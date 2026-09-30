@@ -33,11 +33,13 @@ meta:
     deps: "spec/<spec_kind>/<domain>/<family>/<spec_id>/deps.yaml"
 
 case:
-  # determined values of runtime input (with sweep already expanded). Two kinds of key:
-  # RUNTIME inputs (grid, time, initial, boundary, constants, every node-specific key) are values
-  # generated code takes per case, and each needs a route in the IR (V9); PROVENANCE inputs
-  # (profile_selection, test_profile_id, test_profile_version) are pointers the host pins and
-  # records, and no code path is asked for them.
+  # determined values of runtime input (with sweep already expanded). Three kinds of key:
+  # RUNTIME inputs are values the node's algorithm takes per case (grid, time, initial, boundary,
+  # constants, a node-specific parameter or sentinel), and each needs a route in the IR (V9);
+  # PROVENANCE inputs (profile_selection, test_profile_id, test_profile_version) are pointers the
+  # host pins and records; JUDGMENT keys — a comparand only a predicate reads (an expected or
+  # reference value, a tolerance) and an annotation (notes, description, an expected outcome) —
+  # are read by the host or a reader. Neither of the last two gets a code path.
   test_case_set:
     - case_id: "<case_id>"
       inputs:
@@ -470,7 +472,7 @@ An unresolvable adopted `profile` is not a `Compile fail` but a transport `fail_
 
 #### V9. case input routing
 - **Presence.** Every runtime input (schema block, `case`) that the node's `tests.md` §2 or `controlled_spec.md` fixes for a case is declared in that case's `inputs`.
-- **Route.** Each declared runtime input has a route `Generate` can follow from the IR alone: an `io_contract.inputs[]` entry (`evidence_ref: spec.ir.yaml`) that a step's `inputs` names, with the step description or a derived rule saying what the value fixes; a dependency-realized step (a `boundary.kind` realized by the `boundary_apply` dependency step); or a derived rule / step description that fixes a runner-output field from it (`time.steps` → `perf.json` `steps`, the grid → `cells_updated`). A route that says nothing about what the value fixes is none.
+- **Route.** Each declared runtime input has a route `Generate` can follow from the IR alone: an `io_contract.inputs[]` entry (`evidence_ref: spec.ir.yaml`) that a step's `inputs` names, with the step description or a derived rule saying what the value fixes; a dependency-realized step (a `boundary.kind` realized by the `boundary_apply` dependency step); or a derived rule / step description that fixes a runner-output field from it (`time.steps` → `perf.json` `steps`, the grid → `cells_updated`). A route that says nothing about what the value fixes is none. A route for a judgment key is a `fail`: code that reads the value it is judged against computes nothing.
 - A null member of its kind (`boundary: {kind: none}`) needs no route only where the node's `tests.md` states that aspect is N/A; where `controlled_spec.md` fixes the aspect it is a V9 (and V2) `fail`. Provenance inputs need no route; code MAY read them.
 - The only deterministic floor is partial: an `inputs.<path>` a primary predicate or `coordinates[]` entry names must resolve in every target case. The rest is judged to V2's standard.
 

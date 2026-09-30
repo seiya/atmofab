@@ -727,7 +727,7 @@ PINNED: dict[str, str] = {
     # deterministically at Compile (`_validate_profile_selection`) and recorded by the host.
     # The compile producer gains rule (8) (author a route per runtime input) and the compile
     # reviewer's backstop count becomes three.
-    "pure-54": "25ba6d8c2b91331d8b1774d95fa8505cebd84c647b30184e77d6a91262e593dc",
+    "pure-54": "a87ce8d3820d5b18611e66eb82b0ba124697926104a8162900fe6fd2d80c2e74",
 }
 
 

@@ -468,7 +468,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # route) joins the verify scope and the scope sentence names it, and V3 points at V9 for
     # whether a case input reaches the code. A compile leaf reading it authors routes a
     # compile-docs-9 leaf did not, so the key moves.
-    "compile-docs-10": "cee438066fcb3b9679dad26d3b5d743494423206354f6a943d679f39cf4d55ee",
+    "compile-docs-10": "3f3ff95941f1bfc5e9b06aa6dcc3c07ab075d65c290a086430353f0d45c916ac",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
