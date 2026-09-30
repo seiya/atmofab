@@ -728,7 +728,7 @@ PINNED: dict[str, str] = {
     # is non-empty) and the test-profile pair is recorded by the host (issue #346 PR-2).
     # The compile producer gains rule (8) (author a route per runtime input) and the compile
     # reviewer's backstop count becomes three.
-    "pure-54": "cd8a63750fb17e16ab52d4bc96efdc70cff2781f17daeed93535cef9ab1c4867",
+    "pure-54": "2245d3016d95612c33cbc467d42945d14a4eeb60715043a66431c21dd67ab26c",
 }
 
 
