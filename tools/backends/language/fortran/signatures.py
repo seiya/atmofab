@@ -1188,11 +1188,12 @@ def generated_source_violations(
     # per-entity atoms so a combined `integer, parameter :: dp = real64, case_id_len = 64` matches.
     #
     # Accessibility is outside the pin: the harness spec's §3 leaves the export of these names
-    # free, and each component §5.1 block calls the attribute immaterial. `source_atoms` drops a `public` / `private` attribute before the comparison, so the
-    # attribute form `integer, parameter, public :: dp = real64` is PRESENT (issue #363). It is
-    # still a BINDING for the uniqueness count below — the declared-names helper reads a
-    # declaration carrying `parameter` as a constant whatever else its attribute list holds; its
-    # access-spec-only skip applies to a bare `public :: dp` statement alone.
+    # free, and each component §5.1 block calls the attribute immaterial. `source_atoms` drops a
+    # `public` / `private` attribute before the comparison, so the attribute form
+    # `integer, parameter, public :: dp = real64` is PRESENT (issue #363). It is still a BINDING
+    # for the uniqueness count below — the declared-names helper reads a declaration carrying
+    # `parameter` as a constant whatever else its attribute list holds; its access-spec-only skip
+    # applies to a bare `public :: dp` statement alone.
     all_src_atoms = source_atoms(combined)
     # Defense-in-depth: `_parse_canonical_interface_from_controlled_spec` above already renders the
     # whole §5.1 struct and short-circuits (iface_err → return) on any parameter the backend cannot

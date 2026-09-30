@@ -1916,6 +1916,11 @@ class Section51StanzaLayerTests(unittest.TestCase):
         self.assertEqual(
             source_atoms("integer, parameter, private :: private_len = 64"),
             frozenset({"integer,parameter::private_len=64"}))
+        # Only an ACCESS attribute is dropped: any other attribute beside it stays, so the atom
+        # does not compare equal to the pinned one (the component §5.1 blocks promise exactly this).
+        self.assertEqual(
+            source_atoms("integer, parameter, save, public :: dp = real64"),
+            frozenset({"integer,parameter,save::dp=real64"}))
         # `stanza_atoms` keeps the attribute: a procedure stanza is compared with it.
         self.assertEqual(stanza_atoms(["integer, parameter, public :: dp = real64"]),
                          ("integer,parameter,public::dp=real64",))
