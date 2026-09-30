@@ -463,6 +463,14 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # ...and the digest `compile-docs-9` SHIPPED with (origin/main a09eed1a), kept so a later
     # version returning to those bytes collides (`test_no_empty_bump_or_silent_revert`).
     "compile-docs-9@a09eed1a": "bf6397869f7ffe89c4129f2cc62ad99038c231fc70616b777deb85aeffdb5000",
+    # compile-docs-10 (issue #346): the schema block classifies the case inputs (a runtime input
+    # is a value the node's algorithm takes; the provenance inputs and anything the algorithm
+    # does not take ask nothing of the code), §1-1 asks for a route per runtime input, V9 (case
+    # input routing: presence, the route forms, the per-case null-member exemption) joins the
+    # verify scope and the scope sentence names it, the `evidence_ref` comment and V3 point at
+    # V9, and the `minor` bullet and §On-failure behavior name V9. A compile leaf reading it authors routes a
+    # compile-docs-9 leaf did not, so the key moves.
+    "compile-docs-10": "582c39877703453db3fa865c2db288f4d40cf02ec4bc64958778396ed4ed1e60",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -763,7 +771,17 @@ PINNED_EXECUTE: dict[str, str] = {
     # nothing from it; the record's member is unchanged, because the tuple keeps only launch
     # capabilities and `prompt_fragments` is not one. What Validate.execute produces is
     # unchanged. (Measured by diffing `execute_tuple()` against origin/main b37ce9a6's.)
-    "execute-8": "c019eaa5d8cde94157fbc12286ed1dec3fbc5196f2cdce214ca9f1dfa8c237ea",
+    # Re-pinned by issue #346: `Conductor._execute_inproc` writes `trial_meta.json#
+    # test_profile_id` / `test_profile_version`, the value every case of the IR declares (null
+    # when a case lacks it or two disagree) — the record every `tests.md` §8 asks for. A re-pin,
+    # not a bump: the record's bytes DO change (unlike the refusal-only re-pins above), but no
+    # gate and no verdict predicate reads the two fields (`Validate.judge` is shown the record
+    # whole), and the same change bumps `PURE_PROMPT_CONTRACT_VERSION` to pure-54, which is in
+    # the validate transformation tuple (`tools/derivation.py`), so every validate key moves
+    # and every certified Validate re-derives — with the new record — whatever this version
+    # says. A bump here would move nothing more. (Measured by diffing `execute_tuple()` against
+    # origin/main 7b67f5f3's: the `_execute_inproc` row and no other.)
+    "execute-8": "eb6aa6fcc8641e0f35a9aa9b28f8316d17c25ee03a408d7192d10a7ef92e1aa0",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -818,6 +836,8 @@ PINNED_EXECUTE: dict[str, str] = {
     # no other.) The digest `execute-8` shipped with at
     # f317c42f:
     "execute-8@f317c42f": "8fd899fce01c2f63d3733071d406a485db3b75254b986ac2f60905f709275f2f",
+    # The digest `execute-8` shipped with at 7b67f5f3 (before issue #346's re-pin above):
+    "execute-8@7b67f5f3": "c019eaa5d8cde94157fbc12286ed1dec3fbc5196f2cdce214ca9f1dfa8c237ea",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

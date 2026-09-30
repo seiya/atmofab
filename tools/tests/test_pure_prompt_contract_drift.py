@@ -716,6 +716,24 @@ PINNED: dict[str, str] = {
     # `host` (false for the `fortran_cpu_mpi` manifest). The Fortran runner a distributed
     # harness renders (its ABI comment is part of what the producer reads) is new with it.
     "pure-53": "cd73094b849774ec8b44fc1614568c6db05cd5f1a50963251fc859b6c9cd45b9",
+    # pure-54 (issue #346): G2/H2 name the RUNTIME case inputs and ask that the code follow the
+    # route the IR gives each one (Compile V9), and the Generate severity rubric's `major`
+    # example becomes "a runtime case input the IR routes nowhere"; the PROVENANCE inputs
+    # (`profile_selection`, `test_profile_id`, `test_profile_version`) leave the code-side
+    # obligation. This REVERSES the pure-39 stance above (operator decision, 2026-09-30) on three
+    # grounds: the certified profile bundle that read the two keys proved possibility, not
+    # obligation; #346 measured the cost of the obligation — two providers, three reviews, two
+    # verdicts on one IR shape, two terminal CPU runs; and the pointer is pinned
+    # deterministically at Compile (`_validate_profile_selection`, when the sidecar's `profiles`
+    # is non-empty) and the test-profile pair is recorded by the host (issue #346 PR-2).
+    # The compile producer gains rule (8) (author a route per runtime input) and the compile
+    # reviewer's backstop count becomes three. G3/H3 count a runtime input whose value differs
+    # across cases as a case-dependent difference; a null member (`boundary: {kind: none}`) asks
+    # the code for nothing unless the IR gives that aspect content for the case; G2/H2 carry
+    # V9's list of route forms, since this reviewer is not shown phase_01. A runtime input is a
+    # value the node's algorithm takes, whether or not a predicate also reads it (review round 2
+    # replaced a JUDGMENT key class that over-refused the harness round-trip sentinels).
+    "pure-54": "f6e4a87d9d32c61de34f9bb5620364dff922cb7c3fb8743152a99099a36bf37f",
 }
 
 

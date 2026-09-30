@@ -127,7 +127,7 @@ A `profile spec` has FIVE sections and no `tests.md`: nothing is generated or ex
 - Required statement: state that a `component` outside the compatibility range is an error and that automatic switching to an alternative `profile` is forbidden. The host resolver enforces it and names its refusals.
 
 5. **Traceability**
-- Required statement: state that the adoption and the resolved `component` versions are recorded in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`profiles[]` and `all_nodes`), and that each case of its `IR` records `inputs.profile_selection`.
+- Required statement: state that the adoption and the resolved `component` versions are recorded in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`profiles[]` and `all_nodes`), and that each case of its `IR` records `inputs.profile_selection`. That field is a `provenance input` (`docs/GLOSSARY.md`) the `Compile` gate pins; no generated-code path is asked to read it.
 
 ### Required sections of an `infrastructure spec` (R1 harness)
 An `infrastructure spec` takes the `component spec` section shape **minus section 9 (AD preparation information)** — a harness carries no physics, so it has nothing to differentiate. The **section numbers are load-bearing**: the deterministic `Compile` gate reads the published surface out of `## 5.` and its `### 5.1` subsection by number (`docs/workflow/phases/phase_01_compile.md`), so a harness that renumbers its sections fails to certify.

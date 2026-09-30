@@ -11522,9 +11522,25 @@ class Conductor:
         # start and would drift permanently once any commit lands mid-run.
         from tools.orchestration_runtime import _capture_repo_revision
 
+        # The test profile the cases were authored under (issue #346): every `tests.md` §8 asks
+        # for it in this record, which only the host writes. The value every case declares, and
+        # `null` when a case lacks it or two cases disagree. A record: no gate and no verdict
+        # predicate reads it and nothing fails on it (the judge is shown trial_meta.json whole,
+        # as it is shown every other record field), so a leaf gains nothing from its value.
+        case_set = ir.get("case", {}).get("test_case_set") if isinstance(ir.get("case"), dict) else None
+        case_inputs = [c["inputs"] if isinstance(c, dict) and isinstance(c.get("inputs"), dict) else {}
+                       for c in (case_set if isinstance(case_set, list) else [])]
+        test_profile: dict[str, Any] = {}
+        for key in ("test_profile_id", "test_profile_version"):
+            declared = {json.dumps(ci.get(key), sort_keys=True) for ci in case_inputs}
+            agreed = (case_inputs and len(declared) == 1
+                      and all(key in ci for ci in case_inputs))
+            test_profile[key] = case_inputs[0][key] if agreed else None
+
         trial_meta = {
             "run_id": refs.run_id,
             "node_key": refs.node_key,
+            **test_profile,
             "repo_revision": _capture_repo_revision(self.repo_root),
             "pipeline_id": refs.pipeline_id,
             "source_source_id": refs.source_id,
