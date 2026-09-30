@@ -1900,6 +1900,13 @@ class Section51StanzaLayerTests(unittest.TestCase):
         self.assertEqual(
             source_atoms("character(len=8,kind=1), public :: s = 'ab,cd'"),
             frozenset({"character(len=8,kind=1)::s='ab,cd'"}))
+        # ...and a token inside the parentheses is not an attribute even when it reads `public`:
+        # keywords are not reserved, so `public` can be a named constant in an array bound.
+        # (A split on EVERY comma rejoins to the same text for the row above; this row is the
+        # one that tells the two splits apart.)
+        self.assertEqual(
+            source_atoms("integer, dimension(lo,public,hi), private :: a"),
+            frozenset({"integer,dimension(lo,public,hi)::a"}))
         # `stanza_atoms` keeps the attribute: a procedure stanza is compared with it.
         self.assertEqual(stanza_atoms(["integer, parameter, public :: dp = real64"]),
                          ("integer,parameter,public::dp=real64",))
