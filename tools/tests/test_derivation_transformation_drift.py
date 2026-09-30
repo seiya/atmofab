@@ -338,6 +338,9 @@ def verdict_tuple() -> dict[str, str]:
         "orchestration_runtime.COMPARAND_OWN_VERDICTS":
             hashlib.sha256(json.dumps(sorted(ort.COMPARAND_OWN_VERDICTS)).encode()).hexdigest(),
         "workflow_conductor._verdict_cross_target": _source_digest(wc._verdict_cross_target),
+        # Issue #345 PR-2: the binding the verdict author reads — the comparand runs evaluated
+        # and the `comparands_absent` record — comes from this second resolution, not the key's.
+        "Conductor._bind_comparands": _source_digest(wc.Conductor._bind_comparands),
     }
 
 
@@ -893,6 +896,18 @@ PINNED_VERDICT: dict[str, str] = {
     # `ResolveComparandsTests`, not by this pin.
     "verdict-7@1b5c30de": "9847c038a082ccae4a3ca3d6f539377a75fbf4e9f937aae0128ea1a7ad478e45",
     "verdict-7": "2ddc3713d10e2a9acfc4fe7cb30e42dc817aedd8d6ec08973c70369412c06acb",
+    # verdict-8 (issue #345 PR-2): `resolve_comparands` returns a `ComparandResolution` whose
+    # `absent` names every other declared target that is not a comparand and why;
+    # `verdict.json` gains `comparands_absent` for an IR with a cross-target predicate, and
+    # `aggregate_verdict.json#cross_target` gains `absent`, copied from it.
+    # Re-pinned in round 1 before shipping (the version is new on this branch): the
+    # `ComparandResolution` docstring names an upstream refusal (`derivation_key_mismatch:ir`).
+    # Re-pinned again in round 1: the tuple gains `Conductor._bind_comparands`, which supplies
+    # the verdict author's binding and was in no tuple (a mutant emptying its `absent` changed
+    # `verdict.json` and left this file green).
+    # Re-pinned in round 3: the `ComparandResolution` docstring states which side is stale for
+    # `derivation_key_mismatch:ir` and `compile_ir_mismatch`.
+    "verdict-8": "40e7bdc9359fdf43b9f8a661f33839fdc7bcf120ed46a85f547710b0045d5659",
 }
 
 

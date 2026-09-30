@@ -406,9 +406,11 @@ _VERDICT_FAIL_MARKER = "[execute fail: verdict]"
 
 
 def _verdict_cross_target(verdict_doc: Any) -> dict[str, Any] | None:
-    """`{own_verdict, comparands}` of a `verdict.json` that carries a cross-target primary
-    record (issue #324) — the comparand runs listed once per target, in first-seen order — or
-    None when it carries none."""
+    """`{own_verdict, comparands[, absent]}` of a `verdict.json` that carries a cross-target
+    primary record (issue #324) — the comparand runs listed once per target, in first-seen
+    order, and `absent`, `verdict.json#comparands_absent` (issue #345) when the verdict carries
+    it — or None when it carries none. Read off the verdict file, not the conductor's binding:
+    the aggregate is written at post-judge, possibly by a resumed conductor."""
     from tools.verdict_evaluator import is_cross_target_record
     per_test = verdict_doc.get("per_test") if isinstance(verdict_doc, dict) else None
     seen: dict[str, dict[str, Any]] = {}
@@ -426,7 +428,11 @@ def _verdict_cross_target(verdict_doc: Any) -> dict[str, Any] | None:
                     seen[str(comp.get("target_id"))] = comp
     if not any_cross:
         return None
-    return {"own_verdict": verdict_doc.get("own_verdict"), "comparands": list(seen.values())}
+    out: dict[str, Any] = {"own_verdict": verdict_doc.get("own_verdict"),
+                           "comparands": list(seen.values())}
+    if isinstance(verdict_doc.get("comparands_absent"), list):
+        out["absent"] = verdict_doc["comparands_absent"]
+    return out
 
 
 def _verdict_failure_report(verdict_doc: dict[str, Any]) -> str:
@@ -3633,11 +3639,13 @@ class Conductor:
     _phase_closure_bindings: dict[tuple[str, str], list[dict[str, Any]]] = field(
         default_factory=dict, init=False, repr=False)
     #: The comparands each node's Validate attempt in flight bound (issue #324): the
-    #: `primary_evidence.ComparandEvidence` of every `comparand[]` entry of its validate key,
-    #: resolved at phase start by `_phase_derivation` and checked there against the key. Set
-    #: exactly when the key carries a `comparand` member; `_author_execute_verdict` evaluates
-    #: the cross-target predicates against these and refuses to evaluate them without.
-    _phase_comparand_bindings: dict[str, list[Any]] = field(
+    #: The `primary_evidence.ComparandResolution` of a node's validate key: `comparands`, one
+    #: `ComparandEvidence` per `comparand[]` entry of the key, and `absent`, every other
+    #: declared target that is not one and why (issue #345) — resolved at phase start by
+    #: `_phase_derivation` and checked there against the key. Set exactly when the key carries
+    #: a `comparand` member; `_author_execute_verdict` evaluates the cross-target predicates
+    #: against `comparands`, records `absent`, and refuses to evaluate them without.
+    _phase_comparand_bindings: dict[str, Any] = field(
         default_factory=dict, init=False, repr=False)
     #: The artifact directories THIS conductor process created with an exclusive `mkdir`
     #: (`_mint_seq_dir`): an id is this process's to write under exactly when its directory
@@ -11674,19 +11682,21 @@ class Conductor:
         # predicate with no binding would read as `no_comparand` and pass vacuously, and a
         # comparand whose captures moved since the key was taken is not what the key names.
         comparands: list[Any] = []
+        absent: list[dict[str, str]] | None = None
         if cross_target_predicates(ir if isinstance(ir, dict) else {}):
             bound = self._phase_comparand_bindings.get(refs.node_key)
             if bound is None:
                 raise RuntimeError(
                     f"comparand_unbound: {refs.node_key} has cross-target predicates but this "
                     "Validate attempt bound no comparand set (phase_derivation did not run)")
-            for comp in bound:
+            for comp in bound.comparands:
                 if comparand_evidence_sha256(comp.run_dir) != comp.evidence:
                     raise RuntimeError(
                         f"comparand_evidence_moved:{comp.target_id}: the captures of "
                         f"{comp.pipeline_ref}/runs/{comp.run_id} changed after the validate "
                         "key bound them")
-            comparands = list(bound)
+            comparands = list(bound.comparands)
+            absent = list(bound.absent)
 
         io_contract = (ir.get("io_contract") or {}) if isinstance(ir, dict) else {}
         predicates = io_contract.get("test_predicates") if isinstance(io_contract, dict) else None
@@ -11724,6 +11734,11 @@ class Conductor:
         ir_hash = inputs.get("ir") if isinstance(inputs, dict) else None
         if isinstance(ir_hash, str) and ir_hash:
             doc["ir_hash"] = ir_hash
+        # Every other declared target that is not a comparand, and why (issue #345): what tells
+        # "that target has no certified variant" from "it was left out" when a cross-target
+        # record reads `no_comparand`. Written exactly when the IR has a cross-target predicate.
+        if absent is not None:
+            doc["comparands_absent"] = absent
         self._write_run_node_meta(refs, "verdict.json", doc)
         return doc
 
@@ -12076,24 +12091,25 @@ class Conductor:
                     refs, inputs)
         return derivation
 
-    def _bind_comparands(self, refs: NodeRefs, inputs: Mapping[str, Any]) -> list[Any]:
+    def _bind_comparands(self, refs: NodeRefs, inputs: Mapping[str, Any]) -> Any:
         """The comparand runs a validate key's `comparand[]` member names (issue #324),
         re-resolved by `resolve_comparands` — which builds its own resolver per other target,
-        so this is a second resolution — and refused unless it names the same targets with the
-        same evidence hashes in the same order: the verdict must read the bytes the key bound.
-        Raises `DerivationInputsUnresolvable`."""
+        so this is a second resolution — and refused unless its `comparands` name the same
+        targets with the same evidence hashes in the same order: the verdict must read the
+        bytes the key bound. Returns the whole `ComparandResolution`, its `absent` included
+        (issue #345). Raises `DerivationInputsUnresolvable`."""
         from tools.orchestration_runtime import resolve_comparands
         bound = resolve_comparands(
             self.repo_root, node_key=refs.node_key, ir_hash=str(inputs.get("ir")),
             target=self.target, spec_refs={refs.node_key: refs.spec_path})
         keyed = [(str(c.get("target_id")), str(c.get("evidence")))
                  for c in (inputs.get("comparand") or []) if isinstance(c, dict)]
-        if [(c.target_id, c.evidence) for c in bound] != keyed:
+        if [(c.target_id, c.evidence) for c in bound.comparands] != keyed:
             raise DerivationInputsUnresolvable(
                 f"derivation_inputs_unresolvable: validate derivation of {refs.node_key} bound "
                 f"comparands {keyed} but they resolve to "
-                f"{[(c.target_id, c.evidence) for c in bound]} (another target's run landed "
-                "between the key and the binding; run it again)")
+                f"{[(c.target_id, c.evidence) for c in bound.comparands]} (another target's "
+                "run landed between the key and the binding; run it again)")
         return bound
 
     def _bind_closure_sources(self, refs: NodeRefs, phase: str,
