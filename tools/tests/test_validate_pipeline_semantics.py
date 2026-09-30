@@ -17998,9 +17998,9 @@ class ProfileSelectionGateTests(unittest.TestCase):
         self.assertIn("must be strings", v[0])
 
     def test_a_node_adopting_no_profile_is_not_gated_at_all(self) -> None:
-        # The `infrastructure` harness spec uses the same field name for an unrelated plumbing
-        # aspect. Refusing it here would re-certify the harness and, through the closure
-        # bindings, every consumer of it — for a field no code reads on that node.
+        # No case of a `profiles: []` node declares the field (phase_01 schema block, issue #358),
+        # and a stray one is NOT refused: a leaf gains nothing toward its verdict by authoring
+        # it, so this row pins "not refused", not "licensed".
         self.assertEqual(
             self._run(selections=[{"aspect": "state_io", "plumbing_operation": "write"}],
                       profiles=[]),

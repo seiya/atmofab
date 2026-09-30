@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `test_profile_id`: `harness_cpp_gpu_l0`
-- `test_profile_version`: `0.1.0`
+- `test_profile_version`: `0.2.0`
 - `status`: `draft`
 - `spec_ref.spec_kind`: `infrastructure`
 - `spec_ref.spec_id`: `harness_cpp_gpu`
@@ -17,7 +17,7 @@ This suite verifies the published runner-plumbing operations of `harness_cpp_gpu
   - `l0_numeric_roundtrip_pass`: `inputs.initial.x_in = [-1.5, 1.0e-30, 1.0e+30]` (a negative, a `1e-30`-scale and a `1e+30`-scale real).
   - `l0_array_emit_pass`: `inputs.initial.a1 = [1, 2]`, `a2 = [[1, 2], [3, 4]]`, `a3 = [[[1, 2], [3, 4]], [[5, 6], [7, 8]]]`, `a4` the same pattern over `1..16`, each written in the JSON nesting order the emitters produce (the leading array index outermost), and emitted as declared.
   - `l0_boolean_literal_pass`: `inputs.initial.bool_in_true = true`, `bool_in_false = false`.
-- The metric case (`l0_metric_leaf_pass`) supplies exactly two fixed sentinel `h_metric` records and no other sentinel payload. It carries the same `grid` / `time` / `boundary` inputs as every other case, and — like every case — its own `inputs.profile_selection` entry naming the plumbing aspect it verifies, here the diagnostics fold (`harness_cpp_gpu__write_diagnostics`). The two records, whose field values are the case's input data, are:
+- The metric case (`l0_metric_leaf_pass`) supplies exactly two fixed sentinel `h_metric` records and no other sentinel payload. It carries the same `grid` / `time` / `boundary` inputs as every other case; the plumbing aspect it verifies, the diagnostics fold (`harness_cpp_gpu__write_diagnostics`), is selected by its `case_id` (§4). The two records, whose field values are the case's input data, are:
   - `{ name = 'selftest.metric_leaf', value = 0.25, is_na = false, reason_na = '' }`
   - `{ name = 'selftest.metric_na', value = -1.0, is_na = true, reason_na = 'not_computed' }`
   There is no third record: `selftest.metric_na_reason_na` is a key the writer derives from the second record's `is_na` / `reason_na` (§5), never a supplied `h_metric`.

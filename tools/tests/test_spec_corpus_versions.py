@@ -51,6 +51,28 @@ def version_disagreements(entries: list[dict], root: Path) -> list[str]:
     return out
 
 
+def profile_selection_on_non_adopters(entries: list[dict], root: Path) -> list[str]:
+    """Every `tests.md` that names `profile_selection` although its spec adopts no profile.
+
+    The key is declared exactly when the node adopts a profile (the phase_01 schema block,
+    issue #358); a node whose `deps.yaml` `dependencies.profiles` is empty declares none, so
+    its `tests.md` has no reason to name it — the harness `tests.md` did, and gave the key a
+    second, runtime meaning a Compile.verify then graded against."""
+    out: list[str] = []
+    for e in entries:
+        tp, dp = e.get("tests_path"), e.get("deps_path")
+        if not tp or not (root / tp).is_file():
+            continue
+        if "profile_selection" not in (root / tp).read_text(encoding="utf-8"):
+            continue
+        deps = yaml.safe_load((root / dp).read_text(encoding="utf-8")) if dp else None
+        profiles = ((deps or {}).get("dependencies") or {}).get("profiles") or []
+        if not profiles:
+            out.append(f"{e['spec_id']}: tests.md names profile_selection, but the spec "
+                       "adopts no profile")
+    return out
+
+
 class SpecCorpusVersionTest(unittest.TestCase):
     def _entries(self) -> list[dict]:
         doc = yaml.safe_load((REPO / "spec/registry/spec_catalog.yaml").read_text())
@@ -89,6 +111,28 @@ class SpecCorpusVersionTest(unittest.TestCase):
             self.assertIn("controlled_spec.md spec_version",
                           run(cs.replace("`0.1.1`", "`0.1.2`"), tests, entry)[0])
             self.assertEqual(len(run(cs, tests, {**entry, "spec_version": "0.1.2"})), 2)
+
+
+    def test_no_tests_md_names_profile_selection_on_a_node_adopting_no_profile(self) -> None:
+        self.assertEqual(profile_selection_on_non_adopters(self._entries(), REPO), [])
+
+    def test_the_profile_selection_rule_is_driven_both_ways(self) -> None:
+        """Synthetic: the corpus answer is empty, so drive a refusal and an acceptance."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "s").mkdir()
+            entry = {"spec_id": "s", "tests_path": "s/tests.md", "deps_path": "s/deps.yaml"}
+            (root / "s/tests.md").write_text("- each case carries `inputs.profile_selection`\n")
+            (root / "s/deps.yaml").write_text("dependencies:\n  profiles: []\n")
+            self.assertIn("adopts no profile",
+                          profile_selection_on_non_adopters([entry], root)[0])
+            (root / "s/deps.yaml").write_text(
+                "dependencies:\n  profiles:\n    - profile_id: p\n")
+            self.assertEqual(profile_selection_on_non_adopters([entry], root), [])
+            (root / "s/deps.yaml").write_text("dependencies:\n  profiles: []\n")
+            (root / "s/tests.md").write_text("- selected by its `case_id`\n")
+            self.assertEqual(profile_selection_on_non_adopters([entry], root), [])
 
 
 if __name__ == "__main__":

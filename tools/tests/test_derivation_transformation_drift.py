@@ -471,6 +471,12 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # V9, and the `minor` bullet and §On-failure behavior name V9. A compile leaf reading it authors routes a
     # compile-docs-9 leaf did not, so the key moves.
     "compile-docs-10": "582c39877703453db3fa865c2db288f4d40cf02ec4bc64958778396ed4ed1e60",
+    # compile-docs-11 (issue #358): the schema block's `profile_selection` comment says the key
+    # is present exactly when `profiles` is non-empty — a `profiles: []` node declares none and
+    # its `tests.md` gives the name no other meaning — and the `_validate_profile_selection`
+    # static-gate note drops "an `infrastructure` harness uses the same name for an unrelated
+    # plumbing aspect". A compile leaf reading it authors no harness `profile_selection`.
+    "compile-docs-11": "d07c8ad3e8c38ef2b4fa5b923459ba4e71bdfe3b605febd2fb50952cadd2fb1b",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

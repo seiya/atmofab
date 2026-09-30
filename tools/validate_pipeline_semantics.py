@@ -10211,9 +10211,11 @@ def _validate_profile_selection(
     WHICH nodes the field is required on comes from the SIDECAR, never from the IR
     (`atmofab-enforcement-change` surface 11): a field the leaf authors must not decide whether
     the leaf is gated. A sidecar with ``profiles: []`` is a node that adopts none, and the field
-    is not read there at all — an `infrastructure` harness spec uses the same field name for an
-    unrelated plumbing aspect, and refusing it on a node with no adopted profile would
-    re-certify the harness and, through the closure bindings, every consumer of it. A sidecar
+    is not read there at all. The phase_01 schema block says no case of such a node declares one
+    (issue #358: the harness `tests.md` files no longer give the name a meaning of their own),
+    and a stray key is still not refused: a leaf that authors one gains nothing toward its
+    verdict (V9 asks no route of a provenance input, G2/H2 grade its absence as no finding), so
+    a second reader of the schema's "absent" buys no certification. A sidecar
     with NO ``profiles`` key predates this builder: refused, with "re-run Compile" as the
     remedy, rather than skipped.
 
