@@ -1515,9 +1515,11 @@ class PureRenderTests(unittest.TestCase):
         # arrived under `dev_verify_major`; it reads the token and assigns nothing. A follow-up
         # corrected its `--resume` clause (the refusal a failed attempt meets is
         # `derivation_key_missing`, and a standing revocation seeds a warm repair). READ: the
-        # same routing tokens, nothing assigned.
+        # same routing tokens, nothing assigned. Round 4 restated that clause as the rule
+        # (cold unless the current key selects a revoked meta WITH findings) and named the
+        # answers an operator meets. READ: the same routing tokens, nothing assigned.
         "docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-        " #92a8be9215b2",
+        " #39cb9d5d77e1",
         # The two verifier `SKILL`s' routing lines stood here until Z4 (issue #171). Both files
         # are deleted with the agentic leaf: a pure leaf reads no `SKILL`, so the lines are not
         # on a leaf-read surface any more and there is nothing left to allowlist.

@@ -453,8 +453,8 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # `last_fail_reason` names `docs/TESTS.md` requirement 9.
     # Re-pinned for issue #355: §1-1's "How a `Compile fail` is declared" names the terminus,
     # `fail_closed` in both workflow modes under `compile_declared_fail`, in place of "the
-    # same terminus the agentic declaration reaches". What a valid IR is, and when a leaf
-    # declares, did not move, so the key does not. Re-pinned again on the same branch (the
+    # same terminus the agentic declaration reaches". What a valid IR is did not move, so the
+    # key does not. Re-pinned again on the same branch (the
     # value above was never shipped): §On-failure behavior stops calling a self-check
     # invariant violation a `Compile fail` — the producer authors an IR that meets it, the
     # reviewer reports it — and drops the agentic-era "repair_strategy defaults to `reuse`"
