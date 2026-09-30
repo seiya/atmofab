@@ -1286,8 +1286,9 @@ def generated_source_violations(
                 f"{target}: generated model source is missing the §5.1 module parameter "
                 f"declaration `{pline.strip()}` (a drifted parameter value silently changes the "
                 "published ABI) — declare it with exactly this type, `parameter` attribute, name "
-                "and value; formatting and an accessibility attribute (`public` / `private`) on "
-                "the declaration may differ, nothing else may")
+                "and value; spacing, case, continuation lines, a combined declaration and an "
+                "accessibility attribute (`public` / `private`) on the declaration may differ, "
+                "nothing else may")
             continue
         # UNIQUENESS, not presence. Presence alone asks "does the pinned text occur anywhere in the
         # file", and a declaration is not where it occurs but where the published signatures BIND.

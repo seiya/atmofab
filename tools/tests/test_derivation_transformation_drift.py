@@ -577,7 +577,7 @@ PINNED_RENDER: dict[str, str] = {
     # of commit 70128dbb before it was committed, against origin/main fcced0b6: every Fortran and CUDA C++ runner render over the 154
     # `workspace/ir/*/*/spec.ir.yaml` for both checked-in targets, both targets' control-file
     # rules and `perf_parallelism` — 312 digests, identical.
-    "render-6": "665c868af33ca32b56a4f7cc1b669f948e26f681f733b2c1dbbb7e2f918a3950",
+    "render-6": "2bcc28eabe5c8b08a8b03a391f8a70d1569fdeece377fd1dace659d6bc7b1054",
     # Re-pinned (issue #316, R4-c PR-4), behaviour-preserving for every existing target: the
     # Fortran renderer gained the variant a harness that runs the program as several ranks
     # renders (the only such harness is new, so no certified runner is one), its perf line reads
@@ -621,7 +621,12 @@ PINNED_RENDER: dict[str, str] = {
     # bump. What a runner renders is unchanged. (Measured against origin/main e1e78155: the
     # `render_tuple()` diff is that row and no other; every Fortran and CUDA C++ runner render
     # over the 214 `workspace/ir/*/*/spec.ir.yaml` for the three checked-in targets — 642
-    # digests, identical.) The digest `render-6` shipped with at e1e78155:
+    # digests, identical — rendered through `host_render.render_runner(<toolchain.language>,
+    # ir, <meta.spec_id>, <harness.infrastructure_id>, target=<profile doc>)`. Rendering does
+    # not run the harness pin, so the relaxation was measured separately: `--stage
+    # post_generate` over the 241 source bundles carrying a `gate_meta.json` changed the exit
+    # code of the 4 attribute-form sources, FAIL to PASS, and of no other.) The digest
+    # `render-6` shipped with at e1e78155:
     "render-6@e1e78155": "a48164785fdd1f989803bc70dd122bbde3ad77efd9ba97abf4d8f40f20db4127",
 }
 PINNED_BUILD: dict[str, str] = {

@@ -1918,6 +1918,7 @@ class Section51StanzaLayerTests(unittest.TestCase):
             frozenset({"integer,parameter::private_len=64"}))
         # Only an ACCESS attribute is dropped: any other attribute beside it stays, so the atom
         # does not compare equal to the pinned one (the component §5.1 blocks promise exactly this).
+        # `save` beside `parameter` is not legal Fortran; the row pins the filter, not a source.
         self.assertEqual(
             source_atoms("integer, parameter, save, public :: dp = real64"),
             frozenset({"integer,parameter,save::dp=real64"}))
