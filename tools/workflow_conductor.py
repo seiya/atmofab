@@ -6579,8 +6579,9 @@ class Conductor:
         freshness-gated deliverable of the pure `generate.generate` substep. Carries the outcome
         (`result` pass/fail), the terminal `failure_category` + `failure_excerpt` on exhaustion
         (`_read_repair_findings` reads the excerpt for the outer repair route), the attempt count,
-        the prompt-contract version (an A7 observable event), and per-attempt model/usage from the
-        CLI result envelope (the ~/.claude-free provenance source). A re-derivable value is not
+        the prompt-contract version (an A7 observable event), and per-attempt model/usage with the
+        model's provenance (`_spawn_pure_turn`: claude's CLI result envelope, codex's host-pinned
+        slug, an HTTP provider's response or configured entry). A re-derivable value is not
         introduced beyond what only the transcript would otherwise hold."""
         from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
         meta: dict[str, Any] = {
@@ -8289,8 +8290,8 @@ class Conductor:
         mirrors bundle_meta.json: the outcome (`result` = whether a schema-valid verdict was
         obtained, NOT the pass/fail of that verdict), the terminal `failure_category`/
         `failure_excerpt` on schema exhaustion (`classify_failure`'s verdict route reads the
-        category), the attempt count, the prompt-contract version, and per-attempt model/usage from
-        the CLI result envelope. source_meta.json cannot hold this (its schema is fixed by
+        category), the attempt count, the prompt-contract version, and per-attempt model/usage with
+        the model's provenance (as bundle_meta.json). source_meta.json cannot hold this (its schema is fixed by
         meta_contracts and carries no per-attempt usage), and the envelope usage is not recoverable
         from any other artifact — so this file is a justified (non-redundant) persistence, exactly
         as bundle_meta.json is for the producer."""

@@ -70,10 +70,11 @@ class HttpLeafResponse(NamedTuple):
     ceiling. It is authoritative — more so than inspecting the partial text — so the caller
     classifies it as `pure_response_truncated` without consulting the extractor.
 
-    `model_reported` says whether `model` is the name the provider's response reported (True)
-    or the entry's configured name the transport fell back to (False), so a caller can record
-    the model's provenance rather than present a configured alias as a resolved one (issue
-    #348).
+    `model_reported` says, on a turn that produced an answer, whether `model` is the name the
+    provider's response reported (True) or the entry's configured name the transport fell back
+    to (False), so a caller can record the model's provenance rather than present a configured
+    alias as a resolved one (issue #348). On a `transport_error` turn `model` is empty and
+    `model_reported` is False; the caller records the entry's configured name itself.
     """
 
     text: str
