@@ -548,14 +548,14 @@ class SeverityRubricSlicerTests(unittest.TestCase):
 # ======================================================================================
 class PureVerifySubstepTests(unittest.TestCase):
     def _run(self, envelopes, *, cls=_PureFakeConductor, stage_checks_contract=True,
-             stage_phase_02=True):
+             stage_phase_02=True, llm_config=None):
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
         refs = _verify_node(repo, stage_checks_contract=stage_checks_contract,
                             stage_phase_02=stage_phase_02)
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = cls(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                llm_config=_cfg("claude"), env={})
+                llm_config=llm_config if llm_config is not None else _cfg("claude"), env={})
         c.envelopes = envelopes
         # Record the run-log rows without suppressing them: the real `emit` still runs, so what a
         # test reads back is what the operator's event stream carries.
@@ -685,6 +685,30 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertIsNone(vmeta["failure_category"])
         self.assertEqual(vmeta["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
         self.assertEqual(vmeta["per_attempt"][0]["model"], "claude-opus-4-8")
+        self.assertEqual(vmeta["per_attempt"][0]["model_provenance"], "result_envelope")
+
+    def test_a_codex_reviewer_attempt_records_the_host_pinned_model(self) -> None:
+        """Issue #348, the reviewer loop's twin of the producer row: a codex reviewer's
+        `per_attempt[].model` records the host-pinned slug (not the streamed value, absent or
+        forged) and equals the agent-run row of the same launch."""
+        for label, streamed in (("no streamed model", None), ("forged stream", "forged-model")):
+            class _C(_PureFakeConductor):
+                def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
+                    return wc.ProcResult(0, json.dumps(_verdict("pass")), "",
+                                         usage={"output_tokens": 10}, model=streamed)
+            with self.subTest(stream=label):
+                c, refs, oc = self._run(
+                    [], cls=_C, llm_config=_cfg("codex", agent_model="gpt-5.6-sol"))
+                self.assertEqual(oc.status, "pass", label)
+                vmeta = json.loads(
+                    (c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
+                row = [cap["--agent-run-json"] for sub, cap in c.calls
+                       if sub == "finalize-child" and "--agent-run-json" in cap][-1]
+                self.assertEqual(vmeta["per_attempt"][0]["model"], "gpt-5.6-sol", label)
+                self.assertEqual(vmeta["per_attempt"][0]["model_provenance"],
+                                 "codex_launch_pinned", label)
+                self.assertEqual(vmeta["per_attempt"][0]["model"], row["agent_model"], label)
+                self._tmp.cleanup()
 
     def test_fail_verdict_is_substep_fail_with_projected_source_meta(self) -> None:
         c, refs, oc = self._run([_envelope(_verdict("fail", severity="minor",

@@ -7718,20 +7718,15 @@ class DiagnosticianTest(unittest.TestCase):
         directive = ('{"action":"retry","target_phase":"generate","severity":"minor",'
                      '"repair_strategy":"reuse","reason":"x"}')
 
-        class _Resp:
-            text = directive
-            transport_error = None
-            usage: dict = {}
-            model = "m"
-            truncated = False
-            raw_response = directive
-
         import tools.llm_http_leaf as hl
         real = hl.run_pure_http_leaf
 
         def fake(entry, messages, env=None):  # type: ignore[no-untyped-def]
             sent.append(len(messages))
-            return _Resp()
+            # The real response type, so a field the conductor starts reading (issue #348's
+            # `model_reported`) cannot go missing from a hand-rolled double.
+            return hl.HttpLeafResponse(directive, "m", {}, False, None, directive,
+                                       model_reported=True)
 
         hl.run_pure_http_leaf = fake  # type: ignore[assignment]
         self.addCleanup(lambda: setattr(hl, "run_pure_http_leaf", real))

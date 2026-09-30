@@ -992,6 +992,52 @@ class PureProducerSubstepTests(unittest.TestCase):
         self.assertEqual(meta["result"], "pass")
         self.assertEqual(meta["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
         self.assertEqual(meta["per_attempt"][0]["model"], "claude-opus-4-8")
+        self.assertEqual(meta["per_attempt"][0]["model_provenance"], "result_envelope")
+
+    def test_a_claude_attempt_with_no_envelope_model_claims_no_provenance(self) -> None:
+        """Issue #348 round 1: a claude attempt whose envelope names no model records
+        (null, null) — `result_envelope` would claim a source that supplied nothing. Measured:
+        making the provenance unconditional left every other row green."""
+        envelope = json.dumps({"result": json.dumps(_valid_bundle()), "is_error": False,
+                               "usage": {"output_tokens": 10}, "session_id": "s"})
+        c, refs, oc = self._run([envelope])
+        self.assertEqual(oc.status, "pass")
+        meta = json.loads((c.repo_root / refs.source_dir() / "bundle_meta.json").read_text())
+        self.assertEqual((meta["per_attempt"][0]["model"],
+                          meta["per_attempt"][0]["model_provenance"]), (None, None))
+
+    def test_a_codex_attempt_records_the_host_pinned_model(self) -> None:
+        """Issue #348: a codex attempt's `per_attempt[].model` was read off the JSONL stream,
+        whose observed success events carry no model, so every codex row recorded `null` while
+        the same launch's `agent_runs.jsonl` row recorded the host-pinned slug. Both now come
+        from `_codex_model_provenance`. Two streams: one naming no model (the observed case) and
+        one naming a forged model (the stream is the leaf's to write) — both rows must record
+        the pinned slug, and must equal the agent-run row of the same launch."""
+        for label, streamed in (("no streamed model", None), ("forged stream", "forged-model")):
+            with self.subTest(stream=label), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                refs = _write_node(repo)
+                (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
+
+                class _C(_PureFakeConductor):
+                    def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
+                        return wc.ProcResult(0, json.dumps(_valid_bundle()), "",
+                                             usage={"output_tokens": 10}, model=streamed)
+
+                c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
+                       llm_config=_cfg("codex", agent_model="gpt-5.6-sol"), env={})
+                oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+                self.assertEqual(oc.status, "pass", label)
+                meta = json.loads(
+                    (repo / refs.source_dir() / "bundle_meta.json").read_text())
+                row = [cap["--agent-run-json"] for sub, cap in c.calls
+                       if sub == "finalize-child" and "--agent-run-json" in cap][-1]
+            self.assertEqual(meta["per_attempt"][0]["model"], "gpt-5.6-sol", label)
+            self.assertEqual(meta["per_attempt"][0]["model_provenance"], "codex_launch_pinned",
+                             label)
+            self.assertEqual(meta["per_attempt"][0]["agent_run_id"], row["agent_run_id"])
+            self.assertEqual(meta["per_attempt"][0]["model"], row["agent_model"], label)
+            self.assertEqual(row["agent_model_provenance"], "codex_launch_pinned", label)
 
     def test_the_producer_loop_takes_its_launch_instant_from_the_filesystem(self) -> None:
         """Issue #113's resolver is used by THIS loop too, not only by `run_substep`.
