@@ -733,9 +733,11 @@ COMPILE_DOCUMENT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # cannot be completed from the inputs it was given (`phase_01_compile.md` §Compile fail —
 # schema insufficiency / missing input). It is neither a pass nor a repairable document defect,
 # so it must not be routed to a retry: `classify_failure` recognizes the token, declines the
-# table, and falls through to the verify-severity gate, which reads the `issue_severity: "major"`
-# the host wrote into `ir_meta.json` (dev -> fail_closed, prod -> escalate). Exactly where the
-# agentic leaf's own `Compile fail` declaration lands.
+# table, and stops the phase `fail_closed` in both workflow modes with the token as the reason
+# (issue #355), which is what the launch contract's "handed to the operator, not retried" says.
+# Until #355 it fell through to the verify-severity gate (dev fail_closed, prod escalate), to
+# match the agentic leaf's own `Compile fail` declaration; that leaf went in Z4 (issue #171),
+# and the prod escalation could hand the declaration back to the leaf as repair findings.
 COMPILE_DECLARED_FAIL = "compile_declared_fail"
 
 # The pure `compile.verify` reviewer returns the same verify-verdict document the pure
@@ -1040,7 +1042,9 @@ def classify_verify_severity(issue_severity: str | None, workflow_mode: str) -> 
                         (compile.generate / generate.generate) resuming its session, with the
                         finding injected (slim), to fix the exact issue inheriting its context.
     - major|critical => dev: fail_closed (fast operator feedback); prod: escalate (the
-                        diagnostician decides reuse/restart/reopen/fail_closed)."""
+                        diagnostician decides reuse/restart/reopen/fail_closed).
+    The compile.generate producer's `Compile fail` declaration never reaches this gate:
+    `classify_failure` terminalizes it `fail_closed` first (issue #355)."""
     sev = (issue_severity or "none").lower()
     if sev in ("none", ""):
         return RouteDecision("advance")
@@ -6984,7 +6988,8 @@ class Conductor:
         second answer to the same question, for the path that does not come through this loop.)
 
         The severity is `major` because the phase's rubric assigns that to a finding whose subject
-        is the INPUT rather than the artifact — which is exactly what this declaration is."""
+        is the INPUT rather than the artifact — which is exactly what this declaration is. It is
+        the operator's record: the router does not read it on this exit (issue #355)."""
         self._write_ir_meta(refs, verification_status="fail", last_fail_reason=reason,
                             issue_severity="major", attempts=attempts)
 
@@ -7856,8 +7861,8 @@ class Conductor:
                 # declared-fail projection (its stage meta, carrying the reason and the severity
                 # the phase rubric assigns an input-side defect) and the per-attempt record with
                 # the OFF-TABLE category, so `classify_failure` recognizes the token, declines the
-                # document routing table, and falls through to the verify-severity gate — the same
-                # landing the agentic leaf's own declaration gets. rc stays 0: nothing crashed.
+                # document routing table, and terminalizes the phase `fail_closed` in both modes
+                # (issue #355). rc stays 0: nothing crashed.
                 assert spec.write_declared_fail is not None
                 self.emit(spec.declared_fail_event, node_key=refs.node_key,
                           substep=substep, detail=declared_fail[:200])
@@ -12373,7 +12378,9 @@ class Conductor:
                              -> runs/<run_id>/trial_meta.json#failure_excerpt
         Read at the conduct reopen point where `refs` still names the FAILED artifact (rotation
         to the fresh id happens later, inside run_phase -> _ensure_fresh_producer_id). Returns
-        None when unavailable so the repair simply falls back to the full prompt."""
+        None when unavailable so the repair simply falls back to the full prompt.
+        `compile_declared_fail` matches no clause, by intent: a producer's declaration is not a
+        finding to correct, and it terminalizes before any repair (issue #355)."""
         r = (reason or "")
         field = "failure_excerpt"
         # compile_static_ is checked before gate_ for clarity; the two share no prefix, so order
@@ -13522,8 +13529,9 @@ class Conductor:
             # Mirror of the generate branch: SUBSTEPS["compile"] == ("generate","static","verify")
             # and run_phase breaks on first failure, so the failed substep is index len-1. A
             # compile.static failure routes via its deterministic table (warm resume to
-            # compile.generate); compile.generate / compile.verify fall through to the
-            # verify-severity gate below.
+            # compile.generate); a schema-valid compile.verify `fail` verdict falls through to
+            # the verify-severity gate below, and the compile.generate producer's own
+            # declaration terminalizes here and never reaches it (issue #355).
             failed_substep = SUBSTEPS["compile"][len(outcomes) - 1]
             if failed_substep == "generate" and self._pure_leaf_substep(refs, "compile", "generate"):
                 # Z1 pure IR producer. Two failure shapes reach here:
@@ -13531,10 +13539,14 @@ class Conductor:
                 #       routed category, and a fresh (compile, generate) attempt with a warm reuse
                 #       repair (its excerpt threaded via _read_repair_findings) can fix it.
                 #   (b) the producer's own `Compile fail` DECLARATION: the category is
-                #       COMPILE_DECLARED_FAIL, deliberately absent from the routing table, and
-                #       ir_meta.json already carries the reason + `issue_severity: major`. Fall
-                #       through to the verify-severity gate below, which is where the agentic
-                #       leaf's identical declaration lands (dev fail_closed / prod escalate).
+                #       COMPILE_DECLARED_FAIL, deliberately absent from the routing table. It
+                #       terminalizes `fail_closed` in BOTH modes with the token as its reason,
+                #       and the severity gate is not consulted: the `issue_severity` in
+                #       ir_meta.json is the operator's record, not a routing input, and
+                #       _read_repair_findings selects nothing for this reason. Until issue #355
+                #       it fell through to the gate, and in prod the escalation's reuse repair
+                #       handed the declaration back to the same leaf as findings to correct —
+                #       against the launch contract's "not retried".
                 # A transport/unknown category has no route -> cold restart.
                 meta = _read_json(
                     self.repo_root / refs.ir_ref / "compile_generate_meta.json") or {}
@@ -13544,6 +13556,8 @@ class Conductor:
                     target, strategy = route
                     return RouteDecision("retry", target_phase=target, repair_strategy=strategy,
                                          reason=f"{COMPILE_DOCUMENT_REASON_PREFIX}{category}")
+                if category == COMPILE_DECLARED_FAIL:
+                    return RouteDecision("fail_closed", reason=COMPILE_DECLARED_FAIL)
                 if category != COMPILE_DECLARED_FAIL:
                     return RouteDecision("retry", target_phase="compile",
                                          repair_strategy="restart",

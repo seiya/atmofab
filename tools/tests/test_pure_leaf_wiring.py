@@ -1507,8 +1507,19 @@ class PureRenderTests(unittest.TestCase):
         # Re-taken a SEVENTH time for issue #347: the revocation "plus the finding as
         # `last_fail_reason`" is now "plus the findings text", because a verify meta's reason
         # now folds every finding. READ: same two routing tokens, nothing assigned.
+        # Re-taken an EIGHTH time for issue #355: the `Compile` SECOND-source paragraph left
+        # this bullet, because the producer's declaration now stops under its own
+        # `reason_detail` (`compile_declared_fail`, the bullet after this one, which names no
+        # severity value). READ: same two routing tokens, nothing assigned. Round 3 of that
+        # branch added one sentence telling a reader of a pre-#355 record how a declaration
+        # arrived under `dev_verify_major`; it reads the token and assigns nothing. A follow-up
+        # corrected its `--resume` clause (the refusal a failed attempt meets is
+        # `derivation_key_missing`, and a standing revocation seeds a warm repair). READ: the
+        # same routing tokens, nothing assigned. Round 4 restated that clause as the rule
+        # (cold unless the current key selects a revoked meta WITH findings) and named the
+        # answers an operator meets. READ: the same routing tokens, nothing assigned.
         "docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-        " #a085cfde705c",
+        " #39cb9d5d77e1",
         # The two verifier `SKILL`s' routing lines stood here until Z4 (issue #171). Both files
         # are deleted with the agentic leaf: a pure leaf reads no `SKILL`, so the lines are not
         # on a leaf-read surface any more and there is nothing left to allowlist.
