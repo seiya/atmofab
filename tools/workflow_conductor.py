@@ -435,6 +435,29 @@ def _verdict_cross_target(verdict_doc: Any) -> dict[str, Any] | None:
     return out
 
 
+#: The `verdict.json` fields the judge is not handed (issue #345): `comparands_absent` records
+#: why each OTHER declared target is not a comparand. It is a record for the operator about
+#: other targets' state, not evidence of this run, and a cross-target record that holds
+#: vacuously is already what `tests.md` sanctions for a target with no other certified variant.
+_JUDGE_VERDICT_OMITTED_FIELDS: tuple[str, ...] = ("comparands_absent",)
+
+
+def _judge_verdict_view(text: str) -> str:
+    """The `verdict.json` text the judge leaf is handed: the file as written, less
+    `_JUDGE_VERDICT_OMITTED_FIELDS`. A verdict carrying none of them is returned byte for byte;
+    one that does is re-serialised in the writer's form (`_write_run_node_meta`), so the view
+    differs from the file by those keys alone. Text that does not parse as a JSON object is
+    returned unchanged: judging a malformed verdict is the judge's job, not this view's."""
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return text
+    if not isinstance(doc, dict) or not any(k in doc for k in _JUDGE_VERDICT_OMITTED_FIELDS):
+        return text
+    view = {k: v for k, v in doc.items() if k not in _JUDGE_VERDICT_OMITTED_FIELDS}
+    return json.dumps(view, indent=2, ensure_ascii=False) + "\n"
+
+
 def _verdict_failure_report(verdict_doc: dict[str, Any]) -> str:
     """The `[execute fail: verdict]` block for a `self_verdict=fail` run.
 
@@ -8204,6 +8227,7 @@ class Conductor:
         excerpt = raw_evidence_excerpt(
             self.repo_root / paths["raw_evidence_excerpt_document"], io_contract)
         context = {key: _read(key) for key, _ in self._PURE_JUDGE_RUN_NODE_DOCUMENTS}
+        context["verdict_document"] = _judge_verdict_view(context["verdict_document"])
         context.update({
             "tests_document": _read("tests_document"),
             "io_contract_document": yaml.safe_dump(io_contract, sort_keys=False,
