@@ -469,6 +469,10 @@ class HttpPureLeafWiringTests(_HttpServeMixin, unittest.TestCase):
         meta = json.loads((self.repo / self.refs.source_dir() / "bundle_meta.json")
                           .read_text(encoding="utf-8"))
         self.assertEqual(meta["failure_category"], "pure_transport")
+        # Issue #348: a turn with no response records the entry's configured model AS configured.
+        self.assertEqual([(a["model"], a["model_provenance"]) for a in meta["per_attempt"]],
+                         [("local-coder", "configured_entry")] * len(meta["per_attempt"]))
+        self.assertTrue(meta["per_attempt"])
 
     def test_a_transient_failure_that_clears_lets_the_substep_pass(self) -> None:
         """The point of the retry: a 429 that clears must not cost the run."""
