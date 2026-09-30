@@ -724,10 +724,11 @@ PINNED: dict[str, str] = {
     # grounds: the certified profile bundle that read the two keys proved possibility, not
     # obligation; #346 measured the cost of the obligation — two providers, three reviews, two
     # verdicts on one IR shape, two terminal CPU runs; and the pointer is pinned
-    # deterministically at Compile (`_validate_profile_selection`) and recorded by the host.
+    # deterministically at Compile (`_validate_profile_selection`, when the sidecar's `profiles`
+    # is non-empty) and the test-profile pair is recorded by the host (issue #346 PR-2).
     # The compile producer gains rule (8) (author a route per runtime input) and the compile
     # reviewer's backstop count becomes three.
-    "pure-54": "46bb0ca29b5041daa0c9e8e0a83b901e71726ec6fb44224462efc1e755599e54",
+    "pure-54": "cd8a63750fb17e16ab52d4bc96efdc70cff2781f17daeed93535cef9ab1c4867",
 }
 
 
