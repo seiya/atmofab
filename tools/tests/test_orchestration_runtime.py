@@ -27571,7 +27571,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/pure_compile_generate.txt:9fcd877901ae52ce":
+        "tools/prompt_templates/pure_compile_generate.txt:30e82687c2f72479":
             "rule 3: read the WHOLE derived set; deps.yaml alone is rejected; the runner "
             "harness is the target's and is not in the set (issue #284, which also removed "
             "rules 5-6 and renumbered 7-9 of the same paragraph; issue #346 appended rule 8, "
