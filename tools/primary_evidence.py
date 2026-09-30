@@ -440,9 +440,10 @@ class ComparandResolution(NamedTuple):
     nothing, in target-id order. Every other declared target is in exactly one of the two.
     `reason` is the comparand resolver's Build refusal — the first refusal along B's chain up
     to Build (`binary_not_found`, `derivation_key_mismatch:<input>` of the refusing phase —
-    `derivation_key_mismatch:ir` from B's Generate when this run's IR re-derived after B was
-    generated —, `revoked`, ...) — `compile_ir_mismatch` (the IR this run validates is not the
-    standing certified one) or `no_eligible_run`. Only
+    `derivation_key_mismatch:ir` from B's Generate when B was generated from an IR other than
+    the node's standing certified one —, `revoked`, ...) — `compile_ir_mismatch` (B stands on
+    the standing IR and the IR this run validates is not it) or `no_eligible_run`. The record is
+    as of this resolution. Only
     `comparands` is keyed: a target that turns into a comparand moves the key through
     `comparand[]` already."""
     comparands: list[ComparandEvidence]

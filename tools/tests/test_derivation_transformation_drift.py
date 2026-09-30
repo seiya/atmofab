@@ -905,7 +905,9 @@ PINNED_VERDICT: dict[str, str] = {
     # Re-pinned again in round 1: the tuple gains `Conductor._bind_comparands`, which supplies
     # the verdict author's binding and was in no tuple (a mutant emptying its `absent` changed
     # `verdict.json` and left this file green).
-    "verdict-8": "b812249c337c5d9363733bbdda86b12ca64b62b0306d98e68a9994f25534626b",
+    # Re-pinned in round 3: the `ComparandResolution` docstring states which side is stale for
+    # `derivation_key_mismatch:ir` and `compile_ir_mismatch`.
+    "verdict-8": "40e7bdc9359fdf43b9f8a661f33839fdc7bcf120ed46a85f547710b0045d5659",
 }
 
 
