@@ -1289,12 +1289,21 @@ class DerivationResolver:
 
     The one exception to "one resolver, one target" is `resolve_comparands` (issue #324): a
     validate key with a cross-target predicate binds OTHER targets' certified builds, and the
-    resolver it builds for each lives and dies inside that function."""
+    resolver it builds for each lives and dies inside that function. Only that function passes
+    `comparand=True` (issue #345): the build key's host-probed leaves
+    (`HOST_PROBED_TOOLCHAIN_LEAVES`) are then not probed but read off each candidate's own stamp
+    (`_comparand_candidate_key`), because this host's probe of another target's compiler — which
+    a run of this target need not have, and which is not the compiler that built a site-built
+    variant — says nothing about the variant. `derivation_key` / `derivation_inputs` on such a
+    resolver's CERTIFIED Build selection are the chosen candidate's stamped key and its substituted
+    inputs, and on a refused one the key computed without the probed leaves, which no stamp
+    carries; `resolve_comparands` reads neither."""
 
     def __init__(self, repo_root: Path, *, spec_refs: Mapping[str, str] | None = None,
-                 target: TargetProfile | None = None) -> None:
+                 target: TargetProfile | None = None, comparand: bool = False) -> None:
         self.repo_root = Path(repo_root)
         self.target = target
+        self.comparand = comparand
         self._memo: dict[tuple[str, str], DerivationSelection] = {}
         self._in_progress: set[tuple[str, str]] = set()
         self._spec_refs: dict[str, str] = {
@@ -1423,6 +1432,10 @@ class DerivationResolver:
         key = _derivation_key(step_token, inputs)
         sel.derivation_key = key
         sel.derivation_inputs = inputs
+        # A comparand resolver matches each Build candidate under the host-probed toolchain
+        # leaves ITS stamp carries (issue #345): `inputs` was computed without them.
+        per_candidate = self.comparand and step_token == "build"
+        assert self.target is not None or not per_candidate
 
         from tools.derivation import (
             Candidate,
@@ -1450,7 +1463,11 @@ class DerivationResolver:
                 latest = (order, meta_path, doc)
             if isinstance(doc, dict) and "derivation_key" in doc:
                 keyed.append((order, doc))
-            if not isinstance(doc, dict) or doc.get("derivation_key") != key:
+            if not isinstance(doc, dict):
+                continue
+            wanted_key = (_comparand_candidate_key(doc, inputs, self.target)
+                          if per_candidate else key)
+            if wanted_key is None or doc.get("derivation_key") != wanted_key:
                 continue
             ok, detail = _stage_meta_certification(self.repo_root, meta_path)
             if ok:
@@ -1467,7 +1484,12 @@ class DerivationResolver:
         # is not an answer to it, and selecting it would let the decision fall through to a
         # skip. A newer FAILED attempt shadows nothing (a failed attempt is a record, never a
         # cache hit, and never a decision); an output produced AFTER the revocation — the
-        # re-derivation it asked for — is selected as usual.
+        # re-derivation it asked for — is selected as usual. For a comparand resolver the
+        # candidates matched under their OWN stamped toolchain leaves, so a revocation shadows
+        # older eligible Builds across compiler versions too, not only those of one key. That
+        # drops the other target from the comparands (this run's cross-target record then has
+        # none to read) rather than comparing against a variant older than one the operator
+        # decided must be re-derived; the revocation is resolved by that re-derivation.
         revoked_orders = [order for order, detail in refused if detail.get("revoked")]
         if revoked_orders:
             newest_revoked = max(revoked_orders)
@@ -1476,6 +1498,12 @@ class DerivationResolver:
         if chosen is not None:
             sel.ok = True
             sel.meta_path = self.repo_root / chosen.ref
+            if per_candidate:
+                chosen_doc = _read_json_or_none(sel.meta_path)
+                assert isinstance(chosen_doc, dict)  # it matched a key above
+                sel.derivation_key = str(chosen_doc["derivation_key"])
+                sel.derivation_inputs = _comparand_substituted_inputs(
+                    chosen_doc, inputs, self.target)
             sel.output_hash = chosen.output_hash
             _selection_refs_from_meta(sel, sel.meta_path, self.repo_root)
             for stage, stage_id in twins.get(self.repo_root / str(sel.pipeline_ref), {}).items():
@@ -1502,7 +1530,22 @@ class DerivationResolver:
         closest: tuple[int, tuple[Any, ...], list[str] | None] | None = None
         for order, doc in keyed:
             recorded = doc.get("derivation_inputs")
-            diff = differing_inputs(recorded, inputs) if isinstance(recorded, dict) else None
+            diff = None
+            if isinstance(recorded, dict):
+                # A comparand resolver diffs each stamp against the inputs substituted with
+                # ITS OWN host-probed leaves, so the diagnosis names what moved rather than a
+                # probe this host never ran; a stamp lacking an expected leaf names that leaf.
+                against: Mapping[str, Any] | None = inputs
+                missing: list[str] = []
+                if per_candidate:
+                    stamped = recorded.get("toolchain")
+                    stamped = stamped if isinstance(stamped, Mapping) else {}
+                    leaves = _host_probed_leaves(self.target)
+                    missing = [f"toolchain.{leaf}" for leaf in leaves if leaf not in stamped]
+                    against = {**inputs, "toolchain": {
+                        **inputs["toolchain"],
+                        **{leaf: stamped[leaf] for leaf in leaves if leaf in stamped}}}
+                diff = missing + differing_inputs(recorded, against)
             rank = (len(diff) if diff is not None else sys.maxsize, order)
             if closest is None or rank[0] < closest[0] or (rank[0] == closest[0]
                                                             and order > closest[1]):
@@ -2210,9 +2253,15 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 #               the control file, all host- or leaf-authored deliverables of Generate);
 #             closure[] — the certified generate output hash of every pipeline closure node
 #               Build stages (`_stage_dependency_sources` copies exactly these sources);
-#             toolchain — `{target_id, language, standard, build_system, backend, compiler,
-#               compiler_version}` read off the target profile, with the compiler the
-#               control-file writer would pin and the first versioned line of its `--version`.
+#             toolchain — `_target_toolchain_identity`: `{target_id, language, standard,
+#               build_system, backend, compiler, compiler_version}` read off the target
+#               profile, with the compiler the control-file writer would pin and the first
+#               versioned line of its `--version`; plus `architecture` when the language's
+#               control-file rules read it, and `compiler_wrapper` / `parallel_runtime` under
+#               a parallel backend with a compiler wrapper. `compiler_version` and
+#               `parallel_runtime` are probed on THIS host (`HOST_PROBED_TOOLCHAIN_LEAVES`);
+#               a comparand resolver instead matches another target's Build under the values
+#               its own stamp carries (issue #345, `_comparand_candidate_key`).
 #   validate  binary — this node's certified build output hash;
 #             ir — the compile output hash (the case set and the predicates);
 #             spec.tests — the judge reads `tests.md`;
@@ -2349,7 +2398,64 @@ def toolchain_version_argv(target: TargetProfile) -> tuple[str, ...]:
     return argv
 
 
-def _target_toolchain_identity(target: TargetProfile) -> dict[str, Any]:
+def _probe_compiler_version(target: TargetProfile) -> Any:
+    return _build_runtime_server_module()._syntax_compiler_version(toolchain_version_argv(target))
+
+
+def _probe_parallel_runtime(target: TargetProfile) -> Any:
+    from tools.host_execution import probe_first_line
+
+    wrapper = backend_registry.capability_module(
+        "parallel", target.parallel_backend, "compiler_wrapper")
+    return probe_first_line(tuple(str(a) for a in wrapper.SHOW_ARGV))
+
+
+#: The leaves of `_target_toolchain_identity` read off THIS process's host (a subprocess run
+#: through PATH) rather than off the profile or the backend registry, each with its probe (issue
+#: #345). `_target_toolchain_identity` probes through this table, and
+#: `DerivationInputsTests.test_every_leaf_that_moves_with_the_path_is_a_declared_host_probed_leaf`
+#: requires every member `_host_probed_leaves` names to be in the probed identity, so an entry added
+#: here without a place in the identity is red rather than a leaf every stamp lacks.
+_HOST_PROBES: dict[str, Callable[[TargetProfile], Any]] = {
+    "compiler_version": _probe_compiler_version,
+    "parallel_runtime": _probe_parallel_runtime,
+}
+HOST_PROBED_TOOLCHAIN_LEAVES: tuple[str, ...] = tuple(_HOST_PROBES)
+
+
+def _host_probed_leaves(target: TargetProfile) -> tuple[str, ...]:
+    """The members of `HOST_PROBED_TOOLCHAIN_LEAVES` that `target`'s identity carries:
+    `compiler_version` always, `parallel_runtime` under a parallel backend that declares
+    `compiler_wrapper`."""
+    if backend_registry.provides("parallel", target.parallel_backend, "compiler_wrapper"):
+        return HOST_PROBED_TOOLCHAIN_LEAVES
+    return ("compiler_version",)
+
+
+def _comparand_candidate_key(doc: Mapping[str, Any], inputs: Mapping[str, Any],
+                             target: TargetProfile) -> str | None:
+    """The build key a stamped Build `doc` of ANOTHER target is matched against by a comparand
+    resolver (issue #345): `inputs` — computed with `probe=False`, so its toolchain lacks the
+    host-probed leaves — with those leaves read off the stamp's own `derivation_inputs.toolchain`.
+    `None` when the stamp does not carry EVERY leaf of `_host_probed_leaves(target)` (a stamp
+    from before a leaf joined the identity, a hand-edited meta): substituting only what is
+    present would let a stamp without `compiler_version` match a key computed without it."""
+    substituted = _comparand_substituted_inputs(doc, inputs, target)
+    return None if substituted is None else _derivation_key("build", substituted)
+
+
+def _comparand_substituted_inputs(doc: Mapping[str, Any], inputs: Mapping[str, Any],
+                                  target: TargetProfile) -> dict[str, Any] | None:
+    recorded = doc.get("derivation_inputs")
+    stamped = recorded.get("toolchain") if isinstance(recorded, Mapping) else None
+    leaves = _host_probed_leaves(target)
+    if not isinstance(stamped, Mapping) or any(leaf not in stamped for leaf in leaves):
+        return None
+    return {**inputs, "toolchain": {**inputs["toolchain"],
+                                    **{leaf: stamped[leaf] for leaf in leaves}}}
+
+
+def _target_toolchain_identity(target: TargetProfile, *, probe: bool = True) -> dict[str, Any]:
     """The build toolchain identity of a target, for the build key and for `binary_meta.json`:
     the target id, the profile's `language` / `standard` / `build_system` / parallel `backend`,
     and the compiler with the first versioned line of its `--version` (issue #284; before R4-a PR-2 the
@@ -2373,9 +2479,16 @@ def _target_toolchain_identity(target: TargetProfile) -> dict[str, Any]:
     runtime installation the binary links against — and asks `compiler_version` through the
     wrapper, which runs the compiler it is configured with — neither the compiler's version nor the
     target's fields change when only that installation does. A backend that declares none keeps
-    the key it had."""
+    the key it had.
+
+    `compiler_version` and `parallel_runtime` are the HOST-PROBED leaves
+    (`HOST_PROBED_TOOLCHAIN_LEAVES`); every other member is read off the profile or the backend
+    registry. With `probe=False` they are ABSENT (not `None`, which is a probe's answer) and no
+    subprocess runs: a comparand resolver reads them off each candidate's own stamp instead
+    (issue #345, `_comparand_candidate_key`)."""
     tc = target.toolchain
-    server = _build_runtime_server_module()
+    probed = ({leaf: _HOST_PROBES[leaf](target) for leaf in _host_probed_leaves(target)}
+              if probe else {})
     compiler = str(tc.get("compiler") or "") or str(backend_registry.capability_module(
         "language", tc["language"], "bundle_facts").DEFAULT_COMPILER)
     identity: dict[str, Any] = {
@@ -2385,8 +2498,9 @@ def _target_toolchain_identity(target: TargetProfile) -> dict[str, Any]:
         "build_system": tc["build_system"],
         "backend": target.parallel_backend,
         "compiler": compiler,
-        "compiler_version": server._syntax_compiler_version(toolchain_version_argv(target)),
     }
+    if "compiler_version" in probed:
+        identity["compiler_version"] = probed["compiler_version"]
     # Asked of the backend's PACKAGE only: a language whose control-file rules the neutral core
     # still carries (`core_provides`) has no module to ask, and reads no architecture; nor does
     # a language no backend declares (the launch gate refuses its profile; a reader of a
@@ -2397,8 +2511,6 @@ def _target_toolchain_identity(target: TargetProfile) -> dict[str, Any]:
                 "language", tc["language"], "control_file").READS_ARCHITECTURE:
         identity["architecture"] = (target.doc.get("hardware") or {}).get("architecture")
     if backend_registry.provides("parallel", target.parallel_backend, "compiler_wrapper"):
-        from tools.host_execution import probe_first_line
-
         wrapper = backend_registry.capability_module(
             "parallel", target.parallel_backend, "compiler_wrapper")
         identity["compiler_wrapper"] = str(wrapper.COMPILER_WRAPPER)
@@ -2407,7 +2519,8 @@ def _target_toolchain_identity(target: TargetProfile) -> dict[str, Any]:
         # the one `compiler` resolves to on PATH would otherwise key the build by the wrong
         # compiler, and an in-place upgrade of the wrapped one would move neither that value nor
         # `parallel_runtime`.
-        identity["parallel_runtime"] = probe_first_line(tuple(str(a) for a in wrapper.SHOW_ARGV))
+        if "parallel_runtime" in probed:
+            identity["parallel_runtime"] = probed["parallel_runtime"]
     return identity
 
 
@@ -2537,7 +2650,10 @@ def resolve_comparands(
     declared target B (`list_target_ids`, in target-id order), B's certified variant of the
     same node over the same IR, as a `primary_evidence.ComparandEvidence` — or nothing for B.
 
-    B contributes when `DerivationResolver(target=B).select(node_key, "build")` is certified
+    B contributes when `DerivationResolver(target=B, comparand=True).select(node_key, "build")`
+    is certified — B's Build matched under the toolchain identity B was stamped with, so this
+    host's probe of B's compiler (which a run of another target need not have, and which since
+    issue #333 is not the compiler that built a site-built B) decides nothing (issue #345) —
     and B's certified Compile output is `ir_hash` (the IR this Validate runs; Compile is
     target-free, so a B built from the current IR shares it — the check keeps a B built from
     another IR out when this run's IR is not the standing one). Its comparand is the LATEST
@@ -2592,7 +2708,8 @@ def resolve_comparands(
             raise DerivationInputsUnresolvable(
                 f"derivation_inputs_unresolvable: comparand: target {tid} does not load "
                 f"({exc.detail})") from exc
-        resolver = DerivationResolver(repo_root, spec_refs=spec_refs, target=other)
+        resolver = DerivationResolver(repo_root, spec_refs=spec_refs, target=other,
+                                      comparand=True)
         build = resolver.select(node_key, "build")
         if not (build.ok and build.pipeline_ref and build.binary_id):
             continue
@@ -2789,7 +2906,10 @@ def phase_derivation_inputs(
             "closure": [
                 {"node_key": nk, "source": _dependency_output_hash(resolver, nk, "generate")}
                 for nk in sorted(closure_nodes)],
-            "toolchain": _target_toolchain_identity(target),
+            # A comparand resolver reads the host-probed leaves off each candidate's stamp
+            # (issue #345), so it probes nothing here; the stamp path (`phase_derivation`)
+            # never passes one, so a stamp always carries the probed identity.
+            "toolchain": _target_toolchain_identity(target, probe=not resolver.comparand),
         }
 
     spec = need("spec_ref", spec_ref)
