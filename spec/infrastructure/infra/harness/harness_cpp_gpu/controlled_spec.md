@@ -420,4 +420,4 @@ procedures:
 Record the harness adoption in `component_catalog.yaml` (as the `(language, hardware)` = `(cuda_cpp, gpu)` runner harness) and the resolved harness version each dependent physics node was certified against.
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/infrastructure/infra/harness/harness_cpp_gpu/tests.md`, with `test_profile_version` of `0.1.0`.
+The corresponding `tests.md` is `spec/infrastructure/infra/harness/harness_cpp_gpu/tests.md`, with `test_profile_version` of `0.2.0`.
