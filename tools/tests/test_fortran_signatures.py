@@ -35,6 +35,7 @@ from tools.backends.language.fortran.signatures import (
     render_module_parameter_to_fortran,
     render_signatures_to_fortran,
     render_symbol_to_fortran,
+    source_atoms,
     stanza_atoms,
 )
 from tools.backends.language.fortran.runner import _HARNESS_V3_INTERFACE, _HARNESS_V3_PARAMETERS
@@ -1880,6 +1881,28 @@ class Section51StanzaLayerTests(unittest.TestCase):
         # A header (no ::) passes through unchanged.
         self.assertEqual(
             declaration_atoms("subroutine hx__foo(a, b)"), ["subroutine hx__foo(a, b)"])
+
+    def test_source_atoms_drop_an_accessibility_attribute(self) -> None:
+        # Issue #363: harness §3 leaves the export of the §5.1 module parameters free, so an
+        # access-spec attribute on the declaration is not part of what `source_atoms` compares.
+        pinned = "integer,parameter::dp=real64"
+        for decl in ("integer, parameter, public :: dp = real64",
+                     "integer, public, parameter :: dp = real64",
+                     "integer, parameter, private :: dp = real64",
+                     "integer, parameter :: dp = real64"):
+            with self.subTest(decl=decl):
+                self.assertEqual(source_atoms(decl), frozenset({pinned}))
+        # A bare accessibility statement declares nothing: dropping its only attribute would
+        # leave `::dp`, so it is kept whole and cannot stand in for the declaration.
+        self.assertEqual(source_atoms("public :: dp"), frozenset({"public::dp"}))
+        # The attribute list splits on TOP-LEVEL commas only: the type-spec's comma and the
+        # literal's comma stay where they are.
+        self.assertEqual(
+            source_atoms("character(len=8,kind=1), public :: s = 'ab,cd'"),
+            frozenset({"character(len=8,kind=1)::s='ab,cd'"}))
+        # `stanza_atoms` keeps the attribute: a procedure stanza is compared with it.
+        self.assertEqual(stanza_atoms(["integer, parameter, public :: dp = real64"]),
+                         ("integer,parameter,public::dp=real64",))
 
     def test_declaration_atoms_keep_a_comma_inside_a_character_literal(self) -> None:
         # Splitter-level reproducer: this module used to define `_split_top_level_commas` twice

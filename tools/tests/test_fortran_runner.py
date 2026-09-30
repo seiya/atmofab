@@ -1433,6 +1433,26 @@ class HarnessPinTest(unittest.TestCase):
         with self.assertRaises(RenderError):
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, stale, self.src)
 
+    def test_attribute_form_export_in_the_certified_harness_passes_the_pin(self) -> None:
+        # Issue #363: harness §3 leaves the export of `dp` / `case_id_len` free, and the
+        # attribute form is one of Fortran's two export spellings. The pin reads the same
+        # `source_atoms` view as the Generate gate, so a harness the gate certifies in that
+        # form must not stop every dependent node's render here.
+        src = self.src
+        for name in ("dp = real64", "case_id_len = 64"):
+            self.assertIn(f"integer, parameter :: {name}", src)
+            src = src.replace(f"integer, parameter :: {name}",
+                              f"integer, parameter, public :: {name}", 1)
+        assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, src)
+
+    def test_attribute_form_with_a_drifted_value_still_fails_the_pin(self) -> None:
+        src = self.src.replace("integer, parameter :: case_id_len = 64",
+                               "integer, parameter, public :: case_id_len = 32", 1)
+        self.assertNotEqual(src, self.src)
+        with self.assertRaises(RenderError) as cm:
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, src)
+        self.assertIn("does not declare the pinned module parameter", str(cm.exception))
+
     def test_case_id_len_value_drift_is_caught(self) -> None:
         # The interface stanzas name the SYMBOL `case_id_len`, never its value, so a harness
         # recert lowering the width leaves the signature pin green — while this renderer keeps

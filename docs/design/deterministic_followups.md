@@ -1647,7 +1647,10 @@ harness. Reversed by #359 (2026-10): the "not exported" wording was itself unenf
 reviewer fail a runner that imports the parameters, a shape 13 of the 23 Fortran harness sources a
 lineage adopted on disk carry (measured 2026-10-01; the other 10 keep them private and do not import them).
 The spec now leaves their accessibility free: the model may export them or not, and a runner
-imports them where exported or redeclares them. **Real verification is a billed E2E #2′** (operator-run: harness single-node re-certification at 0.2.0,
+imports them where exported or redeclares them. Until issue #363 (2026-10) the gate's presence check and the renderer's
+harness pin accepted only the separate-statement spelling of that export (4 of 4 attribute-form
+model sources on disk failed the gate, 2 losing an attempt); `source_atoms` now drops the
+access-spec attribute before either comparison. **Real verification is a billed E2E #2′** (operator-run: harness single-node re-certification at 0.2.0,
 `aggregate_verdict=pass`, the strengthened gates forcing correct signatures from attempt 1). Unit
 suite green (2034). M3c-β (physical-node narrowing + host-rendered glue) and M3d (recovery) follow.
 

@@ -349,17 +349,46 @@ def stanza_line_list(lines: list[str]) -> tuple[str, ...]:
     return stanza_atoms(lines)
 
 
+_ACCESS_SPEC_ATTRIBUTES = frozenset({"public", "private"})
+
+
+def _without_access_spec(atom: str) -> str:
+    """A normalized declaration atom with its access-spec attributes (``public`` / ``private``)
+    dropped from the attribute list: ``integer,parameter,public::dp=real64`` becomes
+    ``integer,parameter::dp=real64``. The attribute list is split on TOP-LEVEL commas, so a comma
+    inside a type-spec (``character(len=8,kind=1)``) stays where it is.
+
+    An atom from which nothing is dropped comes back unchanged, and so does one whose attribute
+    list would become EMPTY — ``public::dp`` is an accessibility statement, not a declaration, and
+    must not turn into a text that compares equal to one."""
+    if "::" not in atom:
+        return atom
+    lhs, _sep, rhs = atom.partition("::")
+    attrs = fortran_lines.split_top_level_commas(lhs)
+    kept = [a for a in attrs if a not in _ACCESS_SPEC_ATTRIBUTES]
+    if not kept or len(kept) == len(attrs):
+        return atom
+    return ",".join(kept) + "::" + rhs
+
+
 def source_atoms(text: str) -> frozenset[str]:
     """Every comparison atom of a whole Fortran text, as a SET — the same per-entity atoms
-    ``stanza_atoms`` produces, taken over every logical line rather than one stanza's lines.
+    ``stanza_atoms`` produces, taken over every logical line rather than one stanza's lines, with
+    one difference: a declaration's access-spec attribute (``public`` / ``private``) is dropped
+    (``_without_access_spec``). Harness §3 leaves the accessibility of the §5.1 module parameters
+    outside the contract (issue #363), so ``integer, parameter, public :: dp = real64`` and
+    ``integer, parameter :: dp = real64`` are the same declaration here. ``stanza_atoms`` keeps the
+    attribute, because a procedure stanza and a type component are compared with it.
 
     The view a caller needs to ask "does this source declare X anywhere", which is how the §5.1
     module ``parameter`` declarations are pinned: they are part of the published ABI but are not
-    inside any stanza, so a stanza-scoped lookup cannot see them. Two callers had the same
-    two-level comprehension over `fortran_logical_line_texts` + `stanza_atoms`; stating it once
-    here also keeps the caller from needing the line scanner in its own right."""
+    inside any stanza, so a stanza-scoped lookup cannot see them. Both callers read this view —
+    the §5.1 gate's presence check in this module and the renderer's harness pin
+    (`runner.assert_harness_pin`) — so the two cannot disagree about what counts as the
+    declaration; stating it once here also keeps a caller from needing the line scanner in its
+    own right."""
     return frozenset(
-        atom
+        _without_access_spec(atom)
         for line in fortran_lines.fortran_logical_line_texts(text)
         for atom in stanza_atoms([line])
     )
@@ -1156,6 +1185,13 @@ def generated_source_violations(
     # ABI but are not stanzas; pin their exact declaration (name AND value) against the source —
     # a `case_id_len = 32` drift would otherwise be invisible (the symbolic decls still match). Use
     # per-entity atoms so a combined `integer, parameter :: dp = real64, case_id_len = 64` matches.
+    #
+    # Accessibility is outside the pin: harness §3 leaves the export of these names free, and
+    # `source_atoms` drops a `public` / `private` attribute before the comparison, so the
+    # attribute form `integer, parameter, public :: dp = real64` is PRESENT (issue #363). It is
+    # still a BINDING for the uniqueness count below — the declared-names helper reads a
+    # declaration carrying `parameter` as a constant whatever else its attribute list holds; its
+    # access-spec-only skip applies to a bare `public :: dp` statement alone.
     all_src_atoms = source_atoms(combined)
     # Defense-in-depth: `_parse_canonical_interface_from_controlled_spec` above already renders the
     # whole §5.1 struct and short-circuits (iface_err → return) on any parameter the backend cannot
@@ -1247,7 +1283,9 @@ def generated_source_violations(
             violations.append(
                 f"{target}: generated model source is missing the §5.1 module parameter "
                 f"declaration `{pline.strip()}` (a drifted parameter value silently changes the "
-                "published ABI)")
+                "published ABI) — declare it with exactly this type, `parameter` attribute, name "
+                "and value; formatting and an accessibility attribute (`public` / `private`) on "
+                "the declaration may differ, nothing else may")
             continue
         # UNIQUENESS, not presence. Presence alone asks "does the pinned text occur anywhere in the
         # file", and a declaration is not where it occurs but where the published signatures BIND.
