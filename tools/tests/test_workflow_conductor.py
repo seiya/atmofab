@@ -2946,6 +2946,26 @@ class ConductRoutingTest(unittest.TestCase):
             # The last revocation is the budget-exhausted branch's own.
             self.assertEqual(revokes[-1]["--last-fail-reason"], self._FOLD_353)
 
+    def test_escalated_cross_phase_budget_exhaustion_reads_the_failed_phase_meta(self) -> None:
+        # The budget branch revokes the TARGET (compile) but the findings belong to the phase
+        # that failed (generate): its read must key on `phase`, which the same-phase row above
+        # cannot tell apart from `target`.
+        with tempfile.TemporaryDirectory() as tmp:
+            c, refs = self._escalating_conductor(
+                tmp, "prod", "generate", "verify",
+                wc.classify_verify_severity("major", "prod"),
+                wc.RouteDecision("reopen", target_phase="compile", repair_strategy="reuse",
+                                 severity="major", reason="the IR under-specifies the halo"),
+                {"source_meta.json": {"last_fail_reason": self._FOLD_353}},
+                fail_times=wc.MAX_ATTEMPTS_PER_PHASE + 1)
+            self.assertEqual(c.conduct(refs, "generate"), "fail_closed")
+            ss = [cap for s, cap in c.calls if s == "set-status"][-1]
+            self.assertEqual(ss["--reason-code"], "retry_budget_exhausted")
+            revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+            self.assertEqual([r["--step"] for r in revokes],
+                             ["compile"] * (wc.MAX_ATTEMPTS_PER_PHASE + 1))
+            self.assertEqual(revokes[-1]["--last-fail-reason"], self._FOLD_353)
+
     def test_escalated_dev_rollback_revokes_with_the_host_reason_findings(self) -> None:
         excerpt = "[syntax]\n" + "s" * 2600 + "\n[lint]\n" + "l" * 2600
         with tempfile.TemporaryDirectory() as tmp:
