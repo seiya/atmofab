@@ -14042,8 +14042,8 @@ class Conductor:
             # run id). The excerpt is also what the revocation records as `last_fail_reason`, so
             # a LATER run — which reads no `pending_repair` — recovers the same finding. It is
             # selected by the host's route reason, which is the escalated reason when the
-            # diagnostician routed. Every other cross-phase reason yields None -> the repair falls back to the full
-            # prompt, exactly as before.
+            # diagnostician routed. Every other cross-phase reason yields None -> the repair falls
+            # back to the full prompt, exactly as before.
             findings = self._read_repair_findings(refs, findings_reason, phase)
             if self._revoke_and_reset_or_terminalize(
                     refs, target, trigger, decision.reason or f"{phase}_reopen",
