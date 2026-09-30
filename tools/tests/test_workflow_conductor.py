@@ -798,23 +798,25 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
                 c._read_repair_findings(refs, "gate_syntax_error+lint_findings"),
                 "[syntax]\nErr\n[lint]\nC061 argument 'u_l'")
             # verify_* reason -> reads the phase's verify meta last_fail_reason. Absent -> None;
-            # present -> returned (generate phase reads source_meta.json).
+            # present -> returned whole (generate phase reads source_meta.json). The value is
+            # the projection's multi-line fold of reason + findings (issue #347), so the read
+            # must not keep only its first line.
             self.assertIsNone(c._read_repair_findings(refs, "verify_minor", "generate"))
+            folded = "responsibility split violated\n1. quoted not escaped\n2. ceil not used"
             (meta_dir / "source_meta.json").write_text(
-                json.dumps({"last_fail_reason": "responsibility split violated"}),
-                encoding="utf-8")
+                json.dumps({"last_fail_reason": folded}), encoding="utf-8")
             self.assertEqual(
-                c._read_repair_findings(refs, "verify_minor", "generate"),
-                "responsibility split violated")
+                c._read_repair_findings(refs, "verify_minor", "generate"), folded)
             # compile phase reads ir_meta.json#last_fail_reason instead.
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
             (ir_dir / "ir_meta.json").write_text(
-                json.dumps({"last_fail_reason": "io_contract recompute-insufficient"}),
+                json.dumps({"last_fail_reason":
+                            "io_contract recompute-insufficient\n1. step_03 unmet"}),
                 encoding="utf-8")
             self.assertEqual(
                 c._read_repair_findings(refs, "verify_minor", "compile"),
-                "io_contract recompute-insufficient")
+                "io_contract recompute-insufficient\n1. step_03 unmet")
             # Missing meta file -> None (falls back to full prompt).
             refs2 = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0",
                                 spec_path="spec/component/spec_x",
@@ -1647,6 +1649,19 @@ class SeedRepairsFromRevocationsTest(unittest.TestCase):
         self.assertEqual(len(seeds), 1)
         self.assertEqual((seeds[0]["node_key"], seeds[0]["phase"], seeds[0]["producer"]),
                          (self._refs().node_key, "generate", "child-7"))
+
+    def test_a_multi_line_verify_fold_is_seeded_whole(self) -> None:
+        """The cross-run `--resume` half of issue #347: a revoked verify meta carries the
+        projection's fold of reason + every finding, and the seed hands all of it on."""
+        answer = dict(self._REVOKED_GENERATE)
+        answer["last_fail_reason"] = "quoted unescaped\n1. quoted unescaped\n2. ceil not used\n"
+        c = self._conductor(lambda phase:
+                            dict(answer) if phase == "generate" else {"certified": False})
+        with redirect_stdout(io.StringIO()), patch.object(
+                _FakeConductor, "_completed_producer_arid", return_value="child-7"):
+            seeded = c._seed_repairs_from_revocations(self._refs(), ["compile", "generate"])
+        self.assertEqual(seeded["generate"]["repair_findings"],
+                         "quoted unescaped\n1. quoted unescaped\n2. ceil not used")
 
     def test_the_seeded_repair_honours_the_grade_recorded_on_the_revocation(self) -> None:
         """G5 across the resume boundary. `critical` means the producer's context is not to be

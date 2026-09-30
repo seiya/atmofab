@@ -920,7 +920,9 @@ class PureCompileReviewerTests(_Fixture):
         # would publish as certified. The generate-side twin pins this; this row did not.
         self.assertEqual(meta["verification_status"], "fail")
         self.assertEqual(meta["issue_severity"], "minor")
-        self.assertEqual(meta["last_fail_reason"], "step_03 has no update target")
+        # The reason, then every finding's summary (`verify_repair_text`, issue #347).
+        self.assertEqual(meta["last_fail_reason"],
+                         "step_03 has no update target\n1. an item is unmet")
         decision = c.classify_failure(self.refs, "compile", [None, None, outcome])
         # `minor` is the verify-severity gate's warm same-phase repair. `target_phase` is None
         # there BY DESIGN — the caller reopens the phase it is already in — and the reason is what
@@ -930,7 +932,7 @@ class PureCompileReviewerTests(_Fixture):
         self.assertEqual(decision.reason, "verify_minor")
         self.assertEqual(
             c._read_repair_findings(self.refs, decision.reason, "compile"),
-            "step_03 has no update target")
+            "step_03 has no update target\n1. an item is unmet")
 
     def test_a_schema_exhausted_verdict_writes_no_projection_and_restarts(self) -> None:
         """Proof-of-work: no valid verdict, no stage meta. The producer's `"pending"` therefore

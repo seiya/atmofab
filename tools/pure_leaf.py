@@ -476,15 +476,17 @@ def extract_json_document(result_text: Any) -> tuple[Any, "str | None"]:
 # Verify verdict contract
 # --------------------------------------------------------------------------------------
 
-# The verify persona returns a verdict JSON; the host projects `verification_status`,
-# `issue_severity`, and `last_fail_reason` onto `source_meta.json` (value-type contract:
+# The verify persona returns a verdict JSON; the host projects `verification_status` and
+# `issue_severity` onto `source_meta.json` / `ir_meta.json` (value-type contract:
 # `tools/meta_contracts.py`) verbatim. The verdict is a distinct, richer intermediate: it adds
 # a structured `findings[]` the meta has no key for, so its shape is pinned here, not in the
-# meta contract. `last_fail_reason` is the single AUTHORITATIVE string the producer's
-# warm-resume repair reads (as today, via `source_meta.last_fail_reason`); `findings[]` carries
-# per-finding detail for diagnostics and provenance and is NOT the repair-text source. Both are
-# model-authored. Vocabularies match the conductor's routing (`classify_verify_severity`):
-# status is `pass`/`fail`, severity is `none`/`minor`/`major`/`critical`.
+# meta contract. `last_fail_reason` and `findings[]` are both model-authored, and the host folds
+# the two into the meta's one `last_fail_reason` string with `verify_repair_text` — the text the
+# producer's repair reads (via `last_fail_reason`, on the warm, cold and `--resume` paths alike),
+# so a finding the reviewer left out of its one-line reason still reaches the repair (issue
+# #347). The verdict document itself survives only in the reviewer's `leaf.stdout.log`.
+# Vocabularies match the conductor's routing (`classify_verify_severity`): status is
+# `pass`/`fail`, severity is `none`/`minor`/`major`/`critical`.
 VERDICT_STATUSES: tuple[str, ...] = ("pass", "fail")
 VERDICT_SEVERITIES: tuple[str, ...] = ("none", "minor", "major", "critical")
 VERDICT_REQUIRED_KEYS: tuple[str, ...] = (
@@ -562,6 +564,24 @@ def verify_verdict_violations(doc: Any) -> list[str]:
             violations.append(
                 "verification_status 'fail' requires a non-empty last_fail_reason")
     return violations
+
+
+def verify_repair_text(verdict: dict[str, Any]) -> str | None:
+    """The `last_fail_reason` the host projects from a schema-valid verify verdict.
+
+    The ONE place the verdict's reason and its `findings[]` are folded into the meta's single
+    repair string; every reader of `last_fail_reason` (the same-phase repair, the revoke that
+    writes it back, the `--resume` seed, the diagnostician's inline meta) takes it unchanged.
+    `pass` gives `None`. `fail` gives the stripped reason, then one line per finding in the
+    verdict's order, `1. <summary>`, `2. <summary>`, … with each summary stripped. Nothing is
+    deduplicated (a summary that repeats the reason is kept) and nothing is capped: a clipped
+    finding is the defect this function exists to remove."""
+    if verdict["verification_status"] == "pass":
+        return None
+    lines = [verdict["last_fail_reason"].strip()]
+    lines.extend(f"{index}. {finding['summary'].strip()}"
+                 for index, finding in enumerate(verdict["findings"], start=1))
+    return "\n".join(lines)
 
 
 # --------------------------------------------------------------------------------------

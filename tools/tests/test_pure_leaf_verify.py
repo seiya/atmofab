@@ -696,11 +696,37 @@ class PureVerifySubstepTests(unittest.TestCase):
         meta = json.loads((base / "source_meta.json").read_text())
         self.assertEqual(meta["verification_status"], "fail")
         self.assertEqual(meta["issue_severity"], "minor")
-        self.assertEqual(meta["last_fail_reason"], "flux sign is wrong")
+        # The reason, then every finding's summary (`verify_repair_text`, issue #347).
+        self.assertEqual(meta["last_fail_reason"], "flux sign is wrong\n1. mass is not conserved")
         # A valid fail verdict is NOT a routed category — verdict_meta stays result=pass.
         vmeta = json.loads((base / "verdict_meta.json").read_text())
         self.assertEqual(vmeta["result"], "pass")
         self.assertIsNone(vmeta["failure_category"])
+
+    def test_every_finding_of_a_minor_verdict_reaches_the_producer_repair_request(self) -> None:
+        """Issue #347's defect, end to end on the host: the reviewer's one-line reason named one
+        defect and `findings[]` named more, and the warm repair's `repair_findings` carried only
+        the reason (orch_20260929T204405Z_c269a003, launch 608eef82). Every summary must now be
+        in the launch request the producer repair is built from."""
+        summaries = ["`quoted` escape is missing", "the block count does not use ceil",
+                     "rank 0 writes the halo twice"]
+        c, refs, oc = self._run([_envelope(_verdict(
+            "fail", severity="minor", reason="escape handling is incomplete",
+            findings=[{"summary": s} for s in summaries]))])
+        self.assertEqual(oc.status, "fail")
+        passed = wc.SubstepOutcome("a", "pass", [])
+        decision = c.classify_failure(refs, "generate", [passed, passed, oc])
+        self.assertEqual((decision.reason, decision.repair_strategy), ("verify_minor", "reuse"))
+        findings = c._read_repair_findings(refs, decision.reason, "generate")
+        repair = c._repair_payload(decision, "producer-1", findings=findings)
+        req = wc.build_launch_request(
+            refs, step="generate", substep="generate", orchestration_id="o",
+            orchestration_agent_run_id="orch", child_agent_run_id="producer-2",
+            agent_model="opus", workflow_mode="dev", repair=repair, warm_resume=True)
+        self.assertTrue(req.get("warm_resume"))
+        self.assertEqual(req["repair_findings"],
+                         "escape handling is incomplete\n"
+                         + "\n".join(f"{i}. {s}" for i, s in enumerate(summaries, start=1)))
 
     def test_bounded_repair_recovers_on_second_turn(self) -> None:
         bad = {"verification_status": "pass"}  # schema violation (missing keys)
