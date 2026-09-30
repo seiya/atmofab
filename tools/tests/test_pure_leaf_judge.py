@@ -223,6 +223,27 @@ class PureJudgeContextTests(_Fixture):
         self.assertEqual(excerpt["coverage"]["missing"], [])
         self.assertEqual(excerpt["problems"], [])
 
+    def test_the_verdict_is_handed_over_without_comparands_absent(self) -> None:
+        """Issue #345: `comparands_absent` records why OTHER targets are not comparands; the
+        judge reviews this run and is not handed it. Every other field reaches the judge, and a
+        verdict without the field is inlined byte for byte."""
+        from tools.workflow_conductor import _judge_verdict_view
+        path = self.run_node("verdict.json")
+        plain = path.read_text(encoding="utf-8")
+        self.assertEqual(self.conductor()._build_pure_judge_context(self.refs)
+                         ["verdict_document"], plain)
+        doc = json.loads(plain)
+        absent = [{"target_id": "cpp_gpu", "reason": "no_eligible_run"}]
+        path.write_text(json.dumps({**doc, "comparands_absent": absent}, indent=2,
+                                   ensure_ascii=False) + "\n", encoding="utf-8")
+        view = self.conductor()._build_pure_judge_context(self.refs)["verdict_document"]
+        self.assertNotIn("comparands_absent", view)
+        self.assertNotIn("no_eligible_run", view)
+        self.assertEqual(json.loads(view), doc)
+        # text that is not a JSON object reaches the judge unchanged
+        for text in ("{not json", "[1, 2]"):
+            self.assertEqual(_judge_verdict_view(text), text)
+
     def test_every_missing_document_raises(self) -> None:
         """The judge's disposition, and the one thing that must not be copied from its
         `generate.verify` sibling, which degrades a missing node artifact to `""`.
