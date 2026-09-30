@@ -1644,8 +1644,10 @@ error: §3/§5.1 called `dp`/`case_id_len` "public", but the certified harness k
 private (its runner hardcodes `character(len=64)`), so the wording was corrected to "internal,
 value-pinned, not exported" rather than adding a visibility check that would false-reject a correct
 harness. Reversed by #359 (2026-10): the "not exported" wording was itself unenforced and made a
-reviewer fail a shape 9 of the 16 Fortran harness bundles adopted on disk carry (measured
-2026-10-01); the parameters are published, and a runner may import or redeclare them. **Real verification is a billed E2E #2′** (operator-run: harness single-node re-certification at 0.2.0,
+reviewer fail a runner that imports the parameters, a shape 13 of the 23 Fortran harness sources a
+lineage adopted on disk carry (measured 2026-10-01; the other 10 keep them private and redeclare).
+The spec now leaves their accessibility free: the model may export them or not, and a runner
+imports them where exported or redeclares them. **Real verification is a billed E2E #2′** (operator-run: harness single-node re-certification at 0.2.0,
 `aggregate_verdict=pass`, the strengthened gates forcing correct signatures from attempt 1). Unit
 suite green (2034). M3c-β (physical-node narrowing + host-rendered glue) and M3d (recovery) follow.
 
