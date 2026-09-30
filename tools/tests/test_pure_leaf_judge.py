@@ -232,14 +232,17 @@ class PureJudgeContextTests(_Fixture):
         plain = path.read_text(encoding="utf-8")
         self.assertEqual(self.conductor()._build_pure_judge_context(self.refs)
                          ["verdict_document"], plain)
-        doc = json.loads(plain)
+        # keys out of sorted order and a non-ASCII value, so the writer's form is observed
+        doc = {"z_first": "Δt", **json.loads(plain)}
+        self.assertNotEqual(list(doc), sorted(doc))
         absent = [{"target_id": "cpp_gpu", "reason": "no_eligible_run"}]
         path.write_text(json.dumps({**doc, "comparands_absent": absent}, indent=2,
                                    ensure_ascii=False) + "\n", encoding="utf-8")
         view = self.conductor()._build_pure_judge_context(self.refs)["verdict_document"]
         self.assertNotIn("comparands_absent", view)
         self.assertNotIn("no_eligible_run", view)
-        self.assertEqual(json.loads(view), doc)
+        # the writer's form (`_write_run_node_meta`), less the omitted key
+        self.assertEqual(view, json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
         # text that is not a JSON object reaches the judge unchanged
         for text in ("{not json", "[1, 2]"):
             self.assertEqual(_judge_verdict_view(text), text)
