@@ -2991,24 +2991,41 @@ class ConductRoutingTest(unittest.TestCase):
 
     def test_directive_free_text_never_selects_the_findings(self) -> None:
         # The host reason has no findings source; the diagnostician spells its reason like one
-        # that has. The meta it would name is on disk, and nothing may read it.
-        for directive_reason in ("verify_minor", "gate_x"):
-            with self.subTest(directive_reason=directive_reason), \
-                    tempfile.TemporaryDirectory() as tmp:
-                c, refs = self._escalating_conductor(
-                    tmp, "prod", "generate", "verify",
-                    wc.RouteDecision("escalate", reason="generate_fail_unclassified"),
-                    wc.RouteDecision("retry", target_phase="generate", repair_strategy="reuse",
-                                     severity="major", reason=directive_reason),
-                    {"source_meta.json": {"last_fail_reason": self._FOLD_353},
-                     "gate_meta.json": {"failure_excerpt": "[lint]\nC061"}})
-                self.assertEqual(c.conduct(refs, "generate"), "pass")
-                revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
-                self.assertEqual(len(revokes), 1)
-                self.assertNotIn("--last-fail-reason", revokes[0])
-                launches = self._producer_launches(c, "generate")
-                self.assertEqual(len(launches), 2)
-                self.assertNotIn("repair_findings", launches[1])
+        # that has. The metas it would name are on disk, and nothing may read them — at each of
+        # the four reads: same-phase reopen, cross-phase reopen, budget exhaustion, dev rollback.
+        budget = wc.MAX_ATTEMPTS_PER_PHASE + 1
+        shapes = (  # (label, mode, directive action, target, fail_times, final status)
+            ("same_phase", "prod", "retry", "generate", 1, "pass"),
+            ("cross_phase", "prod", "reopen", "compile", 1, "pass"),
+            ("budget", "prod", "retry", "generate", budget, "fail_closed"),
+            ("dev_rollback", "dev", "reopen", "compile", 1, "fail_closed"),
+        )
+        for label, mode, action, target, fail_times, final in shapes:
+            for directive_reason in ("verify_minor", "gate_x"):
+                with self.subTest(shape=label, directive_reason=directive_reason), \
+                        tempfile.TemporaryDirectory() as tmp:
+                    c, refs = self._escalating_conductor(
+                        tmp, mode, "generate", "verify",
+                        wc.RouteDecision("escalate", reason="generate_fail_unclassified"),
+                        wc.RouteDecision(action, target_phase=target, repair_strategy="reuse",
+                                         severity="major", reason=directive_reason),
+                        {"source_meta.json": {"last_fail_reason": self._FOLD_353},
+                         "gate_meta.json": {"failure_excerpt": "[lint]\nC061"}},
+                        fail_times=fail_times)
+                    self.assertEqual(c.conduct(refs, "generate"), final)
+                    revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+                    self.assertTrue(revokes)
+                    self.assertEqual({r["--step"] for r in revokes}, {target})
+                    for r in revokes:
+                        self.assertNotIn("--last-fail-reason", r)
+                    launches = (self._producer_launches(c, "compile")
+                                + self._producer_launches(c, "generate"))
+                    # A repair launch exists wherever the route re-runs a producer (dev
+                    # terminalizes after the revocation instead), so the check below is not vacuous.
+                    if mode == "prod":
+                        self.assertGreater(len(launches), 2)
+                    for launch in launches:
+                        self.assertNotIn("repair_findings", launch)
 
     def test_escalate_ambiguous_null_target_terminalizes(self) -> None:
         # An ambiguous diagnostician directive (target_phase=None — the schema permits null) must
