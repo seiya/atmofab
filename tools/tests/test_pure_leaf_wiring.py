@@ -1510,9 +1510,11 @@ class PureRenderTests(unittest.TestCase):
         # Re-taken an EIGHTH time for issue #355: the `Compile` SECOND-source paragraph left
         # this bullet, because the producer's declaration now stops under its own
         # `reason_detail` (`compile_declared_fail`, the bullet after this one, which names no
-        # severity value). READ: same two routing tokens, nothing assigned.
+        # severity value). READ: same two routing tokens, nothing assigned. Round 3 of that
+        # branch added one sentence telling a reader of a pre-#355 record how a declaration
+        # arrived under `dev_verify_major`; it reads the token and assigns nothing.
         "docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-        " #afa9a0613f8e",
+        " #21805aaaf564",
         # The two verifier `SKILL`s' routing lines stood here until Z4 (issue #171). Both files
         # are deleted with the agentic leaf: a pure leaf reads no `SKILL`, so the lines are not
         # on a leaf-read surface any more and there is nothing left to allowlist.
