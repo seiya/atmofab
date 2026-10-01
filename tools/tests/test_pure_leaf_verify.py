@@ -1629,8 +1629,10 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         """Issue #365: two verifiers given byte-identical prompts demanded opposite perf-write
         orders, because the inlined contract said `walltime_sec` was "the whole execution" while
         the IR wrote perf before the self-test re-parsed it. The contract's §2 now says the one
-        write and the interval once; this row keeps the removed phrasings out of every document
-        a harness leaf is given, and out of the document that cites §2. It is a literal guard on
+        write and the interval once; this row keeps the removed phrasings out of the inlined
+        contract and the two harness templates, and out of `docs/PERFORMANCE_DIAGNOSTICS.md`,
+        which cites §2 (the harness `controlled_spec.md` order sentences are not read here). It
+        is a literal guard on
         the removed phrasings, not a reader of meaning: a rephrased reversal of a leaf-read
         sentence is caught by the drift pin's digest, and reaches a leaf only through a
         deliberate version bump."""
