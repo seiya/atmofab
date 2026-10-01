@@ -942,21 +942,21 @@ class ChecksReachGateTests(unittest.TestCase):
                 ("local lambda", f"  auto p__step = {fake};\n  p__step(u, s);\n", ""),
                 ("namespace-scope lambda", "  p__step(u, s);\n",
                  f"auto p__step = {fake.replace('[&]', '[]')};\n"),
-                ("local functor", "  struct F { void operator()(std::vector<double>& v, double& x)"
-                                  " { v[0] = x; } } p__step;\n  p__step(u, s);\n", ""),
+                ("local functor", ("  struct F { void operator()(std::vector<double>& v, double& x)"
+                                   " { v[0] = x; } } p__step;\n  p__step(u, s);\n"), ""),
                 ("local variable", "  int p__step = 1;\n  (void)p__step;\n", ""),
                 ("local struct static member",
-                 "  struct W { static void p__step(std::vector<double>& v, double& x) "
-                 "{ v[0] = x; } };\n  W::p__step(u, s);\n", ""),
+                 ("  struct W { static void p__step(std::vector<double>& v, double& x) "
+                  "{ v[0] = x; } };\n  W::p__step(u, s);\n"), ""),
                 ("alias-named local struct",
-                 "  struct p_model { static void p__step(std::vector<double>& v, double& x) "
-                 "{ v[0] = x; } };\n  p_model::p__step(u, s);\n", ""),
+                 ("  struct p_model { static void p__step(std::vector<double>& v, double& x) "
+                  "{ v[0] = x; } };\n  p_model::p__step(u, s);\n"), ""),
                 ("after a using-declaration", "  using p_model::p__step;\n  p__step(u, s);\n", ""),
                 ("after a using-directive", "  using namespace p_model;\n  p__step(u, s);\n", ""),
                 ("template in the model namespace", "  p_model::p__step(u, s);\n",
-                 "}  // namespace p_checks\nnamespace p_model {\ntemplate <typename T = int>\n"
-                 "void p__step(std::vector<double>& v, double& x) { v[0] = x; }\n}\n"
-                 "namespace p_checks {\n")):
+                 ("}  // namespace p_checks\nnamespace p_model {\ntemplate <typename T = int>\n"
+                  "void p__step(std::vector<double>& v, double& x) { v[0] = x; }\n}\n"
+                  "namespace p_checks {\n"))):
             with self.subTest(label):
                 v = self._run(self._with_run_body(body, extra))
                 self.assertTrue(any("other than as `p_model::<op>`" in x for x in v), v)
