@@ -1633,9 +1633,10 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         contract and the two harness templates, and out of `docs/PERFORMANCE_DIAGNOSTICS.md`,
         which cites §2 (the harness `controlled_spec.md` order sentences are not read here). It
         is a literal guard on
-        the removed phrasings, not a reader of meaning: a rephrased reversal of a leaf-read
-        sentence is caught by the drift pin's digest, and reaches a leaf only through a
-        deliberate version bump."""
+        the removed phrasings, not a reader of meaning: a rephrased reversal in the contract or
+        a template is caught by the drift pin's digest and reaches a leaf only through a
+        deliberate version bump, while a `controlled_spec.md` edit moves only that node's
+        derivation key, which no test reads for meaning."""
         ctx = self.c._build_pure_harness_verify_context(self.refs)
         contract = ctx["runner_output_contract_document"]
         self.assertIn("final before `write_perf`", contract)
