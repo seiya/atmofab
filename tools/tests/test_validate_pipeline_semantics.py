@@ -25180,6 +25180,28 @@ class IrFixtureShapeTests(unittest.TestCase):
             with self.assertRaises(json.JSONDecodeError):  # not UnicodeDecodeError
                 _read_json(bad)
 
+    def test_the_non_finite_tokens_the_runner_contract_names_are_the_readers(self) -> None:
+        """RUNNER_OUTPUT_CONTRACT.md §4 names `NaN` / `Infinity` / `-Infinity` as the spelling of a
+        non-finite real because they are the tokens this reader restores; a numeric format's own
+        spelling (`nan`, `-nan`, `inf`, as C's `%.16e` prints them) is `invalid json` (#315)."""
+        import math
+
+        from tools.validate_pipeline_semantics import _read_json
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "diagnostics.json"
+            path.write_text('{"m": NaN, "p": Infinity, "n": -Infinity}', encoding="utf-8")
+            doc = _read_json(path)
+            self.assertTrue(math.isnan(doc["m"]))
+            self.assertEqual((doc["p"], doc["n"]), (math.inf, -math.inf))
+            for token in ("nan", "-nan", "inf", "-inf", "null"):
+                path.write_text('{"m": %s}' % token, encoding="utf-8")
+                if token == "null":
+                    self.assertIsNone(_read_json(path)["m"])
+                    continue
+                with self.assertRaises(json.JSONDecodeError, msg=token):
+                    _read_json(path)
+
     def test_deeply_nested_ir_is_a_violation_not_a_traceback(self) -> None:
         """A pathologically nested document raises `RecursionError`, which `yaml.YAMLError` does not
         cover, so it escaped the gates that guard the IR read."""

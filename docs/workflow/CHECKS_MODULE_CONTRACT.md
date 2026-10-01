@@ -98,7 +98,10 @@ shape on every path, the rejected-input path included.
 - **NA metrics.** When a metric is honestly unavailable set `found` true,
   `is_na` true, and `reason_na` to a short reason; the harness encodes it as
   `"<address>": null` plus a sibling `"<address>_reason_na": "<reason>"`. A
-  metric that simply does not apply to a case sets `found` false (omitted).
+  metric that simply does not apply to a case sets `found` false (omitted). A
+  metric that was computed and came out non-finite (a NaN, an infinity) is not N/A:
+  leave `is_na` false, and the harness writes the token `RUNNER_OUTPUT_CONTRACT.md` §4
+  names.
 - **`case_run` perf counters** feed the single `perf.json` (`steps` summed,
   `cells_updated` summed across the run); make them the real work done.
 - **Metrics-basis is a test × target-case matrix.** The host-rendered runner records one

@@ -134,11 +134,24 @@ source; do not uniformly require a fixed minimal composition.
   shape-checked like the final snapshot. A hand-authored runner (a harness self-test)
   does not write it, and nothing requires it to.
 
-## 4. JSON serialization (UTF-8, standard-parseable)
+## 4. JSON serialization (UTF-8)
 
 `diagnostics.json` / `perf.json` and every `.json` under `raw/` must be a UTF-8
-JSON object restorable by a standard JSON parser. Numeric tokens follow RFC 8259
-(`.123` / `-.123` with a missing leading zero are forbidden).
+JSON object restorable by a standard JSON parser. Every finite numeric token follows
+RFC 8259 (`.123` / `-.123` with a missing leading zero are forbidden).
+
+**A non-finite real** is written as the literal token `NaN`, `Infinity` or `-Infinity`
+(`NaN` whatever the sign bit), chosen by branching on the value, never by handing the
+value to a numeric format. These three tokens are the one departure from RFC 8259 this
+contract takes: they are exactly the non-finite tokens the host's reader accepts, and
+any other spelling makes the document unreadable. A non-finite value is never written as
+`null` (`null` is the honest-N/A encoding a caller declares through `is_na`,
+`CHECKS_MODULE_CONTRACT.md`), and a writer never stops the program over one: the other
+cases' evidence is still owed. What the host does with the value is decided elsewhere —
+a non-finite capture is a `structural_violation` naming the variable
+(`phase_04_validate.md`), and a non-finite metric is a value, not an N/A: `na_allowed`
+does not accept it, a `NaN` fails every comparison, and an infinity compares as the signed
+extreme it is.
 
 The writer rules a runner of a given language follows to satisfy this — which of its
 format descriptors are forbidden for a JSON token and the canonical safe idiom — are that

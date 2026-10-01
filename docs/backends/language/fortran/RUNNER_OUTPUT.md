@@ -27,14 +27,26 @@ descriptor must not appear at all.
   `***` — `ES23.16E3` is one column too narrow) then `trim(adjustl(...))`, or a
   bounded explicit-width `Fw.d` (e.g. `F20.6`, never `F0`/`F0.d`) with
   `trim(adjustl(...))`; integers via `I0`; booleans via the `true`/`false`
-  literal.
+  literal; a non-finite real via the literal `RUNNER_OUTPUT_CONTRACT.md` §4
+  names (`NaN` whatever the sign bit, `Infinity`, `-Infinity`), chosen by
+  branching with `ieee_is_nan` / `ieee_is_finite` from
+  `use, intrinsic :: ieee_arithmetic`. gfortran's `ES24.16E3` prints the same
+  three tokens, but the branch is required: the standard lets a processor
+  append a processor-dependent `NaN(...)` suffix. Never write `null` for a
+  non-finite value, and never stop the program over one.
 
   ```fortran
-  function jnum(x) result(s)
+  function jnum(x) result(s)       ! the enclosing module has: use, intrinsic :: ieee_arithmetic
     real(8), intent(in) :: x
     character(len=32) :: s
-    write(s, '(ES24.16E3)') x      ! leading digit guaranteed; width fits a sign; never F0/F0.d
-    s = adjustl(s)                 ! trim(adjustl(s)) at the JSON write site
+    if (ieee_is_nan(x)) then
+      s = 'NaN'                    ! any sign bit
+    else if (.not. ieee_is_finite(x)) then
+      s = merge('Infinity ', '-Infinity', x > 0.0d0)
+    else
+      write(s, '(ES24.16E3)') x    ! leading digit guaranteed; width fits a sign; never F0/F0.d
+      s = adjustl(s)               ! trim(adjustl(s)) at the JSON write site
+    end if
   end function jnum
 
   function jbool(b) result(s)
@@ -49,14 +61,20 @@ descriptor must not appear at all.
 - A `toolchain.language=fortran` `runner` must not directly embed the `F0` / `F0.d` format into a `JSON` numeric token.
 - A `toolchain.language=fortran` `runner`, when outputting a logical value to `JSON`, must not directly embed the `T`/`F` token that the `L`-family edit descriptor (`L1` etc.) generates into a `JSON` boolean token. A `JSON` boolean allows only the literals `true` / `false`, so branch on the logical value and write the string.
 - **Enforcement is descriptor-syntactic, not output-based.** The `post_generate` static analysis (`validate_pipeline_semantics --stage post_generate`) flags the mere *presence* of an `F0` / `F0.d` numeric descriptor (and the `L`-family logical descriptor) in any runner `JSON` write format spec. It never inspects the runtime output, so a manual leading-zero fixup (e.g. computing the value, then string-patching a missing `0`) does **not** satisfy the gate — the forbidden descriptor must not appear in the format spec at all.
-- **Canonical safe idiom (`fortran`):** emit reals with an explicit scientific descriptor such as `ES24.16E3` (always emits a leading digit; width 24 = sign + `d.dddddddddddddddd` + `E±ddd`, so it never overflows to `****` even for negatives — `ES23.16E3` is one column too narrow and prints `***` for a negative value), then `trim(adjustl(...))`; or, when the magnitude range is known small, a bounded explicit-width `Fw.d` (e.g. `F20.6`, never `F0`/`F0.d`) with `trim(adjustl(...))`. Emit integers with `I0`. Emit booleans by branching on the logical and writing the literal `true` / `false`. Example:
+- **Canonical safe idiom (`fortran`):** emit reals with an explicit scientific descriptor such as `ES24.16E3` (always emits a leading digit; width 24 = sign + `d.dddddddddddddddd` + `E±ddd`, so it never overflows to `****` even for negatives — `ES23.16E3` is one column too narrow and prints `***` for a negative value), then `trim(adjustl(...))`; or, when the magnitude range is known small, a bounded explicit-width `Fw.d` (e.g. `F20.6`, never `F0`/`F0.d`) with `trim(adjustl(...))`. Emit integers with `I0`. Emit booleans by branching on the logical and writing the literal `true` / `false`. Emit a non-finite real as the literal `RUNNER_OUTPUT_CONTRACT.md` §4 names, by branching on `ieee_is_nan` / `ieee_is_finite` before the value reaches the descriptor, as §1 states. Example:
 
   ```fortran
-  function jnum(x) result(s)
+  function jnum(x) result(s)       ! the enclosing module has: use, intrinsic :: ieee_arithmetic
     real(8), intent(in) :: x
     character(len=32) :: s
-    write(s, '(ES24.16E3)') x      ! leading digit guaranteed; width fits a sign; never F0/F0.d
-    s = adjustl(s)                 ! trim(adjustl(s)) at the JSON write site
+    if (ieee_is_nan(x)) then
+      s = 'NaN'                    ! any sign bit
+    else if (.not. ieee_is_finite(x)) then
+      s = merge('Infinity ', '-Infinity', x > 0.0d0)
+    else
+      write(s, '(ES24.16E3)') x    ! leading digit guaranteed; width fits a sign; never F0/F0.d
+      s = adjustl(s)               ! trim(adjustl(s)) at the JSON write site
+    end if
   end function jnum
 
   function jbool(b) result(s)

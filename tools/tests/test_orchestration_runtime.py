@@ -21294,7 +21294,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # inlined slice must name because `post_execute` shape-checks it. Measured 11431.
         # Lowered 11500->10800 (issue #289, R4-b PR-2): the Fortran descriptor rules of §4 moved
         # to the Fortran binding. Measured 10410 at 33dacd5c.
-        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 10800,
+        # Raised 10800->11700 (issue #315): §4 names the non-finite tokens, the branch rule,
+        # and that a non-finite value is never `null` and never stops the writer. Measured 11618.
+        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 11700,
         # R1/M3c-β: the fixed-ABI contract for a physics node's `<spec_id>_checks.f90`
         # (leaf-authored callbacks the host-rendered runner drives). Leaf must-read for
         # every generate LLM leaf (its SKILL branches on whether the node is M3c).
@@ -21365,7 +21367,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # bullet.
         # Lowered 18600->13600 (issue #289, R4-b PR-2): §1-4 became language-neutral and §5 moved
         # to the Fortran binding below. Measured 13223 at 33dacd5c.
-        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 13600,
+        # Raised 13600->13900 (issue #315): the NA-metrics bullet says a computed non-finite
+        # metric is not N/A and cites §4 of the runner-output contract. Measured 13697.
+        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 13900,
         # New (issue #289, R4-b PR-2; round 3 found both inlined bindings unguarded). Measured
         # 11479 and 4418 at 33dacd5c.
         # Raised 11900->13200 (issue #316, R4-c PR-4): §1-c, the distributed binding — the four
@@ -21375,7 +21379,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Raised 13200->13500 in the same PR's round 2: which cells a rank contributes when the
         # IR's shape includes the domain's boundary ghost cells. Measured 13216.
         "docs/backends/language/fortran/CHECKS_ABI.md": 13500,
-        "docs/backends/language/fortran/RUNNER_OUTPUT.md": 4800,
+        # Raised 4800->5900 (issue #315): §1 and §2 name the non-finite tokens and the
+        # `ieee_arithmetic` branch, and `jnum` gains it. Measured 5605.
+        "docs/backends/language/fortran/RUNNER_OUTPUT.md": 5900,
         # Still force-read by compile.generate/verify (its IR schema is the contract
         # the compile SKILL defers to).
         # Bumped 17000->18200: documented the deterministic Compile.static substep (G2,

@@ -749,6 +749,14 @@ PINNED: dict[str, str] = {
     # `src_20260930_003`, authored at pure-54 — pure-55 left this wording unchanged), which is why
     # the key moves.
     "pure-56": "11684187b2b38605acc4efc27e9e7c6eae2638182189f8f18a34be7e9fe12091",
+    # pure-57 (issue #315): §4 of the inlined runner-output contract names the one spelling of a
+    # non-finite real (`NaN` / `Infinity` / `-Infinity`, by branching on the value; never `null`,
+    # never a stop), both language bindings give the idiom, the checks contract says a computed
+    # non-finite metric is not N/A, and rule (7) / H8 of the harness templates cite §4. Under
+    # the wording pure-56 left unchanged a harness leaf wrote `null`, a throw, or the raw `%.16e`
+    # token (the three spellings measured on sources authored at pure-54 / pure-55), which is
+    # why the key moves.
+    "pure-57": "fc693599ca78f87b7d3a2750146adf22a77f549b1f293d8e6c07fb65f18808fa",
 }
 
 
