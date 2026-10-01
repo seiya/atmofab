@@ -21205,8 +21205,6 @@ class ChecksReachGateTests(unittest.TestCase):
         # An import inside a procedure is not the module's: no hit (round 2 — the model
         # imported only in a sibling procedure let an unrelated `bx__step` count).
         v = self._run(_reach_checks("    call bx__step(u)\n", uses="").replace(
-            "    logical, intent(out) :: ok\n    ok = len_trim",
-            "    logical, intent(out) :: ok\n    ok = len_trim", 1).replace(
             "  subroutine case_setup(case_id, ok)\n",
             "  subroutine case_setup(case_id, ok)\n    use bx_model, only: bx__step\n"))
         self.assertTrue(any("no `use bx_model` in the specification part" in x for x in v), v)
@@ -21215,11 +21213,11 @@ class ChecksReachGateTests(unittest.TestCase):
     def test_a_local_entity_named_as_the_operation_is_refused(self) -> None:
         """Round 1 (issue #314): a call to a LOCAL entity carrying the operation's name — a
         procedure pointer, a statement function, a dummy procedure, a variable, a component —
-        looks like a call to the model and runs the checks module's own update. Every way the
-        checks source declares, binds or defines the name (or a rename's local name) is refused,
-        and a name the module did not import from the model is not a reach. Since round 2 the
-        rule is stated by position, not by declaration form: a member of P appears only in a
-        `use bx_model` statement or as the callee of a `call`."""
+        looks like a call to the model and runs the checks module's own update. Since round 2
+        the rule is stated by position, not by declaration form: a member of P appears only in a
+        `use bx_model` statement or as the callee of a `call`, so each of these is refused; a
+        rename's local name is NOT policed (a disclosed residual, asserted `[]` below), and a
+        name the module did not import from the model is not a reach."""
         impl = ("  subroutine impl(v)\n    real(real64), intent(inout) :: v(:)\n    v = 2*v\n"
                 "  end subroutine impl\n")
         spec = "    integer, intent(out) :: steps, cells_updated\n"

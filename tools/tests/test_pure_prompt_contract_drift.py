@@ -773,10 +773,10 @@ PINNED: dict[str, str] = {
     "pure-59": "b2ada46cdae8723a31399be467c7914d30d889924ff87efffccd83695dd2d610",
     # pure-60 (issue #314): the inlined checks contract's §1 `case_run` row and §4, both
     # bindings' CHECKS_ABI, and rule (F) of both language fragments say `case_run` reaches the
-    # model's published operation and the checks source never defines one. A pure-59 leaf was
+    # model's published operation and a leaf source gives that name to nothing of its own. A pure-59 leaf was
     # never told, and probe g18 (a checks source computing the state inline) passed the gate,
     # which is why the key moves.
-    "pure-60": "a02ab8d4feddb3a8404db1e1d42d9ff869dc4ca9f84f757f4b24b74132050830",
+    "pure-60": "220b63a073fd6e2dec9facb42fe47006ce0932e18caa02026ee158ecaf7868b4",
 }
 
 

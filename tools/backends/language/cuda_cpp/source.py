@@ -841,7 +841,8 @@ def checks_model_reach_violations(checks_path: Path, text: str, model_files: lis
         f"{checks_path}: case_run reaches no published operation of the model (one of: {ops}) "
         f"— the checks source advances the state by `{spec_id}_model::{spec_id}__<op>(...)` "
         "from case_run or from a function the checks source defines that case_run reaches (one "
-        "in another file is not followed); it must not compute the update itself")
+        "in another file, a template function, a struct member function and a namespace-scope "
+        "lambda are not followed); it must not compute the update itself")
     return violations
 
 

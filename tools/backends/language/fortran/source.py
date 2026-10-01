@@ -2730,10 +2730,11 @@ def checks_model_reach_violations(checks_path: Path, text: str, model_files: lis
                 frontier.append(token)
     violations.append(
         f"{checks_path}: case_run reaches no published operation of the model (one of: {ops}) "
-        f"— the checks module advances the state by `call {spec_id}__<op>(...)` from case_run "
-        "or from a procedure OF THE CHECKS MODULE case_run reaches (one in another file is not "
-        f"followed; a `use {spec_id}_model, only: name => {spec_id}__<op>` rename in the "
-        "module's specification part is followed); it must not compute the update itself")
+        f"— the checks module imports it by a `use {spec_id}_model` in the module's "
+        "specification part (an import inside a procedure does not count; a rename there is "
+        f"followed) and advances the state by `call {spec_id}__<op>(...)` from case_run or "
+        "from a procedure OF THE CHECKS MODULE case_run reaches (one in another file is not "
+        "followed); it must not compute the update itself")
     return violations
 
 

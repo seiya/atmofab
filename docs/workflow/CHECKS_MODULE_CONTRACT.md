@@ -166,10 +166,9 @@ value (`found` true), and `found` false for the earlier cases.
   even as a comment or example string. Emission is the harness's exclusive job; the checks
   module only computes.
 - **No local entity named as a published operation** — the checks module calls the model's
-  operation (`<spec_id>__*`) and names it nowhere else: no procedure, procedure pointer,
-  variable, dummy or other declaration of that name, and no passing it as an argument — a call
-  to such a name would run the checks module's own code. Where the name may appear is the
-  binding's rule.
+  operation (`<spec_id>__*`) and gives that name to nothing of its own: no procedure,
+  procedure pointer, variable, dummy or other declaration of that name — a call to such a name
+  would run the checks module's own code. Where the name may appear is the binding's §4.
 
 ## 5. Language binding
 
