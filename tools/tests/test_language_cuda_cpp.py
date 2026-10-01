@@ -960,6 +960,18 @@ class ChecksReachGateTests(unittest.TestCase):
             with self.subTest(label):
                 v = self._run(self._with_run_body(body, extra))
                 self.assertTrue(any("other than as `p_model::<op>`" in x for x in v), v)
+                if label in ("local lambda", "local functor", "local struct static member"):
+                    # ...and the call to it is no reach either.
+                    self.assertTrue(any(_REACH in x for x in v), v)
+
+    def test_only_the_models_namespace_qualifies(self) -> None:
+        v = self._run(self._with_run_body("  other::p__step(u, s);\n"))
+        self.assertTrue(any(_REACH in x for x in v), v)
+        self.assertTrue(any("other than as `p_model::<op>`" in x for x in v), v)
+        # A declaration of the name outside the model's namespace is not the problem idiom.
+        v = self._run(self._with_run_body(
+            "  p_model::p__step(u, s);\n", "void p__step(std::vector<double>& u, double& s);\n"))
+        self.assertTrue(any("other than as `p_model::<op>`" in x for x in v), v)
 
     def test_a_helper_source_naming_the_operation_is_refused(self) -> None:
         """A helper `.cu` the checks source includes is read by the same rule."""

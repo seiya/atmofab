@@ -21233,6 +21233,10 @@ class ChecksReachGateTests(unittest.TestCase):
                     "    call drive(impl)\n", extra=impl + (
                         "  subroutine drive(bx__step)\n    procedure(impl) :: bx__step\n"
                         "    call bx__step(u)\n  end subroutine drive\n")), "bx__step"),
+                ("undeclared dummy procedure", _reach_checks(
+                    "    call drive(impl)\n", extra=impl + (
+                        "  subroutine drive(bx__step)\n    call bx__step(u)\n"
+                        "  end subroutine drive\n")), "bx__step"),
                 ("variable", _reach_checks("    bx__step = 1\n", uses="  use bx_model, only:\n"
                                            ).replace(spec, spec + "    integer :: bx__step\n"),
                  "bx__step"),
