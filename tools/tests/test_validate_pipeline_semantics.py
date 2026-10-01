@@ -21194,8 +21194,7 @@ class ChecksReachGateTests(unittest.TestCase):
         v = self._run(_reach_checks("    call bx__step(u)\n", uses="  use bx_model\n",
                                     extra=shadow))
         self.assertEqual(len(v), 1, v)
-        self.assertIn("declares or defines `bx__step`, a name of the model's published "
-                      "operation", v[0])
+        self.assertIn("names `bx__step`, a published operation of the model, other than in", v[0])
         self.assertEqual(len(self._reach(_reach_checks(
             "    call dep__flux(u)\n", uses="  use bx_model\n  use dep_model\n"))), 1)
         # Without the `use` the name is not the operation: both refusals.
@@ -21203,13 +21202,24 @@ class ChecksReachGateTests(unittest.TestCase):
         self.assertEqual(len(v), 2, v)
         self.assertIn("no `use bx_model`", v[0])
         self.assertIn(_REACH, v[1])
+        # An import inside a procedure is not the module's: no hit (round 2 — the model
+        # imported only in a sibling procedure let an unrelated `bx__step` count).
+        v = self._run(_reach_checks("    call bx__step(u)\n", uses="").replace(
+            "    logical, intent(out) :: ok\n    ok = len_trim",
+            "    logical, intent(out) :: ok\n    ok = len_trim", 1).replace(
+            "  subroutine case_setup(case_id, ok)\n",
+            "  subroutine case_setup(case_id, ok)\n    use bx_model, only: bx__step\n"))
+        self.assertTrue(any("no `use bx_model` in the specification part" in x for x in v), v)
+        self.assertTrue(any(_REACH in x for x in v), v)
 
     def test_a_local_entity_named_as_the_operation_is_refused(self) -> None:
         """Round 1 (issue #314): a call to a LOCAL entity carrying the operation's name — a
         procedure pointer, a statement function, a dummy procedure, a variable, a component —
         looks like a call to the model and runs the checks module's own update. Every way the
         checks source declares, binds or defines the name (or a rename's local name) is refused,
-        and a name the module did not import from the model is not a reach."""
+        and a name the module did not import from the model is not a reach. Since round 2 the
+        rule is stated by position, not by declaration form: a member of P appears only in a
+        `use bx_model` statement or as the callee of a `call`."""
         impl = ("  subroutine impl(v)\n    real(real64), intent(inout) :: v(:)\n    v = 2*v\n"
                 "  end subroutine impl\n")
         spec = "    integer, intent(out) :: steps, cells_updated\n"
@@ -21255,7 +21265,13 @@ class ChecksReachGateTests(unittest.TestCase):
                  "bx__step")):
             with self.subTest(label):
                 v = self._run(checks)
-                self.assertTrue(any(f"declares or defines `{name}`" in x for x in v), v)
+                if name == "bx__step":
+                    self.assertTrue(any(f"names `{name}`, a published operation of the model, "
+                                        f"other than in" in x for x in v), v)
+                else:
+                    # A rename's local name is not policed (an ordinary word another scope
+                    # may use); its redeclaration is a disclosed residual of a dead call's gain.
+                    self.assertEqual(v, [], v)
         # A name the module never imported from the model is not a reach, whatever it is.
         v = self._run(_reach_checks("    call bx__step(u)\n",
                                     uses="  use bx_model, only: bx__other\n"))
@@ -21276,7 +21292,9 @@ class ChecksReachGateTests(unittest.TestCase):
                     "    end interface\n"))):
             with self.subTest(label):
                 self.assertEqual(len(self._reach(checks)), 1, self._run(checks))
-                self.assertEqual(len(self._run(checks)), 1, self._run(checks))
+                # An interface body naming the operation is also a misplaced name (round 2).
+                self.assertEqual(len(self._run(checks)), 2 if label == "interface body" else 1,
+                                 self._run(checks))
 
     def test_m8_an_unreadable_structure_is_a_violation_and_a_missing_reader_raises(
             self) -> None:
@@ -21322,10 +21340,66 @@ class ChecksReachGateTests(unittest.TestCase):
     def _reach_only_root(self, checks: str) -> list[str]:
         return [v for v in self._run(checks) if "case_run" in v and "fixed ABI" not in v]
 
-    def test_m10_an_operation_passed_as_an_actual_is_a_reach(self) -> None:
-        self.assertEqual(self._run(_reach_checks(
+    def test_m10_an_operation_passed_as_an_actual_is_refused(self) -> None:
+        """Round 2: only the callee position names the operation; passed as an actual it is a
+        name a callee could run as anything (0 corpus occurrences)."""
+        v = self._run(_reach_checks(
             "    call driver(bx__step)\n",
-            extra="  subroutine driver(op)\n    external :: op\n  end subroutine driver\n")), [])
+            extra="  subroutine driver(op)\n    external :: op\n  end subroutine driver\n"))
+        self.assertTrue(any("names `bx__step`" in x for x in v), v)
+
+    def test_a_logical_if_call_is_a_reach(self) -> None:
+        self.assertEqual(self._run(_reach_checks(
+            "    if (size(u) > 0) call bx__step(u)\n")), [])
+
+    def test_a_rename_local_used_as_an_ordinary_name_elsewhere_passes(self) -> None:
+        """Round 2's over-refusal probe: a rename's local name is an ordinary word."""
+        self.assertEqual(self._run(_reach_checks(
+            "    call step(u)\n", uses="  use bx_model, only: step => bx__step\n",
+            extra="  subroutine count_it(n)\n    integer, intent(out) :: n\n"
+                  "    integer :: step\n    n = 0\n    do step = 1, 3\n      n = n + step\n"
+                  "    end do\n  end subroutine count_it\n")), [])
+
+    def test_round_2_forms_are_refused(self) -> None:
+        """Round 2: a generic interface, a construct name, an interface body inside case_run and
+        a helper file, each carrying the operation's name."""
+        spec = "    integer, intent(out) :: steps, cells_updated\n"
+        own = ("  subroutine own_update(v)\n    real(real64), intent(inout) :: v(:)\n"
+               "    v = 2*v\n  end subroutine own_update\n")
+        for label, checks in (
+                ("generic interface", _reach_checks(
+                    "    call bx__step(u)\n", uses="  use bx_model, only: bx__other\n",
+                    extra=own).replace("  public :: u\n", "  public :: u\n  interface bx__step\n"
+                                       "    module procedure own_update\n  end interface\n")),
+                ("construct name", _reach_checks(
+                    "    bx__step: block\n      u = 2*u\n    end block bx__step\n")),
+                ("interface body in case_run", _reach_checks("    call bx__step(u)\n").replace(
+                    spec, spec + "    interface\n      subroutine bx__step(v)\n"
+                    "        real(8) :: v(:)\n      end subroutine bx__step\n"
+                    "    end interface\n"))):
+            with self.subTest(label):
+                v = self._run(checks)
+                self.assertTrue(any("names `bx__step`" in x for x in v), v)
+        with tempfile.TemporaryDirectory() as t:
+            src = Path(t)
+            (src / "bx_model.f90").write_text(_MODEL_OK)
+            (src / "bx_helpers.f90").write_text(
+                "module bx_helpers\ncontains\n  subroutine bx__step(v)\n    real(8) :: v(:)\n"
+                "    v = 2*v\n  end subroutine bx__step\nend module bx_helpers\n")
+            v = fortran_source.checks_model_reach_violations(
+                src / "bx_checks.f90", _reach_checks("    call bx__step(u)\n"),
+                [src / "bx_model.f90"], "bx")
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("bx_helpers.f90: names `bx__step`", v[0])
+        # The host-rendered runner is not a leaf source and is not read.
+        with tempfile.TemporaryDirectory() as t:
+            src = Path(t)
+            (src / "bx_model.f90").write_text(_MODEL_OK)
+            (src / "bx_runner.f90").write_text("program bx_runner\n  integer :: bx__step\n"
+                                               "end program bx_runner\n")
+            self.assertEqual(fortran_source.checks_model_reach_violations(
+                src / "bx_checks.f90", _reach_checks("    call bx__step(u)\n"),
+                [src / "bx_model.f90"], "bx"), [])
 
     def test_m11_case_is_folded_on_both_sides(self) -> None:
         self.assertEqual(self._run(_reach_checks("    CALL BX__STEP(U)\n")), [])

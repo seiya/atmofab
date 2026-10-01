@@ -21506,7 +21506,8 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Raised 13900->14600 (issue #314): the §1 `case_run` row says it reaches the model's
         # published operation, and §4 gains the no-shadow-definition item. Measured 14233; 14310
         # after round 1 widened §4 to every local entity of that name; 14418 after round 1 told
-        # the §1 row's reader the check is a reach, not a use.
+        # the §1 row's reader the check is a reach, not a use; 14506 after round 2 stated §4 by
+        # where the name may appear rather than by declaration form.
         "docs/workflow/CHECKS_MODULE_CONTRACT.md": 14600,
         # New (issue #289, R4-b PR-2; round 3 found both inlined bindings unguarded). Measured
         # 11479 and 4418 at 33dacd5c.

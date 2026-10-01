@@ -973,6 +973,14 @@ class ChecksReachGateTests(unittest.TestCase):
             "  p_model::p__step(u, s);\n", "void p__step(std::vector<double>& u, double& s);\n"))
         self.assertTrue(any("other than as `p_model::<op>`" in x for x in v), v)
 
+    def test_the_host_rendered_runner_is_not_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "p_model.cu").write_text(_P_MODEL)
+            (Path(tmp) / "p_runner.cu").write_text("void p__step(int);\n")
+            v = cpp_source.checks_model_reach_violations(
+                Path(tmp) / "p_checks.cu", _REACHING_CHECKS, [Path(tmp) / "p_model.cu"], "p")
+        self.assertEqual(v, [])
+
     def test_a_helper_source_naming_the_operation_is_refused(self) -> None:
         """A helper `.cu` the checks source includes is read by the same rule."""
         helper = ("namespace p_model {\ntemplate <typename T = int>\n"
