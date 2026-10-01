@@ -776,7 +776,7 @@ PINNED: dict[str, str] = {
     # model's published operation and the checks source never defines one. A pure-59 leaf was
     # never told, and probe g18 (a checks source computing the state inline) passed the gate,
     # which is why the key moves.
-    "pure-60": "e6266534add4ac0616aa7cf21adb29afaf8ad89fcf663c9b16bf4d546ec0a634",
+    "pure-60": "10388ef0fc6d98f2496a11775120a943df01424e45a0440db60eb5f0f25993a4",
 }
 
 
