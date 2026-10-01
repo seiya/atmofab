@@ -13941,8 +13941,7 @@ class Conductor:
                                   findings=findings, severity=severity,
                                   repair_strategy=repair_strategy,
                                   attempt_id=self._attempt_id(refs, phase),
-                                  attempt_pipeline_ref=(None if phase == "compile"
-                                                        else refs.pipeline_ref))
+                                  attempt_pipeline_ref=refs.pipeline_ref)
         except RevocationNotLandedError as exc:
             self.emit("revocation_not_landed", node_key=refs.node_key, phase=phase,
                       reason=reason, intended_terminal=fallback_code, error=str(exc)[:200])

@@ -18232,7 +18232,9 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Answer a `noop` over a phase that is still certified with exit 0 and the JSON "
             "answer, instead of refusing it. For the conductor, which holds the attempt id "
-            "the answer's `certified_by` is compared with (a failed --rederive attempt leaves "
+            "the answer's `certified_by` (within `certified_pipeline_ref`, the pipeline a "
+            "source / binary / run id is numbered in) is compared with (a failed --rederive "
+            "attempt leaves "
             "the standing output certifying the phase, issue #369) and refuses the rest "
             "itself (`revocation_not_landed`). Not for the manual recipe."
         ),
