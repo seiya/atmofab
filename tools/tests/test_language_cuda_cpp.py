@@ -891,8 +891,8 @@ class ChecksReachGateTests(unittest.TestCase):
                 ("in the checks namespace", "void p__step(int n) { (void)n; }\n")):
             with self.subTest(label):
                 v = self._run(self._with_run_body("  p_model::p__step(u, s);\n", extra))
-                self.assertEqual(len(v), 1, v)
-                self.assertIn("defines `p__step`, a published operation of the model", v[0])
+                self.assertTrue(any("defines `p__step`, a published operation of the model" in x
+                                    for x in v), v)
         v = self._run(self._with_run_body("  dep_model::dep__flux(u);\n"))
         self.assertEqual([_REACH in x for x in v], [True], v)
 
@@ -919,13 +919,59 @@ class ChecksReachGateTests(unittest.TestCase):
         for label, body in (
                 ("qualified", "  p_model::p__step(u, s);\n"),
                 ("split over lines", "  p_model::\n      p__step(\n u, s);\n"),
-                ("after a using-declaration", "  using p_model::p__step;\n  p__step(u, s);\n"),
-                ("after a using-directive", "  using namespace p_model;\n  p__step(u, s);\n"),
                 ("taken by address", ("  void (*op)(std::vector<double>&, double&) = "
                                       "&p_model::p__step;\n  op(u, s);\n")),
                 ("inside a lambda", "  auto go = [&]() { p_model::p__step(u, s); };\n  go();\n")):
             with self.subTest(label):
                 self.assertEqual([], self._run(self._with_run_body(body)))
+
+    def test_a_namespace_alias_of_the_model_qualifies(self) -> None:
+        """Certified sources call through `namespace md = <spec_id>_model;`."""
+        alias = _REACHING_CHECKS.replace("namespace p_checks {",
+                                         "namespace md = p_model;\nnamespace p_checks {", 1)
+        self.assertEqual([], self._run(alias.replace("p_model::p__step(u, s);",
+                                                     "md::p__step(u, s);")))
+
+    def test_a_local_entity_named_as_the_operation_is_refused(self) -> None:
+        """Round 1 (issue #314): a lambda, functor, variable, member or template carrying the
+        operation's name, and an unqualified call that may reach one, look like a call to the
+        model and run the checks source's own update. The name appears only qualified by the
+        model's namespace, or as the checks source's declaration in it."""
+        fake = "[&](std::vector<double>& v, double& x) { v[0] = x; }"
+        for label, body, extra in (
+                ("local lambda", f"  auto p__step = {fake};\n  p__step(u, s);\n", ""),
+                ("namespace-scope lambda", "  p__step(u, s);\n",
+                 f"auto p__step = {fake.replace('[&]', '[]')};\n"),
+                ("local functor", "  struct F { void operator()(std::vector<double>& v, double& x)"
+                                  " { v[0] = x; } } p__step;\n  p__step(u, s);\n", ""),
+                ("local variable", "  int p__step = 1;\n  (void)p__step;\n", ""),
+                ("local struct static member",
+                 "  struct W { static void p__step(std::vector<double>& v, double& x) "
+                 "{ v[0] = x; } };\n  W::p__step(u, s);\n", ""),
+                ("alias-named local struct",
+                 "  struct p_model { static void p__step(std::vector<double>& v, double& x) "
+                 "{ v[0] = x; } };\n  p_model::p__step(u, s);\n", ""),
+                ("after a using-declaration", "  using p_model::p__step;\n  p__step(u, s);\n", ""),
+                ("after a using-directive", "  using namespace p_model;\n  p__step(u, s);\n", ""),
+                ("template in the model namespace", "  p_model::p__step(u, s);\n",
+                 "}  // namespace p_checks\nnamespace p_model {\ntemplate <typename T = int>\n"
+                 "void p__step(std::vector<double>& v, double& x) { v[0] = x; }\n}\n"
+                 "namespace p_checks {\n")):
+            with self.subTest(label):
+                v = self._run(self._with_run_body(body, extra))
+                self.assertTrue(any("other than as `p_model::<op>`" in x for x in v), v)
+
+    def test_a_helper_source_naming_the_operation_is_refused(self) -> None:
+        """A helper `.cu` the checks source includes is read by the same rule."""
+        helper = ("namespace p_model {\ntemplate <typename T = int>\n"
+                  "void p__step(std::vector<double>& v, double& x) { v[0] = x; }\n}\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "p_model.cu").write_text(_P_MODEL)
+            (Path(tmp) / "fake.cu").write_text(helper)
+            v = cpp_source.checks_model_reach_violations(
+                Path(tmp) / "p_checks.cu", _REACHING_CHECKS, [Path(tmp) / "p_model.cu"], "p")
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("fake.cu: names a published operation of the model", v[0])
 
     def test_forms_not_followed_are_refused(self) -> None:
         """Documented refusals (GENERATE_RULES.md §5): a struct member function, a namespace-scope

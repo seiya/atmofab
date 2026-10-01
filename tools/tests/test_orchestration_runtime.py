@@ -21504,7 +21504,8 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Raised 13600->13900 (issue #315): the NA-metrics bullet says a computed non-finite
         # metric is not N/A and cites §4 of the runner-output contract. Measured 13697.
         # Raised 13900->14400 (issue #314): the §1 `case_run` row says it reaches the model's
-        # published operation, and §4 gains the no-shadow-definition item. Measured 14233.
+        # published operation, and §4 gains the no-shadow-definition item. Measured 14233; 14310
+        # after round 1 widened §4 to every local entity of that name.
         "docs/workflow/CHECKS_MODULE_CONTRACT.md": 14400,
         # New (issue #289, R4-b PR-2; round 3 found both inlined bindings unguarded). Measured
         # 11479 and 4418 at 33dacd5c.

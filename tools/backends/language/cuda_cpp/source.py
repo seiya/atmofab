@@ -705,11 +705,21 @@ def checks_model_reach_violations(checks_path: Path, text: str, model_files: lis
     THE READING IS POLARITY-INVERTED. It does not parse call expressions: every identifier token
     of a defined function's body (`declarations.read`'s body — comments, literals and directives
     blanked — with `using` declarations dropped) that names another function this source defines
-    is an edge, and one that names a member of P is a hit. So a qualified or unqualified call, a
-    kernel launch `op<<<g, b>>>(...)`, a call split over lines, a helper called with template
-    arguments, a call inside a lambda in a body, and an operation taken by address are all
-    followed. Functions are keyed by bare name, so overloads and same-named functions in
-    different namespaces merge (over-approximation in the passing direction only). The walk
+    is an edge, and a member of P QUALIFIED by the model's namespace (`<spec_id>_model::<op>`, or
+    an alias `namespace md = <spec_id>_model;` that a leaf source declares) is a hit. So a
+    kernel launch, a call split over lines, a helper called with template arguments, a call
+    inside a lambda in a body, and an operation taken by address are all followed. Functions are
+    keyed by bare name, so overloads and same-named functions in different namespaces merge
+    (over-approximation in the passing direction only, of the same gain as a dead call).
+
+    A NAME IS THE OPERATION ONLY WHEN QUALIFIED. In the checks source and in every other leaf
+    source but the model and the runner, a member of P appears only qualified by the model's
+    namespace, or (checks source) as the name of a declaration in `namespace <spec_id>_model`;
+    any other occurrence — a local lambda, functor or variable of that name, a member, a
+    template, an unqualified call after `using` — is refused, because a call can reach it
+    without reaching the model (round 1 of issue #314's review reached the gate with a local
+    lambda named as the operation). The occurrence count is taken over the masked text, so a
+    qualifier is read back over at most 200 characters of whitespace. The walk
     starts at the `case_run` defined in namespace `<spec_id>_checks`; a call only from
     `case_setup` does not count (the capture after it is the INITIAL state, §1-b). NOT followed,
     so an operation reached only through one is refused: a namespace-scope lambda variable, a
@@ -743,6 +753,48 @@ def checks_model_reach_violations(checks_path: Path, text: str, model_files: lis
         return [_structure_refusal(checks_path, decls.errors, "the checks-reach gate")]
 
     violations: list[str] = []
+    model_ns = f"{spec_id}_model"
+    # The names that qualify the model's namespace: itself, and every alias of it a leaf source
+    # declares (`namespace md = <spec_id>_model;`, as certified sources do).
+    qualifiers = {model_ns}
+    sources = [(checks_path, text)]
+    for path in leaf_sources(checks_path.parent):
+        if path == checks_path or path in model_files or path.name == f"{spec_id}_runner.cu":
+            continue
+        try:
+            sources.append((path, path.read_text(encoding="utf-8", errors="ignore")))
+        except OSError:
+            continue
+    codes = [(path, cpp_lines.strip_preprocessor(cpp_lines.mask(splice_lines(source))))
+             for path, source in sources]
+    for _path, code in codes:
+        qualifiers.update(re.findall(
+            rf"\bnamespace\s+([A-Za-z_]\w*)\s*=\s*(?:::\s*)?{re.escape(model_ns)}\s*;", code))
+    qualified_re = re.compile(
+        r"\b(?:" + "|".join(re.escape(q) for q in sorted(qualifiers)) + r")\s*::\s*$")
+    op_re = re.compile(r"\b(" + "|".join(re.escape(op) for op in sorted(published)) + r")\b")
+
+    def unqualified(code: str) -> int:
+        return sum(1 for m in op_re.finditer(code)
+                   if not qualified_re.search(code[max(0, m.start() - 200):m.start()]))
+
+    # A name of the model's operation appears in a leaf source only qualified by the model's
+    # namespace (`<spec_id>_model::<op>` or an alias of it), or as the name of a declaration in
+    # that namespace in the checks source (the problem idiom). Anything else — a local lambda,
+    # variable or functor of that name, a member, a template, an unqualified call — is a name
+    # that a call can reach without reaching the model.
+    declared = sum(1 for fn in decls.functions
+                   if not fn.defined and fn.namespace == (model_ns,) and fn.name in published)
+    for path, code in codes:
+        extra = unqualified(code) - (declared if path == checks_path else 0)
+        if extra > 0:
+            violations.append(
+                f"{path}: names a published operation of the model ({ops}) other than as "
+                f"`{model_ns}::<op>` — a leaf source calls the operation qualified by the "
+                f"model's namespace (or an alias of it) and never declares, binds or defines "
+                f"that name itself (on a problem node the checks source only DECLARES it in "
+                f"`namespace {model_ns}`)")
+
     checks_namespace = (f"{spec_id}_checks",)
     bodies: dict[str, list[str]] = {}
     has_root = False
@@ -767,13 +819,17 @@ def checks_model_reach_violations(checks_path: Path, text: str, model_files: lis
             "checks-reach gate to start from")
         return violations
 
+    def reaches(body: str) -> bool:
+        return any(qualified_re.search(body[max(0, m.start() - 200):m.start()])
+                   for m in op_re.finditer(body))
+
     seen = {"case_run"}
     frontier = ["case_run"]
     while frontier:
-        tokens = {token for body in bodies.get(frontier.pop(), ())
-                  for token in _IDENTIFIER_TOKEN_RE.findall(body)}
-        if tokens & published:
+        node = bodies.get(frontier.pop(), ())
+        if any(reaches(body) for body in node):
             return violations
+        tokens = {token for body in node for token in _IDENTIFIER_TOKEN_RE.findall(body)}
         for token in tokens:
             if token in bodies and token not in seen:
                 seen.add(token)

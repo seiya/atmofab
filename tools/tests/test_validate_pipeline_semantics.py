@@ -21194,12 +21194,68 @@ class ChecksReachGateTests(unittest.TestCase):
         v = self._run(_reach_checks("    call bx__step(u)\n", uses="  use bx_model\n",
                                     extra=shadow))
         self.assertEqual(len(v), 1, v)
-        self.assertIn("defines `bx__step`, a published operation of the model", v[0])
+        self.assertIn("declares or defines `bx__step`, a name of the model's published "
+                      "operation", v[0])
         self.assertEqual(len(self._reach(_reach_checks(
             "    call dep__flux(u)\n", uses="  use bx_model\n  use dep_model\n"))), 1)
+        # Without the `use` the name is not the operation: both refusals.
         v = self._run(_reach_checks("    call bx__step(u)\n", uses=""))
-        self.assertEqual(len(v), 1, v)
+        self.assertEqual(len(v), 2, v)
         self.assertIn("no `use bx_model`", v[0])
+        self.assertIn(_REACH, v[1])
+
+    def test_a_local_entity_named_as_the_operation_is_refused(self) -> None:
+        """Round 1 (issue #314): a call to a LOCAL entity carrying the operation's name — a
+        procedure pointer, a statement function, a dummy procedure, a variable, a component —
+        looks like a call to the model and runs the checks module's own update. Every way the
+        checks source declares, binds or defines the name (or a rename's local name) is refused,
+        and a name the module did not import from the model is not a reach."""
+        impl = ("  subroutine impl(v)\n    real(real64), intent(inout) :: v(:)\n    v = 2*v\n"
+                "  end subroutine impl\n")
+        spec = "    integer, intent(out) :: steps, cells_updated\n"
+        for label, checks, name in (
+                ("procedure pointer", _reach_checks(
+                    "    bx__step => impl\n    call bx__step(u)\n", extra=impl).replace(
+                    spec, spec + "    procedure(impl), pointer :: bx__step\n"), "bx__step"),
+                ("pointer under a rename", _reach_checks(
+                    "    bx__step => impl\n    call bx__step(u)\n",
+                    uses="  use bx_model, only: real_op => bx__step\n", extra=impl).replace(
+                    spec, spec + "    procedure(impl), pointer :: bx__step\n"), "bx__step"),
+                ("rename's local name bound", _reach_checks(
+                    "    step => impl\n    call step(u)\n",
+                    uses="  use bx_model, only: step => bx__step\n", extra=impl).replace(
+                    spec, spec + "    procedure(impl), pointer :: step\n"), "step"),
+                ("statement function", _reach_checks(
+                    "    u = bx__step(u)\n", uses="  use bx_model, only:\n").replace(
+                    spec, spec + "    real(real64) :: bx__step, x\n    bx__step(x) = 2*x\n"),
+                 "bx__step"),
+                ("dummy procedure", _reach_checks(
+                    "    call drive(impl)\n", extra=impl + (
+                        "  subroutine drive(bx__step)\n    procedure(impl) :: bx__step\n"
+                        "    call bx__step(u)\n  end subroutine drive\n")), "bx__step"),
+                ("variable", _reach_checks("    bx__step = 1\n", uses="  use bx_model, only:\n"
+                                           ).replace(spec, spec + "    integer :: bx__step\n"),
+                 "bx__step"),
+                ("another module's rename onto the name", _reach_checks(
+                    "    call bx__step(u)\n",
+                    uses="  use bx_model, only: bx__other\n  use fake_mod, only: bx__step => fake\n",
+                    tail="module fake_mod\ncontains\n  subroutine fake(v)\n    real(8) :: v(:)\n"
+                         "    v = 2*v\n  end subroutine fake\nend module fake_mod\n"), "bx__step"),
+                ("local variable under an unrelated import", _reach_checks(
+                    "    bx__step = 1\n    u = 2*u\n", uses="  use bx_model, only: bx__other\n"
+                    ).replace(spec, spec + "    real(real64) :: bx__step\n"), "bx__step"),
+                ("component", _reach_checks("    q%bx__step = 1\n").replace(
+                    "  real(real64), allocatable :: u(:)\n",
+                    "  real(real64), allocatable :: u(:)\n  type :: holder\n"
+                    "    integer :: bx__step\n  end type holder\n  type(holder) :: q\n"),
+                 "bx__step")):
+            with self.subTest(label):
+                v = self._run(checks)
+                self.assertTrue(any(f"declares or defines `{name}`" in x for x in v), v)
+        # A name the module never imported from the model is not a reach, whatever it is.
+        v = self._run(_reach_checks("    call bx__step(u)\n",
+                                    uses="  use bx_model, only: bx__other\n"))
+        self.assertTrue(any(_REACH in x for x in v), v)
 
     def test_m7_a_comment_a_literal_or_a_use_is_not_a_reach(self) -> None:
         spec_anchor = "    integer, intent(out) :: steps, cells_updated\n"

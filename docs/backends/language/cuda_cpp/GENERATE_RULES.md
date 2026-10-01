@@ -133,13 +133,18 @@ value is one more output, whether or not its `return` names anything.
   model DEFINES in `namespace <spec_id>_model`; an empty set is refused. From the `case_run` of
   `namespace <spec_id>_checks`, every identifier of a defined function's body (comments,
   literals and directives blanked, `using` declarations dropped) that names a function the
-  checks source defines is followed, and one that names a published operation is a reach — a
-  qualified or unqualified call, a `<<<...>>>` launch, a call split over lines, a call inside a
-  lambda in a body, an operation taken by address. NOT followed, so an operation reached only
+  checks source defines is followed, and a published operation QUALIFIED by
+  `<spec_id>_model::` (or a `namespace md = <spec_id>_model;` alias) is a reach — a
+  `<<<...>>>` launch, a call split over lines, a call inside a lambda in a body, an operation
+  taken by address. In the checks source and every other leaf source but the model, the
+  operation's name appears only that way, or as the checks source's declaration in
+  `namespace <spec_id>_model`: a local lambda, functor, variable, member or template of that
+  name, and an unqualified call after a `using`, are refused. NOT followed, so an operation reached only
   through one is refused — call it from a namespace-scope function instead: a namespace-scope
   lambda variable, a struct member function, a template function, a macro. A call only from
   `case_setup` does not count (its capture is the INITIAL state). Also refused: a checks-side
   definition of a function named as a published operation, in any namespace (on a `problem`
-  node the checks source DECLARES it in `namespace <spec_id>_model` and never defines it). The
+  node the checks source DECLARES it in `namespace <spec_id>_model` and never defines it). Same-named
+  functions merge (a call to either follows both). The
   refusal reads `case_run reaches no published operation of the model`. It is a reach claim: a
   dead or guarded call passes it and is `Generate.verify`'s.

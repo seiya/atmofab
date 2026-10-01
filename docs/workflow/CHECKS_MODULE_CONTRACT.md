@@ -165,9 +165,10 @@ value (`found` true), and `found` false for the earlier cases.
   `verdict.json` / `aggregate_verdict.json` / `summary.json` / `trial_meta.json` appears in it,
   even as a comment or example string. Emission is the harness's exclusive job; the checks
   module only computes.
-- **No definition of a published operation in the checks module** — no procedure named as one
-  of the model's published operations (`<spec_id>__*`): the checks module calls the model's
-  operation and never shadows it.
+- **No local entity named as a published operation** — the checks module calls the model's
+  operation (`<spec_id>__*`) and never declares, binds or defines that name itself (a procedure,
+  a procedure pointer, a variable, a dummy): a call to such a name would run the checks
+  module's own code.
 
 ## 5. Language binding
 

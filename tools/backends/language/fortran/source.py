@@ -2554,13 +2554,23 @@ def checks_model_reach_violations(checks_path: Path, text: str, model_files: lis
     THE READING IS POLARITY-INVERTED. It does not parse call statements: every identifier token
     of a procedure's body (the gate view — comments and literal contents blanked, continuations
     joined — with interface blocks blanked and `use` statements dropped) that names another
-    procedure this file defines is an edge, and one that names a member of P, or a local name a
-    `use <spec_id>_model, only: name => <spec_id>__op` rename binds to one, is a hit. So a
-    function helper (`x = helper(u)`), a zero-argument `call helper`, and an operation passed as
-    an actual are all followed. A contained procedure is a node of its own: a hit inside one
-    that `case_run` never names does not count. The walk starts at the `case_run` the module
-    `<spec_id>_checks` defines; a call only from `case_setup` does not count (the capture after
-    it is the INITIAL state, §1-b).
+    procedure this file defines is an edge, and one that names a member of P the module IMPORTED
+    from `<spec_id>_model` (a `use` without `only:`, a listed name, or a rename's local name) is
+    a hit. So a function helper (`x = helper(u)`), a zero-argument `call helper`, and an
+    operation passed as an actual are all followed. A contained procedure's body is its own, not
+    its host's; procedures are keyed by bare name, so two of one name merge (a call to either
+    follows both — the passing direction, of the same gain as a dead call). The walk starts at
+    the `case_run` the module `<spec_id>_checks` defines; a call only from `case_setup` does not
+    count (the capture after it is the INITIAL state, §1-b).
+
+    A NAME IS THE OPERATION ONLY IF NOTHING LOCAL CARRIES IT. Every name the checks source
+    declares, binds or defines (`declared_names` over the view without the model's `use`
+    statements — a type declaration, a procedure pointer, `external`, a statement function's
+    typed name, a component, an `associate` binding, another module's import — and every
+    procedure's name, dummies and result) is refused when it is a member of P or a rename's local
+    name: a call to it would run the checks module's own code under the operation's name (round 1
+    of issue #314's review reached the gate that way with a procedure pointer, a statement
+    function and a dummy procedure).
 
     WHAT IT DOES NOT CLOSE, stated because the reading is a reach CLAIM and not a dataflow: a
     dead or guarded call, a call whose result is discarded, an update recomputed after a live
@@ -2570,9 +2580,7 @@ def checks_model_reach_violations(checks_path: Path, text: str, model_files: lis
     operation defined as a `function`, an `entry` or a generic is outside P by the naming rule,
     and the empty-P refusal names the fix.
 
-    Also refused: a checks source that DEFINES a procedure named as a member of P (a shadow the
-    hit rule would otherwise accept), and one that carries no `use <spec_id>_model` at all
-    (without it a P-named token is a local, not the operation). A source whose structure does
+    Also refused: a checks source that carries no `use <spec_id>_model` at all. A source whose structure does
     not resolve is a violation naming the reader's error; `FortranStructureUnavailableError` (a
     missing host package) propagates, as in `run_problem_model_gates`."""
     spec_l = spec_id.lower()
@@ -2605,17 +2613,24 @@ def checks_model_reach_violations(checks_path: Path, text: str, model_files: lis
             for structure_error in exc.errors]
 
     violations: list[str] = []
-    aliases: dict[str, str] = {}
+    # `imported`: the local names a `use <spec_id>_model` statement binds to a member of P — the
+    # name itself (no `only:` list imports every one), or a rename's local name. Only these are
+    # hits: a P-named token the module never imported is not the operation.
+    imported: dict[str, str] = {}
     uses_model = False
     for stmt in statements(lowered):
         read = _use_only_items(stmt.strip())
         if read is None or read[0] != model_module:
             continue
         uses_model = True
-        for item, target in read[1] or ():
-            local = item.split("=>", 1)[0].strip().lower() if "=>" in item else ""
-            if local and target in published:
-                aliases[local] = target
+        if read[1] is None:
+            imported.update((name, name) for name in published)
+            continue
+        for item, target in read[1]:
+            if target not in published:
+                continue
+            local = item.split("=>", 1)[0].strip().lower() if "=>" in item else target
+            imported[local] = target
     if not uses_model:
         violations.append(
             f"{checks_path}: no `use {spec_id}_model` — case_run reaches the model's operation "
@@ -2626,8 +2641,23 @@ def checks_model_reach_violations(checks_path: Path, text: str, model_files: lis
     blanked = fortran_structure.blank_interface_spans(
         view, tuple((to_view(start), to_view(end)) for start, end in tree.interface_spans))
     bodies: dict[str, list[str]] = {}
+    # Every name the checks source DECLARES, BINDS or DEFINES other than by importing it from the
+    # model: `declared_names` over the view without the model's `use` statements (a type
+    # declaration, a `procedure(...), pointer`, `external`, a statement function's typed name, a
+    # derived-type component, an `associate` binding, another module's `use ..., only:` import),
+    # plus every procedure's name, dummies and result. One of these carrying an operation's name,
+    # or a rename's local name, would make a call to that name a call to something else.
+    model_free_view = "\n".join(
+        line for line in view.split("\n")
+        if not ((read := _use_only_items(line.strip())) is not None and read[0] == model_module))
+    constants, others = declared_names(model_free_view)
+    local_names = set(constants) | set(others)
     for procedure in tree.procedures:
         name = procedure.name.strip().lower()
+        local_names.add(name)
+        local_names.update(n.lower() for n in split_names(procedure.dummy_args_text))
+        if procedure.result_name:
+            local_names.add(procedure.result_name.strip().lower())
         if name == "case_run" and procedure not in roots:
             # Only the ABI's `case_run` is the root: one of the same name in another unit of
             # the file is not what the runner calls.
@@ -2639,11 +2669,11 @@ def checks_model_reach_violations(checks_path: Path, text: str, model_files: lis
                          if not _USE_STATEMENT_LINE_RE.match(line))
         bodies.setdefault(name, []).append(body)
 
-    for name in sorted(bodies):
-        if name in published:
-            violations.append(
-                f"{checks_path}: defines `{name}`, a published operation of the model — the "
-                "checks module calls the model's operation and never defines one")
+    for name in sorted(local_names & (published | set(imported))):
+        violations.append(
+            f"{checks_path}: declares or defines `{name}`, a name of the model's published "
+            f"operation — the checks module calls the operation it imports from "
+            f"{spec_id}_model and never declares, binds or defines that name itself")
 
     if not roots:
         violations.append(
@@ -2651,7 +2681,7 @@ def checks_model_reach_violations(checks_path: Path, text: str, model_files: lis
             "gate to start from")
         return violations
 
-    hits = published | set(aliases)
+    hits = set(imported)
     seen = {"case_run"}
     frontier = ["case_run"]
     while frontier:
