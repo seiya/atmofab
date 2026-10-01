@@ -404,6 +404,19 @@ class EvaluationTest(unittest.TestCase):
         self._structural(self._one("min(1e400, final.s)"), "non-finite")
         self._structural(self._one("min(exp(1000), final.s)"), "non-finite")
 
+    def test_a_non_finite_token_in_a_capture_is_structural(self) -> None:
+        """A runner writes a non-finite real as `NaN` / `Infinity` / `-Infinity`
+        (RUNNER_OUTPUT_CONTRACT.md §4). The capture reader restores each and refuses it,
+        naming the variable (issue #315)."""
+        path = self.run.sdir / "b.json"
+        clean = path.read_text()
+        for token in ("NaN", "Infinity", "-Infinity"):
+            doc = json.loads(clean)
+            doc["s"] = "@TOKEN@"
+            path.write_text(json.dumps(doc).replace('"@TOKEN@"', token))
+            rec = self._structural(self._one("final.s"), "holds a non-finite value")
+            self.assertIn("'s'", rec["evaluated"][-1]["error"], token)
+
     def test_interpreter_exceptions_become_structural_records(self) -> None:
         """Round 1 (both axes): a Python-float division by zero, an integer literal beyond a
         float, and a numpy refusal on unequal extents used to escape as bare exceptions and

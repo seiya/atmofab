@@ -52,5 +52,5 @@
 - On a physics fail, skip the performance evaluation (it has little meaning).
 - A `perf.json` with `parallelism` missing is treated as invalid input and made unjudgeable (error).
 - `perf.json` must be a single UTF-8 `JSON object` restorable by a standard parser.
-- Numeric tokens follow `RFC 8259`, and `.123` and `-.123` with a missing leading zero are forbidden.
+- Finite numeric tokens follow `RFC 8259`, and `.123` and `-.123` with a missing leading zero are forbidden; a non-finite real is the literal token `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §4 names.
 - The writer rules a runner of a given language follows for its JSON tokens (forbidden format descriptors, the canonical safe idiom, and how they are enforced) are the language backend's: `docs/backends/language/<language>/RUNNER_OUTPUT.md`.

@@ -23,10 +23,13 @@ spelling in the runner source; it never inspects runtime output, so a runtime fi
   `true` / `false`, never by printing the `bool` itself (a stream prints `1` / `0`).
 
   ```cpp
+  #include <cmath>
   #include <cstdio>
   #include <string>
 
   std::string jnum(double x) {
+    if (std::isnan(x)) return "NaN";                         // any sign bit
+    if (std::isinf(x)) return x > 0 ? "Infinity" : "-Infinity";
     char buf[32];
     std::snprintf(buf, sizeof buf, "%.16e", x);  // exponential, lossless; never %a
     return buf;
@@ -35,6 +38,9 @@ spelling in the runner source; it never inspects runtime output, so a runtime fi
   std::string jbool(bool b) { return b ? "true" : "false"; }  // literal true/false
   ```
 
-- A non-finite real (a NaN, an infinity) has no JSON number: `%.16e` prints `nan` / `inf` (signed, e.g. `-nan`) for it,
-  which is not JSON, and the runtime deliverable gate refuses the document. Do not format one: a
-  non-finite value is a defect of the computation to fix, not a value to spell.
+- **A non-finite real** (a NaN, an infinity) is written as the literal token
+  `RUNNER_OUTPUT_CONTRACT.md` §4 names — `NaN` (whatever the sign bit), `Infinity`, `-Infinity` —
+  by branching with `std::isnan` / `std::isinf` (`<cmath>`) before the value reaches `%.16e`, as
+  `jnum` above does. `%.16e` itself prints `nan` / `-nan` / `inf` / `-inf` (measured), none of
+  which the host's reader accepts: the `post_execute` gate refuses the document as `invalid json`.
+  Never write `null` for a non-finite value, and never throw or stop the program over one.
