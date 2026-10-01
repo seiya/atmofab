@@ -21299,6 +21299,14 @@ class ChecksReachGateTests(unittest.TestCase):
                     Path("bx_checks.f90"), _reach_checks("    call bx__step(u)\n"),
                     [model], "bx")
 
+    def test_a_reach_refusal_does_not_stop_the_sibling_gates(self) -> None:
+        """The handler appends the reach findings and runs on: the forbidden-filename scan that
+        follows it still reports (round 1 — a `return` there survived every row)."""
+        v = self._run(_reach_checks("    u = 2*u\n    ! see summary.json\n"))
+        self.assertTrue(any(_REACH in x for x in v), v)
+        self.assertTrue(any("forbidden judge-artifact filename detected (summary.json)" in x
+                            for x in v), v)
+
     def test_a_checks_module_without_case_run_is_refused(self) -> None:
         checks = _reach_checks("    call bx__step(u)\n").replace(
             "subroutine case_run(", "subroutine case_go(").replace(
