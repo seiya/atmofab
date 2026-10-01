@@ -147,8 +147,11 @@ contract takes: they are exactly the non-finite tokens the host's reader accepts
 any other spelling a numeric format may print for the value (`nan`, `-nan`, `inf`;
 a processor-dependent `NaN(...)`) makes the document unreadable. A non-finite value is never written as
 `null` (`null` is the honest-N/A encoding a caller declares through `is_na`,
-`CHECKS_MODULE_CONTRACT.md`), and a writer never stops the program over one: the other
-cases' evidence is still owed. What the host does with the value is decided elsewhere —
+`CHECKS_MODULE_CONTRACT.md`), and serializing one never stops the program: the token is
+written and the other cases' evidence is still owed. A writer may still stop on an input that
+violates a precondition it states for its own arguments (a non-positive `walltime_sec`
+included, whatever its finiteness); that is a refusal of the input, not a spelling of the
+value. What the host does with the value is decided elsewhere —
 a non-finite value in a declared state variable or the time variable of a capture a
 primary predicate reads is a `structural_violation` naming the variable
 (`phase_04_validate.md`), and a non-finite metric is a value, not an N/A: `na_allowed`

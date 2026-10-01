@@ -34,7 +34,7 @@ descriptor must not appear at all.
   `only:` clause is required, as for every `use`). gfortran's `ES24.16E3` prints the same
   three tokens, but the branch is required: the standard lets a processor
   append a processor-dependent `NaN(...)` suffix. Never write `null` for a
-  non-finite value, and never stop the program over one.
+  non-finite value, and never stop the program in the emitter over one.
 
   ```fortran
   function jnum(x) result(s)       ! needs: use, intrinsic :: ieee_arithmetic, only: ieee_is_nan, ieee_is_finite
