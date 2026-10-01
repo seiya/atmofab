@@ -2566,9 +2566,9 @@ def _misplaced_operation_names(view: str, published: set[str], model_module: str
             continue
         callee = _call_callee_span(stmt)
         for m in IDENTIFIER_PATTERN.finditer(stmt):
-            if m.group(0) in published and (callee is None or m.span() != callee):
-                if m.group(0) not in out:
-                    out.append(m.group(0))
+            if (m.group(0) in published and (callee is None or m.span() != callee)
+                    and m.group(0) not in out):
+                out.append(m.group(0))
     return out
 
 
