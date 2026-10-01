@@ -12,13 +12,13 @@
 - Leave CPU/GPU and optimization-transformation comparisons in a form that can be recorded and visualized.
 
 ## 1. Collection unit
-- Output 1 `perf.json` per single case execution (case_id, target, impl setting).
-- Output each sub-case of refinement or sweep likewise.
+- Output one `perf.json` per run; `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §2 states the one-write rule and what `walltime_sec` covers.
+- A sub-case of a refinement or sweep is a case of that run; its work is counted in the run's one record.
 
 ## 2. Minimal fields (required)
 - `case_id`: string
 - `target`: cpu|gpu|...
-- `walltime_sec`: the wall-clock time of the whole execution (seconds)
+- `walltime_sec`: seconds; the interval it covers is defined in `RUNNER_OUTPUT_CONTRACT.md` §2
 - `steps`: the number of execution steps
 - `cells_updated`: the total number of updated cells (nx*ny*nz*steps etc.)
 - `throughput_cells_per_sec`: cells_updated / walltime_sec
