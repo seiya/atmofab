@@ -3237,7 +3237,11 @@ _USAGE_LIMIT_INFRA_PATTERN = re.compile(
     r"(?<!not your )\busage limit\b|\bsession limit\b"
     rf"|\b{_USAGE_LIMIT_WINDOWS}\s+limit\s+reached\b"
     rf"|{_USAGE_ABORT_HIT_YOUR_LIMIT_TAGGABLE}"
-    r"|\bcredit balance is too low\b|\bquota\b[^\n]{0,20}exceed")
+    r"|\bcredit balance is too low\b|\bquota\b[^\n]{0,20}exceed"
+    # Codex's credits stop, matched only inside the `error` / `turn.failed` event line
+    # `_absorb_codex_event` splices into stderr (the same shape as its capacity notice under
+    # `llm_overloaded`; issue #375, `orch_20261001T041151Z_658f30c5`).
+    r'|^\{"type": "(?:error|turn\.failed)", [^\n]*\bworkspace is out of credits\b')
 
 # Ordered MOST severe first — the tuple index is the severity rank (see `_classify_leaf_infra_error`).
 # A usage limit is a hard stop that costs hours; a rate limit or an overload is transient. Reporting

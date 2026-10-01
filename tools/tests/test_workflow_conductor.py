@@ -3695,6 +3695,12 @@ class TransportFailureTest(unittest.TestCase):
             # ...and only the `error` / `turn.failed` events count, not an agent message.
             ('{"type": "item.completed", "item": {"type": "agent_message", "text": "Selected '
              'model is at capacity."}}'),
+            # The same two shapes for codex's credits stop.
+            "The shared workspace is out of credits, so the run stopped early.",
+            ('The CLI printed {"type": "error", "message": "Your workspace is out of credits."} '
+             'last time.'),
+            ('{"type": "item.completed", "item": {"type": "agent_message", "text": "Your '
+             'workspace is out of credits."}}'),
         ]
         for text in benign:
             with self.subTest(text=text):
@@ -3742,6 +3748,12 @@ class TransportFailureTest(unittest.TestCase):
               'different model."}'), "llm_overloaded"),
             (('{"type": "turn.failed", "error": {"message": "Selected model is at capacity. '
               'Please try a different model."}}'), "llm_overloaded"),
+            # Codex's credits stop, spliced the same way (verbatim from
+            # `orch_20261001T041151Z_658f30c5`).
+            (('{"type": "error", "message": "Your workspace is out of credits. Ask your '
+              'workspace owner to refill in order to continue."}'), "llm_usage_limit"),
+            (('{"type": "turn.failed", "error": {"message": "Your workspace is out of credits. '
+              'Ask your workspace owner to refill in order to continue."}}'), "llm_usage_limit"),
         ]
         for text, expected in cases:
             with self.subTest(text=text):
