@@ -745,8 +745,9 @@ PINNED: dict[str, str] = {
     # and `walltime_sec` = the case executions, final before `write_perf` (pure-55 said "whole
     # execution" and "per single case execution"); rule (6) and H7 of the harness templates say
     # "once per run" where pure-55 said "per case". A harness leaf reading it writes one perf
-    # record where a pure-55 leaf could write two (measured: cpp_gpu `src_20260930_003`), which is
-    # why the key moves.
+    # record where a leaf under the old wording could write two (measured: cpp_gpu
+    # `src_20260930_003`, authored at pure-54 — pure-55 left this wording unchanged), which is why
+    # the key moves.
     "pure-56": "acbc6bb2e609178307b8ee18c1cfa3a8bafd3e5d4c5424905dfc10ddbb2f4f2d",
 }
 
