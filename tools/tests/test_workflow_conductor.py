@@ -2095,13 +2095,44 @@ class CompileClaimTest(unittest.TestCase):
         finally:
             other._release_compile_claim()
 
+    def test_a_prod_reopen_of_compile_takes_the_claim_again(self) -> None:
+        """A cross-phase reopen re-derives Compile, which is the #374 race in its reopen form:
+        the claim released when Compile first passed must be held again when Compile runs
+        again (round 3: a hold guarded on the first attempt only stayed green)."""
+        c = self._conductor()
+        c.workflow_mode = "prod"
+        seen: list[tuple[str, bool]] = []
+        state = {"generate": 0}
+
+        def run_phase(refs, phase, repair=None):  # type: ignore[no-untyped-def]
+            seen.append((phase, self._claim_free(refs.node_key)))
+            if phase == "generate" and state["generate"] == 0:
+                state["generate"] += 1
+                return wc.PhaseOutcome(
+                    phase=phase, status="fail", failed_substeps=["child-1"],
+                    decision=wc.RouteDecision("reopen", target_phase="compile",
+                                              repair_strategy="reuse", reason="ir_defect"))
+            return wc.PhaseOutcome(phase=phase, status="pass")
+
+        c.run_phase = run_phase  # type: ignore[method-assign]
+        c._revoke_and_reset_or_terminalize = (  # type: ignore[method-assign]
+            lambda *a, **k: False)
+        c._read_repair_findings = lambda *a, **k: None  # type: ignore[method-assign]
+        c._producer_arid = {}  # set by the real run_phase, which this fake replaces
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(c.conduct(self._refs(), "generate"), "pass")
+        self.assertEqual(seen, [("compile", False), ("generate", True),
+                                ("compile", False), ("generate", True)])
+
     def test_a_waiting_driver_takes_the_claim_once_the_holder_releases_it(self) -> None:
         holder, waiter = self._conductor(), self._conductor()
         holder._hold_compile_claim(self._NODE)
         took = threading.Event()
 
+        out = io.StringIO()
+
         def wait() -> None:
-            with redirect_stdout(io.StringIO()):
+            with redirect_stdout(out):
                 waiter._hold_compile_claim(self._NODE)
             took.set()
 
@@ -2111,6 +2142,11 @@ class CompileClaimTest(unittest.TestCase):
             self.assertFalse(took.wait(0.5))  # blocked on the holder, not refused
             holder._release_compile_claim()
             self.assertTrue(took.wait(10))
+            # Announced once, as a JSON event: the tee renders it for `human` and keeps it
+            # whole in the run log; a pre-rendered line would land in both as text.
+            events = [json.loads(line) for line in out.getvalue().splitlines()]
+            self.assertEqual([(e["event"], e["claim_kind"], e["claim_key"]) for e in events],
+                             [("start_claim_waiting", "compile", self._NODE)])
         finally:
             holder._release_compile_claim()
             thread.join(10)
@@ -2176,17 +2212,18 @@ class CompileClaimTest(unittest.TestCase):
         """`reason_detail` is cut at `_PHASE_REASON_DETAIL_MAX_CHARS`; a real node's ir_ref
         runs past it with the remedy in front, so the detail names the bare ir_id — the
         `_<seq>` is what tells two IRs of one day apart (round 2)."""
-        node = "component/dynamics_advection_diffusion_boundary_1d_periodic_copy@0.2.1"
-        slug = "dynamics_advection_diffusion_boundary_1d_periodic_copy"
+        slug = "dynamics_advection_diffusion_boundary_1d_periodic_copy_with_open_edges"
+        node = f"component/{slug}@0.2.1"
         refs = wc.NodeRefs(target_id=_TARGET_ID, node_key=node,
                            spec_path="spec/component/x", ir_id=f"{slug}_20261001_002",
                            pipeline_id="p_1")
-        # The probe straddles the cap: the ir_ref form would have lost the seq.
-        self.assertGreater(len("--resume re-derives Generate onwards on the standing IR; "
-                               + refs.ir_ref), wc._PHASE_REASON_DETAIL_MAX_CHARS)
-        for probed, reason in (("generate", "derivation_key_mismatch:ir"),
-                               ("compile", "revoked")):
+        for probed, reason, head in (
+                ("generate", "derivation_key_mismatch:ir",
+                 "--resume re-derives Generate onwards on the standing IR; "),
+                ("compile", "revoked", "--resume re-derives from Compile; ")):
             with self.subTest(phase=probed):
+                # The probe straddles the cap for THIS arm: its ir_ref form lost the seq.
+                self.assertGreater(len(head + refs.ir_ref), wc._PHASE_REASON_DETAIL_MAX_CHARS)
                 c = self._conductor()
                 c.cert_fn = lambda phase, _p=probed, _r=reason: (  # type: ignore[assignment]
                     {"certified": False, "reason": _r} if phase == _p
