@@ -15004,6 +15004,37 @@ class WriteRunnerTest(unittest.TestCase):
             self.assertNotIn("CHECKS_SRC", text)
             self.assertIn("$(RUNNER_OBJ): $(RUNNER_SRC) $(MODEL_OBJ)", text)
 
+    def test_makefile_test_recipe_pre_creates_initial_only_for_a_host_rendered_runner(
+            self) -> None:
+        # Issue #368: the `test:` recipe pre-creates the capture point the host-rendered runner
+        # opens `initial/<case_id>.json` in, and never on a node whose runner is its own (a
+        # strict fan-out self-test refuses an entry it did not write). Both conductor writers:
+        # the IR-shaped one and the bundle-derived one.
+        initial = "\tmkdir -p $(RUNDIR)/raw/state_snapshots/initial\n"
+        bare = "\tmkdir -p $(RUNDIR)/raw/state_snapshots\n"
+        graph = {"compile_units": [], "link": {"objects": []}}
+        for spec_kind, authored in (("problem", True), ("infrastructure", False)):
+            with self.subTest(spec_kind=spec_kind), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                refs = self._refs()
+                if authored:
+                    self._write_consumer_ir(repo, refs)
+                    (repo / refs.ir_ref / "dependency_graph.json").write_text(json.dumps({
+                        "all_nodes": [
+                            {"node_key": f"component/{self.SID}@0.1.0", "topo_level": 0},
+                        ]}), encoding="utf-8")
+                else:
+                    self._write_consumer_ir(repo, refs, infra=0, spec_kind=spec_kind)
+                c = self._conductor(repo)
+                self.assertEqual(c._conductor_authors_runner(refs), authored)
+                c._write_makefile(refs)
+                node = (repo / refs.source_dir() / "src" / "Makefile").read_text(
+                    encoding="utf-8")
+                from_graph = c._render_pure_makefile_from_graph(refs, graph)
+                for rendered in (node, from_graph):
+                    self.assertEqual(initial in rendered, authored)
+                    self.assertEqual(bare in rendered, not authored)
+
     def test_build_launch_request_swaps_runner_for_checks(self) -> None:
         refs = self._refs()
         # generate.generate authors the sources: on an M3c (runner_host_authored) node the leaf
@@ -17517,8 +17548,11 @@ class DeterministicBuildTest(unittest.TestCase):
                     self.assertNotEqual(meta.get("failure_category"), "snapshot_deliverable_gap")
                 # the in-process execute pre-creates the directory the host-rendered runner
                 # opens `initial/<case_id>.json` in (the binary runs directly here, not through
-                # the Makefile's `mkdir -p`; without it the harness's open fails with rc 2)
-                self.assertTrue((run_tmp / "raw" / "state_snapshots" / "initial").is_dir())
+                # the Makefile's `mkdir -p`; without it the rendered runner's open fails with
+                # rc 2), and never for a runner of the node's own: a hand-authored runner's
+                # strict fan-out self-test refuses an entry it did not write (issue #368)
+                self.assertEqual(
+                    authored, (run_tmp / "raw" / "state_snapshots" / "initial").is_dir())
 
     def test_execute_inproc_category_precedence_when_inputs_fail_together(self) -> None:
         # The categories differ only in report quality (all three route to generate/reuse), so the

@@ -545,6 +545,25 @@ class DeterministicBuildGraphTest(unittest.TestCase):
             host_glue_sources=("adv1d_runner.f90",))
         self.assertEqual(graph["link"]["objects"],
                          self._makefile_link_objects(makefile))
+        # ...and the two renderers' `test:` recipes are one recipe for each value of the
+        # host-rendered-runner flag (issue #368: `initial/` is pre-created exactly when it is set).
+        from tools.backends.build_system.make import control_file
+        rules = conductor._control_file_rules(conductor._read_toolchain(refs),
+                                              conductor._target_architecture())
+        common = dict(rules=rules, compiler="fc", bin_name="b", cases_default="c")
+        for flag in (True, False):
+            with self.subTest(initial_capture_dir=flag):
+                node = control_file.render_node(
+                    **common, model_stem="m", runner_stem="r", checks_stem=None, closure=(),
+                    initial_capture_dir=flag)
+                pure = control_file.render_from_graph(
+                    **common, graph=graph, initial_capture_dir=flag)
+                self.assertEqual(self._test_recipe(node), self._test_recipe(pure))
+                self.assertEqual(flag, "/raw/state_snapshots/initial" in self._test_recipe(node))
+
+    @staticmethod
+    def _test_recipe(text: str) -> str:
+        return re.search(r"^test:\n((?:\t.*\n)+)", text, flags=re.MULTILINE).group(1)
 
     @staticmethod
     def _makefile_link_objects(text: str) -> list[str]:
