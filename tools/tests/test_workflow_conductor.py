@@ -2038,6 +2038,138 @@ class SeedRepairsFromRevocationsTest(unittest.TestCase):
         self.assertEqual(received["generate"]["repair_findings"], "predicate p1 failed")
 
 
+class CompileClaimTest(unittest.TestCase):
+    """Issue #374: the node's Compile runs under a target-free `("compile", node_key)` claim,
+    so two targets of one spec run at once derive one IR rather than two — the second waits,
+    and its certification check then finds the first one's IR and adopts it. And a chain whose
+    Generate was superseded anyway stops with a named `ir_superseded`, not `conductor_error`."""
+
+    _NODE = "component/spec_x@0.1.0"
+
+    def _conductor(self) -> _FakeConductor:
+        c = _FakeConductor(
+            repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
+            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+        c.calls = []
+        return c
+
+    def _refs(self) -> wc.NodeRefs:
+        return wc.NodeRefs(target_id=_TARGET_ID,
+            node_key=self._NODE, spec_path="spec/component/spec_x",
+            ir_id="x_20260101_001", pipeline_id="x_20260101_001",
+            source_id="src_20260101_001", binary_id="bin_20260101_001",
+            run_id="run_20260101_001", source_binary_id="bin_20260101_001")
+
+    @staticmethod
+    def _claim_free(node_key: str) -> bool:
+        """Whether ANOTHER driver could take the node's compile claim now. flock locks belong
+        to the open file description, so a second open in this process contends like another
+        process would."""
+        from tools.run_workflow import _exclusive_claim
+
+        with _exclusive_claim(_SHARED_REPO_ROOT, "compile", node_key) as held:
+            return held
+
+    def test_the_claim_covers_compile_only_and_is_target_free(self) -> None:
+        c = self._conductor()
+        seen: dict[str, bool] = {}
+
+        def run_phase(refs, phase, repair=None):  # type: ignore[no-untyped-def]
+            seen[phase] = self._claim_free(refs.node_key)
+            return wc.PhaseOutcome(phase=phase, status="pass")
+
+        c.run_phase = run_phase  # type: ignore[method-assign]
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(c.conduct(self._refs(), "validate"), "pass")
+        # Held across Compile — the certification check `run_phase` opens with included —
+        # and released once Compile passed, so Generate onwards runs per target in parallel.
+        self.assertEqual(seen, {"compile": False, "generate": True, "build": True,
+                                "validate": True})
+        self.assertTrue(self._claim_free(self._NODE))
+        # The key is the node alone: another target's driver contends for the same claim.
+        other = self._conductor()
+        other.target_profile = None
+        other._hold_compile_claim(self._NODE)
+        try:
+            self.assertFalse(self._claim_free(self._NODE))
+        finally:
+            other._release_compile_claim()
+
+    def test_a_waiting_driver_takes_the_claim_once_the_holder_releases_it(self) -> None:
+        holder, waiter = self._conductor(), self._conductor()
+        holder._hold_compile_claim(self._NODE)
+        took = threading.Event()
+
+        def wait() -> None:
+            with redirect_stdout(io.StringIO()):
+                waiter._hold_compile_claim(self._NODE)
+            took.set()
+
+        thread = threading.Thread(target=wait, daemon=True)
+        thread.start()
+        try:
+            self.assertFalse(took.wait(0.5))  # blocked on the holder, not refused
+            holder._release_compile_claim()
+            self.assertTrue(took.wait(10))
+        finally:
+            holder._release_compile_claim()
+            thread.join(10)
+            waiter._release_compile_claim()
+
+    def test_a_run_that_stops_in_compile_releases_the_claim(self) -> None:
+        c = self._conductor()
+
+        def run_phase(refs, phase, repair=None):  # type: ignore[no-untyped-def]
+            return wc.PhaseOutcome(phase=phase, status="fail", decision=wc.RouteDecision(
+                "fail_closed", reason="boom"))
+
+        c.run_phase = run_phase  # type: ignore[method-assign]
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(c.conduct(self._refs(), "validate"), "fail_closed")
+        self.assertTrue(self._claim_free(self._NODE))
+
+    def test_a_superseded_ir_fails_named_instead_of_at_set_status(self) -> None:
+        for reason, expected in (("derivation_key_mismatch:ir", "fail"),
+                                 ("derivation_key_mismatch:spec.controlled_spec", "pass"),
+                                 (None, "pass")):
+            with self.subTest(reason=reason):
+                c = self._conductor()
+                asks: list[str] = []
+
+                def cert(phase, _asks=asks, _reason=reason):  # type: ignore[no-untyped-def]
+                    _asks.append(phase)
+                    # Two revocation-seed asks and one per phase run every phase; the next
+                    # ask is the pre-pass one, and only it answers the probed reason.
+                    if len(_asks) <= 2 + 4:
+                        return {"certified": False, "reason": "ir_not_reserved"}
+                    return ({"certified": False, "reason": _reason} if _reason
+                            else {"certified": True})
+
+                c.cert_fn = cert
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    self.assertEqual(c.conduct(self._refs(), "validate"), expected)
+                self.assertEqual(asks[-1], "generate")
+                status = [cap for sub, cap in c.calls if sub == "set-status"]
+                self.assertEqual(len(status), 1)
+                self.assertEqual(status[0]["--status"], expected)
+                if expected == "fail":
+                    self.assertEqual(status[0]["--reason-code"], "ir_superseded")
+                    self.assertTrue(status[0]["--reason-detail"].startswith(
+                        "--resume re-derives Generate onwards"))
+                    events = [json.loads(line) for line in buf.getvalue().splitlines()
+                              if line.strip().startswith("{")]
+                    self.assertIn("ir_superseded", [e.get("event") for e in events])
+
+    def test_a_run_short_of_generate_is_not_asked(self) -> None:
+        c = self._conductor()
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(c.conduct(self._refs(), "compile"), "pass")
+        subs = [sub for sub, _ in c.calls]
+        self.assertEqual(subs[-1], "set-status")
+        self.assertEqual(subs[-2], "write-step-result")
+
+
 class PhaseDerivationWiringTest(unittest.TestCase):
     """`run_phase` computes the phase's derivation ONCE at phase start (issue #250) and the
     conductor records it three ways: on every launch of that attempt (`record_launch`
@@ -2300,7 +2432,9 @@ class ConductHappyPathTest(unittest.TestCase):
                "record-launch", "finalize-child",  # judge (leaf)
                "record-launch", "record-child-return", "finalize-child",  # post_judge (deterministic)
                "write-step-result"]  # validate (3 deterministic + 1 leaf substep)
-            + ["set-status"]
+            # Generate is asked once more, unrecorded, before `set-status pass`: is the IR it
+            # was derived from still the standing one (issue #374, `ir_superseded`)?
+            + ["check-phase-certified", "set-status"]
         )
         self.assertEqual(subs, expected)
 
@@ -2399,6 +2533,10 @@ class ConductHappyPathTest(unittest.TestCase):
         self.assertEqual(status, "pass")
         # The forced phase is asked with `--no-record` (it runs; recording it skipped would be
         # a false record — correctness round 1, F2); every other phase is asked recording.
+        # The LAST ask is the unrecorded pre-pass Generate check (issue #374), not a phase's.
+        final = asked.pop()
+        self.assertEqual((final[final.index("--step") + 1], "--no-record" in final),
+                         ("generate", True))
         by_phase = {a[a.index("--step") + 1]: ("--no-record" in a) for a in asked}
         self.assertEqual(by_phase, {"compile": True, "generate": False})
         events = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
@@ -22570,6 +22708,9 @@ class ConductTargetTests(unittest.TestCase):
 
                 def emit(self, event, **fields):  # type: ignore[override]
                     pass
+
+                def check_phase_certified(self, node_key, phase, *, record=True):  # type: ignore[override]
+                    return {"certified": True}  # the pre-pass IR check (issue #374)
 
             from tools import target_profile as tp
             c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="ORCH",

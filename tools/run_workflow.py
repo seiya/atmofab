@@ -1624,8 +1624,10 @@ def _spec_claim_key(spec_ref: str, target_profile: TargetProfile | None) -> str:
     """The key of a `("spec", …)` claim: the spec AND the target it is run for (issue #284).
     Two runs of one spec for two targets write two per-target pipeline trees
     (`workspace/pipelines/<safe>/<target_id>/`), so they are not serialized against each
-    other; their Compile output is target-free, and each mints its IR id with an exclusive
-    `mkdir`, so the two can derive the same IR twice but never write into one directory. A
+    other. Their Compile output is target-free, so the conductor serializes the node's Compile
+    across targets with a claim of its own, `("compile", node_key)` (issue #374,
+    `Conductor.conduct`): the second target waits, then adopts the IR the first certified,
+    instead of deriving a second IR that leaves one target's chain standing on a stale one. A
     caller with no target claims the bare spec — no production path, which resolves the
     target before it claims."""
     if target_profile is None:

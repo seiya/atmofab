@@ -26,6 +26,7 @@ real, working request.json artifacts in tools/tests/test_workflow_conductor.py.
 from __future__ import annotations
 
 import codecs
+import contextlib
 import hashlib
 import json
 import locale
@@ -3693,6 +3694,9 @@ class Conductor:
     #: directory it did not mint, so two drivers that pick the same `<slug>_<date>_<seq>`
     #: name never both write into it.
     _minted_dirs: set[Path] = field(default_factory=set, init=False, repr=False)
+    #: The node's target-free compile claim while this process holds it (issue #374;
+    #: `conduct`, `_hold_compile_claim`).
+    _compile_claim: contextlib.ExitStack | None = field(default=None, init=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.llm_config is None:
@@ -8797,7 +8801,8 @@ class Conductor:
             "--result-json", json.dumps(result),
         ])
 
-    def check_phase_certified(self, node_key: str, phase: str) -> dict[str, Any]:
+    def check_phase_certified(self, node_key: str, phase: str, *,
+                              record: bool = True) -> dict[str, Any]:
         """Is this (node, phase) already certified by the artifacts on disk?
 
         Asked on EVERY run, cold or resumed — the artifacts answer, so there is no
@@ -8809,7 +8814,8 @@ class Conductor:
         A phase named in `--rederive` is asked with `--no-record`: it runs although certified,
         so it is not skipped and nothing is adopted — a `skipped_certified` written here would
         be a false record, and one that outlives the run when the forced attempt stops before
-        `record_launch` overwrites it (correctness round 1, F2).
+        `record_launch` overwrites it (correctness round 1, F2). `record=False` asks the same
+        way for a caller that only wants the answer (`_superseded_ir_detail`).
         """
         out = self.runtime([
             "check-phase-certified", *self._oid_args(),
@@ -8818,7 +8824,7 @@ class Conductor:
             # The target the phase is certified FOR (issue #284), stated rather than left to
             # the orchestration's record, so the answer is for the profile this conductor holds.
             "--target", self.target.target_id,
-            *(["--no-record"] if phase in self.rederive else []),
+            *(["--no-record"] if phase in self.rederive or not record else []),
         ])
         return out if isinstance(out, dict) else {"certified": False}
 
@@ -13961,7 +13967,65 @@ class Conductor:
     def conduct(self, refs: NodeRefs, until_phase: str) -> str:
         """Drive the phases, acting on each phase's cross-phase routing decision:
         reopen an upstream (already-passed) phase, fail_closed, or escalate. The
-        per-phase attempt budget bounds the reopen loop."""
+        per-phase attempt budget bounds the reopen loop.
+
+        The node's Compile runs under a TARGET-FREE claim (issue #374). The driver's spec
+        claim is per target (`_spec_claim_key`), because each target writes its own pipeline
+        tree; but the IR is target-free, so two targets of one spec run at once both found no
+        certified IR, both derived one, and the chain of whichever certified first then stood
+        on an IR that was no longer the standing one — a billed Generate, Build and Validate
+        thrown away, learned only at `set-status`. Holding `("compile", node_key)` from
+        Compile's certification check until Compile passes (or the run ends) makes the second
+        target wait, and its check then finds the first target's IR certified, skips Compile
+        and adopts it (`run_phase` -> `_adopt_certified_refs`). Generate onwards still runs
+        per target in parallel."""
+        try:
+            return self._conduct_phases(refs, until_phase)
+        finally:
+            self._release_compile_claim()
+
+    def _hold_compile_claim(self, node_key: str) -> None:
+        """Take `("compile", node_key)`, waiting for another driver that holds it. Imported
+        from the driver lazily: `run_workflow` imports this module, and the claim's location,
+        degradation warnings and wait announcement live there, once."""
+        if self._compile_claim is not None:
+            return
+        from tools.run_workflow import _exclusive_claim
+
+        stack = contextlib.ExitStack()
+        # Blocking, so the only yields are "held" and a degraded host's warned "proceed".
+        stack.enter_context(_exclusive_claim(self.repo_root, "compile", node_key,
+                                             stdout_format="jsonl", blocking=True))
+        self._compile_claim = stack
+
+    def _release_compile_claim(self) -> None:
+        stack, self._compile_claim = self._compile_claim, None
+        if stack is not None:
+            stack.close()
+
+    def _superseded_ir_detail(self, refs: NodeRefs, phases: Sequence[str]) -> str | None:
+        """Why this chain's Generate stands on a superseded IR, asked just before
+        `set-status pass` — else None, and `set-status` vouches as before.
+
+        The compile claim serializes Compile, not what happens after it: a `--rederive
+        compile` (or a reopen) of the node on another target while this chain is past its
+        Compile certifies a newer IR, and the selection then reads this chain's Generate as
+        `derivation_key_mismatch:ir`. The completion vouch refuses that correctly, but as a
+        `RuntimeError` the driver reports as `conductor_error`. Named here instead
+        (`ir_superseded`), with its remedy: `--resume` adopts the standing IR and re-derives
+        Generate onwards. Generate alone is asked: it is the phase whose key binds the IR, and
+        Build and Validate bind the IR only through it."""
+        if "generate" not in phases:
+            return None
+        cert = self.check_phase_certified(refs.node_key, "generate", record=False)
+        if cert.get("certified") or cert.get("reason") != "derivation_key_mismatch:ir":
+            return None
+        # Remedy first: `reason_detail` is capped, and the ir_ref is the long part.
+        return (f"--resume re-derives Generate onwards on the standing IR; {refs.ir_ref} "
+                "was superseded by another target's Compile")
+
+    def _conduct_phases(self, refs: NodeRefs, until_phase: str) -> str:
+        """`conduct`'s phase loop; `conduct` owns the compile claim's release."""
         phases = phases_through(until_phase)
         attempts: dict[str, int] = {p: 0 for p in phases}
         pending_repair: dict[str, dict[str, str]] = {}
@@ -13975,6 +14039,10 @@ class Conductor:
             self.emit("phase_start", node_key=refs.node_key, phase=phase,
                       attempt=attempts[phase] + 1)
             phase_started = time.monotonic()
+            if phase == "compile":
+                # Before the certification check `run_phase` opens with: the check is what
+                # the second target must ask only after the first one's Compile has landed.
+                self._hold_compile_claim(refs.node_key)
             try:
                 outcome = self.run_phase(refs, phase, repair=pending_repair.pop(phase, None))
             except SandboxEnforcementError as exc:
@@ -13994,6 +14062,9 @@ class Conductor:
                           result=outcome.status,
                           elapsed_seconds=round(time.monotonic() - phase_started, 2))
             if outcome.status == "pass":
+                if phase == "compile":
+                    # The IR this chain stands on is certified: the other targets may adopt it.
+                    self._release_compile_claim()
                 # validate advanced: a later, unrelated execute failure should start its
                 # escalation count fresh (C2 backstop counter).
                 if phase == "validate" and hasattr(self, "_validate_execute_fail_count"):
@@ -14180,6 +14251,12 @@ class Conductor:
                 pending_repair[target] = self._repair_payload(
                     decision, self._producer_arid.get(target, "none"), findings=findings)
             idx = target_idx
+        superseded = self._superseded_ir_detail(refs, phases)
+        if superseded is not None:
+            self.emit("ir_superseded", node_key=refs.node_key, detail=superseded)
+            self.set_status("fail", reason_code="ir_superseded",
+                            reason_detail=superseded[:_PHASE_REASON_DETAIL_MAX_CHARS])
+            return "fail"
         self.set_status("pass")
         return "pass"
 
