@@ -21297,7 +21297,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Raised 10800->11900 (issue #315): §4 names the non-finite tokens, the branch rule,
         # and that a non-finite value is never `null` and never stops the writer. Measured 11841.
         # Raised 11900->12300 (issue #315 follow-up): §4 scopes the no-stop rule to serializing a
-        # non-finite value and keeps a writer's own input precondition. Measured 12089.
+        # non-finite value and keeps a writer's own input range. Measured 12123.
         "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 12300,
         # R1/M3c-β: the fixed-ABI contract for a physics node's `<spec_id>_checks.f90`
         # (leaf-authored callbacks the host-rendered runner drives). Leaf must-read for

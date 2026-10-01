@@ -763,7 +763,7 @@ PINNED: dict[str, str] = {
     # pure-57 a codex verify leaf graded a `write_perf` `error stop` on `walltime_sec <= 0` as an
     # H8 violation (orch_20261001T041151Z_658f30c5, the #315 MPI closing run), which is why the
     # key moves.
-    "pure-58": "6a8ed409b16591d7cf6fe1363f240570da27ec8e171d392ee9e33f590fece775",
+    "pure-58": "9e69c3b83903ab836b4d6338d6ded8710c2412e88e5e027db6377c8468df3d91",
 }
 
 
