@@ -21,7 +21,7 @@ This suite verifies the published runner-plumbing operations of `harness_cpp_gpu
   - `{ name = 'selftest.metric_leaf', value = 0.25, is_na = false, reason_na = '' }`
   - `{ name = 'selftest.metric_na', value = -1.0, is_na = true, reason_na = 'not_computed' }`
   There is no third record: `selftest.metric_na_reason_na` is a key the writer derives from the second record's `is_na` / `reason_na` (§5), never a supplied `h_metric`.
-- The non-finite case (`l0_nonfinite_token_pass`) declares no sentinel input: the IR carries no non-finite number, so the four values it emits — a quiet NaN with the sign bit clear, a quiet NaN with the sign bit set, `+inf` and `-inf` — are produced at run time (spec §3). It carries the same `grid` / `time` / `boundary` inputs as every other case; the plumbing aspect it verifies, `harness_cpp_gpu__emit_real` on a non-finite value, is selected by its `case_id`.
+- The non-finite case (`l0_nonfinite_token_pass`) declares no sentinel input: the IR carries no non-finite number, so the four values it emits — a quiet NaN with the sign bit clear, a quiet NaN with the sign bit set, `+inf` and `-inf` — are produced at run time from the language's IEEE facility, never from a literal division a compiler may refuse to fold. It carries the same `grid` / `time` / `boundary` inputs as every other case; the plumbing aspect it verifies, `harness_cpp_gpu__emit_real` on a non-finite value, is selected by its `case_id`.
 - The abnormal case (`l0_missing_cases_xfail`) synthesizes an empty argv-token list (no `--cases`) and drives `harness_cpp_gpu__parse_cases` to exercise the guard.
 
 ## 3. Execution-control rules
