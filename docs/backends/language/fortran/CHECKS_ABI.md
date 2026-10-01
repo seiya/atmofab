@@ -39,7 +39,8 @@ subroutine case_setup(case_id, ok)
 end subroutine case_setup
 
 ! Run the model kernel's time loop for this case by `call <spec_id>__<op>(...)`
-! (from here or from a procedure called from here) and return the perf counters.
+! (from here or from a procedure of this module called from here) and return the perf
+! counters.
 ! A non-time-stepping component uses steps=1 and cells_updated = cells touched.
 subroutine case_run(case_id, steps, cells_updated, ok)
   character(len=*), intent(in) :: case_id

@@ -2696,7 +2696,8 @@ def checks_model_reach_violations(checks_path: Path, text: str, model_files: lis
     violations.append(
         f"{checks_path}: case_run reaches no published operation of the model (one of: {ops}) "
         f"— the checks module advances the state by `call {spec_id}__<op>(...)` from case_run "
-        "or from a procedure case_run reaches (a `use "
+        "or from a procedure OF THE CHECKS MODULE case_run reaches (one in another file is not "
+        "followed; a `use "
         f"{spec_id}_model, only: name => {spec_id}__<op>` rename is followed); it must not "
         "compute the update itself")
     return violations

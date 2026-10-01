@@ -96,7 +96,7 @@ The current case's state lives in the bound namespace-scope variables of §1-b, 
 model that computes on the device copies the result back into them before `case_run` returns.
 `case_run` advances that state by calling the model's published operation, qualified —
 `<spec_id>_model::<spec_id>__<op>(...)` or through a namespace alias of it — from itself or from
-a function it calls; the checks
+a function the checks source defines that it calls; the checks
 source computes no update of its own (the static check refuses a `case_run` that reaches none). A
 cross-case accumulator lives in other namespace-scope variables of the checks source, which an
 unnamed namespace keeps internal to it.
