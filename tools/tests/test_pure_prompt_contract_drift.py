@@ -757,6 +757,13 @@ PINNED: dict[str, str] = {
     # token (the three spellings measured on sources authored at pure-54 / pure-55), which is
     # why the key moves.
     "pure-57": "9228f94ec8eb23d97268bbe10b6fdec4dc150f105305747878bd5d3463cf3ca8",
+    # pure-58 (issue #315 follow-up): §4 scopes "never stops the program" to SERIALIZING a
+    # non-finite value — a writer may still stop on an input that violates its own stated
+    # precondition (a non-positive `walltime_sec`) — and both bindings say "in the emitter". Under
+    # pure-57 a codex verify leaf graded a `write_perf` `error stop` on `walltime_sec <= 0` as an
+    # H8 violation (orch_20261001T041151Z_658f30c5, the #315 MPI closing run), which is why the
+    # key moves.
+    "pure-58": "9e69c3b83903ab836b4d6338d6ded8710c2412e88e5e027db6377c8468df3d91",
 }
 
 

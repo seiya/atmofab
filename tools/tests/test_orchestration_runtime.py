@@ -21296,7 +21296,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # to the Fortran binding. Measured 10410 at 33dacd5c.
         # Raised 10800->11900 (issue #315): §4 names the non-finite tokens, the branch rule,
         # and that a non-finite value is never `null` and never stops the writer. Measured 11841.
-        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 11900,
+        # Raised 11900->12300 (issue #315 follow-up): §4 scopes the no-stop rule to serializing a
+        # non-finite value and keeps a writer's own input range. Measured 12123.
+        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 12300,
         # R1/M3c-β: the fixed-ABI contract for a physics node's `<spec_id>_checks.f90`
         # (leaf-authored callbacks the host-rendered runner drives). Leaf must-read for
         # every generate LLM leaf (its SKILL branches on whether the node is M3c).
@@ -21380,7 +21382,8 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # IR's shape includes the domain's boundary ghost cells. Measured 13216.
         "docs/backends/language/fortran/CHECKS_ABI.md": 13500,
         # Raised 4800->5900 (issue #315): §1 and §2 name the non-finite tokens and the
-        # `ieee_arithmetic` branch, and `jnum` gains it. Measured 5727.
+        # `ieee_arithmetic` branch, and `jnum` gains it. Measured 5727; 5742 after the
+        # #315 follow-up scoped the no-stop sentence to the emitter.
         "docs/backends/language/fortran/RUNNER_OUTPUT.md": 5900,
         # Still force-read by compile.generate/verify (its IR schema is the contract
         # the compile SKILL defers to).
