@@ -3270,10 +3270,14 @@ _LEAF_INFRA_ERROR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     # token, a 529 in an API status context, `Overloaded` AS the whole message, and the CLI's
     # capacity notice. `{_TERMINAL}` is what separates `Error: Overloaded` (the API) from `error:
     # call of overloaded 'update(double)' ...` (the compiler) — the sentence continues.
+    # Codex's capacity notice (issue #375) is matched only inside the structured `error` /
+    # `turn.failed` event `_absorb_codex_event` splices into stderr — the line shape that event's
+    # `json.dumps` produces — so `the buffer is at capacity` in a leaf's prose stays unmatched.
     ("llm_overloaded", re.compile(
         rf"\boverloaded_error\b|{_API_STATUS_CONTEXT}\b529\b"
         rf"|\berror\b[^\n]{{0,20}}\boverloaded{_TERMINAL}"
-        r"|^\s*overloaded\s*$|\bexperiencing high load\b")),
+        r"|^\s*overloaded\s*$|\bexperiencing high load\b"
+        r'|^\{"type": "(?:error|turn\.failed)", [^\n]*\bselected model is at capacity\b')),
     # Same discipline for the rate limit. `rate limit` unqualified is ordinary technical English —
     # "diffusion rate limits the timestep", "the scheme is rate limited by diffusion" — so the bare
     # form counts only when it IS the message (`{_TERMINAL}`), and otherwise an explicit API shape

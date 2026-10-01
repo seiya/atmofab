@@ -3685,6 +3685,9 @@ class TransportFailureTest(unittest.TestCase):
             # `error` is a subscript or a line number, never an HTTP status.
             "error: index 502 out of bounds for array u(500)",
             "gfortran: error at line 504 of model.f90",
+            # Codex's capacity phrase counts only inside its structured error event (#375).
+            "The halo buffer is at capacity, so the selected model is at capacity too.",
+            "error: selected model is at capacity",
         ]
         for text in benign:
             with self.subTest(text=text):
@@ -3726,6 +3729,12 @@ class TransportFailureTest(unittest.TestCase):
             ("Request rejected (429) · this may be a temporary capacity issue.", "llm_rate_limit"),
             ("rate limited — wait and retry", "llm_rate_limit"),
             ("Opus is experiencing high load, please use another model", "llm_overloaded"),
+            # Codex's capacity notice, as `_absorb_codex_event` splices its events into stderr
+            # (issue #375; verbatim from `orch_20261001T131434Z_c339e24b`).
+            (('{"type": "error", "message": "Selected model is at capacity. Please try a '
+              'different model."}'), "llm_overloaded"),
+            (('{"type": "turn.failed", "error": {"message": "Selected model is at capacity. '
+              'Please try a different model."}}'), "llm_overloaded"),
         ]
         for text, expected in cases:
             with self.subTest(text=text):
