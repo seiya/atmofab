@@ -21503,7 +21503,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # to the Fortran binding below. Measured 13223 at 33dacd5c.
         # Raised 13600->13900 (issue #315): the NA-metrics bullet says a computed non-finite
         # metric is not N/A and cites §4 of the runner-output contract. Measured 13697.
-        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 13900,
+        # Raised 13900->14600 (issue #314): the §1 `case_run` row says it reaches the model's
+        # published operation, and §4 gains the no-shadow-definition item. Measured 14233; 14310
+        # after round 1 widened §4 to every local entity of that name; 14418 after round 1 told
+        # the §1 row's reader the check is a reach, not a use; 14506 after round 2 stated §4 by
+        # where the name may appear rather than by declaration form; 14485 after round 3 left
+        # the positions to the binding's §4.
+        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 14600,
         # New (issue #289, R4-b PR-2; round 3 found both inlined bindings unguarded). Measured
         # 11479 and 4418 at 33dacd5c.
         # Raised 11900->13200 (issue #316, R4-c PR-4): §1-c, the distributed binding — the four
@@ -21512,7 +21518,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # cannot judge a distributed checks module without it. Measured 12759 on the branch.
         # Raised 13200->13500 in the same PR's round 2: which cells a rank contributes when the
         # IR's shape includes the domain's boundary ghost cells. Measured 13216.
-        "docs/backends/language/fortran/CHECKS_ABI.md": 13500,
+        # Raised 13500->14000 (issue #314): `case_run`'s comment says it calls the operation, and
+        # §4 states where the operation's name may appear — the Fortran verify reviewer receives
+        # no other statement of it. Measured 13821.
+        "docs/backends/language/fortran/CHECKS_ABI.md": 14000,
         # Raised 4800->5900 (issue #315): §1 and §2 name the non-finite tokens and the
         # `ieee_arithmetic` branch, and `jnum` gains it. Measured 5727; 5742 after the
         # #315 follow-up scoped the no-stop sentence to the emitter.

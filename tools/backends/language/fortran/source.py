@@ -2494,28 +2494,248 @@ _HARNESS_USE_RE = re.compile(
 _ONLY_LIST_RE = re.compile(r"(?i)^,\s*only\s*:(.*)$", re.DOTALL)
 
 
+def _use_only_items(use: str) -> tuple[str, list[tuple[str, str]] | None] | None:
+    """`(module, items)` of the `use` statement `use`, lowercased, or None when it is not one
+    this reader can read. `items` is the `only:` list as `(item, target)` pairs — `target` is
+    the name the item reaches (a rename's right-hand side, else the item itself; "" for an
+    empty item) — or None when the statement carries no `only:` list. Shared by the harness
+    isolation gate and the checks-reach gate, so the two cannot read one list two ways."""
+    m = _HARNESS_USE_RE.match(use)
+    if m is None:
+        return None
+    module = m.group(1).lower()
+    only = _ONLY_LIST_RE.match(m.group(2).strip())
+    if only is None:
+        return module, None
+    return module, [(item.strip(), item.split("=>", 1)[-1].strip().lower())
+                    for item in fortran_lines.split_top_level_commas(only.group(1))]
+
+
 def _harness_use_refusal(use: str, allowed: Mapping[str, frozenset[str]]) -> str | None:
     """Why the harness `use` statement `use` is refused, or None when `allowed` admits it (see
     `checks_harness_isolation_violations`). Every identifier the `only:` list reaches is read —
     each item's name, and each rename's target — so a spelling this reader does not know
     (`operator(...)`, a generic) is refused rather than passed."""
-    m = _HARNESS_USE_RE.match(use)
-    if m is None:
+    read = _use_only_items(use)
+    if read is None:
         return "it is not a `use` statement this gate can read"
-    module = m.group(1).lower()
+    module, items = read
     if module not in allowed:
         return f"module {module} is not a harness module a physics source may use"
-    only = _ONLY_LIST_RE.match(m.group(2).strip())
-    if only is None:
+    if items is None:
         return "it has no `only:` list, so it reaches every name the harness publishes"
     names = allowed[module]
-    for item in fortran_lines.split_top_level_commas(only.group(1)):
-        target = item.split("=>", 1)[-1].strip().lower()
+    for item, target in items:
         if not target:
             continue
         if target not in names:
-            return f"`{item.strip()}` reaches `{target}`, which is not one of them"
+            return f"`{item}` reaches `{target}`, which is not one of them"
     return None
+
+
+# A statement that begins `use`, dropped from a body before its edges are read. A variable NAMED
+# `use` (legal: keywords are not reserved) would lose its line's tokens here, which is the
+# refusing direction; measured, the structure reader refuses a source assigning one first.
+_USE_STATEMENT_LINE_RE = re.compile(r"^\s*use\b")
+
+
+# The callee of a `call` statement, behind an optional logical `if (...)`, over one statement
+# of the gate view (lowercased, labels stripped, literals and comments blanked).
+_CALL_HEAD_RE = re.compile(r"call\s+([a-z_][a-z0-9_]*)")
+
+
+def _call_callee_span(stmt: str) -> tuple[int, int] | None:
+    """`(start, end)` of the callee name of the `call` statement `stmt`, or None."""
+    at = len(stmt) - len(stmt.lstrip())
+    if re.match(r"if\s*\(", stmt[at:]):
+        open_at = stmt.index("(", at)
+        inside = extract_balanced_parens(stmt, open_at)
+        at = open_at + len(inside) + 2
+        at += len(stmt[at:]) - len(stmt[at:].lstrip())
+    m = _CALL_HEAD_RE.match(stmt, at)
+    return (m.start(1), m.end(1)) if m else None
+
+
+def _misplaced_operation_names(view: str, published: set[str], model_module: str) -> list[str]:
+    """The members of ``published`` that ``view`` names anywhere but in a `use <model_module>`
+    statement or as the callee of a `call` statement, in order of first appearance."""
+    out: list[str] = []
+    for stmt in view.split("\n"):
+        read = _use_only_items(stmt.strip())
+        if read is not None and read[0] == model_module:
+            continue
+        callee = _call_callee_span(stmt)
+        for m in IDENTIFIER_PATTERN.finditer(stmt):
+            if (m.group(0) in published and (callee is None or m.span() != callee)
+                    and m.group(0) not in out):
+                out.append(m.group(0))
+    return out
+
+
+def checks_model_reach_violations(checks_path: Path, text: str, model_files: list[Path],
+                                  spec_id: str) -> list[str]:
+    """The checks-reach gate (issue #314): on an M3c node the checks module's `case_run`
+    advances the state by calling a published operation of the model —
+    `docs/workflow/CHECKS_MODULE_CONTRACT.md` §1, the `case_run` row, is canonical for the rule.
+    `text` is the checks source's raw content; each model source, and every other leaf `.f90`
+    beside the checks source, is read here.
+
+    THE PUBLISHED SET P is what the model under review DEFINES (`published_subroutines`: a
+    `subroutine <spec_id>__*` outside an abstract interface), never the leaf-authored bundle;
+    the prefix and the module name are host identity. An empty P is its own violation: nothing
+    else checks that a `problem` model defines the operation its bundle requires.
+
+    A NAME OF P APPEARS IN TWO PLACES ONLY: a `use <spec_id>_model` statement, and the callee of
+    a `call` statement (behind an optional logical `if (...)`). Any other occurrence in the
+    checks source or in another leaf `.f90` — a declaration, a procedure pointer, an interface
+    body, a statement function, a dummy, a construct name, a generic, an actual argument, a
+    definition — is refused, because each makes a call to that name a call to something other
+    than the model (rounds 1 and 2 of issue #314's review reached the gate through six such
+    forms before the rule was stated this way rather than as a list of declaration forms).
+
+    THE WALK. A hit is the callee of a `call` statement that names a member of P — or a rename's
+    local name — imported by a `use <spec_id>_model` in the SPECIFICATION PART of module
+    `<spec_id>_checks` (an import inside a procedure, or none, makes no hit). Every identifier of
+    a procedure's body (the gate view, `use` statements dropped; a contained procedure's body is
+    its own) that names a procedure the file defines is an edge, so a function helper and a
+    zero-argument `call helper` are followed; procedures are keyed by bare name, so two of one
+    name merge. The walk starts at the module's `case_run`; a call only from `case_setup` does
+    not count (the capture after it is the INITIAL state, §1-b).
+
+    WHAT IT DOES NOT CLOSE, stated because the reading is a reach CLAIM and not a dataflow: a
+    dead or guarded call, a discarded result, an update recomputed after a live call, a call to
+    one of two same-named procedures, and a rename's local name redeclared in an inner scope (a
+    rename's local name is an ordinary word another scope may legitimately use, so it is not
+    policed) all pass, with the same gain as a dead call; `Generate.verify` owns the semantic
+    half. It closes the shape of probe g18 — a `case_run` that computes the state inline and
+    calls no operation at all. An operation written as a `function`, an `entry` or a generic is
+    outside P by the naming rule, and the empty-P refusal names the fix.
+
+    Also refused: a checks source with no `use <spec_id>_model` in its module's specification
+    part. A source whose structure does not resolve is a violation naming the reader's error;
+    `FortranStructureUnavailableError` (a missing host package) propagates, as in
+    `run_problem_model_gates`."""
+    spec_l = spec_id.lower()
+    model_module = f"{spec_l}_model"
+    published: set[str] = set()
+    for model_file in model_files:
+        try:
+            model_text = model_file.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        published.update(name.lower() for name in published_subroutines(model_text, spec_id))
+    if not published:
+        return [(f"{checks_path}: the model source defines no `subroutine {spec_id}__<op>` for "
+                 f"case_run to call ({[str(p) for p in model_files]}) — publish the operation "
+                 f"as `subroutine {spec_id}__<op>` (GENERATE_RULES.md §3)")]
+    ops = ", ".join(sorted(published))
+
+    lowered = text.lower()
+    try:
+        view, tree, to_view = structure_reading(lowered)
+    except SourceStructureError as exc:
+        return [
+            f"{checks_path}: the checks-reach gate cannot read this source's procedure structure "
+            f"at statement {structure_error.line} of its joined view "
+            f"({'missing token' if structure_error.missing else 'parse error'}): "
+            f"{structure_error.snippet!r} — the shape to look for is an identifier named after "
+            "a keyword (`endsubroutine`, `contains`, `interface`; rename it) or a statement "
+            "label where this parser expects structure; the reported statement may be the "
+            "module header rather than the cause"
+            for structure_error in exc.errors]
+
+    violations: list[str] = []
+    leaf_views = [(checks_path, view)]
+    # The host-rendered runner by its full path: a leaf file of that NAME in a subdirectory is
+    # a leaf source like any other (round 3).
+    runner_path = checks_path.parent / f"{spec_l}_runner.f90"
+    for path in sorted(checks_path.parent.rglob("*.f90")):
+        if (path == checks_path or path in model_files or path.is_symlink()
+                or path == runner_path):
+            continue
+        try:
+            leaf_views.append((path, joined_masked_view(
+                path.read_text(encoding="utf-8", errors="ignore").lower())))
+        except OSError:
+            continue
+    for path, leaf_view in leaf_views:
+        for name in _misplaced_operation_names(leaf_view, published, model_module):
+            violations.append(
+                f"{path}: names `{name}`, a published operation of the model, other than in "
+                f"`use {spec_id}_model` or as the callee of a `call` — a leaf source calls the "
+                "operation it imports and never declares, binds, defines or passes that name "
+                "(a call to a local entity of that name runs the checks module's own code)")
+
+    checks_units = [u for u in tree.units if u.name == f"{spec_l}_checks"]
+    module_procedures = fortran_structure.module_level_procedures(tree, f"{spec_l}_checks")
+    imported: dict[str, str] = {}
+    uses_model = False
+    for unit in checks_units:
+        spec_end = min((p.header_start for p in tree.procedures
+                        if unit.start <= p.header_start < unit.end), default=unit.end)
+        for stmt in view[to_view(unit.start):to_view(spec_end)].split("\n"):
+            read = _use_only_items(stmt.strip())
+            if read is None or read[0] != model_module:
+                continue
+            uses_model = True
+            if read[1] is None:
+                imported.update((name, name) for name in published)
+                continue
+            for item, target in read[1]:
+                if target in published:
+                    local = item.split("=>", 1)[0].strip().lower() if "=>" in item else target
+                    imported[local] = target
+    if not uses_model:
+        violations.append(
+            f"{checks_path}: no `use {spec_id}_model` in the specification part of module "
+            f"{spec_id}_checks — case_run reaches the model's operation only through its module")
+
+    roots = [p for p in module_procedures if p.name.strip().lower() == "case_run"]
+    bodies: dict[str, list[str]] = {}
+    for procedure in tree.procedures:
+        name = procedure.name.strip().lower()
+        if name == "case_run" and procedure not in roots:
+            # Only the ABI's `case_run` is the root: one of the same name in another unit of
+            # the file is not what the runner calls.
+            continue
+        start = to_view(procedure.body_start)
+        stop = to_view(procedure.body_end if procedure.contains_at is None
+                       else min(procedure.contains_at, procedure.body_end))
+        body = "\n".join(line for line in view[start:max(stop, start)].split("\n")
+                         if not _USE_STATEMENT_LINE_RE.match(line))
+        bodies.setdefault(name, []).append(body)
+
+    if not roots:
+        violations.append(
+            f"{checks_path}: module {spec_id}_checks defines no `case_run` for the checks-reach "
+            "gate to start from")
+        return violations
+
+    def calls_an_operation(body: str) -> bool:
+        for stmt in body.split("\n"):
+            callee = _call_callee_span(stmt)
+            if callee is not None and stmt[callee[0]:callee[1]] in imported:
+                return True
+        return False
+
+    seen = {"case_run"}
+    frontier = ["case_run"]
+    while frontier:
+        node = bodies.get(frontier.pop(), ())
+        if any(calls_an_operation(body) for body in node):
+            return violations
+        for token in {t for body in node for t in IDENTIFIER_PATTERN.findall(body)}:
+            if token in bodies and token not in seen:
+                seen.add(token)
+                frontier.append(token)
+    violations.append(
+        f"{checks_path}: case_run reaches no published operation of the model (one of: {ops}) "
+        f"— the checks module imports it by a `use {spec_id}_model` in the module's "
+        "specification part (an import inside a procedure does not count; a rename there is "
+        f"followed) and advances the state by `call {spec_id}__<op>(...)` from case_run or "
+        "from a procedure OF THE CHECKS MODULE case_run reaches (one in another file is not "
+        "followed); it must not compute the update itself")
+    return violations
 
 
 def model_source_not_found_violation(

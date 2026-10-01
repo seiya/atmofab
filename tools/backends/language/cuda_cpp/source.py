@@ -688,6 +688,164 @@ def published_subroutines(text: str, spec_id: str) -> list[str]:
     return out
 
 
+_USING_STATEMENT_RE = re.compile(r"\busing\b[^;{}]*;")
+
+
+def checks_model_reach_violations(checks_path: Path, text: str, model_files: list[Path],
+                                  spec_id: str) -> list[str]:
+    """The checks-reach gate (issue #314): on an M3c node the checks source's `case_run`
+    advances the state by calling a published operation of the model —
+    `docs/workflow/CHECKS_MODULE_CONTRACT.md` §1, the `case_run` row, is canonical for the rule.
+    `text` is the checks source's raw content; each model source is read here.
+
+    THE PUBLISHED SET P is what the model under review DEFINES (`published_subroutines`: a
+    defined `<spec_id>__*` in namespace `<spec_id>_model`), never the leaf-authored bundle; an
+    empty P is its own violation.
+
+    THE READING IS POLARITY-INVERTED. It does not parse call expressions: every identifier token
+    of a defined function's body (`declarations.read`'s body — comments, literals and directives
+    blanked — with `using` declarations dropped) that names another function this source defines
+    is an edge, and a member of P QUALIFIED by the model's namespace (`<spec_id>_model::<op>`, or
+    an alias `namespace md = <spec_id>_model;` that a leaf source declares) is a hit. So a
+    kernel launch, a call split over lines, a helper called with template arguments, a call
+    inside a lambda in a body, and an operation taken by address are all followed. Functions are
+    keyed by bare name, so overloads and same-named functions in different namespaces merge
+    (over-approximation in the passing direction only, of the same gain as a dead call).
+
+    A NAME IS THE OPERATION ONLY WHEN QUALIFIED. In the checks source and in every other leaf
+    source but the model and the runner, a member of P appears only qualified by the model's
+    namespace, or (checks source) as the name of a declaration in `namespace <spec_id>_model`;
+    any other occurrence — a local lambda, functor or variable of that name, a member, a
+    template, an unqualified call after `using` — is refused, because a call can reach it
+    without reaching the model (round 1 of issue #314's review reached the gate with a local
+    lambda named as the operation). The occurrence count is taken over the masked text, so a
+    qualifier is read back over at most 200 characters of whitespace. The walk
+    starts at the `case_run` defined in namespace `<spec_id>_checks`; a call only from
+    `case_setup` does not count (the capture after it is the INITIAL state, §1-b). NOT followed,
+    so an operation reached only through one is refused: a namespace-scope lambda variable, a
+    member function of a struct, a template function (`declarations` reads none of them as a
+    function), and a macro (no directive but `#include` is allowed).
+
+    WHAT IT DOES NOT CLOSE: a dead or guarded call, a discarded result, an update recomputed
+    after a live call, and an operation named without being invoked all pass; `Generate.verify`
+    owns the semantic half. It closes the shape of probe g18 — a `case_run` that computes the
+    state inline and names no operation at all.
+
+    Also refused: a checks source that DEFINES a function named as a member of P, in any
+    namespace (it DECLARES the operation on a `problem` node and never defines one). A source
+    whose declarations do not read is refused with `_structure_refusal`."""
+    published: set[str] = set()
+    for model_file in model_files:
+        try:
+            model_text = model_file.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        published.update(published_subroutines(model_text, spec_id))
+    if not published:
+        return [(f"{checks_path}: the model source defines no `{spec_id}__<op>` in "
+                 f"`namespace {spec_id}_model` for case_run to call "
+                 f"({[str(p) for p in model_files]}) — define the operation there "
+                 "(GENERATE_RULES.md §3)")]
+    ops = ", ".join(sorted(published))
+
+    decls = cpp_decls.read(text)
+    if decls.errors:
+        return [_structure_refusal(checks_path, decls.errors, "the checks-reach gate")]
+
+    violations: list[str] = []
+    model_ns = f"{spec_id}_model"
+    # The names that qualify the model's namespace: itself, and every alias of it a leaf source
+    # declares (`namespace md = <spec_id>_model;`, as certified sources do).
+    qualifiers = {model_ns}
+    sources = [(checks_path, text)]
+    for path in leaf_sources(checks_path.parent):
+        # The host-rendered runner by its full path: a leaf file of that NAME in a subdirectory
+        # is a leaf source like any other (round 3).
+        if (path == checks_path or path in model_files
+                or path == checks_path.parent / f"{spec_id}_runner.cu"):
+            continue
+        try:
+            sources.append((path, path.read_text(encoding="utf-8", errors="ignore")))
+        except OSError:
+            continue
+    codes = [(path, cpp_lines.strip_preprocessor(cpp_lines.mask(splice_lines(source))))
+             for path, source in sources]
+    for _path, code in codes:
+        qualifiers.update(re.findall(
+            rf"\bnamespace\s+([A-Za-z_]\w*)\s*=\s*(?:::\s*)?{re.escape(model_ns)}\s*;", code))
+    qualified_re = re.compile(
+        r"\b(?:" + "|".join(re.escape(q) for q in sorted(qualifiers)) + r")\s*::\s*$")
+    op_re = re.compile(r"\b(" + "|".join(re.escape(op) for op in sorted(published)) + r")\b")
+
+    def unqualified(code: str) -> int:
+        return sum(1 for m in op_re.finditer(code)
+                   if not qualified_re.search(code[max(0, m.start() - 200):m.start()]))
+
+    # A name of the model's operation appears in a leaf source only qualified by the model's
+    # namespace (`<spec_id>_model::<op>` or an alias of it), or as the name of a declaration in
+    # that namespace in the checks source (the problem idiom). Anything else — a local lambda,
+    # variable or functor of that name, a member, a template, an unqualified call — is a name
+    # that a call can reach without reaching the model.
+    declared = sum(1 for fn in decls.functions
+                   if not fn.defined and fn.namespace == (model_ns,) and fn.name in published)
+    for path, code in codes:
+        extra = unqualified(code) - (declared if path == checks_path else 0)
+        if extra > 0:
+            violations.append(
+                f"{path}: names a published operation of the model ({ops}) other than as "
+                f"`{model_ns}::<op>` — a leaf source calls the operation qualified by the "
+                f"model's namespace (or an alias of it) and never declares, binds or defines "
+                f"that name itself (on a problem node the checks source only DECLARES it in "
+                f"`namespace {model_ns}`)")
+
+    checks_namespace = (f"{spec_id}_checks",)
+    bodies: dict[str, list[str]] = {}
+    has_root = False
+    for fn in decls.functions:
+        if not fn.defined:
+            continue
+        if fn.name in published:
+            violations.append(
+                f"{checks_path}: defines `{fn.name}`, a published operation of the model — the "
+                "checks source calls the model's operation and never defines one (on a problem "
+                "node it DECLARES the operation in its model namespace)")
+        if fn.name == "case_run":
+            if fn.namespace != checks_namespace:
+                # Only the ABI's `case_run` is the root: one in another namespace is not what
+                # the runner calls.
+                continue
+            has_root = True
+        bodies.setdefault(fn.name, []).append(_USING_STATEMENT_RE.sub(" ", fn.body))
+    if not has_root:
+        violations.append(
+            f"{checks_path}: namespace {spec_id}_checks defines no `case_run` for the "
+            "checks-reach gate to start from")
+        return violations
+
+    def reaches(body: str) -> bool:
+        return any(qualified_re.search(body[max(0, m.start() - 200):m.start()])
+                   for m in op_re.finditer(body))
+
+    seen = {"case_run"}
+    frontier = ["case_run"]
+    while frontier:
+        node = bodies.get(frontier.pop(), ())
+        if any(reaches(body) for body in node):
+            return violations
+        tokens = {token for body in node for token in _IDENTIFIER_TOKEN_RE.findall(body)}
+        for token in tokens:
+            if token in bodies and token not in seen:
+                seen.add(token)
+                frontier.append(token)
+    violations.append(
+        f"{checks_path}: case_run reaches no published operation of the model (one of: {ops}) "
+        f"— the checks source advances the state by `{spec_id}_model::{spec_id}__<op>(...)` "
+        "from case_run or from a function the checks source defines that case_run reaches (one "
+        "in another file, a template function, a struct member function and a namespace-scope "
+        "lambda are not followed); it must not compute the update itself")
+    return violations
+
+
 def published_operation_missing(name: str) -> str:
     return (f"generated model source does not publish component public_api operation '{name}' "
             f"— define `{name}(...)` in the model's namespace (the IR public_api pins it as a "

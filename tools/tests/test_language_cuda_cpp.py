@@ -799,6 +799,223 @@ double dep__norm(const std::vector<double>& u);
 """
 
 
+#: Issue #314: the model a reaching checks source calls, and that checks source — the problem
+#: idiom (the checks source DECLARES the operation in the model's namespace).
+_P_MODEL = """namespace p_model {
+void p__step(std::vector<double>& u, double& s) { u[0] = s; }
+}
+"""
+_REACHING_CHECKS = _CHECKS_SOURCE.replace(
+    "namespace p_checks {",
+    "namespace p_model {\nvoid p__step(std::vector<double>& u, double& s);\n}\n\nnamespace p_checks {",
+    1).replace("  (void)case_id; steps = 1;", "  p_model::p__step(u, s);\n  (void)case_id; steps = 1;")
+_REACH = "case_run reaches no published operation of the model"
+
+
+class ChecksReachGateTests(unittest.TestCase):
+    """Issue #314: `checks_model_reach_violations`, the C++ reading. Each row is named for the
+    mutant it kills; the handler rows live in `test_validate_pipeline_semantics`."""
+
+    def _run(self, checks: str, model: str | None = _P_MODEL) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            models = []
+            if model is not None:
+                (Path(tmp) / "p_model.cu").write_text(model)
+                models = [Path(tmp) / "p_model.cu"]
+            return cpp_source.checks_model_reach_violations(
+                Path(tmp) / "p_checks.cu", checks, models, "p")
+
+    def _with_run_body(self, body: str, extra: str = "") -> str:
+        return _REACHING_CHECKS.replace("  p_model::p__step(u, s);\n", body).replace(
+            "}  // namespace p_checks", extra + "}  // namespace p_checks")
+
+    def test_the_reaching_idiom_passes_every_checks_gate(self) -> None:
+        self.assertEqual([], self._run(_REACHING_CHECKS))
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "p_model.cu").write_text(_P_MODEL)
+            self.assertEqual([], cpp_source.checks_harness_isolation_violations(
+                Path(tmp) / "p_checks.cu", _REACHING_CHECKS, [Path(tmp) / "p_model.cu"]))
+
+    def test_m1_a_case_run_computing_the_state_inline_is_refused(self) -> None:
+        v = self._run(self._with_run_body("  u[0] = s;\n"))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn(_REACH, v[0])
+        self.assertIn("(one of: p__step)", v[0])
+
+    def test_m2_a_model_defining_no_operation_is_refused(self) -> None:
+        for label, model in (("none", None),
+                             ("outside the namespace", ("void p__step(std::vector<double>& u, "
+                                                        "double& s) { u[0] = s; }\n")),
+                             ("without the prefix", _P_MODEL.replace("p__step", "step")),
+                             ("declared only", "namespace p_model {\nvoid p__step(int);\n}\n")):
+            with self.subTest(label):
+                v = self._run(_REACHING_CHECKS, model)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("the model source defines no `p__<op>` in `namespace p_model`", v[0])
+
+    def test_m3_only_the_checks_namespace_case_run_is_the_root(self) -> None:
+        for label, checks in (
+                ("from case_setup", self._with_run_body("").replace(
+                    "(void)case_id; ok = true; }", "(void)case_id; p_model::p__step(u, s); ok = true; }")),
+                ("from an orphan helper", self._with_run_body(
+                    "", "void orphan() { p_model::p__step(u, s); }\n")),
+                ("from a case_run in another namespace", self._with_run_body("") + (
+                    "namespace other {\nvoid case_run(const std::string& c, int& a, int& b, bool& o) "
+                    "{ p_model::p__step(p_checks::u, p_checks::s); }\n}\n"))):
+            with self.subTest(label):
+                v = self._run(checks)
+                self.assertEqual([_REACH in x for x in v], [True], v)
+
+    def test_m4_a_helper_case_run_reaches_is_followed(self) -> None:
+        for label, body, extra in (
+                ("helper", "  advance();\n", "void advance() { p_model::p__step(u, s); }\n"),
+                ("unnamed namespace", "  advance();\n",
+                 "namespace {\nvoid advance() { p_model::p__step(u, s); }\n}\n"),
+                ("two levels", "  outer();\n",
+                 "void inner() { p_model::p__step(u, s); }\nvoid outer() { inner(); }\n"),
+                ("template arguments at the call", "  advance<atmofab::View<double, 1>>(u);\n",
+                 "void advance(std::vector<double>& v) { p_model::p__step(v, s); }\n"),
+                ("value-returning helper", "  const double r = norm_after(u);\n  (void)r;\n",
+                 ("double norm_after(std::vector<double>& v) { p_model::p__step(v, s); "
+                  "return v[0]; }\n"))):
+            with self.subTest(label):
+                self.assertEqual([], self._run(self._with_run_body(body, extra)))
+                v = self._run(self._with_run_body("", extra))
+                self.assertEqual([_REACH in x for x in v], [True], v)
+
+    def test_m6_a_checks_definition_of_an_operation_is_a_shadow(self) -> None:
+        for label, extra in (
+                ("overload in the model namespace",
+                 ("}  // namespace p_checks\nnamespace p_model {\nvoid p__step(int n) { (void)n; }\n"
+                  "}\nnamespace p_checks {\n")),
+                ("in the checks namespace", "void p__step(int n) { (void)n; }\n")):
+            with self.subTest(label):
+                v = self._run(self._with_run_body("  p_model::p__step(u, s);\n", extra))
+                self.assertTrue(any("defines `p__step`, a published operation of the model" in x
+                                    for x in v), v)
+        v = self._run(self._with_run_body("  dep_model::dep__flux(u);\n"))
+        self.assertEqual([_REACH in x for x in v], [True], v)
+
+    def test_m7_a_comment_or_a_literal_is_not_a_reach(self) -> None:
+        for label, body in (("comment", "  // p_model::p__step(u, s);\n"),
+                            ("block comment", "  /* p__step(u, s); */\n"),
+                            ("literal", '  const char* note = "p__step(u, s)";\n  (void)note;\n'),
+                            ("using only", "  using p_model::p__step;\n")):
+            with self.subTest(label):
+                v = self._run(self._with_run_body(body))
+                self.assertEqual([_REACH in x for x in v], [True], v)
+
+    def test_a_checks_namespace_without_case_run_is_refused(self) -> None:
+        v = self._run(_REACHING_CHECKS.replace("void case_run(", "void case_go("))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("namespace p_checks defines no `case_run`", v[0])
+
+    def test_m9_an_unbalanced_source_is_refused_not_passed(self) -> None:
+        v = self._run(_REACHING_CHECKS + "void broken() {\n")
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("the checks-reach gate cannot read this source's declarations", v[0])
+
+    def test_m10_every_spelling_of_a_reach_is_followed(self) -> None:
+        for label, body in (
+                ("qualified", "  p_model::p__step(u, s);\n"),
+                ("split over lines", "  p_model::\n      p__step(\n u, s);\n"),
+                ("taken by address", ("  void (*op)(std::vector<double>&, double&) = "
+                                      "&p_model::p__step;\n  op(u, s);\n")),
+                ("inside a lambda", "  auto go = [&]() { p_model::p__step(u, s); };\n  go();\n")):
+            with self.subTest(label):
+                self.assertEqual([], self._run(self._with_run_body(body)))
+
+    def test_a_namespace_alias_of_the_model_qualifies(self) -> None:
+        """Certified sources call through `namespace md = <spec_id>_model;`."""
+        alias = _REACHING_CHECKS.replace("namespace p_checks {",
+                                         "namespace md = p_model;\nnamespace p_checks {", 1)
+        self.assertEqual([], self._run(alias.replace("p_model::p__step(u, s);",
+                                                     "md::p__step(u, s);")))
+
+    def test_a_local_entity_named_as_the_operation_is_refused(self) -> None:
+        """Round 1 (issue #314): a lambda, functor, variable, member or template carrying the
+        operation's name, and an unqualified call that may reach one, look like a call to the
+        model and run the checks source's own update. The name appears only qualified by the
+        model's namespace, or as the checks source's declaration in it."""
+        fake = "[&](std::vector<double>& v, double& x) { v[0] = x; }"
+        for label, body, extra in (
+                ("local lambda", f"  auto p__step = {fake};\n  p__step(u, s);\n", ""),
+                ("namespace-scope lambda", "  p__step(u, s);\n",
+                 f"auto p__step = {fake.replace('[&]', '[]')};\n"),
+                ("local functor", ("  struct F { void operator()(std::vector<double>& v, double& x)"
+                                   " { v[0] = x; } } p__step;\n  p__step(u, s);\n"), ""),
+                ("local variable", "  int p__step = 1;\n  (void)p__step;\n", ""),
+                ("local struct static member",
+                 ("  struct W { static void p__step(std::vector<double>& v, double& x) "
+                  "{ v[0] = x; } };\n  W::p__step(u, s);\n"), ""),
+                ("alias-named local struct",
+                 ("  struct p_model { static void p__step(std::vector<double>& v, double& x) "
+                  "{ v[0] = x; } };\n  p_model::p__step(u, s);\n"), ""),
+                ("after a using-declaration", "  using p_model::p__step;\n  p__step(u, s);\n", ""),
+                ("after a using-directive", "  using namespace p_model;\n  p__step(u, s);\n", ""),
+                ("template in the model namespace", "  p_model::p__step(u, s);\n",
+                 ("}  // namespace p_checks\nnamespace p_model {\ntemplate <typename T = int>\n"
+                  "void p__step(std::vector<double>& v, double& x) { v[0] = x; }\n}\n"
+                  "namespace p_checks {\n"))):
+            with self.subTest(label):
+                v = self._run(self._with_run_body(body, extra))
+                self.assertTrue(any("other than as `p_model::<op>`" in x for x in v), v)
+                if label in ("local lambda", "local functor", "local struct static member"):
+                    # ...and the call to it is no reach either.
+                    self.assertTrue(any(_REACH in x for x in v), v)
+
+    def test_only_the_models_namespace_qualifies(self) -> None:
+        v = self._run(self._with_run_body("  other::p__step(u, s);\n"))
+        self.assertTrue(any(_REACH in x for x in v), v)
+        self.assertTrue(any("other than as `p_model::<op>`" in x for x in v), v)
+        # A declaration of the name outside the model's namespace is not the problem idiom.
+        v = self._run(self._with_run_body(
+            "  p_model::p__step(u, s);\n", "void p__step(std::vector<double>& u, double& s);\n"))
+        self.assertTrue(any("other than as `p_model::<op>`" in x for x in v), v)
+
+    def test_the_host_rendered_runner_is_not_read(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "p_model.cu").write_text(_P_MODEL)
+            (Path(tmp) / "p_runner.cu").write_text("void p__step(int);\n")
+            v = cpp_source.checks_model_reach_violations(
+                Path(tmp) / "p_checks.cu", _REACHING_CHECKS, [Path(tmp) / "p_model.cu"], "p")
+            self.assertEqual(v, [])
+            # ...but a leaf file of the runner's NAME in a subdirectory is read (round 3).
+            (Path(tmp) / "sub").mkdir()
+            (Path(tmp) / "sub" / "p_runner.cu").write_text("void p__step(int);\n")
+            v = cpp_source.checks_model_reach_violations(
+                Path(tmp) / "p_checks.cu", _REACHING_CHECKS, [Path(tmp) / "p_model.cu"], "p")
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("sub/p_runner.cu: names a published operation", v[0])
+
+    def test_a_helper_source_naming_the_operation_is_refused(self) -> None:
+        """A helper `.cu` the checks source includes is read by the same rule."""
+        helper = ("namespace p_model {\ntemplate <typename T = int>\n"
+                  "void p__step(std::vector<double>& v, double& x) { v[0] = x; }\n}\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "p_model.cu").write_text(_P_MODEL)
+            (Path(tmp) / "fake.cu").write_text(helper)
+            v = cpp_source.checks_model_reach_violations(
+                Path(tmp) / "p_checks.cu", _REACHING_CHECKS, [Path(tmp) / "p_model.cu"], "p")
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("fake.cu: names a published operation of the model", v[0])
+
+    def test_forms_not_followed_are_refused(self) -> None:
+        """Documented refusals (GENERATE_RULES.md §5): a struct member function, a namespace-scope
+        lambda variable and a template function are not read as functions, so an operation
+        reached only through one is no reach — over-refusal, never a pass."""
+        for label, body, extra in (
+                ("struct member", "  Stepper{}.go();\n",
+                 "struct Stepper { void go() { p_model::p__step(u, s); } };\n"),
+                ("namespace-scope lambda", "  run_step();\n",
+                 "auto run_step = [] { p_model::p__step(u, s); };\n"),
+                ("template function", "  advance<int>();\n",
+                 "template <typename T> void advance() { p_model::p__step(u, s); }\n")):
+            with self.subTest(label):
+                v = self._run(self._with_run_body(body, extra))
+                self.assertEqual([_REACH in x for x in v], [True], v)
+
+
 class PhysicsGateTests(unittest.TestCase):
     """The checks-source, dependency-use and `problem` model gates a physics node reaches
     (R4-b PR-6): each passes the certified idiom and names each defect it exists for."""

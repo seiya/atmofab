@@ -38,7 +38,9 @@ subroutine case_setup(case_id, ok)
   logical, intent(out) :: ok
 end subroutine case_setup
 
-! Run the model kernel's time loop for this case and return the perf counters.
+! Run the model kernel's time loop for this case by `call <spec_id>__<op>(...)`
+! (from here or from a procedure of this module called from here) and return the perf
+! counters.
 ! A non-time-stepping component uses steps=1 and cells_updated = cells touched.
 subroutine case_run(case_id, steps, cells_updated, ok)
   character(len=*), intent(in) :: case_id
@@ -155,6 +157,12 @@ language-specific here.
   offers them. The rendered runner is the sole site that uses the harness's plumbing. (The
   harness's `<spec_id>_model.o` is linked via the closure.)
 - **No file I/O in the checks module** — no `open` / `write(unit=...)` to a file.
+- **The model's operation is named in two places only.** In the checks source and every other
+  leaf `.f90` but the model, a `<spec_id>__<op>` the model defines appears only in a
+  `use <spec_id>_model` statement — the one in the module's specification part is what makes
+  `case_run`'s call the model's — and right after `call`; never as a declaration, procedure
+  pointer, interface body, dummy, construct name, generic name, actual argument or definition
+  (`source.checks_model_reach_violations`).
 
 ## 5. Fortran legality and gate guards
 
