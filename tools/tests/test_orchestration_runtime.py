@@ -21300,7 +21300,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # non-finite value and keeps a writer's own input range. Measured 12123.
         # Raised 12300->12700 (issue #368): §3 states the directories the host pre-creates in a
         # run directory (`initial/` only for a host-rendered runner), which a harness leaf
-        # writing a strict fan-out check must read. Measured 12542.
+        # writing a strict fan-out check must read. Measured 12487.
         "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 12700,
         # R1/M3c-β: the fixed-ABI contract for a physics node's `<spec_id>_checks.f90`
         # (leaf-authored callbacks the host-rendered runner drives). Leaf must-read for

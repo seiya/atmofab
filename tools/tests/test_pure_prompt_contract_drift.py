@@ -770,7 +770,7 @@ PINNED: dict[str, str] = {
     # fan-out check. Under pure-58 the host also pre-created `initial/` for a hand-authored
     # runner, and a strict check refused it (cpp_gpu `src_20261001_003`,
     # orch_20261001T041151Z_c0ec0466), which is why the key moves.
-    "pure-59": "59d92e69b6def0ce98952416fc466b0bb08ec6b181b120c973f8b6968b030c2e",
+    "pure-59": "b2ada46cdae8723a31399be467c7914d30d889924ff87efffccd83695dd2d610",
 }
 
 

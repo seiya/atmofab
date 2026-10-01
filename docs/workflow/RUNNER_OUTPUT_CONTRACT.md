@@ -135,9 +135,8 @@ source; do not uniformly require a fixed minimal composition.
   does not write it, and nothing requires it to. The host pre-creates
   `raw/state_snapshots/` in the run directory of every runner, and
   `raw/state_snapshots/initial/` only for a host-rendered one, so a hand-authored
-  runner's `raw/state_snapshots/` holds exactly the files it writes (and
-  `snapshot_schema.json`, which the host authors after the run): a self-test may check
-  its case fan-out strictly ([issue #368](https://github.com/seiya/atmofab/issues/368)).
+  runner's run directory `raw/state_snapshots/` holds exactly the files it writes: a
+  self-test may check its case fan-out strictly ([issue #368](https://github.com/seiya/atmofab/issues/368)).
 
 ## 4. JSON serialization (UTF-8)
 
