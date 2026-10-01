@@ -149,8 +149,8 @@ unreadable. A non-finite value is never written as
 `null` (`null` is the honest-N/A encoding a caller declares through `is_na`,
 `CHECKS_MODULE_CONTRACT.md`), and a writer never stops the program over one: the other
 cases' evidence is still owed. What the host does with the value is decided elsewhere —
-a non-finite value in a captured variable a primary predicate reads is a
-`structural_violation` naming the variable (`phase_04_validate.md`), and a non-finite metric is a value, not an N/A: `na_allowed`
+a non-finite value in a declared state variable of a capture a primary predicate
+reads is a `structural_violation` naming the variable (`phase_04_validate.md`), and a non-finite metric is a value, not an N/A: `na_allowed`
 does not accept it, a `NaN` fails every ordered comparison and `eq` (and satisfies `ne`),
 and an infinity compares as the signed extreme it is.
 
