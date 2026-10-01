@@ -2129,34 +2129,45 @@ class CompileClaimTest(unittest.TestCase):
         self.assertTrue(self._claim_free(self._NODE))
 
     def test_a_superseded_ir_fails_named_instead_of_at_set_status(self) -> None:
-        for reason, expected in (("derivation_key_mismatch:ir", "fail"),
-                                 ("derivation_key_mismatch:spec.controlled_spec", "pass"),
-                                 (None, "pass")):
-            with self.subTest(reason=reason):
+        # (phase asked pre-pass, the reason it answers, the terminal status, the remedy head)
+        rows = (
+            ("generate", "derivation_key_mismatch:ir", "fail",
+             "--resume re-derives Generate onwards"),
+            # Another run's judge / verify finding routed to Compile and revoked the shared IR.
+            ("compile", "revoked", "fail", "--resume re-derives from Compile"),
+            ("generate", "derivation_key_mismatch:spec.controlled_spec", "pass", None),
+            ("compile", "derivation_key_mismatch:spec.controlled_spec", "pass", None),
+            ("generate", "revoked", "pass", None),
+            (None, None, "pass", None),
+        )
+        for probed, reason, expected, remedy in rows:
+            with self.subTest(phase=probed, reason=reason):
                 c = self._conductor()
                 asks: list[str] = []
 
-                def cert(phase, _asks=asks, _reason=reason):  # type: ignore[no-untyped-def]
+                def cert(phase, _asks=asks, _probed=probed, _reason=reason):  # type: ignore[no-untyped-def]
                     _asks.append(phase)
-                    # Two revocation-seed asks and one per phase run every phase; the next
-                    # ask is the pre-pass one, and only it answers the probed reason.
+                    # Two revocation-seed asks and one per phase run every phase; the asks
+                    # after them are the pre-pass ones, and only those answer the probe.
                     if len(_asks) <= 2 + 4:
                         return {"certified": False, "reason": "ir_not_reserved"}
-                    return ({"certified": False, "reason": _reason} if _reason
-                            else {"certified": True})
+                    if phase == _probed:
+                        return {"certified": False, "reason": _reason}
+                    return {"certified": True}
 
                 c.cert_fn = cert
                 buf = io.StringIO()
                 with redirect_stdout(buf):
                     self.assertEqual(c.conduct(self._refs(), "validate"), expected)
-                self.assertEqual(asks[-1], "generate")
+                # A revoked Compile answers before Generate is asked at all.
+                self.assertEqual(asks[2 + 4:], ["compile"] if remedy and probed == "compile"
+                                 else ["compile", "generate"])
                 status = [cap for sub, cap in c.calls if sub == "set-status"]
                 self.assertEqual(len(status), 1)
                 self.assertEqual(status[0]["--status"], expected)
                 if expected == "fail":
                     self.assertEqual(status[0]["--reason-code"], "ir_superseded")
-                    self.assertTrue(status[0]["--reason-detail"].startswith(
-                        "--resume re-derives Generate onwards"))
+                    self.assertTrue(status[0]["--reason-detail"].startswith(remedy))
                     events = [json.loads(line) for line in buf.getvalue().splitlines()
                               if line.strip().startswith("{")]
                     self.assertIn("ir_superseded", [e.get("event") for e in events])
@@ -2432,9 +2443,10 @@ class ConductHappyPathTest(unittest.TestCase):
                "record-launch", "finalize-child",  # judge (leaf)
                "record-launch", "record-child-return", "finalize-child",  # post_judge (deterministic)
                "write-step-result"]  # validate (3 deterministic + 1 leaf substep)
-            # Generate is asked once more, unrecorded, before `set-status pass`: is the IR it
-            # was derived from still the standing one (issue #374, `ir_superseded`)?
-            + ["check-phase-certified", "set-status"]
+            # Compile and Generate are asked once more, unrecorded, before `set-status pass`:
+            # is the IR this chain stands on still the standing one (issue #374,
+            # `ir_superseded`)?
+            + ["check-phase-certified", "check-phase-certified", "set-status"]
         )
         self.assertEqual(subs, expected)
 
@@ -2533,10 +2545,10 @@ class ConductHappyPathTest(unittest.TestCase):
         self.assertEqual(status, "pass")
         # The forced phase is asked with `--no-record` (it runs; recording it skipped would be
         # a false record — correctness round 1, F2); every other phase is asked recording.
-        # The LAST ask is the unrecorded pre-pass Generate check (issue #374), not a phase's.
-        final = asked.pop()
-        self.assertEqual((final[final.index("--step") + 1], "--no-record" in final),
-                         ("generate", True))
+        # The LAST two asks are the unrecorded pre-pass checks (issue #374), not a phase's.
+        final = [asked.pop(-2), asked.pop()]
+        self.assertEqual([(a[a.index("--step") + 1], "--no-record" in a) for a in final],
+                         [("compile", True), ("generate", True)])
         by_phase = {a[a.index("--step") + 1]: ("--no-record" in a) for a in asked}
         self.assertEqual(by_phase, {"compile": True, "generate": False})
         events = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]

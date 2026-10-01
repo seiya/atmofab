@@ -14004,25 +14004,32 @@ class Conductor:
             stack.close()
 
     def _superseded_ir_detail(self, refs: NodeRefs, phases: Sequence[str]) -> str | None:
-        """Why this chain's Generate stands on a superseded IR, asked just before
+        """Why the IR this chain stands on is no longer the standing one, asked just before
         `set-status pass` — else None, and `set-status` vouches as before.
 
-        The compile claim serializes Compile, not what happens after it: a `--rederive
-        compile` (or a reopen) of the node on another target while this chain is past its
-        Compile certifies a newer IR, and the selection then reads this chain's Generate as
-        `derivation_key_mismatch:ir`. The completion vouch refuses that correctly, but as a
-        `RuntimeError` the driver reports as `conductor_error`. Named here instead
-        (`ir_superseded`), with its remedy: `--resume` adopts the standing IR and re-derives
-        Generate onwards. Generate alone is asked: it is the phase whose key binds the IR, and
-        Build and Validate bind the IR only through it."""
+        The compile claim serializes Compile, not what happens after it. Another run of the
+        node (another target, or a resume of this target's other orchestration) can, while
+        this chain is past its Compile, either certify a newer IR — a `--rederive compile`, or
+        a prod reopen that re-derives — so the selection reads this chain's Generate as
+        `derivation_key_mismatch:ir`; or REVOKE the shared IR — a judge or verify finding that
+        routes to Compile — so Compile itself answers `revoked`. A revocation this run decided
+        never reaches here: dev terminalizes on it, and prod re-derives Compile before going
+        on. The completion vouch refuses both correctly, but as a `RuntimeError` the driver
+        reports as `conductor_error`. Named here instead (`ir_superseded`), with its remedy:
+        `--resume` re-derives what the chain lost. Generate is the only pipeline phase asked:
+        its key binds the IR, and Build and Validate bind the IR only through it."""
         if "generate" not in phases:
             return None
+        compile_cert = self.check_phase_certified(refs.node_key, "compile", record=False)
+        if not compile_cert.get("certified") and compile_cert.get("reason") == "revoked":
+            # Remedy first: `reason_detail` is capped, and the ir_ref is the long part.
+            return (f"--resume re-derives from Compile; {refs.ir_ref} was revoked by "
+                    "another run of this node")
         cert = self.check_phase_certified(refs.node_key, "generate", record=False)
         if cert.get("certified") or cert.get("reason") != "derivation_key_mismatch:ir":
             return None
-        # Remedy first: `reason_detail` is capped, and the ir_ref is the long part.
         return (f"--resume re-derives Generate onwards on the standing IR; {refs.ir_ref} "
-                "was superseded by another target's Compile")
+                "was superseded by another run's Compile")
 
     def _conduct_phases(self, refs: NodeRefs, until_phase: str) -> str:
         """`conduct`'s phase loop; `conduct` owns the compile claim's release."""
