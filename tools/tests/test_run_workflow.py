@@ -7732,6 +7732,29 @@ class StdoutFormatTests(unittest.TestCase):
             "— this run proceeds with NO concurrency gate; one driver per workspace is yours "
             "to enforce (docs/RUNBOOK.md §3-1)",
         )
+        # The conductor's compile claim (issue #374) names a NODE, so it must not read as a
+        # spec; and its wait — like a `--jobs` member's — is a line, not raw JSON.
+        self.assertEqual(
+            f({"status": "info", "event": "start_claim_degraded",
+               "reason": "claim_lock_unsupported", "claim_kind": "compile",
+               "claim_key": "component/x@0.1.0", "cause": "nolock"}),
+            "    [warn   ] no start claim for the Compile of component/x@0.1.0: nolock "
+            "— this run proceeds with NO concurrency gate; one driver per workspace is yours "
+            "to enforce (docs/RUNBOOK.md §3-1)",
+        )
+        for kind, scope in (("compile", "the Compile of"), ("spec", "spec"),
+                            ("orch", "orchestration")):
+            self.assertEqual(
+                f({"status": "info", "event": "start_claim_waiting",
+                   "claim_kind": kind, "claim_key": "k"}),
+                f"    [warn   ] waiting for {scope} k: another driver holds its claim "
+                "(docs/RUNBOOK.md §3-1)",
+            )
+        self.assertEqual(
+            f({"status": "info", "event": "ir_superseded", "orchestration_id": "o",
+               "node_key": "component/x@0.1.0", "detail": "--resume re-derives from Compile"}),
+            "    [warn   ] IR superseded for component/x@0.1.0: --resume re-derives from Compile",
+        )
         # The cold path's resumable-prior warning. `human` is the default stdout format, so
         # this is what an operator actually reads before a cold run starts over on top of a
         # checkpoint they could have resumed. Its three siblings from the issue-#11 recovery
