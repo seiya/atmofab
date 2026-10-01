@@ -199,7 +199,10 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
         # The quality check ran the same runner in its own directory, and its output came back.
         qc_tmp = n.repo / "workspace" / "tmp" / "arid-1" / "qc_run"
         self.assertEqual(json.loads((qc_tmp / "argv.json").read_text())["cwd"], f"{job}/qc_run")
-        self.assertTrue((run_tmp / "raw" / "state_snapshots" / "initial").is_dir())
+        # The job directory carries `raw/state_snapshots/` and, the runner being the node's own
+        # (the IR names no host-rendered kind), no `initial/` (issue #368).
+        self.assertTrue((run_tmp / "raw" / "state_snapshots").is_dir())
+        self.assertFalse((run_tmp / "raw" / "state_snapshots" / "initial").exists())
         # Promoted from the collected run directory, as the local path promotes its own.
         self.assertTrue((n.node_dir / "diagnostics.json").is_file())
         self.assertEqual(json.loads((n.node_dir / "quality_check.json").read_text())["status"],
@@ -256,6 +259,17 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
         self.assertEqual(env["execution_site"], {
             "site": "box", "host": "box", "scheduler": "none", "job_id": None,
             "remote_dir": job, "queue_wait_ms": 0})
+
+    def test_the_job_pre_creates_the_initial_capture_dir_only_for_a_host_rendered_runner(
+            self) -> None:
+        # What is on disk is what the job script's `mkdir -p` made at the site: the collected
+        # run directory comes home as is. The host-rendered runner opens
+        # `initial/<case_id>.json` relatively, so its job directory carries it (issue #368).
+        n = self.n
+        with mock.patch.object(wc.Conductor, "_conductor_authors_runner", return_value=True):
+            n.execute()
+        run_tmp = n.repo / "workspace" / "tmp" / "arid-1" / "run"
+        self.assertTrue((run_tmp / "raw" / "state_snapshots" / "initial").is_dir())
 
     def test_a_failing_runner_is_the_kernels_failure_and_the_check_does_not_run(self) -> None:
         n = self.n

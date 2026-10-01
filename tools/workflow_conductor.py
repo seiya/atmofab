@@ -6075,6 +6075,7 @@ class Conductor:
             checks_stem=f"{refs.spec_id}_checks" if authors_runner else None,
             # Dependency closure (Model B). Empty for leaf nodes -> the leaf template.
             closure=self._dependency_closure(refs),
+            initial_capture_dir=authors_runner,
         )
         path = self.repo_root / refs.source_dir() / "src" / self.CONTROL_FILE_BASENAME
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -6423,6 +6424,7 @@ class Conductor:
             bin_name=self._resolve_exe_name(refs),
             cases_default=" ".join(self.read_case_ids(refs)),
             graph=graph,
+            initial_capture_dir=self._conductor_authors_runner(refs),
         )
 
     @staticmethod
@@ -11361,10 +11363,16 @@ class Conductor:
         # decides nothing from them (the capability gate went with issue #171).
         attribution = {"orchestration_id": self.orchestration_id, "agent_run_id": child_arid}
 
-        # The runner opens raw/ paths relatively (cwd=RUNDIR); its run directory carries them
-        # pre-created — `initial/` included, which the host-rendered runner writes its
-        # post-`case_setup` captures into.
-        run_raw_dirs = ("raw", "state_snapshots", "initial")
+        # The runner opens raw/ paths relatively (cwd=RUNDIR); its run directory carries the
+        # contract's pre-created set (RUNNER_OUTPUT_CONTRACT.md §3): `raw/state_snapshots/` for
+        # every runner, and `initial/` only for the runner the host renders, which opens
+        # `initial/<case_id>.json` for its post-`case_setup` capture and fails with rc 2 without
+        # it. A hand-authored runner writes no `initial/`, and its strict fan-out self-test
+        # (`case_fanout`) refuses an entry it did not write (issue #368). The build control
+        # file's quality-check recipe pre-creates the same set (`initial_capture_dir`), so the
+        # run and the quality check see one directory set.
+        authors_runner = self._conductor_authors_runner(refs)
+        run_raw_dirs = ("raw", "state_snapshots", *(("initial",) if authors_runner else ()))
 
         def commands(binary_path: str, spec_path: str, bin_path: str, qc_path: str,
                      obj_path: str) -> tuple[list[str], dict[str, str]]:
@@ -11539,7 +11547,7 @@ class Conductor:
         # the runner's THIS-attempt tmp output (fresh), not the promoted node dir.
         snapshot_gap = self._snapshot_deliverable_gap(
             run_tmp / "raw" / "state_snapshots", case_ids, artifacts,
-            initial_required=self._conductor_authors_runner(refs))
+            initial_required=authors_runner)
 
         run_diag = _read_json(run_tmp / "diagnostics.json") or {}
         qc_diag = _read_json(qc_tmp / "diagnostics.json") or {}

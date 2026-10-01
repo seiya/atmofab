@@ -61,6 +61,17 @@ def _padded(variable: str) -> str:
     return f"{variable:<8}"
 
 
+def _snapshot_dir(initial_capture_dir: bool) -> str:
+    """The directory the `test` recipe pre-creates in the run directory before the runner runs:
+    `raw/state_snapshots/`, plus its `initial/` capture point only when the host renders the
+    runner (`initial_capture_dir`), which opens `initial/<case_id>.json` relatively
+    (`docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §3). A hand-authored runner writes no `initial/`,
+    so its `raw/state_snapshots/` holds only what it wrote and a strict fan-out self-test may
+    refuse any other entry (issue #368). ONE helper so the two renderers cannot drift."""
+    return ("$(RUNDIR)/raw/state_snapshots/initial" if initial_capture_dir
+            else "$(RUNDIR)/raw/state_snapshots")
+
+
 def render_node(
     *,
     rules: dict[str, Any],
@@ -71,6 +82,7 @@ def render_node(
     runner_stem: str,
     checks_stem: str | None,
     closure: Iterable[str],
+    initial_capture_dir: bool = False,
 ) -> str:
     """The IR-shaped Makefile: a node's model and runner (and, on a harness-backed physics node,
     its checks module between them: model.o <- checks.o <- runner.o), plus the Model B dependency
@@ -81,7 +93,8 @@ def render_node(
     binary name); OBJDIR / BINDIR / RUNDIR default to "." and are overridden by Build
     (`compile_project`) and Validate.execute (`run_quality_checks`); SPEC / CASES default so a
     local `make all test` runs the full case set standalone, and Validate.execute overrides them
-    through the make-test environment so `make test` invokes the runner as `run_program` does."""
+    through the make-test environment so `make test` invokes the runner as `run_program` does.
+    `initial_capture_dir`: see `_snapshot_dir`."""
     closure = list(closure)
     suffix = rules["source_suffix"]
     cc = _compile(rules)
@@ -165,7 +178,7 @@ $(sort $(OBJDIR) $(BINDIR)):
 
 test:
 \ttest -x $(BINDIR)/$(BIN) || {{ echo "error: $(BINDIR)/$(BIN) not built; run 'make all' first" >&2; exit 1; }}
-\tmkdir -p $(RUNDIR)/raw/state_snapshots/initial
+\tmkdir -p {_snapshot_dir(initial_capture_dir)}
 \tcd $(RUNDIR) && $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)
 
 clean:
@@ -179,6 +192,7 @@ def render_from_graph(
     bin_name: str,
     cases_default: str,
     graph: dict[str, Any],
+    initial_capture_dir: bool = False,
 ) -> str:
     """The Makefile of a pure `CodegenBundle`: EXACTLY the derived build graph's
     `compile_units` (so a bundle that declares a helper / internal-module file is built too) and
@@ -186,7 +200,7 @@ def render_from_graph(
     so Build and Validate.execute drive both identically. A `staged:` source is
     `$(OBJDIR)/<name>` (staged by the conductor before make), a `bundle:` / `glue:` source a
     filename in the src/ cwd; objects live under `$(OBJDIR)`, in the graph's conservative total
-    prerequisite order."""
+    prerequisite order. `initial_capture_dir`: see `_snapshot_dir`."""
     cc = _compile(rules)
 
     def _src_path(source: str) -> str:
@@ -236,7 +250,7 @@ $(sort $(OBJDIR) $(BINDIR)):
 
 test:
 \ttest -x $(BINDIR)/$(BIN) || {{ echo "error: $(BINDIR)/$(BIN) not built; run 'make all' first" >&2; exit 1; }}
-\tmkdir -p $(RUNDIR)/raw/state_snapshots/initial
+\tmkdir -p {_snapshot_dir(initial_capture_dir)}
 \tcd $(RUNDIR) && $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)
 
 clean:

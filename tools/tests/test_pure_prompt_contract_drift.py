@@ -764,6 +764,13 @@ PINNED: dict[str, str] = {
     # H8 violation (orch_20261001T041151Z_658f30c5, the #315 MPI closing run), which is why the
     # key moves.
     "pure-58": "9e69c3b83903ab836b4d6338d6ded8710c2412e88e5e027db6377c8468df3d91",
+    # pure-59 (issue #368): §3 of the inlined runner-output contract says which directories the
+    # host pre-creates in a run directory — `raw/state_snapshots/` for every runner, its
+    # `initial/` only for a host-rendered one — so a harness leaf may write a strict case
+    # fan-out check. Under pure-58 the host also pre-created `initial/` for a hand-authored
+    # runner, and a strict check refused it (cpp_gpu `src_20261001_003`,
+    # orch_20261001T041151Z_c0ec0466), which is why the key moves.
+    "pure-59": "b2ada46cdae8723a31399be467c7914d30d889924ff87efffccd83695dd2d610",
 }
 
 

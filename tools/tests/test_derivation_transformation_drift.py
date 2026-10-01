@@ -577,7 +577,7 @@ PINNED_RENDER: dict[str, str] = {
     # of commit 70128dbb before it was committed, against origin/main fcced0b6: every Fortran and CUDA C++ runner render over the 154
     # `workspace/ir/*/*/spec.ir.yaml` for both checked-in targets, both targets' control-file
     # rules and `perf_parallelism` — 312 digests, identical.
-    "render-6": "2bcc28eabe5c8b08a8b03a391f8a70d1569fdeece377fd1dace659d6bc7b1054",
+    "render-6": "b1faea49f2211d4fd60d9e81d8cc9419eef9ff761ba792aeb3f8d8ac60337f63",
     # Re-pinned (issue #316, R4-c PR-4), behaviour-preserving for every existing target: the
     # Fortran renderer gained the variant a harness that runs the program as several ranks
     # renders (the only such harness is new, so no certified runner is one), its perf line reads
@@ -628,6 +628,17 @@ PINNED_RENDER: dict[str, str] = {
     # code of the 4 attribute-form sources, FAIL to PASS, and of no other.) The digest
     # `render-6` shipped with at e1e78155:
     "render-6@e1e78155": "a48164785fdd1f989803bc70dd122bbde3ad77efd9ba97abf4d8f40f20db4127",
+    # Re-pinned by issue #368: three members moved, `make/control_file.py` and the two conductor
+    # writers that call it. The `test:` recipe pre-creates `raw/state_snapshots/initial` only
+    # when the host renders the runner (`initial_capture_dir`), `raw/state_snapshots` otherwise;
+    # the m3c Makefile is byte-identical, a harness node's loses `/initial`. A re-pin, not a
+    # bump: the same change bumps `PURE_PROMPT_CONTRACT_VERSION` to pure-59 (RUNNER_OUTPUT_CONTRACT
+    # §3 states the directory set), which is in the generate transformation tuple, so every
+    # Generate key moves and every certified harness Makefile is re-rendered whatever this version
+    # says (the precedent is `execute-8`'s issue #346 re-pin). (Measured by diffing
+    # `render_tuple()` against origin/main 6add2b17's: those three rows and no other.) The digest
+    # `render-6` shipped with at 6add2b17:
+    "render-6@6add2b17": "2bcc28eabe5c8b08a8b03a391f8a70d1569fdeece377fd1dace659d6bc7b1054",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -681,7 +692,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "df6a89f5d73fccd79faf1909db6a184ba70d985df2f725ca8ec422a92395b580",
+    "build-2": "cef34f457ad57adbd5edbca28e5f860f30a893eac860873500a4d5120eebc683",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build
@@ -697,6 +708,11 @@ PINNED_BUILD: dict[str, str] = {
     # named, whose compiler version the job reads as before. (Measured by diffing
     # `build_tuple()` against origin/main f317c42f's: those two rows and no other.) The digest `build-2` shipped with at f317c42f:
     "build-2@f317c42f": "4bc9c88fe47769f34d62c2fff119fd35e5b9c1f7c55127681f828723c29bced5",
+    # Re-pinned by issue #368: one member moved, `make/control_file.py`, whose `test:` recipe
+    # (render-6's re-pin) Build never runs — it makes `all`. (Measured by diffing `build_tuple()`
+    # against origin/main 6add2b17's: that row and no other.) The digest `build-2` shipped with
+    # at 6add2b17:
+    "build-2@6add2b17": "df6a89f5d73fccd79faf1909db6a184ba70d985df2f725ca8ec422a92395b580",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -807,7 +823,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # and every certified Validate re-derives — with the new record — whatever this version
     # says. A bump here would move nothing more. (Measured by diffing `execute_tuple()` against
     # origin/main 7b67f5f3's: the `_execute_inproc` row and no other.)
-    "execute-8": "eb6aa6fcc8641e0f35a9aa9b28f8316d17c25ee03a408d7192d10a7ef92e1aa0",
+    "execute-8": "db99ce42579cf0221c5eabaf0cdd8aa904997bcd8eb6b6d93cf900eba6c36157",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -864,6 +880,15 @@ PINNED_EXECUTE: dict[str, str] = {
     "execute-8@f317c42f": "8fd899fce01c2f63d3733071d406a485db3b75254b986ac2f60905f709275f2f",
     # The digest `execute-8` shipped with at 7b67f5f3 (before issue #346's re-pin above):
     "execute-8@7b67f5f3": "c019eaa5d8cde94157fbc12286ed1dec3fbc5196f2cdce214ca9f1dfa8c237ea",
+    # Re-pinned by issue #368: `Conductor._execute_inproc` pre-creates
+    # `raw/state_snapshots/initial/` in the run directory (local and at a site) only for a
+    # host-rendered runner. A hand-authored runner's run directory loses an empty directory it
+    # never wrote, which `_promote_run_evidence` already did not promote; the record of a run
+    # that passed is unchanged. And pure-59 is in the validate tuple too, so every validate key
+    # moves whatever this version says. (Measured by diffing `execute_tuple()` against
+    # origin/main 6add2b17's: the `_execute_inproc` row and no other.) The digest `execute-8`
+    # shipped with at 6add2b17:
+    "execute-8@6add2b17": "eb6aa6fcc8641e0f35a9aa9b28f8316d17c25ee03a408d7192d10a7ef92e1aa0",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

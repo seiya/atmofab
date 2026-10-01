@@ -21298,7 +21298,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # and that a non-finite value is never `null` and never stops the writer. Measured 11841.
         # Raised 11900->12300 (issue #315 follow-up): §4 scopes the no-stop rule to serializing a
         # non-finite value and keeps a writer's own input range. Measured 12123.
-        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 12300,
+        # Raised 12300->12700 (issue #368): §3 states the directories the host pre-creates in a
+        # run directory (`initial/` only for a host-rendered runner), which a harness leaf
+        # writing a strict fan-out check must read. Measured 12487.
+        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 12700,
         # R1/M3c-β: the fixed-ABI contract for a physics node's `<spec_id>_checks.f90`
         # (leaf-authored callbacks the host-rendered runner drives). Leaf must-read for
         # every generate LLM leaf (its SKILL branches on whether the node is M3c).
