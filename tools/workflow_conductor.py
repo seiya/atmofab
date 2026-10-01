@@ -8858,10 +8858,15 @@ class Conductor:
         `last_fail_reason` travels over stdin: a findings excerpt runs to several thousand
         characters, which does not belong on an argv. `severity` is the G5 grade of the finding,
         and it must travel with the findings or the resumed repair re-enters a `critical` as a
-        `major` — reusing the very producer context the `critical` graded untrustworthy."""
+        `major` — reusing the very producer context the `critical` graded untrustworthy.
+
+        `--caller-decides-still-certified`: a `noop` over a still-certified phase comes back as
+        an answer rather than a refusal, because `revoke_and_reset` is what reads it — with the
+        attempt id the CLI does not have (issue #369)."""
         args = ["revoke-artifact", *self._oid_args(),
                 "--node-key", node_key, "--step", step,
-                "--trigger-agent-run-id", trigger_arid, "--reason", reason]
+                "--trigger-agent-run-id", trigger_arid, "--reason", reason,
+                "--caller-decides-still-certified"]
         if severity in ("minor", "major", "critical"):
             args += ["--severity", severity]
         # BESIDE the grade, never derived from it: G5 forces `minor -> reuse` and
@@ -8889,7 +8894,8 @@ class Conductor:
     def revoke_and_reset(self, node_key: str, phase: str, trigger_arid: str, reason: str,
                          findings: str | None = None,
                          severity: str | None = None,
-                         repair_strategy: str | None = None) -> None:
+                         repair_strategy: str | None = None,
+                         attempt_id: str | None = None) -> None:
         """The whole of a re-derivation decision: revoke the artifact, then reset the record.
         Every retry route calls exactly this, so the two halves cannot drift apart.
 
@@ -8899,6 +8905,16 @@ class Conductor:
         failure this whole PR exists to prevent (the decision did not reach the artifact, so the
         next `--resume` finds the phase still `certified` and skips straight past it). The
         runtime tells them apart and reports `still_certified` on the `noop`.
+
+        A still-certified `noop` has a third reading, and only here can it be told apart
+        (issue #369): a phase forced by `--rederive` whose attempt FAILED wrote no meta under
+        the id the lineage names, and the STANDING output keeps certifying the phase — the
+        state `docs/RUNBOOK.md` documents for a failed forced attempt, not a lost decision.
+        The answer's `certified_by` names what certifies the phase; when the phase is forced
+        and that is not this attempt's id (`attempt_id`), the attempt is repaired like any
+        other. Every other still-certified `noop` raises — the unforced case, and the forced
+        one whose attempt DID certify under its own id while the lineage lost it (the #177
+        class, which `--rederive` does not exempt).
 
         The runtime answers it because the question has to be asked READ-ONLY, and the obvious
         way to ask it from here was not: `check-phase-certified` TRANSITIONS the phase to
@@ -8912,9 +8928,17 @@ class Conductor:
                                        repair_strategy=repair_strategy)
         self.reset_phase(node_key, phase, trigger_arid, reason)
         if str((outcome or {}).get("status") or "") == "noop":
+            certified_by = str((outcome or {}).get("certified_by") or "")
+            forced = phase in self.rederive
             self.emit("revoke_artifact_noop", node_key=node_key, phase=phase,
                       reason=reason, detail=str((outcome or {}).get("reason") or ""),
-                      still_certified=bool((outcome or {}).get("still_certified")))
+                      still_certified=bool((outcome or {}).get("still_certified")),
+                      certified_by=certified_by or None, forced=forced)
+            if ((outcome or {}).get("still_certified") and forced and certified_by
+                    and attempt_id and certified_by != attempt_id):
+                self.emit("revoke_artifact_forced_standing", node_key=node_key, phase=phase,
+                          certified_by=certified_by, attempt_id=attempt_id)
+                return
             if (outcome or {}).get("still_certified"):
                 raise RevocationNotLandedError(
                     f"revoke-artifact resolved no stage meta for {node_key}/{phase} "
@@ -12285,6 +12309,13 @@ class Conductor:
             refs.run_id = str(cert["run_id"])
 
     @staticmethod
+    def _attempt_id(refs: NodeRefs, phase: str) -> str:
+        """The id this run's attempt of `phase` used, in the form the runtime's `certified_by`
+        takes (`_certified_by_ref`: a path for compile, an id otherwise), so the two compare."""
+        return {"compile": refs.ir_ref, "generate": refs.source_id,
+                "build": refs.binary_id, "validate": refs.run_id}[phase] or ""
+
+    @staticmethod
     def _certified_by_label(phase: str, cert: dict[str, Any]) -> str:
         """The one id that identifies what a skipped phase adopted, for the run log."""
         key = {"compile": "ir_ref", "generate": "source_id",
@@ -13899,7 +13930,8 @@ class Conductor:
         try:
             self.revoke_and_reset(refs.node_key, phase, trigger, reason,
                                   findings=findings, severity=severity,
-                                  repair_strategy=repair_strategy)
+                                  repair_strategy=repair_strategy,
+                                  attempt_id=self._attempt_id(refs, phase))
         except RevocationNotLandedError as exc:
             self.emit("revocation_not_landed", node_key=refs.node_key, phase=phase,
                       reason=reason, intended_terminal=fallback_code, error=str(exc)[:200])
