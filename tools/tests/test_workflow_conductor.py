@@ -20163,14 +20163,21 @@ class DeterministicGateTest(unittest.TestCase):
             self._seed(repo, refs)
             c = self._conductor(repo)
             ran_static = {"called": False}
+            real_run = wc.subprocess.run
 
             def linter(args):
                 return {"ok": False, "return_code": 1, "command_id": "cid",
                         "preset": "fortitude", "stdout": "S001 line too long"}
 
             def run(cmd, **kwargs):  # static must NOT run when lint/syntax failed
-                ran_static["called"] = True
-                raise AssertionError("static checker must be skipped on a dirty source")
+                # Observe only the static checker's own scripts: the patch is process-wide, and
+                # the fixture's harness certification probes the compiler version through the
+                # same subprocess.run whenever its lru_cache is cold (issue #377).
+                if any(str(x).endswith(("validate_workspace_root.py",
+                                        "validate_pipeline_semantics.py")) for x in cmd):
+                    ran_static["called"] = True
+                    raise AssertionError("static checker must be skipped on a dirty source")
+                return real_run(cmd, **kwargs)
 
             with contextlib.ExitStack() as stack:
                 for p in self._patches(linter, self._syntax_fail, run):
