@@ -14045,11 +14045,12 @@ class Conductor:
             phase = phases[idx]
             self.emit("phase_start", node_key=refs.node_key, phase=phase,
                       attempt=attempts[phase] + 1)
-            phase_started = time.monotonic()
             if phase == "compile":
                 # Before the certification check `run_phase` opens with: the check is what
                 # the second target must ask only after the first one's Compile has landed.
+                # Before the clock, too: a wait for another driver is not this phase's time.
                 self._hold_compile_claim(refs.node_key)
+            phase_started = time.monotonic()
             try:
                 outcome = self.run_phase(refs, phase, repair=pending_repair.pop(phase, None))
             except SandboxEnforcementError as exc:
