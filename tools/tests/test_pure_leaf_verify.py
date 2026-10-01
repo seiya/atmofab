@@ -1625,6 +1625,33 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         self.assertEqual(request["pure_shape"], "harness")
         self.assertIn("runner_output_contract_document", request["pure_context"])
 
+    def test_walltime_scope_is_stated_once_in_the_inlined_contract(self) -> None:
+        """Issue #365: two verifiers given byte-identical prompts demanded opposite perf-write
+        orders, because the inlined contract said `walltime_sec` was "the whole execution" while
+        the IR wrote perf before the self-test re-parsed it. The contract's §2 now says the one
+        write and the interval once; this row keeps the removed phrasings out of every document
+        a harness leaf is given, and out of the document that cites §2."""
+        ctx = self.c._build_pure_harness_verify_context(self.refs)
+        contract = ctx["runner_output_contract_document"]
+        self.assertIn("final before `write_perf`", contract)
+        self.assertNotIn("whole execution", contract)
+        self.assertNotIn("per single case execution", contract)
+        real_root = Path(wc.__file__).resolve().parents[1]
+        perf_doc = (real_root / "docs" / "PERFORMANCE_DIAGNOSTICS.md").read_text(encoding="utf-8")
+        self.assertNotIn("whole execution", perf_doc)
+        self.assertIn("RUNNER_OUTPUT_CONTRACT.md` §2", perf_doc)
+        for name in ("pure_generate_generate_harness.txt", "pure_generate_verify_harness.txt"):
+            with self.subTest(template=name):
+                text = (real_root / "tools" / "prompt_templates" / name).read_text(
+                    encoding="utf-8")
+                self.assertNotIn("whole execution", text)
+                sentences = [s for s in re.split(r"(?<=\.)\s", text)
+                             if "The performance document" in s]
+                self.assertTrue(sentences, name)
+                for s in sentences:
+                    self.assertNotIn("per case", s)
+                    self.assertIn("once per run", s)
+
     def test_the_m3c_node_still_carries_no_shape_through_the_same_sites(self) -> None:
         """The negative half: `pure_shape` is ABSENT on the default shape, so a mutation that
         stamped one unconditionally is red here rather than green on the harness rows above."""

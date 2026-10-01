@@ -45,14 +45,18 @@ artifact *filenames*, not a diagnostics field name).
 
 ## 2. `perf.json` (required fields)
 
-One `perf.json` per single case execution. Required fields (a custom minimal
+One `perf.json` per run: one `write_perf` call, after the last case, never
+rewritten; its `case_id` names a case of the run. Required fields (a custom minimal
 schema such as `{case_count, wall_seconds}` is rejected by the `post_execute`
 gate, which mandatorily verifies `walltime_sec` / `throughput_cells_per_sec` /
 `parallelism`):
 
 - `case_id`: string
 - `target`: `cpu|gpu|...`
-- `walltime_sec`: wall-clock time of the whole execution (seconds)
+- `walltime_sec`: elapsed wall-clock seconds of the case executions: from
+  before the first case to after the last, the work `steps` / `cells_updated`
+  count, final before `write_perf` is called. Argument parsing, the run-wide
+  writers, and a self-test's re-parse of its own `perf.json` are outside it.
 - `steps`: number of execution steps
 - `cells_updated`: total updated cells (`nx*ny*nz*steps` etc.)
 - `throughput_cells_per_sec`: `cells_updated / walltime_sec`

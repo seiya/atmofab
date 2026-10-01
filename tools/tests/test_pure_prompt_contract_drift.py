@@ -741,6 +741,13 @@ PINNED: dict[str, str] = {
     # across the 27 harness IRs with `verification_status: pass` in the primary checkout's
     # `workspace/ir/`, counted at 88a7953b), which is why the key moves.
     "pure-55": "1c57e6105f642be2b56efc0bff1ea4b2d1b631425cc343bbd02c464c14bd8ca4",
+    # pure-56 (issue #365): §2 of the inlined runner-output contract says one `perf.json` per run
+    # and `walltime_sec` = the case executions, final before `write_perf` (pure-55 said "whole
+    # execution" and "per single case execution"); rule (6) and H7 of the harness templates say
+    # "once per run" where pure-55 said "per case". A harness leaf reading it writes one perf
+    # record where a pure-55 leaf could write two (measured: cpp_gpu `src_20260930_003`), which is
+    # why the key moves.
+    "pure-56": "acbc6bb2e609178307b8ee18c1cfa3a8bafd3e5d4c5424905dfc10ddbb2f4f2d",
 }
 
 
