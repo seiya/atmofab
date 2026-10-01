@@ -93,7 +93,10 @@ sets `found = false`; a rejected case's bound arrays are still sized, e.g. fille
 ## 3. Module-level state in CUDA C++
 
 The current case's state lives in the bound namespace-scope variables of §1-b, in HOST memory: a
-model that computes on the device copies the result back into them before `case_run` returns. A
+model that computes on the device copies the result back into them before `case_run` returns.
+`case_run` advances that state by calling the model's published operation,
+`<spec_id>_model::<spec_id>__<op>(...)`, from itself or from a function it calls; the checks
+source computes no update of its own (the static check refuses a `case_run` that reaches none). A
 cross-case accumulator lives in other namespace-scope variables of the checks source, which an
 unnamed namespace keeps internal to it.
 
@@ -114,6 +117,11 @@ unnamed namespace keeps internal to it.
   runner makes it so structurally: it writes EVERY output — the snapshots it serialized at the
   capture points included — after the node's last callback has returned, and ends every exit
   with `std::_Exit`, so no code of a leaf source runs after the harness has written anything.
+- **`case_run` reaches the model's operation, and the checks source never defines one.** From
+  `case_run`, through the functions the checks source defines, some body names a
+  `<spec_id>__<op>` the model defines in `namespace <spec_id>_model`; the checks source defines
+  no function of that name in any namespace — on a `problem` node it DECLARES the operation in
+  that namespace and never defines it (`source.checks_model_reach_violations`).
 
 ## 5. CUDA C++ legality and gate guards
 

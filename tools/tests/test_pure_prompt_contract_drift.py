@@ -771,6 +771,12 @@ PINNED: dict[str, str] = {
     # runner, and a strict check refused it (cpp_gpu `src_20261001_003`,
     # orch_20261001T041151Z_c0ec0466), which is why the key moves.
     "pure-59": "b2ada46cdae8723a31399be467c7914d30d889924ff87efffccd83695dd2d610",
+    # pure-60 (issue #314): the inlined checks contract's §1 `case_run` row and §4, both
+    # bindings' CHECKS_ABI, and rule (F) of both language fragments say `case_run` reaches the
+    # model's published operation and the checks source never defines one. A pure-59 leaf was
+    # never told, and probe g18 (a checks source computing the state inline) passed the gate,
+    # which is why the key moves.
+    "pure-60": "c836f48b1c47aa1a33e75876cef09a454dbb1d098ec03c147a696d870f89fb9f",
 }
 
 

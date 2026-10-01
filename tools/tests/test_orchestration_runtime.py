@@ -21503,7 +21503,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # to the Fortran binding below. Measured 13223 at 33dacd5c.
         # Raised 13600->13900 (issue #315): the NA-metrics bullet says a computed non-finite
         # metric is not N/A and cites §4 of the runner-output contract. Measured 13697.
-        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 13900,
+        # Raised 13900->14400 (issue #314): the §1 `case_run` row says it reaches the model's
+        # published operation, and §4 gains the no-shadow-definition item. Measured 14233.
+        "docs/workflow/CHECKS_MODULE_CONTRACT.md": 14400,
         # New (issue #289, R4-b PR-2; round 3 found both inlined bindings unguarded). Measured
         # 11479 and 4418 at 33dacd5c.
         # Raised 11900->13200 (issue #316, R4-c PR-4): §1-c, the distributed binding — the four
