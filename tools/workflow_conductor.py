@@ -14009,13 +14009,16 @@ class Conductor:
 
         The compile claim serializes Compile, not what happens after it. Another run of the
         node (another target, or a resume of this target's other orchestration) can, while
-        this chain is past its Compile, either certify a newer IR — a `--rederive compile`, or
-        a prod reopen that re-derives — so the selection reads this chain's Generate as
+        this chain is past its Compile, either certify a newer IR without revoking this one —
+        a `--rederive compile` — so the selection reads this chain's Generate as
         `derivation_key_mismatch:ir`; or REVOKE the shared IR — a judge or verify finding that
-        routes to Compile — so Compile itself answers `revoked`. A revocation this run decided
-        never reaches here: dev terminalizes on it, and prod re-derives Compile before going
-        on. The completion vouch refuses both correctly, but as a `RuntimeError` the driver
-        reports as `conductor_error`. Named here instead (`ir_superseded`), with its remedy:
+        routes to Compile, prod's re-deriving reopen included — so Compile itself answers
+        `revoked`. Only a revocation landing after this chain's Validate started reaches here:
+        an earlier one stops the next phase start as `derivation_inputs_unresolvable`, since
+        every pipeline phase's key hashes the certified IR. A revocation this run decided never
+        reaches here either: dev terminalizes on it, and prod re-derives Compile before going
+        on. The completion vouch refuses what does reach here correctly, but as a
+        `RuntimeError` the driver reports as `conductor_error`. Named here instead (`ir_superseded`), with its remedy:
         `--resume` re-derives what the chain lost. Generate is the only pipeline phase asked:
         its key binds the IR, and Build and Validate bind the IR only through it."""
         if "generate" not in phases:
