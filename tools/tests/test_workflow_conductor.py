@@ -3688,6 +3688,13 @@ class TransportFailureTest(unittest.TestCase):
             # Codex's capacity phrase counts only inside its structured error event (#375).
             "The halo buffer is at capacity, so the selected model is at capacity too.",
             "error: selected model is at capacity",
+            # The event shape must OPEN the line: a leaf answer quoting it mid-line reaches the
+            # classifier as stdout when codex exits nonzero with no failure event.
+            ('The CLI printed {"type": "error", "message": "Selected model is at capacity. '
+             'Please try a different model."} last time.'),
+            # ...and only the `error` / `turn.failed` events count, not an agent message.
+            ('{"type": "item.completed", "item": {"type": "agent_message", "text": "Selected '
+             'model is at capacity."}}'),
         ]
         for text in benign:
             with self.subTest(text=text):
