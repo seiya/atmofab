@@ -420,12 +420,16 @@ def _m3c_checks_source(stem: str = "shallow_water2d",
                        state: tuple[str, ...] = ("h", "hu", "hv")) -> str:
     """A fixed-ABI checks module for `stem` publishing the bound `state`: since R4-a PR-3 (issue
     #284) every physics node of a runner-rendering target is M3c, so a post_generate row about
-    something else carries one."""
+    something else carries one. Its `case_run` calls `<stem>__step`, which the model must
+    define (the checks-reach gate, issue #314)."""
     names = _abi_names()
-    return (f"module {stem}_checks\n  implicit none\n  private\n"
+    return (f"module {stem}_checks\n  use {stem}_model, only: {stem}__step\n"
+            "  implicit none\n  private\n"
             + "".join(f"  real, allocatable :: {v}(:,:)\n  public :: {v}\n" for v in state)
             + "".join(f"  public :: {n}\n" for n in names) + "contains\n"
-            + "".join(f"  subroutine {n}()\n  end subroutine {n}\n" for n in names)
+            + "".join(f"  subroutine {n}()\n"
+                      + (f"    call {stem}__step()\n" if n == "case_run" else "")
+                      + f"  end subroutine {n}\n" for n in names)
             + f"end module {stem}_checks\n")
 
 
@@ -12517,6 +12521,10 @@ subroutine solve(flag)
   logical, intent(out) :: flag
   call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
 end subroutine solve
+subroutine shallow_water2d__step(flag)
+  logical, intent(out) :: flag
+  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
+end subroutine shallow_water2d__step
 end module shallow_water2d_model
 """
             runner_text = """program shallow_water2d_runner
@@ -12537,6 +12545,9 @@ shallow_water2d_model.o shallow_water2d_model.mod: shallow_water2d_model.f90 dyn
 \t$(FC) -c $<
 
 shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
+\t$(FC) -c $<
+
+shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 shallow_water2d_model.mod
 \t$(FC) -c $<
 """
             _create_minimal_execution_tree(
@@ -12645,6 +12656,10 @@ subroutine solve(flag)
   logical, intent(out) :: flag
   call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
 end subroutine solve
+subroutine shallow_water2d__step(flag)
+  logical, intent(out) :: flag
+  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
+end subroutine shallow_water2d__step
 end module shallow_water2d_model
 """
             runner_text = """program shallow_water2d_runner
@@ -12665,6 +12680,9 @@ shallow_water2d_model.o shallow_water2d_model.mod: shallow_water2d_model.f90 dyn
 \t$(FC) -c $<
 
 shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
+\t$(FC) -c $<
+
+shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 shallow_water2d_model.mod
 \t$(FC) -c $<
 """
             _create_minimal_execution_tree(
@@ -15666,6 +15684,25 @@ class SourceGateDispatchTest(unittest.TestCase):
             violations: list[str] = []
             vps._validate_runner_outputs(root, execution, src, violations)
         self.assertTrue(any("hardcoded snapshot filename" in v for v in violations), violations)
+
+    def test_a_case_run_reaching_no_operation_is_reported_by_the_generation_gates(self) -> None:
+        """Issue #314: the checks-reach gate, through the post_generate entry on an M3c node."""
+        model = ("module p_model\n  implicit none\ncontains\n  subroutine p__step(u)\n"
+                 "    real, intent(inout) :: u(:)\n    u = 2*u\n  end subroutine p__step\n"
+                 "end module p_model\n")
+        checks = _reach_checks("BODY").replace("bx_", "p_").replace("bx__", "p__")
+        for body, reported in (("    u = 2*u\n", True), ("    call p__step(u)\n", False)):
+            with self.subTest(body=body), tempfile.TemporaryDirectory() as t:
+                root = Path(t)
+                execution, src = self._pipeline(root)
+                (src / "p_model.f90").write_text(model)
+                (src / "p_checks.f90").write_text(checks.replace("BODY", body))
+                violations: list[str] = []
+                with unittest.mock.patch.object(vps, "_execution_m3c_language",
+                                                return_value="fortran"):
+                    vps._validate_generate_outputs_for_generation(root, execution, "src_1",
+                                                                  violations)
+                self.assertEqual(any(_REACH in v for v in violations), reported, violations)
 
 
 class FortranMakefileObjdirPrefixTest(unittest.TestCase):
@@ -20755,6 +20792,7 @@ class DependencyExpectedNodeKeysTests(unittest.TestCase):
 _CHECKS_OK = """\
 module bx_checks
   use, intrinsic :: iso_fortran_env, only: real64
+  use bx_model, only: bx__step
   ! allow(C003)
   implicit none
   private
@@ -20769,10 +20807,22 @@ contains
     ok = .true.
     if (len_trim(case_id) < 0) continue
   end subroutine case_setup
+  subroutine case_run(case_id, steps, cells_updated, ok)
+    character(len=*), intent(in) :: case_id
+    integer, intent(out) :: steps, cells_updated
+    logical, intent(out) :: ok
+    call bx__step(u)
+    steps = 1
+    cells_updated = size(u)
+    ok = len_trim(case_id) >= 0
+  end subroutine case_run
 end module bx_checks
 """
 
-_MODEL_OK = "module bx_model\n! allow(C003)\nimplicit none\nend module bx_model\n"
+# Issue #314: the model publishes the operation `case_run` calls (the checks-reach gate).
+_MODEL_OK = ("module bx_model\n! allow(C003)\nimplicit none\ncontains\n"
+             "subroutine bx__step(u)\nreal(8), intent(inout) :: u(:)\nu = 2*u\n"
+             "end subroutine bx__step\nend module bx_model\n")
 
 
 def _abi_names() -> tuple[str, ...]:
@@ -21007,6 +21057,260 @@ class DistributedChecksSourceGateTests(unittest.TestCase):
                     vps._validate_generate_outputs_for_generation(root, execution, "src_1", [])
                 self.assertEqual(spy.call_count, 1)
                 self.assertEqual(spy.call_args.kwargs["harness_spec_id"], harness)
+
+
+_REACH = "case_run reaches no published operation of the model"
+_G18_DIR = Path(__file__).parent / "data" / "checks_reach_g18"
+
+
+def _reach_checks(run_body: str, *, uses: str = "  use bx_model, only: bx__step\n",
+                  setup_body: str = "", extra: str = "", tail: str = "") -> str:
+    """A fixed-ABI `bx_checks` whose `case_run` body is `run_body` (issue #314)."""
+    return ("module bx_checks\n  use, intrinsic :: iso_fortran_env, only: real64\n" + uses
+            + "  implicit none\n  private\n  real(real64), allocatable :: u(:)\n"
+            "  public :: case_setup, case_run, get_time\n"
+            "  public :: checks_compute, metric_compute\n  public :: u\ncontains\n"
+            "  subroutine case_setup(case_id, ok)\n    character(len=*), intent(in) :: case_id\n"
+            "    logical, intent(out) :: ok\n" + setup_body + "    ok = len_trim(case_id) >= 0\n"
+            "  end subroutine case_setup\n"
+            "  subroutine case_run(case_id, steps, cells_updated, ok)\n"
+            "    character(len=*), intent(in) :: case_id\n"
+            "    integer, intent(out) :: steps, cells_updated\n    logical, intent(out) :: ok\n"
+            + run_body + "    steps = 1\n    cells_updated = size(u)\n"
+            "    ok = len_trim(case_id) >= 0\n  end subroutine case_run\n" + extra
+            + "end module bx_checks\n" + tail)
+
+
+class ChecksReachGateTests(unittest.TestCase):
+    """Issue #314: the checks-reach gate, pinned at the handler (`_validate_checks_source_files`)
+    so deleting its wiring is red. Each row is named for the mutant it kills."""
+
+    def _run(self, checks: str, model: str | None = _MODEL_OK, *, spec: str = "bx",
+             language: str = "fortran", node_key: str = "component/bx@0.1.0",
+             suffix: str = ".f90") -> list[str]:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            src = tmp / "src"
+            src.mkdir()
+            models = []
+            if model is not None:
+                (src / f"{spec}_model{suffix}").write_text(model)
+                models = [src / f"{spec}_model{suffix}"]
+            (src / f"{spec}_checks{suffix}").write_text(checks)
+            violations: list[str] = []
+            vps._validate_checks_source_files(
+                NodeExecution(node_key=node_key, node_dir=tmp, exec_dir=tmp, pipeline_dir=tmp),
+                language, src, models, violations)
+            return violations
+
+    def _reach(self, checks: str, model: str | None = _MODEL_OK) -> list[str]:
+        return [v for v in self._run(checks, model) if _REACH in v]
+
+    def test_a_case_run_that_calls_the_operation_passes(self) -> None:
+        self.assertEqual(self._run(_reach_checks("    call bx__step(u)\n")), [])
+
+    def test_m1_a_case_run_computing_the_state_inline_is_refused(self) -> None:
+        v = self._run(_reach_checks("    u = 2*u\n"))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn(_REACH, v[0])
+        self.assertIn("(one of: bx__step)", v[0])
+        self.assertIn("bx_checks.f90", v[0])
+
+    def test_m2_a_model_defining_no_operation_is_refused(self) -> None:
+        model = ("module bx_model\nimplicit none\ncontains\nsubroutine solve(u)\n"
+                 "real(8), intent(inout) :: u(:)\nu = 2*u\nend subroutine solve\n"
+                 "end module bx_model\n")
+        for label, m in (("no op", model), ("no model file", None),
+                         ("abstract interface only",
+                          "module bx_model\nimplicit none\nabstract interface\n"
+                          "subroutine bx__step(u)\nreal(8), intent(inout) :: u(:)\n"
+                          "end subroutine bx__step\nend interface\nend module bx_model\n")):
+            with self.subTest(label):
+                v = self._run(_reach_checks("    call bx__step(u)\n"), m)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("the model source defines no `subroutine bx__<op>`", v[0])
+
+    def test_m2_the_backend_function_refuses_an_empty_model_list(self) -> None:
+        v = fortran_source.checks_model_reach_violations(
+            Path("bx_checks.f90"), _reach_checks("    call bx__step(u)\n"), [], "bx")
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("defines no `subroutine bx__<op>`", v[0])
+
+    def test_m3_only_case_run_is_the_root(self) -> None:
+        orphan = ("  subroutine orphan()\n    call bx__step(u)\n  end subroutine orphan\n")
+        decoy = ("module other_checks\n  use bx_model, only: bx__step\n  implicit none\n"
+                 "contains\n  subroutine case_run()\n    real(8) :: w(2)\n"
+                 "    call bx__step(w)\n  end subroutine case_run\nend module other_checks\n")
+        for label, checks in (
+                ("from case_setup", _reach_checks("", setup_body="    call bx__step(u)\n")),
+                ("from an orphan helper", _reach_checks("", extra=orphan)),
+                ("from a case_run in another module", _reach_checks("", tail=decoy))):
+            with self.subTest(label):
+                self.assertEqual(len(self._reach(checks)), 1, self._run(checks))
+
+    def test_m4_a_helper_case_run_reaches_is_followed(self) -> None:
+        sub = "  subroutine advance()\n    call bx__step(u)\n  end subroutine advance\n"
+        fn = ("  function advance(v) result(r)\n    real(real64), intent(in) :: v(:)\n"
+              "    real(real64) :: r\n    call bx__step(u)\n    r = sum(v)\n"
+              "  end function advance\n")
+        chain = ("  subroutine outer()\n    call inner\n  end subroutine outer\n"
+                 "  subroutine inner()\n    call bx__step(u)\n  end subroutine inner\n")
+        for label, body, extra in (
+                ("subroutine", "    call advance()\n", sub),
+                ("zero-argument subroutine without parentheses", "    call advance\n", sub),
+                ("function", "    s = advance(u)\n", fn),
+                ("two levels", "    call outer()\n", chain)):
+            with self.subTest(label):
+                checks = _reach_checks("    real(real64) :: s\n" + body, extra=extra)
+                self.assertEqual(self._run(checks), [])
+                # ...and the same helper NOT reached from case_run is refused.
+                self.assertEqual(len(self._reach(_reach_checks("", extra=extra))), 1)
+
+    def test_m5_a_rename_onto_the_operation_is_followed_and_no_other(self) -> None:
+        self.assertEqual(self._run(_reach_checks(
+            "    call step(u)\n", uses="  use bx_model, only: step => bx__step\n")), [])
+        self.assertEqual(self._run(_reach_checks(
+            "    call step(u)\n",
+            uses="  use bx_model, only: bx__other, step => bx__step\n")), [])
+        for label, uses in (
+                ("dependency rename", "  use bx_model\n  use dep_model, only: step => dep__flux\n"),
+                ("no rename", "  use bx_model, only: bx__step\n")):
+            with self.subTest(label):
+                self.assertEqual(len(self._reach(_reach_checks("    call step(u)\n",
+                                                               uses=uses))), 1)
+
+    def test_m6_the_published_set_is_the_models_and_is_not_shadowed(self) -> None:
+        shadow = "  subroutine bx__step(v)\n    real(real64) :: v(:)\n  end subroutine bx__step\n"
+        other = _MODEL_OK.replace("bx__step", "bx__other")
+        v = self._run(_reach_checks("    call bx__step(u)\n", uses="  use bx_model\n",
+                                    extra=shadow), other)
+        # P is read from the MODEL: a checks-defined `bx__step` is not a member, so the call to
+        # it is no reach (and, being outside P, no shadow either).
+        self.assertEqual(len(v), 1, v)
+        self.assertIn(_REACH, v[0])
+        self.assertIn("(one of: bx__other)", v[0])
+        v = self._run(_reach_checks("    call bx__step(u)\n", uses="  use bx_model\n",
+                                    extra=shadow))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("defines `bx__step`, a published operation of the model", v[0])
+        self.assertEqual(len(self._reach(_reach_checks(
+            "    call dep__flux(u)\n", uses="  use bx_model\n  use dep_model\n"))), 1)
+        v = self._run(_reach_checks("    call bx__step(u)\n", uses=""))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("no `use bx_model`", v[0])
+
+    def test_m7_a_comment_a_literal_or_a_use_is_not_a_reach(self) -> None:
+        spec_anchor = "    integer, intent(out) :: steps, cells_updated\n"
+        head_anchor = "  subroutine case_run(case_id, steps, cells_updated, ok)\n"
+        uses = "  use bx_model, only: bx__other\n"
+        for label, checks in (
+                ("comment", _reach_checks("    ! call bx__step(u)\n", uses=uses)),
+                ("literal", _reach_checks("    print *, 'call bx__step(u)'\n", uses=uses)),
+                ("procedure-local use", _reach_checks("", uses=uses).replace(
+                    head_anchor, head_anchor + "    use bx_model, only: step => bx__step\n")),
+                ("interface body", _reach_checks("", uses=uses).replace(
+                    spec_anchor, spec_anchor + "    interface\n      subroutine bx__step(v)\n"
+                    "        real(8) :: v(:)\n      end subroutine bx__step\n"
+                    "    end interface\n"))):
+            with self.subTest(label):
+                self.assertEqual(len(self._reach(checks)), 1, self._run(checks))
+                self.assertEqual(len(self._run(checks)), 1, self._run(checks))
+
+    def test_m8_an_unreadable_structure_is_a_violation_and_a_missing_reader_raises(
+            self) -> None:
+        # `endsubroutine` is a legal variable name (gfortran accepts it) that the structure
+        # reader reads as the statement it spells — the documented carrier of a parse error.
+        checks = _reach_checks("    endsubroutine = 1.0\n    call bx__step(u)\n").replace(
+            "    logical, intent(out) :: ok\n",
+            "    logical, intent(out) :: ok\n    real :: endsubroutine\n")
+        v = fortran_source.checks_model_reach_violations(
+            Path("bx_checks.f90"), checks, [], "bx")
+        self.assertIn("defines no", v[0])  # P is read first
+        with tempfile.TemporaryDirectory() as t:
+            model = Path(t) / "bx_model.f90"
+            model.write_text(_MODEL_OK)
+            v = fortran_source.checks_model_reach_violations(
+                Path("bx_checks.f90"), checks, [model], "bx")
+            self.assertTrue(v, v)
+            self.assertTrue(all("checks-reach gate cannot read" in x for x in v), v)
+            with unittest.mock.patch.object(
+                    fortran_source, "structure_reading",
+                    side_effect=fortran_structure.FortranStructureUnavailableError("absent")):
+                with self.assertRaises(fortran_structure.FortranStructureUnavailableError):
+                    fortran_source.checks_model_reach_violations(
+                        Path("bx_checks.f90"), _reach_checks("    call bx__step(u)\n"),
+                        [model], "bx")
+
+    def test_m10_an_operation_passed_as_an_actual_is_a_reach(self) -> None:
+        self.assertEqual(self._run(_reach_checks(
+            "    call driver(bx__step)\n",
+            extra="  subroutine driver(op)\n    external :: op\n  end subroutine driver\n")), [])
+
+    def test_m11_case_is_folded_on_both_sides(self) -> None:
+        self.assertEqual(self._run(_reach_checks("    CALL BX__STEP(U)\n")), [])
+        self.assertEqual(self._run(_reach_checks("    call bx__step(u)\n"),
+                                   _MODEL_OK.replace("bx__step", "BX__Step")), [])
+
+    def test_m12_a_contained_procedure_is_its_own_node(self) -> None:
+        contained = ("  contains\n    subroutine inner()\n      call bx__step(u)\n"
+                     "    end subroutine inner\n")
+        reached = _reach_checks("    call inner()\n").replace(
+            "  end subroutine case_run\n", contained + "  end subroutine case_run\n")
+        self.assertEqual(self._run(reached), [])
+        orphan = _reach_checks("").replace(
+            "  end subroutine case_run\n", contained + "  end subroutine case_run\n")
+        self.assertEqual(len(self._reach(orphan)), 1, self._run(orphan))
+
+    def test_g18_the_certified_pair_passes_and_the_inline_rewrite_is_refused(self) -> None:
+        checks = (_G18_DIR / "advdiff1d_linear_checks.f90").read_text()
+        model = (_G18_DIR / "advdiff1d_linear_model.f90").read_text()
+        kw = dict(spec="advdiff1d_linear", node_key="problem/advdiff1d_linear@0.4.3")
+        self.assertEqual(self._run(checks, model, **kw), [])
+        call = ("      call advdiff1d_linear__step(cur_nx, cur_len, cur_a, cur_nu, cur_t_start, &\n"
+                "        cur_t_end, cur_n_step, n, u, u_work, t_new, step_ok)\n")
+        self.assertEqual(checks.count(call), 1)
+        g18 = checks.replace(call, "      u_work = u - 0.1_dp*(u - cshift(u, -1))\n"
+                                   "      t_new = t + 0.1_dp\n      step_ok = .true.\n")
+        v = self._run(g18, model, **kw)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn(_REACH, v[0])
+        self.assertIn("(one of: advdiff1d_linear__step)", v[0])
+
+    def test_g18_cuda_the_certified_pair_passes_and_the_inline_rewrite_is_refused(
+            self) -> None:
+        checks = (_G18_DIR / "advdiff1d_linear_checks.cu").read_text()
+        model = (_G18_DIR / "advdiff1d_linear_model.cu").read_text()
+        kw = dict(spec="advdiff1d_linear", node_key="problem/advdiff1d_linear@0.4.3",
+                  language="cuda_cpp", suffix=".cu")
+        self.assertEqual([x for x in self._run(checks, model, **kw) if "reach" in x], [])
+        self.assertEqual(self._run(checks, model, **kw), [])
+        call = ("    advdiff1d_linear_model::advdiff1d_linear__step(g_case.nx, kA, kNu, g_case.dx, "
+                "g_case.dt, u_view_in,\n"
+                "                                                   u_view_out, step_ok);\n")
+        decl_start = checks.index("namespace advdiff1d_linear_model {")
+        decl_end = checks.index("}  // namespace advdiff1d_linear_model\n") + len(
+            "}  // namespace advdiff1d_linear_model\n")
+        self.assertEqual(checks.count(call), 1)
+        g18 = (checks[:decl_start] + checks[decl_end:]).replace(
+            call, "    for (int i = 0; i < g_case.nx; ++i) { u[i] = u[i] * 0.9; }\n"
+                  "    step_ok = true;\n")
+        v = self._run(g18, model, **kw)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn(_REACH, v[0])
+
+    def test_m1_cuda_wiring_through_the_handler(self) -> None:
+        model = ("namespace p_model {\nvoid p__step(std::vector<double>& u) { u[0] = 1.0; }\n}\n")
+        checks = ('#include "p_checks.cuh"\nnamespace p_model { void p__step(std::vector<double>& u); }\n'
+                  "namespace p_checks {\nstd::vector<double> u;\n"
+                  "void case_run(const std::string& case_id, int& steps, int& cells_updated, "
+                  "bool& ok) {\n  BODY\n  steps = 1; cells_updated = 1; ok = true;\n}\n}\n")
+        kw = dict(spec="p", node_key="problem/p@0.1.0", language="cuda_cpp", suffix=".cu")
+        reach = [x for x in self._run(checks.replace("BODY", "p_model::p__step(u);"), model, **kw)
+                 if "reach" in x]
+        self.assertEqual(reach, [])
+        reach = [x for x in self._run(checks.replace("BODY", "u[0] = 1.0;"), model, **kw)
+                 if _REACH in x]
+        self.assertEqual(len(reach), 1)
 
 
 class ChecksSourceGateTests(unittest.TestCase):

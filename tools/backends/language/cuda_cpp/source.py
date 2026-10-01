@@ -688,6 +688,104 @@ def published_subroutines(text: str, spec_id: str) -> list[str]:
     return out
 
 
+_USING_STATEMENT_RE = re.compile(r"\busing\b[^;{}]*;")
+
+
+def checks_model_reach_violations(checks_path: Path, text: str, model_files: list[Path],
+                                  spec_id: str) -> list[str]:
+    """The checks-reach gate (issue #314): on an M3c node the checks source's `case_run`
+    advances the state by calling a published operation of the model —
+    `docs/workflow/CHECKS_MODULE_CONTRACT.md` §1, the `case_run` row, is canonical for the rule.
+    `text` is the checks source's raw content; each model source is read here.
+
+    THE PUBLISHED SET P is what the model under review DEFINES (`published_subroutines`: a
+    defined `<spec_id>__*` in namespace `<spec_id>_model`), never the leaf-authored bundle; an
+    empty P is its own violation.
+
+    THE READING IS POLARITY-INVERTED. It does not parse call expressions: every identifier token
+    of a defined function's body (`declarations.read`'s body — comments, literals and directives
+    blanked — with `using` declarations dropped) that names another function this source defines
+    is an edge, and one that names a member of P is a hit. So a qualified or unqualified call, a
+    kernel launch `op<<<g, b>>>(...)`, a call split over lines, a helper called with template
+    arguments, a call inside a lambda in a body, and an operation taken by address are all
+    followed. Functions are keyed by bare name, so overloads and same-named functions in
+    different namespaces merge (over-approximation in the passing direction only). The walk
+    starts at the `case_run` defined in namespace `<spec_id>_checks`; a call only from
+    `case_setup` does not count (the capture after it is the INITIAL state, §1-b). NOT followed,
+    so an operation reached only through one is refused: a namespace-scope lambda variable, a
+    member function of a struct, a template function (`declarations` reads none of them as a
+    function), and a macro (no directive but `#include` is allowed).
+
+    WHAT IT DOES NOT CLOSE: a dead or guarded call, a discarded result, an update recomputed
+    after a live call, and an operation named without being invoked all pass; `Generate.verify`
+    owns the semantic half. It closes the shape of probe g18 — a `case_run` that computes the
+    state inline and names no operation at all.
+
+    Also refused: a checks source that DEFINES a function named as a member of P, in any
+    namespace (it DECLARES the operation on a `problem` node and never defines one). A source
+    whose declarations do not read is refused with `_structure_refusal`."""
+    published: set[str] = set()
+    for model_file in model_files:
+        try:
+            model_text = model_file.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        published.update(published_subroutines(model_text, spec_id))
+    if not published:
+        return [f"{checks_path}: the model source defines no `{spec_id}__<op>` in "
+                f"`namespace {spec_id}_model` for case_run to call "
+                f"({[str(p) for p in model_files]}) — define the operation there "
+                "(GENERATE_RULES.md §3)"]
+    ops = ", ".join(sorted(published))
+
+    decls = cpp_decls.read(text)
+    if decls.errors:
+        return [_structure_refusal(checks_path, decls.errors, "the checks-reach gate")]
+
+    violations: list[str] = []
+    checks_namespace = (f"{spec_id}_checks",)
+    bodies: dict[str, list[str]] = {}
+    has_root = False
+    for fn in decls.functions:
+        if not fn.defined:
+            continue
+        if fn.name in published:
+            violations.append(
+                f"{checks_path}: defines `{fn.name}`, a published operation of the model — the "
+                "checks source calls the model's operation and never defines one (on a problem "
+                "node it DECLARES the operation in its model namespace)")
+        if fn.name == "case_run":
+            if fn.namespace != checks_namespace:
+                # Only the ABI's `case_run` is the root: one in another namespace is not what
+                # the runner calls.
+                continue
+            has_root = True
+        bodies.setdefault(fn.name, []).append(_USING_STATEMENT_RE.sub(" ", fn.body))
+    if not has_root:
+        violations.append(
+            f"{checks_path}: namespace {spec_id}_checks defines no `case_run` for the "
+            "checks-reach gate to start from")
+        return violations
+
+    seen = {"case_run"}
+    frontier = ["case_run"]
+    while frontier:
+        tokens = {token for body in bodies.get(frontier.pop(), ())
+                  for token in _IDENTIFIER_TOKEN_RE.findall(body)}
+        if tokens & published:
+            return violations
+        for token in tokens:
+            if token in bodies and token not in seen:
+                seen.add(token)
+                frontier.append(token)
+    violations.append(
+        f"{checks_path}: case_run reaches no published operation of the model (one of: {ops}) "
+        f"— the checks source advances the state by `{spec_id}_model::{spec_id}__<op>(...)` "
+        "from case_run or from a function case_run reaches; it must not compute the update "
+        "itself")
+    return violations
+
+
 def published_operation_missing(name: str) -> str:
     return (f"generated model source does not publish component public_api operation '{name}' "
             f"— define `{name}(...)` in the model's namespace (the IR public_api pins it as a "

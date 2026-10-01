@@ -2260,7 +2260,9 @@ def _validate_checks_source_files(
     ``sb_<var> => <var>`` since Z6, issue #255); NEITHER the checks NOR
     the model source ``use``s the harness (the host-rendered runner is the sole caller of its
     plumbing — the one exception is below); the checks module does no file I/O
-    (``open(``); and it writes no forbidden judge-artifact filename. A violation routes
+    (``open(``); its ``case_run`` reaches a published operation of the model (the
+    checks-reach gate, issue #314 — the language's ``checks_model_reach_violations``); and it
+    writes no forbidden judge-artifact filename. A violation routes
     back to Generate.generate to re-author the checks source.
 
     On a harness that runs the program as several ranks (`harness_spec_id`, the target's —
@@ -2372,6 +2374,11 @@ def _validate_checks_source_files(
 
     violations.extend(source_reading.checks_harness_isolation_violations(
         checks_path, text, model_files, allowed_harness_uses=harness_uses))
+    # The checks-reach gate (issue #314): `case_run` reaches a published operation of the model
+    # (CHECKS_MODULE_CONTRACT.md §1, the `case_run` row). Independent of the ABI refusal above
+    # and appended, never returned on, so no sibling gate is skipped.
+    violations.extend(source_reading.checks_model_reach_violations(
+        checks_path, text, model_files, spec_id))
     lowered = text.lower()
     for output_name in FORBIDDEN_RUNNER_OUTPUTS:
         if output_name in lowered:

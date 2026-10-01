@@ -2564,7 +2564,10 @@ class RegistryConsistencyTests(unittest.TestCase):
             "validate_runner_snapshot_filenames", "published_subroutines", "counted_loops",
             "source_module_deps", "MODULE_SOURCE_SUFFIXES", "MODULE_ARTIFACT_SUFFIX",
             # R4-b PR-4: the component-surface gate's remedies.
-            "published_operation_missing", "published_operation_extra"),
+            "published_operation_missing", "published_operation_extra",
+            # Issue #314: the checks-reach gate. Load-bearing: the neutral caller does not wrap
+            # content calls, so a language lacking it raises and discards every sibling finding.
+            "checks_model_reach_violations"),
         "signatures": (
             "LANGUAGE_DISPLAY_NAME", "SignatureParseError", "load_structured_signatures",
             "render_signatures", "render_symbol", "render_interface", "render_module_parameter",
