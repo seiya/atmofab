@@ -173,8 +173,9 @@ class MetricAddressResolutionTest(unittest.TestCase):
     def test_a_non_finite_metric_is_a_value_not_an_na(self) -> None:
         # A metric that was computed and came out non-finite reaches the file as `NaN` /
         # `Infinity` / `-Infinity` (RUNNER_OUTPUT_CONTRACT.md §4) and parses as a float. It is a
-        # value, not an N/A: `na_allowed` does not accept it. A NaN fails every comparison as
-        # physics; an infinity compares as the signed extreme it is (issue #315).
+        # value, not an N/A: `na_allowed` does not accept it. A NaN fails every ordered comparison
+        # and `eq` as physics and satisfies `ne`; an infinity compares as the signed extreme it is
+        # (issue #315).
         def run(x, op, value=0.0, **cond):
             diag = {"per_case": {"c1": {"metrics": {"metrics.x": x}}}}
             status, kind, _ = evaluate_predicate(
@@ -187,6 +188,7 @@ class MetricAddressResolutionTest(unittest.TestCase):
             self.assertEqual(run(x, op, na_allowed=True), ("fail", "physics"), x)
         for op in ("le", "ge", "lt", "gt", "eq"):
             self.assertEqual(run(nan, op), ("fail", "physics"), op)
+        self.assertEqual(run(nan, "ne"), ("pass", "pass"))
         self.assertEqual(run(inf, "ge"), ("pass", "pass"))
         self.assertEqual(run(-inf, "le"), ("pass", "pass"))
 

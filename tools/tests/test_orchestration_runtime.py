@@ -21294,9 +21294,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # inlined slice must name because `post_execute` shape-checks it. Measured 11431.
         # Lowered 11500->10800 (issue #289, R4-b PR-2): the Fortran descriptor rules of §4 moved
         # to the Fortran binding. Measured 10410 at 33dacd5c.
-        # Raised 10800->11700 (issue #315): §4 names the non-finite tokens, the branch rule,
-        # and that a non-finite value is never `null` and never stops the writer. Measured 11618.
-        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 11700,
+        # Raised 10800->11900 (issue #315): §4 names the non-finite tokens, the branch rule,
+        # and that a non-finite value is never `null` and never stops the writer. Measured 11705.
+        "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": 11900,
         # R1/M3c-β: the fixed-ABI contract for a physics node's `<spec_id>_checks.f90`
         # (leaf-authored callbacks the host-rendered runner drives). Leaf must-read for
         # every generate LLM leaf (its SKILL branches on whether the node is M3c).
