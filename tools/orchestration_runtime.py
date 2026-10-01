@@ -16779,6 +16779,7 @@ def revoke_artifact(
         "reason": "no_meta",
         "still_certified": False,
         "certified_by": None,
+        "certified_pipeline_ref": None,
     }
     if meta_path is None or not meta_path.is_file():
         # `noop` is the one answer that looks identical in the good case (none was written
@@ -16796,11 +16797,17 @@ def revoke_artifact(
         # documented state of a failed `--rederive` attempt (issue #369): there the attempt
         # wrote no meta, and the STANDING output — whose id is not the attempt's — stays
         # selected (`docs/RUNBOOK.md`). Only the conductor holds the attempt's id, so it is the
-        # one that decides; this answers the fact.
+        # one that decides; this answers the fact. A source / binary / run id is numbered per
+        # pipeline, so `certified_pipeline_ref` names the pipeline it is one of (a forced
+        # Compile can open a fresh pipeline whose first source repeats the standing one's id).
+        # Compile names none — its `certified_by` is already a path, and its chain stops at the
+        # IR.
         certified, detail = _phase_certified(repo_root, orchestration_id, node_key, step_token)
         result["still_certified"] = bool(certified)
         result["certified_by"] = (_certified_by_ref(step_token, detail) or None
                                   if certified else None)
+        result["certified_pipeline_ref"] = (detail.get("pipeline_ref") or None
+                                            if certified else None)
         return result
     revoked = _revoke_stage_meta(
         repo_root,

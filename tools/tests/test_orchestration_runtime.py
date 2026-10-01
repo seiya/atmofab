@@ -9845,20 +9845,23 @@ class PhaseCertificationTests(unittest.TestCase):
                     self.assertTrue(result["still_certified"])
                     self.assertEqual(result["certified_by"], refs[key])
                     self.assertEqual(result["certified_by"], standing)
+                    self.assertEqual(result["certified_pipeline_ref"], refs["pipeline_ref"])
             # Compile's `certified_by` is the IR's path, the form the conductor's attempt id has.
             res_dir = ort._orchestration_root(repo, "o1") / "reservations" / ort._node_key_to_safe(self._NK)
             res_dir.mkdir(parents=True, exist_ok=True)
             with mock.patch.object(ort, "_reserved_id", return_value="ir_attempt"):
                 result = ort.revoke_artifact(repo, "o1", node_key=self._NK, step="compile",
                                              reason="r", trigger_agent_run_id="t")
-            self.assertEqual((result["status"], result["certified_by"]), ("noop", refs["ir_ref"]))
+            self.assertEqual((result["status"], result["certified_by"],
+                              result["certified_pipeline_ref"]), ("noop", refs["ir_ref"], None))
             # Not certified: nothing certifies it, so `certified_by` is None.
             ort.revoke_artifact(repo, "o1", node_key=self._NK, step="compile",
                                 reason="r", trigger_agent_run_id="t")
             (repo / refs["pipeline_ref"] / "lineage.json").write_text("{}", encoding="utf-8")
             result = ort.revoke_artifact(repo, "o1", node_key=self._NK, step="generate",
                                          reason="r", trigger_agent_run_id="t")
-            self.assertEqual((result["still_certified"], result["certified_by"]), (False, None))
+            self.assertEqual((result["still_certified"], result["certified_by"],
+                              result["certified_pipeline_ref"]), (False, None, None))
 
     def test_the_conductor_flag_answers_a_still_certified_noop_instead_of_refusing(
             self) -> None:

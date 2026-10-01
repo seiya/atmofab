@@ -8895,7 +8895,8 @@ class Conductor:
                          findings: str | None = None,
                          severity: str | None = None,
                          repair_strategy: str | None = None,
-                         attempt_id: str | None = None) -> None:
+                         attempt_id: str | None = None,
+                         attempt_pipeline_ref: str | None = None) -> None:
         """The whole of a re-derivation decision: revoke the artifact, then reset the record.
         Every retry route calls exactly this, so the two halves cannot drift apart.
 
@@ -8911,8 +8912,10 @@ class Conductor:
         the id the lineage names, and the STANDING output keeps certifying the phase — the
         state `docs/RUNBOOK.md` documents for a failed forced attempt, not a lost decision.
         The answer's `certified_by` names what certifies the phase; when the phase is forced
-        and that is not this attempt's id (`attempt_id`), the attempt is repaired like any
-        other. Every other still-certified `noop` raises — the unforced case, and the forced
+        and that is not this attempt's id (`attempt_id`) — a source / binary / run id compared
+        within its pipeline (`certified_pipeline_ref` against `attempt_pipeline_ref`), since
+        those ids are numbered per pipeline — the attempt is repaired like any other. A side
+        that names no pipeline compares the ids alone, which can only over-refuse. Every other still-certified `noop` raises — the unforced case, and the forced
         one whose attempt DID certify under its own id while the lineage lost it (the #177
         class, which `--rederive` does not exempt).
 
@@ -8934,10 +8937,16 @@ class Conductor:
                       reason=reason, detail=str((outcome or {}).get("reason") or ""),
                       still_certified=bool((outcome or {}).get("still_certified")),
                       certified_by=certified_by or None, forced=forced)
+            certified_pipe = str((outcome or {}).get("certified_pipeline_ref") or "")
+            own = certified_by == attempt_id and (
+                not certified_pipe or not attempt_pipeline_ref
+                or certified_pipe == attempt_pipeline_ref)
             if ((outcome or {}).get("still_certified") and forced and certified_by
-                    and attempt_id and certified_by != attempt_id):
+                    and attempt_id and not own):
                 self.emit("revoke_artifact_forced_standing", node_key=node_key, phase=phase,
-                          certified_by=certified_by, attempt_id=attempt_id)
+                          certified_by=certified_by, attempt_id=attempt_id,
+                          certified_pipeline_ref=certified_pipe or None,
+                          attempt_pipeline_ref=attempt_pipeline_ref)
                 return
             if (outcome or {}).get("still_certified"):
                 raise RevocationNotLandedError(
@@ -13931,7 +13940,9 @@ class Conductor:
             self.revoke_and_reset(refs.node_key, phase, trigger, reason,
                                   findings=findings, severity=severity,
                                   repair_strategy=repair_strategy,
-                                  attempt_id=self._attempt_id(refs, phase))
+                                  attempt_id=self._attempt_id(refs, phase),
+                                  attempt_pipeline_ref=(None if phase == "compile"
+                                                        else refs.pipeline_ref))
         except RevocationNotLandedError as exc:
             self.emit("revocation_not_landed", node_key=refs.node_key, phase=phase,
                       reason=reason, intended_terminal=fallback_code, error=str(exc)[:200])

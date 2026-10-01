@@ -1558,6 +1558,36 @@ class RevokeAndResetTest(unittest.TestCase):
                         self.assertRaises(wc.RevocationNotLandedError):
                     c.revoke_and_reset(self._NK, "generate", "t1", "r", attempt_id=attempt)
 
+    def test_an_id_is_compared_within_its_pipeline(self) -> None:
+        """A source / binary / run id is numbered per pipeline: a forced Compile can open a
+        fresh pipeline whose first source repeats the standing source's id (round-2 review).
+        The same id in ANOTHER pipeline is the standing output — repaired; in the attempt's
+        own pipeline it is the #177 loss; with either pipeline unnamed the ids alone decide,
+        which can only over-refuse."""
+        same_id = {**self._STANDING, "certified_by": "src_001"}
+        cases = (("p_old", "p_new", None),
+                 ("p_new", "p_new", wc.RevocationNotLandedError),
+                 (None, "p_new", wc.RevocationNotLandedError),
+                 ("p_old", None, wc.RevocationNotLandedError))
+        for certified_pipe, attempt_pipe, raises in cases:
+            with self.subTest(certified=certified_pipe, attempt=attempt_pipe):
+                c = self._conductor({**same_id, "certified_pipeline_ref": certified_pipe})
+                c.rederive = frozenset({"generate"})
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    if raises is None:
+                        c.revoke_and_reset(self._NK, "generate", "t1", "r",
+                                           attempt_id="src_001",
+                                           attempt_pipeline_ref=attempt_pipe)
+                    else:
+                        with self.assertRaises(raises):
+                            c.revoke_and_reset(self._NK, "generate", "t1", "r",
+                                               attempt_id="src_001",
+                                               attempt_pipeline_ref=attempt_pipe)
+                standing = [e for e in self._events(buf)
+                            if e["event"] == "revoke_artifact_forced_standing"]
+                self.assertEqual(len(standing), 1 if raises is None else 0)
+
     def test_the_conductor_asks_the_cli_to_answer_rather_than_refuse(self) -> None:
         """The decision above can only run if the CLI answers: without the flag a
         still-certified `noop` exits 1, and `Conductor.runtime` turns that into a bare
@@ -1720,20 +1750,23 @@ class RevocationNotLandedTerminalTest(unittest.TestCase):
         #177 loss and terminalizes `revocation_not_landed`. Both arms, so the generate row of
         `_attempt_id` and the route's `phase` argument are each pinned."""
         refs = self._refs()
-        for certified_by, want in (("s_0", ("pass", None)),
-                                   (refs.source_id, ("fail_closed", "revocation_not_landed"))):
-            with self.subTest(certified_by=certified_by):
+        for certified_by, pipe, want in (
+                ("s_0", refs.pipeline_ref, ("pass", None)),
+                (refs.source_id, refs.pipeline_ref, ("fail_closed", "revocation_not_landed")),
+                # the attempt's id in ANOTHER pipeline: the standing output, so repaired
+                (refs.source_id, "workspace/pipelines/other/p_0", ("pass", None))):
+            with self.subTest(certified_by=certified_by, pipeline=pipe):
                 c = self._conductor()
                 c.rederive = frozenset({"generate"})
                 c.workflow_mode = "prod"
                 real_runtime = c.runtime
 
                 def runtime(args, *, input=None, _cb=certified_by,  # type: ignore[no-untyped-def]
-                            _real=real_runtime):
+                            _pipe=pipe, _real=real_runtime):
                     if args[0] == "revoke-artifact":
                         _real(args, input=input)
                         return {"status": "noop", "reason": "no_meta", "still_certified": True,
-                                "certified_by": _cb}
+                                "certified_by": _cb, "certified_pipeline_ref": _pipe}
                     return _real(args, input=input)
 
                 c.runtime = runtime  # type: ignore[method-assign]
