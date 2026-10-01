@@ -759,7 +759,10 @@ def checks_model_reach_violations(checks_path: Path, text: str, model_files: lis
     qualifiers = {model_ns}
     sources = [(checks_path, text)]
     for path in leaf_sources(checks_path.parent):
-        if path == checks_path or path in model_files or path.name == f"{spec_id}_runner.cu":
+        # The host-rendered runner by its full path: a leaf file of that NAME in a subdirectory
+        # is a leaf source like any other (round 3).
+        if (path == checks_path or path in model_files
+                or path == checks_path.parent / f"{spec_id}_runner.cu"):
             continue
         try:
             sources.append((path, path.read_text(encoding="utf-8", errors="ignore")))

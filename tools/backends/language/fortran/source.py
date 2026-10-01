@@ -2646,10 +2646,12 @@ def checks_model_reach_violations(checks_path: Path, text: str, model_files: lis
 
     violations: list[str] = []
     leaf_views = [(checks_path, view)]
-    runner_name = f"{spec_l}_runner.f90"
+    # The host-rendered runner by its full path: a leaf file of that NAME in a subdirectory is
+    # a leaf source like any other (round 3).
+    runner_path = checks_path.parent / f"{spec_l}_runner.f90"
     for path in sorted(checks_path.parent.rglob("*.f90")):
         if (path == checks_path or path in model_files or path.is_symlink()
-                or path.name.lower() == runner_name):
+                or path == runner_path):
             continue
         try:
             leaf_views.append((path, joined_masked_view(

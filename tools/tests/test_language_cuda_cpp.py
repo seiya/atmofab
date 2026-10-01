@@ -979,7 +979,14 @@ class ChecksReachGateTests(unittest.TestCase):
             (Path(tmp) / "p_runner.cu").write_text("void p__step(int);\n")
             v = cpp_source.checks_model_reach_violations(
                 Path(tmp) / "p_checks.cu", _REACHING_CHECKS, [Path(tmp) / "p_model.cu"], "p")
-        self.assertEqual(v, [])
+            self.assertEqual(v, [])
+            # ...but a leaf file of the runner's NAME in a subdirectory is read (round 3).
+            (Path(tmp) / "sub").mkdir()
+            (Path(tmp) / "sub" / "p_runner.cu").write_text("void p__step(int);\n")
+            v = cpp_source.checks_model_reach_violations(
+                Path(tmp) / "p_checks.cu", _REACHING_CHECKS, [Path(tmp) / "p_model.cu"], "p")
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("sub/p_runner.cu: names a published operation", v[0])
 
     def test_a_helper_source_naming_the_operation_is_refused(self) -> None:
         """A helper `.cu` the checks source includes is read by the same rule."""

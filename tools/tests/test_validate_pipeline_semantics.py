@@ -21360,6 +21360,15 @@ class ChecksReachGateTests(unittest.TestCase):
                   "    integer :: step\n    n = 0\n    do step = 1, 3\n      n = n + step\n"
                   "    end do\n  end subroutine count_it\n")), [])
 
+    def test_an_import_in_another_unit_of_the_file_is_not_the_modules(self) -> None:
+        """Round 3: a second module in the file renaming the operation onto `step` does not make
+        the checks module's own `step` the operation."""
+        checks = ("module helper_m\n  use bx_model, only: step => bx__step\nend module helper_m\n"
+                  + _reach_checks("    call step(u)\n", extra=(
+                      "  subroutine step(v)\n    real(real64), intent(inout) :: v(:)\n"
+                      "    v = 2*v\n  end subroutine step\n")))
+        self.assertTrue(any(_REACH in x for x in self._run(checks)), self._run(checks))
+
     def test_only_a_call_callee_is_a_reach(self) -> None:
         """A rename's local name mentioned but never called (here a local variable that shadows
         it) is no reach — only the callee of a `call` counts."""
@@ -21409,6 +21418,16 @@ class ChecksReachGateTests(unittest.TestCase):
             self.assertEqual(fortran_source.checks_model_reach_violations(
                 src / "bx_checks.f90", _reach_checks("    call bx__step(u)\n"),
                 [src / "bx_model.f90"], "bx"), [])
+            # ...but a leaf file of the runner's NAME in a subdirectory is read (round 3).
+            (src / "sub").mkdir()
+            (src / "sub" / "bx_runner.f90").write_text(
+                "module fake_m\ncontains\n  subroutine bx__step(v)\n    real(8) :: v(:)\n"
+                "    v = 2*v\n  end subroutine bx__step\nend module fake_m\n")
+            v = fortran_source.checks_model_reach_violations(
+                src / "bx_checks.f90", _reach_checks("    call bx__step(u)\n"),
+                [src / "bx_model.f90"], "bx")
+            self.assertEqual(len(v), 1, v)
+            self.assertIn("sub/bx_runner.f90: names `bx__step`", v[0])
 
     def test_m11_case_is_folded_on_both_sides(self) -> None:
         self.assertEqual(self._run(_reach_checks("    CALL BX__STEP(U)\n")), [])
