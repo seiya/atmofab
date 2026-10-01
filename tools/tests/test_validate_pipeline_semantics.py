@@ -21613,7 +21613,9 @@ class ChecksSourceGateTests(unittest.TestCase):
     def test_wrong_module_name(self) -> None:
         bad = _CHECKS_OK.replace("module bx_checks", "module bx_wrong", 1).replace(
             "end module bx_checks", "end module bx_wrong")
-        self.assertTrue(any("module bx_checks" in v for v in self._run(bad)))
+        # The declaration check's own words: since issue #314 the reach gate's refusals also
+        # name `module bx_checks`, and a bare needle was satisfied by them (round 3).
+        self.assertTrue(any("must declare `module bx_checks` (the fixed ABI module)" in v for v in self._run(bad)))
 
     def test_a_module_declaration_only_inside_a_comment_does_not_satisfy_the_gate(self) -> None:
         # The module-name check reads COMMENT-STRIPPED, CONTINUATION-JOINED logical lines, and
@@ -21626,14 +21628,14 @@ class ChecksSourceGateTests(unittest.TestCase):
         commented = _CHECKS_OK.replace("module bx_checks\n",
                                        "module bx_wrong\n  ! module bx_checks\n", 1).replace(
             "end module bx_checks", "end module bx_wrong")
-        self.assertTrue(any("module bx_checks" in v for v in self._run(commented)),
+        self.assertTrue(any("must declare `module bx_checks` (the fixed ABI module)" in v for v in self._run(commented)),
                         "a commented-out declaration satisfied the gate")
 
         # Over-rejection half: a declaration legally split across a `&` continuation must still
         # satisfy it. Raw line splitting sees `module bx_&` and reports the module missing on a
         # source gfortran accepts.
         continued = _CHECKS_OK.replace("module bx_checks\n", "module bx_&\n  &checks\n", 1)
-        self.assertEqual([v for v in self._run(continued) if "module bx_checks" in v], [],
+        self.assertEqual([v for v in self._run(continued) if "must declare `module bx_checks` (the fixed ABI module)" in v], [],
                          "a continuation-split declaration was reported missing")
 
     def test_missing_public_name(self) -> None:
