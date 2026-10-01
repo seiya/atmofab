@@ -9820,6 +9820,135 @@ class PhaseCertificationTests(unittest.TestCase):
                 ort.revoke_artifact(repo, "o1", node_key=self._NK, step="generate",
                                     reason="r", trigger_agent_run_id="t")["still_certified"])
 
+    def test_a_noop_names_what_certifies_the_phase(self) -> None:
+        """Issue #369: the answer carries `certified_by`, the id `check_phase_certified` records,
+        so the conductor can tell a failed forced attempt (the lineage names the attempt, which
+        wrote no meta, and the STANDING output certifies the phase) from a lost revocation. The
+        fixture is that shape: the lineage names an id with no meta beside a certified one."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="validate")
+            for step, key, attempt in (("generate", "source_id", "src_attempt"),
+                                       ("build", "binary_id", "bin_attempt"),
+                                       ("validate", "run_id", "run_attempt")):
+                with self.subTest(step=step):
+                    lineage_path = repo / refs["pipeline_ref"] / "lineage.json"
+                    lineage = json.loads(lineage_path.read_text("utf-8"))
+                    standing = lineage[key]
+                    lineage_path.write_text(json.dumps({**lineage, key: attempt}),
+                                            encoding="utf-8")
+                    result = ort.revoke_artifact(repo, "o1", node_key=self._NK, step=step,
+                                                 reason="r", trigger_agent_run_id="t")
+                    lineage_path.write_text(json.dumps(lineage), encoding="utf-8")
+                    self.assertEqual(result["status"], "noop")
+                    self.assertTrue(result["still_certified"])
+                    self.assertEqual(result["certified_by"], refs[key])
+                    self.assertEqual(result["certified_by"], standing)
+                    self.assertEqual(result["certified_pipeline_ref"], refs["pipeline_ref"])
+            # Compile's `certified_by` is the IR's path, the form the conductor's attempt id has.
+            res_dir = ort._orchestration_root(repo, "o1") / "reservations" / ort._node_key_to_safe(self._NK)
+            res_dir.mkdir(parents=True, exist_ok=True)
+            with mock.patch.object(ort, "_reserved_id", return_value="ir_attempt"):
+                result = ort.revoke_artifact(repo, "o1", node_key=self._NK, step="compile",
+                                             reason="r", trigger_agent_run_id="t")
+            self.assertEqual((result["status"], result["certified_by"],
+                              result["certified_pipeline_ref"]), ("noop", refs["ir_ref"], None))
+            # Not certified: nothing certifies it, so `certified_by` is None.
+            ort.revoke_artifact(repo, "o1", node_key=self._NK, step="compile",
+                                reason="r", trigger_agent_run_id="t")
+            (repo / refs["pipeline_ref"] / "lineage.json").write_text("{}", encoding="utf-8")
+            result = ort.revoke_artifact(repo, "o1", node_key=self._NK, step="generate",
+                                         reason="r", trigger_agent_run_id="t")
+            self.assertEqual((result["still_certified"], result["certified_by"],
+                              result["certified_pipeline_ref"]), (False, None, None))
+
+    def test_the_conductor_flag_answers_a_still_certified_noop_instead_of_refusing(
+            self) -> None:
+        """Issue #369: the conductor asks with --caller-decides-still-certified and decides
+        itself; without the flag the refusal reached it as a bare `runtime revoke-artifact
+        failed` — the run ended `conductor_error` and the repair route was lost. The manual
+        recipe (no flag) keeps exit 1, and its message and JSON name what certifies the phase."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="generate")
+            lineage_path = repo / refs["pipeline_ref"] / "lineage.json"
+            lineage = json.loads(lineage_path.read_text("utf-8"))
+            lineage_path.write_text(json.dumps({**lineage, "source_id": "src_attempt"}),
+                                    encoding="utf-8")
+            argv = ["revoke-artifact", "--repo-root", str(repo), "--orchestration-id", "o1",
+                    "--node-key", self._NK, "--step", "generate", "--reason", "r",
+                    "--trigger-agent-run-id", "t"]
+            for flag, want_rc in ((False, 1), (True, 0)):
+                with self.subTest(caller_decides=flag):
+                    err, out = io.StringIO(), io.StringIO()
+                    with redirect_stderr(err), redirect_stdout(out):
+                        rc = main(argv + (["--caller-decides-still-certified"] if flag else []))
+                    self.assertEqual(rc, want_rc)
+                    answer = json.loads(out.getvalue())
+                    self.assertEqual((answer["status"], answer["still_certified"],
+                                      answer["certified_by"]),
+                                     ("noop", True, refs["source_id"]))
+                    self.assertEqual("did not reach the artifact" in err.getvalue(), not flag)
+                    if not flag:
+                        self.assertIn(f"(by {refs['source_id']})", err.getvalue())
+
+    def test_the_conductor_reads_a_failed_forced_attempt_through_the_real_cli(self) -> None:
+        """Issue #369, end to end over the real CLI: the conductor's own `revoke-artifact` argv
+        handed to `main`, its exit code read as `Conductor.runtime` reads it. A forced Generate
+        whose attempt wrote no meta returns (the standing output certifies the phase); the
+        same answer for an unforced phase, and a forced one certified by the attempt's own id,
+        raise `RevocationNotLandedError` — never the bare `runtime ... failed` that ended the
+        measured run `conductor_error`."""
+        import tools.workflow_conductor as wc
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._preflight(repo)
+            refs = self._certified(repo, through="generate")
+            lineage_path = repo / refs["pipeline_ref"] / "lineage.json"
+            lineage = json.loads(lineage_path.read_text("utf-8"))
+            lineage_path.write_text(json.dumps({**lineage, "source_id": "src_attempt"}),
+                                    encoding="utf-8")
+
+            def runtime(self, args, *, input=None):
+                argv = [str(repo) if a == "." and i and args[i - 1] == "--repo-root" else a
+                        for i, a in enumerate(args)]
+                err, out = io.StringIO(), io.StringIO()
+                with redirect_stderr(err), redirect_stdout(out):
+                    rc = main(argv)
+                if rc != 0:
+                    raise RuntimeError(f"runtime {args[0]} failed: {err.getvalue().strip()}")
+                return json.loads(out.getvalue()) if out.getvalue().strip() else {}
+
+            def conductor(rederive):
+                c = wc.Conductor(repo_root=repo, orchestration_id="o1",
+                                 orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"),
+                                 env={})
+                c.rederive = frozenset(rederive)
+                return c
+
+            cases = (({"generate"}, "src_attempt", None),
+                     ((), "src_attempt", wc.RevocationNotLandedError),
+                     ({"generate"}, refs["source_id"], wc.RevocationNotLandedError))
+            for rederive, attempt, raises in cases:
+                with self.subTest(rederive=sorted(rederive), attempt=attempt), \
+                        mock.patch.object(wc.Conductor, "runtime", runtime), \
+                        redirect_stdout(io.StringIO()) as events:
+                    c = conductor(rederive)
+                    if raises is None:
+                        c.revoke_and_reset(self._NK, "generate", "t", "gate_fail",
+                                           attempt_id=attempt)
+                    else:
+                        with self.assertRaises(raises):
+                            c.revoke_and_reset(self._NK, "generate", "t", "gate_fail",
+                                               attempt_id=attempt)
+                    names = [json.loads(line).get("event")
+                             for line in events.getvalue().splitlines() if line.strip()]
+                    self.assertIn("revoke_artifact_noop", names)
+                    self.assertEqual("revoke_artifact_forced_standing" in names, raises is None)
+
     def test_the_cli_route_fails_on_a_revocation_that_did_not_land(self) -> None:
         """The conductor fails closed on a lost revocation; so must the CLI. The documented
         manual recipe (`docs/RUNBOOK.md` §3-1) goes through this route, and it used to print

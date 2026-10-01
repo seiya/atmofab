@@ -1497,6 +1497,110 @@ class RevokeAndResetTest(unittest.TestCase):
         self.assertTrue(any(e.get("event") == "revoke_artifact_noop" for e in events))
         self.assertIn("reset-phase", [sub for sub, _ in c.calls])
 
+    # Issue #369: a still-certified `noop` read with the attempt's id under `--rederive`.
+    _STANDING = {"status": "noop", "meta_ref": None, "reason": "no_meta",
+                 "still_certified": True, "certified_by": "src_006"}
+
+    @staticmethod
+    def _events(buf: io.StringIO) -> list[dict]:
+        return [json.loads(l) for l in buf.getvalue().splitlines() if l.strip()]
+
+    def test_a_forced_phase_whose_attempt_wrote_no_meta_is_repaired_not_lost(self) -> None:
+        """A failed `--rederive` attempt wrote no meta under the id the lineage names, and the
+        STANDING output certifies the phase — the documented state, not a lost decision. Both
+        halves still run, and the run log says the standing output stays selected."""
+        c = self._conductor(self._STANDING)
+        c.rederive = frozenset({"generate"})
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            c.revoke_and_reset(self._NK, "generate", "t1", "r", attempt_id="src_007")
+        self.assertEqual([sub for sub, _ in c.calls], ["revoke-artifact", "reset-phase"])
+        events = self._events(buf)
+        noop = [e for e in events if e["event"] == "revoke_artifact_noop"]
+        self.assertEqual([(e["forced"], e["certified_by"]) for e in noop], [(True, "src_006")])
+        standing = [e for e in events if e["event"] == "revoke_artifact_forced_standing"]
+        self.assertEqual([(e["certified_by"], e["attempt_id"]) for e in standing],
+                         [("src_006", "src_007")])
+
+    def test_a_forced_phase_still_certified_by_its_own_attempt_is_a_lost_revocation(
+            self) -> None:
+        """The #177 guard survives `--rederive`: the forced attempt DID certify under its own
+        id, yet the revocation resolved no meta — the lineage lost it, and a resume would
+        skip the phase."""
+        c = self._conductor({**self._STANDING, "certified_by": "src_007"})
+        c.rederive = frozenset({"generate"})
+        buf = io.StringIO()
+        with redirect_stdout(buf), self.assertRaises(wc.RevocationNotLandedError):
+            c.revoke_and_reset(self._NK, "generate", "t1", "r", attempt_id="src_007")
+        self.assertNotIn("revoke_artifact_forced_standing",
+                         [e["event"] for e in self._events(buf)])
+
+    def test_a_phase_not_forced_keeps_raising_whatever_certifies_it(self) -> None:
+        """Only a FORCED phase has a standing output that is meant to stay selected; another
+        phase — even one `--rederive` names beside it — reads the pair as the #177 failure."""
+        for rederive in (frozenset(), frozenset({"compile"})):
+            with self.subTest(rederive=sorted(rederive)):
+                c = self._conductor(self._STANDING)
+                c.rederive = rederive
+                with redirect_stdout(io.StringIO()), \
+                        self.assertRaises(wc.RevocationNotLandedError):
+                    c.revoke_and_reset(self._NK, "generate", "t1", "r", attempt_id="src_007")
+
+    def test_a_forced_phase_without_a_comparable_id_keeps_raising(self) -> None:
+        """No `certified_by` (a runtime that does not name it) or no attempt id: nothing says
+        the certifying output is not the attempt's, so the guard holds."""
+        for answer, attempt in ((self._STANDING, None), ({**self._STANDING, "certified_by": None},
+                                                          "src_007")):
+            with self.subTest(certified_by=answer["certified_by"], attempt=attempt):
+                c = self._conductor(answer)
+                c.rederive = frozenset({"generate"})
+                with redirect_stdout(io.StringIO()), \
+                        self.assertRaises(wc.RevocationNotLandedError):
+                    c.revoke_and_reset(self._NK, "generate", "t1", "r", attempt_id=attempt)
+
+    def test_an_id_is_compared_within_its_pipeline(self) -> None:
+        """A source / binary / run id is numbered per pipeline: a forced Compile can open a
+        fresh pipeline whose first source repeats the standing source's id (round-2 review).
+        The same id in ANOTHER pipeline is the standing output — repaired; in the attempt's
+        own pipeline it is the #177 loss; with either pipeline unnamed the ids alone decide,
+        which can only over-refuse."""
+        same_id = {**self._STANDING, "certified_by": "src_001"}
+        cases = (("p_old", "p_new", None),
+                 ("p_new", "p_new", wc.RevocationNotLandedError),
+                 (None, "p_new", wc.RevocationNotLandedError),
+                 ("p_old", None, wc.RevocationNotLandedError))
+        for certified_pipe, attempt_pipe, raises in cases:
+            with self.subTest(certified=certified_pipe, attempt=attempt_pipe):
+                c = self._conductor({**same_id, "certified_pipeline_ref": certified_pipe})
+                c.rederive = frozenset({"generate"})
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    if raises is None:
+                        c.revoke_and_reset(self._NK, "generate", "t1", "r",
+                                           attempt_id="src_001",
+                                           attempt_pipeline_ref=attempt_pipe)
+                    else:
+                        with self.assertRaises(raises):
+                            c.revoke_and_reset(self._NK, "generate", "t1", "r",
+                                               attempt_id="src_001",
+                                               attempt_pipeline_ref=attempt_pipe)
+                standing = [e for e in self._events(buf)
+                            if e["event"] == "revoke_artifact_forced_standing"]
+                self.assertEqual(len(standing), 1 if raises is None else 0)
+
+    def test_the_conductor_asks_the_cli_to_answer_rather_than_refuse(self) -> None:
+        """The decision above can only run if the CLI answers: without the flag a
+        still-certified `noop` exits 1, and `Conductor.runtime` turns that into a bare
+        `RuntimeError` (the measured `conductor_error`, issue #369)."""
+        c = _FakeConductor(
+            repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
+            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
+        )
+        seen: list[list[str]] = []
+        c.runtime = lambda args, *, input=None: seen.append(list(args)) or {}  # type: ignore
+        c.revoke_artifact(self._NK, "generate", "t1", "r")
+        self.assertIn("--caller-decides-still-certified", seen[0])
+
     def test_a_landed_revocation_asks_the_predicate_nothing(self) -> None:
         """A revocation that resolved a meta needs no confirmation: the runtime rewrote the
         file. Asking anyway would put a certification read on every retry route."""
@@ -1591,6 +1695,118 @@ class RevocationNotLandedTerminalTest(unittest.TestCase):
                                  msg=f"{label}: the reason code must survive; got {terminal}")
                 self.assertTrue(terminal["--reason-detail"],
                                 msg=f"{label}: the routing reason must survive in the detail")
+
+    def test_a_failed_forced_attempt_is_repaired_and_spends_the_budget_not_the_run(
+            self) -> None:
+        """Issue #369 at the route level: a forced Compile whose gate keeps failing goes to the
+        same-phase repair (not `revocation_not_landed`) on each attempt, with the standing IR
+        certifying the phase throughout, and the exhausted budget terminalizes as
+        `retry_budget_exhausted`."""
+        c = self._conductor()
+        c.rederive = frozenset({"compile"})
+        c.workflow_mode = "prod"
+        standing = "workspace/ir/standing/ir_0"
+        real_runtime = c.runtime
+
+        def runtime(args, *, input=None):  # type: ignore[no-untyped-def]
+            if args[0] == "revoke-artifact":
+                real_runtime(args, input=input)
+                return {"status": "noop", "reason": "no_meta", "still_certified": True,
+                        "certified_by": standing}
+            return real_runtime(args, input=input)
+
+        c.runtime = runtime  # type: ignore[method-assign]
+        c.cert_fn = lambda phase: ({"certified": True, "ir_ref": standing}
+                                   if phase == "compile" else {"certified": False})
+        c._adopt_certified_refs = lambda refs, phase, cert: None  # type: ignore[method-assign]
+        c._completed_producer_arid = lambda nk, ph, ref: ""  # type: ignore[method-assign]
+        c.status_fn = lambda phase, substep, n: (
+            "fail" if (phase == "compile" and substep == "static") else "pass")
+        c.decision_fn = lambda phase, outcomes: wc.RouteDecision(
+            "retry", target_phase="compile", repair_strategy="reuse",
+            reason="compile_static_fail")
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            status = c.conduct(self._refs(), "compile")
+        self.assertEqual(status, "fail_closed")
+        terminal = [cap for sub, cap in c.calls if sub == "set-status"][-1]
+        self.assertEqual(terminal["--reason-code"], "retry_budget_exhausted")
+        events = [json.loads(l) for l in buf.getvalue().splitlines() if l.strip()]
+        names = [e["event"] for e in events]
+        self.assertNotIn("revocation_not_landed", names)
+        self.assertEqual(names.count("phase_rederive_forced"), wc.MAX_ATTEMPTS_PER_PHASE + 1)
+        attempts = [e["attempt_id"] for e in events
+                    if e["event"] == "revoke_artifact_forced_standing"]
+        self.assertEqual(len(attempts), wc.MAX_ATTEMPTS_PER_PHASE + 1)
+        # Compared with the attempt's own IR path, never with the standing one. (The id itself
+        # does not rotate under this fake — `_claim_artifact_dir` claims any path under a root
+        # that does not exist; the rotation is `MintSeqDirTest`'s.)
+        self.assertEqual(set(attempts), {self._refs().ir_ref})
+
+    def test_a_forced_generate_reads_its_own_source_id_on_the_measured_route(self) -> None:
+        """Issue #369's measured route: a forced Generate whose gate fails, same-phase repair.
+        The attempt id compared with `certified_by` is the attempt's SOURCE id — a standing
+        source certifying the phase is repaired; the attempt's own id certifying it is the
+        #177 loss and terminalizes `revocation_not_landed`. Both arms, so the generate row of
+        `_attempt_id` and the route's `phase` argument are each pinned."""
+        refs = self._refs()
+        for certified_by, pipe, want in (
+                ("s_0", refs.pipeline_ref, ("pass", None)),
+                (refs.source_id, refs.pipeline_ref, ("fail_closed", "revocation_not_landed")),
+                # the attempt's id in ANOTHER pipeline: the standing output, so repaired
+                (refs.source_id, "workspace/pipelines/other/p_0", ("pass", None))):
+            with self.subTest(certified_by=certified_by, pipeline=pipe):
+                c = self._conductor()
+                c.rederive = frozenset({"generate"})
+                c.workflow_mode = "prod"
+                real_runtime = c.runtime
+
+                def runtime(args, *, input=None, _cb=certified_by,  # type: ignore[no-untyped-def]
+                            _pipe=pipe, _real=real_runtime):
+                    if args[0] == "revoke-artifact":
+                        _real(args, input=input)
+                        return {"status": "noop", "reason": "no_meta", "still_certified": True,
+                                "certified_by": _cb, "certified_pipeline_ref": _pipe}
+                    return _real(args, input=input)
+
+                c.runtime = runtime  # type: ignore[method-assign]
+                c.cert_fn = lambda phase: ({"certified": True, "source_id": "s_0"}
+                                           if phase == "generate" else {"certified": False})
+                c._completed_producer_arid = lambda nk, ph, ref: ""  # type: ignore[method-assign]
+                gate_fails = {"n": 0}
+
+                def status_fn(phase, substep, n, _g=gate_fails):  # type: ignore[no-untyped-def]
+                    if phase == "generate" and substep == "gate" and _g["n"] == 0:
+                        _g["n"] += 1
+                        return "fail"
+                    return "pass"
+
+                c.status_fn = status_fn
+                c.decision_fn = lambda phase, outcomes: wc.RouteDecision(
+                    "retry", target_phase="generate", repair_strategy="reuse",
+                    reason="generate_gate_fail")
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    status = c.conduct(self._refs(), "generate")
+                terminal = [cap for sub, cap in c.calls if sub == "set-status"][-1]
+                self.assertEqual((status, terminal.get("--reason-code")), want)
+                standing = [json.loads(l) for l in buf.getvalue().splitlines() if l.strip()
+                            and json.loads(l).get("event") == "revoke_artifact_forced_standing"]
+                self.assertEqual([e["attempt_id"] for e in standing],
+                                 [refs.source_id] if want[0] == "pass" else [])
+
+    def test_the_attempt_id_is_the_phases_own_id(self) -> None:
+        """`_attempt_id` per phase, in the form the runtime's `certified_by` takes (a path for
+        compile, the stage id otherwise). Every id distinct, so a swapped row is red."""
+        refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0",
+                           spec_path="spec/component/spec_x", ir_id="ir_1", pipeline_id="p_1",
+                           source_id="src_1", binary_id="bin_1", run_id="run_1",
+                           source_binary_id="bin_1")
+        self.assertEqual({p: wc.Conductor._attempt_id(refs, p)
+                          for p in ("compile", "generate", "build", "validate")},
+                         {"compile": refs.ir_ref, "generate": "src_1", "build": "bin_1",
+                          "validate": "run_1"})
+        self.assertEqual(refs.ir_ref, f"workspace/ir/{refs.safe}/ir_1")
 
     def test_the_reason_code_is_in_the_runtime_allowlist(self) -> None:
         """`set-status` refuses a fail_closed reason code outside `FAIL_CLOSED_REASON_CODES`, so

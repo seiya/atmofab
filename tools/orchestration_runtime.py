@@ -16778,6 +16778,8 @@ def revoke_artifact(
         "prior_verification_status": None,
         "reason": "no_meta",
         "still_certified": False,
+        "certified_by": None,
+        "certified_pipeline_ref": None,
     }
     if meta_path is None or not meta_path.is_file():
         # `noop` is the one answer that looks identical in the good case (none was written
@@ -16789,8 +16791,23 @@ def revoke_artifact(
         # completion vouch reads as an EXEMPTION. Probing through it recorded "this phase was
         # skipped because it was certified" at the instant the conductor declared the
         # re-derivation lost.
-        result["still_certified"] = bool(
-            _phase_certified(repo_root, orchestration_id, node_key, step_token)[0])
+        #
+        # `certified_by` names WHAT certifies the phase now (the id `check_phase_certified`
+        # records, `_certified_by_ref`). The pair alone cannot tell the #177 failure from the
+        # documented state of a failed `--rederive` attempt (issue #369): there the attempt
+        # wrote no meta, and the STANDING output — whose id is not the attempt's — stays
+        # selected (`docs/RUNBOOK.md`). Only the conductor holds the attempt's id, so it is the
+        # one that decides; this answers the fact. A source / binary / run id is numbered per
+        # pipeline, so `certified_pipeline_ref` names the pipeline it is one of (a forced
+        # Compile can open a fresh pipeline whose first source repeats the standing one's id).
+        # Compile names none — its `certified_by` is already a path, and its chain stops at the
+        # IR.
+        certified, detail = _phase_certified(repo_root, orchestration_id, node_key, step_token)
+        result["still_certified"] = bool(certified)
+        result["certified_by"] = (_certified_by_ref(step_token, detail) or None
+                                  if certified else None)
+        result["certified_pipeline_ref"] = (detail.get("pipeline_ref") or None
+                                            if certified else None)
         return result
     revoked = _revoke_stage_meta(
         repo_root,
@@ -18163,7 +18180,9 @@ def main(argv: list[str] | None = None) -> int:
             "revocation_reason. This is the half of a retry that reaches the ARTIFACT — the "
             "phase-state reset beside it is this orchestration's own bookkeeping, which a cold "
             "re-run does not read. Downstream phases need no revocation: each binds to the id "
-            "of the phase above it. `noop` when no meta was written."
+            "of the phase above it. `noop` when no meta was written; a `noop` over a phase "
+            "that is still certified exits 1 (its answer names `certified_by`) unless "
+            "--caller-decides-still-certified."
         ),
     )
     revoke_artifact_parser.add_argument("--repo-root", required=True)
@@ -18206,6 +18225,18 @@ def main(argv: list[str] | None = None) -> int:
         help=(
             "Read --last-fail-reason from stdin instead. The excerpt can reach several "
             "thousand characters, which does not belong on an argv."
+        ),
+    )
+    revoke_artifact_parser.add_argument(
+        "--caller-decides-still-certified", action="store_true",
+        help=(
+            "Answer a `noop` over a phase that is still certified with exit 0 and the JSON "
+            "answer, instead of refusing it. For the conductor, which holds the attempt id "
+            "the answer's `certified_by` (within `certified_pipeline_ref`, the pipeline a "
+            "source / binary / run id is numbered in) is compared with (a failed --rederive "
+            "attempt leaves "
+            "the standing output certifying the phase, issue #369) and refuses the rest "
+            "itself (`revocation_not_landed`). Not for the manual recipe."
         ),
     )
 
@@ -18534,12 +18565,16 @@ def main(argv: list[str] | None = None) -> int:
         # the route where that mattered most: the conductor fails closed on it, but the
         # documented manual recipe (`docs/RUNBOOK.md` §3-1) and any other caller got
         # `{"status": "noop"}` and exit 0 while the phase stayed certified — an operator
-        # following the recipe would then `--resume` and watch the phase be skipped. Same
-        # answer, same exit code, on both routes.
-        if result.get("status") == "noop" and result.get("still_certified"):
+        # following the recipe would then `--resume` and watch the phase be skipped. The
+        # conductor asks with --caller-decides-still-certified: it decides from the answer
+        # (issue #369), and a refusal here reached it as a bare `runtime revoke-artifact
+        # failed` that ended the run `conductor_error` before its own reading could run.
+        if (result.get("status") == "noop" and result.get("still_certified")
+                and not args.caller_decides_still_certified):
             print(
                 f"revoke-artifact: resolved no stage meta for {args.node_key}/{args.step} "
-                f"({result.get('reason')}), and the phase is still certified — the "
+                f"({result.get('reason')}), and the phase is still certified (by "
+                f"{result.get('certified_by')}) — the "
                 "re-derivation decision did not reach the artifact, so a resume would skip "
                 "this phase. Check that the pipeline's lineage.json names the stage this "
                 "orchestration produced.",
