@@ -143,14 +143,15 @@ RFC 8259 (`.123` / `-.123` with a missing leading zero are forbidden).
 **A non-finite real** is written as the literal token `NaN`, `Infinity` or `-Infinity`
 (`NaN` whatever the sign bit), chosen by branching on the value, never by handing the
 value to a numeric format. These three tokens are the one departure from RFC 8259 this
-contract takes: they are exactly the non-finite tokens the host's reader accepts, and a
-numeric format's own spelling of the value (`nan`, `-nan`, `inf`) makes the document
-unreadable. A non-finite value is never written as
+contract takes: they are exactly the non-finite tokens the host's reader accepts, and
+any other spelling a numeric format may print for the value (`nan`, `-nan`, `inf`;
+a processor-dependent `NaN(...)`) makes the document unreadable. A non-finite value is never written as
 `null` (`null` is the honest-N/A encoding a caller declares through `is_na`,
 `CHECKS_MODULE_CONTRACT.md`), and a writer never stops the program over one: the other
 cases' evidence is still owed. What the host does with the value is decided elsewhere —
-a non-finite value in a declared state variable of a capture a primary predicate
-reads is a `structural_violation` naming the variable (`phase_04_validate.md`), and a non-finite metric is a value, not an N/A: `na_allowed`
+a non-finite value in a declared state variable or the time variable of a capture a
+primary predicate reads is a `structural_violation` naming the variable
+(`phase_04_validate.md`), and a non-finite metric is a value, not an N/A: `na_allowed`
 does not accept it, a `NaN` fails every ordered comparison and `eq` (and satisfies `ne`),
 and an infinity compares as the signed extreme it is.
 
