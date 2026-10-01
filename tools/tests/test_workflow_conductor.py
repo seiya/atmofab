@@ -2172,6 +2172,51 @@ class CompileClaimTest(unittest.TestCase):
                               if line.strip().startswith("{")]
                     self.assertIn("ir_superseded", [e.get("event") for e in events])
 
+    def test_the_capped_detail_keeps_the_whole_ir_id_of_a_long_node(self) -> None:
+        """`reason_detail` is cut at `_PHASE_REASON_DETAIL_MAX_CHARS`; a real node's ir_ref
+        runs past it with the remedy in front, so the detail names the bare ir_id — the
+        `_<seq>` is what tells two IRs of one day apart (round 2)."""
+        node = "component/dynamics_advection_diffusion_boundary_1d_periodic_copy@0.2.1"
+        slug = "dynamics_advection_diffusion_boundary_1d_periodic_copy"
+        refs = wc.NodeRefs(target_id=_TARGET_ID, node_key=node,
+                           spec_path="spec/component/x", ir_id=f"{slug}_20261001_002",
+                           pipeline_id="p_1")
+        # The probe straddles the cap: the ir_ref form would have lost the seq.
+        self.assertGreater(len("--resume re-derives Generate onwards on the standing IR; "
+                               + refs.ir_ref), wc._PHASE_REASON_DETAIL_MAX_CHARS)
+        for probed, reason in (("generate", "derivation_key_mismatch:ir"),
+                               ("compile", "revoked")):
+            with self.subTest(phase=probed):
+                c = self._conductor()
+                c.cert_fn = lambda phase, _p=probed, _r=reason: (  # type: ignore[assignment]
+                    {"certified": False, "reason": _r} if phase == _p
+                    else {"certified": True})
+                detail = c._superseded_ir_detail(refs, ("compile", "generate"))
+                assert detail is not None
+                self.assertIn(refs.ir_id,
+                              detail[:wc._PHASE_REASON_DETAIL_MAX_CHARS])
+
+    def test_the_pre_pass_asks_are_unrecorded_on_an_ordinary_run(self) -> None:
+        """Both pre-pass asks carry `--no-record`: recording them would write
+        `skipped_certified` for phases this run RAN. On a run with no `--rederive`, where
+        nothing else adds the flag (round 2: the Compile ask was pinned only under
+        `--rederive compile`, which adds it anyway)."""
+        c = self._conductor()
+        asked: list[list[str]] = []
+        real_runtime = c.runtime
+
+        def _runtime(args, **kw):  # type: ignore[no-untyped-def]
+            if args and args[0] == "check-phase-certified":
+                asked.append(list(args))
+            return real_runtime(args, **kw)
+
+        c.runtime = _runtime  # type: ignore[method-assign]
+        with redirect_stdout(io.StringIO()):
+            self.assertEqual(c.conduct(self._refs(), "validate"), "pass")
+        flags = [(a[a.index("--step") + 1], "--no-record" in a) for a in asked]
+        self.assertEqual(flags[-2:], [("compile", True), ("generate", True)])
+        self.assertFalse(any(unrecorded for _phase, unrecorded in flags[:-2]))
+
     def test_a_run_short_of_generate_is_not_asked(self) -> None:
         c = self._conductor()
         with redirect_stdout(io.StringIO()):

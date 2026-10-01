@@ -14022,13 +14022,15 @@ class Conductor:
             return None
         compile_cert = self.check_phase_certified(refs.node_key, "compile", record=False)
         if not compile_cert.get("certified") and compile_cert.get("reason") == "revoked":
-            # Remedy first: `reason_detail` is capped, and the ir_ref is the long part.
-            return (f"--resume re-derives from Compile; {refs.ir_ref} was revoked by "
+            # Remedy first and the bare ir_id, not the ir_ref: `reason_detail` is capped at
+            # 200, and a real ir_ref alone runs past 150 — the `_<seq>` telling the two IRs
+            # apart was what the cap cut (round 2).
+            return (f"--resume re-derives from Compile; IR {refs.ir_id} was revoked by "
                     "another run of this node")
         cert = self.check_phase_certified(refs.node_key, "generate", record=False)
         if cert.get("certified") or cert.get("reason") != "derivation_key_mismatch:ir":
             return None
-        return (f"--resume re-derives Generate onwards on the standing IR; {refs.ir_ref} "
+        return (f"--resume re-derives Generate onwards on the standing IR; IR {refs.ir_id} "
                 "was superseded by another run's Compile")
 
     def _conduct_phases(self, refs: NodeRefs, until_phase: str) -> str:
