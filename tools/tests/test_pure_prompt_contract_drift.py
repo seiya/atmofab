@@ -756,7 +756,7 @@ PINNED: dict[str, str] = {
     # the wording pure-56 left unchanged a harness leaf wrote `null`, a throw, or the raw `%.16e`
     # token (the three spellings measured on sources authored at pure-54 / pure-55), which is
     # why the key moves.
-    "pure-57": "3ac3d460def17cbbec4b942a25bf5cf57510c29a1763eddaf95fec610bcebe46",
+    "pure-57": "3d7821b66c47f711da3cc32b7790008ce2be96bd543c66c9c83cbb4ad0471168",
 }
 
 
