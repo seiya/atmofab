@@ -3685,6 +3685,22 @@ class TransportFailureTest(unittest.TestCase):
             # `error` is a subscript or a line number, never an HTTP status.
             "error: index 502 out of bounds for array u(500)",
             "gfortran: error at line 504 of model.f90",
+            # Codex's capacity phrase counts only inside its structured error event (#375).
+            "The halo buffer is at capacity, so the selected model is at capacity too.",
+            "error: selected model is at capacity",
+            # The event shape must OPEN the line: a leaf answer quoting it mid-line reaches the
+            # classifier as stdout when codex exits nonzero with no failure event.
+            ('The CLI printed {"type": "error", "message": "Selected model is at capacity. '
+             'Please try a different model."} last time.'),
+            # ...and only the `error` / `turn.failed` events count, not an agent message.
+            ('{"type": "item.completed", "item": {"type": "agent_message", "text": "Selected '
+             'model is at capacity."}}'),
+            # The same two shapes for codex's credits stop.
+            "The shared workspace is out of credits, so the run stopped early.",
+            ('The CLI printed {"type": "error", "message": "Your workspace is out of credits."} '
+             'last time.'),
+            ('{"type": "item.completed", "item": {"type": "agent_message", "text": "Your '
+             'workspace is out of credits."}}'),
         ]
         for text in benign:
             with self.subTest(text=text):
@@ -3726,12 +3742,51 @@ class TransportFailureTest(unittest.TestCase):
             ("Request rejected (429) · this may be a temporary capacity issue.", "llm_rate_limit"),
             ("rate limited — wait and retry", "llm_rate_limit"),
             ("Opus is experiencing high load, please use another model", "llm_overloaded"),
+            # Codex's capacity notice, as `_absorb_codex_event` splices its events into stderr
+            # (issue #375; verbatim from `orch_20261001T131434Z_c339e24b`).
+            (('{"type": "error", "message": "Selected model is at capacity. Please try a '
+              'different model."}'), "llm_overloaded"),
+            (('{"type": "turn.failed", "error": {"message": "Selected model is at capacity. '
+              'Please try a different model."}}'), "llm_overloaded"),
+            # Codex's credits stop, spliced the same way (verbatim from
+            # `orch_20261001T041151Z_658f30c5`).
+            (('{"type": "error", "message": "Your workspace is out of credits. Ask your '
+              'workspace owner to refill in order to continue."}'), "llm_usage_limit"),
+            (('{"type": "turn.failed", "error": {"message": "Your workspace is out of credits. '
+              'Ask your workspace owner to refill in order to continue."}}'), "llm_usage_limit"),
         ]
         for text, expected in cases:
             with self.subTest(text=text):
                 got = wc._classify_leaf_infra_error(text)
                 self.assertIsNotNone(got, f"expected a tag for {text!r}")
                 self.assertEqual(got[0], expected)
+
+    def test_codex_failure_events_classify_through_the_splice(self) -> None:
+        """The codex alternatives match the line shape `_absorb_codex_event` writes, so the rows
+        above are hand-written copies of that shape. Drive the recorded raw CLI events (compact
+        JSON, as in `leaf.stdout.jsonl`) through the real splice, so a change to how the splice
+        serialises an event is red here rather than silently untagging both stops (#375)."""
+        recorded = {
+            "Selected model is at capacity. Please try a different model.": "llm_overloaded",
+            ("Your workspace is out of credits. Ask your workspace owner to refill in order to "
+             "continue."): "llm_usage_limit",
+        }
+        for message, expected in recorded.items():
+            with self.subTest(expected=expected):
+                failure_events: list[str] = []
+                for raw in (json.dumps({"type": "error", "message": message},
+                                       separators=(",", ":")),
+                            json.dumps({"type": "turn.failed", "error": {"message": message}},
+                                       separators=(",", ":"))):
+                    wc._absorb_codex_event(json.loads(raw), None, None, None, False,
+                                           failure_events)
+                self.assertEqual(len(failure_events), 2)
+                got = wc._classify_leaf_infra_error("\n".join(failure_events), "")
+                self.assertIsNotNone(got)
+                self.assertEqual(got[0], expected)
+                # Each spliced event classifies on its own, not only the pair.
+                for line in failure_events:
+                    self.assertEqual(wc._classify_leaf_infra_error(line, "")[0], expected, line)
 
     def test_classify_leaf_infra_error_does_not_invert_the_clis_not_your_usage_limit(self) -> None:
         """The CLI's own 429 message reads "Server is temporarily limiting requests (not your usage
