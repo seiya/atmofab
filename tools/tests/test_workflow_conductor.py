@@ -1713,6 +1713,68 @@ class RevocationNotLandedTerminalTest(unittest.TestCase):
         # that does not exist; the rotation is `MintSeqDirTest`'s.)
         self.assertEqual(set(attempts), {self._refs().ir_ref})
 
+    def test_a_forced_generate_reads_its_own_source_id_on_the_measured_route(self) -> None:
+        """Issue #369's measured route: a forced Generate whose gate fails, same-phase repair.
+        The attempt id compared with `certified_by` is the attempt's SOURCE id — a standing
+        source certifying the phase is repaired; the attempt's own id certifying it is the
+        #177 loss and terminalizes `revocation_not_landed`. Both arms, so the generate row of
+        `_attempt_id` and the route's `phase` argument are each pinned."""
+        refs = self._refs()
+        for certified_by, want in (("s_0", ("pass", None)),
+                                   (refs.source_id, ("fail_closed", "revocation_not_landed"))):
+            with self.subTest(certified_by=certified_by):
+                c = self._conductor()
+                c.rederive = frozenset({"generate"})
+                c.workflow_mode = "prod"
+                real_runtime = c.runtime
+
+                def runtime(args, *, input=None, _cb=certified_by,  # type: ignore[no-untyped-def]
+                            _real=real_runtime):
+                    if args[0] == "revoke-artifact":
+                        _real(args, input=input)
+                        return {"status": "noop", "reason": "no_meta", "still_certified": True,
+                                "certified_by": _cb}
+                    return _real(args, input=input)
+
+                c.runtime = runtime  # type: ignore[method-assign]
+                c.cert_fn = lambda phase: ({"certified": True, "source_id": "s_0"}
+                                           if phase == "generate" else {"certified": False})
+                c._completed_producer_arid = lambda nk, ph, ref: ""  # type: ignore[method-assign]
+                gate_fails = {"n": 0}
+
+                def status_fn(phase, substep, n, _g=gate_fails):  # type: ignore[no-untyped-def]
+                    if phase == "generate" and substep == "gate" and _g["n"] == 0:
+                        _g["n"] += 1
+                        return "fail"
+                    return "pass"
+
+                c.status_fn = status_fn
+                c.decision_fn = lambda phase, outcomes: wc.RouteDecision(
+                    "retry", target_phase="generate", repair_strategy="reuse",
+                    reason="generate_gate_fail")
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    status = c.conduct(self._refs(), "generate")
+                terminal = [cap for sub, cap in c.calls if sub == "set-status"][-1]
+                self.assertEqual((status, terminal.get("--reason-code")), want)
+                standing = [json.loads(l) for l in buf.getvalue().splitlines() if l.strip()
+                            and json.loads(l).get("event") == "revoke_artifact_forced_standing"]
+                self.assertEqual([e["attempt_id"] for e in standing],
+                                 [refs.source_id] if want[0] == "pass" else [])
+
+    def test_the_attempt_id_is_the_phases_own_id(self) -> None:
+        """`_attempt_id` per phase, in the form the runtime's `certified_by` takes (a path for
+        compile, the stage id otherwise). Every id distinct, so a swapped row is red."""
+        refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0",
+                           spec_path="spec/component/spec_x", ir_id="ir_1", pipeline_id="p_1",
+                           source_id="src_1", binary_id="bin_1", run_id="run_1",
+                           source_binary_id="bin_1")
+        self.assertEqual({p: wc.Conductor._attempt_id(refs, p)
+                          for p in ("compile", "generate", "build", "validate")},
+                         {"compile": refs.ir_ref, "generate": "src_1", "build": "bin_1",
+                          "validate": "run_1"})
+        self.assertEqual(refs.ir_ref, f"workspace/ir/{refs.safe}/ir_1")
+
     def test_the_reason_code_is_in_the_runtime_allowlist(self) -> None:
         """`set-status` refuses a fail_closed reason code outside `FAIL_CLOSED_REASON_CODES`, so
         a terminal the conductor cannot record is a terminal the operator never sees."""
