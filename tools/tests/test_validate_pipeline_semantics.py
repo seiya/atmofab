@@ -21122,9 +21122,9 @@ class ChecksReachGateTests(unittest.TestCase):
                  "end module bx_model\n")
         for label, m in (("no op", model), ("no model file", None),
                          ("abstract interface only",
-                          "module bx_model\nimplicit none\nabstract interface\n"
-                          "subroutine bx__step(u)\nreal(8), intent(inout) :: u(:)\n"
-                          "end subroutine bx__step\nend interface\nend module bx_model\n")):
+                          ("module bx_model\nimplicit none\nabstract interface\n"
+                           "subroutine bx__step(u)\nreal(8), intent(inout) :: u(:)\n"
+                           "end subroutine bx__step\nend interface\nend module bx_model\n"))):
             with self.subTest(label):
                 v = self._run(_reach_checks("    call bx__step(u)\n"), m)
                 self.assertEqual(len(v), 1, v)
@@ -21237,11 +21237,11 @@ class ChecksReachGateTests(unittest.TestCase):
             self.assertTrue(all("checks-reach gate cannot read" in x for x in v), v)
             with unittest.mock.patch.object(
                     fortran_source, "structure_reading",
-                    side_effect=fortran_structure.FortranStructureUnavailableError("absent")):
-                with self.assertRaises(fortran_structure.FortranStructureUnavailableError):
-                    fortran_source.checks_model_reach_violations(
-                        Path("bx_checks.f90"), _reach_checks("    call bx__step(u)\n"),
-                        [model], "bx")
+                    side_effect=fortran_structure.FortranStructureUnavailableError("absent")), \
+                    self.assertRaises(fortran_structure.FortranStructureUnavailableError):
+                fortran_source.checks_model_reach_violations(
+                    Path("bx_checks.f90"), _reach_checks("    call bx__step(u)\n"),
+                    [model], "bx")
 
     def test_a_checks_module_without_case_run_is_refused(self) -> None:
         checks = _reach_checks("    call bx__step(u)\n").replace(
@@ -21277,7 +21277,7 @@ class ChecksReachGateTests(unittest.TestCase):
     def test_g18_the_certified_pair_passes_and_the_inline_rewrite_is_refused(self) -> None:
         checks = (_G18_DIR / "advdiff1d_linear_checks.f90").read_text()
         model = (_G18_DIR / "advdiff1d_linear_model.f90").read_text()
-        kw = dict(spec="advdiff1d_linear", node_key="problem/advdiff1d_linear@0.4.3")
+        kw = {"spec": "advdiff1d_linear", "node_key": "problem/advdiff1d_linear@0.4.3"}
         self.assertEqual(self._run(checks, model, **kw), [])
         call = ("      call advdiff1d_linear__step(cur_nx, cur_len, cur_a, cur_nu, cur_t_start, &\n"
                 "        cur_t_end, cur_n_step, n, u, u_work, t_new, step_ok)\n")
@@ -21293,8 +21293,8 @@ class ChecksReachGateTests(unittest.TestCase):
             self) -> None:
         checks = (_G18_DIR / "advdiff1d_linear_checks.cu").read_text()
         model = (_G18_DIR / "advdiff1d_linear_model.cu").read_text()
-        kw = dict(spec="advdiff1d_linear", node_key="problem/advdiff1d_linear@0.4.3",
-                  language="cuda_cpp", suffix=".cu")
+        kw = {"spec": "advdiff1d_linear", "node_key": "problem/advdiff1d_linear@0.4.3",
+              "language": "cuda_cpp", "suffix": ".cu"}
         self.assertEqual([x for x in self._run(checks, model, **kw) if "reach" in x], [])
         self.assertEqual(self._run(checks, model, **kw), [])
         call = ("    advdiff1d_linear_model::advdiff1d_linear__step(g_case.nx, kA, kNu, g_case.dx, "
@@ -21317,7 +21317,7 @@ class ChecksReachGateTests(unittest.TestCase):
                   "namespace p_checks {\nstd::vector<double> u;\n"
                   "void case_run(const std::string& case_id, int& steps, int& cells_updated, "
                   "bool& ok) {\n  BODY\n  steps = 1; cells_updated = 1; ok = true;\n}\n}\n")
-        kw = dict(spec="p", node_key="problem/p@0.1.0", language="cuda_cpp", suffix=".cu")
+        kw = {"spec": "p", "node_key": "problem/p@0.1.0", "language": "cuda_cpp", "suffix": ".cu"}
         reach = [x for x in self._run(checks.replace("BODY", "p_model::p__step(u);"), model, **kw)
                  if "reach" in x]
         self.assertEqual(reach, [])

@@ -732,10 +732,10 @@ def checks_model_reach_violations(checks_path: Path, text: str, model_files: lis
             continue
         published.update(published_subroutines(model_text, spec_id))
     if not published:
-        return [f"{checks_path}: the model source defines no `{spec_id}__<op>` in "
-                f"`namespace {spec_id}_model` for case_run to call "
-                f"({[str(p) for p in model_files]}) — define the operation there "
-                "(GENERATE_RULES.md §3)"]
+        return [(f"{checks_path}: the model source defines no `{spec_id}__<op>` in "
+                 f"`namespace {spec_id}_model` for case_run to call "
+                 f"({[str(p) for p in model_files]}) — define the operation there "
+                 "(GENERATE_RULES.md §3)")]
     ops = ", ".join(sorted(published))
 
     decls = cpp_decls.read(text)

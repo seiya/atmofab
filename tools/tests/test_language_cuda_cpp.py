@@ -844,8 +844,8 @@ class ChecksReachGateTests(unittest.TestCase):
 
     def test_m2_a_model_defining_no_operation_is_refused(self) -> None:
         for label, model in (("none", None),
-                             ("outside the namespace", "void p__step(std::vector<double>& u, "
-                                                       "double& s) { u[0] = s; }\n"),
+                             ("outside the namespace", ("void p__step(std::vector<double>& u, "
+                                                        "double& s) { u[0] = s; }\n")),
                              ("without the prefix", _P_MODEL.replace("p__step", "step")),
                              ("declared only", "namespace p_model {\nvoid p__step(int);\n}\n")):
             with self.subTest(label):
@@ -876,8 +876,8 @@ class ChecksReachGateTests(unittest.TestCase):
                 ("template arguments at the call", "  advance<atmofab::View<double, 1>>(u);\n",
                  "void advance(std::vector<double>& v) { p_model::p__step(v, s); }\n"),
                 ("value-returning helper", "  const double r = norm_after(u);\n  (void)r;\n",
-                 "double norm_after(std::vector<double>& v) { p_model::p__step(v, s); "
-                 "return v[0]; }\n")):
+                 ("double norm_after(std::vector<double>& v) { p_model::p__step(v, s); "
+                  "return v[0]; }\n"))):
             with self.subTest(label):
                 self.assertEqual([], self._run(self._with_run_body(body, extra)))
                 v = self._run(self._with_run_body("", extra))
@@ -886,8 +886,8 @@ class ChecksReachGateTests(unittest.TestCase):
     def test_m6_a_checks_definition_of_an_operation_is_a_shadow(self) -> None:
         for label, extra in (
                 ("overload in the model namespace",
-                 "}  // namespace p_checks\nnamespace p_model {\nvoid p__step(int n) { (void)n; }\n"
-                 "}\nnamespace p_checks {\n"),
+                 ("}  // namespace p_checks\nnamespace p_model {\nvoid p__step(int n) { (void)n; }\n"
+                  "}\nnamespace p_checks {\n")),
                 ("in the checks namespace", "void p__step(int n) { (void)n; }\n")):
             with self.subTest(label):
                 v = self._run(self._with_run_body("  p_model::p__step(u, s);\n", extra))
@@ -921,8 +921,8 @@ class ChecksReachGateTests(unittest.TestCase):
                 ("split over lines", "  p_model::\n      p__step(\n u, s);\n"),
                 ("after a using-declaration", "  using p_model::p__step;\n  p__step(u, s);\n"),
                 ("after a using-directive", "  using namespace p_model;\n  p__step(u, s);\n"),
-                ("taken by address", "  void (*op)(std::vector<double>&, double&) = "
-                                     "&p_model::p__step;\n  op(u, s);\n"),
+                ("taken by address", ("  void (*op)(std::vector<double>&, double&) = "
+                                      "&p_model::p__step;\n  op(u, s);\n")),
                 ("inside a lambda", "  auto go = [&]() { p_model::p__step(u, s); };\n  go();\n")):
             with self.subTest(label):
                 self.assertEqual([], self._run(self._with_run_body(body)))

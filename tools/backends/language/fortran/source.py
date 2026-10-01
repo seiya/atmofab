@@ -2585,9 +2585,9 @@ def checks_model_reach_violations(checks_path: Path, text: str, model_files: lis
             continue
         published.update(name.lower() for name in published_subroutines(model_text, spec_id))
     if not published:
-        return [f"{checks_path}: the model source defines no `subroutine {spec_id}__<op>` for "
-                f"case_run to call ({[str(p) for p in model_files]}) — publish the operation as "
-                f"`subroutine {spec_id}__<op>` (GENERATE_RULES.md §3)"]
+        return [(f"{checks_path}: the model source defines no `subroutine {spec_id}__<op>` for "
+                 f"case_run to call ({[str(p) for p in model_files]}) — publish the operation "
+                 f"as `subroutine {spec_id}__<op>` (GENERATE_RULES.md §3)")]
     ops = ", ".join(sorted(published))
 
     lowered = text.lower()
