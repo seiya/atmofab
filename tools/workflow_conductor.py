@@ -14009,18 +14009,21 @@ class Conductor:
 
         The compile claim serializes Compile, not what happens after it. Another run of the
         node (another target, or a resume of this target's other orchestration) can, while
-        this chain is past its Compile, either certify a newer IR without revoking this one —
-        a `--rederive compile` — so the selection reads this chain's Generate as
-        `derivation_key_mismatch:ir`; or REVOKE the shared IR — a judge or verify finding that
-        routes to Compile, prod's re-deriving reopen included — so Compile itself answers
-        `revoked`. Only a revocation landing after this chain's Validate started reaches here:
-        an earlier one stops the next phase start as `derivation_inputs_unresolvable`, since
-        every pipeline phase's key hashes the certified IR. A revocation this run decided never
-        reaches here either: dev terminalizes on it, and prod re-derives Compile before going
-        on. The completion vouch refuses what does reach here correctly, but as a
-        `RuntimeError` the driver reports as `conductor_error`. Named here instead (`ir_superseded`), with its remedy:
-        `--resume` re-derives what the chain lost. Generate is the only pipeline phase asked:
-        its key binds the IR, and Build and Validate bind the IR only through it."""
+        this chain is past its Compile, REVOKE the shared IR — a judge or verify finding that
+        routes to Compile, prod's re-deriving reopen included — and, by a re-derivation that
+        lands, certify a newer one. Which answer this chain gets depends on timing. A
+        revocation landing before this chain's Validate started stops the next phase start as
+        `derivation_inputs_unresolvable`: every pipeline phase's derivation reads the IR's
+        certified hash before it builds a key (`phase_derivation_inputs`). One landing later
+        reaches here: Compile answers `revoked` while no newer IR is certified, and once one
+        is (or after a `--rederive compile`, which revokes nothing) the selection reads this
+        chain's Generate as `derivation_key_mismatch:ir`. A revocation this run decided never
+        reaches here: dev terminalizes on it, and prod re-derives Compile before going on.
+        The completion vouch refuses what does reach here correctly, but as a `RuntimeError`
+        the driver reports as `conductor_error`. Named here instead (`ir_superseded`), with its
+        remedy: `--resume` re-derives what the chain lost. Of the pipeline phases only Generate
+        is asked: an IR mismatch surfaces first there, since Validate's key hashes the IR too
+        but follows Generate's, and Build's key carries no IR."""
         if "generate" not in phases:
             return None
         compile_cert = self.check_phase_certified(refs.node_key, "compile", record=False)
