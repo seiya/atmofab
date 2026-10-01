@@ -21360,6 +21360,15 @@ class ChecksReachGateTests(unittest.TestCase):
                   "    integer :: step\n    n = 0\n    do step = 1, 3\n      n = n + step\n"
                   "    end do\n  end subroutine count_it\n")), [])
 
+    def test_only_a_call_callee_is_a_reach(self) -> None:
+        """A rename's local name mentioned but never called (here a local variable that shadows
+        it) is no reach — only the callee of a `call` counts."""
+        checks = _reach_checks("    step = 1\n    u = 2*u\n",
+                               uses="  use bx_model, only: step => bx__step\n").replace(
+            "    integer, intent(out) :: steps, cells_updated\n",
+            "    integer, intent(out) :: steps, cells_updated\n    integer :: step\n")
+        self.assertEqual([_REACH in x for x in self._run(checks)], [True])
+
     def test_round_2_forms_are_refused(self) -> None:
         """Round 2: a generic interface, a construct name, an interface body inside case_run and
         a helper file, each carrying the operation's name."""
