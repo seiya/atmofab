@@ -1630,7 +1630,10 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         orders, because the inlined contract said `walltime_sec` was "the whole execution" while
         the IR wrote perf before the self-test re-parsed it. The contract's §2 now says the one
         write and the interval once; this row keeps the removed phrasings out of every document
-        a harness leaf is given, and out of the document that cites §2."""
+        a harness leaf is given, and out of the document that cites §2. It is a literal guard on
+        the removed phrasings, not a reader of meaning: a rephrased reversal of a leaf-read
+        sentence is caught by the drift pin's digest, and reaches a leaf only through a
+        deliberate version bump."""
         ctx = self.c._build_pure_harness_verify_context(self.refs)
         contract = ctx["runner_output_contract_document"]
         self.assertIn("final before `write_perf`", contract)
@@ -1639,6 +1642,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         real_root = Path(wc.__file__).resolve().parents[1]
         perf_doc = (real_root / "docs" / "PERFORMANCE_DIAGNOSTICS.md").read_text(encoding="utf-8")
         self.assertNotIn("whole execution", perf_doc)
+        self.assertNotIn("per single case execution", perf_doc)
         self.assertIn("RUNNER_OUTPUT_CONTRACT.md` §2", perf_doc)
         for name in ("pure_generate_generate_harness.txt", "pure_generate_verify_harness.txt"):
             with self.subTest(template=name):

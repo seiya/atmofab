@@ -13,7 +13,7 @@
 
 ## 1. Collection unit
 - Output one `perf.json` per run; `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` §2 states the one-write rule and what `walltime_sec` covers.
-- Output each sub-case of refinement or sweep likewise.
+- A sub-case of a refinement or sweep is a case of that run; its work is counted in the run's one record.
 
 ## 2. Minimal fields (required)
 - `case_id`: string
