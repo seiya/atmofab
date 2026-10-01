@@ -3761,6 +3761,33 @@ class TransportFailureTest(unittest.TestCase):
                 self.assertIsNotNone(got, f"expected a tag for {text!r}")
                 self.assertEqual(got[0], expected)
 
+    def test_codex_failure_events_classify_through_the_splice(self) -> None:
+        """The codex alternatives match the line shape `_absorb_codex_event` writes, so the rows
+        above are hand-written copies of that shape. Drive the recorded raw CLI events (compact
+        JSON, as in `leaf.stdout.jsonl`) through the real splice, so a change to how the splice
+        serialises an event is red here rather than silently untagging both stops (#375)."""
+        recorded = {
+            "Selected model is at capacity. Please try a different model.": "llm_overloaded",
+            ("Your workspace is out of credits. Ask your workspace owner to refill in order to "
+             "continue."): "llm_usage_limit",
+        }
+        for message, expected in recorded.items():
+            with self.subTest(expected=expected):
+                failure_events: list[str] = []
+                for raw in (json.dumps({"type": "error", "message": message},
+                                       separators=(",", ":")),
+                            json.dumps({"type": "turn.failed", "error": {"message": message}},
+                                       separators=(",", ":"))):
+                    wc._absorb_codex_event(json.loads(raw), None, None, None, False,
+                                           failure_events)
+                self.assertEqual(len(failure_events), 2)
+                got = wc._classify_leaf_infra_error("\n".join(failure_events), "")
+                self.assertIsNotNone(got)
+                self.assertEqual(got[0], expected)
+                # Each spliced event classifies on its own, not only the pair.
+                for line in failure_events:
+                    self.assertEqual(wc._classify_leaf_infra_error(line, "")[0], expected, line)
+
     def test_classify_leaf_infra_error_does_not_invert_the_clis_not_your_usage_limit(self) -> None:
         """The CLI's own 429 message reads "Server is temporarily limiting requests (not your usage
         limit)". Tagging that `llm_usage_limit` is exactly backwards: the operator would sit out a
