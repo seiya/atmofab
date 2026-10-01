@@ -1624,8 +1624,10 @@ def _spec_claim_key(spec_ref: str, target_profile: TargetProfile | None) -> str:
     """The key of a `("spec", …)` claim: the spec AND the target it is run for (issue #284).
     Two runs of one spec for two targets write two per-target pipeline trees
     (`workspace/pipelines/<safe>/<target_id>/`), so they are not serialized against each
-    other; their Compile output is target-free, and each mints its IR id with an exclusive
-    `mkdir`, so the two can derive the same IR twice but never write into one directory. A
+    other. Their Compile output is target-free, so the conductor serializes the node's Compile
+    across targets with a claim of its own, `("compile", node_key)` (issue #374,
+    `Conductor.conduct`): the second target waits, then adopts the IR the first certified,
+    instead of deriving a second IR that leaves one target's chain standing on a stale one. A
     caller with no target claims the bare spec — no production path, which resolves the
     target before it claims."""
     if target_profile is None:
@@ -1665,7 +1667,9 @@ def _exclusive_claim(repo_root: Path, kind: str, key: str, *,
     `kind="orch"` serializes drivers of one orchestration — two `--resume` invocations
     of the same run would otherwise both `init --resume` into the SAME preserved
     `orchestration_agent_run_id`, sharing one `workspace/tmp/<arid>` that either one's
-    cleanup then deletes.
+    cleanup then deletes;
+    `kind="compile"` (taken by the conductor, blocking, issue #374) serializes one node's
+    Compile across the targets it is run for, whose IR is target-free.
 
     **THIS IS THE CONCURRENCY GATE, not a strengthener of one.** Issue #177's PR-3 deleted the
     driver-liveness probe that used to stand behind it — the probe read a recorded pid through
@@ -3390,14 +3394,22 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
         return (f"    [warn   ] usage limit in {phase}.{substep} [wait {attempt}/{max_waits}]: "
                 f"sleeping {wait}s on the fixed schedule, then re-launching")
 
-    if status == "info" and event == "start_claim_degraded":
+    if status == "info" and event in ("start_claim_degraded", "start_claim_waiting"):
         kind = payload.get("claim_kind", "?")
         key = payload.get("claim_key", "?")
+        # The compile claim is the conductor's (issue #374): its key is a node, not a spec.
+        scope = {"orch": "orchestration", "compile": "the Compile of"}.get(kind, "spec")
+        if event == "start_claim_waiting":
+            return (f"    [warn   ] waiting for {scope} {key}: another driver holds its claim "
+                    f"(docs/RUNBOOK.md §3-1)")
         cause = payload.get("cause", payload.get("reason", "?"))
-        scope = "orchestration" if kind == "orch" else "spec"
         return (f"    [warn   ] no start claim for {scope} {key}: {cause} — this run proceeds "
                 f"with NO concurrency gate; one driver per workspace is yours to enforce "
                 f"(docs/RUNBOOK.md §3-1)")
+
+    if status == "info" and event == "ir_superseded":
+        node = payload.get("node_key", "?")
+        return f"    [warn   ] IR superseded for {node}: {payload.get('detail', '?')}"
 
     if status == "info" and event == "prior_incomplete_orchestration":
         orch = payload.get("orchestration_id", "?")
