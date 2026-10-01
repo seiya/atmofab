@@ -30,13 +30,14 @@ descriptor must not appear at all.
   literal; a non-finite real via the literal `RUNNER_OUTPUT_CONTRACT.md` §4
   names (`NaN` whatever the sign bit, `Infinity`, `-Infinity`), chosen by
   branching with `ieee_is_nan` / `ieee_is_finite` from
-  `use, intrinsic :: ieee_arithmetic`. gfortran's `ES24.16E3` prints the same
+  `use, intrinsic :: ieee_arithmetic, only: ieee_is_nan, ieee_is_finite` (the
+  `only:` clause is required, as for every `use`). gfortran's `ES24.16E3` prints the same
   three tokens, but the branch is required: the standard lets a processor
   append a processor-dependent `NaN(...)` suffix. Never write `null` for a
   non-finite value, and never stop the program over one.
 
   ```fortran
-  function jnum(x) result(s)       ! the enclosing module has: use, intrinsic :: ieee_arithmetic
+  function jnum(x) result(s)       ! needs: use, intrinsic :: ieee_arithmetic, only: ieee_is_nan, ieee_is_finite
     real(8), intent(in) :: x
     character(len=32) :: s
     if (ieee_is_nan(x)) then
@@ -64,7 +65,7 @@ descriptor must not appear at all.
 - **Canonical safe idiom (`fortran`):** emit reals with an explicit scientific descriptor such as `ES24.16E3` (always emits a leading digit; width 24 = sign + `d.dddddddddddddddd` + `E±ddd`, so it never overflows to `****` even for negatives — `ES23.16E3` is one column too narrow and prints `***` for a negative value), then `trim(adjustl(...))`; or, when the magnitude range is known small, a bounded explicit-width `Fw.d` (e.g. `F20.6`, never `F0`/`F0.d`) with `trim(adjustl(...))`. Emit integers with `I0`. Emit booleans by branching on the logical and writing the literal `true` / `false`. Emit a non-finite real as the literal `RUNNER_OUTPUT_CONTRACT.md` §4 names, by branching on `ieee_is_nan` / `ieee_is_finite` before the value reaches the descriptor, as §1 states. Example:
 
   ```fortran
-  function jnum(x) result(s)       ! the enclosing module has: use, intrinsic :: ieee_arithmetic
+  function jnum(x) result(s)       ! needs: use, intrinsic :: ieee_arithmetic, only: ieee_is_nan, ieee_is_finite
     real(8), intent(in) :: x
     character(len=32) :: s
     if (ieee_is_nan(x)) then

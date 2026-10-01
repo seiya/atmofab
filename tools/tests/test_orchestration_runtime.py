@@ -21380,7 +21380,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # IR's shape includes the domain's boundary ghost cells. Measured 13216.
         "docs/backends/language/fortran/CHECKS_ABI.md": 13500,
         # Raised 4800->5900 (issue #315): §1 and §2 name the non-finite tokens and the
-        # `ieee_arithmetic` branch, and `jnum` gains it. Measured 5605.
+        # `ieee_arithmetic` branch, and `jnum` gains it. Measured 5727.
         "docs/backends/language/fortran/RUNNER_OUTPUT.md": 5900,
         # Still force-read by compile.generate/verify (its IR schema is the contract
         # the compile SKILL defers to).
