@@ -2533,9 +2533,10 @@ def _harness_use_refusal(use: str, allowed: Mapping[str, frozenset[str]]) -> str
     return None
 
 
-# A statement that begins `use` and is a `use` statement (`use x`, `use, intrinsic :: x`,
-# `use :: x`) — not an assignment to a variable named `use`.
-_USE_STATEMENT_LINE_RE = re.compile(r"^\s*use\b\s*(?:,|::|[a-z_])")
+# A statement that begins `use`. A variable NAMED `use` (legal: keywords are not reserved) would
+# lose its line's tokens here, which is the refusing direction; measured, the structure reader
+# refuses a source assigning one (`use = f(u)`, a parse error) before any token is read.
+_USE_STATEMENT_LINE_RE = re.compile(r"^\s*use\b")
 
 
 def checks_model_reach_violations(checks_path: Path, text: str, model_files: list[Path],

@@ -21174,6 +21174,8 @@ class ChecksReachGateTests(unittest.TestCase):
             uses="  use bx_model, only: bx__other, step => bx__step\n")), [])
         for label, uses in (
                 ("dependency rename", "  use bx_model\n  use dep_model, only: step => dep__flux\n"),
+                ("rename onto a name the model does not define",
+                 "  use bx_model, only: bx__step, step => bx__other\n"),
                 ("no rename", "  use bx_model, only: bx__step\n")):
             with self.subTest(label):
                 self.assertEqual(len(self._reach(_reach_checks("    call step(u)\n",
@@ -21240,6 +21242,17 @@ class ChecksReachGateTests(unittest.TestCase):
                     fortran_source.checks_model_reach_violations(
                         Path("bx_checks.f90"), _reach_checks("    call bx__step(u)\n"),
                         [model], "bx")
+
+    def test_a_checks_module_without_case_run_is_refused(self) -> None:
+        checks = _reach_checks("    call bx__step(u)\n").replace(
+            "subroutine case_run(", "subroutine case_go(").replace(
+            "end subroutine case_run", "end subroutine case_go")
+        v = self._reach_only_root(checks)
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("module bx_checks defines no `case_run`", v[0])
+
+    def _reach_only_root(self, checks: str) -> list[str]:
+        return [v for v in self._run(checks) if "case_run" in v and "fixed ABI" not in v]
 
     def test_m10_an_operation_passed_as_an_actual_is_a_reach(self) -> None:
         self.assertEqual(self._run(_reach_checks(

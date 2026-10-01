@@ -905,6 +905,11 @@ class ChecksReachGateTests(unittest.TestCase):
                 v = self._run(self._with_run_body(body))
                 self.assertEqual([_REACH in x for x in v], [True], v)
 
+    def test_a_checks_namespace_without_case_run_is_refused(self) -> None:
+        v = self._run(_REACHING_CHECKS.replace("void case_run(", "void case_go("))
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("namespace p_checks defines no `case_run`", v[0])
+
     def test_m9_an_unbalanced_source_is_refused_not_passed(self) -> None:
         v = self._run(_REACHING_CHECKS + "void broken() {\n")
         self.assertEqual(len(v), 1, v)
