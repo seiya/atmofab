@@ -646,8 +646,10 @@ PINNED_RENDER: dict[str, str] = {
     # operation as a plain host function, which the §5.1 pin now refuses against the new header,
     # and every certified `cuda_cpp` Makefile lacks the flag a consumer kernel's call needs. The
     # Fortran render is unchanged (its `generated_source_violations` accepts and does not read
-    # the new `procedures` argument, which no renderer calls).
-    "render-7": "c65ec19706d9f6bf9a1845295fe937ce224920bfb004914eae362e05e9da90b0",
+    # the new `procedures` argument, which no renderer calls). Re-pinned in place within PR-1's
+    # review (round 3), before it shipped: the §5.1 pin's drift message names the specifier the
+    # definition must carry (`__device__`) instead of "both" — a message only.
+    "render-7": "4b6b9b354f6b21b021b48aec6a69b2ea49d3031f56562c5a385d1ad0035ef562",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

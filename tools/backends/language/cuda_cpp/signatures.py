@@ -529,7 +529,8 @@ def generated_source_violations(
                 "removed; the first atom is the header, which pins the return type and the "
                 "argument NAMES in order, and a specifier on it such as `__device__` is a "
                 "difference — a header that declares `__host__ __device__` requires the "
-                "definition to carry both) — define it with exactly the declaration in "
+                "definition to carry `__device__`: spell it `__host__ __device__`, as declared) "
+                "— define it with exactly the declaration in "
                 f"{header_path.name}")
         if name not in model_defined:
             violations.append(

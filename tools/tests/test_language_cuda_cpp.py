@@ -721,7 +721,7 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
                 module_parameters=_POINTWISE["module_parameters"],
                 procedures=_POINTWISE["procedures"], violations=out)
         self.assertTrue(any("procedure 'c__flux' drifts" in v
-                            and "requires the definition to carry both" in v for v in out), out)
+                            and "requires the definition to carry `__device__`" in v for v in out), out)
 
     def test_the_validator_hands_the_pin_section_5_1_s_procedures(self) -> None:
         """Through `_validate_generated_signatures` on a `cuda_cpp` component (round 1 of #380
@@ -2021,12 +2021,91 @@ class PhysicsGateTests(unittest.TestCase):
                 self.assertEqual(1, len(out), out)
                 self.assertIn("(candidates=['df'])", out[0])
 
+    def test_a_written_actual_never_loses_its_last_name(self) -> None:
+        """Round 3 of #380 PR-1's review: the fallback's exclusions (integers, file constants,
+        this file's functions) emptied the candidates of a call, which then passed unasked —
+        a buffer obtained from a function, a bare `int&` result, a namespace-scope
+        `double* const`. A dropped result is refused in each; origin/main refused all three."""
+        header = ("namespace dep_model {\n"
+                  "void dep__flux(atmofab::View<const double, 1> u, atmofab::View<double, 1> f);\n"
+                  "void dep__count(atmofab::View<const double, 1> u, int& n);\n}\n")
+        cases = {
+            "buffer from a function": (
+                "double* buf_of(int k) { static double b[12]; return b + 3 * k; }\n"
+                "void p__f(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new) {\n"
+                "  for (int k = 0; k < 4; ++k) {\n"
+                "    dep_model::dep__flux(u, atmofab::View<double, 1>{buf_of(k), {3}});\n  }\n"
+                "  for (long i = 0; i < 12; ++i) { u_new.data[i] = u.data[i]; }\n}"),
+            "bare integer result": (
+                "void p__f(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new) {\n"
+                "  int n = 0;\n  dep_model::dep__count(u, n);\n"
+                "  for (long i = 0; i < 12; ++i) { u_new.data[i] = u.data[i]; }\n}"),
+            "namespace-scope const pointer": (
+                "double g_store[12];\ndouble* const g_fl = g_store;\n"
+                "void p__f(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new) {\n"
+                "  dep_model::dep__flux(u, atmofab::View<double, 1>{g_fl, {3}});\n"
+                "  for (long i = 0; i < 12; ++i) { u_new.data[i] = u.data[i]; }\n}"),
+        }
+        for label, body in cases.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                (Path(tmp) / "dep_model.cuh").write_text(header)
+                out = self._gates(self._model(tmp, body, header=False), ["dep"])
+                self.assertTrue(any("function p__f does not propagate" in v for v in out), out)
+
+    def test_a_pointer_alias_is_a_declaration_or_a_whole_assignment(self) -> None:
+        """`double* fq = sf + 3 * t;` points `fq` into `sf`; a later ELEMENT write through it
+        (`fq[0] = u[q];`) makes `u` point nowhere. Read as an alias, it made `u` take `fq` and a
+        flux dropped in shared memory passed (round 3 of #380 PR-1's review, a mutant)."""
+        kernel = ("__global__ void faces(const double* u, double* f, double g, long n, int* bad)"
+                  " {\n  __shared__ double sf[96];\n  const int t = threadIdx.x;\n"
+                  "  const long q = blockIdx.x * blockDim.x + t;\n  double* fq = sf + 3 * t;\n"
+                  "  double gy[3];\n  bool gok = true;\n"
+                  "  dep_model::dep__face2(atmofab::View<const double, 1>{u + 3 * q, {3}}, g,\n"
+                  "      atmofab::View<double, 1>{fq, {3}}, atmofab::View<double, 1>{gy, {3}}, gok);\n"
+                  "  fq[0] = u[q];\n  f[q] = u[q];\n  bad[q] = gok ? 0 : 1;\n}\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "dep_model.cuh").write_text(self._PW2_HEADER)
+            out = self._pw2(tmp, kernel, "f[i]")
+            self.assertTrue(any("function faces does not propagate" in v for v in out), out)
+
+    def test_what_a_helper_returns_is_read_through_its_body(self) -> None:
+        """A helper returning a LOCAL computed from what it filled carries the flux through its
+        return (round 3: with the return read as its own identifiers only, the legitimate
+        `F[3 * k] = face(...)` was refused); and a call nested in a taken argument is read the
+        same way (`to_flag(face(...))` must not make the flag stand for the dropped flux)."""
+        helper = ("__device__ double face(const double* u, double* fo, double g, long k) {\n"
+                  "  double go[3];\n  bool gok = true;\n"
+                  "  dep_model::dep__face2(atmofab::View<const double, 1>{u + 3 * k, {3}}, g,\n"
+                  "      atmofab::View<double, 1>{fo, {3}}, atmofab::View<double, 1>{go, {3}},"
+                  " gok);\n  const double s = fo[0] + go[0];\n  return s;\n}\n")
+        carried = ("__global__ void faces(const double* u, double* f, double g, long n,"
+                   " int* bad) {\n  const long k = threadIdx.x;\n  if (k < n) {\n"
+                   "    double fo[3];\n    f[3 * k] = face(u, fo, g, k);\n    bad[k] = 0;\n"
+                   "  }\n}\n")
+        guard = ("__device__ bool face_ok(const double* u, double* fo, double g, long k) {\n"
+                 "  double go[3];\n  bool gok = true;\n"
+                 "  dep_model::dep__face2(atmofab::View<const double, 1>{u + 3 * k, {3}}, g,\n"
+                 "      atmofab::View<double, 1>{fo, {3}}, atmofab::View<double, 1>{go, {3}},"
+                 " gok);\n  (void)go;\n  return gok;\n}\n"
+                 "__device__ int to_flag(bool ok) { return ok ? 0 : 1; }\n"
+                 "__global__ void faces(const double* u, double* f, double g, long n,"
+                 " int* bad) {\n  const long k = threadIdx.x;\n"
+                 "  if (k < n) { bad[k] = to_flag(face_ok(u, f + 3 * k, g, k)); }\n}\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "dep_model.cuh").write_text(self._PW2_HEADER)
+            self.assertEqual([], self._pw2(tmp, helper + carried, "f[i]"))
+            self.assertEqual([], self._pw2(tmp, guard, "f[i]"))
+            out = self._pw2(tmp, guard, "0.0")
+            self.assertEqual(1, len(out), out)
+            self.assertIn("(candidates=['df'])", out[0])
+
     def test_two_functions_of_one_name_do_not_stall_the_gate(self) -> None:
         """Codex, round 2 of #380 PR-1's review: `a::helper` reaching the dependency and
         `b::helper` not alternated `reached['helper']` forever, and two `copy`s with different
         summaries alternate the summaries' fixed point the same way. Keyed by name and only
         widened, both iterations end; bounded here by an alarm so a regression fails instead of
-        hanging."""
+        hanging. The price is the union: `b::helper(k)` counts as reaching the dependency too, so
+        `k` is used here (no overloaded name occurs in the corpus)."""
         import signal
 
         body = ("namespace a { void helper(double& out) { dep_model::dep__speed(1.0, out); } }\n"
@@ -2039,7 +2118,7 @@ class PhysicsGateTests(unittest.TestCase):
                 "namespace a { double r(double x) { return x; } }\n"
                 "namespace b { double r(double x) { (void)x; return 1.0; } }\n"
                 "void p__f(double& x) { a::helper(x); int k = 0; b::helper(k);\n"
-                "  double z = 0.0; a::copy(x, z); b::copy(x, z); x = a::r(z) + b::r(z); }")
+                "  double z = 0.0; a::copy(x, z); b::copy(x, z); x = a::r(z) + b::r(z) + k; }")
 
         def alarm(_signum, _frame):
             raise TimeoutError("the dataflow gate did not return")

@@ -1154,28 +1154,40 @@ def _value_records(body: str, summaries: dict[str, Summary], returns: Returns) -
     records: list[tuple[str, set[str], int, str, bool]] = []
     for lhs, ids, pos, rhs, declared in _assignments(body):
         if rhs:
-            blanked = rhs
-            kept: set[str] = set()
-            for call in _CALL_RE.finditer(rhs):
-                name = call.group("name")
-                if name not in summaries and name not in returns:
-                    continue
-                open_at = call.end() - 1
-                close_at = _close_paren(rhs, open_at)
-                args = _call_arguments(rhs, open_at)
-                if name in returns:
-                    take = returns[name]
-                else:
-                    take = frozenset(i for i in range(len(args)) if i not in summaries[name])
-                kept |= {tok for i in take if i < len(args) for tok in _identifiers(args[i])}
-                blanked = blanked[:call.start()] + " " * (close_at + 1 - call.start()) + \
-                    blanked[close_at + 1:]
-            if blanked != rhs:
-                # `_assignments` takes an assignment's sources as its right-hand side's
-                # identifiers; a followed call's argument list now contributes `kept` alone.
-                ids = _identifiers(blanked) | kept
+            ids = _value_identifiers(rhs, summaries, returns)
         records.append((lhs, ids, pos, rhs, declared))
     return records + _call_records(body, summaries)
+
+
+def _value_identifiers(expr: str, summaries: dict[str, Summary], returns: Returns) -> set[str]:
+    """The identifiers `expr`'s VALUE is computed from: its own, with each summarized call
+    contributing only the arguments its value is taken from — recursively, so a call nested in a
+    taken argument (`to_flag(face(u, fo, g, k))`) is read the same way (round 3 of #380 PR-1's
+    review)."""
+    blanked = expr
+    kept: set[str] = set()
+    for call in _CALL_RE.finditer(expr):
+        if call.start() < len(expr) and blanked[call.start()] == " ":
+            # Inside a call already read (its taken arguments were recursed into). Not pinned:
+            # without it a nested call's taken arguments are counted again at the top level,
+            # which only adds input names (round 3's mutation sweep).
+            continue
+        name = call.group("name")
+        if name not in summaries and name not in returns:
+            continue
+        open_at = call.end() - 1
+        close_at = _close_paren(expr, open_at)
+        args = _call_arguments(expr, open_at)
+        if name in returns:
+            take = returns[name]
+        else:
+            take = frozenset(i for i in range(len(args)) if i not in summaries[name])
+        for i in take:
+            if i < len(args):
+                kept |= _value_identifiers(args[i], summaries, returns)
+        blanked = blanked[:call.start()] + " " * (close_at + 1 - call.start()) + \
+            blanked[close_at + 1:]
+    return _identifiers(blanked) | kept
 
 
 def _function_summaries(functions: list[cpp_decls.Function],
@@ -1421,9 +1433,11 @@ def _validate_problem_dependency_dataflow(
     authoring rules tell the leaf). Which
     actuals are read at all is decided by the dependency's host-rendered header when it is beside
     the model source: only those at the operation's OUTPUT parameters — the Fortran binding's
-    `intent(out)` question, answered by the declaration. Without the header every actual is read,
-    minus the Fortran binding's two further kinds: a name the file declares `const` / `constexpr`
-    (not definable) and the name of a function this file defines (a procedure argument).
+    `intent(out)` question, answered by the declaration. Without the header every actual is read.
+    Either way, an actual that names no declared storage loses the Fortran binding's two further
+    kinds — a name the file declares `const` / `constexpr` (not definable) and the name of a
+    function this file defines (a procedure argument) — and its integer names, unless that would
+    leave the call no name at all (`dependency_calls`' `handed`).
 
     A function returning a value always takes part: its result is an output even when no
     identifier reaches its `return`, as the Fortran binding's result variable always is. The
@@ -1438,8 +1452,9 @@ def _validate_problem_dependency_dataflow(
     follow otherwise (round 2 of this change's review). A call to anything else is not followed;
     the semantic authority is `Generate.verify`. An actual whose storage the call writes is read
     by `_handed_over`: the storage names the function declares that the actual mentions, else
-    `_actual_names` (which falls back to every plain name the actual mentions) minus integers and
-    file constants, so an output reached through a pointer, a helper or a member still yields a
+    `_actual_names` (which falls back to every plain name the actual mentions) minus integers,
+    file constants and this file's function names — and when that leaves the CALL nothing, its
+    actuals' names unfiltered — so an output reached through a pointer, a helper or a member still yields a
     candidate."""
     if not dep_spec_ids:
         return
@@ -1502,13 +1517,21 @@ def _validate_problem_dependency_dataflow(
     def handed(fn: cpp_decls.Function, open_at: int, out_at: list[bool] | None,
                arrays: set[int]) -> list[set[str]]:
         """Per written actual of the call whose `(` is at `open_at`, the names it hands over."""
-        out: list[set[str]] = []
+        written: list[str] = []
         for index, arg in enumerate(_call_arguments(fn.body, open_at)):
             if out_at is not None and not (index < len(out_at) and out_at[index]):
                 continue
             if arrays and index not in arrays:
                 continue
-            out.append(_handed_over(arg, storage_of[id(fn)], excluded_of[id(fn)]))
+            written.append(arg)
+        out = [_handed_over(arg, storage_of[id(fn)], excluded_of[id(fn)]) for arg in written]
+        # The exclusions never leave a CALL without a name: one with no candidate passes the
+        # per-call check unasked (round 3 of #380 PR-1's review — a buffer from `buf_of(k)`, a
+        # bare `int&` result, a namespace-scope `double* const` each lost its only name). A
+        # single actual may still lose its own (a `const` or a function handed over among
+        # others, as in the Fortran binding).
+        if not any(out):
+            out = [_actual_names(arg) for arg in written]
         return out
 
     reached: dict[str, frozenset[int]] = {}

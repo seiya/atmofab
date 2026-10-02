@@ -114,8 +114,8 @@ value is one more output, whether or not its `return` names anything.
 - **Dependency dataflow.** What a dependency call writes must reach an output through
   assignments. Its candidates are the names whose storage the call's actuals hand over — at the
   operation's output parameters as the dependency's header `<dep>_model.cuh` beside the model
-  declares them, or, without the header, at every position minus `const` / `constexpr` names and
-  functions this file defines — minus the enclosing function's parameters and names assigned
+  declares them, or, without the header, at every position — minus the enclosing function's
+  parameters and names assigned
   before the call by an assignment statement — a declaration's initializer is not one, as in the
   Fortran binding (an inert call's inputs). An actual's names are its storage (`u`, `&u`,
   `u[i]`, `u.data()`), else every plain name it mentions (a pointer, `as_view(u)`, `w.flux`).
@@ -145,7 +145,9 @@ value is one more output, whether or not its `return` names anything.
   writing is the STORAGE its actual names — a pointer, array, view or container the function
   declares — so `View<double, 1>{f + kComp * i, {3}}` hands over `f` whatever the stride is
   spelled with (a file constant, an `auto` index); only an actual naming no declared storage
-  falls back to its plain names, integers and file constants aside. An assignment from a call to
+  falls back to its plain names, integers, `const` / `constexpr` names and functions this file
+  defines aside — and to all of them when that leaves the call none, so a buffer from
+  `buf_of(k)` or a bare `int&` result is still a candidate. An assignment from a call to
   a summarized function takes what the call RETURNS — for a function the model defines, the
   arguments its `return` is computed from; for a dependency operation, its inputs — not the
   buffers the call fills, so `bad[i] = face_flux(u, f, g, i) ? 0 : 1` does not make the flag
