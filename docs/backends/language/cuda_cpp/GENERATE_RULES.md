@@ -228,10 +228,11 @@ iteration, and the device trace does not attribute a launch to a loop. The recor
 the per-kernel `Instances` of `kernel_trace.csv` (`DEVICE_TRACE.md` §4).
 
 **Why.** Until pure-62 the producer was told to allocate, copy in, launch, copy out and free inside
-every call, and every `cpp_gpu` shallow-water component did (call sites in each certified
-`_model.cu`, issue #380: `flux_2d_rusanov` 2 `cudaMalloc` / 2 `cudaMemcpy` / 1 launch,
-`reconstruction_2d_muscl_mc` 8 / 2 / 5, `source_2d_tc4_forcing` 9 / 9 / 2, `time_update_2d_rk4`
-6 / 6 / 2). The channel problem called the pointwise flux once per face from host loops and
+every call, and every `cpp_gpu` shallow-water component did (call sites in each certified 0.1.1
+`_model.cu`, comments and literals masked, at main 7e9c2232: `flux_2d_rusanov` 2 `cudaMalloc` /
+2 `cudaMemcpy` / 1 launch, `reconstruction_2d_muscl_mc` 8 / 2 / 5, `source_2d_tc4_forcing`
+9 / 9 / 2, `time_update_2d_rk4` 6 / 5 / 2; issue #380's table counts 6 for the last, one of them
+inside a string literal). The channel problem called the pointwise flux once per face from host loops and
 allocated 15 buffers per step. `problem/shallow_water2d_channel@0.2.1` and `shallow_water2d@0.4.3`
 were both killed by the site's 10-minute bound in `Validate.execute`
 (`orch_20261002T004426Z_a1463874`, `orch_20261002T013248Z_96097e57`), while the `fortran_cpu`
