@@ -69,10 +69,13 @@ transport `fail_closed`.
 On a `component` / `problem` node built for `parallel.backend: cuda` on a `gpu`, a model source
 with counted `for` loops must define or launch at least one kernel (`__global__` or `<<<`), read
 over the code only (`tools/backends/parallel/cuda/directives.py`). The floor does not run on an
-`infrastructure` node. A pointwise operation (`BUNDLE_BINDING.md` §2) has no counted loop and
-defines no kernel, so the floor passes its model and the device trace (`DEVICE_TRACE.md`) asks
-nothing of it; its device path is exercised by the traced runs of the consumers whose kernels
-call it.
+`infrastructure` node. A pointwise operation (`BUNDLE_BINDING.md` §2) defines no kernel and
+launches nothing, while its body may hold a counted loop over its fixed extent (the three
+components of a face): its plan declares `"model": "none"`, with the reason that its consumers'
+kernels call it once per element, which exempts it from the floor and which `generate.verify`
+holds to the binding (the producer and the reviewer are both told). The device trace
+(`DEVICE_TRACE.md`) asks nothing of it; its device path is exercised by the traced runs of the
+consumers whose kernels call it.
 
 A failed CUDA call is a failure of the operation: it frees what it allocated and returns without
 the result (a checks callback still assigns its `out` arguments). It is not reported through the
@@ -134,10 +137,12 @@ value is one more output, whether or not its `return` names anything.
   checks every written name, and `Generate.verify` G5 is the authority on the rest. A call to a
   function or kernel the model source defines that calls a dependency operation — directly or
   through another such function — is a dependency call of its caller too, whose candidates are
-  the actuals at the callee's output parameters (issue #380): inside a kernel, the dependency's
-  result is written into the kernel's own output pointer, which the kernel's check exempts as an
-  output, so what must be shown is that the buffer the launch hands it reaches the caller's
-  outputs.
+  the actuals at those of the callee's output parameters that the dependency's result reaches
+  through the callee's body (issue #380): inside a kernel, the dependency's result is written
+  into the kernel's own output pointer, which the kernel's check exempts as an output, so what
+  must be shown is that the buffer the launch hands it reaches the caller's outputs. A guard flag
+  the kernel also writes (`int* bad`) does not stand for the flux, and an integer index
+  (`View<double, 1>{f + 3 * i, {3}}` hands over `f`, not `i`) is not a result.
 - **Metric-only scalar kernel.** On a multi-dimensional `problem` node, a function with five or
   more outputs and neither an array parameter (`atmofab::View`, `atmofab::Array`, `std::vector`, a
   pointer) nor a loop (`for`, `while`, a `<<<` launch) is refused.

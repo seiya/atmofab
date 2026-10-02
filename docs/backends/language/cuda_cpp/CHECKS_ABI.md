@@ -213,6 +213,6 @@ and the hand-authored runner of an `infrastructure` node's self-test).
   program than the compiler builds. The host-rendered header is not a leaf source and is not
   held to this.
 - **The syntax stage compiles for the target.** The `Generate.gate` syntax check runs
-  `nvcc -std=<toolchain.standard> -arch=<hardware.architecture> -Xcompiler -fsyntax-only -c` over
+  `nvcc -std=<toolchain.standard> -arch=<hardware.architecture> -Xcompiler -fsyntax-only -rdc=true -c` over
   every `.cu` of the source directory, each on its own, with the host-rendered header staged
   beside them (`tools/backends/compiler/nvcc/syntax.py`).

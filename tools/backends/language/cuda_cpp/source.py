@@ -1226,6 +1226,23 @@ def _dependency_array_outputs(model_file: Path, spec_id: str) -> dict[str, set[i
             for fn in cpp_decls.read(text).functions if fn.name.startswith(f"{spec_id}__")}
 
 
+_INTEGER_TYPE_RE = re.compile(
+    r"(?:const\s*)?(?:(?:unsigned|signed|short|long|int|(?:std::)?size_t|(?:std::)?ptrdiff_t"
+    r"|(?:std::)?u?int(?:8|16|32|64)_t)\s*)+")
+_INTEGER_DECLARATION_RE = re.compile(
+    r"\b(?:unsigned|signed|short|long|int|(?:std::)?size_t|(?:std::)?ptrdiff_t"
+    r"|(?:std::)?u?int(?:8|16|32|64)_t)\s+(?P<name>[A-Za-z_]\w*)\s*(?=[=;,{(])")
+
+
+def _integer_names(fn: cpp_decls.Function) -> set[str]:
+    """The names `fn` declares as integers — its by-value integer parameters and the integer
+    locals of its body (`const long i = ...`, `for (int k = 0; ...)`): an index into a buffer,
+    never the buffer. A pointer (`int* bad`) is not one."""
+    names = {name for ptype, name in fn.params
+             if name and _INTEGER_TYPE_RE.fullmatch(ptype.strip())}
+    return names | {m.group("name") for m in _INTEGER_DECLARATION_RE.finditer(fn.body)}
+
+
 def _signature_summary(out_at: list[bool]) -> Summary:
     """A callee known by its declaration only: every input may reach every output."""
     inputs = frozenset(i for i, out in enumerate(out_at) if not out)
@@ -1324,22 +1341,69 @@ def _validate_problem_dependency_dataflow(
                     **_RUNTIME_COPIES})
     call_re = re.compile(
         r"\b(?P<name>(?:" + "|".join(re.escape(s) for s in dep_spec_ids) + r")__\w+)\s*\(")
-    # The functions and kernels of this file that call a dependency operation, directly or
-    # through another of them (issue #380: a kernel may call a `__host__ __device__` operation
-    # one element at a time). A call TO one of them is a dependency call of its caller too, whose
-    # writes are the callee's output parameters: the dependency's result written into a kernel's
-    # output pointer must still reach the caller's outputs, or the launch discarded it — the
-    # in-kernel call itself only ever reaches the kernel's own output parameter, which the
-    # per-function check below exempts as already an output.
+    # A function or kernel of this file whose OUTPUT PARAMETER receives what a dependency call
+    # in its body writes stands for that dependency call in its callers (issue #380: a kernel may
+    # call a `__host__ __device__` operation one element at a time, and the in-kernel call only
+    # ever reaches the kernel's own output parameter, which the per-function check below exempts
+    # as already an output). `reached[f]` is the positions of `f`'s output parameters the
+    # dependency's result reaches through `f`'s body — not every output of `f`: a kernel's guard
+    # flag `int* bad` passed on to `ok` must not stand for the flux it discards (round 1 of #380
+    # PR-1's review). Computed to a fixed point, so a host helper that launches such a kernel
+    # stands for it too.
     by_name = {fn.name: fn for fn in functions}
-    reaching = {fn.name for fn in functions if call_re.search(fn.body)}
+    records_of = {fn.name: _assignments(fn.body) + _call_records(fn.body, summaries)
+                  for fn in functions}
+
+    def dependency_calls(fn: cpp_decls.Function, reached: dict[str, frozenset[int]]) -> list[
+            tuple[int, int, list[bool] | None, set[int]]]:
+        """`(start, open paren, output positions or None, array output positions)` of every
+        dependency call in `fn`'s body — an operation of a dependency, or a function of this
+        file that `reached` says carries one's result."""
+        # An operation that writes an ARRAY must have an array result reach the output: its
+        # scalar outputs (a guard flag) do not stand for it (round 5 of this change's review:
+        # `ok = guard_pass;` alone made every call of the advdiff problem "propagated" while its
+        # fluxes were discarded).
+        calls = [(call.start(), call.end() - 1, positions.get(call.group("name")),
+                  array_outputs.get(call.group("name"), set()))
+                 for call in call_re.finditer(fn.body)]
+        for call in _CALL_RE.finditer(fn.body):
+            callee = by_name.get(call.group("name"))
+            if callee is None or callee.name == fn.name or not reached.get(callee.name):
+                continue
+            # No array narrowing here: `reached` already holds only the positions the
+            # dependency's (array, when it has one) result reaches.
+            hit = reached[callee.name]
+            calls.append((call.start(), call.end() - 1,
+                          [i in hit for i in range(len(callee.params))], set()))
+        return calls
+
+    def written(fn: cpp_decls.Function, calls: list[tuple[int, int, list[bool] | None,
+                                                         set[int]]]) -> set[str]:
+        """The names a dependency call in `fn` hands over for writing, an integer index aside
+        (`View<double, 1>{f + 3 * i, {3}}` hands over `f`, not `i`)."""
+        integers = _integer_names(fn)
+        names: set[str] = set()
+        for _start, open_at, out_at, arrays in calls:
+            for index, arg in enumerate(_call_arguments(fn.body, open_at)):
+                if out_at is not None and not (index < len(out_at) and out_at[index]):
+                    continue
+                if arrays and index not in arrays:
+                    continue
+                names |= _actual_names(arg) - integers
+        return names
+
+    reached: dict[str, frozenset[int]] = {}
     changed = True
     while changed:
         changed = False
         for fn in functions:
-            if fn.name not in reaching and any(
-                    m.group("name") in reaching for m in _CALL_RE.finditer(fn.body)):
-                reaching.add(fn.name)
+            hands_over = written(fn, dependency_calls(fn, reached))
+            now = frozenset(
+                i for i, (ptype, name) in enumerate(fn.params)
+                if hands_over and name and is_output_parameter(ptype)
+                and _closure({name}, records_of[fn.name]) & hands_over)
+            if now != reached.get(fn.name, frozenset()):
+                reached[fn.name] = now
                 changed = True
     for fn in functions:
         params = {name for _ptype, name in fn.params if name}
@@ -1349,26 +1413,10 @@ def _validate_problem_dependency_dataflow(
         # is always an output. Skipped only when nothing leaves the function.
         if not outs and fn.returns == "void":
             continue
-        records = _assignments(fn.body) + _call_records(fn.body, summaries)
+        records = records_of[fn.name]
         sources = _closure(set(outs) | returned, records)
         discarded: set[str] = set()
-        calls: list[tuple[int, int, list[bool] | None, set[int]]] = [
-            # An operation that writes an ARRAY must have an array result reach the output: its
-            # scalar outputs (a guard flag) do not stand for it (round 5 of this change's review:
-            # `ok = guard_pass;` alone made every call of the advdiff problem "propagated" while
-            # its fluxes were discarded).
-            (call.start(), call.end() - 1, positions.get(call.group("name")),
-             array_outputs.get(call.group("name"), set()))
-            for call in call_re.finditer(fn.body)]
-        for call in _CALL_RE.finditer(fn.body):
-            callee = by_name.get(call.group("name"))
-            if callee is None or callee.name == fn.name or callee.name not in reaching:
-                continue
-            calls.append((call.start(), call.end() - 1,
-                          [is_output_parameter(ptype) for ptype, _n in callee.params],
-                          {i for i, (ptype, _n) in enumerate(callee.params)
-                           if is_output_parameter(ptype)
-                           and _ARRAY_TYPE_RE.search(ptype.rstrip("&"))}))
+        calls = dependency_calls(fn, reached)
         for call_start, open_at, out_at, arrays in calls:
             args = _call_arguments(fn.body, open_at)
             candidates: set[str] = set()

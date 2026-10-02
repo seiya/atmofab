@@ -723,6 +723,94 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
         self.assertTrue(any("procedure 'c__flux' drifts" in v
                             and "requires the definition to carry both" in v for v in out), out)
 
+    def test_the_validator_hands_the_pin_section_5_1_s_procedures(self) -> None:
+        """Through `_validate_generated_signatures` on a `cuda_cpp` component (round 1 of #380
+        PR-1's review: the wiring `procedures=_section51_procedures(...)` could be replaced by
+        `[]` with every row green, and then neither spelling of the pointwise operation passes —
+        the component's Generate.static never converges). A faithful model passes; a plain host
+        definition is refused."""
+        import json
+
+        import yaml
+
+        from tools import validate_pipeline_semantics as vps
+        from tools.tests.target_fixtures import (
+            install_target_profile,
+            pipe_ref,
+            profile_with,
+        )
+
+        def run(model: str) -> list[str]:
+            with tempfile.TemporaryDirectory() as t:
+                repo = Path(t)
+                (repo / "cs.md").write_text(
+                    "## 5. Public API\nprose.\n### 5.1 Canonical interface block\n```yaml\n"
+                    + yaml.safe_dump(_POINTWISE, sort_keys=False) + "```\n## 6. x\n")
+                ir_dir = repo / "workspace" / "ir" / "x"
+                ir_dir.mkdir(parents=True)
+                (ir_dir / "spec.ir.yaml").write_text(json.dumps({
+                    "meta": {"spec_kind": "component", "spec_id": "c",
+                             "source_refs": {"controlled_spec": "cs.md"}},
+                    "public_api": _public_api(_POINTWISE)}))
+                install_target_profile(repo, profile_with(
+                    hardware={"class": "gpu"},
+                    toolchain={"language": "cuda_cpp", "compiler": "nvcc"},
+                    parallel={"backend": "cuda"}))
+                pipe = repo / pipe_ref("component__c__0.1.0", "c_20260101_001")
+                src = pipe / "src"
+                src.mkdir(parents=True)
+                (pipe / "lineage.json").write_text(json.dumps({"ir_ref": "workspace/ir/x"}))
+                (src / "c_model.cu").write_text(model)
+                (src / "c_model.cuh").write_text(
+                    cpp_header.render("c", _public_api(_POINTWISE), spec_kind="component"))
+                execution = vps.NodeExecution(node_key="component/c@0.1.0", node_dir=pipe,
+                                              exec_dir=pipe, pipeline_dir=pipe)
+                out: list[str] = []
+                vps._validate_generated_signatures(repo, execution, [src / "c_model.cu"], out)
+                return out
+
+        self.assertEqual([], run(_POINTWISE_MODEL))
+        refused = run(_POINTWISE_MODEL.replace("__host__ __device__ void", "void"))
+        self.assertTrue(any("c__flux" in v for v in refused), refused)
+
+    def test_the_presence_floor_asks_a_pointwise_model_for_its_none_plan(self) -> None:
+        """A pointwise operation's body may hold a counted loop over its fixed extent and launches
+        nothing, so the floor refuses it under a plan that names CUDA (round 1 of #380 PR-1's
+        review, measured) and passes it under the `"model": "none"` plan the producer is told to
+        declare for it — the escape rule (6a) names is the one this gate honours."""
+        import json
+
+        from tools import validate_pipeline_semantics as vps
+        from tools.tests.target_fixtures import (
+            install_target_profile,
+            pipe_ref,
+            profile_with,
+        )
+
+        def floor(model: str) -> list[str]:
+            with tempfile.TemporaryDirectory() as t:
+                repo = Path(t)
+                install_target_profile(repo, profile_with(
+                    hardware={"class": "gpu"},
+                    toolchain={"language": "cuda_cpp", "compiler": "nvcc"},
+                    parallel={"backend": "cuda"}))
+                pipe = repo / pipe_ref("component__c__0.1.0", "c_20260101_001")
+                src = pipe / "source" / "src_20260101_001" / "src"
+                src.mkdir(parents=True)
+                (src.parent / "codegen_bundle.json").write_text(json.dumps({
+                    "target_lowering_plan": {"precision": {}, "state_residency": "host",
+                                             "parallelization": {"model": model}}}))
+                (src / "c_model.cu").write_text(_POINTWISE_MODEL)
+                out: list[str] = []
+                vps._validate_parallel_presence_floor(
+                    repo, vps._stub_execution(pipe, "component/c@0.1.0"), src,
+                    [src / "c_model.cu"], out)
+                return out
+
+        self.assertGreater(cpp_source.counted_loops(_POINTWISE_MODEL), 0)
+        self.assertTrue(any("not one kernel" in v for v in floor("cuda")), floor("cuda"))
+        self.assertEqual([], floor("none"))
+
     def test_a_consumer_is_shown_the_pair_unqualified(self) -> None:
         facts = cs.published_interface(_POINTWISE_MODEL, "c__flux")
         self.assertEqual("__host__ __device__ void c__flux(atmofab::View<const c_model::dp,1> u, "
@@ -1641,9 +1729,143 @@ class PhysicsGateTests(unittest.TestCase):
                 "  flux[0] = 0.0;\n  out = std::sqrt(dt);\n}")
         with tempfile.TemporaryDirectory() as tmp:
             model = self._model(tmp, body)
-            self.assertEqual([f"{model}: function p__f does not propagate dependency operation "
-                              "outputs to its output dataflow (candidates=['flux'])"],
-                             self._gates(model, ["dep"]))
+            want = (f"{model}: function p__f does not propagate dependency operation "
+                    "outputs to its output dataflow (candidates=['flux'])")
+            self.assertEqual([want], self._gates(model, ["dep"]))
+
+    # Round 1 of #380 PR-1's review: the shapes in which a callee's OTHER output stood for the
+    # dependency result it discards. Each is written consuming (`f[i]`) and discarding (`0.0`)
+    # the flux; the discarded one must be refused with the buffer the flux was written into.
+    _PW_FLAGGED = ("__global__ void faces(const double* u, double* f, double g, long n,"
+                   " {flag}* bad) {{\n"
+                   "  const long i = blockIdx.x * blockDim.x + threadIdx.x;\n  if (i < n) {{\n"
+                   "    bool gok = true;\n"
+                   "    dep_model::dep__face_ok(atmofab::View<const double, 1>{{u + 3 * i, {{3}}}}, g,\n"
+                   "        atmofab::View<double, 1>{{f + 3 * i, {{3}}}}, gok);\n"
+                   "    if (!gok) {{ *bad = 1; }}\n  }}\n}}\n")
+    _PW_FLAGGED_HEADER = ("namespace dep_model {\n__host__ __device__ void dep__face_ok(\n"
+                          "    atmofab::View<const double, 1> u,\n    double g,\n"
+                          "    atmofab::View<double, 1> f,\n    bool& ok);\n}\n")
+    _PW_FLAGGED_STEP = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+                        " bool& ok) {{\n  double* du = nullptr;\n  double* df = nullptr;\n"
+                        "  double* dn = nullptr;\n  {flag}* dbad = nullptr;\n  {flag} bad = 0;\n"
+                        "  cudaMemcpy(du, u.data, 96, cudaMemcpyHostToDevice);\n"
+                        "  {launch}(du, df, 9.81, 4, dbad);\n"
+                        "  upd<<<1, 12>>>(du, df, dn, 0.1, 12);\n"
+                        "  cudaMemcpy(u_new.data, dn, 96, cudaMemcpyDeviceToHost);\n"
+                        "  cudaMemcpy(&bad, dbad, sizeof(bad), cudaMemcpyDeviceToHost);\n"
+                        "  ok = !bad;\n}}")
+    _PW_LAUNCHER = ("void launch_faces(const double* u, double* f, double g, long n, {flag}* bad) {{\n"
+                    "  faces<<<1, 4>>>(u, f, g, n, bad);\n}}\n")
+
+    def test_a_kernel_s_guard_flag_does_not_stand_for_the_flux_it_discards(self) -> None:
+        """A kernel that passes its dependency's guard on through a flag pointer has two output
+        parameters; only the one the dependency's flux reaches stands for the dependency call
+        (before: the flag reaching `ok` made the launch "propagated" while the flux was
+        dropped). Directly launched, and through a host helper that launches it — the helper
+        carries the kernel's reach one level up (the fixed point)."""
+        for flag in ("int", "bool"):
+            for label, extra, launch in (("kernel", "", "faces<<<1, 4>>>"),
+                                         ("helper", self._PW_LAUNCHER, "launch_faces"),
+                                         ("helper defined first", self._PW_LAUNCHER,
+                                          "launch_faces")):
+                with self.subTest(flag=flag, via=label), tempfile.TemporaryDirectory() as tmp:
+                    (Path(tmp) / "dep_model.cuh").write_text(self._PW_FLAGGED_HEADER)
+
+                    def gates(use: str, flag: str = flag, extra: str = extra,
+                              launch: str = launch, label: str = label) -> list[str]:
+                        kernel = self._PW_FLAGGED.format(flag=flag)
+                        if label == "helper defined first":
+                            # The helper precedes the kernel it launches (a forward declaration
+                            # names it), so one pass in file order sees the helper before the
+                            # kernel's reach is known: the fixed point is what carries it.
+                            head = kernel.split(" {\n", 1)[0] + ";\n"
+                            kernel = head + extra.format(flag=flag) + kernel
+                        else:
+                            kernel += extra.format(flag=flag)
+                        body = (kernel + self._PW_UPDATE.format(use=use)
+                                + self._PW_FLAGGED_STEP.format(flag=flag, launch=launch))
+                        return self._gates(self._model(tmp, body, header=False), ["dep"])
+                    self.assertEqual([], gates("f[i]"))
+                    out = gates("0.0")
+                    self.assertEqual(1, len(out), out)
+                    self.assertIn("function p__step does not propagate dependency operation "
+                                  "outputs to its output dataflow (candidates=['df'])", out[0])
+
+    def test_a_host_helper_s_scalar_output_does_not_stand_for_its_array(self) -> None:
+        """A host helper filling a vector from the dependency and returning its guard through a
+        `bool&`: a caller that reads only the flag discards the flux. (Were the flag computed
+        from the flux, the flux would reach `ok` through the helper's summary, and the gate's
+        closure rule would call it propagated.)"""
+        helper = ("void flux_host(const std::vector<double>& u, std::vector<double>& f, bool& fok)"
+                  " {\n  for (long i = 0; i < 4; ++i) {\n    bool gok = true;\n"
+                  "    dep_model::dep__face_ok(atmofab::View<const double, 1>{u.data() + 3 * i, {3}},"
+                  " 9.81,\n        atmofab::View<double, 1>{f.data() + 3 * i, {3}}, gok);\n"
+                  "    fok = gok;\n  }\n}\n")
+        step = ("void p__step(const std::vector<double>& u, std::vector<double>& u_new, bool& ok)"
+                " {{\n  std::vector<double> fh(12);\n  bool fok = true;\n"
+                "  flux_host(u, fh, fok);\n"
+                "  for (long i = 0; i < 12; ++i) {{ u_new[i] = u[i] + {use}; }}\n  ok = fok;\n}}")
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "dep_model.cuh").write_text(self._PW_FLAGGED_HEADER)
+            consumed = self._gates(self._model(tmp, helper + step.format(use="fh[i]"),
+                                               header=False), ["dep"])
+            self.assertEqual([], consumed)
+            out = self._gates(self._model(tmp, helper + step.format(use="0.0"), header=False),
+                              ["dep"])
+            self.assertEqual(1, len(out), out)
+            self.assertIn("(candidates=['fh'])", out[0])
+
+    def test_a_helper_carrying_a_scalar_result_reads_only_its_output_positions(self) -> None:
+        """A dependency with a SCALAR output only (no array to narrow to), carried by a host
+        helper: what stands for it is the helper's output parameter, not the input the caller
+        hands it — an input that also reaches the caller's output must not make the discarded
+        speed look consumed."""
+        header = ("namespace dep_model {\n__host__ __device__ void dep__speed(\n    double h,\n"
+                  "    double& c);\n}\n")
+        helper = ("void wave_speed(const std::vector<double>& w, double& c) {\n"
+                  "  double cl = 0.0;\n  dep_model::dep__speed(w[0], cl);\n  c = cl;\n}\n")
+        step = ("void p__f(atmofab::View<const double, 1> u, double& out) {{\n"
+                "  std::vector<double> w(u.data, u.data + 3);\n  double c = 0.0;\n"
+                "  wave_speed(w, c);\n  out = {use};\n}}")
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "dep_model.cuh").write_text(header)
+            self.assertEqual([], self._gates(self._model(
+                tmp, helper + step.format(use="w[0] + c"), header=False), ["dep"]))
+            out = self._gates(self._model(tmp, helper + step.format(use="w[0]"), header=False),
+                              ["dep"])
+            self.assertEqual(1, len(out), out)
+            self.assertIn("(candidates=['c'])", out[0])
+
+    def test_an_index_does_not_stand_for_the_buffer_it_indexes(self) -> None:
+        """`View<double, 1>{f + 3 * (base + i), {3}}` hands over `f`; the index is an integer
+        local `i` and an integer parameter `base`, and an output computed from them (a kernel
+        writing the face index it processed) must not stand for the flux — each of the two is
+        what the row needs (either alone left unread makes `seen` stand for it)."""
+        kernel = ("__global__ void faces(const double* u, double* f, double g, long n,"
+                  " long* seen, long base) {\n"
+                  "  const long i = blockIdx.x * blockDim.x + threadIdx.x;\n  if (i < n) {\n"
+                  "    dep_model::dep__face(atmofab::View<const double, 1>{u + 3 * (base + i), {3}},"
+                  " g,\n                         atmofab::View<double, 1>{f + 3 * (base + i), {3}});\n"
+                  "    seen[i] = base + i;\n  }\n}\n")
+        step = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+                " long& count) {{\n  double* du = nullptr;\n  double* df = nullptr;\n"
+                "  double* dn = nullptr;\n  long* dseen = nullptr;\n"
+                "  cudaMemcpy(du, u.data, 96, cudaMemcpyHostToDevice);\n"
+                "  faces<<<1, 4>>>(du, df, 9.81, 4, dseen, 0);\n"
+                "  upd<<<1, 12>>>(du, df, dn, 0.1, 12);\n"
+                "  cudaMemcpy(u_new.data, dn, 96, cudaMemcpyDeviceToHost);\n"
+                "  cudaMemcpy(&count, dseen, 8, cudaMemcpyDeviceToHost);\n}}")
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "dep_model.cuh").write_text(self._PW_HEADER)
+            self.assertEqual([], self._gates(self._model(
+                tmp, kernel + self._PW_UPDATE.format(use="f[i]") + step.format(), header=False),
+                ["dep"]))
+            out = self._gates(self._model(
+                tmp, kernel + self._PW_UPDATE.format(use="0.0") + step.format(), header=False),
+                ["dep"])
+            self.assertEqual(1, len(out), out)
+            self.assertIn("(candidates=['df'])", out[0])
 
     def test_a_call_to_a_function_that_calls_no_dependency_is_not_a_dependency_call(self) -> None:
         """Only a callee that reaches a dependency operation stands for one: a kernel that
@@ -2037,6 +2259,18 @@ class ToolAdapterTests(unittest.TestCase):
         self.assertNotIn("Published operations are host functions", section5)
         self.assertNotIn("a kernel over the shared-memory limit)", section5)
         self.assertIn("-rdc=true", nvcc_lint.lint_rules_document())
+        # Round 1 of #380 PR-1's review: what the producer and reviewer read beside the binding.
+        # The lint argv rule (1) quotes is the declared one, derived from the code; the syntax
+        # argv carries the build's relocatable device code; a pointwise operation's plan
+        # declares `none`, and the reviewer reads that as the binding rather than a finding.
+        rules = prompts.fragments("generate_generate")["authoring_rules_1_to_4"]
+        self.assertIn(f"`{' '.join(nvcc_lint.check_argv())}`", rules)
+        self.assertIn("-Xcompiler -fsyntax-only -rdc=true -c`", rules)
+        self.assertIn("-Xcompiler -fsyntax-only -rdc=true -c`", section5)
+        self.assertIn('declares `"model": "none"`', rule)
+        g6 = prompts.fragments("generate_verify")["checklist_g6_floor_scope"]
+        self.assertIn('its plan declares `"model": "none"`', g6)
+        self.assertIn("that is the binding, not a finding", g6)
 
     def test_the_registry_serves_every_declared_capability(self) -> None:
         for capability in ("bundle_facts", "syntax_promotions", "prompt_fragments", "checks_abi",
