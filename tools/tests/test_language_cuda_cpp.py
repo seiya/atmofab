@@ -720,8 +720,8 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
                 type_stanzas=types, proto_stanzas=ifaces,
                 module_parameters=_POINTWISE["module_parameters"],
                 procedures=_POINTWISE["procedures"], violations=out)
-        self.assertTrue(any("procedure 'c__flux' drifts" in v and "__device__" in v
-                            for v in out), out)
+        self.assertTrue(any("procedure 'c__flux' drifts" in v
+                            and "requires the definition to carry both" in v for v in out), out)
 
     def test_a_consumer_is_shown_the_pair_unqualified(self) -> None:
         facts = cs.published_interface(_POINTWISE_MODEL, "c__flux")
