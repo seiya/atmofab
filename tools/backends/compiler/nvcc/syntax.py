@@ -3,11 +3,14 @@
 What this module knows is how the CUDA compiler driver is asked for a syntax-only pass over CUDA
 C++: `-Xcompiler -fsyntax-only -c` has the host compiler parse and stop, while the device side is
 still compiled and discarded — measured on 13.4: the argv is accepted, a source whose kernel
-calls a host function fails (front end), a kernel over the shared-memory limit fails with exit
-255 (device assembler), and no object is left beside any source (`-odir` names the scratch
+calls a host function fails (front end), invalid inline PTX fails with exit 255 (device
+assembler), and no object is left beside any source (`-odir` names the scratch
 directory anyway, so a driver version that did write one would write it there). The target's
 standard and GPU architecture reach it from the target profile; the language's facts (which
 suffixes are sources, their order, what is promoted) are `tools/backends/language/cuda_cpp/syntax.py`.
+The argv carries `-rdc=true`, as the build does (`docs/backends/language/cuda_cpp/BUNDLE_BINDING.md`
+§4); under it a kernel over the static shared-memory limit passes here and fails at the device
+link in Build (re-measured 2026-10-02, issue #380).
 
 Stdlib only.
 """
@@ -50,5 +53,9 @@ def argv(*, standard: str, scratch_dir: str, openmp: bool, promotions: tuple[str
     command = [EXECUTABLE, f"-std={standard}"]
     if architecture:
         command.append(f"-arch={architecture}")
-    command += ["-Xcompiler", "-fsyntax-only", *promotions, "-odir", scratch_dir, "-c"]
+    # `-rdc=true`: without it the device code generator refuses a kernel's call to a
+    # `__host__ __device__` operation another file defines (`ptxas fatal : Unresolved extern
+    # function`), even in syntax-only mode — measured on 13.4 (issue #380).
+    command += ["-Xcompiler", "-fsyntax-only", *promotions, "-odir", scratch_dir, "-rdc=true",
+                "-c"]
     return command + list(sources)

@@ -133,6 +133,10 @@ A run that stops before `Validate` is asked nothing. The version range measured 
 
 - The trace covers the whole process: which case launched a kernel is not recorded.
 - Kernels of two namespaces with one base name are counted as one.
+- A pointwise `component` operation (`docs/backends/language/cuda_cpp/BUNDLE_BINDING.md` §2) is
+  `__host__ __device__` and defines no kernel, so its own run has no row here and the gate asks
+  nothing of it; its device path runs inside the kernels of the consumers that call it, whose
+  traced runs record those kernels (issue #380).
 - The quality check (`make test`) is not traced.
 - `perf.json` comes from the traced run: the runner's wall-clock is its own clock around the
   cases (a `steady_clock` read after the arguments are parsed and before the first case,

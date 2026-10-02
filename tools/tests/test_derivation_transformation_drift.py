@@ -639,6 +639,17 @@ PINNED_RENDER: dict[str, str] = {
     # `render_tuple()` against origin/main 6add2b17's: those three rows and no other.) The digest
     # `render-6` shipped with at 6add2b17:
     "render-6@6add2b17": "2bcc28eabe5c8b08a8b03a391f8a70d1569fdeece377fd1dace659d6bc7b1054",
+    # Bumped (issue #380, PR-1): the CUDA C++ published-surface header declares a pointwise
+    # operation of a `component` node `__host__ __device__` (`signatures.is_pointwise`, the
+    # header renderer now takes the node's kind), and the control file's `NVCCFLAGS` carries
+    # `-rdc=true`. A bump, not a re-pin: a certified `cuda_cpp` flux component defines its
+    # operation as a plain host function, which the §5.1 pin now refuses against the new header,
+    # and every certified `cuda_cpp` Makefile lacks the flag a consumer kernel's call needs. The
+    # Fortran render is unchanged (its `generated_source_violations` accepts and does not read
+    # the new `procedures` argument, which no renderer calls). Re-pinned in place within PR-1's
+    # review (round 3), before it shipped: the §5.1 pin's drift message names the specifier the
+    # definition must carry (`__device__`) instead of "both" — a message only.
+    "render-7": "4b6b9b354f6b21b021b48aec6a69b2ea49d3031f56562c5a385d1ad0035ef562",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

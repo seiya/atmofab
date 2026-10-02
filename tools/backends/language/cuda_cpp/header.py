@@ -70,10 +70,14 @@ def _struct_from_public_api(public_api: dict[str, Any]) -> dict[str, Any]:
             "types": types, "interfaces": interfaces, "procedures": procedures}
 
 
-def render(spec_id: str, public_api: dict[str, Any]) -> str:
-    """The whole header for node `spec_id`. Raises `SignatureParseError` when the IR's surface
-    has no CUDA C++ lowering (the same refusal the §5.1 pin makes)."""
-    declarations = cpp_signatures.render_signatures(_struct_from_public_api(public_api))
+def render(spec_id: str, public_api: dict[str, Any], *, spec_kind: str) -> str:
+    """The whole header for node `spec_id` of kind `spec_kind` (the host's own identity for the
+    node, its `node_key`). Raises `SignatureParseError` when the IR's surface has no CUDA C++
+    lowering (the same refusal the §5.1 pin makes). A pointwise operation of a node of
+    `signatures.DEVICE_CALLABLE_SPEC_KINDS` is declared `__host__ __device__`."""
+    declarations = cpp_signatures.render_signatures(
+        _struct_from_public_api(public_api),
+        device_callable=spec_kind in cpp_signatures.DEVICE_CALLABLE_SPEC_KINDS)
     body = "".join(f"{line}\n" if line else "\n" for line in declarations.splitlines())
     return (
         f"// {basename(spec_id)}: the published surface of {spec_id}, rendered by the host from\n"
@@ -84,6 +88,7 @@ def render(spec_id: str, public_api: dict[str, Any]) -> str:
         "\n"
         f"{VIEW_DEFINITION}"
         "\n"
+        "// An operation declared __host__ __device__ is pointwise: a kernel may call it.\n"
         f"namespace {spec_id}_model {{\n"
         f"{body}"
         f"}}  // namespace {spec_id}_model\n"

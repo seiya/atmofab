@@ -61,6 +61,20 @@ symbol (a module parameter) or the language default (`float` for `real`, `int` f
 
 - A `subroutine` lowers to a function returning `void`; a `function` to one returning its result's
   type.
+- **A pointwise operation of a `component` node is declared `__host__ __device__`** (issue #380),
+  so a consumer may call it from inside its own kernel, one element at a time; its parameter types
+  are those of the table. An operation is pointwise when it takes at least one argument, every
+  argument is `real` / `integer` / `logical` that is either rank 0 or an explicit-shape array
+  whose every `dims` entry is an integer literal (`['3']`) and not `alloc`, and a `function`'s
+  result is a rank-0 `real` / `integer` / `logical` (`signatures.is_pointwise`). A string, a
+  derived value, a procedure argument, an allocatable array or an extent that is a symbol
+  (`nx`) makes an operation not pointwise. Only a `component` takes the pair
+  (`signatures.DEVICE_CALLABLE_SPEC_KINDS`): a `problem` is called by its harness, and an
+  `infrastructure` node's operations are host I/O. The node kind is the host's own identity for
+  the node (its `node_key`) when the header is rendered, and the certified IR's `meta.spec_kind` at
+  the pin, which Compile holds to the node's own kind. Whether a consumer calls the operation from
+  a kernel, from a host loop, or lets device link-time optimization inline it is the consumer's
+  lowering choice, not part of this binding.
 - A module parameter `n = float64` lowers to `using n = double;` (`float32` to `float`); an
   integer value `n = 64` to `inline constexpr int n = 64;` (in a header, an unreferenced
   `inline constexpr` draws no unused-variable diagnostic).
@@ -73,7 +87,7 @@ symbol (a module parameter) or the language default (`float` for `real`, `int` f
 - An `interfaces` entry `P` lowers to `using P = <return type> (*)(<parameters>);`.
 - A `type` lowers to `struct T { <component>; ... };`, components in order.
 - **Not part of the C++ type, so not pinned:** an argument's `dims` (a view's extents are run-time
-  values) and a string's `len` (a `std::string` carries its own length).
+  values; the literal-or-symbol question above decides only the specifier) and a string's `len` (a `std::string` carries its own length).
 - **No lowering, refused (`SignatureParseError`):** a `logical` with a kind, a kind naming an
   integer-valued module parameter, and a name that is a C++ keyword or a CUDA execution-space
   specifier. The target-free Compile
@@ -91,7 +105,13 @@ type's data members as an ordered list, a procedure as a set whose first element
 `<return type> <name>(<argument names in order>)`, a prototype likewise. Every §5.1 procedure must
 be DEFINED in the model source with the declared parameter types (a definition whose types differ
 is another overload, refused; a top-level `const` on a by-value parameter is not part of the type
-and is ignored), no function may carry a prototype's name, and every module parameter must be
+and is ignored). The execution-space specifiers are compared as the header declares them
+(`__host__` is dropped from both sides, `__device__` kept): a pointwise operation of a `component`
+must carry `__device__` on its definition — spelled `__host__ __device__` as the header declares
+it; a `__device__`-only definition compares equal, and the compiler merges it with the
+declaration, so it stays callable from the host — and every other operation neither — the expected
+header is rendered from §5.1 with the node's kind, not read off the header beside the source. No
+function may carry a prototype's name, and every module parameter must be
 declared once. Every leaf source is also held to the preprocessor allowlist of `CHECKS_ABI.md` §5,
 so the text the pin reads is the program the compiler builds.
 
@@ -104,5 +124,18 @@ so the text the pin reads is the program the compiler builds.
   (`source.MODULE_ARTIFACT_SUFFIX` is `None`).
 - **Control file.** The host authors every node's `src/Makefile` (the language half of
   `control_file`, `tools/backends/language/cuda_cpp/control_file.py`): `NVCC` pinned, `NVCCFLAGS`
-  `-std=<toolchain.standard> -O2 -arch=<hardware.architecture> -I$(OBJDIR)`, one object per `.cu`,
-  one link.
+  `-std=<toolchain.standard> -O2 -rdc=true -arch=<hardware.architecture> -I$(OBJDIR)`, one object
+  per `.cu`, one link.
+- **Relocatable device code (`-rdc=true`).** A kernel that calls a `__host__ __device__`
+  operation another `.cu` defines (§2) needs the device code of both objects linked: without it
+  the device code generator refuses the call, `ptxas fatal : Unresolved extern function`, at
+  `-c` — and so do the `Generate.gate` lint and syntax stages, which compile the device side too.
+  So the flag is in all three argvs (`NVCCFLAGS`, `tools/backends/compiler/nvcc/syntax.py`,
+  `tools/backends/linter/nvcc/lint.py`), uniformly for every node, and the compile and link
+  lines both carry it, so the link line device-links (measured with nvcc 13.4, issue #380). Two
+  costs, recorded: relocatable device code turns off whole-program device optimization across
+  translation units — `-dlto` restores it and is an optimization variant (`docs/TUNING_WORKFLOW.md`),
+  not the default — and a kernel's static shared memory over the device's limit is no longer
+  refused when its file is compiled but when the program is linked (`nvlink error … uses too much
+  shared data`), so Build reports it, not the `Generate.gate` lint
+  (`docs/backends/linter/nvcc/RULES.md` §Measurements).

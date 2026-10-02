@@ -170,14 +170,20 @@ and the hand-authored runner of an `infrastructure` node's self-test).
   `int main(int argc, char** argv)`. Never `#include` a `.cu` file: the model would then be
   defined in two objects, which fails at link. Every `.cu` sits at the top level of the source
   directory, beside the header; one in a subdirectory is refused by the static check.
-- **Published operations are host functions.** A published operation is callable from the host:
-  no `__global__`, `__device__` or vendor attribute on it. Device work sits in kernels the
-  operation launches; a kernel is internal, and its name does not start with `<spec_id>__`.
+- **Published operations are callable from the host.** A pointwise operation of a `component`
+  (`BUNDLE_BINDING.md` §2: every argument a scalar or a fixed-extent view) is
+  `__host__ __device__` as its header declares, defined with that pair, with a body that is legal
+  in device code (no standard-library container or string, no allocation, no exception, no I/O)
+  and that launches nothing, so a consumer's kernel may call it. Every other published operation carries
+  no `__global__`, `__device__` or vendor attribute: its device work sits in kernels it launches;
+  a kernel is internal, and its name does not start with `<spec_id>__`.
 - **Every warning is an error.** The deterministic `Generate.gate` lint check compiles each
   source with the host compiler's `-Wall -Wextra -Werror` and `--Werror all-warnings`
   (`tools/backends/linter/nvcc/lint.py`), under `-std=c++17`. An unused parameter, an unused
-  variable, and a comparison between signed and unsigned integers are therefore failures, and so
-  is a device-assembler error (a kernel over the shared-memory limit).
+  variable, and a comparison between signed and unsigned integers are therefore failures. Every
+  source is compiled as relocatable device code (`-rdc=true`, as the build compiles it), so a
+  kernel over the device's shared-memory limit is refused at Build's link step rather than by
+  this check.
 - **Intentionally-unused parameters.** When an interface FIXES a parameter the body never reads
   (a name the §5.1 signature pins), the parameter keeps its name and the body opens with
   `(void)<name>;`. A parameter no interface fixes — in a helper the leaf itself declared — is
@@ -207,6 +213,6 @@ and the hand-authored runner of an `infrastructure` node's self-test).
   program than the compiler builds. The host-rendered header is not a leaf source and is not
   held to this.
 - **The syntax stage compiles for the target.** The `Generate.gate` syntax check runs
-  `nvcc -std=<toolchain.standard> -arch=<hardware.architecture> -Xcompiler -fsyntax-only -c` over
+  `nvcc -std=<toolchain.standard> -arch=<hardware.architecture> -Xcompiler -fsyntax-only -rdc=true -c` over
   every `.cu` of the source directory, each on its own, with the host-rendered header staged
   beside them (`tools/backends/compiler/nvcc/syntax.py`).

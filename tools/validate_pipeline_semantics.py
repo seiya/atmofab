@@ -3485,6 +3485,21 @@ def _section51_module_parameters(controlled_spec_path: Path, signatures: Any) ->
     ]
 
 
+def _section51_procedures(controlled_spec_path: Path, signatures: Any) -> list[dict]:
+    """The §5.1 structured ``procedures`` entries, as ``_section51_module_parameters`` reads the
+    module parameters: ``[]`` when the block cannot be read (the calling gate has already refused
+    such a §5.1). Handed to the language backend's source pin, which decides from them whether a
+    procedure is published in a form other than the one ``render_signatures`` gives without a
+    node kind (issue #380)."""
+    body, err = _section51_fence_body(controlled_spec_path)
+    if err or body is None:
+        return []
+    struct, perr = signatures.load_structured_signatures(body)
+    if perr:
+        return []
+    return [proc for proc in struct.get("procedures", []) if isinstance(proc, dict)]
+
+
 def _parse_canonical_interface_from_controlled_spec(
     controlled_spec_path: Path, signatures: Any,
 ) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, list[str]], str | None]:
@@ -9841,6 +9856,7 @@ def _validate_generated_signatures(
         type_stanzas=type_stanzas,
         proto_stanzas=proto_stanzas,
         module_parameters=_section51_module_parameters(cs_path, signatures),
+        procedures=_section51_procedures(cs_path, signatures),
         violations=violations,
     )
 

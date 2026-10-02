@@ -159,9 +159,56 @@ def _render_params(args: list[dict[str, Any]], ctx: str) -> list[str]:
             for i, a in enumerate(args)]
 
 
-def _render_procedure(proc: dict[str, Any], ctx: str = "procedure") -> list[str]:
+#: The execution-space specifier pair a POINTWISE operation of a `component` node is declared
+#: with, so a consumer may call it from inside its own kernel (issue #380;
+#: `docs/backends/language/cuda_cpp/BUNDLE_BINDING.md` §2).
+DEVICE_CALLABLE_SPECIFIER = "__host__ __device__"
+
+#: The node kinds whose pointwise operations take `DEVICE_CALLABLE_SPECIFIER`. A `problem` is
+#: called by a harness, never from a kernel, and an `infrastructure` node's operations are host
+#: I/O; the header renderer and the §5.1 source pin both read this one set.
+DEVICE_CALLABLE_SPEC_KINDS = frozenset({"component"})
+
+
+def _is_fixed_numeric(ent: Any) -> bool:
+    """`ent` is a `real` / `integer` / `logical` value that is either rank 0 or an explicit-shape
+    array whose every `dims` entry is an integer literal — a value whose whole extent is known
+    without reading another argument, and which lowers to a scalar or an `atmofab::View`."""
+    if not isinstance(ent, dict):
+        return False
+    spec = ent.get("spec")
+    if not isinstance(spec, dict) or spec.get("type") not in _DEFAULT_SCALAR or spec.get("alloc"):
+        return False
+    rank = ent.get("rank", 0) or 0
+    if rank == 0:
+        return True
+    dims = ent.get("dims")
+    return (isinstance(dims, list) and len(dims) == rank
+            and all(str(d).strip().isdigit() for d in dims))
+
+
+def is_pointwise(proc: dict[str, Any]) -> bool:
+    """Whether a §5.1 procedure is POINTWISE (issue #380, decision 6): it takes at least one
+    argument, every argument is a fixed numeric value (`_is_fixed_numeric`), and a function's
+    result is a rank-0 numeric value. A string, a derived value, a procedure argument, an
+    allocatable array or an array whose extent is a symbol (`nx`) makes it not pointwise. The
+    caller decides whether the node's kind admits the device-callable binding at all
+    (`render_signatures(device_callable=...)`)."""
+    args = proc.get("args") or []
+    if not args or not all(_is_fixed_numeric(a) for a in args):
+        return False
+    if proc.get("kind") == "function":
+        result = proc.get("result")
+        return _is_fixed_numeric(result) and not (result.get("rank", 0) or 0)
+    return True
+
+
+def _render_procedure(proc: dict[str, Any], ctx: str = "procedure", *,
+                      device_callable: bool = False) -> list[str]:
     name = _require_cpp_name(proc["name"], f"{ctx}.name")
     ret = "void" if proc["kind"] == "subroutine" else _value_type(proc["result"], f"{ctx}.result")
+    if device_callable and is_pointwise(proc):
+        ret = f"{DEVICE_CALLABLE_SPECIFIER} {ret}"
     params = _render_params(proc.get("args") or [], ctx)
     if not params:
         return [f"{ret} {name}();"]
@@ -231,9 +278,11 @@ def _require_type_kinds(struct: dict[str, Any]) -> None:
                     "double;` / `float;`, which only a float64 / float32 value gives)")
 
 
-def render_signatures(struct: dict[str, Any]) -> str:
+def render_signatures(struct: dict[str, Any], *, device_callable: bool = False) -> str:
     """A whole structured §5.1 block as C++ declarations (module parameters, types, prototypes,
-    procedures), validated first."""
+    procedures), validated first. With `device_callable` (the node is a `component`), a
+    pointwise procedure (`is_pointwise`) is declared `__host__ __device__`; every other one, and
+    every procedure of a node of another kind, is a plain host function."""
     _validate_struct(struct)
     _require_type_kinds(struct)
     out: list[str] = [render_module_parameter(mp) for mp in struct.get("module_parameters") or []]
@@ -242,7 +291,7 @@ def render_signatures(struct: dict[str, Any]) -> str:
     for i, iface in enumerate(struct.get("interfaces") or []):
         out += _render_interface_lines(iface, f"interfaces[{i}]")
     for i, proc in enumerate(struct.get("procedures") or []):
-        out += _render_procedure(proc, f"procedures[{i}]")
+        out += _render_procedure(proc, f"procedures[{i}]", device_callable=device_callable)
     return "\n".join(out) + "\n"
 
 
@@ -374,6 +423,24 @@ def stanza_line_set(lines: list[str]) -> frozenset[str]:
 
 # --- the Generate.static source pin ------------------------------------------------------------
 
+def _device_callable_stanzas(procedures: list[dict[str, Any]]) -> dict[str, list[str]]:
+    """The stanza of each pointwise procedure among `procedures`, rendered device-callable.
+    A procedure that does not validate is skipped: the §5.1 render that produced `op_stanzas`
+    already refused it."""
+    out: dict[str, list[str]] = {}
+    for proc in procedures:
+        if not isinstance(proc, dict) or not is_pointwise(proc):
+            continue
+        try:
+            _validate_procedure(proc, "procedure", allow_procedure_args=True)
+            rendered = "\n".join(_render_procedure(proc, device_callable=True)) + "\n"
+        except (SignatureParseError, KeyError, TypeError):
+            continue
+        ops, _t, _i, _e = parse_interface_stanzas(rendered)
+        out.update(ops)
+    return out
+
+
 def generated_source_violations(
     *,
     model_files: list[Path],
@@ -383,10 +450,16 @@ def generated_source_violations(
     type_stanzas: dict[str, list[str]],
     proto_stanzas: dict[str, list[str]],
     module_parameters: list[dict[str, Any]],
+    procedures: list[dict[str, Any]],
     violations: list[str],
 ) -> None:
     """The source half of the validator's `Generate.static` signature gate, in CUDA C++: pin the
     node's published surface against §5.1 already rendered to C++ stanzas.
+
+    `op_stanzas` are rendered without a node kind (the IR comparison renders in the same
+    currency), so for a node of `DEVICE_CALLABLE_SPEC_KINDS` the pointwise ones among
+    `procedures` (§5.1's structured entries) are rendered again with the specifier pair the
+    header declares them with (`header.render`): the definition must carry it too.
 
     The surface is DECLARED by the host-rendered header `<model stem>.cuh` beside the model source
     (`header.render`, from the IR `public_api`) and DEFINED by the model source, both in namespace
@@ -398,6 +471,8 @@ def generated_source_violations(
     declaration is another overload, refused); every prototype a function-pointer alias with
     exactly the pinned atoms, and no function of its name defined; every module parameter declared
     exactly once, as rendered."""
+    if ir_kind in DEVICE_CALLABLE_SPEC_KINDS:
+        op_stanzas = {**op_stanzas, **_device_callable_stanzas(procedures)}
     if (op_stanzas or type_stanzas) and len(model_files) != 1:
         violations.append(
             f"{target}: this {ir_kind} node's published surface cannot be pinned to one "
@@ -453,7 +528,9 @@ def generated_source_violations(
                 f"{sorted(want - have)}, extra {sorted(have - want)} (compared with whitespace "
                 "removed; the first atom is the header, which pins the return type and the "
                 "argument NAMES in order, and a specifier on it such as `__device__` is a "
-                "difference) — define it with exactly the declaration in "
+                "difference — a header that declares `__host__ __device__` requires the "
+                "definition to carry `__device__`: spell it `__host__ __device__`, as declared) "
+                "— define it with exactly the declaration in "
                 f"{header_path.name}")
         if name not in model_defined:
             violations.append(
@@ -516,7 +593,7 @@ def _rank_of(ctype: str) -> int:
 # the dependency's own header (`dp`, a published `struct`, an `interfaces` alias).
 _TYPE_KEYWORDS = frozenset({
     "const", "volatile", "unsigned", "signed", "short", "long", "int", "double", "float", "char",
-    "bool", "void", "auto", "struct", "__restrict__"})
+    "bool", "void", "auto", "struct", "__restrict__", "__host__", "__device__"})
 
 
 def _qualified_type(ctype: str, namespace: tuple[str, ...]) -> str:
@@ -555,8 +632,14 @@ def published_interface(source_text: str, name: str) -> dict[str, Any] | None:
     fn = candidates[0]
     typed = [(_qualified_type(t, fn.namespace), n) for t, n in fn.params]
     params = ", ".join(f"{t} {n}".strip() for t, n in typed)
+    # A device-callable operation is shown with the specifier pair its header declares (the
+    # canonical return type keeps `__device__` and drops `__host__`), so a consumer reads that a
+    # kernel may call it (issue #380).
+    returns = fn.returns
+    if "__device__" in returns.split() and "__host__" in fn.head.split():
+        returns = f"__host__ {returns}"
     return {
-        "interface": f"{_qualified_type(fn.returns, fn.namespace)} {fn.name}({params})",
+        "interface": f"{_qualified_type(returns, fn.namespace)} {fn.name}({params})",
         "argument_order": [n for _t, n in typed],
         "arguments": [{"name": n, "type": t, "rank": _rank_of(t)} for t, n in typed],
     }
