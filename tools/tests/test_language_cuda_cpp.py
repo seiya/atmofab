@@ -1631,6 +1631,20 @@ class PhysicsGateTests(unittest.TestCase):
                     self.assertIn("function p__step does not propagate dependency operation "
                                   "outputs to its output dataflow (candidates=['df'])", out[0])
 
+    def test_assigned_before_is_measured_from_the_dependency_call_itself(self) -> None:
+        """The "assigned before the call" exemption compares against THIS call's position (round
+        0 of #380 PR-1: with the position taken from the last call of any kind in the body, the
+        later `std::sqrt(...)` moved it past `flux[0] = 0.0;` and the overwritten result passed)."""
+        body = ("void p__f(atmofab::View<const double, 1> u, double& out, double dt) {\n"
+                "  std::vector<double> flux(4);\n"
+                "  dep_model::dep__flux(u, atmofab::View<double, 1>{flux.data(), {4}}, dt);\n"
+                "  flux[0] = 0.0;\n  out = std::sqrt(dt);\n}")
+        with tempfile.TemporaryDirectory() as tmp:
+            model = self._model(tmp, body)
+            self.assertEqual([f"{model}: function p__f does not propagate dependency operation "
+                              "outputs to its output dataflow (candidates=['flux'])"],
+                             self._gates(model, ["dep"]))
+
     def test_a_call_to_a_function_that_calls_no_dependency_is_not_a_dependency_call(self) -> None:
         """Only a callee that reaches a dependency operation stands for one: a kernel that
         computes on its own is followed as before and asked nothing of — here it fills a scratch
