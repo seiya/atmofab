@@ -198,9 +198,10 @@ shapes is what happens inside an operation: allocation per call, transfer of dat
 already holds, and launches per element. The producer's default is three points.
 
 - **A.1 Allocate once.** A device buffer is held at namespace scope (an unnamed-namespace variable
-  holding the pointer and its capacity), allocated on the first call that needs it, grown when a
-  later call needs more, and not freed by the operation. The runner's `finish` calls
-  `cudaDeviceReset` (`tools/backends/language/cuda_cpp/runner.py`), which releases every buffer.
+  holding the pointer and its capacity), allocated on the first call that needs it, replaced by a
+  larger one (the old one freed) when a later call needs more, and otherwise not freed by the
+  operation. The runner's `finish` calls `cudaDeviceReset`
+  (`tools/backends/language/cuda_cpp/runner.py`), which releases every buffer.
 - **A.2 Cross the bus once each way.** Within one call, each input a kernel reads is copied in
   once and each output copied out once, and a value one kernel produces for another kernel of the
   same call stays on the device. A `problem` model's step keeps the state its own kernels pass
