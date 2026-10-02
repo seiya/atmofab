@@ -58,7 +58,8 @@ transport `fail_closed`.
 - A `problem` node's header declares nothing of its operation (its IR has no signatures), so its
   checks source declares the operation itself, in namespace `<spec_id>_model`, with exactly the
   model's definition types; another spelling is refused (`checks_harness_isolation_violations`)
-  before it would be a link error at Build.
+  before it would be a link error at Build. The reopened namespace is not listed in the checks
+  file's `modules` (`BUNDLE_BINDING.md` §1); the producer fragment says so since `pure-63`.
 - Neither the model nor the checks source includes or names the harness, and the checks source
   does no file I/O; no leaf source — the model and every helper included — names a file stream
   or stream buffer, a file opener, renamer or deleter, a command runner, an exit handler

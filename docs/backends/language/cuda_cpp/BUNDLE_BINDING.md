@@ -33,7 +33,10 @@
   bundle.
 - **`modules`.** A module is a C++ namespace. The model file declares the namespace
   `<spec_id>_model`, which holds its whole published surface; a consumer names a published
-  symbol as `<spec_id>_model::<name>`.
+  symbol as `<spec_id>_model::<name>`. A `problem` node's checks source reopens `<spec_id>_model`
+  only to declare the operation (`GENERATE_RULES.md` §3); that extent defines nothing, and the
+  checks file's `modules` is `[<spec_id>_checks]` alone — `validate_bundle` refuses a namespace
+  two files list (issue #384).
 - **Host-given names.** The host names a node's model source `<spec_id>_model.cu`, its header
   `<spec_id>_model.cuh`, its checks source `<spec_id>_checks.cu` and its runner
   `<spec_id>_runner.cu` (`model_basename` / `header.basename` / `checks_basename` /
