@@ -141,8 +141,18 @@ value is one more output, whether or not its `return` names anything.
   through the callee's body (issue #380): inside a kernel, the dependency's result is written
   into the kernel's own output pointer, which the kernel's check exempts as an output, so what
   must be shown is that the buffer the launch hands it reaches the caller's outputs. A guard flag
-  the kernel also writes (`int* bad`) does not stand for the flux, and an integer index
-  (`View<double, 1>{f + 3 * i, {3}}` hands over `f`, not `i`) is not a result.
+  the kernel also writes (`int* bad`) does not stand for the flux. What a call hands over for
+  writing is the STORAGE its actual names — a pointer, array, view or container the function
+  declares — so `View<double, 1>{f + kComp * i, {3}}` hands over `f` whatever the stride is
+  spelled with (a file constant, an `auto` index); only an actual naming no declared storage
+  falls back to its plain names, integers and file constants aside. An assignment from a call to
+  a summarized function takes what the call RETURNS — for a function the model defines, the
+  arguments its `return` is computed from; for a dependency operation, its inputs — not the
+  buffers the call fills, so `bad[i] = face_flux(u, f, g, i) ? 0 : 1` does not make the flag
+  stand for `f`. A call that writes one of the enclosing function's OUTPUT parameters
+  (`View<double, 1>{&f[3 * q], {3}}`, or a pointer `double* fq = f + 3 * q;` into it) has its
+  result at an output already. The summaries and reach are keyed by name and only widened, so two
+  functions of one name share the union.
 - **Metric-only scalar kernel.** On a multi-dimensional `problem` node, a function with five or
   more outputs and neither an array parameter (`atmofab::View`, `atmofab::Array`, `std::vector`, a
   pointer) nor a loop (`for`, `while`, a `<<<` launch) is refused.

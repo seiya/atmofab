@@ -107,7 +107,9 @@ be DEFINED in the model source with the declared parameter types (a definition w
 is another overload, refused; a top-level `const` on a by-value parameter is not part of the type
 and is ignored). The execution-space specifiers are compared as the header declares them
 (`__host__` is dropped from both sides, `__device__` kept): a pointwise operation of a `component`
-must be defined `__host__ __device__`, and every other operation with neither — the expected
+must carry `__device__` on its definition — spelled `__host__ __device__` as the header declares
+it; a `__device__`-only definition compares equal, and the compiler merges it with the
+declaration, so it stays callable from the host — and every other operation neither — the expected
 header is rendered from §5.1 with the node's kind, not read off the header beside the source. No
 function may carry a prototype's name, and every module parameter must be
 declared once. Every leaf source is also held to the preprocessor allowlist of `CHECKS_ABI.md` §5,

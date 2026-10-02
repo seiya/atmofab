@@ -1138,37 +1138,94 @@ def _closure(seeds: set[str], records: list[tuple[str, set[str], int, str, bool]
     return sources
 
 
+#: What a function's RETURNED value is computed from: the positions of the parameters whose data
+#: reaches its `return` (issue #380, round 2 of PR-1's review).
+Returns = dict[str, frozenset[int]]
+
+
+def _value_records(body: str, summaries: dict[str, Summary], returns: Returns) -> list[
+        tuple[str, set[str], int, str, bool]]:
+    """`_assignments` plus `_call_records` over `body`, with an assignment whose right-hand side
+    CALLS a summarized function taking from that call only what the call returns: the actuals at
+    the positions `returns` names (a function this file defines), or at the callee's input
+    positions (one summarized from its declaration). `bad[i] = face_flux(u, fx, g, i)` takes the
+    guard `face_flux` returns, not the `fx` it fills — which, read as a source, made a kernel's
+    flag stand for the flux it dropped. The call's own name is no source either."""
+    records: list[tuple[str, set[str], int, str, bool]] = []
+    for lhs, ids, pos, rhs, declared in _assignments(body):
+        if rhs:
+            blanked = rhs
+            kept: set[str] = set()
+            for call in _CALL_RE.finditer(rhs):
+                name = call.group("name")
+                if name not in summaries and name not in returns:
+                    continue
+                open_at = call.end() - 1
+                close_at = _close_paren(rhs, open_at)
+                args = _call_arguments(rhs, open_at)
+                if name in returns:
+                    take = returns[name]
+                else:
+                    take = frozenset(i for i in range(len(args)) if i not in summaries[name])
+                kept |= {tok for i in take if i < len(args) for tok in _identifiers(args[i])}
+                blanked = blanked[:call.start()] + " " * (close_at + 1 - call.start()) + \
+                    blanked[close_at + 1:]
+            if blanked != rhs:
+                # `_assignments` takes an assignment's sources as its right-hand side's
+                # identifiers; a followed call's argument list now contributes `kept` alone.
+                ids = _identifiers(blanked) | kept
+        records.append((lhs, ids, pos, rhs, declared))
+    return records + _call_records(body, summaries)
+
+
 def _function_summaries(functions: list[cpp_decls.Function],
-                        fixed: dict[str, Summary]) -> dict[str, Summary]:
+                        fixed: dict[str, Summary]) -> tuple[dict[str, Summary], Returns]:
     """`fixed` plus a summary of every function `functions` defines, computed from its BODY:
     which input parameters' data reaches each output parameter, through assignments, aliases and
     the calls it makes (round 3 of this change's review: a kernel credited from its signature
-    passed although its body ignored the dependency's result). Computed to a fixed point from
-    empty summaries, so a function is credited only with what its body shows, and a recursion
-    terminates."""
-    summaries = {**fixed, **{fn.name: {i: frozenset() for i, (ptype, _n) in enumerate(fn.params)
-                                       if is_output_parameter(ptype)}
-                             for fn in functions}}
+    passed although its body ignored the dependency's result); and, for a function returning a
+    value, which parameters reach its `return` (`Returns`, read by `_value_records`). Computed
+    to a fixed point from empty summaries, so a function is credited only with what its body
+    shows, and a recursion terminates. Keyed by NAME and only ever widened, so two functions of
+    one name (overloads, two namespaces) share the union and the iteration ends."""
+    summaries: dict[str, Summary] = dict(fixed)
+    for fn in functions:
+        entry = dict(summaries.get(fn.name, {})) if fn.name not in fixed else {}
+        for i, (ptype, _n) in enumerate(fn.params):
+            if is_output_parameter(ptype):
+                entry.setdefault(i, frozenset())
+        summaries[fn.name] = entry
+    returns: Returns = {fn.name: frozenset() for fn in functions if fn.returns != "void"}
     changed = True
     while changed:
         changed = False
         for fn in functions:
-            records = _assignments(fn.body) + _call_records(fn.body, summaries)
+            records = _value_records(fn.body, summaries, returns)
             names = [name for _ptype, name in fn.params]
             current = summaries[fn.name]
-            updated: Summary = {}
+            updated: Summary = dict(current)
             for out_index in current:
-                reached = _closure({names[out_index]}, records) if names[out_index] else set()
+                if out_index >= len(names) or not names[out_index]:
+                    continue
+                reached = _closure({names[out_index]}, records)
                 # Any OTHER parameter whose data reaches this output, whatever its type: a
                 # kernel's non-const `double* f` that it only reads is an input of that call
                 # (round 5 of this change's review: filtering by type dropped it).
-                updated[out_index] = frozenset(
+                updated[out_index] = current[out_index] | frozenset(
                     i for i, name in enumerate(names)
                     if i != out_index and name and name in reached)
             if updated != current:
                 summaries[fn.name] = updated
                 changed = True
-    return summaries
+            if fn.name in returns:
+                _outs, returned = _outputs(fn)
+                reached = _closure(returned, records)
+                now = returns[fn.name] | frozenset(
+                    i for i, name in enumerate(names) if name and name in reached)
+                if now != returns[fn.name]:
+                    returns[fn.name] = now
+                    changed = True
+    return summaries, returns
 
 
 def _call_arguments(body: str, open_at: int) -> list[str]:
@@ -1241,6 +1298,63 @@ def _integer_names(fn: cpp_decls.Function) -> set[str]:
     names = {name for ptype, name in fn.params
              if name and _INTEGER_TYPE_RE.fullmatch(ptype.strip())}
     return names | {m.group("name") for m in _INTEGER_DECLARATION_RE.finditer(fn.body)}
+
+
+# Issue #380 (round 2 of PR-1's review): what a dependency call WRITES is read as the STORAGE
+# names its actual mentions — a name the function declares as a pointer, an array, a view or an
+# owning container — not every plain name: `View<double, 1>{F + kComp * k, {3}}` hands over `F`,
+# whatever the stride is spelled with (a file constant, a member, an `auto` index). Only when an
+# actual mentions no declared storage does the reading fall back to its plain names, integers
+# and file constants aside.
+_STATEMENT_START = r"(?:^|(?<=[;{}]))\s*"
+_STORAGE_QUALIFIERS = r"(?:(?:const|static|volatile|extern|__shared__|__constant__)\s+)*"
+_POINTER_DECLARATION_RE = re.compile(
+    _STATEMENT_START + _STORAGE_QUALIFIERS
+    + r"(?P<type>[A-Za-z_][\w:]*(?:\s*<[^;{}()]*>)?)\s*\*+\s*"
+    r"(?:(?:const|__restrict__|__restrict)\b\s*)*(?P<name>[A-Za-z_]\w*)\s*(?=[=;,\[{])",
+    re.MULTILINE)
+_ARRAY_DECLARATION_RE = re.compile(
+    _STATEMENT_START + _STORAGE_QUALIFIERS
+    + r"(?P<type>[A-Za-z_][\w:]*)\s+(?P<name>[A-Za-z_]\w*)\s*\[", re.MULTILINE)
+_CONTAINER_DECLARATION_RE = re.compile(
+    r"\b(?:std\s*::\s*vector|(?:atmofab\s*::\s*)?(?:View|Array))\s*<[^;{}]*?>\s*&?\s*"
+    r"(?P<name>[A-Za-z_]\w*)\s*(?=[=;,({])")
+_NOT_A_TYPE = frozenset({"return", "else", "case", "delete", "throw", "goto", "do", "new"})
+
+
+def _storage_names_of(fn: cpp_decls.Function) -> set[str]:
+    """The names `fn` declares as STORAGE: a parameter of an array type (a pointer, a view, an
+    owning array or vector), and a local pointer, array, view or container."""
+    names = {name for ptype, name in fn.params if name and _ARRAY_TYPE_RE.search(
+        re.sub(r"\b__restrict(?:__)?\b|\bconst\s*$", "", ptype).strip().rstrip("&").strip())}
+    for regex in (_POINTER_DECLARATION_RE, _ARRAY_DECLARATION_RE):
+        names |= {m.group("name") for m in regex.finditer(fn.body)
+                  if m.group("type").split("<")[0].strip() not in _NOT_A_TYPE}
+    names |= {m.group("name") for m in _CONTAINER_DECLARATION_RE.finditer(fn.body)}
+    return names
+
+
+def _handed_over(arg: str, storage: set[str], fallback_excluded: set[str]) -> set[str]:
+    """The names an actual hands a callee for writing: its declared storage names when it
+    mentions any, else `_actual_names` minus `fallback_excluded` (integers, file constants)."""
+    names = _actual_names(arg)
+    held = names & storage
+    return held if held else names - fallback_excluded
+
+
+def _pointer_alias_records(fn: cpp_decls.Function, storage: set[str]) -> list[
+        tuple[str, set[str], int, str, bool]]:
+    """`p = <storage> + <offset>` (a declaration or a whole assignment of a pointer local) makes
+    `p` point into that storage, so the storage takes `p` as a source, as `_assignments` does for
+    `p = u.data()`: `double* fq = F + 3 * q;` then a write through `fq` is a write to `F`."""
+    pointers = {m.group("name") for m in _POINTER_DECLARATION_RE.finditer(fn.body)}
+    records: list[tuple[str, set[str], int, str, bool]] = []
+    for m in _assignment_matches(fn.body):
+        if m.lhs not in pointers or m.index.strip() or m.op != "=":
+            continue
+        for base in (_identifiers(m.rhs) & storage) - {m.lhs}:
+            records.append((base, {m.lhs}, m.start, "", True))
+    return records
 
 
 def _signature_summary(out_at: list[bool]) -> Summary:
@@ -1323,8 +1437,10 @@ def _validate_problem_dependency_dataflow(
     device lowering (copy to the device, a kernel, copy back) has no assignment for the gate to
     follow otherwise (round 2 of this change's review). A call to anything else is not followed;
     the semantic authority is `Generate.verify`. An actual whose storage the call writes is read
-    by `_actual_names`, which falls back to every plain name the actual mentions, so an output
-    reached through a pointer, a helper or a member still yields a candidate."""
+    by `_handed_over`: the storage names the function declares that the actual mentions, else
+    `_actual_names` (which falls back to every plain name the actual mentions) minus integers and
+    file constants, so an output reached through a pointer, a helper or a member still yields a
+    candidate."""
     if not dep_spec_ids:
         return
     positions: dict[str, list[bool]] = {}
@@ -1336,7 +1452,7 @@ def _validate_problem_dependency_dataflow(
             positions.update(read)
     constants = {m.group("name") for m in _CONST_DECLARATION_RE.finditer(code)}
     function_names = {fn.name for fn in functions}
-    summaries = _function_summaries(
+    summaries, returns = _function_summaries(
         functions, {**{name: _signature_summary(out_at) for name, out_at in positions.items()},
                     **_RUNTIME_COPIES})
     call_re = re.compile(
@@ -1344,14 +1460,20 @@ def _validate_problem_dependency_dataflow(
     # A function or kernel of this file whose OUTPUT PARAMETER receives what a dependency call
     # in its body writes stands for that dependency call in its callers (issue #380: a kernel may
     # call a `__host__ __device__` operation one element at a time, and the in-kernel call only
-    # ever reaches the kernel's own output parameter, which the per-function check below exempts
-    # as already an output). `reached[f]` is the positions of `f`'s output parameters the
-    # dependency's result reaches through `f`'s body — not every output of `f`: a kernel's guard
-    # flag `int* bad` passed on to `ok` must not stand for the flux it discards (round 1 of #380
-    # PR-1's review). Computed to a fixed point, so a host helper that launches such a kernel
-    # stands for it too.
+    # ever reaches the kernel's own output parameter, which the per-function check below
+    # satisfies as already an output). `reached[f]` is the positions of `f`'s output parameters
+    # the dependency's result reaches through `f`'s body — not every output of `f`: a kernel's
+    # guard flag `int* bad` passed on to `ok` must not stand for the flux it discards (round 1 of
+    # #380 PR-1's review), nor a flag taken from what a helper RETURNS while it fills the flux
+    # (`_value_records`, round 2). Computed to a fixed point, so a host helper that
+    # launches such a kernel stands for it too; keyed by NAME, as `_function_summaries` is, and
+    # only ever widened, so two functions of one name (overloads, two namespaces) share the union
+    # and the iteration ends (round 2: an alternating pair never converged).
     by_name = {fn.name: fn for fn in functions}
-    records_of = {fn.name: _assignments(fn.body) + _call_records(fn.body, summaries)
+    storage_of = {id(fn): _storage_names_of(fn) for fn in functions}
+    excluded_of = {id(fn): _integer_names(fn) | constants | function_names for fn in functions}
+    records_of = {id(fn): (_value_records(fn.body, summaries, returns)
+                           + _pointer_alias_records(fn, storage_of[id(fn)]))
                   for fn in functions}
 
     def dependency_calls(fn: cpp_decls.Function, reached: dict[str, frozenset[int]]) -> list[
@@ -1377,60 +1499,64 @@ def _validate_problem_dependency_dataflow(
                           [i in hit for i in range(len(callee.params))], set()))
         return calls
 
-    def written(fn: cpp_decls.Function, calls: list[tuple[int, int, list[bool] | None,
-                                                         set[int]]]) -> set[str]:
-        """The names a dependency call in `fn` hands over for writing, an integer index aside
-        (`View<double, 1>{f + 3 * i, {3}}` hands over `f`, not `i`)."""
-        integers = _integer_names(fn)
-        names: set[str] = set()
-        for _start, open_at, out_at, arrays in calls:
-            for index, arg in enumerate(_call_arguments(fn.body, open_at)):
-                if out_at is not None and not (index < len(out_at) and out_at[index]):
-                    continue
-                if arrays and index not in arrays:
-                    continue
-                names |= _actual_names(arg) - integers
-        return names
+    def handed(fn: cpp_decls.Function, open_at: int, out_at: list[bool] | None,
+               arrays: set[int]) -> list[set[str]]:
+        """Per written actual of the call whose `(` is at `open_at`, the names it hands over."""
+        out: list[set[str]] = []
+        for index, arg in enumerate(_call_arguments(fn.body, open_at)):
+            if out_at is not None and not (index < len(out_at) and out_at[index]):
+                continue
+            if arrays and index not in arrays:
+                continue
+            out.append(_handed_over(arg, storage_of[id(fn)], excluded_of[id(fn)]))
+        return out
 
     reached: dict[str, frozenset[int]] = {}
     changed = True
     while changed:
         changed = False
         for fn in functions:
-            hands_over = written(fn, dependency_calls(fn, reached))
+            hands_over: set[str] = set()
+            for _start, open_at, out_at, arrays in dependency_calls(fn, reached):
+                for names in handed(fn, open_at, out_at, arrays):
+                    hands_over |= names
             now = frozenset(
                 i for i, (ptype, name) in enumerate(fn.params)
                 if hands_over and name and is_output_parameter(ptype)
-                and _closure({name}, records_of[fn.name]) & hands_over)
-            if now != reached.get(fn.name, frozenset()):
-                reached[fn.name] = now
+                and _closure({name}, records_of[id(fn)]) & hands_over)
+            widened = now | reached.get(fn.name, frozenset())
+            if widened != reached.get(fn.name, frozenset()):
+                reached[fn.name] = widened
                 changed = True
     for fn in functions:
         params = {name for _ptype, name in fn.params if name}
+        out_params = {name for ptype, name in fn.params if name and is_output_parameter(ptype)}
         outs, returned = _outputs(fn)
         # A function returning a value always has an output — its result — even when no
         # identifier reaches its `return` (`return 1.0;`): the Fortran binding's result variable
         # is always an output. Skipped only when nothing leaves the function.
         if not outs and fn.returns == "void":
             continue
-        records = records_of[fn.name]
+        records = records_of[id(fn)]
         sources = _closure(set(outs) | returned, records)
         discarded: set[str] = set()
-        calls = dependency_calls(fn, reached)
-        for call_start, open_at, out_at, arrays in calls:
-            args = _call_arguments(fn.body, open_at)
+        for call_start, open_at, out_at, arrays in dependency_calls(fn, reached):
+            per_actual = handed(fn, open_at, out_at, arrays)
+            # A call that writes one of the function's OUTPUT parameters has its result at an
+            # output already (round 2 of #380 PR-1's review: a kernel writing `F_star` straight
+            # into its output `F` and `G_star` into a local it does not need was refused on the
+            # local alone).
+            if any(names & out_params for names in per_actual):
+                continue
             candidates: set[str] = set()
-            for index, arg in enumerate(args):
-                if out_at is not None and not (index < len(out_at) and out_at[index]):
-                    continue
-                if arrays and index not in arrays:
-                    continue
-                for name in _actual_names(arg):
+            for names in per_actual:
+                for name in names:
+                    # The enclosing function's parameters drop out (an input handed over for
+                    # writing is the callee's business), and so does a name assigned before the
+                    # call by an assignment STATEMENT (an input the call reads).
                     if name in params or any(lhs == name and pos < call_start
                                              and not declared
                                              for lhs, _ids, pos, _rhs, declared in records):
-                        continue
-                    if out_at is None and (name in constants or name in function_names):
                         continue
                     candidates.add(name)
             # PER CALL: what THIS call writes must reach an output. The Fortran binding pools the

@@ -792,8 +792,10 @@ PINNED: dict[str, str] = {
     # was told "a HOST function: no `__device__`", which the pin now refuses for the two
     # shallow-water flux components, and a pointwise operation was a host function its
     # consumer could reach only from a host loop, which is why the key moves. (Re-pinned in
-    # place within PR-1's review, round 1, before it shipped: the `none` plan, G6, the argvs.)
-    "pure-61": "603f7a9eb74c132c5953af02dc02845255db24560260a2d0635665e7ff21be7a",
+    # place within PR-1's review before it shipped — round 1: the `none` plan, G6, the argvs;
+    # round 2: a pointwise body is compiled for the host too (its helpers, `#pragma unroll`),
+    # and G6 states the pointwise criterion instead of pointing at a header it does not see.)
+    "pure-61": "c170f3260ade703c93b6ba18a7bb533b3647301baf222bf92945d6ebc889d5b3",
 }
 
 

@@ -1867,6 +1867,214 @@ class PhysicsGateTests(unittest.TestCase):
             self.assertEqual(1, len(out), out)
             self.assertIn("(candidates=['df'])", out[0])
 
+    # Round 2 of #380 PR-1's review. `_PW2_HEADER`'s operation writes two arrays and a guard,
+    # the shape of the rusanov flux (F_star, G_star, ok).
+    _PW2_HEADER = ("namespace dep_model {\n__host__ __device__ void dep__face2(\n"
+                   "    atmofab::View<const double, 1> u,\n    double g,\n"
+                   "    atmofab::View<double, 1> f,\n    atmofab::View<double, 1> h,\n"
+                   "    bool& ok);\n__host__ __device__ void dep__speed(\n    double h,\n"
+                   "    double& c);\n}\n")
+    _PW2_UPDATE = ("__global__ void upd(const double* u, const double* f, double* out, long n) {{\n"
+                   "  const long i = threadIdx.x;\n  if (i < n) {{ out[i] = u[i] + {use}; }}\n}}\n")
+    _PW2_STEP = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+                 " bool& ok) {\n  double* du = nullptr;\n  double* df = nullptr;\n"
+                 "  double* dn = nullptr;\n  int* dbad = nullptr;\n  int bad = 0;\n"
+                 "  cudaMemcpy(du, u.data, 96, cudaMemcpyHostToDevice);\n"
+                 "  faces<<<1, 4>>>(du, df, 9.81, 4, dbad);\n  upd<<<1, 12>>>(du, df, dn, 12);\n"
+                 "  cudaMemcpy(u_new.data, dn, 96, cudaMemcpyDeviceToHost);\n"
+                 "  cudaMemcpy(&bad, dbad, 4, cudaMemcpyDeviceToHost);\n  ok = !bad;\n}")
+    _PW2_HELPER = ("__device__ {ret} face_flux(const double* u, double* f, double g, long i) {{\n"
+                   "  double fx[3];\n  double gy[3];\n  bool gok = true;\n"
+                   "  dep_model::dep__face2(atmofab::View<const double, 1>{{u + 3 * i, {{3}}}}, g,\n"
+                   "      atmofab::View<double, 1>{{fx, {{3}}}}, atmofab::View<double, 1>{{gy, {{3}}}},"
+                   " gok);\n  for (int k = 0; k < 3; ++k) {{ f[3 * i + k] = fx[k]; }}\n"
+                   "  (void)gy;\n  return {returned};\n}}\n")
+    _PW2_KERNELS: ClassVar[dict[str, tuple[str, str, str]]] = {
+        # A guard or a speed taken from what a __device__ helper RETURNS while it fills the flux.
+        "returned guard": ("bool", "gok",
+                           "  if (i < n) { bad[i] = face_flux(u, f, g, i) ? 0 : 1; }\n"),
+        "returned guard, stored first": (
+            "bool", "gok",
+            ("  if (i < n) {\n    const bool fok = face_flux(u, f, g, i);\n"
+             "    bad[i] = fok ? 0 : 1;\n  }\n")),
+        "returned speed": ("double", "u[3 * i]",
+                           "  if (i < n) { bad[i] = face_flux(u, f, g, i) > 0.0 ? 0 : 1; }\n"),
+    }
+
+    def _pw2(self, tmp: str, kernel: str, use: str) -> list[str]:
+        body = kernel + self._PW2_UPDATE.format(use=use) + self._PW2_STEP
+        return self._gates(self._model(tmp, body, header=False), ["dep"])
+
+    def test_what_a_helper_returns_is_not_what_it_fills(self) -> None:
+        """A guard (or any value) a `__device__` helper RETURNS is computed from its inputs, not
+        from the buffer it fills: `bad[i] = face_flux(u, f, g, i) ? 0 : 1` must not make the
+        flag stand for the flux in `f` (before: every argument of the call was a source of
+        `bad`, so the flag carried `f` and a dropped flux passed)."""
+        for label, (ret, returned, launch_body) in self._PW2_KERNELS.items():
+            kernel = (self._PW2_HELPER.format(ret=ret, returned=returned)
+                      + "__global__ void faces(const double* u, double* f, double g, long n,"
+                      " int* bad) {\n  const long i = threadIdx.x;\n" + launch_body + "}\n")
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                (Path(tmp) / "dep_model.cuh").write_text(self._PW2_HEADER)
+                self.assertEqual([], self._pw2(tmp, kernel, "f[i]"))
+                out = self._pw2(tmp, kernel, "0.0")
+                self.assertEqual(1, len(out), out)
+                self.assertIn("function p__step does not propagate", out[0])
+                self.assertIn("(candidates=['df'])", out[0])
+
+    def test_a_helper_returning_what_it_filled_carries_it(self) -> None:
+        """The other side of the row above: a helper whose RETURN is computed from the buffer it
+        filled (`return f[3 * i]`) does carry the flux through what it returns."""
+        kernel = (self._PW2_HELPER.format(ret="double", returned="f[3 * i]")
+                  + "__global__ void faces(const double* u, double* f, double g, long n,"
+                  " int* bad) {\n  const long i = threadIdx.x;\n"
+                  "  if (i < n) { bad[i] = face_flux(u, f, g, i) > 0.0 ? 0 : 1; }\n}\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "dep_model.cuh").write_text(self._PW2_HEADER)
+            self.assertEqual([], self._pw2(tmp, kernel, "0.0"))
+
+    def test_what_a_dependency_returns_is_not_what_it_fills(self) -> None:
+        """The same for a dependency operation that RETURNS a guard while it fills an output:
+        what it returns is computed from its inputs (its declaration says which are inputs), so
+        `bad[i] = dep_ok(u[i], c) ? 0 : 1` does not make the flag stand for `c`."""
+        header = self._PW2_HEADER.replace(
+            "}\n", "__host__ __device__ bool dep__ok(\n    double h,\n    double& c);\n}\n")
+        kernel = ("__global__ void faces(const double* u, double* f, double g, long n,"
+                  " int* bad) {\n  const long i = threadIdx.x;\n  if (i < n) {\n"
+                  "    double c = 0.0;\n    bad[i] = dep_model::dep__ok(u[i] * g, c) ? 0 : 1;\n"
+                  "    f[i] = c;\n  }\n}\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "dep_model.cuh").write_text(header)
+            self.assertEqual([], self._pw2(tmp, kernel, "f[i]"))
+            out = self._pw2(tmp, kernel, "0.0")
+            self.assertEqual(1, len(out), out)
+            self.assertIn("(candidates=['df'])", out[0])
+
+    def test_a_stride_however_spelled_hands_over_the_buffer(self) -> None:
+        """`View<double, 1>{f + kComp * k, {3}}` hands over `f`: what a dependency call writes
+        is the declared STORAGE its actual names, whatever the stride is spelled with — a file
+        constant (the shallow-water models' `constexpr int kComp = 3;`), an `auto` index, an
+        integer parameter. Before, every plain name but an integer was read, so a file constant
+        became a "result" and a guard flag computed from the inputs `u + kComp * k` stood for
+        the dropped flux."""
+        strides = {
+            "file constant": ("constexpr int kComp = 3;\n", "  const long k = threadIdx.x;\n",
+                              "kComp * k"),
+            "auto index": ("", "  const auto k = threadIdx.x;\n", "3 * k"),
+            "integer parameter": ("", "  const long k = threadIdx.x + n0;\n", "3 * k"),
+        }
+        for label, (prelude, index, stride) in strides.items():
+            kernel = (prelude + "__global__ void faces(const double* u, double* f, double g,"
+                      " long n, int* bad, long n0 = 0) {\n" + index
+                      + "  if (k < n) {\n    double gy[3];\n    bool gok = true;\n"
+                      f"    dep_model::dep__face2(atmofab::View<const double, 1>{{u + {stride},"
+                      " {3}}, g,\n"
+                      f"        atmofab::View<double, 1>{{f + {stride}, {{3}}}},"
+                      " atmofab::View<double, 1>{gy, {3}}, gok);\n"
+                      "    bad[k] = gok ? 0 : 1;\n  }\n}\n")
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                (Path(tmp) / "dep_model.cuh").write_text(self._PW2_HEADER)
+                self.assertEqual([], self._pw2(tmp, kernel, "f[i]"))
+                out = self._pw2(tmp, kernel, "0.0")
+                self.assertEqual(1, len(out), out)
+                self.assertIn("(candidates=['df'])", out[0])
+
+    def test_a_result_written_to_shared_memory_and_dropped_is_refused(self) -> None:
+        """A kernel that writes the flux into `__shared__` storage it never reads: the index
+        `t` in `sf + 3 * t` no longer stands for the result (before: `t` reached the output
+        through the thread index and the dropped flux passed)."""
+        kernel = ("__global__ void faces(const double* u, double* f, double g, long n, int* bad)"
+                  " {\n  __shared__ double sf[96];\n  const int t = threadIdx.x;\n"
+                  "  const long q = blockIdx.x * blockDim.x + t;\n  double gy[3];\n"
+                  "  bool gok = true;\n"
+                  "  dep_model::dep__face2(atmofab::View<const double, 1>{u + 3 * q, {3}}, g,\n"
+                  "      atmofab::View<double, 1>{sf + 3 * t, {3}},"
+                  " atmofab::View<double, 1>{gy, {3}}, gok);\n"
+                  "  f[q] = u[q];\n  bad[q] = gok ? 0 : 1;\n}\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            (Path(tmp) / "dep_model.cuh").write_text(self._PW2_HEADER)
+            out = self._pw2(tmp, kernel, "f[i]")
+            self.assertTrue(any("function faces does not propagate" in v and "'sf'" in v
+                                for v in out), out)
+
+    def test_a_call_writing_an_output_parameter_needs_nothing_more(self) -> None:
+        """Legitimate per-face kernels the binding invites: `F_star` straight into the output
+        `f` (`&f[3 * q]`, or a pointer `double* fq = f + 3 * q;` into it) and `G_star` into a
+        local the kernel does not need. Before: refused on the local alone, the output parameter
+        being dropped from the candidates and the pointer not read as pointing into `f`. Each
+        still refuses a caller that drops `f`."""
+        spellings = {
+            "address": ("", "atmofab::View<double, 1>{&f[3 * q], {3}}"),
+            "pointer": ("    double* fq = f + 3 * q;\n", "atmofab::View<double, 1>{fq, {3}}"),
+        }
+        for label, (pointer, view) in spellings.items():
+            kernel = ("__global__ void faces(const double* u, double* f, double g, long n,"
+                      " int* bad) {\n  const long q = threadIdx.x;\n  if (q < n) {\n"
+                      + pointer + "    double go[3];\n    bool gok = true;\n"
+                      "    dep_model::dep__face2(atmofab::View<const double, 1>{u + 3 * q, {3}},"
+                      f" g,\n        {view}, atmofab::View<double, 1>{{go, {{3}}}}, gok);\n"
+                      "    bad[q] = gok ? 0 : 1;\n  }\n}\n")
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                (Path(tmp) / "dep_model.cuh").write_text(self._PW2_HEADER)
+                self.assertEqual([], self._pw2(tmp, kernel, "f[i]"))
+                out = self._pw2(tmp, kernel, "0.0")
+                self.assertEqual(1, len(out), out)
+                self.assertIn("(candidates=['df'])", out[0])
+
+    def test_two_functions_of_one_name_do_not_stall_the_gate(self) -> None:
+        """Codex, round 2 of #380 PR-1's review: `a::helper` reaching the dependency and
+        `b::helper` not alternated `reached['helper']` forever, and two `copy`s with different
+        summaries alternate the summaries' fixed point the same way. Keyed by name and only
+        widened, both iterations end; bounded here by an alarm so a regression fails instead of
+        hanging."""
+        import signal
+
+        body = ("namespace a { void helper(double& out) { dep_model::dep__speed(1.0, out); } }\n"
+                "namespace b { void helper(int& out) { out += 1; } }\n"
+                # Two of one name whose SUMMARIES differ (`y` from `x`, or from nothing): the
+                # summaries' fixed point is keyed the same way and must end the same way.
+                "namespace a { void copy(double x, double& y) { y = x; } }\n"
+                "namespace b { void copy(double x, double& y) { (void)x; y += 1.0; } }\n"
+                # ...and two whose RETURN summaries differ.
+                "namespace a { double r(double x) { return x; } }\n"
+                "namespace b { double r(double x) { (void)x; return 1.0; } }\n"
+                "void p__f(double& x) { a::helper(x); int k = 0; b::helper(k);\n"
+                "  double z = 0.0; a::copy(x, z); b::copy(x, z); x = a::r(z) + b::r(z); }")
+
+        def alarm(_signum, _frame):
+            raise TimeoutError("the dataflow gate did not return")
+        previous = signal.signal(signal.SIGALRM, alarm)
+        try:
+            signal.alarm(10)
+            with tempfile.TemporaryDirectory() as tmp:
+                (Path(tmp) / "dep_model.cuh").write_text(self._PW2_HEADER)
+                self.assertEqual([], self._gates(self._model(tmp, body, header=False), ["dep"]))
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous)
+
+    def test_the_storage_and_integer_readers(self) -> None:
+        """The two readers `_handed_over` rests on, one row per spelling: what a function
+        declares as STORAGE, what it declares as an INTEGER, and the fallback to plain names
+        minus those when an actual names no storage (a member, `w.buf + 3 * i`)."""
+        fn = cpp_decls.read(
+            "__global__ void k(const double* u, double* __restrict__ f, long n, int* bad,"
+            " atmofab::View<double, 1> v, std::vector<double>& w, int base, const int t) {\n"
+            "  __shared__ double sf[96];\n  double gy[3];\n  double* fq = f + 3 * n;\n"
+            "  std::vector<double> fh(12);\n  atmofab::View<double, 1> fv{fh.data(), {3}};\n"
+            "  const long i = 0;\n  std::size_t o = 3;\n  for (int j = 0; j < 3; ++j) {}\n"
+            "  unsigned long m = 0;\n  std::int64_t big = 0;\n  double a = 1.0;\n"
+            "  double b = a * n;\n  if (n) { return; }\n}\n").functions[0]
+        self.assertEqual({"u", "f", "bad", "v", "w", "sf", "gy", "fq", "fh", "fv"},
+                         cpp_source._storage_names_of(fn))
+        self.assertEqual({"n", "base", "t", "i", "o", "j", "m", "big"},
+                         cpp_source._integer_names(fn))
+        # `return w[0];` reads like `<type> <name>[` and declares nothing.
+        h = cpp_decls.read("double h(Work w) { return w[0]; }\n").functions[0]
+        self.assertEqual(set(), cpp_source._storage_names_of(h))
+        self.assertEqual({"f"}, cpp_source._handed_over("f + kComp * i", {"f"}, set()))
+        self.assertEqual({"w"}, cpp_source._handed_over("w.buf + 3 * i", {"f"}, {"i"}))
+
     def test_a_call_to_a_function_that_calls_no_dependency_is_not_a_dependency_call(self) -> None:
         """Only a callee that reaches a dependency operation stands for one: a kernel that
         computes on its own is followed as before and asked nothing of — here it fills a scratch
