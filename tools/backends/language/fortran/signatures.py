@@ -882,6 +882,7 @@ def generated_source_violations(
     type_stanzas: dict[str, list[str]],
     proto_stanzas: dict[str, list[str]],
     module_parameters: list[dict[str, Any]],
+    procedures: list[dict[str, Any]],
     violations: list[str],
 ) -> None:
     """The source half of the validator's `Generate.static` signature gate
@@ -893,7 +894,9 @@ def generated_source_violations(
     statement about how a Fortran source publishes, defines and binds a procedure, a derived type,
     a prototype and a module parameter. ``target`` is the path findings are reported against;
     ``module_parameters`` are §5.1's structured entries (`load_structured_signatures`), rendered
-    here."""
+    here. ``procedures`` (§5.1's structured procedures) is ACCEPTED AND NOT READ: every Fortran
+    procedure is published one way, so ``op_stanzas`` already says everything."""
+    del procedures  # accepted, not read (see the docstring)
     from tools.backends.language.fortran import source as fortran_source
     from tools.backends.language.fortran import structure as fortran_structure
 

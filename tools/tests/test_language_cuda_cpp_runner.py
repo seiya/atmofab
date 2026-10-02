@@ -598,7 +598,7 @@ class NvccSmokeTest(unittest.TestCase):
 
     def _tree(self, d: Path, ir: dict, sid: str, *, allocate: bool = True) -> None:
         (d / "harness_cpp_gpu_model.cuh").write_text(
-            cpp_header.render(HARNESS, _harness_public_api()))
+            cpp_header.render(HARNESS, _harness_public_api(), spec_kind="infrastructure"))
         (d / "harness_cpp_gpu_model.cu").write_text(_harness_stub())
         (d / f"{sid}_runner.cu").write_text(_render(ir, sid))
         name, text = cpp_runner.render_checks_header(ir, sid)
@@ -751,7 +751,7 @@ class SignaturesRoundTripTest(unittest.TestCase):
     def test_the_harness_stub_satisfies_the_section_5_1_source_pin(self) -> None:
         """The stub is a faithful harness: its definitions carry exactly the pinned atoms."""
         ops, _types, _ifaces, errors = cpp_signatures._stanzas(
-            cpp_source.cpp_decls.read(cpp_header.render(HARNESS, _harness_public_api())
+            cpp_source.cpp_decls.read(cpp_header.render(HARNESS, _harness_public_api(), spec_kind="infrastructure")
                                       + _harness_stub()), (f"{HARNESS}_model",))
         self.assertEqual([], errors)
         self.assertLessEqual({s["symbol"] for s in _harness_signatures()

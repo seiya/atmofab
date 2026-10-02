@@ -1324,6 +1324,23 @@ def _validate_problem_dependency_dataflow(
                     **_RUNTIME_COPIES})
     call_re = re.compile(
         r"\b(?P<name>(?:" + "|".join(re.escape(s) for s in dep_spec_ids) + r")__\w+)\s*\(")
+    # The functions and kernels of this file that call a dependency operation, directly or
+    # through another of them (issue #380: a kernel may call a `__host__ __device__` operation
+    # one element at a time). A call TO one of them is a dependency call of its caller too, whose
+    # writes are the callee's output parameters: the dependency's result written into a kernel's
+    # output pointer must still reach the caller's outputs, or the launch discarded it — the
+    # in-kernel call itself only ever reaches the kernel's own output parameter, which the
+    # per-function check below exempts as already an output.
+    by_name = {fn.name: fn for fn in functions}
+    reaching = {fn.name for fn in functions if call_re.search(fn.body)}
+    changed = True
+    while changed:
+        changed = False
+        for fn in functions:
+            if fn.name not in reaching and any(
+                    m.group("name") in reaching for m in _CALL_RE.finditer(fn.body)):
+                reaching.add(fn.name)
+                changed = True
     for fn in functions:
         params = {name for _ptype, name in fn.params if name}
         outs, returned = _outputs(fn)
@@ -1335,14 +1352,25 @@ def _validate_problem_dependency_dataflow(
         records = _assignments(fn.body) + _call_records(fn.body, summaries)
         sources = _closure(set(outs) | returned, records)
         discarded: set[str] = set()
-        for call in call_re.finditer(fn.body):
-            args = _call_arguments(fn.body, call.end() - 1)
-            out_at = positions.get(call.group("name"))
+        calls: list[tuple[int, int, list[bool] | None, set[int]]] = [
             # An operation that writes an ARRAY must have an array result reach the output: its
             # scalar outputs (a guard flag) do not stand for it (round 5 of this change's review:
             # `ok = guard_pass;` alone made every call of the advdiff problem "propagated" while
             # its fluxes were discarded).
-            arrays = array_outputs.get(call.group("name"), set())
+            (call.start(), call.end() - 1, positions.get(call.group("name")),
+             array_outputs.get(call.group("name"), set()))
+            for call in call_re.finditer(fn.body)]
+        for call in _CALL_RE.finditer(fn.body):
+            callee = by_name.get(call.group("name"))
+            if callee is None or callee.name == fn.name or callee.name not in reaching:
+                continue
+            calls.append((call.start(), call.end() - 1,
+                          [is_output_parameter(ptype) for ptype, _n in callee.params],
+                          {i for i, (ptype, _n) in enumerate(callee.params)
+                           if is_output_parameter(ptype)
+                           and _ARRAY_TYPE_RE.search(ptype.rstrip("&"))}))
+        for call_start, open_at, out_at, arrays in calls:
+            args = _call_arguments(fn.body, open_at)
             candidates: set[str] = set()
             for index, arg in enumerate(args):
                 if out_at is not None and not (index < len(out_at) and out_at[index]):
@@ -1350,7 +1378,7 @@ def _validate_problem_dependency_dataflow(
                 if arrays and index not in arrays:
                     continue
                 for name in _actual_names(arg):
-                    if name in params or any(lhs == name and pos < call.start()
+                    if name in params or any(lhs == name and pos < call_start
                                              and not declared
                                              for lhs, _ids, pos, _rhs, declared in records):
                         continue

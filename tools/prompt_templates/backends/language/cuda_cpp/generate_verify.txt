@@ -14,4 +14,4 @@ an unused parameter of a HOST function, an unused variable
 @@ inert_dummy_binding
 a `(void)x;` binding of an inert parameter
 @@ dependency_call_consistency
-each `<dep>_model::<dep>__<op>(...)` call passes arguments in the published declaration's order AND type and rank (an `atmofab::View` of exactly the declared rank — a lower-rank parameter is fed a view of the matching slice inside a component loop, not a view of the whole higher-rank state)
+each `<dep>_model::<dep>__<op>(...)` call passes arguments in the published declaration's order AND type and rank (an `atmofab::View` of exactly the declared rank — a lower-rank parameter is fed a view of the matching slice inside a component loop, not a view of the whole higher-rank state); a dependency the header declares `__host__ __device__` may be called from inside a kernel, with the same argument order, types and ranks — a view handed to it then points into device storage

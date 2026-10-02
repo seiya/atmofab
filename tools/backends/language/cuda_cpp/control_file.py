@@ -24,9 +24,11 @@ READS_ARCHITECTURE = True
 
 
 def flags(standard: str, architecture: str | None) -> str:
-    """The compile / link flags: the target's standard, its GPU architecture when the profile
+    """The compile / link flags: the target's standard, relocatable device code (`-rdc=true`: a
+    kernel may call a `__host__ __device__` operation another translation unit defines, which
+    the device link resolves — BUNDLE_BINDING.md §4), its GPU architecture when the profile
     names one (`-arch=`), and the object directory on the include path."""
-    value = f"-std={standard} -O2"
+    value = f"-std={standard} -O2 -rdc=true"
     if architecture:
         value += f" -arch={architecture}"
     return value + " -I$(OBJDIR)"

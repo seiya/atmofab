@@ -23059,8 +23059,8 @@ class CudaCppLintAttributionTest(unittest.TestCase):
             f"{self.SID}_runner.cu": runner,
             name: text,
             "harness_cpp_gpu_model.cuh": cpp_header.render(
-                "harness_cpp_gpu", fixtures._harness_public_api()),
-            f"{self.SID}_model.cuh": cpp_header.render(self.SID, {}),
+                "harness_cpp_gpu", fixtures._harness_public_api(), spec_kind="infrastructure"),
+            f"{self.SID}_model.cuh": cpp_header.render(self.SID, {}, spec_kind="problem"),
             f"{self.SID}_checks.cu": checks,
             f"{self.SID}_model.cu": f'#include "{self.SID}_model.cuh"\n'
                                     f"namespace {self.SID}_model {{\n"

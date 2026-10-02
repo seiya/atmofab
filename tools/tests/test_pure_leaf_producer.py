@@ -3474,11 +3474,12 @@ class CudaCppHarnessTests(unittest.TestCase):
         graph = self.c._build_pure_bundle_graph(self.refs, doc)
         self.c._write_pure_bundle_artifacts(self.refs, doc, graph)
         src = self.repo / self.refs.source_dir() / "src"
-        self.assertEqual(cpp_header.render(_HARNESS_SPEC_ID, self.public_api),
+        self.assertEqual(cpp_header.render(_HARNESS_SPEC_ID, self.public_api,
+                                           spec_kind="infrastructure"),
                          (src / f"{_HARNESS_SPEC_ID}_model.cuh").read_text(encoding="utf-8"))
         makefile = (src / "Makefile").read_text(encoding="utf-8")
         self.assertIn("NVCC    := nvcc", makefile)
-        self.assertIn("-std=c++17 -O2 -arch=sm_90 -I$(OBJDIR)", makefile)
+        self.assertIn("-std=c++17 -O2 -rdc=true -arch=sm_90 -I$(OBJDIR)", makefile)
         self.assertIn(f"$(OBJDIR)/{_HARNESS_SPEC_ID}_model.o: {_HARNESS_SPEC_ID}_model.cu", makefile)
         self.assertIn(f"$(OBJDIR)/{_HARNESS_SPEC_ID}_runner.o: {_HARNESS_SPEC_ID}_runner.cu",
                       makefile)

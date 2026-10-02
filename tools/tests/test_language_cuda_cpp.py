@@ -374,7 +374,7 @@ def _public_api(struct: dict) -> dict:
             "module_parameters": struct["module_parameters"]}
 
 
-_HEADER = cpp_header.render("h", _public_api(_HARNESS_LIKE))
+_HEADER = cpp_header.render("h", _public_api(_HARNESS_LIKE), spec_kind="infrastructure")
 
 _GOOD_MODEL = """#include "h_model.cuh"
 namespace h_model {
@@ -462,9 +462,9 @@ class HeaderTests(unittest.TestCase):
     def test_an_unlowerable_surface_raises(self) -> None:
         with self.assertRaises(cs.SignatureParseError):
             cpp_header.render("h", {"signatures": [{"symbol": "new", "signature": {
-                "kind": "subroutine", "name": "new", "args": []}}]})
+                "kind": "subroutine", "name": "new", "args": []}}]}, spec_kind="component")
         with self.assertRaises(cs.SignatureParseError):
-            cpp_header.render("h", {"signatures": [{"symbol": "x"}]})
+            cpp_header.render("h", {"signatures": [{"symbol": "x"}]}, spec_kind="component")
 
 
 class GeneratedSourcePinTests(unittest.TestCase):
@@ -481,7 +481,8 @@ class GeneratedSourcePinTests(unittest.TestCase):
             cs.generated_source_violations(
                 model_files=[path], target=path, ir_kind="infrastructure", op_stanzas=ops,
                 type_stanzas=types, proto_stanzas=ifaces,
-                module_parameters=_HARNESS_LIKE["module_parameters"], violations=out)
+                module_parameters=_HARNESS_LIKE["module_parameters"],
+                procedures=_HARNESS_LIKE["procedures"], violations=out)
             return [v.replace(tmp, "<tmp>") for v in out]
 
     def test_a_faithful_model_passes_whatever_its_spacing(self) -> None:
@@ -581,8 +582,158 @@ class GeneratedSourcePinTests(unittest.TestCase):
             b.write_text("")
             cs.generated_source_violations(
                 model_files=[a, b], target=a, ir_kind="infrastructure", op_stanzas=ops,
-                type_stanzas=types, proto_stanzas=ifaces, module_parameters=[], violations=out)
+                type_stanzas=types, proto_stanzas=ifaces, module_parameters=[], procedures=[],
+                violations=out)
         self.assertTrue(any("exactly one is expected" in v for v in out), out)
+
+
+def _fixed(arg_name, rank=1, intent="in", dims=("3",), **spec) -> dict:
+    """A `real(dp)` argument with explicit `dims` (rank 0 when `rank` is 0)."""
+    ent = _arg(arg_name, "real", rank=rank, intent=intent, kind="dp", **spec)
+    if rank:
+        ent["dims"] = list(dims)
+    return ent
+
+
+#: Issue #380: a pointwise `component` surface — every argument a scalar or a fixed-extent view.
+_POINTWISE = _struct(
+    module_parameters=[{"name": "dp", "value": "float64"}],
+    procedures=[{"kind": "subroutine", "name": "c__flux",
+                 "args": [_fixed("u"), _fixed("g", rank=0), _fixed("f", intent="out")]},
+                {"kind": "subroutine", "name": "c__field",
+                 "args": [_fixed("u", dims=("nx",)), _fixed("f", intent="out", dims=("nx",))]}])
+
+_POINTWISE_MODEL = """#include "c_model.cuh"
+namespace c_model {
+__host__ __device__ void c__flux(atmofab::View<const dp, 1> u, dp g, atmofab::View<dp, 1> f) {
+  for (int k = 0; k < 3; ++k) { f.data[k] = g * u.data[k]; }
+}
+void c__field(atmofab::View<const dp, 1> u, atmofab::View<dp, 1> f) { f.data[0] = u.data[0]; }
+}  // namespace c_model
+"""
+
+
+class DeviceCallablePointwiseTests(unittest.TestCase):
+    """Issue #380 (B1): a pointwise operation of a `component` node is declared — and must be
+    defined — `__host__ __device__`, so a consumer's kernel may call it."""
+
+    def test_which_procedures_are_pointwise(self) -> None:
+        def sub(*args):
+            return {"kind": "subroutine", "name": "c__f", "args": list(args)}
+        rows = {
+            "scalars and fixed views": (sub(_fixed("u"), _fixed("g", rank=0)), True),
+            "integer and logical scalars": (sub(_arg("n", "integer"), _arg("b", "logical")), True),
+            "rank 2, every extent a literal": (sub(_fixed("m", rank=2, dims=("3", "3"))), True),
+            "a symbolic extent": (sub(_fixed("u", dims=("nx",))), False),
+            "dims missing": (sub(_arg("u", "real", rank=1, kind="dp")), False),
+            "dims shorter than the rank": (sub(_fixed("m", rank=2, dims=("3",))), False),
+            "allocatable": (sub(_fixed("u", alloc=True)), False),
+            "a string": (sub(_fixed("g", rank=0), _arg("s", "string", len="assumed")), False),
+            "a derived value": (sub(_arg("t", "derived", name="T")), False),
+            "a procedure argument": (sub({"name": "cb", "spec": {"type": "procedure",
+                                                                 "interface": "p"}}), False),
+            "no argument": (sub(), False),
+            "a scalar function": ({"kind": "function", "name": "c__f", "args": [_fixed("u")],
+                                   "result": {"name": "r", "spec": {"type": "real"}}}, True),
+            "a function returning an array": (
+                {"kind": "function", "name": "c__f", "args": [_fixed("u")],
+                 "result": {"name": "r", "rank": 1, "spec": {"type": "real"}}}, False),
+            "a function returning a string": (
+                {"kind": "function", "name": "c__f", "args": [_fixed("u")],
+                 "result": {"name": "r", "spec": {"type": "string", "len": "deferred",
+                                                  "alloc": True}}}, False),
+        }
+        for label, (proc, want) in rows.items():
+            with self.subTest(label):
+                self.assertIs(want, cs.is_pointwise(proc))
+
+    def test_the_rusanov_flux_section_is_pointwise(self) -> None:
+        """The node that motivated the binding, read from the tree."""
+        path = (REPO_ROOT / "spec/component/dynamics/shallow_water"
+                "/dynamics_shallow_water_flux_2d_rusanov/controlled_spec.md")
+        struct, err = cs.load_structured_signatures(_section51(path))
+        self.assertIsNone(err)
+        self.assertEqual([True], [cs.is_pointwise(p) for p in struct["procedures"]])
+
+    def test_only_a_component_header_declares_the_pair(self) -> None:
+        component = cpp_header.render("c", _public_api(_POINTWISE), spec_kind="component")
+        self.assertIn("__host__ __device__ void c__flux(", component)
+        self.assertIn("\nvoid c__field(", component)
+        self.assertEqual(1, component.count("__host__ __device__ void"))
+        for kind in ("problem", "infrastructure"):
+            with self.subTest(kind):
+                other = cpp_header.render("c", _public_api(_POINTWISE), spec_kind=kind)
+                self.assertNotIn("__device__ void", other)
+                self.assertIn("\nvoid c__flux(", other)
+        decls = cpp_decls.read(component)
+        self.assertEqual([], decls.errors)
+        self.assertEqual({"c__flux": "__device__ void", "c__field": "void"},
+                         {f.name: f.returns for f in decls.functions})
+
+    def _pin(self, model: str, kind: str) -> list[str]:
+        ops, types, ifaces, errors = cs.parse_interface_stanzas(cs.render_signatures(_POINTWISE))
+        self.assertEqual([], errors)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "c_model.cu"
+            path.write_text(model, encoding="utf-8")
+            (Path(tmp) / "c_model.cuh").write_text(
+                cpp_header.render("c", _public_api(_POINTWISE), spec_kind=kind), encoding="utf-8")
+            out: list[str] = []
+            cs.generated_source_violations(
+                model_files=[path], target=path, ir_kind=kind, op_stanzas=ops, type_stanzas=types,
+                proto_stanzas=ifaces, module_parameters=_POINTWISE["module_parameters"],
+                procedures=_POINTWISE["procedures"], violations=out)
+            return out
+
+    def test_the_pin_holds_the_definition_to_the_header_s_pair(self) -> None:
+        self.assertEqual([], self._pin(_POINTWISE_MODEL, "component"))
+        host_only = _POINTWISE_MODEL.replace("__host__ __device__ void c__flux", "void c__flux")
+        cases = {
+            # The definition lacks the pair the header declares: two signatures under one name.
+            "a plain host definition": (host_only, "component", "different signatures"),
+            # The pair on an operation the header declares a plain host function.
+            "the pair on a non-pointwise operation": (
+                _POINTWISE_MODEL.replace("void c__field", "__host__ __device__ void c__field"),
+                "component", "different signatures"),
+            # A `problem` node's header declares no pair, so its definition must carry none.
+            "the pair on a problem node": (_POINTWISE_MODEL, "problem", "different signatures"),
+        }
+        for label, (model, kind, needle) in cases.items():
+            with self.subTest(label):
+                found = self._pin(model, kind)
+                self.assertTrue(any(needle in v for v in found), found)
+        self.assertEqual([], self._pin(host_only, "problem"))
+
+    def test_the_pin_s_expected_stanza_carries_the_pair(self) -> None:
+        """With the header and the model BOTH spelling a plain host function — a header not
+        rendered for a `component` — the pin still refuses: what it expects of a component's
+        pointwise operation comes from §5.1, not from the header beside the source."""
+        ops, types, ifaces, _e = cs.parse_interface_stanzas(cs.render_signatures(_POINTWISE))
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "c_model.cu"
+            path.write_text(_POINTWISE_MODEL.replace("__host__ __device__ void", "void"))
+            (Path(tmp) / "c_model.cuh").write_text(
+                cpp_header.render("c", _public_api(_POINTWISE), spec_kind="problem"))
+            out: list[str] = []
+            cs.generated_source_violations(
+                model_files=[path], target=path, ir_kind="component", op_stanzas=ops,
+                type_stanzas=types, proto_stanzas=ifaces,
+                module_parameters=_POINTWISE["module_parameters"],
+                procedures=_POINTWISE["procedures"], violations=out)
+        self.assertTrue(any("procedure 'c__flux' drifts" in v and "__device__" in v
+                            for v in out), out)
+
+    def test_a_consumer_is_shown_the_pair_unqualified(self) -> None:
+        facts = cs.published_interface(_POINTWISE_MODEL, "c__flux")
+        self.assertEqual("__host__ __device__ void c__flux(atmofab::View<const c_model::dp,1> u, "
+                         "c_model::dp g, atmofab::View<c_model::dp,1> f)", facts["interface"])
+        self.assertEqual("void c__field(atmofab::View<const c_model::dp,1> u, "
+                         "atmofab::View<c_model::dp,1> f)",
+                         cs.published_interface(_POINTWISE_MODEL, "c__field")["interface"])
+        self.assertEqual(["c__flux", "c__field"],
+                         cs.prefixed_procedures(_POINTWISE_MODEL, "c__"))
+        self.assertEqual(["c__field", "c__flux"],
+                         sorted(cpp_source.published_subroutines(_POINTWISE_MODEL, "c")))
 
 
 class DependencyInterfaceTests(unittest.TestCase):
@@ -1433,6 +1584,65 @@ class PhysicsGateTests(unittest.TestCase):
                     out = self._round_trip(tmp, **kwargs)
                     self.assertTrue(any("does not propagate" in v for v in out), out)
 
+    # Issue #380: a pointwise dependency declared `__host__ __device__`, called one face at a
+    # time from inside a kernel the model defines — or from a host helper. `{use}` is what the
+    # update kernel adds to `u`: the faces' flux (consumed) or nothing of it (discarded).
+    _PW_HEADER = ("namespace dep_model {\n__host__ __device__ void dep__face(\n"
+                  "    atmofab::View<const double, 1> u,\n    double g,\n"
+                  "    atmofab::View<double, 1> f);\n}\n")
+    _PW_FACES = ("__global__ void faces(const double* u, double* f, double g, long n) {\n"
+                 "  const long i = blockIdx.x * blockDim.x + threadIdx.x;\n"
+                 "  if (i < n) {\n"
+                 "    dep_model::dep__face(atmofab::View<const double, 1>{u + 3 * i, {3}}, g,\n"
+                 "                         atmofab::View<double, 1>{f + 3 * i, {3}});\n  }\n}\n")
+    _PW_HELPER = ("void faces_on_host(const double* u, double* f, double g, long n) {\n"
+                  "  for (long i = 0; i < n; ++i) {\n"
+                  "    dep_model::dep__face(atmofab::View<const double, 1>{u + 3 * i, {3}}, g,\n"
+                  "                         atmofab::View<double, 1>{f + 3 * i, {3}});\n  }\n}\n")
+    _PW_UPDATE = ("__global__ void upd(const double* u, const double* f, double* out, double dt,"
+                  " long n) {{\n  const long i = blockIdx.x * blockDim.x + threadIdx.x;\n"
+                  "  if (i < n) {{ out[i] = u[i] + dt * {use}; }}\n}}\n")
+    _PW_STEP = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+                " double dt) {{\n  double* du = nullptr;\n  double* df = nullptr;\n"
+                "  double* dn = nullptr;\n"
+                "  cudaMemcpy(du, u.data, 96, cudaMemcpyHostToDevice);\n"
+                "  {faces}(du, df, 9.81, 4);\n  upd<<<1, 12>>>(du, df, dn, dt, 12);\n"
+                "  cudaMemcpy(u_new.data, dn, 96, cudaMemcpyDeviceToHost);\n}}")
+
+    def test_a_dependency_called_inside_a_kernel_is_followed_through_the_launch(self) -> None:
+        """The kernel's own check exempts its output pointer (an output parameter IS an output),
+        so the launch that hands it a buffer is what must be followed: before issue #380 the
+        discarded variant passed, because `p__step` itself calls no dependency operation."""
+        shapes = {"kernel": (self._PW_FACES, "faces<<<1, 4>>>"),
+                  "host helper": (self._PW_HELPER, "faces_on_host")}
+        for label, (callee, faces) in shapes.items():
+            for header in (True, False):
+                with self.subTest(label, header=header), tempfile.TemporaryDirectory() as tmp:
+                    if header:
+                        (Path(tmp) / "dep_model.cuh").write_text(self._PW_HEADER)
+
+                    def gates(use: str, callee: str = callee, faces: str = faces) -> list[str]:
+                        body = (callee + self._PW_UPDATE.format(use=use)
+                                + self._PW_STEP.format(faces=faces))
+                        return self._gates(self._model(tmp, body, header=False), ["dep"])
+                    self.assertEqual([], gates("f[i]"))
+                    out = gates("u[i]")
+                    self.assertEqual(1, len(out), out)
+                    self.assertIn("function p__step does not propagate dependency operation "
+                                  "outputs to its output dataflow (candidates=['df'])", out[0])
+
+    def test_a_call_to_a_function_that_calls_no_dependency_is_not_a_dependency_call(self) -> None:
+        """Only a callee that reaches a dependency operation stands for one: a kernel that
+        computes on its own is followed as before and asked nothing of — here it fills a scratch
+        buffer nothing reads, which would be refused as a discarded result if it were asked."""
+        body = ("__global__ void zero(double* f, long n) {\n"
+                "  const long i = threadIdx.x;\n  if (i < n) { f[i] = 0.0; }\n}\n"
+                + self._PW_FACES + self._PW_UPDATE.format(use="f[i]")
+                + self._PW_STEP.format(faces="faces<<<1, 4>>>").replace(
+                    "  upd<<<", "  double* ds = nullptr;\n  zero<<<1, 4>>>(ds, 4);\n  upd<<<"))
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual([], self._gates(self._model(tmp, body), ["dep"]))
+
     def test_kernel_spellings_the_rules_invite(self) -> None:
         """Round 5 of this change's review, each through the REAL declaration reader: inputs
         `const double* __restrict__` (the reader dropped the element's `const`, making them
@@ -1726,7 +1936,7 @@ class ToolAdapterTests(unittest.TestCase):
     def test_syntax_adapter_argv(self) -> None:
         self.assertEqual(
             ["nvcc", "-std=c++17", "-arch=sm_90", "-Xcompiler", "-fsyntax-only", "-odir", ".mods",
-             "-c", "a.cu"],
+             "-rdc=true", "-c", "a.cu"],
             nvcc_syntax.argv(standard="c++17", scratch_dir=".mods", openmp=True, promotions=(),
                              architecture="sm_90", sources=["a.cu"]))
         self.assertNotIn("-arch=None", nvcc_syntax.argv(
@@ -1737,6 +1947,21 @@ class ToolAdapterTests(unittest.TestCase):
             for name in ("b.cu", "a.cu", "c.txt"):
                 (Path(tmp) / name).write_text("")
             self.assertEqual(["a.cu", "b.cu"], cpp_syntax.compile_order(Path(tmp)))
+
+    def test_relocatable_device_code_is_in_every_argv_that_compiles_device_code(self) -> None:
+        """Issue #380: the build, the syntax stage and the lint all compile a kernel's call to a
+        `__host__ __device__` operation of another file, which only relocatable device code
+        resolves (the real-driver row below measures why)."""
+        from tools.backends.language.cuda_cpp import control_file as cpp_control_file
+        self.assertEqual(1, cpp_control_file.flags("c++17", "sm_90").split().count("-rdc=true"))
+        self.assertEqual(1, cpp_control_file.flags("c++17", None).split().count("-rdc=true"))
+        self.assertIn("-rdc=true", cpp_control_file.rules(
+            standard="c++17", parallel_backend="cuda")["flags"].split())
+        self.assertIn("-rdc=true", nvcc_syntax.argv(
+            standard="c++17", scratch_dir=".m", openmp=False, promotions=(), architecture=None,
+            sources=["a.cu"]))
+        self.assertIn("-rdc=true", nvcc_lint.CHECK_FLAGS)
+        self.assertIn("-rdc=true", nvcc_lint.self_check_argv("/x"))
 
     def test_linter_declaration(self) -> None:
         self.assertEqual(("nvcc", *nvcc_lint.CHECK_FLAGS), nvcc_lint.check_argv())
@@ -1778,6 +2003,26 @@ class ToolAdapterTests(unittest.TestCase):
         self.assertFalse(cuda_directives.lowering_plan_declines(
             {"parallelization": {"model": "cuda"}}))
         self.assertFalse(cuda_directives.lowering_plan_declines({}))
+
+    def test_the_leaf_is_told_the_device_callable_binding(self) -> None:
+        """Issue #380 (B1): what a `cuda_cpp` leaf reads about a pointwise operation agrees with
+        what the header and the pin do — the producer's rule 6a, the reviewer's dependency-call
+        item, the checks-ABI binding's §5 and the lint flags it is shown. A literal guard on the
+        removed phrasing ("a HOST function: no `__device__`") as much as on the new one: a
+        leaf told both would be told to define the operation in a way the pin refuses."""
+        prompts = registry.capability_module("language", "cuda_cpp", "prompt_fragments")
+        rule = prompts.fragments("generate_generate")["authoring_rule_6"]
+        self.assertIn("define it with exactly that pair", rule)
+        self.assertIn("`__host__ __device__`", rule)
+        self.assertNotIn("A published operation is a HOST function", rule)
+        verify = prompts.fragments("generate_verify")["dependency_call_consistency"]
+        self.assertIn("`__host__ __device__` may be called from inside a kernel", verify)
+        section5 = registry.capability_module("language", "cuda_cpp", "checks_abi").document()
+        section5 = section5[section5.index("## 5. "):]
+        self.assertIn("`__host__ __device__` as its header declares", section5)
+        self.assertNotIn("Published operations are host functions", section5)
+        self.assertNotIn("a kernel over the shared-memory limit)", section5)
+        self.assertIn("-rdc=true", nvcc_lint.lint_rules_document())
 
     def test_the_registry_serves_every_declared_capability(self) -> None:
         for capability in ("bundle_facts", "syntax_promotions", "prompt_fragments", "checks_abi",
@@ -2203,6 +2448,46 @@ class RealDriverTests(unittest.TestCase):
         self.assertIn(self._lint("int f() { int v = 1; return 2; }\n"), (1, 2))
         self.assertEqual(0, self._lint("int g(int p) { (void)p; return 2; }\n"))
 
+    def test_a_kernel_may_call_a_pointwise_operation_of_another_file(self) -> None:
+        """Issue #380, measured with the repository's own argv builders: a consumer kernel calling
+        a component's `__host__ __device__` operation (header rendered by the host) lints, passes
+        the syntax stage, compiles with the build's flags and links; without `-rdc=true` the
+        device code generator refuses the same source (`Unresolved extern function`)."""
+        from tools.backends.language.cuda_cpp import control_file as cpp_control_file
+        consumer = ('#include "c_model.cuh"\n'
+                    "namespace {\n__global__ void faces(const double* u, double* f, long n) {\n"
+                    "  const long i = blockIdx.x * blockDim.x + threadIdx.x;\n"
+                    "  if (i < n) {\n    c_model::c__flux(atmofab::View<const double, 1>{u + 3 * i, {3}},"
+                    " 9.81,\n                     atmofab::View<double, 1>{f + 3 * i, {3}});\n"
+                    "  }\n}\n}  // namespace\n"
+                    "void launch(const double* u, double* f, long n) { faces<<<1, 32>>>(u, f, n); }\n"
+                    "int main() { return 0; }\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "c_model.cuh").write_text(
+                cpp_header.render("c", _public_api(_POINTWISE), spec_kind="component"))
+            (d / "c_model.cu").write_text(_POINTWISE_MODEL)
+            (d / "p.cu").write_text(consumer)
+
+            def run(argv: list[str]) -> subprocess.CompletedProcess[str]:
+                return subprocess.run(argv, cwd=tmp, capture_output=True, text=True, check=False)
+            lint = run(list(nvcc_lint.source_argv(["./c_model.cu", "./p.cu"])))
+            self.assertEqual(0, lint.returncode, lint.stderr[-2000:])
+            (d / ".m").mkdir()
+            syntax = run(nvcc_syntax.argv(standard="c++17", scratch_dir=".m", openmp=False,
+                                          promotions=(), architecture=None,
+                                          sources=["c_model.cu", "p.cu"]))
+            self.assertEqual(0, syntax.returncode, syntax.stderr[-2000:])
+            flags = cpp_control_file.flags("c++17", None).replace("$(OBJDIR)", ".").split()
+            for src in ("c_model.cu", "p.cu"):
+                built = run([NVCC, *flags, "-c", src, "-o", src.replace(".cu", ".o")])
+                self.assertEqual(0, built.returncode, built.stderr[-2000:])
+            linked = run([NVCC, *flags, "c_model.o", "p.o", "-o", "p_bin"])
+            self.assertEqual(0, linked.returncode, linked.stderr[-2000:])
+            without = run([a for a in nvcc_lint.source_argv(["./p.cu"]) if a != "-rdc=true"])
+            self.assertNotEqual(0, without.returncode)
+            self.assertIn("Unresolved extern function", without.stderr + without.stdout)
+
     def test_self_check_accepts_the_declared_flags(self) -> None:
         proc = subprocess.run(list(nvcc_lint.self_check_argv("/unused")), capture_output=True,
                               text=True, check=False)
@@ -2272,7 +2557,9 @@ class RealDriverTests(unittest.TestCase):
                 spec_id = path.parent.name
                 with tempfile.TemporaryDirectory() as tmp:
                     (Path(tmp) / cpp_header.basename(spec_id)).write_text(
-                        cpp_header.render(spec_id, _public_api(struct)))
+                        cpp_header.render(
+                            spec_id, _public_api(struct),
+                            spec_kind=path.relative_to(REPO_ROOT / "spec").parts[0]))
                     (Path(tmp) / "x.cu").write_text(f'#include "{cpp_header.basename(spec_id)}"\n')
                     proc = subprocess.run(list(nvcc_lint.source_argv(["./x.cu"])), cwd=tmp,
                                           capture_output=True, text=True, check=False)
@@ -2322,7 +2609,7 @@ class RealDriverTests(unittest.TestCase):
                 model_files=[src / "h_model.cu"], target=src / "h_model.cu",
                 ir_kind="infrastructure", op_stanzas=ops, type_stanzas=types,
                 proto_stanzas=ifaces, module_parameters=_HARNESS_LIKE["module_parameters"],
-                violations=pin)
+                procedures=_HARNESS_LIKE["procedures"], violations=pin)
             self.assertEqual([], pin)
             lint = server.tool_run_linter({"preset": "nvcc", "project_dir": str(src)})
             self.assertTrue(lint["ok"], lint.get("stderr"))

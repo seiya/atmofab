@@ -29,8 +29,10 @@ leaf-authored file this lint reads.
 EXIT STATUS. Measured on 13.4 with this argv (`docs/backends/linter/nvcc/RULES.md` §Measurements):
 clean 0; a finding 1, 2 or 255 (1 for an unused parameter, an unused variable (#177-D) and a
 signed/unsigned comparison; 2 for a variable used before it is set (#549-D); 255 for a device
-assembler (`ptxas`) error such as a kernel's shared memory over the limit — `-Xcompiler
--fsyntax-only` stops the HOST compile only, and the device code is still assembled); an unknown
+assembler (`ptxas`) error such as invalid inline PTX — `-Xcompiler -fsyntax-only` stops the HOST
+compile only, and the device code is still assembled. Under `-rdc=true` a kernel's static shared
+memory over the limit is no longer an assembler error but a device-LINK one, so Build refuses it,
+not this gate — re-measured 2026-10-02, issue #380); an unknown
 flag 1 (`nvcc fatal : Unknown option`). A refused invocation and a finding therefore SHARE status 1, and the output is not read to tell them apart (a leaf names the
 files in it). What makes the status a verdict is the launch self-check: the same flags are run
 over an empty translation unit before the first leaf (`self_check_argv`), so a build that
@@ -68,6 +70,9 @@ CHECK_FLAGS: tuple[str, ...] = (
     "-Xcompiler=" + ",".join(HOST_WARNING_FLAGS),
     "--Werror", "all-warnings",
     "-Xcompiler", "-fsyntax-only",
+    # Relocatable device code, as the build compiles: a kernel's call to a `__host__ __device__`
+    # operation of another file is otherwise a `ptxas fatal` here too (issue #380).
+    "-rdc=true",
     "-c",
 )
 

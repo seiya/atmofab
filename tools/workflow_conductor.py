@@ -6539,7 +6539,8 @@ class Conductor:
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         public_api = ir.get("public_api") if isinstance(ir, dict) else None
         try:
-            text = module.render(spec_id, public_api if isinstance(public_api, dict) else {})
+            text = module.render(spec_id, public_api if isinstance(public_api, dict) else {},
+                                 spec_kind=refs.node_key.partition("/")[0].strip())
         except ValueError as exc:
             raise RuntimeError(f"interface_header_unrenderable: {refs.node_key}: {exc}") from exc
         (self.repo_root / refs.source_dir() / "src" / module.basename(spec_id)).write_text(

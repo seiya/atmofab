@@ -777,6 +777,18 @@ PINNED: dict[str, str] = {
     # never told, and probe g18 (a checks source computing the state inline) passed the gate,
     # which is why the key moves.
     "pure-60": "220b63a073fd6e2dec9facb42fe47006ce0932e18caa02026ee158ecaf7868b4",
+    # pure-61 (issue #380, PR-1): the `cuda_cpp` header declares a pointwise operation of a
+    # `component` `__host__ __device__` (render-7), and rule (6a) of the producer fragment, the
+    # reviewer's dependency-call item and §5 of the CUDA C++ checks-ABI binding now say so; the
+    # lint rule set the leaf is shown carries `-rdc=true`, and §5 no longer calls a kernel over the
+    # shared-memory limit a lint failure (under relocatable device code the device link refuses
+    # it). Measured by diffing this tuple against origin/main 977c2051's: those four members — the
+    # two `cuda_cpp` fragment files, `checks_contract_gate_guards_section/cuda_cpp` and
+    # `lint_rules_document/cuda_cpp` — and no other, so every prompt composed for Fortran is
+    # unchanged. A pure-60 leaf was told "a HOST function: no `__device__`", which the pin now
+    # refuses for the two shallow-water flux components, and a pointwise operation was a host
+    # function its consumer could reach only from a host loop, which is why the key moves.
+    "pure-61": "6460bf23571fcc6015213b0335a18e82d21a6fea08c8eb104a297d263903bd83",
 }
 
 

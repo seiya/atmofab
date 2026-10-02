@@ -29,10 +29,12 @@ over the certified harness (`tools/backends/language/cuda_cpp/runner.py`, issue 
 ## 2. The syntax stage
 
 The mandatory syntax stage for `cuda_cpp` is
-`nvcc -std=<toolchain.standard> -arch=<hardware.architecture> -Xcompiler -fsyntax-only -odir <scratch> -c <sources>`
+`nvcc -std=<toolchain.standard> -arch=<hardware.architecture> -Xcompiler -fsyntax-only -odir <scratch> -rdc=true -c <sources>`
 over every `.cu` of the staged directory (all at its top level: a nested one is refused by the static check), each its own translation unit, with the host-rendered
 header staged beside them (`STAGED_SUFFIXES`; `tools/backends/compiler/nvcc/syntax.py`). It promotes no warning class: the lint rule set
-already makes every warning an error. A failing stage is attributed by re-running the same argv
+already makes every warning an error. `-rdc=true` is the build's relocatable device code
+(`BUNDLE_BINDING.md` §4): without it a kernel's call to a `__host__ __device__` operation of
+another file fails this stage although the build links it. A failing stage is attributed by re-running the same argv
 over a canary translation unit with one kernel; a canary failure is an invocation the driver
 refuses (typically a `toolchain.standard` or `hardware.architecture` it does not know) and is a
 transport `fail_closed`.
@@ -49,6 +51,10 @@ transport `fail_closed`.
   `"<dep>_model.cuh"` (the host copies it into `src/` at Generate start and stages it into the
   object directory at Build), defines no `<dep>__*` function, and calls at least one
   `<dep>__<op>` operation — qualified `<dep>_model::` or not — from a function body.
+- A dependency operation its header declares `__host__ __device__` (a pointwise operation of a
+  `component`, `BUNDLE_BINDING.md` §2) may be called from inside a kernel the consumer defines, one
+  element at a time, on views into device storage: that is a dependency call like any other, and
+  the dataflow gate follows it through the kernel's launch (§5).
 - A `problem` node's header declares nothing of its operation (its IR has no signatures), so its
   checks source declares the operation itself, in namespace `<spec_id>_model`, with exactly the
   model's definition types; another spelling is refused (`checks_harness_isolation_violations`)
@@ -63,7 +69,10 @@ transport `fail_closed`.
 On a `component` / `problem` node built for `parallel.backend: cuda` on a `gpu`, a model source
 with counted `for` loops must define or launch at least one kernel (`__global__` or `<<<`), read
 over the code only (`tools/backends/parallel/cuda/directives.py`). The floor does not run on an
-`infrastructure` node.
+`infrastructure` node. A pointwise operation (`BUNDLE_BINDING.md` §2) has no counted loop and
+defines no kernel, so the floor passes its model and the device trace (`DEVICE_TRACE.md`) asks
+nothing of it; its device path is exercised by the traced runs of the consumers whose kernels
+call it.
 
 A failed CUDA call is a failure of the operation: it frees what it allocated and returns without
 the result (a checks callback still assigns its `out` arguments). It is not reported through the
@@ -122,7 +131,13 @@ value is one more output, whether or not its `return` names anything.
   when the operation's header gives it an ARRAY output (a non-const view, an owning array or
   vector reference, a pointer), one of its array outputs — a guard flag reaching `ok` does not
   stand for a discarded flux. The Fortran binding pools the candidates of every call; neither
-  checks every written name, and `Generate.verify` G5 is the authority on the rest.
+  checks every written name, and `Generate.verify` G5 is the authority on the rest. A call to a
+  function or kernel the model source defines that calls a dependency operation — directly or
+  through another such function — is a dependency call of its caller too, whose candidates are
+  the actuals at the callee's output parameters (issue #380): inside a kernel, the dependency's
+  result is written into the kernel's own output pointer, which the kernel's check exempts as an
+  output, so what must be shown is that the buffer the launch hands it reaches the caller's
+  outputs.
 - **Metric-only scalar kernel.** On a multi-dimensional `problem` node, a function with five or
   more outputs and neither an array parameter (`atmofab::View`, `atmofab::Array`, `std::vector`, a
   pointer) nor a loop (`for`, `while`, a `<<<` launch) is refused.
