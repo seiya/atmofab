@@ -154,8 +154,16 @@ value is one more output, whether or not its `return` names anything.
   buffers the call fills, so `bad[i] = face_flux(u, f, g, i) ? 0 : 1` does not make the flag
   stand for `f`. A call that writes one of the enclosing function's OUTPUT parameters
   (`View<double, 1>{&f[3 * q], {3}}`, or a pointer `double* fq = f + 3 * q;` into it) has its
-  result at an output already. The summaries and reach are keyed by name and only widened, so two
-  functions of one name share the union.
+  result at an output already. A name the model source declares at namespace scope — a device
+  buffer kept across calls (§6) — that the dependency's result reaches through a function's or
+  kernel's body, and that the function does not declare itself, is one more candidate set of
+  every call to it: a launcher with no parameter, `void run_faces() { faces<<<...>>>(g_u, g_f);
+  }`, stands for the dependency call in its caller and `g_f` must reach the caller's outputs
+  (round 1 of #380 PR-2's review). A name that reaches the function's returned value is left to
+  the return, which the function's own check holds. Resetting a pointer to `nullptr` /
+  `NULL` before the call (`cudaFree(g_f); g_f = nullptr; cudaMalloc(&g_f, n);`, the growth of a
+  kept buffer) is not an assignment statement for the "assigned before" clause. The summaries
+  and reach are keyed by name and only widened, so two functions of one name share the union.
 - **Metric-only scalar kernel.** On a multi-dimensional `problem` node, a function with five or
   more outputs and neither an array parameter (`atmofab::View`, `atmofab::Array`, `std::vector`, a
   pointer) nor a loop (`for`, `while`, a `<<<` launch) is refused.
