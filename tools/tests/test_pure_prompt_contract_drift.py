@@ -796,6 +796,31 @@ PINNED: dict[str, str] = {
     # round 2: a pointwise body is compiled for the host too (its helpers, `#pragma unroll`),
     # and G6 states the pointwise criterion instead of pointing at a header it does not see.)
     "pure-61": "c170f3260ade703c93b6ba18a7bb533b3647301baf222bf92945d6ebc889d5b3",
+    # pure-62 (issue #380, PR-2): the `cuda_cpp` producer's `target_lowering_floor` replaces the
+    # per-call round trip with a recommended DEFAULT — a device buffer allocated once at
+    # namespace scope and reused, one copy each way per call with intermediates kept on the
+    # device, one launch over the whole range calling a `__host__ __device__` dependency inside
+    # it — which a plan that states another shape in `accelerator_mapping` overrides; the
+    # reviewer's G6 item holds the source to the plan's stated shape and to the default only
+    # where the plan is silent; §3 of the CUDA C++ checks-ABI binding says the runner's `finish`
+    # releases the kept buffers. Measured by diffing this tuple against origin/main 7e9c2232's:
+    # the two `cuda_cpp` fragment files and `checks_abi_binding_sections/cuda_cpp` moved, and no
+    # other member, so every prompt composed for Fortran is unchanged. Measured, not assumed:
+    # every `cpp_gpu` component source authored at pure-60 allocates and frees device memory on
+    # every call and copies its whole input in and output out per call — the fragment told it to
+    # ("every buffer freed on every path"; issue #380's table over the shallow-water components'
+    # `_model.cu`) — and the channel problem's step allocated 15 buffers per step, so its
+    # five-day case could not finish inside the site's 10-minute bound
+    # (orch_20261002T004426Z_a1463874), which is why the key moves. (Re-pinned in place within
+    # PR-2's review before it shipped — round 1: rule (4) states that a `nullptr` reset is not
+    # an input; G6 counts the copies a host callee's arguments need as part of the default and
+    # exempts the default's capacity branch from G4; growth frees the smaller buffer. Round 2:
+    # the default hands a kept buffer to its kernels and helpers as an argument, and rule (4)
+    # says a namespace-scope name read inside a function is not followed — round 1's statement
+    # of a namespace-scope reach was reverted with the reach, operator decision. Round 3: a
+    # callback whose signature an interface fixes reads a kept buffer by name; a pointwise
+    # dependency called from a host loop is a loop kept on the host, under the existing rule.)
+    "pure-62": "e44337abda0468544dc0a04bf46096fecae477a25eaed04efeea309be1171189",
 }
 
 

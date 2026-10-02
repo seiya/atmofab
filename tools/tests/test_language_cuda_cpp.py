@@ -1719,6 +1719,65 @@ class PhysicsGateTests(unittest.TestCase):
                     self.assertIn("function p__step does not propagate dependency operation "
                                   "outputs to its output dataflow (candidates=['df'])", out[0])
 
+    # #380 PR-2: the allocation default keeps the device buffers at namespace scope and hands them
+    # to the kernels and helpers that use them as ARGUMENTS — the gate follows a dependency's
+    # result through parameters, not through a namespace-scope name a function merely reads.
+    _NS_BUFFERS = ("namespace {\ndouble* g_u = nullptr;\ndouble* g_f = nullptr;\n"
+                   "double* g_n = nullptr;\nlong g_cap = 0;\n}\n")
+    _NS_STEP = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+                " double dt) {{\n{grow}"
+                "  cudaMemcpy(g_u, u.data, 96, cudaMemcpyHostToDevice);\n{launch}"
+                "  cudaMemcpy(u_new.data, g_n, 96, cudaMemcpyDeviceToHost);\n}}")
+
+    def _ns_gates(self, tmp: str, use: str, helper: str, grow: str, launch: str) -> list[str]:
+        body = (self._NS_BUFFERS + self._PW_FACES + self._PW_UPDATE.format(use=use) + helper
+                + self._NS_STEP.format(grow=grow, launch=launch))
+        return self._gates(self._model(tmp, body, header=False), ["dep"])
+
+    def test_a_namespace_scope_buffer_handed_as_an_argument_is_followed(self) -> None:
+        """Consumed passes and discarded is refused naming the buffer, for the shapes the default
+        tells the leaf to write: the launches in the operation, a growth that resets the pointer
+        to `nullptr` / `NULL` before the launch (an assignment statement before the call, which
+        the exemption for an input the call reads dropped as the only candidate before round 1
+        of PR-2's review), and a helper that takes the buffers as arguments."""
+        grow = ("  if (g_cap < 12) {{\n    cudaFree(g_f);\n    g_f = {null};\n"
+                "    cudaMalloc(&g_f, 96);\n    g_cap = 12;\n  }}\n")
+        faces = "  faces<<<1, 4>>>(g_u, g_f, 9.81, 4);\n"
+        update = "  upd<<<1, 12>>>(g_u, g_f, g_n, dt, 12);\n"
+        shapes = {
+            "in the operation": ("", "", faces + update),
+            "growth resets to nullptr": ("", grow.format(null="nullptr"), faces + update),
+            "growth resets to NULL": ("", grow.format(null="NULL"), faces + update),
+            "helper takes the buffers": ("void run_faces(const double* u, double* f, long n) {\n"
+                                         "  faces<<<1, 4>>>(u, f, 9.81, n);\n}\n", "",
+                                         "  run_faces(g_u, g_f, 4);\n" + update),
+        }
+        for label, (helper, grow_text, launch) in shapes.items():
+            for header in (True, False):
+                with self.subTest(label, header=header), tempfile.TemporaryDirectory() as tmp:
+                    if header:
+                        (Path(tmp) / "dep_model.cuh").write_text(self._PW_HEADER)
+                    self.assertEqual([], self._ns_gates(tmp, "f[i]", helper, grow_text, launch))
+                    out = self._ns_gates(tmp, "u[i]", helper, grow_text, launch)
+                    self.assertEqual(1, len(out), out)
+                    self.assertIn("does not propagate dependency operation outputs to its output "
+                                  "dataflow (candidates=['g_f'])", out[0])
+
+    def test_argument_less_stage_helpers_over_namespace_scope_buffers_pass(self) -> None:
+        """Over-refusal pin (round 2 of PR-2's review): stage helpers with no parameter that read
+        the namespace-scope buffers, the flux consumed, pass — as on origin/main. A namespace-scope
+        reach added in round 1 refused this source and was reverted (operator decision): such a
+        helper is not followed, so its DISCARDED variant passes too, which is why the leaf is told
+        to hand the buffers over as arguments and why `Generate.verify` G5 holds the rest."""
+        helper = ("void compute_fluxes(long n) { faces<<<1, 4>>>(g_u, g_f, 9.81, n); }\n"
+                  "void apply_update(double dt) { upd<<<1, 12>>>(g_u, g_f, g_n, dt, 12); }\n")
+        for header in (True, False):
+            with self.subTest(header=header), tempfile.TemporaryDirectory() as tmp:
+                if header:
+                    (Path(tmp) / "dep_model.cuh").write_text(self._PW_HEADER)
+                self.assertEqual([], self._ns_gates(
+                    tmp, "f[i]", helper, "", "  compute_fluxes(4);\n  apply_update(dt);\n"))
+
     def test_assigned_before_is_measured_from_the_dependency_call_itself(self) -> None:
         """The "assigned before the call" exemption compares against THIS call's position (round
         0 of #380 PR-1: with the position taken from the last call of any kind in the body, the
@@ -2558,6 +2617,43 @@ class ToolAdapterTests(unittest.TestCase):
         g6 = prompts.fragments("generate_verify")["checklist_g6_floor_scope"]
         self.assertIn('its plan declares `"model": "none"`', g6)
         self.assertIn("that is the binding, not a finding", g6)
+
+    def test_the_transfer_default_is_told_as_a_recommendation(self) -> None:
+        """Issue #380 (A): the producer's default is to allocate a device buffer once, cross the
+        bus once each way and launch once over the range, unless its plan says otherwise; the
+        reviewer holds the source to the plan's stated shape and to the default only where the
+        plan is silent. A literal guard both ways: the removed per-call round trip ("every buffer
+        freed on every path") stays out, and the sentences that make the default overridable cannot
+        be reworded into a rule with this row green — the optimization flow varies exactly these
+        shapes (operator, 2026-10-02). Not caught here: an ADDED sentence contradicting them (only
+        the contract digest moves for that)."""
+        prompts = registry.capability_module("language", "cuda_cpp", "prompt_fragments")
+        floor = prompts.fragments("generate_generate")["target_lowering_floor"]
+        # The override, stated whole: what the default is, when it applies, and that a stated
+        # shape replaces it for the reviewer (round 1 of PR-2's review: with single-word pins,
+        # "DEFAULT" -> "REQUIRED" and "is your own claim" -> "is not accepted" stayed green).
+        for phrase in ("the DEFAULT use of the device",
+                       "they are the lowering you use when your `target_lowering_plan` says "
+                       "nothing else",
+                       "inside the plan's `accelerator_mapping` object — is your own claim, which "
+                       "the reviewer holds the source to in place of the default",
+                       "allocated once and reused",
+                       "otherwise do not free it in the operation",
+                       "one launch over the whole range"):
+            self.assertIn(phrase, floor)
+        self.assertNotIn("every buffer freed on every path", floor)
+        self.assertNotIn("free what was allocated", floor)
+        g6 = prompts.fragments("generate_verify")["checklist_g6_floor_scope"]
+        for phrase in ("is the one its plan states — or, where the plan says nothing about it, "
+                       "the producer's default",
+                       "That default is a recommendation, not a rule:",
+                       "is the producer's own claim, and you hold the source to it",
+                       "or from the default while the plan is silent — not the choice itself"):
+            self.assertIn(phrase, g6)
+        self.assertNotIn("moves its state to the device and back", g6)
+        self.assertNotIn("freeing what was allocated", g6)
+        for text in (floor, g6):
+            self.assertNotRegex(text, r"(?i)default[^.]*\b(refused|forbidden|is a fail)\b")
 
     def test_the_registry_serves_every_declared_capability(self) -> None:
         for capability in ("bundle_facts", "syntax_promotions", "prompt_fragments", "checks_abi",

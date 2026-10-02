@@ -1021,6 +1021,10 @@ def _is_declaration(body: str, lhs_at: int) -> bool:
             and prefix.split()[0] not in _STATEMENT_KEYWORDS)
 
 
+#: The null pointer constants an assignment resets a pointer to.
+_NULL_POINTERS = frozenset({"nullptr", "NULL"})
+
+
 def _assignments(body: str) -> list[tuple[str, set[str], int, str, bool]]:
     """`(target name, source identifiers, offset, right-hand text, not an assignment statement)`
     per data edge of `body`.
@@ -1040,9 +1044,14 @@ def _assignments(body: str) -> list[tuple[str, set[str], int, str, bool]]:
         sources = _identifiers(rhs)
         pointees = _pointee_names(rhs) - {lhs}
         # Making `lhs` point into another's storage sets up where a call will WRITE, not a value
-        # the call reads, so it is not an assignment statement for the "assigned before" clause.
+        # the call reads, so it is not an assignment statement for the "assigned before" clause;
+        # nor is resetting a pointer to null (round 1 of #380 PR-2's review: growing a kept
+        # buffer, `cudaFree(g_f); g_f = nullptr; cudaMalloc(&g_f, n);`, dropped the buffer a
+        # kernel then writes the dependency's result into). Another spelling of the reset
+        # (`g_f = 0;`, `g_f = alloc(n);`) is still an assignment statement.
         records.append((lhs, sources, m.start, rhs.strip(),
-                        bool(pointees) or _is_declaration(body, m.start)))
+                        bool(pointees) or rhs.strip() in _NULL_POINTERS
+                        or _is_declaration(body, m.start)))
         for storage in pointees:
             records.append((storage, {lhs}, m.start, "", True))
     for m in _VIEW_DECLARATION_RE.finditer(body):

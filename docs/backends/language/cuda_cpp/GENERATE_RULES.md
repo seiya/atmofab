@@ -77,8 +77,9 @@ holds to the binding (the producer and the reviewer are both told). The device t
 (`DEVICE_TRACE.md`) asks nothing of it; its device path is exercised by the traced runs of the
 consumers whose kernels call it.
 
-A failed CUDA call is a failure of the operation: it frees what it allocated and returns without
-the result (a checks callback still assigns its `out` arguments). It is not reported through the
+A failed CUDA call is a failure of the operation: it stops computing and returns without the
+result — a device buffer it keeps across calls (§6) stays allocated — and a checks callback still
+assigns its `out` arguments. It is not reported through the
 IR's input guard, whose formula is the IR's, over the inputs, and the runner does not read
 `case_run`'s `ok` (`runner.py`) — so whether a case's checks notice the missing result depends on
 what its outputs held, and the device trace below is what holds the rule. A host fallback — a path that recomputes a kernel's
@@ -153,8 +154,18 @@ value is one more output, whether or not its `return` names anything.
   buffers the call fills, so `bad[i] = face_flux(u, f, g, i) ? 0 : 1` does not make the flag
   stand for `f`. A call that writes one of the enclosing function's OUTPUT parameters
   (`View<double, 1>{&f[3 * q], {3}}`, or a pointer `double* fq = f + 3 * q;` into it) has its
-  result at an output already. The summaries and reach are keyed by name and only widened, so two
-  functions of one name share the union.
+  result at an output already. A namespace-scope name a function reads without receiving it as
+  an argument is not followed into it: a launcher with no parameter, `void run_faces() {
+  faces<<<...>>>(g_u, g_f); }`, stands for no dependency call in its caller, so a flux it
+  discards passes this gate — which is why the allocation default (§6 A.1) hands a kept buffer
+  to every kernel and helper as an argument, and why `Generate.verify` G5 holds the rest. A
+  reach over namespace-scope names is not attempted: one refused correct stage helpers that read
+  the buffers while a local alias, a struct member and a reassignment still escaped it (#380
+  PR-2). Resetting a pointer to
+  `nullptr` / `NULL` before the call (`cudaFree(g_f); g_f = nullptr; cudaMalloc(&g_f, n);`, the
+  growth of a kept buffer) is not an assignment statement for the "assigned before" clause;
+  another spelling (`g_f = 0;`, `g_f = alloc(n);`) still is. The summaries and reach are keyed by
+  name and only widened, so two functions of one name share the union.
 - **Metric-only scalar kernel.** On a multi-dimensional `problem` node, a function with five or
   more outputs and neither an array parameter (`atmofab::View`, `atmofab::Array`, `std::vector`, a
   pointer) nor a loop (`for`, `while`, a `<<<` launch) is refused.
@@ -180,3 +191,61 @@ value is one more output, whether or not its `return` names anything.
   functions merge (a call to either follows both). The
   refusal reads `case_run reaches no published operation of the model`. It is a reach claim: a
   dead or guarded call passes it and is `Generate.verify`'s.
+
+## 6. The allocation and transfer default
+
+State residency is `host`: a published operation takes and returns host memory (`CHECKS_ABI.md`
+§3), so the copies at an operation's boundary are the contract's own cost. What this section
+shapes is what happens inside an operation: allocation per call, transfer of data the device
+already holds, and launches per element. The producer's default is three points.
+
+- **A.1 Allocate once.** A device buffer is held at namespace scope (an unnamed-namespace variable
+  holding the pointer and its capacity), allocated on the first call that needs it, replaced by a
+  larger one (the old one freed and the pointer set to `nullptr` first) when a later call needs
+  more, and otherwise not freed by the operation. It is handed as an argument to the kernels and
+  helpers whose signature the producer chooses, not named inside them, because the
+  dependency-dataflow gate follows parameters (§5); a callback whose signature an interface fixes
+  (the channel problem's time-update right-hand side) reads it by name. The runner's `finish` calls `cudaDeviceReset`
+  (`tools/backends/language/cuda_cpp/runner.py`), which releases every buffer.
+- **A.2 Cross the bus once each way.** Within one call, each input a kernel reads is copied in
+  once and each output copied out once, and a value one kernel produces for another kernel of the
+  same call stays on the device. A `problem` model's step keeps the state its own kernels pass
+  between the stages of one step on the device; it crosses at the operation's boundary and where
+  a host callee's arguments require it.
+- **A.3 Launch once over the range.** Element-wise work the plan puts on the device is one launch
+  whose grid covers the element count, not one launch per element from a host loop. A dependency
+  whose header declares it `__host__ __device__` (`BUNDLE_BINDING.md` §2) is called from inside
+  that kernel, once per element, on views into the device buffers.
+
+**Standing: a recommendation, not a rule.** The default is the lowering the producer uses when its
+`target_lowering_plan` says nothing else; it is the baseline of the core workflow, and the plan is
+fixed once Generate certifies the bundle (`docs/IMPL_PLAN_SPEC.md` §Position). A plan that states
+another allocation, transfer or launch shape in its `accelerator_mapping` object, with a reason
+about the operation, is the producer's own claim, and `generate.verify` holds the source to that
+plan (G6). The finding is a source that departs from the stated shape, or from the default while
+the plan is silent; the choice itself is never one. The optimization flow (`Tune`, whose
+variants override the lowering plan, `accelerator_mapping` included: `docs/TUNING_WORKFLOW.md`
+§The override-allowed boundary) tries, measures and selects among these shapes freely,
+per-call allocation and cross-unit inlining by `-dlto` included. A pointwise dependency called
+from a host loop rather than inside a kernel is not one of these shapes: it keeps that loop on
+the host, and §4's rule for a loop the plan keeps on the host applies (its reason is about the
+loop); how a tuning variant's host loop is reviewed is the tuning flow's to settle. No gate reads this section. A count of
+`cudaMalloc` inside a loop body is easy to dodge and over-refuses a buffer grown on a loop's first
+iteration, and the device trace does not attribute a launch to a loop. The record a reader has is
+the per-kernel `Instances` of `kernel_trace.csv` (`DEVICE_TRACE.md` §4).
+
+**Why.** Until pure-62 the producer was told to allocate, copy in, launch, copy out and free inside
+every call, and every `cpp_gpu` shallow-water component did (call sites in each certified 0.1.1
+`_model.cu`, comments and literals masked, at main 7e9c2232: `flux_2d_rusanov` 2 `cudaMalloc` /
+2 `cudaMemcpy` / 1 launch, `reconstruction_2d_muscl_mc` 8 / 2 / 5, `source_2d_tc4_forcing`
+9 / 9 / 2, `time_update_2d_rk4` 6 / 5 / 2; issue #380's table gives rk4 6 `cudaMemcpy`, one of
+them inside a string literal). The channel problem called the pointwise flux once per face from host loops and
+allocated 15 buffers per step. `problem/shallow_water2d_channel@0.2.1` and `shallow_water2d@0.4.3`
+were both killed by the site's 10-minute bound in `Validate.execute`
+(`orch_20261002T004426Z_a1463874`, `orch_20261002T013248Z_96097e57`), while the `fortran_cpu`
+variants ran their whole suites in 232.6 s and 7.2 s.
+
+**What it does not do.** It does not remove the copies at an operation's boundary: that is the
+device-residency step (`state_residency: device`, which needs a harness providing
+`async_device_resident`). It is not a runtime bound. It does not touch the Fortran binding or the
+IR.
