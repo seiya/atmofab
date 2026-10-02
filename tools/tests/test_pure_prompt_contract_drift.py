@@ -812,7 +812,7 @@ PINNED: dict[str, str] = {
     # `_model.cu`) — and the channel problem's step allocated 15 buffers per step, so its
     # five-day case could not finish inside the site's 10-minute bound
     # (orch_20261002T004426Z_a1463874), which is why the key moves.
-    "pure-62": "47691b50f82117b785102cf811fe7af52c82b88ddf225af111f7dbf521fbcf41",
+    "pure-62": "6ded34b5f50f3e4dac1ede5543a649f1b23221ee47a6c3dea2dc29622e9c26ff",
 }
 
 
