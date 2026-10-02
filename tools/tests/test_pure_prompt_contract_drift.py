@@ -811,7 +811,11 @@ PINNED: dict[str, str] = {
     # ("every buffer freed on every path"; issue #380's table over the shallow-water components'
     # `_model.cu`) — and the channel problem's step allocated 15 buffers per step, so its
     # five-day case could not finish inside the site's 10-minute bound
-    # (orch_20261002T004426Z_a1463874), which is why the key moves.
+    # (orch_20261002T004426Z_a1463874), which is why the key moves. (Re-pinned in place within
+    # PR-2's review before it shipped — round 1: rule (4) states that the gate follows a
+    # dependency result into a namespace-scope buffer and that a `nullptr` reset is not an
+    # input; G6 counts the copies a host callee's arguments need as part of the default and
+    # exempts the default's capacity branch from G4; growth frees the smaller buffer.)
     "pure-62": "a46e06fdd92f818bfbad7ed691b848ccb0a6b6482763467114c4d19dea58ec2f",
 }
 
