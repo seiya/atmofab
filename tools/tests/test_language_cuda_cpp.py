@@ -2632,19 +2632,33 @@ class ToolAdapterTests(unittest.TestCase):
         bus once each way and launch once over the range, unless its plan says otherwise; the
         reviewer holds the source to the plan's stated shape and to the default only where the
         plan is silent. A literal guard both ways: the removed per-call round trip ("every buffer
-        freed on every path") stays out, and the default does not harden into a rule in a later
-        edit — the optimization flow varies exactly these shapes (operator, 2026-10-02)."""
+        freed on every path") stays out, and the sentences that make the default overridable cannot
+        be reworded into a rule with this row green — the optimization flow varies exactly these
+        shapes (operator, 2026-10-02). Not caught here: an ADDED sentence contradicting them (only
+        the contract digest moves for that)."""
         prompts = registry.capability_module("language", "cuda_cpp", "prompt_fragments")
         floor = prompts.fragments("generate_generate")["target_lowering_floor"]
-        self.assertIn("allocated once and reused", floor)
-        self.assertIn("says nothing else", floor)
-        self.assertIn("`accelerator_mapping`", floor)
-        self.assertIn("one launch over the whole range", floor)
+        # The override, stated whole: what the default is, when it applies, and that a stated
+        # shape replaces it for the reviewer (round 1 of PR-2's review: with single-word pins,
+        # "DEFAULT" -> "REQUIRED" and "is your own claim" -> "is not accepted" stayed green).
+        for phrase in ("the DEFAULT use of the device",
+                       "they are the lowering you use when your `target_lowering_plan` says "
+                       "nothing else",
+                       "inside the plan's `accelerator_mapping` object — is your own claim, which "
+                       "the reviewer holds the source to in place of the default",
+                       "allocated once and reused",
+                       "otherwise do not free it in the operation",
+                       "one launch over the whole range"):
+            self.assertIn(phrase, floor)
         self.assertNotIn("every buffer freed on every path", floor)
         self.assertNotIn("free what was allocated", floor)
         g6 = prompts.fragments("generate_verify")["checklist_g6_floor_scope"]
-        self.assertIn("a recommendation, not a rule", g6)
-        self.assertIn("or from the default while the plan is silent", g6)
+        for phrase in ("is the one its plan states — or, where the plan says nothing about it, "
+                       "the producer's default",
+                       "That default is a recommendation, not a rule:",
+                       "is the producer's own claim, and you hold the source to it",
+                       "or from the default while the plan is silent — not the choice itself"):
+            self.assertIn(phrase, g6)
         self.assertNotIn("moves its state to the device and back", g6)
         self.assertNotIn("freeing what was allocated", g6)
         for text in (floor, g6):
