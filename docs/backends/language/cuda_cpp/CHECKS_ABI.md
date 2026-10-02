@@ -93,7 +93,10 @@ sets `found = false`; a rejected case's bound arrays are still sized, e.g. fille
 ## 3. Module-level state in CUDA C++
 
 The current case's state lives in the bound namespace-scope variables of §1-b, in HOST memory: a
-model that computes on the device copies the result back into them before `case_run` returns.
+model that computes on the device copies the result back into them before `case_run` returns. The
+model's own device buffers are another matter: by default it keeps them at namespace scope of the
+model source and reuses them across calls (`GENERATE_RULES.md` §6), and the runner's `finish`
+releases them when it resets the device (`cudaDeviceReset`, `runner.py`).
 `case_run` advances that state by calling the model's published operation, qualified —
 `<spec_id>_model::<spec_id>__<op>(...)` or through a namespace alias of it — from itself or from
 a function the checks source defines that it calls; the checks

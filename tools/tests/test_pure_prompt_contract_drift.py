@@ -796,6 +796,23 @@ PINNED: dict[str, str] = {
     # round 2: a pointwise body is compiled for the host too (its helpers, `#pragma unroll`),
     # and G6 states the pointwise criterion instead of pointing at a header it does not see.)
     "pure-61": "c170f3260ade703c93b6ba18a7bb533b3647301baf222bf92945d6ebc889d5b3",
+    # pure-62 (issue #380, PR-2): the `cuda_cpp` producer's `target_lowering_floor` replaces the
+    # per-call round trip with a recommended DEFAULT — a device buffer allocated once at
+    # namespace scope and reused, one copy each way per call with intermediates kept on the
+    # device, one launch over the whole range calling a `__host__ __device__` dependency inside
+    # it — which a plan that states another shape in `accelerator_mapping` overrides; the
+    # reviewer's G6 item holds the source to the plan's stated shape and to the default only
+    # where the plan is silent; §3 of the CUDA C++ checks-ABI binding says the runner's `finish`
+    # releases the kept buffers. Measured by diffing this tuple against origin/main 7e9c2232's:
+    # the two `cuda_cpp` fragment files and `checks_abi_binding_sections/cuda_cpp` moved, and no
+    # other member, so every prompt composed for Fortran is unchanged. Measured, not assumed:
+    # every `cpp_gpu` component source authored at pure-60 allocates and frees device memory on
+    # every call and copies its whole input in and output out per call — the fragment told it to
+    # ("every buffer freed on every path"; issue #380's table over the shallow-water components'
+    # `_model.cu`) — and the channel problem's step allocated 15 buffers per step, so its
+    # five-day case could not finish inside the site's 10-minute bound
+    # (orch_20261002T004426Z_a1463874), which is why the key moves.
+    "pure-62": "8b7936b6a0e2a4990a50406ba897f6878e614235fa231350a9f6b3c029eba887",
 }
 
 

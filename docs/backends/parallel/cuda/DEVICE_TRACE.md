@@ -137,6 +137,12 @@ A run that stops before `Validate` is asked nothing. The version range measured 
   `__host__ __device__` and defines no kernel, so its own run has no row here and the gate asks
   nothing of it; its device path runs inside the kernels of the consumers that call it, whose
   traced runs record those kernels (issue #380).
+- The trace does not judge how often a kernel ran. Its per-kernel `Instances` is the record of the
+  launch-once-over-the-range default (`docs/backends/language/cuda_cpp/GENERATE_RULES.md` §6
+  A.3): a kernel launched once per stage of a step runs about `perf.json#steps` × the stages per
+  step summed over the cases, while one launched per element from a host loop runs that many times
+  the element count. A reader compares the two; no gate reads the count, because the default is a
+  recommendation the plan may override (issue #380).
 - The quality check (`make test`) is not traced.
 - `perf.json` comes from the traced run: the runner's wall-clock is its own clock around the
   cases (a `steady_clock` read after the arguments are parsed and before the first case,

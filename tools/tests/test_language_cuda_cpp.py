@@ -2559,6 +2559,29 @@ class ToolAdapterTests(unittest.TestCase):
         self.assertIn('its plan declares `"model": "none"`', g6)
         self.assertIn("that is the binding, not a finding", g6)
 
+    def test_the_transfer_default_is_told_as_a_recommendation(self) -> None:
+        """Issue #380 (A): the producer's default is to allocate a device buffer once, cross the
+        bus once each way and launch once over the range, unless its plan says otherwise; the
+        reviewer holds the source to the plan's stated shape and to the default only where the
+        plan is silent. A literal guard both ways: the removed per-call round trip ("every buffer
+        freed on every path") stays out, and the default does not harden into a rule in a later
+        edit — the optimization flow varies exactly these shapes (operator, 2026-10-02)."""
+        prompts = registry.capability_module("language", "cuda_cpp", "prompt_fragments")
+        floor = prompts.fragments("generate_generate")["target_lowering_floor"]
+        self.assertIn("allocated once and reused", floor)
+        self.assertIn("says nothing else", floor)
+        self.assertIn("`accelerator_mapping`", floor)
+        self.assertIn("one launch over the whole range", floor)
+        self.assertNotIn("every buffer freed on every path", floor)
+        self.assertNotIn("free what was allocated", floor)
+        g6 = prompts.fragments("generate_verify")["checklist_g6_floor_scope"]
+        self.assertIn("a recommendation, not a rule", g6)
+        self.assertIn("or from the default while the plan is silent", g6)
+        self.assertNotIn("moves its state to the device and back", g6)
+        self.assertNotIn("freeing what was allocated", g6)
+        for text in (floor, g6):
+            self.assertNotRegex(text, r"(?i)default[^.]*\b(refused|forbidden|is a fail)\b")
+
     def test_the_registry_serves_every_declared_capability(self) -> None:
         for capability in ("bundle_facts", "syntax_promotions", "prompt_fragments", "checks_abi",
                            "source_reading", "signatures"):
