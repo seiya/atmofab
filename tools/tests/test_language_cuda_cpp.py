@@ -2661,9 +2661,11 @@ class ToolAdapterTests(unittest.TestCase):
         that namespace in the checks file's `modules` too — `validate_bundle` refused the first
         `cpp_gpu` bundle of orch_20261002T140410Z_20f43acc for it and one repair turn was spent.
         The field's meaning now names the owner, and rule (6a) points back at it. Whole clauses
-        are pinned, not words: with single-phrase pins, rewriting the clause to "the checks file
-        lists `<spec_id>_checks` and also `<spec_id>_model`" kept every phrase and stayed green
-        (round 1 of the review). Not caught here: an ADDED sentence contradicting them (only the
+        are pinned, not words: with single-phrase pins, two reversals stayed green (round 1 of the
+        review) — the meaning rewritten to "lists `<spec_id>_checks` and also `<spec_id>_model`
+        (never `<spec_id>_model` without `<spec_id>_checks`)", which keeps the pinned phrase in
+        its parenthetical, and rule (6a) rewritten to "adds nothing to the checks file's
+        `modules` beyond `<spec_id>_model` itself". Not caught here: an ADDED sentence contradicting them (only the
         contract digest moves for that)."""
         prompts = registry.capability_module("language", "cuda_cpp", "prompt_fragments")
         frag = prompts.fragments("generate_generate")
