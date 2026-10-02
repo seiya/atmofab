@@ -158,10 +158,10 @@ value is one more output, whether or not its `return` names anything.
   an argument is not followed into it: a launcher with no parameter, `void run_faces() {
   faces<<<...>>>(g_u, g_f); }`, stands for no dependency call in its caller, so a flux it
   discards passes this gate — which is why the allocation default (§6 A.1) hands a kept buffer
-  to every kernel and helper as an argument, and why `Generate.verify` G5 holds the rest. (A
-  reach over namespace-scope names was added in round 1 of #380 PR-2's review and reverted in
-  round 2, operator decision: it refused correct stage helpers that read the buffers, and
-  aliases, struct members and reassignments still escaped it.) Resetting a pointer to
+  to every kernel and helper as an argument, and why `Generate.verify` G5 holds the rest. A
+  reach over namespace-scope names is not attempted: one refused correct stage helpers that read
+  the buffers while a local alias, a struct member and a reassignment still escaped it (#380
+  PR-2). Resetting a pointer to
   `nullptr` / `NULL` before the call (`cudaFree(g_f); g_f = nullptr; cudaMalloc(&g_f, n);`, the
   growth of a kept buffer) is not an assignment statement for the "assigned before" clause;
   another spelling (`g_f = 0;`, `g_f = alloc(n);`) still is. The summaries and reach are keyed by
@@ -202,9 +202,10 @@ already holds, and launches per element. The producer's default is three points.
 - **A.1 Allocate once.** A device buffer is held at namespace scope (an unnamed-namespace variable
   holding the pointer and its capacity), allocated on the first call that needs it, replaced by a
   larger one (the old one freed and the pointer set to `nullptr` first) when a later call needs
-  more, and otherwise not freed by the operation. It is handed to the kernels and helpers that
-  use it as an argument, not named inside them, because the dependency-dataflow gate follows
-  parameters (§5). The runner's `finish` calls `cudaDeviceReset`
+  more, and otherwise not freed by the operation. It is handed as an argument to the kernels and
+  helpers whose signature the producer chooses, not named inside them, because the
+  dependency-dataflow gate follows parameters (§5); a callback whose signature an interface fixes
+  (the channel problem's time-update right-hand side) reads it by name. The runner's `finish` calls `cudaDeviceReset`
   (`tools/backends/language/cuda_cpp/runner.py`), which releases every buffer.
 - **A.2 Cross the bus once each way.** Within one call, each input a kernel reads is copied in
   once and each output copied out once, and a value one kernel produces for another kernel of the
@@ -225,8 +226,10 @@ plan (G6). The finding is a source that departs from the stated shape, or from t
 the plan is silent; the choice itself is never one. The optimization flow (`Tune`, whose
 variants override the lowering plan, `accelerator_mapping` included: `docs/TUNING_WORKFLOW.md`
 §The override-allowed boundary) tries, measures and selects among these shapes freely,
-per-call allocation, a host-loop call of a pointwise dependency and cross-unit inlining by
-`-dlto` included. No gate reads this section. A count of
+per-call allocation and cross-unit inlining by `-dlto` included. A pointwise dependency called
+from a host loop rather than inside a kernel is not one of these shapes: it keeps that loop on
+the host, and §4's rule for a loop the plan keeps on the host applies (its reason is about the
+loop); how a tuning variant's host loop is reviewed is the tuning flow's to settle. No gate reads this section. A count of
 `cudaMalloc` inside a loop body is easy to dodge and over-refuses a buffer grown on a loop's first
 iteration, and the device trace does not attribute a launch to a loop. The record a reader has is
 the per-kernel `Instances` of `kernel_trace.csv` (`DEVICE_TRACE.md` §4).
@@ -235,8 +238,8 @@ the per-kernel `Instances` of `kernel_trace.csv` (`DEVICE_TRACE.md` §4).
 every call, and every `cpp_gpu` shallow-water component did (call sites in each certified 0.1.1
 `_model.cu`, comments and literals masked, at main 7e9c2232: `flux_2d_rusanov` 2 `cudaMalloc` /
 2 `cudaMemcpy` / 1 launch, `reconstruction_2d_muscl_mc` 8 / 2 / 5, `source_2d_tc4_forcing`
-9 / 9 / 2, `time_update_2d_rk4` 6 / 5 / 2; issue #380's table counts 6 for the last, one of them
-inside a string literal). The channel problem called the pointwise flux once per face from host loops and
+9 / 9 / 2, `time_update_2d_rk4` 6 / 5 / 2; issue #380's table gives rk4 6 `cudaMemcpy`, one of
+them inside a string literal). The channel problem called the pointwise flux once per face from host loops and
 allocated 15 buffers per step. `problem/shallow_water2d_channel@0.2.1` and `shallow_water2d@0.4.3`
 were both killed by the site's 10-minute bound in `Validate.execute`
 (`orch_20261002T004426Z_a1463874`, `orch_20261002T013248Z_96097e57`), while the `fortran_cpu`

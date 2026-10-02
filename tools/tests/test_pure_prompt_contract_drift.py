@@ -817,8 +817,10 @@ PINNED: dict[str, str] = {
     # exempts the default's capacity branch from G4; growth frees the smaller buffer. Round 2:
     # the default hands a kept buffer to its kernels and helpers as an argument, and rule (4)
     # says a namespace-scope name read inside a function is not followed — round 1's statement
-    # of a namespace-scope reach was reverted with the reach, operator decision.)
-    "pure-62": "f20b9c18161777cddc8cc5f3574e431095d240316e974f02c1a40991fb93ae49",
+    # of a namespace-scope reach was reverted with the reach, operator decision. Round 3: a
+    # callback whose signature an interface fixes reads a kept buffer by name; a pointwise
+    # dependency called from a host loop is a loop kept on the host, under the existing rule.)
+    "pure-62": "e44337abda0468544dc0a04bf46096fecae477a25eaed04efeea309be1171189",
 }
 
 
