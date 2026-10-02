@@ -1719,9 +1719,9 @@ class PhysicsGateTests(unittest.TestCase):
                     self.assertIn("function p__step does not propagate dependency operation "
                                   "outputs to its output dataflow (candidates=['df'])", out[0])
 
-    # Round 1 of #380 PR-2's review: the allocation default keeps the device buffers at namespace
-    # scope, so a buffer reaches a kernel without passing through any parameter of the function
-    # that launches it, and growing a buffer resets its pointer before the launch.
+    # #380 PR-2: the allocation default keeps the device buffers at namespace scope and hands them
+    # to the kernels and helpers that use them as ARGUMENTS — the gate follows a dependency's
+    # result through parameters, not through a namespace-scope name a function merely reads.
     _NS_BUFFERS = ("namespace {\ndouble* g_u = nullptr;\ndouble* g_f = nullptr;\n"
                    "double* g_n = nullptr;\nlong g_cap = 0;\n}\n")
     _NS_STEP = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
@@ -1729,63 +1729,54 @@ class PhysicsGateTests(unittest.TestCase):
                 "  cudaMemcpy(g_u, u.data, 96, cudaMemcpyHostToDevice);\n{launch}"
                 "  cudaMemcpy(u_new.data, g_n, 96, cudaMemcpyDeviceToHost);\n}}")
 
-    def test_a_dependency_result_in_a_namespace_scope_buffer_is_followed(self) -> None:
-        """Consumed passes and discarded is refused naming the buffer, for each shape the default
-        makes natural: the launches in the operation, a launcher helper with no parameter that
-        reads the buffers (it has no output parameter, so before the fix the launch inside it
-        stood for no dependency call and the discarded flux passed), and a growth that resets
-        the pointer to `nullptr` before the launch (an assignment statement before the call, so
-        before the fix the exemption for an input the call reads dropped the only candidate)."""
-        grow = ("  if (g_cap < 12) {\n    cudaFree(g_f);\n    g_f = nullptr;\n"
-                "    cudaMalloc(&g_f, 96);\n    g_cap = 12;\n  }\n")
+    def _ns_gates(self, tmp: str, use: str, helper: str, grow: str, launch: str) -> list[str]:
+        body = (self._NS_BUFFERS + self._PW_FACES + self._PW_UPDATE.format(use=use) + helper
+                + self._NS_STEP.format(grow=grow, launch=launch))
+        return self._gates(self._model(tmp, body, header=False), ["dep"])
+
+    def test_a_namespace_scope_buffer_handed_as_an_argument_is_followed(self) -> None:
+        """Consumed passes and discarded is refused naming the buffer, for the shapes the default
+        tells the leaf to write: the launches in the operation, a growth that resets the pointer
+        to `nullptr` / `NULL` before the launch (an assignment statement before the call, which
+        the exemption for an input the call reads dropped as the only candidate before round 1
+        of PR-2's review), and a helper that takes the buffers as arguments."""
+        grow = ("  if (g_cap < 12) {{\n    cudaFree(g_f);\n    g_f = {null};\n"
+                "    cudaMalloc(&g_f, 96);\n    g_cap = 12;\n  }}\n")
         faces = "  faces<<<1, 4>>>(g_u, g_f, 9.81, 4);\n"
         update = "  upd<<<1, 12>>>(g_u, g_f, g_n, dt, 12);\n"
-        helpers = {
+        shapes = {
             "in the operation": ("", "", faces + update),
-            "growth resets the pointer": ("", grow, faces + update),
-            "parameterless launcher": ("void run_faces(long n) {\n"
-                                       "  faces<<<1, 4>>>(g_u, g_f, 9.81, n);\n}\n",
-                                       "", "  run_faces(4);\n" + update),
-            "launcher of both kernels": ("void launch_all(double dt) {\n" + faces + update + "}\n",
-                                         "", "  launch_all(dt);\n"),
+            "growth resets to nullptr": ("", grow.format(null="nullptr"), faces + update),
+            "growth resets to NULL": ("", grow.format(null="NULL"), faces + update),
+            "helper takes the buffers": ("void run_faces(const double* u, double* f, long n) {\n"
+                                         "  faces<<<1, 4>>>(u, f, 9.81, n);\n}\n", "",
+                                         "  run_faces(g_u, g_f, 4);\n" + update),
         }
-        for label, (helper, grow_text, launch) in helpers.items():
+        for label, (helper, grow_text, launch) in shapes.items():
             for header in (True, False):
                 with self.subTest(label, header=header), tempfile.TemporaryDirectory() as tmp:
                     if header:
                         (Path(tmp) / "dep_model.cuh").write_text(self._PW_HEADER)
-
-                    def gates(use: str, helper: str = helper, grow_text: str = grow_text,
-                              launch: str = launch) -> list[str]:
-                        body = (self._NS_BUFFERS + self._PW_FACES + self._PW_UPDATE.format(use=use)
-                                + helper + self._NS_STEP.format(grow=grow_text, launch=launch))
-                        return self._gates(self._model(tmp, body, header=False), ["dep"])
-                    self.assertEqual([], gates("f[i]"))
-                    out = gates("u[i]")
+                    self.assertEqual([], self._ns_gates(tmp, "f[i]", helper, grow_text, launch))
+                    out = self._ns_gates(tmp, "u[i]", helper, grow_text, launch)
                     self.assertEqual(1, len(out), out)
                     self.assertIn("does not propagate dependency operation outputs to its output "
                                   "dataflow (candidates=['g_f'])", out[0])
 
-    def test_a_namespace_scope_result_returned_by_a_helper_is_not_a_second_candidate(self) -> None:
-        """Over-refusal probe of the namespace-scope reach: a helper that fills a namespace-scope
-        scalar through a dependency and RETURNS it hands the result over through its return,
-        which its own check holds; the caller that uses the returned value passes. Without the
-        return carve-out the caller was refused (`candidates=['g_c']`, measured)."""
-        header = ("namespace dep_model {\nvoid dep__speed(atmofab::View<const double, 1> u,"
-                  " double& c);\n}\n")
-        body = ("namespace {\ndouble g_c = 0.0;\n}\n"
-                "double max_speed(atmofab::View<const double, 1> u) {\n"
-                "  dep_model::dep__speed(u, g_c);\n  return RET;\n}\n"
-                "void p__dt(atmofab::View<const double, 1> u, double& dt) {\n"
-                "  const double c = max_speed(u);\n  dt = 0.5 / c;\n}")
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "dep_model.cuh").write_text(header)
-            self.assertEqual([], self._gates(self._model(
-                tmp, body.replace("RET", "g_c"), header=False), ["dep"]))
-            # The helper that discards it is still refused by its own check (and its caller,
-            # to which the buffer then stands for the dependency call).
-            out = self._gates(self._model(tmp, body.replace("RET", "1.0"), header=False), ["dep"])
-            self.assertTrue(any("function max_speed does not propagate" in v for v in out), out)
+    def test_argument_less_stage_helpers_over_namespace_scope_buffers_pass(self) -> None:
+        """Over-refusal pin (round 2 of PR-2's review): stage helpers with no parameter that read
+        the namespace-scope buffers, the flux consumed, pass — as on origin/main. A namespace-scope
+        reach added in round 1 refused this source and was reverted (operator decision): such a
+        helper is not followed, so its DISCARDED variant passes too, which is why the leaf is told
+        to hand the buffers over as arguments and why `Generate.verify` G5 holds the rest."""
+        helper = ("void compute_fluxes(long n) { faces<<<1, 4>>>(g_u, g_f, 9.81, n); }\n"
+                  "void apply_update(double dt) { upd<<<1, 12>>>(g_u, g_f, g_n, dt, 12); }\n")
+        for header in (True, False):
+            with self.subTest(header=header), tempfile.TemporaryDirectory() as tmp:
+                if header:
+                    (Path(tmp) / "dep_model.cuh").write_text(self._PW_HEADER)
+                self.assertEqual([], self._ns_gates(
+                    tmp, "f[i]", helper, "", "  compute_fluxes(4);\n  apply_update(dt);\n"))
 
     def test_assigned_before_is_measured_from_the_dependency_call_itself(self) -> None:
         """The "assigned before the call" exemption compares against THIS call's position (round

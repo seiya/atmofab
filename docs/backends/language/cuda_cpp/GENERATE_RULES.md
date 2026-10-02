@@ -154,16 +154,18 @@ value is one more output, whether or not its `return` names anything.
   buffers the call fills, so `bad[i] = face_flux(u, f, g, i) ? 0 : 1` does not make the flag
   stand for `f`. A call that writes one of the enclosing function's OUTPUT parameters
   (`View<double, 1>{&f[3 * q], {3}}`, or a pointer `double* fq = f + 3 * q;` into it) has its
-  result at an output already. A name the model source declares at namespace scope — a device
-  buffer kept across calls (§6) — that the dependency's result reaches through a function's or
-  kernel's body, and that the function does not declare itself, is one more candidate set of
-  every call to it: a launcher with no parameter, `void run_faces() { faces<<<...>>>(g_u, g_f);
-  }`, stands for the dependency call in its caller and `g_f` must reach the caller's outputs
-  (round 1 of #380 PR-2's review). A name that reaches the function's returned value is left to
-  the return, which the function's own check holds. Resetting a pointer to `nullptr` /
-  `NULL` before the call (`cudaFree(g_f); g_f = nullptr; cudaMalloc(&g_f, n);`, the growth of a
-  kept buffer) is not an assignment statement for the "assigned before" clause. The summaries
-  and reach are keyed by name and only widened, so two functions of one name share the union.
+  result at an output already. A namespace-scope name a function reads without receiving it as
+  an argument is not followed into it: a launcher with no parameter, `void run_faces() {
+  faces<<<...>>>(g_u, g_f); }`, stands for no dependency call in its caller, so a flux it
+  discards passes this gate — which is why the allocation default (§6 A.1) hands a kept buffer
+  to every kernel and helper as an argument, and why `Generate.verify` G5 holds the rest. (A
+  reach over namespace-scope names was added in round 1 of #380 PR-2's review and reverted in
+  round 2, operator decision: it refused correct stage helpers that read the buffers, and
+  aliases, struct members and reassignments still escaped it.) Resetting a pointer to
+  `nullptr` / `NULL` before the call (`cudaFree(g_f); g_f = nullptr; cudaMalloc(&g_f, n);`, the
+  growth of a kept buffer) is not an assignment statement for the "assigned before" clause;
+  another spelling (`g_f = 0;`, `g_f = alloc(n);`) still is. The summaries and reach are keyed by
+  name and only widened, so two functions of one name share the union.
 - **Metric-only scalar kernel.** On a multi-dimensional `problem` node, a function with five or
   more outputs and neither an array parameter (`atmofab::View`, `atmofab::Array`, `std::vector`, a
   pointer) nor a loop (`for`, `while`, a `<<<` launch) is refused.
@@ -199,8 +201,10 @@ already holds, and launches per element. The producer's default is three points.
 
 - **A.1 Allocate once.** A device buffer is held at namespace scope (an unnamed-namespace variable
   holding the pointer and its capacity), allocated on the first call that needs it, replaced by a
-  larger one (the old one freed) when a later call needs more, and otherwise not freed by the
-  operation. The runner's `finish` calls `cudaDeviceReset`
+  larger one (the old one freed and the pointer set to `nullptr` first) when a later call needs
+  more, and otherwise not freed by the operation. It is handed to the kernels and helpers that
+  use it as an argument, not named inside them, because the dependency-dataflow gate follows
+  parameters (§5). The runner's `finish` calls `cudaDeviceReset`
   (`tools/backends/language/cuda_cpp/runner.py`), which releases every buffer.
 - **A.2 Cross the bus once each way.** Within one call, each input a kernel reads is copied in
   once and each output copied out once, and a value one kernel produces for another kernel of the

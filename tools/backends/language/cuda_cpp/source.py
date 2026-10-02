@@ -1045,9 +1045,10 @@ def _assignments(body: str) -> list[tuple[str, set[str], int, str, bool]]:
         pointees = _pointee_names(rhs) - {lhs}
         # Making `lhs` point into another's storage sets up where a call will WRITE, not a value
         # the call reads, so it is not an assignment statement for the "assigned before" clause;
-        # nor is resetting a pointer to null (round 1 of #380 PR-2's review: growing a buffer
-        # kept at namespace scope, `cudaFree(g_f); g_f = nullptr; cudaMalloc(&g_f, n);`, dropped
-        # the buffer a kernel then writes the dependency's result into).
+        # nor is resetting a pointer to null (round 1 of #380 PR-2's review: growing a kept
+        # buffer, `cudaFree(g_f); g_f = nullptr; cudaMalloc(&g_f, n);`, dropped the buffer a
+        # kernel then writes the dependency's result into). Another spelling of the reset
+        # (`g_f = 0;`, `g_f = alloc(n);`) is still an assignment statement.
         records.append((lhs, sources, m.start, rhs.strip(),
                         bool(pointees) or rhs.strip() in _NULL_POINTERS
                         or _is_declaration(body, m.start)))
@@ -1354,35 +1355,6 @@ def _storage_names_of(fn: cpp_decls.Function) -> set[str]:
     return names
 
 
-_OBJECT_DECLARATION_RE = re.compile(
-    _STATEMENT_START + _STORAGE_QUALIFIERS
-    + r"(?P<type>[A-Za-z_][\w:]*(?:\s*<[^;{}()]*>)?)\s+(?P<name>[A-Za-z_]\w*)\s*(?=[=;{])",
-    re.MULTILINE)
-
-
-def _namespace_scope_names(code: str, functions: list[cpp_decls.Function]) -> set[str]:
-    """The names the model source declares outside every function body — a pointer, array,
-    container or object at namespace scope (an unnamed namespace included), such as a device
-    buffer kept across calls (`double* g_f = nullptr;`)."""
-    outside = code
-    for fn in functions:
-        if fn.body:
-            outside = outside.replace(fn.body, "", 1)
-    names: set[str] = set()
-    for regex in (_POINTER_DECLARATION_RE, _ARRAY_DECLARATION_RE, _OBJECT_DECLARATION_RE):
-        names |= {m.group("name") for m in regex.finditer(outside)
-                  if m.group("type").split("<")[0].strip() not in _NOT_A_TYPE}
-    names |= {m.group("name") for m in _CONTAINER_DECLARATION_RE.finditer(outside)}
-    return names
-
-
-def _declared_names(fn: cpp_decls.Function) -> set[str]:
-    """The names `fn` declares itself: its parameters, its local storage, and every name a
-    declaration in its body initializes."""
-    return ({name for _ptype, name in fn.params if name} | _storage_names_of(fn)
-            | {m.lhs for m in _assignment_matches(fn.body) if _is_declaration(fn.body, m.start)})
-
-
 def _handed_over(arg: str, storage: set[str], fallback_excluded: set[str]) -> set[str]:
     """The names an actual hands a callee for writing: its declared storage names when it
     mentions any, else `_actual_names` minus `fallback_excluded` (integers, file constants)."""
@@ -1527,45 +1499,33 @@ def _validate_problem_dependency_dataflow(
     records_of = {id(fn): (_value_records(fn.body, summaries, returns)
                            + _pointer_alias_records(fn, storage_of[id(fn)]))
                   for fn in functions}
-    # A buffer the model keeps at namespace scope (the CUDA allocation default, round 1 of #380
-    # PR-2's review) reaches a kernel without passing through any parameter of the function that
-    # launches it: `reached_shared[f]` is the namespace-scope names, not declared by `f` itself,
-    # that the dependency's result reaches through `f`'s body, and a call to `f` hands them over
-    # as one more candidate set — so a launcher with no parameter, `void run_faces() {
-    # faces<<<...>>>(g_u, g_f); }`, stands for the dependency call in its caller.
-    shared_of = {id(fn): _namespace_scope_names(code, functions) - _declared_names(fn)
-                 for fn in functions}
 
-    def dependency_calls(fn: cpp_decls.Function, reached: dict[str, frozenset[int]],
-                         reached_shared: dict[str, frozenset[str]]) -> list[
-            tuple[int, int, list[bool] | None, set[int], frozenset[str]]]:
-        """`(start, open paren, output positions or None, array output positions, namespace-scope
-        names)` of every dependency call in `fn`'s body — an operation of a dependency, or a
-        function of this file that `reached` / `reached_shared` says carries one's result."""
+    def dependency_calls(fn: cpp_decls.Function, reached: dict[str, frozenset[int]]) -> list[
+            tuple[int, int, list[bool] | None, set[int]]]:
+        """`(start, open paren, output positions or None, array output positions)` of every
+        dependency call in `fn`'s body — an operation of a dependency, or a function of this
+        file that `reached` says carries one's result."""
         # An operation that writes an ARRAY must have an array result reach the output: its
         # scalar outputs (a guard flag) do not stand for it (round 5 of this change's review:
         # `ok = guard_pass;` alone made every call of the advdiff problem "propagated" while its
         # fluxes were discarded).
         calls = [(call.start(), call.end() - 1, positions.get(call.group("name")),
-                  array_outputs.get(call.group("name"), set()), frozenset())
+                  array_outputs.get(call.group("name"), set()))
                  for call in call_re.finditer(fn.body)]
         for call in _CALL_RE.finditer(fn.body):
             callee = by_name.get(call.group("name"))
-            if callee is None or callee.name == fn.name or not (
-                    reached.get(callee.name) or reached_shared.get(callee.name)):
+            if callee is None or callee.name == fn.name or not reached.get(callee.name):
                 continue
             # No array narrowing here: `reached` already holds only the positions the
             # dependency's (array, when it has one) result reaches.
-            hit = reached.get(callee.name, frozenset())
+            hit = reached[callee.name]
             calls.append((call.start(), call.end() - 1,
-                          [i in hit for i in range(len(callee.params))], set(),
-                          reached_shared.get(callee.name, frozenset())))
+                          [i in hit for i in range(len(callee.params))], set()))
         return calls
 
     def handed(fn: cpp_decls.Function, open_at: int, out_at: list[bool] | None,
-               arrays: set[int], shared: frozenset[str]) -> list[set[str]]:
-        """Per written actual of the call whose `(` is at `open_at`, the names it hands over —
-        and, as one more set, the namespace-scope names its callee writes the result into."""
+               arrays: set[int]) -> list[set[str]]:
+        """Per written actual of the call whose `(` is at `open_at`, the names it hands over."""
         written: list[str] = []
         for index, arg in enumerate(_call_arguments(fn.body, open_at)):
             if out_at is not None and not (index < len(out_at) and out_at[index]):
@@ -1579,39 +1539,26 @@ def _validate_problem_dependency_dataflow(
         # bare `int&` result, a namespace-scope `double* const` each lost its only name). A
         # single actual may still lose its own (a `const` or a function handed over among
         # others, as in the Fortran binding).
-        if written and not any(out):
+        if not any(out):
             out = [_actual_names(arg) for arg in written]
-        return out + ([set(shared)] if shared else [])
+        return out
 
     reached: dict[str, frozenset[int]] = {}
-    reached_shared: dict[str, frozenset[str]] = {}
     changed = True
     while changed:
         changed = False
         for fn in functions:
             hands_over: set[str] = set()
-            for _start, open_at, out_at, arrays, shared in dependency_calls(
-                    fn, reached, reached_shared):
-                for names in handed(fn, open_at, out_at, arrays, shared):
+            for _start, open_at, out_at, arrays in dependency_calls(fn, reached):
+                for names in handed(fn, open_at, out_at, arrays):
                     hands_over |= names
-            records = records_of[id(fn)]
             now = frozenset(
                 i for i, (ptype, name) in enumerate(fn.params)
                 if hands_over and name and is_output_parameter(ptype)
-                and _closure({name}, records) & hands_over)
-            # A name that reaches `fn`'s returned value leaves through the return, which `fn`'s
-            # own check below holds it to; standing for a dependency call in the caller as well
-            # would refuse `c = max_speed(u);` whose `max_speed` returns the buffer it filled.
-            returned = _closure(_outputs(fn)[1], records) if fn.returns != "void" else set()
-            now_shared = frozenset(name for name in shared_of[id(fn)] - returned
-                                   if hands_over and _closure({name}, records) & hands_over)
+                and _closure({name}, records_of[id(fn)]) & hands_over)
             widened = now | reached.get(fn.name, frozenset())
-            widened_shared = now_shared | reached_shared.get(fn.name, frozenset())
             if widened != reached.get(fn.name, frozenset()):
                 reached[fn.name] = widened
-                changed = True
-            if widened_shared != reached_shared.get(fn.name, frozenset()):
-                reached_shared[fn.name] = widened_shared
                 changed = True
     for fn in functions:
         params = {name for _ptype, name in fn.params if name}
@@ -1625,9 +1572,8 @@ def _validate_problem_dependency_dataflow(
         records = records_of[id(fn)]
         sources = _closure(set(outs) | returned, records)
         discarded: set[str] = set()
-        for call_start, open_at, out_at, arrays, shared in dependency_calls(
-                fn, reached, reached_shared):
-            per_actual = handed(fn, open_at, out_at, arrays, shared)
+        for call_start, open_at, out_at, arrays in dependency_calls(fn, reached):
+            per_actual = handed(fn, open_at, out_at, arrays)
             # A call that writes one of the function's OUTPUT parameters has its result at an
             # output already (round 2 of #380 PR-1's review: a kernel writing `F_star` straight
             # into its output `F` and `G_star` into a local it does not need was refused on the
