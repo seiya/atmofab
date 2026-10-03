@@ -4972,8 +4972,8 @@ def _validate_diagnostics_contract(
 ) -> None:
     """Structural validation of io_contract.diagnostics_contract when present.
 
-    Presence is optional (a node whose tests.md has no §3 diagnostics contract
-    omits it); coverage against tests.md §3 is the LLM Compile.verify
+    Presence is optional (a node whose tests.md has no Diagnostics contract
+    section, §5, omits it); coverage against that section is the LLM Compile.verify
     responsibility (hybrid verification). Here we only enforce well-formedness:
     checks must be a non-empty list of {id: <non-empty string>}, and when a
     verdict block is present it must carry required: bool and (when
@@ -5044,7 +5044,7 @@ def _validate_diagnostics_contract_output(
     repo_root: Path, execution: NodeExecution, violations: list[str]
 ) -> None:
     """At post_execute/pre_judge, verify diagnostics.json satisfies the IR's
-    io_contract.diagnostics_contract (the tests.md §3 contract encoded in the IR).
+    io_contract.diagnostics_contract (the tests.md Diagnostics contract, §5, encoded in the IR).
 
     When the contract declares checks[].id, diagnostics.json must carry a top-level
     `checks` object holding each id. When verdict.required is true, diagnostics.json

@@ -454,6 +454,29 @@ class PureCompileContextTests(_Fixture):
         self.assertIn("schema_version", ctx["ir_document"])
         self.assertIn(f"{_SPEC_ID}__apply", ctx["dependency_surface_document"])
 
+    #: The V3 coverage rule as both compile leaves read it (issue #386). A `problem` `tests.md`
+    #: names no `checks.<id>` key in its Diagnostics contract and writes each judgment as test
+    #: prose, so a rule keyed on the keys alone left the check list to the producer's taste.
+    _NON_GATING_RULE = (
+        "every judgment a test applies and reports WITHOUT making it a condition of its "
+        "`pass_when`")
+
+    def test_both_compile_leaves_read_the_non_gating_coverage_rule(self) -> None:
+        """Read through the two builders, so a document the leaves stop inlining is red too.
+        The stale `tests.md §3` / `§4` spellings (the Diagnostics contract is §5 and the tests
+        §6 in every `tests.md`) must not come back beside it."""
+        c = self.conductor()
+        for substep, ctx in (("generate", c._build_pure_compile_context(self.refs)),
+                             ("verify", c._build_pure_compile_verify_context(self.refs))):
+            doc = ctx["phase_contract_document"]
+            with self.subTest(substep=substep):
+                self.assertIn(self._NON_GATING_RULE, doc)
+                self.assertNotIn("tests.md §3", doc)
+                self.assertNotIn("tests.md §4", doc)
+                # Self-test the search: the same assertion fails on the document with the
+                # sentence removed, so a deleted rule is red rather than vacuous.
+                self.assertNotIn(self._NON_GATING_RULE, doc.replace(self._NON_GATING_RULE, ""))
+
 
 class PureCompileProfileContextTests(_Fixture):
     PROFILE = True

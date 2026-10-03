@@ -476,7 +476,19 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # its `tests.md` gives the name no other meaning — and the `_validate_profile_selection`
     # static-gate note drops "an `infrastructure` harness uses the same name for an unrelated
     # plumbing aspect". A compile leaf reading it authors no harness `profile_selection`.
-    "compile-docs-11": "d07c8ad3e8c38ef2b4fa5b923459ba4e71bdfe3b605febd2fb50952cadd2fb1b",
+    # Re-pinned (issue #386), and NOT bumped, on this reasoning: V3 and the schema block's
+    # `checks[].id` comment add a judgment a test applies and reports without gating (a
+    # threshold, a per-case status, never `na`) to the coverage rule, exclude one whose
+    # threshold is `informational_only`, and spell the Diagnostics contract / test sections
+    # §5 / §6 instead of the stale §3 / §4. Measured 2026-10-03 over every IR of a current
+    # `spec_version` whose `tests.md` carries such a judgment: `shallow_water2d_channel` 0.2.2
+    # (`…_20261003_001`: `depth_positivity`) and `shallow_water2d` 0.4.3 (`…_20261002_001`:
+    # `depth_positivity`; `…_20261002_002`: `h_positivity`) all carry the check, and no
+    # `l0_cfl_guard_xfail` `pass_when` references it; `advdiff1d_linear` 0.4.3's one such
+    # judgment is `informational_only`, so both of its IRs stay valid. The one IR that lacks
+    # the check (`shallow_water2d_channel` 0.2.1 `…_20261002_001`) is of a superseded
+    # `spec_version`. A bump would re-derive every node's Compile for a rule they satisfy.
+    "compile-docs-11": "c4494b2179e4312fbfafa37ee901c1db6458f6de8e818ba5463216917509b0c5",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
