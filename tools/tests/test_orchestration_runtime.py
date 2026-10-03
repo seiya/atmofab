@@ -21851,6 +21851,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # rule, the `minor` bullet names its absence. Measured 94663 with `wc -c` in
         # /home/seiya/atmofab at the commit that takes this bump. Round 1 (V3 says what each id
         # answers to instead of "neither more nor less"): measured 94689, no bump.
+        # Round 2 (a cross-target judgment is no check-id source): measured 94899, no bump.
         "docs/workflow/phases/phase_01_compile.md": 95000,
     }
 

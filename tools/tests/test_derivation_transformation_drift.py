@@ -497,7 +497,11 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # judgment, channel's `n_step` to the step-count judgment); the `major` example "a
     # `pass_when` that names a check its §3 does not declare" becomes "…no judgment of
     # `tests.md` defines" for the same reason.
-    "compile-docs-11": "db5ba3e357870347cc6063c9675cb60b60c18ccf4531a98baa978889dfaae789",
+    # Re-pinned in round 2 (same reasoning): V3 says a cross-target judgment is no source of a
+    # check id either way (it has no `diagnostics.json` field, `docs/TESTS.md`); no current
+    # IR carries such an id (113 current-`spec_version` IRs, ids matched on `cross` / `comparand` /
+    # `agreement`: the one hit, `analytic_agreement`, is the analytic comparison).
+    "compile-docs-11": "4f431629097d9c63ecc0f4ea3e89eb967faf807e3d3d0f9a11ec1f7cce0336fa",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

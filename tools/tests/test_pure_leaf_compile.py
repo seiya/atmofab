@@ -467,6 +467,7 @@ class PureCompileContextTests(_Fixture):
         "every judgment a test applies and reports WITHOUT making it a condition of its "
         "`pass_when`",
         "nor does one whose threshold is `informational_only`",
+        "A cross-target judgment is no source either way",
     )
     #: Matches both stale spellings, `tests.md §3` and ``tests.md` §3``.
     _STALE = re.compile(r"tests\.md`?\s*§[34]\b")
