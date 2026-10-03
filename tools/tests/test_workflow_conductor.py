@@ -19713,7 +19713,10 @@ class DeterministicSyntaxTest(unittest.TestCase):
                 kinds.append(kind)
                 if kind == "model_alone":
                     alone_args.append(args)
-                    return self._pass(args, "alone-sid")
+                    # A pass that printed a warning is still a pass: the verdict is the
+                    # tool's `ok`, never the presence of diagnostics text.
+                    return {**self._pass(args, "alone-sid"),
+                            "stderr": "Warning: Nonconforming tab character at (1)\n"}
                 return self._pass(args)
 
             stage_p, closure_p = self._with_dep(c)
