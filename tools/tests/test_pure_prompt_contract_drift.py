@@ -845,15 +845,17 @@ PINNED: dict[str, str] = {
     "pure-64": "3209d995cf217c78967fe4fe429a72903a8a1711cede7a8e62b625f4fe0ff407",
     # pure-65 (issue #391): the `Output contract (verify verdict)` paragraph the three verify
     # templates share says a `fail` lists EVERY defect the review found, one `findings` entry
-    # each, that `last_fail_reason` states the corrections as a whole, and that `issue_severity`
-    # is the highest value any one finding earns; and `RUNNER_OUTPUT_CONTRACT.md` names the
+    # each whatever its subject, that `last_fail_reason` states the corrections as a whole, and
+    # that `issue_severity` is the value first in the order `major`, `critical`, `minor` among
+    # those the findings earn (a `major` input defect survives the cold re-run a `critical`
+    # calls for); and `RUNNER_OUTPUT_CONTRACT.md` names the
     # Diagnostics contract section of `tests.md` by name (§5) instead of the stale `§3`.
     # Measured by diffing this tuple against origin/main 05ee5541's: the three verify templates,
     # `runner_output_contract_document` and `runner_output_contract_sections` moved and no
     # other member. Witness: orch_20261003T044645Z_7cdf7aa7 (codex,
     # `infrastructure/harness_fortran_cpu@0.7.0`) reported three defects present in attempt 2
     # one per verdict over attempts 2-4 and ended `generate exceeded 3`.
-    "pure-65": "7ed5bdb3ca2112a743aca3fa749c8dbb8b0a358297ec7dfb72527cdc24d7324d",
+    "pure-65": "45708ca66aafb54aae52224524afd322794aad6093d11bd8d2241d625110401c",
 }
 
 

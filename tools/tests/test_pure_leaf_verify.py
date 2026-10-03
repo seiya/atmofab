@@ -1319,13 +1319,13 @@ class PureVerifyOutputContractTests(unittest.TestCase):
         self.assertIn("more than one document", text)
 
     # Issue #391: a failing verdict lists every defect, one entry each, and its severity is the
-    # highest any finding earns. The rule is in the output-contract paragraph because that is the
+    # value that comes first in the order `major`, `critical`, `minor`. The rule is in the output-contract paragraph because that is the
     # block a cold repair lifts, so it is read from the lift, not from the template file.
     _EVERY_DEFECT_PHRASES = (
         "EVERY defect",
         "one `findings` entry per defect",
         "states the corrections as a whole",
-        "the highest any one of them earns",
+        "comes first in the order `major`, `critical`, `minor`",
     )
     _VERIFY_REQUESTS = (
         {"step": "generate", "substep": "verify"},
