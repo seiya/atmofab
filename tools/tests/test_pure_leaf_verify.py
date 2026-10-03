@@ -1318,6 +1318,56 @@ class PureVerifyOutputContractTests(unittest.TestCase):
         # The verify contract's closing clause survives (no blank-line truncation).
         self.assertIn("more than one document", text)
 
+    # Issue #391: a failing verdict lists every defect, one entry each, and its severity is the
+    # highest any finding earns. The rule is in the output-contract paragraph because that is the
+    # block a cold repair lifts, so it is read from the lift, not from the template file.
+    _EVERY_DEFECT_PHRASES = (
+        "EVERY defect",
+        "one `findings` entry per defect",
+        "states the corrections as a whole",
+        "the highest any one of them earns",
+    )
+    _VERIFY_REQUESTS = (
+        {"step": "generate", "substep": "verify"},
+        {"step": "generate", "substep": "verify", "pure_shape": "harness"},
+        {"step": "compile", "substep": "verify"},
+    )
+
+    def _lifted_verify_paragraphs(self) -> list[str]:
+        import tools.orchestration_runtime as ort
+        texts = []
+        for extra in self._VERIFY_REQUESTS:
+            req = {"leaf_mode": "pure", "pure_language": "fortran", "pure_parallel": "openmp",
+                   "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION, **extra}
+            texts.append(ort._pure_output_contract_text(req))
+        return texts
+
+    def _missing_every_defect_phrases(self, text: str) -> list[str]:
+        return [p for p in self._EVERY_DEFECT_PHRASES if p not in text]
+
+    def test_every_verify_template_asks_a_fail_to_list_every_defect(self) -> None:
+        for extra, text in zip(self._VERIFY_REQUESTS, self._lifted_verify_paragraphs()):
+            with self.subTest(request=extra):
+                self.assertTrue(text.startswith("Output contract (verify verdict)"))
+                self.assertEqual(self._missing_every_defect_phrases(text), [])
+                # The insertion did not split the paragraph: its closing clause is still lifted.
+                self.assertIn("more than one document", text)
+
+    def test_the_three_verify_output_contracts_are_one_text(self) -> None:
+        texts = self._lifted_verify_paragraphs()
+        self.assertTrue(texts[0])
+        self.assertEqual(texts[1], texts[0])
+        self.assertEqual(texts[2], texts[0])
+
+    def test_the_phrase_probe_fails_when_the_rule_is_removed(self) -> None:
+        """Self-test: with the #391 sentences cut out of the lifted paragraph, the probe above
+        reports every phrase missing, so a deleted rule is red rather than vacuously green."""
+        text = self._lifted_verify_paragraphs()[0]
+        start = text.index("A `fail` lists EVERY defect")
+        end = text.index("Use the exact lowercase enum literals.")
+        self.assertEqual(self._missing_every_defect_phrases(text[:start] + text[end:]),
+                         list(self._EVERY_DEFECT_PHRASES))
+
 
 # ======================================================================================
 # Full pure generate phase through the real step_result validator (subagent review round 1)

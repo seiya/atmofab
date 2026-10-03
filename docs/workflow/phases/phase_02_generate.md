@@ -10,7 +10,7 @@ Since `M-F` the `generate-executor` is no longer selectable (`docs/GLOSSARY.md`)
 
 ## I/O contract
 - execution input: `spec.ir.yaml`
-- verification input: `spec.ir.yaml`, `controlled_spec.md` (verify-only), the generated `source/<source_id>/src/`
+- verification input: `spec.ir.yaml`, `controlled_spec.md` (verify-only), `tests.md` (verify-only), the generated `source/<source_id>/src/`
 - output: `workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>/source/<source_id>/src/`, `source_meta.json`, `gate_meta.json` (the single conductor-authored `Generate.gate` deliverable; see substep structure below). Under the `pure` `generate-executor` the source directory additionally holds `codegen_bundle.json`, `bundle_meta.json`, and `verdict_meta.json` (see Generate-executor above).
 
 ## substep structure
