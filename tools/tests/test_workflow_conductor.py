@@ -19877,6 +19877,55 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertEqual(out["status"], "pass")
             self.assertEqual(kinds, ["stage", "model_alone"])
 
+    def test_model_alone_probe_resets_a_residue_from_an_earlier_attempt(self) -> None:
+        """`workspace/tmp/<agent_run_id>/` outlives an attempt; a sibling left in the probe dir by
+        an earlier one would make the set wider than what a consumer is staged, and pass the
+        very model the probe exists to refuse."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs, sources=self._private_sources())
+            c = self._conductor(repo)
+            residue = (repo / "workspace" / "tmp" / "child-1" / "syntax"
+                       / "gfortran_model_alone")
+            residue.mkdir(parents=True)
+            (residue / "spec_x_private.f90").write_text(
+                "module spec_x_private\nend module spec_x_private\n", encoding="utf-8")
+            kinds: list[str] = []
+
+            def fake(args):
+                kinds.append(self._call_kind(args))  # asserts the probe's exact set
+                return self._pass(args)
+
+            stage_p, closure_p = self._with_dep(c)
+            with stage_p, closure_p, self._patch_syntax(fake):
+                c._gate_syntax_check(refs, "child-1")
+            self.assertEqual(kinds, ["stage", "model_alone"])
+
+    def test_model_alone_probe_does_not_run_when_the_model_file_is_absent(self) -> None:
+        """A bundle with no model file is the static checker's finding; a probe over the
+        closure alone would be the dependency probe under another name, and copying the
+        missing file would raise a transport fail_closed the leaf could have repaired."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs, sources={
+                "spec_x_checks.f90": "module spec_x_checks\nend module spec_x_checks\n"})
+            c = self._conductor(repo)
+            kinds: list[str] = []
+
+            def fake(args):
+                kinds.append(self._call_kind(args))
+                return self._pass(args)
+
+            stage_p, closure_p = self._with_dep(c)
+            with stage_p, closure_p, self._patch_syntax(fake):
+                out = c._gate_syntax_check(refs, "child-1")
+            self.assertEqual(kinds, ["stage"])
+            self.assertEqual(out["status"], "pass")
+
     def test_model_alone_probe_stages_the_interface_header_and_not_the_checks_header(
             self) -> None:
         """Decision 4 of issue #389's plan: a consumer is staged the model and its INTERFACE
@@ -19885,6 +19934,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
         pass a probe that carried it and still break every consumer. Driven on a real
         `cuda_cpp` node so the header module is the language backend's own."""
         import tempfile
+        from unittest import mock
 
         from tools.tests.target_fixtures import install_target_profile, profile_with
         seen: dict[str, set[str]] = {}
@@ -19910,7 +19960,15 @@ class DeterministicSyntaxTest(unittest.TestCase):
                 seen[d.name] = {p.name for p in d.iterdir() if p.is_file()}
                 return self._pass(args)
 
-            with self._patch_syntax(fake):
+            # What a physics node's oracle answers (`CudaCppPhysicsHostFilesTest`): the checks
+            # header is host-rendered too. This fixture's node renders no runner, so without
+            # the patch the wider set would equal the narrow one and the row could not tell
+            # the two selections apart.
+            host_names = frozenset({"spec_x_runner.cu", "spec_x_checks.cuh", "Makefile",
+                                    "spec_x_model.cuh", "dep_model.cuh"})
+            self.assertIn("spec_x_checks.cuh", host_names)
+            with self._patch_syntax(fake), mock.patch.object(
+                    wc.Conductor, "_host_rendered_src_names", return_value=host_names):
                 out = c._gate_syntax_check(refs, "child-1")
         self.assertEqual(out["status"], "pass")
         alone = [v for k, v in seen.items() if k.endswith("_model_alone")]
