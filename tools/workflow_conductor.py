@@ -10801,10 +10801,11 @@ class Conductor:
                                 f"{model_src.name} (and its host-rendered interface header, "
                                 f"where the language has one) with the dependency closure, and "
                                 f"nothing else of this bundle — so the model file may not "
-                                f"use or include a `helper` / `internal_module` file. Move what "
-                                f"it needs into the model file, which may declare further "
-                                f"modules, and keep those roles for the checks file and the "
-                                f"runner. The whole src/ passed; the model alone did not:\n"
+                                f"use or include any other file of this bundle (a `helper` / "
+                                f"`internal_module` file, or the checks file). Move what it "
+                                f"needs into the model file, which may declare further modules; "
+                                f"`helper` / `internal_module` files serve the other files. The "
+                                f"whole src/ passed; the model alone did not:\n"
                                 + "\n".join(alone_excerpt.splitlines()[-40:]))
                             failure_excerpt = (block if failure_excerpt is None
                                                else failure_excerpt + "\n" + block)
