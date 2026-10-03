@@ -73,6 +73,35 @@ def profile_selection_on_non_adopters(entries: list[dict], root: Path) -> list[s
     return out
 
 
+_CELLS_UPDATED_FIXED = re.compile(
+    r"`steps` and `cells_updated` both equal to the number of cases `__parse_cases` returned")
+_CELLS_UPDATED_CITED = re.compile(
+    r"The `cells_updated` the self-test passes to `__write_perf` is the value "
+    r"`controlled_spec\.md` §3 fixes for it")
+
+
+def harness_cells_updated_unfixed(entries: list[dict], root: Path) -> list[str]:
+    """Every `infrastructure` spec whose self-test does not fix `cells_updated` once in
+    `controlled_spec.md`, or whose `tests.md` perf judgment does not cite it there.
+
+    The `l0_perf_derived_pass` residual divides by the throughput, so a value the inputs
+    leave open is the leaf's to choose, and zero leaves the residual undefined (issue #394)."""
+    out: list[str] = []
+    for e in entries:
+        if e.get("spec_kind") != "infrastructure":
+            continue
+        cs = (root / e["controlled_spec_path"]).read_text(encoding="utf-8")
+        n = len(_CELLS_UPDATED_FIXED.findall(cs))
+        if n != 1:
+            out.append(f"{e['spec_id']}: controlled_spec.md states the self-test's "
+                       f"cells_updated {n} times, not once")
+        tests = (root / e["tests_path"]).read_text(encoding="utf-8")
+        if len(_CELLS_UPDATED_CITED.findall(tests)) != 1:
+            out.append(f"{e['spec_id']}: tests.md l0_perf_derived_pass does not cite "
+                       "controlled_spec.md §3 for cells_updated")
+    return out
+
+
 class SpecCorpusVersionTest(unittest.TestCase):
     def _entries(self) -> list[dict]:
         doc = yaml.safe_load((REPO / "spec/registry/spec_catalog.yaml").read_text())
@@ -134,6 +163,37 @@ class SpecCorpusVersionTest(unittest.TestCase):
             (root / "s/tests.md").write_text("- selected by its `case_id`\n")
             self.assertEqual(profile_selection_on_non_adopters([entry], root), [])
 
+
+    def test_every_harness_fixes_the_self_test_cells_updated(self) -> None:
+        entries = self._entries()
+        self.assertEqual(
+            len([e for e in entries if e.get("spec_kind") == "infrastructure"]), 3)
+        self.assertEqual(harness_cells_updated_unfixed(entries, REPO), [])
+
+    def test_the_cells_updated_rule_is_driven_both_ways(self) -> None:
+        """Synthetic: a statement and its citation pass; each missing, or the statement
+        doubled, is reported; a non-infrastructure spec is not read."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "s").mkdir()
+            entry = {"spec_id": "s", "spec_kind": "infrastructure",
+                     "controlled_spec_path": "s/controlled_spec.md", "tests_path": "s/tests.md"}
+            cs = ("with `steps` and `cells_updated` both equal to the number of cases "
+                  "`__parse_cases` returned: each case runs one step.\n")
+            tests = ("The `cells_updated` the self-test passes to `__write_perf` is the value "
+                     "`controlled_spec.md` §3 fixes for it, which is positive.\n")
+
+            def run(c: str, t: str, e: dict) -> list[str]:
+                (root / "s/controlled_spec.md").write_text(c)
+                (root / "s/tests.md").write_text(t)
+                return harness_cells_updated_unfixed([e], root)
+
+            self.assertEqual(run(cs, tests, entry), [])
+            self.assertIn("0 times", run("no statement\n", tests, entry)[0])
+            self.assertIn("2 times", run(cs + cs, tests, entry)[0])
+            self.assertIn("does not cite", run(cs, "no citation\n", entry)[0])
+            self.assertEqual(run("x\n", "y\n", {**entry, "spec_kind": "component"}), [])
 
 if __name__ == "__main__":
     unittest.main()
