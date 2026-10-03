@@ -1222,7 +1222,7 @@ class InprocBodiesCallTheServerWithoutATokenTests(unittest.TestCase):
         "_gate_lint_check",         # run_linter          (generate.gate, compile.static)
         "_probe",                   # run_linter          (attribution re-run)
         "_gate_syntax_check",       # run_syntax_check    (generate.gate, compile.static)
-        "_sub_check",               # run_syntax_check    (attribution re-run)
+        "_sub_check",               # run_syntax_check    (attribution re-runs, model-alone probe)
         "_execute_inproc",          # run_program + run_quality_checks
     })
 

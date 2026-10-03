@@ -40,7 +40,7 @@ refuses (typically a `toolchain.standard` or `hardware.architecture` it does not
 transport `fail_closed`. A passing stage is followed by the model-alone probe
 (`docs/workflow/phases/phase_02_generate.md`, issue #389): `<spec_id>_model.cu` and
 `<spec_id>_model.cuh` with the closure alone, which is what a consumer is staged. A model that
-includes another file of its bundle — the checks header, or a `helper` `.cu` — fails it. It
+includes another file of its `src/` — the checks header, or a `helper` `.cu` — fails it. It
 checks syntax only, so a model that declares a function a `helper` `.cu` defines passes it and
 fails only at the dependent's link.
 
