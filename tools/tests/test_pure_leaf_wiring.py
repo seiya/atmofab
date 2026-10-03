@@ -1036,8 +1036,11 @@ class PureRenderTests(unittest.TestCase):
         #     becomes "a `pass_when` that names a check no judgment of `tests.md` defines" —
         #     every guard test names `cfl` in `verdict.failed_checks` and no `problem`
         #     Diagnostics contract names `checks.cfl`, so the §5 reading graded a valid
-        #     `tests.md` `major`. Still an input-side subject.
-        "compile": "f31aeee8d0d03de8ee96cd4bfbfbd44e4807de12afa33cc21906cf55520ceda7",
+        #     `tests.md` `major`. Still an input-side subject. Re-taken in round 3: "…neither
+        #     its Diagnostics contract names nor any judgment of `tests.md` defines" — eight
+        #     `component` and three `infrastructure` guards name `input_guard`, which only their Diagnostics contract
+        #     defines, so the round-1 wording graded those valid specs `major`.
+        "compile": "18f4ad6e8b131d009274fe1ffc1a480156fc36c1fcda41dbc802db9af516d0de",
         "generate": "e8aae7c7a1d458f535d045612b363602220dbaef993b21711843a52b9dcf34e1",
     }
 

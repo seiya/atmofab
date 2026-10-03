@@ -501,7 +501,16 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # check id either way (it has no `diagnostics.json` field, `docs/TESTS.md`); no current
     # IR carries such an id (113 current-`spec_version` IRs, ids matched on `cross` / `comparand` /
     # `agreement`: the one hit, `analytic_agreement`, is the analytic comparison).
-    "compile-docs-11": "4f431629097d9c63ecc0f4ea3e89eb967faf807e3d3d0f9a11ec1f7cce0336fa",
+    # Re-pinned in round 3: the `major` example reads "a check neither its Diagnostics contract
+    # names nor any judgment of `tests.md` defines" — eight `component` and three
+    # `infrastructure` guards name `input_guard`, a key only their Diagnostics contract defines. The 0.2.1 IR above is
+    # left invalid by this re-pin; nothing selects it, because an IR directory is keyed by
+    # `spec_version` (`workflow_conductor.node_key_safe`: `<kind>__<id>__<version>`) and the
+    # spec on disk is 0.2.2.
+    "compile-docs-11": "033e228bb452e4b6a9aad2ad75c1256f8bf11b19acc486dd0268eeb405eb3c29",
+    # ...and the digest `compile-docs-11` SHIPPED with (origin/main 1807917d), kept so a later
+    # version returning to those bytes collides (`test_no_empty_bump_or_silent_revert`).
+    "compile-docs-11@1807917d": "d07c8ad3e8c38ef2b4fa5b923459ba4e71bdfe3b605febd2fb50952cadd2fb1b",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
