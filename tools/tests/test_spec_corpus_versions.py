@@ -73,32 +73,50 @@ def profile_selection_on_non_adopters(entries: list[dict], root: Path) -> list[s
     return out
 
 
-_CELLS_UPDATED_FIXED = re.compile(
-    r"`steps` and `cells_updated` both equal to the number of cases `__parse_cases` returned")
-_CELLS_UPDATED_CITED = re.compile(
-    r"The `cells_updated` the self-test passes to `__write_perf` is the value "
-    r"`controlled_spec\.md` §3 fixes for it")
+_PERF_PARAGRAPH = "calls `__write_perf` once"
+_CELLS_UPDATED_FIXED = ("`steps` and `cells_updated` both equal to the number of cases its "
+                        "`__parse_cases` call on the program's argv returned")
+_WALLTIME_FLOOR = "or `1.0e-9` when the elapsed time it reads is not positive"
+_MPI_RANKS = "`__comm_size()` as `mpi_ranks`"
+_NOT_SUMMED = "is not summed over ranks"
+_CELLS_UPDATED_CITED = ("The `cells_updated` and `walltime_sec` the self-test passes to "
+                        "`__write_perf` are the values `controlled_spec.md` §3 fixes for it")
+_PERF_TEST = re.compile(r"^- `test_id`: `l0_perf_derived_pass`\n(?:(?!- `test_id`).*\n?)*", re.M)
 
 
-def harness_cells_updated_unfixed(entries: list[dict], root: Path) -> list[str]:
-    """Every `infrastructure` spec whose self-test does not fix `cells_updated` once in
-    `controlled_spec.md`, or whose `tests.md` perf judgment does not cite it there.
+def harness_perf_values_unfixed(entries: list[dict], root: Path) -> list[str]:
+    """Every spec with a self-test `__write_perf` paragraph whose paragraph does not carry,
+    once, the sentences fixing `steps` / `cells_updated` and the `walltime_sec` floor (and,
+    where it passes `__comm_size()` as `mpi_ranks`, the not-summed-over-ranks clause), or
+    whose `tests.md` `l0_perf_derived_pass` block does not cite them.
 
-    The `l0_perf_derived_pass` residual divides by the throughput, so a value the inputs
-    leave open is the leaf's to choose, and zero leaves the residual undefined (issue #394)."""
+    The residual of that test divides by the throughput, so a value the inputs leave open
+    is the leaf's to choose, and zero leaves the residual undefined (issue #394). This pins
+    the sentences' presence and placement, not what they mean."""
     out: list[str] = []
     for e in entries:
-        if e.get("spec_kind") != "infrastructure":
-            continue
         cs = (root / e["controlled_spec_path"]).read_text(encoding="utf-8")
-        n = len(_CELLS_UPDATED_FIXED.findall(cs))
-        if n != 1:
-            out.append(f"{e['spec_id']}: controlled_spec.md states the self-test's "
-                       f"cells_updated {n} times, not once")
+        paras = [p for p in cs.split("\n") if _PERF_PARAGRAPH in p]
+        if not paras:
+            continue
+        sid = e["spec_id"]
+        if len(paras) != 1:
+            out.append(f"{sid}: {len(paras)} self-test paragraphs call __write_perf")
+            continue
+        para = paras[0]
+        for phrase, what in ((_CELLS_UPDATED_FIXED, "steps / cells_updated"),
+                             (_WALLTIME_FLOOR, "the walltime_sec floor")):
+            if cs.count(phrase) != 1 or phrase not in para:
+                out.append(f"{sid}: the self-test paragraph does not state {what} once")
+        if _MPI_RANKS in para and _NOT_SUMMED not in para:
+            out.append(f"{sid}: the distributed self-test does not say the count is not "
+                       "summed over ranks")
         tests = (root / e["tests_path"]).read_text(encoding="utf-8")
-        if len(_CELLS_UPDATED_CITED.findall(tests)) != 1:
-            out.append(f"{e['spec_id']}: tests.md l0_perf_derived_pass does not cite "
-                       "controlled_spec.md §3 for cells_updated")
+        block = _PERF_TEST.search(tests)
+        if not block or _CELLS_UPDATED_CITED not in block.group(0) \
+                or tests.count(_CELLS_UPDATED_CITED) != 1:
+            out.append(f"{sid}: tests.md l0_perf_derived_pass does not cite "
+                       "controlled_spec.md §3 for cells_updated / walltime_sec")
     return out
 
 
@@ -163,37 +181,55 @@ class SpecCorpusVersionTest(unittest.TestCase):
             (root / "s/tests.md").write_text("- selected by its `case_id`\n")
             self.assertEqual(profile_selection_on_non_adopters([entry], root), [])
 
-
-    def test_every_harness_fixes_the_self_test_cells_updated(self) -> None:
+    def test_every_harness_fixes_the_self_test_perf_values(self) -> None:
         entries = self._entries()
-        self.assertEqual(
-            len([e for e in entries if e.get("spec_kind") == "infrastructure"]), 3)
-        self.assertEqual(harness_cells_updated_unfixed(entries, REPO), [])
+        # the rule reads a perf paragraph in each harness spec (not vacuous)
+        read = [e for e in entries if _PERF_PARAGRAPH in
+                (REPO / e["controlled_spec_path"]).read_text(encoding="utf-8")]
+        self.assertGreaterEqual(len(read), 3)
+        self.assertEqual(harness_perf_values_unfixed(entries, REPO), [])
 
-    def test_the_cells_updated_rule_is_driven_both_ways(self) -> None:
-        """Synthetic: a statement and its citation pass; each missing, or the statement
-        doubled, is reported; a non-infrastructure spec is not read."""
+    def test_the_perf_values_rule_is_driven_both_ways(self) -> None:
+        """Synthetic: the statements and the citation pass; each missing, misplaced or
+        doubled is reported; a spec without a perf paragraph is not read."""
         import tempfile
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "s").mkdir()
-            entry = {"spec_id": "s", "spec_kind": "infrastructure",
-                     "controlled_spec_path": "s/controlled_spec.md", "tests_path": "s/tests.md"}
-            cs = ("with `steps` and `cells_updated` both equal to the number of cases "
-                  "`__parse_cases` returned: each case runs one step.\n")
-            tests = ("The `cells_updated` the self-test passes to `__write_perf` is the value "
-                     "`controlled_spec.md` §3 fixes for it, which is positive.\n")
+            entry = {"spec_id": "s", "controlled_spec_path": "s/controlled_spec.md",
+                     "tests_path": "s/tests.md"}
+            para = (f"It {_PERF_PARAGRAPH}, with that elapsed time as `walltime_sec`, "
+                    f"{_WALLTIME_FLOOR} (a tick), and with {_CELLS_UPDATED_FIXED}: one step.")
+            cs = f"# spec\n{para}\n"
+            mpi = para.replace("(a tick),", f"(a tick), {_MPI_RANKS},")
+            block = (f"- `test_id`: `l0_perf_derived_pass`\n  - `judgment`: residual. "
+                     f"{_CELLS_UPDATED_CITED}, both positive.\n")
+            other = "- `test_id`: `l0_metric_leaf_pass`\n  - `judgment`: fold.\n"
+            tests = block + other
 
-            def run(c: str, t: str, e: dict) -> list[str]:
+            def run(c: str, t: str) -> list[str]:
                 (root / "s/controlled_spec.md").write_text(c)
                 (root / "s/tests.md").write_text(t)
-                return harness_cells_updated_unfixed([e], root)
+                return harness_perf_values_unfixed([entry], root)
 
-            self.assertEqual(run(cs, tests, entry), [])
-            self.assertIn("0 times", run("no statement\n", tests, entry)[0])
-            self.assertIn("2 times", run(cs + cs, tests, entry)[0])
-            self.assertIn("does not cite", run(cs, "no citation\n", entry)[0])
-            self.assertEqual(run("x\n", "y\n", {**entry, "spec_kind": "component"}), [])
+            self.assertEqual(run(cs, tests), [])
+            self.assertIn("steps / cells_updated",
+                          run(cs.replace(_CELLS_UPDATED_FIXED, "x"), tests)[0])
+            self.assertIn("walltime_sec floor", run(cs.replace(_WALLTIME_FLOOR, "x"), tests)[0])
+            # the statement sits in another paragraph than the __write_perf one
+            moved = f"# spec\n{para.replace(_CELLS_UPDATED_FIXED, 'x')}\n{_CELLS_UPDATED_FIXED}\n"
+            self.assertIn("steps / cells_updated", run(moved, tests)[0])
+            self.assertIn("steps / cells_updated",
+                          run(cs + _CELLS_UPDATED_FIXED + "\n", tests)[0])
+            self.assertIn("not summed over ranks", run(f"# spec\n{mpi}\n", tests)[0])
+            self.assertEqual(run(f"# spec\n{mpi} The count {_NOT_SUMMED}.\n", tests), [])
+            self.assertIn("does not cite", run(cs, other)[0])
+            # the citation under another test is not the perf test's
+            self.assertIn("does not cite", run(cs, block.replace(_CELLS_UPDATED_CITED, "x")
+                                                   + other + _CELLS_UPDATED_CITED + "\n")[0])
+            self.assertEqual(run("no perf paragraph\n", "y\n"), [])
+
+
 
 if __name__ == "__main__":
     unittest.main()
