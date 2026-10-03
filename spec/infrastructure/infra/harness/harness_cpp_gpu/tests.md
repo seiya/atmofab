@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `test_profile_id`: `harness_cpp_gpu_l0`
-- `test_profile_version`: `0.3.0`
+- `test_profile_version`: `0.4.0`
 - `status`: `draft`
 - `spec_ref.spec_kind`: `infrastructure`
 - `spec_ref.spec_id`: `harness_cpp_gpu`
@@ -79,7 +79,7 @@ Because `raw/metrics_basis.json` carries one entry per (`test_id`, target `case_
   - `operation_id`: `harness_cpp_gpu__write_perf`
   - `expected_outcome`: `pass`
   - `required_raw_variables`: `throughput_residual` (scalar)
-  - `judgment`: `perf.json` carries all required fields and `throughput_cells_per_sec == cells_updated / walltime_sec` within a relative tolerance of `1e-9`: `throughput_residual = |throughput_cells_per_sec - cells_updated / walltime_sec| / throughput_cells_per_sec <= 1e-9` (the RELATIVE residual, so the snapshot value is judged against the tolerance alone), and `checks.perf_derived.status == pass`.
+  - `judgment`: `perf.json` carries all required fields and `throughput_cells_per_sec == cells_updated / walltime_sec` within a relative tolerance of `1e-9`: `throughput_residual = |throughput_cells_per_sec - cells_updated / walltime_sec| / throughput_cells_per_sec <= 1e-9` (the RELATIVE residual, so the snapshot value is judged against the tolerance alone), and `checks.perf_derived.status == pass`. The `cells_updated` the self-test passes to `__write_perf` is the value `controlled_spec.md` §3 fixes for it, which is positive, so the throughput the residual divides by is non-zero for every positive `walltime_sec`.
   - `quantity`: `perf_derived` on both `pass_when` conditions.
   - `primary_predicate` (quantity `perf_derived`, `per_case: true`): `final.throughput_residual <= 1.0e-9`.
 - `test_id`: `l0_metric_leaf_pass`

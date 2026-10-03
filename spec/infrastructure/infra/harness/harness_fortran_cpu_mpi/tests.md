@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `test_profile_id`: `harness_fortran_cpu_mpi_l0`
-- `test_profile_version`: `0.3.0`
+- `test_profile_version`: `0.4.0`
 - `status`: `draft`
 - `spec_ref.spec_kind`: `infrastructure`
 - `spec_ref.spec_id`: `harness_fortran_cpu_mpi`
@@ -93,7 +93,7 @@ The run needs at least one rank and at most six: the halo cases partition 12 cel
   - `operation_id`: `harness_fortran_cpu_mpi__write_perf`
   - `expected_outcome`: `pass`
   - `required_raw_variables`: `throughput_residual` (scalar)
-  - `judgment`: `perf.json` carries all required fields and `throughput_cells_per_sec == cells_updated / walltime_sec` within a relative tolerance of `1e-9`: `throughput_residual = |throughput_cells_per_sec - cells_updated / walltime_sec| / throughput_cells_per_sec <= 1e-9` (the RELATIVE residual, so the snapshot value is judged against the tolerance alone), and `checks.perf_derived.status == pass`. `perf.json`'s `parallelism.mpi_ranks` is the `__comm_size()` of the run that wrote it (the Validate phase compares it with the target's `execution.ranks`); `threads_per_rank` is `1` and `gpu_devices` is `0`.
+  - `judgment`: `perf.json` carries all required fields and `throughput_cells_per_sec == cells_updated / walltime_sec` within a relative tolerance of `1e-9`: `throughput_residual = |throughput_cells_per_sec - cells_updated / walltime_sec| / throughput_cells_per_sec <= 1e-9` (the RELATIVE residual, so the snapshot value is judged against the tolerance alone), and `checks.perf_derived.status == pass`. The `cells_updated` the self-test passes to `__write_perf` is the value `controlled_spec.md` §3 fixes for it, which is positive, so the throughput the residual divides by is non-zero for every positive `walltime_sec`. `perf.json`'s `parallelism.mpi_ranks` is the `__comm_size()` of the run that wrote it (the Validate phase compares it with the target's `execution.ranks`); `threads_per_rank` is `1` and `gpu_devices` is `0`.
   - `quantity`: `perf_derived` on both `pass_when` conditions.
   - `primary_predicate` (quantity `perf_derived`, `per_case: true`): `final.throughput_residual <= 1.0e-9`.
 - `test_id`: `l0_metric_leaf_pass`
