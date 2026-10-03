@@ -39,10 +39,10 @@ over a canary translation unit with one kernel; a canary failure is an invocatio
 refuses (typically a `toolchain.standard` or `hardware.architecture` it does not know) and is a
 transport `fail_closed`. A passing stage is followed by the model-alone probe
 (`docs/workflow/phases/phase_02_generate.md`, issue #389): `<spec_id>_model.cu` and
-`<spec_id>_model.cuh` with the closure alone, which is what a consumer is staged. A leaf ships no
-header, so a `helper` `.cu` offers the model nothing to include; what the probe catches here is
-a model that includes the checks header. It checks syntax only, so a model that declares a
-function a `helper` `.cu` defines passes it and fails only at the dependent's link.
+`<spec_id>_model.cuh` with the closure alone, which is what a consumer is staged. A model that
+includes another file of its bundle — the checks header, or a `helper` `.cu` — fails it. It
+checks syntax only, so a model that declares a function a `helper` `.cu` defines passes it and
+fails only at the dependent's link.
 
 ## 3. Model naming and dependency use
 

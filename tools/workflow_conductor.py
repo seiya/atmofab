@@ -10485,10 +10485,11 @@ class Conductor:
         dependency's certified source. A missing MANDATORY stage compiler (or a genuine
         tool/infra error) raises and surfaces as a transport fail_closed likewise — an
         environment problem, not something the generate retry loop could fix.
-        When the mandatory stage passes, a fourth run compiles the node's model file alone
-        (plus its host-rendered interface header, when the language declares one) with the
-        staged closure — exactly what a dependent node is staged (issue #389). Its failure is a
-        leaf content failure (the model reached a `helper` / `internal_module` sibling), logged
+        When the mandatory stage PASSES, none of those attribution runs happen; instead one more
+        run compiles the node's model file alone (plus its host-rendered interface header, when
+        the language declares one) with the staged closure — exactly what a dependent node is
+        staged (issue #389). Its failure is a leaf content failure (the model reached another
+        file of its own bundle — a `helper` / `internal_module` file, or the checks file), logged
         to the canonical command log and recorded as a `scope: "model_alone"` stage. Optional
         additional stages from ATMOFAB_SYNTAX_COMPILERS (comma-separated adapter ids — the
         future target-compiler second stage) are recorded as skipped when their compiler has no
@@ -10741,7 +10742,8 @@ class Conductor:
                 # exactly this node's model file — plus its host-rendered interface header, when
                 # the language declares one — and nothing else of this bundle
                 # (`_stage_dependency_sources`). The stage above compiles the WHOLE src/, so a
-                # model that reaches a `helper` / `internal_module` sibling passes it here and
+                # model that reaches another file of its bundle (a `helper` / `internal_module`
+                # file, or the checks file) passes it here and
                 # breaks every consumer, at a gate whose leaf cannot repair it. So once the
                 # mandatory stage passes, the same adapter and flags run over exactly what a
                 # consumer is handed: the closure, the model, and the interface header. Only
