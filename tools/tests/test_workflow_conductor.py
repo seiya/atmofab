@@ -18951,6 +18951,9 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertEqual(ev["stages"][0]["command_id"], "sid")
             self.assertTrue(
                 ev["stages"][0]["command_log_ref"].endswith("/src/command_log.jsonl"))
+            # The whole-src stage is its own entry, not satisfied by the model-alone one.
+            self.assertEqual([st.get("scope") for st in ev["stages"]
+                              if st["compiler"] == "gfortran"], [None, "model_alone"])
 
     _M3C_NODE_KEY = "problem/adv1d@0.1.0"
 
@@ -19469,6 +19472,9 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertEqual(ev["stages"][0]["compiler"], "gfortran")
             self.assertEqual(by_compiler["gfortran"]["status"], "pass")
             self.assertEqual(by_compiler["frt"]["status"], "skipped")
+            # The whole-src stage is its own entry, not satisfied by the model-alone one.
+            self.assertEqual([st.get("scope") for st in ev["stages"]
+                              if st["compiler"] == "gfortran"], [None, "model_alone"])
 
     def test_a_mandatory_stage_whose_adapter_reads_another_language_fails_closed(self) -> None:
         """The optional-stage skip must not reach the MANDATORY stage: a language whose
@@ -19708,9 +19714,13 @@ class DeterministicSyntaxTest(unittest.TestCase):
             kinds: list[str] = []
             alone_args: list[dict] = []
 
+            stage_args: list[dict] = []
+
             def fake(args):
                 kind = self._call_kind(args)
                 kinds.append(kind)
+                if kind == "stage":
+                    stage_args.append(args)
                 if kind == "model_alone":
                     alone_args.append(args)
                     # A pass that printed a warning is still a pass: the verdict is the
@@ -19726,6 +19736,11 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertEqual(out["status"], "pass")
             self.assertIsNone(out["attribution"])
             self.assertTrue(alone_args[0]["command_log_path"].endswith("/src/command_log.jsonl"))
+            # The consumer's build is what the probe stands for, so its argv is the stage's: only
+            # the directory differs (the log path is the same canonical one).
+            def _argv(a: dict) -> dict:
+                return {k: v for k, v in a.items() if k != "project_dir"}
+            self.assertEqual(_argv(alone_args[0]), _argv(stage_args[0]))
             ev = read_syntax_evidence(pipeline_root=repo / refs.pipeline_ref, source_id="src_1")
             assert ev is not None
             self.assertTrue(ev["ok"])
@@ -20108,6 +20123,9 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertEqual(by_compiler["gfortran"]["status"], "pass")
             self.assertEqual(by_compiler["frtxx"]["status"], "skipped")
             self.assertIn("no registered", by_compiler["frtxx"]["reason"])
+            # The whole-src stage is its own entry, not satisfied by the model-alone one.
+            self.assertEqual([st.get("scope") for st in ev["stages"]
+                              if st["compiler"] == "gfortran"], [None, "model_alone"])
 
 
 class DeterministicStaticTest(unittest.TestCase):
