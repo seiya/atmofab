@@ -1558,11 +1558,11 @@ class PureRenderTests(unittest.TestCase):
         # grades into the one verdict field `classify_verify_severity` routes on; it assigns no
         # value to any finding or checklist item — the rubric still chooses each one.
         ("tools/prompt_templates/pure_compile_verify.txt: Output contract (verify verdict): "
-         "return one JSON object wit #c4d1aea58512"),
+         "return one JSON object wit #44453a0a4418"),
         ("tools/prompt_templates/pure_generate_verify.txt: Output contract (verify verdict): "
-         "return one JSON object wit #c4d1aea58512"),
+         "return one JSON object wit #44453a0a4418"),
         ("tools/prompt_templates/pure_generate_verify_harness.txt: Output contract (verify "
-         "verdict): return one JSON object wit #c4d1aea58512"),
+         "verdict): return one JSON object wit #44453a0a4418"),
     )
 
     #: The conductor helpers that inline a language binding, and the capability they read it

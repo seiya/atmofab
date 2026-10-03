@@ -1326,8 +1326,9 @@ class PureVerifyOutputContractTests(unittest.TestCase):
     # (round 1), and only the drift and allowlist hashes, which every legitimate edit re-pins,
     # noticed. Rewording a sentence therefore means rewording it here too.
     _EVERY_DEFECT_PHRASES = (
-        ("A `fail` lists EVERY defect your review found, whatever its subject, one `findings` "
-         "entry per defect — not the first one met, and not several folded into one entry: the "
+        ("A `fail` lists EVERY defect your review found, whether its subject is the artifact "
+         "under review or an input, one `findings` entry per defect — not the first one met, and "
+         "not several folded into one entry: the "
          "host hands the producer the whole list at once, and a defect this verdict leaves out "
          "is found only by a later verdict, at the cost of one more attempt from a finite "
          "budget."),
