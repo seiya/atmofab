@@ -1319,13 +1319,25 @@ class PureVerifyOutputContractTests(unittest.TestCase):
         self.assertIn("more than one document", text)
 
     # Issue #391: a failing verdict lists every defect, one entry each, and its severity is the
-    # value that comes first in the order `major`, `critical`, `minor`. The rule is in the output-contract paragraph because that is the
-    # block a cold repair lifts, so it is read from the lift, not from the template file.
+    # value that comes first in the order `major`, `critical`, `minor`. The rule is in the
+    # output-contract paragraph because that is the block a cold repair lifts, so it is read
+    # from the lift, not from the template file. Each sentence is pinned WHOLE: a key-phrase
+    # probe let a weakened ("… you choose to report"), negated or reversed rule stay green
+    # (round 1), and only the drift and allowlist hashes, which every legitimate edit re-pins,
+    # noticed. Rewording a sentence therefore means rewording it here too.
     _EVERY_DEFECT_PHRASES = (
-        "EVERY defect",
-        "one `findings` entry per defect",
-        "states the corrections as a whole",
-        "comes first in the order `major`, `critical`, `minor`",
+        "A `fail` lists EVERY defect your review found, whatever its subject, one `findings` "
+        "entry per defect — not the first one met, and not several folded into one entry: the "
+        "host hands the producer the whole list at once, and a defect this verdict leaves out "
+        "is found only by a later verdict, at the cost of one more attempt from a finite "
+        "budget.",
+        "`last_fail_reason` states the corrections as a whole; it does not repeat the first "
+        "finding.",
+        "When the findings earn different values under the severity rubric, `issue_severity` "
+        "is the one that comes first in the order `major`, `critical`, `minor`: a `major` names "
+        "an input that no re-run of the producer repairs, which stays true whatever else the "
+        "verdict carries, and a `critical` calls for a cold re-run of the producer, which "
+        "discards the artifact under review that every `minor` is about.",
     )
     _VERIFY_REQUESTS = (
         {"step": "generate", "substep": "verify"},
