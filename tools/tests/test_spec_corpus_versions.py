@@ -80,8 +80,8 @@ _CELLS_UPDATED_FIXED = ("`steps` and `cells_updated` both equal to the number of
 _WALLTIME_FLOOR = "or `1.0e-9` when the elapsed time it reads is not positive"
 _DISTRIBUTED = "__comm_size()"
 _NOT_SUMMED = "is not summed over ranks"
-_CELLS_UPDATED_CITED = ("The `cells_updated` and `walltime_sec` the self-test passes to "
-                        "`__write_perf` are the values `controlled_spec.md` §3 fixes for it")
+_CELLS_UPDATED_CITED = ("The `steps`, `cells_updated` and `walltime_sec` the self-test passes to "
+                        "`__write_perf` are the run totals `controlled_spec.md` §3 fixes for it")
 _PERF_TEST = re.compile(r"^- `test_id`: `l0_perf_derived_pass`\n(?:(?!- `test_id`).*\n?)*", re.M)
 
 
