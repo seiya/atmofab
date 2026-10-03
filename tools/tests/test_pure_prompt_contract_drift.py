@@ -843,6 +843,21 @@ PINNED: dict[str, str] = {
     # its `internal_module`, and the dependent orch_20261003T013455Z_93800b16 ended fail_closed
     # (`leaf_exit=1`) at a gate whose leaf could fix nothing.
     "pure-64": "3209d995cf217c78967fe4fe429a72903a8a1711cede7a8e62b625f4fe0ff407",
+    # pure-65 (issue #391): the `Output contract (verify verdict)` paragraph the three verify
+    # templates share says a `fail` lists EVERY defect the review found, one `findings` entry
+    # each, whether its subject is the artifact under review or an input; that
+    # `last_fail_reason` states the corrections as a whole; and that `issue_severity` is the
+    # value first in the order `major`, `critical`, `minor` among those the findings earn (a
+    # `major` input defect survives the cold re-run a `critical` calls for). And
+    # `RUNNER_OUTPUT_CONTRACT.md` names the Diagnostics contract section of `tests.md` by name
+    # (§5) instead of the stale `§3`.
+    # Measured by diffing this tuple against origin/main 05ee5541's: the three verify templates,
+    # `runner_output_contract_document` and `runner_output_contract_sections` moved and no
+    # other member. Witness: orch_20261003T044645Z_7cdf7aa7 (codex,
+    # `infrastructure/harness_fortran_cpu@0.7.0`) failed generate.verify on attempts 2-4 with
+    # one finding each — three defects that issue #391 reports were all present in attempt 2
+    # — and ended `generate exceeded 3`.
+    "pure-65": "53acee8bb3f6845d851e93f887ad72a245aa7a76f35db08ddaf949c8a2421957",
 }
 
 

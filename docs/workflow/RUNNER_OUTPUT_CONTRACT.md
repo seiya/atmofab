@@ -36,9 +36,10 @@ Must satisfy `spec.ir.yaml.io_contract.diagnostics_contract`:
   object carrying the `diagnostics_contract.verdict.fields` keys (e.g.
   `verdict.overall` / `verdict.failed_checks`).
 
-This is how the runner conveys the `tests.md §3` diagnostics contract that
-`Generate` cannot read directly (Generate consumes only the IR). A custom
-per-case array that omits the contracted `checks.*` / `verdict` is a fail.
+This is how the runner conveys the Diagnostics contract section of `tests.md`
+(§5 in the `docs/TESTS.md` layout) that `Generate` cannot read directly
+(Generate consumes only the IR). A custom per-case array that omits the
+contracted `checks.*` / `verdict` is a fail.
 Emitting a `verdict` **key inside `diagnostics.json`** is permitted and does not
 conflict with the forbidden-filename rule above (that rule targets the judge
 artifact *filenames*, not a diagnostics field name).

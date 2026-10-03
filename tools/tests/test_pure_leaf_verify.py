@@ -1318,6 +1318,90 @@ class PureVerifyOutputContractTests(unittest.TestCase):
         # The verify contract's closing clause survives (no blank-line truncation).
         self.assertIn("more than one document", text)
 
+    # Issue #391: a failing verdict lists every defect, one entry each, and its severity is the
+    # value that comes first in the order `major`, `critical`, `minor`. The rule is in the
+    # output-contract paragraph because that is the block a cold repair lifts, so it is read
+    # from the lift, not from the template file. Each sentence is pinned WHOLE: a key-phrase
+    # probe let a weakened ("… you choose to report"), negated or reversed rule stay green
+    # (round 1), and only the drift and allowlist hashes, which every legitimate edit re-pins,
+    # noticed. Rewording a sentence therefore means rewording it here too.
+    _EVERY_DEFECT_PHRASES = (
+        ("A `fail` lists EVERY defect your review found, whether its subject is the artifact "
+         "under review or an input, one `findings` entry per defect — not the first one met, and "
+         "not several folded into one entry: the "
+         "host hands the producer the whole list at once, and a defect this verdict leaves out "
+         "is found only by a later verdict, at the cost of one more attempt from a finite "
+         "budget."),
+        ("`last_fail_reason` states the corrections as a whole; it does not repeat the first "
+         "finding."),
+        ("When the findings earn different values under the severity rubric, `issue_severity` "
+         "is the one that comes first in the order `major`, `critical`, `minor`: a `major` names "
+         "an input that no re-run of the producer repairs, which stays true whatever else the "
+         "verdict carries, and a `critical` calls for a cold re-run of the producer, which "
+         "discards the artifact under review that every `minor` is about."),
+    )
+    _VERIFY_REQUESTS = (
+        {"step": "generate", "substep": "verify"},
+        {"step": "generate", "substep": "verify", "pure_shape": "harness"},
+        {"step": "compile", "substep": "verify"},
+    )
+
+    def _lifted_verify_paragraphs(self) -> list[str]:
+        import tools.orchestration_runtime as ort
+        texts = []
+        for extra in self._VERIFY_REQUESTS:
+            req = {"leaf_mode": "pure", "pure_language": "fortran", "pure_parallel": "openmp",
+                   "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION, **extra}
+            texts.append(ort._pure_output_contract_text(req))
+        return texts
+
+    def _missing_every_defect_phrases(self, text: str) -> list[str]:
+        return [p for p in self._EVERY_DEFECT_PHRASES if p not in text]
+
+    def test_every_verify_template_asks_a_fail_to_list_every_defect(self) -> None:
+        for extra, text in zip(self._VERIFY_REQUESTS, self._lifted_verify_paragraphs()):
+            with self.subTest(request=extra):
+                self.assertTrue(text.startswith("Output contract (verify verdict)"))
+                self.assertEqual(self._missing_every_defect_phrases(text), [])
+                # The insertion did not split the paragraph: its closing clause is still lifted.
+                self.assertIn("more than one document", text)
+
+    def test_the_three_verify_output_contracts_are_one_text(self) -> None:
+        texts = self._lifted_verify_paragraphs()
+        self.assertTrue(texts[0])
+        self.assertEqual(texts[1], texts[0])
+        self.assertEqual(texts[2], texts[0])
+
+    def test_a_cold_verify_repair_carries_the_rule_and_a_warm_one_does_not(self) -> None:
+        """The lift is the source; the cold repair TURN is the delivery. A round-2 review
+        mutation that dropped the output contract from the cold repair of the verdict pairs
+        alone left every suite green, so the rendered repair prompt is read here for each
+        verify request."""
+        import tools.orchestration_runtime as ort
+        for extra in self._VERIFY_REQUESTS:
+            req = {"leaf_mode": "pure", "pure_language": "fortran", "pure_parallel": "openmp",
+                   "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                   "repair_findings": "verdict JSON did not parse", **extra}
+            with self.subTest(request=extra):
+                cold = ort._render_pure_repair_prompt(req)
+                for phrase in self._EVERY_DEFECT_PHRASES:
+                    self.assertEqual(cold.count(phrase), 1, phrase)
+                warm = ort._render_pure_repair_prompt({**req, "warm_resume": True})
+                # Self-test: the warm render is a real repair prompt, so its lacking the rule
+                # is the warm/cold split and not an empty render.
+                self.assertIn("verdict JSON did not parse", warm)
+                self.assertEqual(self._missing_every_defect_phrases(warm),
+                                 list(self._EVERY_DEFECT_PHRASES))
+
+    def test_the_phrase_probe_fails_when_the_rule_is_removed(self) -> None:
+        """Self-test: with the #391 sentences cut out of the lifted paragraph, the probe above
+        reports every phrase missing, so a deleted rule is red rather than vacuously green."""
+        text = self._lifted_verify_paragraphs()[0]
+        start = text.index("A `fail` lists EVERY defect")
+        end = text.index("Use the exact lowercase enum literals.")
+        self.assertEqual(self._missing_every_defect_phrases(text[:start] + text[end:]),
+                         list(self._EVERY_DEFECT_PHRASES))
+
 
 # ======================================================================================
 # Full pure generate phase through the real step_result validator (subagent review round 1)

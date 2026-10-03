@@ -1550,6 +1550,19 @@ class PureRenderTests(unittest.TestCase):
         # and explicitly refuses to be read as a shorter enumeration of it; it assigns nothing.
         "tools/prompt_templates/pure_generate_verify_harness.txt: One kind of finding is NOT "
         "code-vs-IR and is still yours to  #18a97797a2d9",
+        # `pure-65` (issue #391): the verify verdict's output contract, byte-identical in the
+        # three verify templates, says a failing verdict lists every defect and that, when the
+        # findings earn different values "under the severity rubric", `issue_severity` is the
+        # one that comes first in the order `major`, `critical`, `minor`, with the reason each
+        # outranks the next. READ: it orders the rubric's values to fold several per-finding
+        # grades into the one verdict field `classify_verify_severity` routes on; it assigns no
+        # value to any finding or checklist item — the rubric still chooses each one.
+        ("tools/prompt_templates/pure_compile_verify.txt: Output contract (verify verdict): "
+         "return one JSON object wit #44453a0a4418"),
+        ("tools/prompt_templates/pure_generate_verify.txt: Output contract (verify verdict): "
+         "return one JSON object wit #44453a0a4418"),
+        ("tools/prompt_templates/pure_generate_verify_harness.txt: Output contract (verify "
+         "verdict): return one JSON object wit #44453a0a4418"),
     )
 
     #: The conductor helpers that inline a language binding, and the capability they read it
