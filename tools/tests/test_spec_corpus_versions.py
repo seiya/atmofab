@@ -73,11 +73,12 @@ def profile_selection_on_non_adopters(entries: list[dict], root: Path) -> list[s
     return out
 
 
-_PERF_PARAGRAPH = "calls `__write_perf` once"
+_SELF_TEST_PARAGRAPH = "The self-test `"
+_WRITE_PERF = "`__write_perf`"
 _CELLS_UPDATED_FIXED = ("`steps` and `cells_updated` both equal to the number of cases its "
                         "`__parse_cases` call on the program's argv returned")
 _WALLTIME_FLOOR = "or `1.0e-9` when the elapsed time it reads is not positive"
-_MPI_RANKS = "`__comm_size()` as `mpi_ranks`"
+_DISTRIBUTED = "__comm_size()"
 _NOT_SUMMED = "is not summed over ranks"
 _CELLS_UPDATED_CITED = ("The `cells_updated` and `walltime_sec` the self-test passes to "
                         "`__write_perf` are the values `controlled_spec.md` §3 fixes for it")
@@ -85,10 +86,11 @@ _PERF_TEST = re.compile(r"^- `test_id`: `l0_perf_derived_pass`\n(?:(?!- `test_id
 
 
 def harness_perf_values_unfixed(entries: list[dict], root: Path) -> list[str]:
-    """Every spec with a self-test `__write_perf` paragraph whose paragraph does not carry,
-    once, the sentences fixing `steps` / `cells_updated` and the `walltime_sec` floor (and,
-    where it passes `__comm_size()` as `mpi_ranks`, the not-summed-over-ranks clause), or
-    whose `tests.md` `l0_perf_derived_pass` block does not cite them.
+    """Every spec whose self-test paragraph (the one opening "The self-test `") calls
+    `__write_perf` but does not carry, once, the sentences fixing `steps` / `cells_updated`
+    and the `walltime_sec` floor (and, in a spec that publishes `__comm_size()`, the
+    not-summed-over-ranks clause), or whose `tests.md` `l0_perf_derived_pass` block does not
+    cite them.
 
     The residual of that test divides by the throughput, so a value the inputs leave open
     is the leaf's to choose, and zero leaves the residual undefined (issue #394). This pins
@@ -96,7 +98,8 @@ def harness_perf_values_unfixed(entries: list[dict], root: Path) -> list[str]:
     out: list[str] = []
     for e in entries:
         cs = (root / e["controlled_spec_path"]).read_text(encoding="utf-8")
-        paras = [p for p in cs.split("\n") if _PERF_PARAGRAPH in p]
+        paras = [p for p in cs.split("\n")
+                 if p.startswith(_SELF_TEST_PARAGRAPH) and _WRITE_PERF in p]
         if not paras:
             continue
         sid = e["spec_id"]
@@ -108,7 +111,7 @@ def harness_perf_values_unfixed(entries: list[dict], root: Path) -> list[str]:
                              (_WALLTIME_FLOOR, "the walltime_sec floor")):
             if cs.count(phrase) != 1 or phrase not in para:
                 out.append(f"{sid}: the self-test paragraph does not state {what} once")
-        if _MPI_RANKS in para and _NOT_SUMMED not in para:
+        if _DISTRIBUTED in cs and _NOT_SUMMED not in para:
             out.append(f"{sid}: the distributed self-test does not say the count is not "
                        "summed over ranks")
         tests = (root / e["tests_path"]).read_text(encoding="utf-8")
@@ -184,8 +187,9 @@ class SpecCorpusVersionTest(unittest.TestCase):
     def test_every_harness_fixes_the_self_test_perf_values(self) -> None:
         entries = self._entries()
         # the rule reads a perf paragraph in each harness spec (not vacuous)
-        read = [e for e in entries if _PERF_PARAGRAPH in
-                (REPO / e["controlled_spec_path"]).read_text(encoding="utf-8")]
+        read = [e for e in entries if any(
+            p.startswith(_SELF_TEST_PARAGRAPH) and _WRITE_PERF in p for p in
+            (REPO / e["controlled_spec_path"]).read_text(encoding="utf-8").split("\n"))]
         self.assertGreaterEqual(len(read), 3)
         self.assertEqual(harness_perf_values_unfixed(entries, REPO), [])
 
@@ -198,10 +202,10 @@ class SpecCorpusVersionTest(unittest.TestCase):
             (root / "s").mkdir()
             entry = {"spec_id": "s", "controlled_spec_path": "s/controlled_spec.md",
                      "tests_path": "s/tests.md"}
-            para = (f"It {_PERF_PARAGRAPH}, with that elapsed time as `walltime_sec`, "
+            para = (f"{_SELF_TEST_PARAGRAPH}r` calls {_WRITE_PERF} once, with that elapsed time as `walltime_sec`, "
                     f"{_WALLTIME_FLOOR} (a tick), and with {_CELLS_UPDATED_FIXED}: one step.")
             cs = f"# spec\n{para}\n"
-            mpi = para.replace("(a tick),", f"(a tick), {_MPI_RANKS},")
+            mpi = para.replace("(a tick),", "(a tick), `__comm_size()` as `mpi_ranks`,")
             block = (f"- `test_id`: `l0_perf_derived_pass`\n  - `judgment`: residual. "
                      f"{_CELLS_UPDATED_CITED}, both positive.\n")
             other = "- `test_id`: `l0_metric_leaf_pass`\n  - `judgment`: fold.\n"
@@ -222,6 +226,12 @@ class SpecCorpusVersionTest(unittest.TestCase):
             self.assertIn("steps / cells_updated",
                           run(cs + _CELLS_UPDATED_FIXED + "\n", tests)[0])
             self.assertIn("not summed over ranks", run(f"# spec\n{mpi}\n", tests)[0])
+            # keyed on the spec publishing the operation, not on the paragraph's wording
+            self.assertIn("not summed over ranks",
+                          run(f"# spec\n- `x__comm_size()`\n{para}\n", tests)[0])
+            # another paragraph naming __write_perf is not the self-test's
+            self.assertEqual(run(cs + f"A host runner likewise calls {_WRITE_PERF} once.\n",
+                                 tests), [])
             self.assertEqual(run(f"# spec\n{mpi} The count {_NOT_SUMMED}.\n", tests), [])
             self.assertIn("does not cite", run(cs, other)[0])
             # the citation under another test is not the perf test's
