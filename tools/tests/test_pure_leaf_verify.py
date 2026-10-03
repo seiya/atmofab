@@ -1371,6 +1371,26 @@ class PureVerifyOutputContractTests(unittest.TestCase):
         self.assertEqual(texts[1], texts[0])
         self.assertEqual(texts[2], texts[0])
 
+    def test_a_cold_verify_repair_carries_the_rule_and_a_warm_one_does_not(self) -> None:
+        """The lift is the source; the cold repair TURN is the delivery. Round 2 dropped the
+        output contract from the cold repair of the verdict pairs alone and every suite stayed
+        green, so the rendered repair prompt is read here for each verify request."""
+        import tools.orchestration_runtime as ort
+        for extra in self._VERIFY_REQUESTS:
+            req = {"leaf_mode": "pure", "pure_language": "fortran", "pure_parallel": "openmp",
+                   "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                   "repair_findings": "verdict JSON did not parse", **extra}
+            with self.subTest(request=extra):
+                cold = ort._render_pure_repair_prompt(req)
+                for phrase in self._EVERY_DEFECT_PHRASES:
+                    self.assertEqual(cold.count(phrase), 1, phrase)
+                warm = ort._render_pure_repair_prompt({**req, "warm_resume": True})
+                # Self-test: the warm render is a real repair prompt, so its lacking the rule
+                # is the warm/cold split and not an empty render.
+                self.assertIn("verdict JSON did not parse", warm)
+                self.assertEqual(self._missing_every_defect_phrases(warm),
+                                 list(self._EVERY_DEFECT_PHRASES))
+
     def test_the_phrase_probe_fails_when_the_rule_is_removed(self) -> None:
         """Self-test: with the #391 sentences cut out of the lifted paragraph, the probe above
         reports every phrase missing, so a deleted rule is red rather than vacuously green."""
