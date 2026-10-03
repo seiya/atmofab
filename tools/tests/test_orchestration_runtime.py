@@ -21849,7 +21849,8 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Bumped 94000->95000 (issue #386): V3 and the schema block's `checks[].id` comment add
         # the non-gating judgment (and exclude an `informational_only` one) to the coverage
         # rule, the `minor` bullet names its absence. Measured 94663 with `wc -c` in
-        # /home/seiya/atmofab at the commit that takes this bump.
+        # /home/seiya/atmofab at the commit that takes this bump. Round 1 (V3 says what each id
+        # answers to instead of "neither more nor less"): measured 94689, no bump.
         "docs/workflow/phases/phase_01_compile.md": 95000,
     }
 

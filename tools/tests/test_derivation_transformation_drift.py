@@ -488,7 +488,16 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # judgment is `informational_only`, so both of its IRs stay valid. The one IR that lacks
     # the check (`shallow_water2d_channel` 0.2.1 `…_20261002_001`) is of a superseded
     # `spec_version`. A bump would re-derive every node's Compile for a rule they satisfy.
-    "compile-docs-11": "c4494b2179e4312fbfafa37ee901c1db6458f6de8e818ba5463216917509b0c5",
+    # Re-pinned in round 1 (same reasoning): V3 drops "(neither more nor less)" over the
+    # Diagnostics contract's keys — a `problem` one names none, so read literally it refused
+    # the `cfl` id every guard's `verdict.failed_checks includes 'cfl'` needs — and says what
+    # an id answers to instead: a key the Diagnostics contract names, a check a `pass_when`
+    # names, or a judgment a test applies. Every id of the five IRs above answers to one
+    # (advdiff `…_20261001_001`'s `mass_conservation` to `l2_mass_conservation_long_run`'s
+    # judgment, channel's `n_step` to the step-count judgment); the `major` example "a
+    # `pass_when` that names a check its §3 does not declare" becomes "…no judgment of
+    # `tests.md` defines" for the same reason.
+    "compile-docs-11": "db5ba3e357870347cc6063c9675cb60b60c18ccf4531a98baa978889dfaae789",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

@@ -1032,8 +1032,12 @@ class PureRenderTests(unittest.TestCase):
         #     lacks" (an IR subject a Compile.generate re-run fixes, V3); the `major` bullet's
         #     "its §3" / "a §3 check" name the Diagnostics contract (§5), the section they always
         #     meant — still an input-side subject. The axis, the other bullets, the tie-breaks
-        #     and the pointer are byte-identical.
-        "compile": "8f9338ad4e223d9f47aa96e469dfa5bc6f1f450b39b69886cf0fa0a913c55b1f",
+        #     and the pointer are byte-identical. Re-taken in round 1: the `major` example
+        #     becomes "a `pass_when` that names a check no judgment of `tests.md` defines" —
+        #     every guard test names `cfl` in `verdict.failed_checks` and no `problem`
+        #     Diagnostics contract names `checks.cfl`, so the §5 reading graded a valid
+        #     `tests.md` `major`. Still an input-side subject.
+        "compile": "f31aeee8d0d03de8ee96cd4bfbfbd44e4807de12afa33cc21906cf55520ceda7",
         "generate": "e8aae7c7a1d458f535d045612b363602220dbaef993b21711843a52b9dcf34e1",
     }
 
