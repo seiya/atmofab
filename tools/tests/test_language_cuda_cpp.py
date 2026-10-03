@@ -2655,6 +2655,34 @@ class ToolAdapterTests(unittest.TestCase):
         for text in (floor, g6):
             self.assertNotRegex(text, r"(?i)default[^.]*\b(refused|forbidden|is a fail)\b")
 
+    def test_a_reopened_model_namespace_is_not_listed_in_modules(self) -> None:
+        """Issue #384: on a `problem` node the checks source reopens `<spec_id>_model` to declare
+        the operation (rule 6a), and "the C++ namespaces that file defines" let the producer list
+        that namespace in the checks file's `modules` too — `validate_bundle` refused the first
+        `cpp_gpu` bundle of orch_20261002T140410Z_20f43acc for it and one repair turn was spent.
+        The field's meaning now names the owner, and rule (6a) points back at it. Whole clauses
+        are pinned, not words: with single-phrase pins, two reversals stayed green (round 1 of the
+        review) — the meaning rewritten to "lists `<spec_id>_checks` and also `<spec_id>_model`
+        (never `<spec_id>_model` without `<spec_id>_checks`)", which keeps the pinned phrase in
+        its parenthetical, and rule (6a) rewritten to "adds nothing to the checks file's
+        `modules` beyond `<spec_id>_model` itself". Not caught here: an ADDED sentence contradicting them (only the
+        contract digest moves for that)."""
+        prompts = registry.capability_module("language", "cuda_cpp", "prompt_fragments")
+        frag = prompts.fragments("generate_generate")
+        meaning = frag["file_modules_meaning"]
+        for clause in ("the C++ namespaces whose DEFINITIONS that file provides, each listed by "
+                       "exactly one file",
+                       "reopens only to DECLARE the operation (6a) belongs to the model file "
+                       "alone, so the checks file lists `<spec_id>_checks` and never "
+                       "`<spec_id>_model`;",
+                       "a name two files list is REJECTED (`is already defined by another file`)"):
+            self.assertIn(clause, meaning)
+        self.assertNotIn("that file defines", meaning)
+        self.assertNotIn("also `<spec_id>_model`", meaning)
+        self.assertIn("— and that reopening adds nothing to the checks file's `modules`: the "
+                      "namespace is the model file's (see `modules` in the output contract).",
+                      frag["authoring_rule_6"])
+
     def test_the_registry_serves_every_declared_capability(self) -> None:
         for capability in ("bundle_facts", "syntax_promotions", "prompt_fragments", "checks_abi",
                            "source_reading", "signatures"):

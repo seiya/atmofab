@@ -821,6 +821,18 @@ PINNED: dict[str, str] = {
     # callback whose signature an interface fixes reads a kept buffer by name; a pointwise
     # dependency called from a host loop is a loop kept on the host, under the existing rule.)
     "pure-62": "e44337abda0468544dc0a04bf46096fecae477a25eaed04efeea309be1171189",
+    # pure-63 (issue #384): the `cuda_cpp` producer's `file_modules_meaning` says a file lists
+    # the namespaces whose DEFINITIONS it provides, each by exactly one file, and that a
+    # `problem` node's `<spec_id>_model` namespace — which the checks source reopens only to
+    # declare the operation — belongs to the model file alone; rule (6a) says that reopening
+    # adds nothing to the checks file's `modules`. Measured by diffing this tuple against
+    # origin/main b27b4529's: `language_fragments/language/cuda_cpp/generate_generate.txt`
+    # moved and no other member, so every prompt composed for Fortran is unchanged. Measured,
+    # not assumed: the first `cpp_gpu` bundle of `problem/shallow_water2d_channel@0.2.1`
+    # listed `shallow_water2d_channel_model` in both files and was refused by
+    # `validate_bundle`, costing one of the two repair turns
+    # (orch_20261002T140410Z_20f43acc), which is why the key moves.
+    "pure-63": "750a658ac2c1043827ed0262afa0b3b389acba122d0483fcafcf5defdcf1444b",
 }
 
 

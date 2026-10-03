@@ -176,7 +176,9 @@ can name one.
 `modules` is the non-empty list of modules the file defines — the language's unit of
 publication (a language backend's binding says what a module is in that language:
 `docs/backends/language/<language>/BUNDLE_BINDING.md`). A module name is unique across the whole
-bundle (compared case-insensitively). This list is
+bundle (compared case-insensitively). In a language whose publication unit can be reopened, a
+file that opens another file's module only to declare into it does not list that module; the
+file whose definitions it holds does (the binding states the case). This list is
 what ties an `entrypoints[].module` or a `state_bindings[].module` to the file that owns it —
 and, through the file's `member_node_key`, to a member: without it, an attribution that names
 the member's own file in `defined_in` could still route the rendered `use <module>, only:
