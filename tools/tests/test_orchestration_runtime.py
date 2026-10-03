@@ -21846,7 +21846,14 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # forms name derived rules and step descriptions): measured 93378, no bump. Round 4: 93449.
         # Issue #358 (a `profiles: []` node declares no `profile_selection`, stated once in the
         # schema block): measured 93631, no bump.
-        "docs/workflow/phases/phase_01_compile.md": 94000,
+        # Bumped 94000->95000 (issue #386): V3 and the schema block's `checks[].id` comment add
+        # the non-gating judgment (and exclude an `informational_only` one) to the coverage
+        # rule, the `minor` bullet names its absence. Measured 94663 with `wc -c` in
+        # /home/seiya/atmofab at the commit that takes this bump. Round 1 (V3 says what each id
+        # answers to instead of "neither more nor less"): measured 94689, no bump.
+        # Round 2 (a cross-target judgment is no check-id source): measured 94899, no bump.
+        # Round 3 (the `major` example names the Diagnostics contract too): 94943, no bump.
+        "docs/workflow/phases/phase_01_compile.md": 95000,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

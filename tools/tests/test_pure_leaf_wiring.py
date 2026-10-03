@@ -1027,7 +1027,20 @@ class PureRenderTests(unittest.TestCase):
         #     The axis, the other bullets, the tie-breaks and the pointer are byte-identical;
         #     property 8 holds because the compile verify template's scope is V1-V4, V8 and V9
         #     in the same change.
-        "compile": "263067e1d42f58d1d910cb9c57f1d55f579ebc7f6b1f8f8acb76d59c4228a3ec",
+        #   - issue #386, phase_01 only, and only inside the example lists: the `minor` bullet
+        #     gains "a judgment a test applies without gating that `diagnostics_contract.checks`
+        #     lacks" (an IR subject a Compile.generate re-run fixes, V3); the `major` bullet's
+        #     "its §3" / "a §3 check" name the Diagnostics contract (§5), the section they always
+        #     meant — still an input-side subject. The axis, the other bullets, the tie-breaks
+        #     and the pointer are byte-identical. Re-taken in round 1: the `major` example
+        #     becomes "a `pass_when` that names a check no judgment of `tests.md` defines" —
+        #     every guard test names `cfl` in `verdict.failed_checks` and no `problem`
+        #     Diagnostics contract names `checks.cfl`, so the §5 reading graded a valid
+        #     `tests.md` `major`. Still an input-side subject. Re-taken in round 3: "…neither
+        #     its Diagnostics contract names nor any judgment of `tests.md` defines" — eight
+        #     `component` and three `infrastructure` guards name `input_guard`, which only their Diagnostics contract
+        #     defines, so the round-1 wording graded those valid specs `major`.
+        "compile": "18f4ad6e8b131d009274fe1ffc1a480156fc36c1fcda41dbc802db9af516d0de",
         "generate": "e8aae7c7a1d458f535d045612b363602220dbaef993b21711843a52b9dcf34e1",
     }
 

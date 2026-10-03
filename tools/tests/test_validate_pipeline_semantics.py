@@ -17456,7 +17456,7 @@ class MakefileTestNoRelinkTest(unittest.TestCase):
 
 
 class DiagnosticsContractTest(unittest.TestCase):
-    """Tests for the io_contract.diagnostics_contract (tests.md §3) field."""
+    """Tests for the io_contract.diagnostics_contract (the tests.md Diagnostics contract, §5) field."""
 
     @staticmethod
     def _struct(contract: dict) -> list[str]:
@@ -17465,7 +17465,7 @@ class DiagnosticsContractTest(unittest.TestCase):
         return violations
 
     def test_absent_diagnostics_contract_is_allowed(self) -> None:
-        # A node whose tests.md has no §3 contract omits the field entirely.
+        # A node whose tests.md has no Diagnostics contract section omits the field entirely.
         self.assertEqual([], self._struct({"io_contract": {}}))
 
     def test_wellformed_contract_passes_lifted_and_nested(self) -> None:

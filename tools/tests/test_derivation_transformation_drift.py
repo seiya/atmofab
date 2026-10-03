@@ -476,7 +476,41 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # its `tests.md` gives the name no other meaning — and the `_validate_profile_selection`
     # static-gate note drops "an `infrastructure` harness uses the same name for an unrelated
     # plumbing aspect". A compile leaf reading it authors no harness `profile_selection`.
-    "compile-docs-11": "d07c8ad3e8c38ef2b4fa5b923459ba4e71bdfe3b605febd2fb50952cadd2fb1b",
+    # Re-pinned (issue #386), and NOT bumped, on this reasoning: V3 and the schema block's
+    # `checks[].id` comment add a judgment a test applies and reports without gating (a
+    # threshold, a per-case status, never `na`) to the coverage rule, exclude one whose
+    # threshold is `informational_only`, and spell the Diagnostics contract / test sections
+    # §5 / §6 instead of the stale §3 / §4. Measured 2026-10-03 over every IR of a current
+    # `spec_version` whose `tests.md` carries such a judgment: `shallow_water2d_channel` 0.2.2
+    # (`…_20261003_001`: `depth_positivity`) and `shallow_water2d` 0.4.3 (`…_20261002_001`:
+    # `depth_positivity`; `…_20261002_002`: `h_positivity`) all carry the check, and no
+    # `l0_cfl_guard_xfail` `pass_when` references it; `advdiff1d_linear` 0.4.3's one such
+    # judgment is `informational_only`, so both of its IRs stay valid. The one IR that lacks
+    # the check (`shallow_water2d_channel` 0.2.1 `…_20261002_001`) is of a superseded
+    # `spec_version`. A bump would re-derive every node's Compile for a rule they satisfy.
+    # Re-pinned in round 1 (same reasoning): V3 drops "(neither more nor less)" over the
+    # Diagnostics contract's keys — a `problem` one names none, so read literally it refused
+    # the `cfl` id every guard's `verdict.failed_checks includes 'cfl'` needs — and says what
+    # an id answers to instead: a key the Diagnostics contract names, a check a `pass_when`
+    # names, or a judgment a test applies. Every id of the five IRs above answers to one
+    # (advdiff `…_20261001_001`'s `mass_conservation` to `l2_mass_conservation_long_run`'s
+    # judgment, channel's `n_step` to the step-count judgment); the `major` example "a
+    # `pass_when` that names a check its §3 does not declare" becomes "…no judgment of
+    # `tests.md` defines" for the same reason.
+    # Re-pinned in round 2 (same reasoning): V3 says a cross-target judgment is no source of a
+    # check id either way (it has no `diagnostics.json` field, `docs/TESTS.md`); no current
+    # IR carries such an id (113 current-`spec_version` IRs, ids matched on `cross` / `comparand` /
+    # `agreement`: the one hit, `analytic_agreement`, is the analytic comparison).
+    # Re-pinned in round 3: the `major` example reads "a check neither its Diagnostics contract
+    # names nor any judgment of `tests.md` defines" — eight `component` and three
+    # `infrastructure` guards name `input_guard`, a key only their Diagnostics contract defines. The 0.2.1 IR above is
+    # left invalid by this re-pin; nothing selects it, because an IR directory is keyed by
+    # `spec_version` (`workflow_conductor.node_key_safe`: `<kind>__<id>__<version>`) and the
+    # spec on disk is 0.2.2.
+    "compile-docs-11": "033e228bb452e4b6a9aad2ad75c1256f8bf11b19acc486dd0268eeb405eb3c29",
+    # ...and the digest `compile-docs-11` SHIPPED with (origin/main 1807917d), kept so a later
+    # version returning to those bytes collides (`test_no_empty_bump_or_silent_revert`).
+    "compile-docs-11@1807917d": "d07c8ad3e8c38ef2b4fa5b923459ba4e71bdfe3b605febd2fb50952cadd2fb1b",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
