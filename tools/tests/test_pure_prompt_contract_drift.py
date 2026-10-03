@@ -854,8 +854,9 @@ PINNED: dict[str, str] = {
     # Measured by diffing this tuple against origin/main 05ee5541's: the three verify templates,
     # `runner_output_contract_document` and `runner_output_contract_sections` moved and no
     # other member. Witness: orch_20261003T044645Z_7cdf7aa7 (codex,
-    # `infrastructure/harness_fortran_cpu@0.7.0`) reported three defects present in attempt 2
-    # one per verdict over attempts 2-4 and ended `generate exceeded 3`.
+    # `infrastructure/harness_fortran_cpu@0.7.0`) failed generate.verify on attempts 2-4 with
+    # one finding each — three defects that issue #391 reports were all present in attempt 2
+    # — and ended `generate exceeded 3`.
     "pure-65": "53acee8bb3f6845d851e93f887ad72a245aa7a76f35db08ddaf949c8a2421957",
 }
 
