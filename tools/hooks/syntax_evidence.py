@@ -27,6 +27,13 @@ an optional target compiler with no registered adapter or no installed binary, a
 that refused before running (a staged source whose NAME the tool rejects). Either
 way nothing ran, so there is no record to cite. The reader does not distinguish them and
 does not need to: a `skipped` MANDATORY stage fails certification whichever produced it.
+
+The mandatory compiler may contribute TWO entries: the stage over the whole staged set, and —
+once that passes — one carrying `scope: "model_alone"`, the node's model file compiled alone
+with the dependency closure, which is exactly what a dependent node is staged (issue #389).
+The reader and the validator ignore `scope`: a second passing entry re-asserts the mandatory
+pass, and a failing one is written with `ok=False`, which the validator refuses before it
+reads any stage.
 """
 
 from __future__ import annotations

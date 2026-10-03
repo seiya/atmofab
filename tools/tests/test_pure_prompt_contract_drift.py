@@ -833,6 +833,16 @@ PINNED: dict[str, str] = {
     # `validate_bundle`, costing one of the two repair turns
     # (orch_20261002T140410Z_20f43acc), which is why the key moves.
     "pure-63": "750a658ac2c1043827ed0262afa0b3b389acba122d0483fcafcf5defdcf1444b",
+    # pure-64 (issue #389): the two neutral generate templates say a `helper` /
+    # `internal_module` file is not reachable from the model — a consuming node is staged the
+    # `<spec_id>_model` file alone, so the model compiles alone against the dependency closure,
+    # which the gate's new model-alone probe checks. Measured by diffing this tuple against
+    # origin/main 83de39fd's: `pure_generate_generate.txt` and
+    # `pure_generate_generate_harness.txt` moved and no other member — no language fragment.
+    # Witness: orch_20261003T010742Z_62b48625 certified a harness source whose model `use`s
+    # its `internal_module`, and the dependent orch_20261003T013455Z_93800b16 ended fail_closed
+    # (`leaf_exit=1`) at a gate whose leaf could fix nothing.
+    "pure-64": "3209d995cf217c78967fe4fe429a72903a8a1711cede7a8e62b625f4fe0ff407",
 }
 
 
