@@ -19594,6 +19594,12 @@ class DeterministicSyntaxTest(unittest.TestCase):
         if d.name.endswith("_deps_probe"):
             self.assertEqual(staged, set(self._probe_sources))
             return "probe"
+        if d.name.endswith("_model_alone"):
+            # What a CONSUMER is staged (issue #389): the closure and this node's model, and
+            # nothing else of its src/ — a probe that also carried a sibling would pass the
+            # very model it exists to refuse.
+            self.assertEqual(staged, set(self._probe_sources) | {"spec_x_model.f90"})
+            return "model_alone"
         return "stage"
 
     def test_gate_syntax_check_dependency_source_finding_fails_closed_not_loops(self) -> None:
@@ -19669,6 +19675,248 @@ class DeterministicSyntaxTest(unittest.TestCase):
             meta = out
             self.assertEqual(meta["status"], "fail")
             self.assertEqual(meta["failure_category"], "syntax_error")
+
+    @staticmethod
+    def _private_sources() -> dict[str, str]:
+        """A bundle whose model reaches its own `internal_module` — the shape of issue #389."""
+        return {
+            "spec_x_model.f90":
+                "module spec_x_model\n  use spec_x_private\nend module spec_x_model\n",
+            "spec_x_checks.f90": "module spec_x_checks\nend module spec_x_checks\n",
+            "spec_x_private.f90": "module spec_x_private\nend module spec_x_private\n",
+        }
+
+    @staticmethod
+    def _pass(args: dict, command_id: str = "sid") -> dict:
+        return {"ok": True, "return_code": 0, "command_id": command_id,
+                "compiler": args["compiler"], "compiler_version": "GNU Fortran 13",
+                "skipped": False}
+
+    def test_model_alone_probe_runs_after_the_staged_stage_passes_and_holds_only_the_model_and_closure(
+            self) -> None:
+        """Issue #389: once the mandatory stage passes over the whole src/, the gate compiles
+        the model alone with the closure — exactly what a dependent is staged. It certifies, so
+        its entry carries a command id and its log is the canonical one."""
+        import tempfile
+
+        from tools.hooks.syntax_evidence import read_syntax_evidence
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs, sources=self._private_sources())
+            c = self._conductor(repo)
+            kinds: list[str] = []
+            alone_args: list[dict] = []
+
+            def fake(args):
+                kind = self._call_kind(args)
+                kinds.append(kind)
+                if kind == "model_alone":
+                    alone_args.append(args)
+                    return self._pass(args, "alone-sid")
+                return self._pass(args)
+
+            stage_p, closure_p = self._with_dep(c)
+            with stage_p, closure_p, self._patch_syntax(fake):
+                out = c._gate_syntax_check(refs, "child-1")
+            self.assertEqual(kinds, ["stage", "model_alone"])
+            self.assertEqual(out["status"], "pass")
+            self.assertIsNone(out["attribution"])
+            self.assertTrue(alone_args[0]["command_log_path"].endswith("/src/command_log.jsonl"))
+            ev = read_syntax_evidence(pipeline_root=repo / refs.pipeline_ref, source_id="src_1")
+            assert ev is not None
+            self.assertTrue(ev["ok"])
+            self.assertEqual([s["compiler"] for s in ev["stages"]], ["gfortran", "gfortran"])
+            self.assertNotIn("scope", ev["stages"][0])
+            self.assertEqual(ev["stages"][1]["scope"], "model_alone")
+            self.assertEqual(ev["stages"][1]["status"], "pass")
+            self.assertEqual(ev["stages"][1]["command_id"], "alone-sid")
+            self.assertTrue(
+                ev["stages"][1]["command_log_ref"].endswith("/src/command_log.jsonl"))
+
+    def test_a_model_that_uses_a_private_sibling_fails_as_a_leaf_content_finding(self) -> None:
+        """Issue #389: orch_20261003T010742Z_62b48625 certified a harness whose model `use`s its
+        `internal_module`; its dependent orch_20261003T013455Z_93800b16 failed closed with
+        `Cannot open module file`, at a gate whose leaf could fix nothing. Held at the
+        producing node instead: a content `syntax_error` the leaf CAN fix, never a raise."""
+        import tempfile
+
+        from tools.hooks.syntax_evidence import read_syntax_evidence
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs, sources=self._private_sources())
+            c = self._conductor(repo)
+
+            def fake(args):
+                if self._call_kind(args) == "model_alone":
+                    return {"ok": False, "return_code": 1, "command_id": "alone-sid",
+                            "skipped": False, "compiler_version": "GNU Fortran 13",
+                            "stderr": "spec_x_model.f90:2:7:\n\nFatal Error: Cannot open "
+                                      "module file 'spec_x_private.mod' for reading at (1)\n"}
+                return self._pass(args)
+
+            stage_p, closure_p = self._with_dep(c)
+            with stage_p, closure_p, self._patch_syntax(fake):
+                out = c._gate_syntax_check(refs, "child-1")
+            self.assertEqual(out["status"], "fail")
+            self.assertEqual(out["failure_category"], "syntax_error")
+            self.assertEqual(out["attribution"], "leaf")
+            self.assertIn("model-alone check fail", out["failure_excerpt"])
+            self.assertIn("internal_module", out["failure_excerpt"])
+            self.assertIn("spec_x_private.mod", out["failure_excerpt"])
+            ev = read_syntax_evidence(pipeline_root=repo / refs.pipeline_ref, source_id="src_1")
+            assert ev is not None
+            self.assertFalse(ev["ok"])
+            alone = [s for s in ev["stages"] if s.get("scope") == "model_alone"]
+            self.assertEqual(len(alone), 1)
+            self.assertEqual(alone[0]["status"], "fail")
+            self.assertEqual(alone[0]["command_id"], "alone-sid")
+
+    def test_model_alone_probe_does_not_run_when_the_staged_stage_fails(self) -> None:
+        """A failing stage keeps the attribution path it had: the probe asks a question only a
+        PASSING whole src/ makes meaningful, and running it there would add a second excerpt
+        for the same finding."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+            kinds: list[str] = []
+
+            def fake(args):
+                kind = self._call_kind(args)
+                kinds.append(kind)
+                if kind in ("canary", "probe"):
+                    # An attribution run certifies nothing: its log stays in its own dir.
+                    self.assertIsNone(args["command_log_path"])
+                    return {"ok": True, "skipped": False, "command_id": "sub"}
+                return {"ok": False, "return_code": 1, "command_id": "sid", "skipped": False,
+                        "stderr": "spec_x_model.f90:4:25:\n\nError: boom\n"}
+
+            stage_p, closure_p = self._with_dep(c)
+            with stage_p, closure_p, self._patch_syntax(fake):
+                out = c._gate_syntax_check(refs, "child-1")
+            self.assertEqual(out["status"], "fail")
+            self.assertNotIn("model_alone", kinds)
+            self.assertNotIn("model-alone", out["failure_excerpt"])
+
+    def test_model_alone_probe_runs_for_the_mandatory_compiler_only(self) -> None:
+        """An optional stage that RAN and passed adds no probe: the probe is the consumer's
+        build, which the mandatory compiler stands for."""
+        import tempfile
+        from unittest import mock
+
+        from tools.backends import registry as backend_registry
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo, env={"ATMOFAB_SYNTAX_COMPILERS": "gfortran,frt"})
+            frt = backend_registry.Backend(
+                "compiler", "frt", "tools.backends.compiler.gfortran",
+                backend_provides=frozenset({"syntax_check"}))
+            calls: list[tuple[str, str]] = []
+
+            def fake(args):
+                calls.append((args["compiler"], self._call_kind(args)))
+                return self._pass(args)
+
+            stage_p, closure_p = self._with_dep(c)
+            with mock.patch.dict(backend_registry._BACKENDS, {("compiler", "frt"): frt}), \
+                    stage_p, closure_p, self._patch_syntax(fake):
+                out = c._gate_syntax_check(refs, "child-1")
+            self.assertEqual(out["status"], "pass")
+            self.assertEqual(calls, [("gfortran", "stage"), ("gfortran", "model_alone"),
+                                     ("frt", "stage")])
+
+    def test_a_skipped_model_alone_probe_fails_closed(self) -> None:
+        """The identical executable just ran over a set holding the model, so a skip is a
+        tooling inconsistency, not a pass: recording nothing would certify a model nobody
+        compiled alone."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+
+            def fake(args):
+                if self._call_kind(args) == "model_alone":
+                    return {"ok": True, "skipped": True, "reason": "compiler vanished"}
+                return self._pass(args)
+
+            stage_p, closure_p = self._with_dep(c)
+            with stage_p, closure_p, self._patch_syntax(fake), \
+                    self.assertRaises(RuntimeError) as ctx:
+                c._gate_syntax_check(refs, "child-1")
+            self.assertIn("model-alone", str(ctx.exception))
+            self.assertIn("compiler vanished", str(ctx.exception))
+
+    def test_model_alone_probe_on_a_node_with_no_closure_holds_the_model_only(self) -> None:
+        """The harness case of the incident: a node with no closure is staged its model alone,
+        and its private sibling stays out."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs, sources=self._private_sources())
+            c = self._conductor(repo)
+            c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
+            c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
+            self._probe_sources = frozenset()
+            kinds: list[str] = []
+
+            def fake(args):
+                kinds.append(self._call_kind(args))
+                return self._pass(args)
+
+            with self._patch_syntax(fake):
+                out = c._gate_syntax_check(refs, "child-1")
+            self.assertEqual(out["status"], "pass")
+            self.assertEqual(kinds, ["stage", "model_alone"])
+
+    def test_model_alone_probe_stages_the_interface_header_and_not_the_checks_header(
+            self) -> None:
+        """Decision 4 of issue #389's plan: a consumer is staged the model and its INTERFACE
+        header (`_interface_header_module`), never the checks header, which the wider
+        `_host_rendered_src_names` also names. A model that included the checks header would
+        pass a probe that carried it and still break every consumer. Driven on a real
+        `cuda_cpp` node so the header module is the language backend's own."""
+        import tempfile
+
+        from tools.tests.target_fixtures import install_target_profile, profile_with
+        seen: dict[str, set[str]] = {}
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs, language="cuda_cpp", sources={
+                "spec_x_model.cu": "// model\n", "spec_x_model.cuh": "// interface\n",
+                "spec_x_checks.cu": "// checks\n", "spec_x_checks.cuh": "// checks header\n",
+                "spec_x_helper.cu": "// helper\n"})
+            install_target_profile(repo, profile_with(toolchain={
+                "language": "cuda_cpp", "standard": "c++17"}))
+            c = self._conductor(repo)
+            c._stage_dependency_sources = (  # type: ignore[assignment]
+                lambda r, d, **kw: ((d / "dep_model.cu").write_text("// dep\n"),
+                                    (d / "dep_model.cuh").write_text("// dep h\n"),
+                                    [{"node_key": "component/dep@0.1.0",
+                                      "model_source_ref": "x"}])[-1])
+            c._dependency_closure_nodes = lambda r: ["component/dep@0.1.0"]  # type: ignore[assignment]
+
+            def fake(args):
+                d = Path(args["project_dir"])
+                seen[d.name] = {p.name for p in d.iterdir() if p.is_file()}
+                return self._pass(args)
+
+            with self._patch_syntax(fake):
+                out = c._gate_syntax_check(refs, "child-1")
+        self.assertEqual(out["status"], "pass")
+        alone = [v for k, v in seen.items() if k.endswith("_model_alone")]
+        self.assertEqual(len(alone), 1)
+        self.assertEqual(alone[0], {"spec_x_model.cu", "spec_x_model.cuh",
+                                    "dep_model.cu", "dep_model.cuh"})
 
     def test_gate_syntax_check_unviable_invocation_fails_closed_not_blaming_deps(self) -> None:
         # `std` comes from the LLM-authored IR and is passed verbatim as `-std=<value>`. An
@@ -20214,6 +20462,59 @@ class DeterministicGateTest(unittest.TestCase):
             findings = c._read_repair_findings(refs, d.reason, "generate")
             self.assertIn("[syntax]", findings)
             self.assertIn("[lint]", findings)
+
+    def test_a_failing_model_alone_probe_is_a_warm_syntax_retry_of_generate(self) -> None:
+        """Issue #389, composed: the whole src/ passes, the model alone does not, lint is clean.
+        The gate is a CONTENT fail (rc 0) whose one category is `syntax_error`, attributed to
+        the leaf, and it routes to a warm `generate.generate` retry — never the transport
+        fail_closed the incident's dependent ended in."""
+        import contextlib
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs)
+            c = self._conductor(repo)
+            real_run = wc.subprocess.run
+
+            def linter(args):
+                return {"ok": True, "return_code": 0, "command_id": "cid",
+                        "preset": "fortitude", "stdout": ""}
+
+            def syntax(args):
+                if str(args.get("project_dir", "")).endswith("_model_alone"):
+                    return {"ok": False, "return_code": 1, "command_id": "alone",
+                            "skipped": False,
+                            "stderr": "Fatal Error: Cannot open module file "
+                                      "'spec_x_private.mod' for reading at (1)"}
+                return self._syntax_pass(args)
+
+            def run(cmd, **kwargs):
+                if list(cmd)[1:] == ["--version"]:
+                    return real_run(cmd, **kwargs)
+                raise AssertionError("static checker must be skipped on a dirty source")
+
+            with contextlib.ExitStack() as stack:
+                for p in self._patches(linter, syntax, run):
+                    stack.enter_context(p)
+                out = c._gate_inproc(refs, "child-1")
+
+            self.assertEqual(out["returncode"], 0)
+            meta = json.loads((repo / refs.source_dir() / "gate_meta.json").read_text())
+            self.assertEqual(meta["gate_status"], "fail")
+            self.assertEqual(meta["failure_categories"], ["syntax_error"])
+            self.assertEqual(meta["checkers"]["syntax"]["attribution"], "leaf")
+            self.assertLess(meta["failure_excerpt"].index("[syntax]"),
+                            meta["failure_excerpt"].index("model-alone check fail"))
+            self.assertEqual(meta["checkers"]["static"]["status"], "skipped")
+            paths = [refs.source_dir() + "/gate_meta.json"]
+            self.assertEqual(
+                c.determine_substep_status(refs, "generate", "gate", paths)[0], "fail")
+            d = c.classify_failure(refs, "generate", [wc.SubstepOutcome("g", "pass", [], 0),
+                                                      wc.SubstepOutcome("gate", "fail", [], 0)])
+            self.assertEqual((d.action, d.target_phase, d.repair_strategy),
+                             ("retry", "generate", "reuse"))
+            self.assertEqual(d.reason, "gate_syntax_error")
 
     def test_all_clean_runs_static_and_passes(self) -> None:
         """New test 3 (pass path): lint+syntax pass -> static runs; all clean -> gate pass."""

@@ -37,7 +37,11 @@ already makes every warning an error. `-rdc=true` is the build's relocatable dev
 another file fails this stage although the build links it. A failing stage is attributed by re-running the same argv
 over a canary translation unit with one kernel; a canary failure is an invocation the driver
 refuses (typically a `toolchain.standard` or `hardware.architecture` it does not know) and is a
-transport `fail_closed`.
+transport `fail_closed`. A passing stage is followed by the model-alone probe
+(`docs/workflow/phases/phase_02_generate.md`, issue #389): `<spec_id>_model.cu` and
+`<spec_id>_model.cuh` with the closure alone, which is what a consumer is staged. The binding
+already keeps a `helper` `.cu` out of the model's reach (a leaf ships no header), so the probe
+adds no rule here; it catches a model that includes the checks header.
 
 ## 3. Model naming and dependency use
 

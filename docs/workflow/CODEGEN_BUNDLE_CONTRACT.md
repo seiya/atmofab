@@ -218,6 +218,10 @@ is shared by the whole unit, and only `helper` / `internal_module` may be shared
 of any entrypoint. This *is* the definition of "private" in this contract: privacy is
 declared by role, not inferred from a language's own accessibility statement. A `runner` file cannot be
 one either, for the opposite reason: it is the executable entry, which nothing may `use`.
+A `helper` / `internal_module` file is reachable from the `checks` (or `runner`) file only. A
+consumer is staged exactly a member's `model` file, so the `model` compiles alone against the
+dependency closure; the producing node's `Generate.gate` syntax check compiles it that way
+(issue #389).
 
 ### `logical_path`
 

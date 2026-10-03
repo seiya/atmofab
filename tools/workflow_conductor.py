@@ -10484,7 +10484,12 @@ class Conductor:
         fail_closed naming what to fix, since the leaf authors neither the IR nor a
         dependency's certified source. A missing MANDATORY stage compiler (or a genuine
         tool/infra error) raises and surfaces as a transport fail_closed likewise — an
-        environment problem, not something the generate retry loop could fix. Optional
+        environment problem, not something the generate retry loop could fix.
+        When the mandatory stage passes, a fourth run compiles the node's model file alone
+        (plus its host-rendered interface header, when the language declares one) with the
+        staged closure — exactly what a dependent node is staged (issue #389). Its failure is a
+        leaf content failure (the model reached a `helper` / `internal_module` sibling), logged
+        to the canonical command log and recorded as a `scope: "model_alone"` stage. Optional
         additional stages from ATMOFAB_SYNTAX_COMPILERS (comma-separated adapter ids — the
         future target-compiler second stage) are recorded as skipped when their compiler has no
         registered adapter, reads another language's sources, or its binary is not installed,
@@ -10634,6 +10639,32 @@ class Conductor:
                 stage_syntax_inputs(src_dir, stage_dir, staged_suffixes)
                 for p in dep_files:
                     shutil.copy2(p, stage_dir / p.name)
+
+                def _sub_check(sub_dir: Path, *,
+                               command_log_path: str | None = None) -> dict[str, Any]:
+                    """Re-run THIS stage's adapter+flags over an isolated source set.
+
+                    The three attribution runs below (canary, dependency closure, leaf files)
+                    pass no `command_log_path`, so their log stays in the throwaway dir: they
+                    certify nothing, and keeping them out of the node's canonical
+                    <src>/command_log.jsonl keeps that log the record of the gate proper. The
+                    model-alone probe passes the canonical log, because it CERTIFIES — its stage
+                    entry's command id is resolved against that log by the post_generate
+                    validator. `None` is the tool's own default: the log beside `sub_dir`."""
+                    return tool_run_syntax_check({
+                        "compiler": compiler,
+                        "std": tc["standard"],
+                        "openmp": tc["backend"] == "openmp",
+                        "architecture": architecture,
+                        "parallel_backend": tc["backend"],
+                        "project_dir": str(sub_dir),
+                        "repo_root": str(self.repo_root),
+                        "command_log_path": command_log_path,
+                        "capture_limit": _FULL_CAPTURE_LIMIT,
+                        "orchestration_id": self.orchestration_id,
+                        "agent_run_id": child_arid,
+                    })
+
                 try:
                     result = tool_run_syntax_check({
                         "compiler": compiler,
@@ -10706,28 +10737,80 @@ class Conductor:
                     "command_id": str(result.get("command_id") or ""),
                     "command_log_ref": command_log_ref,
                 })
+                # The model-alone probe (issue #389). A node that depends on this one is staged
+                # exactly this node's model file — plus its host-rendered interface header, when
+                # the language declares one — and nothing else of this bundle
+                # (`_stage_dependency_sources`). The stage above compiles the WHOLE src/, so a
+                # model that reaches a `helper` / `internal_module` sibling passes it here and
+                # breaks every consumer, at a gate whose leaf cannot repair it. So once the
+                # mandatory stage passes, the same adapter and flags run over exactly what a
+                # consumer is handed: the closure, the model, and the interface header. Only
+                # `_interface_header_module` decides the header — the wider
+                # `_host_rendered_src_names` also names the checks header, which a consumer never
+                # receives. A failure is the leaf's own content (it can move what the model needs
+                # into the model file), so it is a `syntax_error` routed to generate.generate,
+                # never a raise. It certifies, so it logs to the canonical command log.
+                if stage_ok and compiler == mandatory:
+                    model_src = src_dir / self._model_basename(refs)
+                    # A missing model is the static checker's / validate_bundle's finding; a
+                    # probe over the closure alone would be the dependency probe, not this one.
+                    if model_src.is_file():
+                        alone_dir = (self.repo_root / "workspace" / "tmp" / child_arid
+                                     / "syntax" / f"{compiler}_model_alone")
+                        # Reset, for the leaf probe's reason below: a residue from an earlier
+                        # attempt would make the set wider than what a consumer is staged.
+                        if alone_dir.exists():
+                            shutil.rmtree(alone_dir)
+                        alone_dir.mkdir(parents=True, exist_ok=True)
+                        for p in dep_files:
+                            shutil.copy2(p, alone_dir / p.name)
+                        shutil.copy2(model_src, alone_dir / model_src.name)
+                        header = self._interface_header_module(refs)
+                        if header is not None:
+                            header_src = src_dir / header.basename(spec_id_of(refs.node_key))
+                            if header_src.is_file():
+                                shutil.copy2(header_src, alone_dir / header_src.name)
+                        alone = _sub_check(
+                            alone_dir, command_log_path=str(src_dir / "command_log.jsonl"))
+                        if alone.get("skipped"):
+                            # The identical executable just ran and the dir holds the model, so
+                            # a skip is a tooling inconsistency — the class of the mandatory
+                            # stage's own skip above.
+                            raise RuntimeError(
+                                f"generate.gate syntax check: the mandatory {compiler} "
+                                f"model-alone probe did not run ({alone.get('reason')}) although "
+                                f"the {compiler} stage over the whole src/ just ran")
+                        alone_ok = bool(alone.get("ok"))
+                        stages.append({
+                            "compiler": compiler,
+                            "status": "pass" if alone_ok else "fail",
+                            "scope": "model_alone",
+                            "compiler_version": alone.get("compiler_version"),
+                            "command_id": str(alone.get("command_id") or ""),
+                            "command_log_ref": command_log_ref,
+                        })
+                        if not alone_ok:
+                            ok = False
+                            failure_category = "syntax_error"
+                            attribution = "leaf"
+                            alone_excerpt = ((alone.get("stdout", "") or "")
+                                             + (alone.get("stderr", "") or ""))
+                            block = (
+                                f"[{compiler} {tc['standard']} model-alone check fail]\n"
+                                f"A node that depends on this one is staged exactly "
+                                f"{model_src.name} (and its host-rendered interface header, "
+                                f"where the language has one) with the dependency closure, and "
+                                f"nothing else of this bundle — so the model file may not "
+                                f"use or include a `helper` / `internal_module` file. Move what "
+                                f"it needs into the model file, which may declare further "
+                                f"modules, and keep those roles for the checks file and the "
+                                f"runner. The whole src/ passed; the model alone did not:\n"
+                                + "\n".join(alone_excerpt.splitlines()[-40:]))
+                            failure_excerpt = (block if failure_excerpt is None
+                                               else failure_excerpt + "\n" + block)
                 if not stage_ok:
                     excerpt = ((result.get("stdout", "") or "")
                                + (result.get("stderr", "") or ""))
-
-                    def _sub_check(sub_dir: Path) -> dict[str, Any]:
-                        """Re-run THIS stage's adapter+flags over an isolated source set, to
-                        attribute the failure by the compiler's own verdict. The command log
-                        stays in the throwaway dir (no command_log_path override): these runs
-                        certify nothing, so keeping them out of the node's canonical
-                        <src>/command_log.jsonl keeps that log the record of the gate proper."""
-                        return tool_run_syntax_check({
-                            "compiler": compiler,
-                            "std": tc["standard"],
-                            "openmp": tc["backend"] == "openmp",
-                            "architecture": architecture,
-                            "parallel_backend": tc["backend"],
-                            "project_dir": str(sub_dir),
-                            "repo_root": str(self.repo_root),
-                            "capture_limit": _FULL_CAPTURE_LIMIT,
-                            "orchestration_id": self.orchestration_id,
-                            "agent_run_id": child_arid,
-                        })
 
                     # Attribution step 1 — is the INVOCATION itself viable? `std` comes from
                     # the target profile (`toolchain.standard`, operator-authored since issue
@@ -10775,9 +10858,11 @@ class Conductor:
                     # (e.g. any of the promoted -Werror classes) is not clean by induction —
                     # only a dependency certified under the current gate is.
                     #
-                    # Attribution re-runs the SAME adapter over the dependency closure ALONE
-                    # (it is self-contained: `_stage_dependency_sources` stages the transitive
-                    # closure, so every `use` among the deps resolves within the set). Deciding
+                    # Attribution re-runs the SAME adapter over the dependency closure ALONE.
+                    # The set is closed under `use` / include by induction (issue #389): every
+                    # certified dependency's model passed ITS gate's model-alone probe against
+                    # ITS closure, and `_stage_dependency_sources` stages the transitive
+                    # closure, so every reference among the deps resolves within it. Deciding
                     # this by the compiler's own verdict rather than by reading the diagnostics
                     # keeps it exact and format-agnostic: a dep basename merely APPEARING in
                     # the excerpt proves nothing (gfortran prints default-on warnings — -Wtabs,

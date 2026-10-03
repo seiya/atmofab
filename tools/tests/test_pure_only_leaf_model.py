@@ -1210,9 +1210,11 @@ class InprocBodiesCallTheServerWithoutATokenTests(unittest.TestCase):
     #: it — or a new one that starts — is a failure rather than a quietly narrower sweep.
     #: The name is the INNERMOST enclosing function, so two of them are nested helpers:
     #: `_probe` (inside `_gate_lint_check`, the host/leaf attribution re-run) and
-    #: `_sub_check` (inside `_gate_syntax_check`, the per-source attribution re-run). Both
-    #: certify nothing, which is why they carry no `command_log_path` — but they are still
-    #: calls into the server and the attribution rule is the same for them.
+    #: `_sub_check` (inside `_gate_syntax_check`, the per-source attribution re-runs and the
+    #: model-alone probe of issue #389). The attribution re-runs certify nothing, which is why
+    #: they carry no `command_log_path` (`_sub_check` passes `None` for them); the model-alone
+    #: probe certifies and passes the canonical log. All are calls into the server and the
+    #: attribution rule is the same for them.
     #: `_compile_static_inproc` reaches the server through `_gate_lint_check` /
     #: `_gate_syntax_check` rather than a body of its own.
     CALLING_METHODS: ClassVar[frozenset[str]] = frozenset({

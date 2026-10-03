@@ -14,7 +14,9 @@
   name, and Fortran names are case-insensitive, so the contract's case-folded module-name
   uniqueness is exactly the language's own rule.
 - **Privacy.** A `helper` / `internal_module` role is private by declaration; a Fortran
-  `private` statement does not make a file private in the contract's sense.
+  `private` statement does not make a file private in the contract's sense, and a private file
+  is not reachable from the model: a staged dependency is `<spec_id>_model.f90` alone
+  (§Host-given names).
 - **Host-given names.** The host names a node's model source `<spec_id>_model.f90`, its checks
   source `<spec_id>_checks.f90` and its runner `<spec_id>_runner.f90` (`model_basename` /
   `checks_basename` / `runner_basename`); a staged dependency is `<spec_id>_model.f90`.
