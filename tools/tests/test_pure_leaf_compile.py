@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import tempfile
 import unittest
@@ -456,26 +457,42 @@ class PureCompileContextTests(_Fixture):
 
     #: The V3 coverage rule as both compile leaves read it (issue #386). A `problem` `tests.md`
     #: names no `checks.<id>` key in its Diagnostics contract and writes each judgment as test
-    #: prose, so a rule keyed on the keys alone left the check list to the producer's taste.
-    _NON_GATING_RULE = (
+    #: prose, so a rule keyed on the keys alone left the check list to the producer's taste —
+    #: and, read with "neither more nor less", refused the `cfl` id every guard test names.
+    #: Each phrase must sit on the V3 bullet itself, not anywhere in the document.
+    _V3_PREFIX = "- Every `io_contract.diagnostics_contract.checks[].id` answers to `tests.md`"
+    _V3_PHRASES = (
+        "to a check a test's `pass_when` names",
+        "or to a judgment a test (§6) applies; an id that answers to none is a defect",
         "every judgment a test applies and reports WITHOUT making it a condition of its "
-        "`pass_when`")
+        "`pass_when`",
+        "nor does one whose threshold is `informational_only`",
+    )
+    #: Matches both stale spellings, `tests.md §3` and ``tests.md` §3``.
+    _STALE = re.compile(r"tests\.md`?\s*§[34]\b")
 
     def test_both_compile_leaves_read_the_non_gating_coverage_rule(self) -> None:
         """Read through the two builders, so a document the leaves stop inlining is red too.
+        What this does NOT hold is the rule's meaning: a rewording that keeps each phrase and
+        negates the sentence is green here, and is held by the `COMPILE_INLINED_DOCUMENTS_VERSION`
+        digest (`test_derivation_transformation_drift.py`), a review gate on every byte.
         The stale `tests.md §3` / `§4` spellings (the Diagnostics contract is §5 and the tests
         §6 in every `tests.md`) must not come back beside it."""
+        # The stale-spelling pattern must be able to match, in both spellings.
+        for probe in ("tests.md §3", "`tests.md` §4", "tests.md`§3"):
+            self.assertRegex(probe, self._STALE)
+        self.assertNotRegex("tests.md §5", self._STALE)
         c = self.conductor()
         for substep, ctx in (("generate", c._build_pure_compile_context(self.refs)),
                              ("verify", c._build_pure_compile_verify_context(self.refs))):
             doc = ctx["phase_contract_document"]
             with self.subTest(substep=substep):
-                self.assertIn(self._NON_GATING_RULE, doc)
-                self.assertNotIn("tests.md §3", doc)
-                self.assertNotIn("tests.md §4", doc)
-                # Self-test the search: the same assertion fails on the document with the
-                # sentence removed, so a deleted rule is red rather than vacuous.
-                self.assertNotIn(self._NON_GATING_RULE, doc.replace(self._NON_GATING_RULE, ""))
+                bullets = [ln for ln in doc.splitlines() if ln.startswith(self._V3_PREFIX)]
+                self.assertEqual(len(bullets), 1, "the V3 coverage bullet is not one line")
+                for phrase in self._V3_PHRASES:
+                    self.assertIn(phrase, bullets[0])
+                self.assertIn("one `tests.md` marks non-gating included", doc)
+                self.assertNotRegex(doc, self._STALE)
 
 
 class PureCompileProfileContextTests(_Fixture):
