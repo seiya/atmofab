@@ -104,7 +104,7 @@ to fail (G6). A loop of the model source the plan keeps on the host is the plan'
 like a declared `none`: its reason must be about the loop itself (a carried dependence, a
 reduction, a copy that only reshapes host state), not about a gate or a run in which a kernel did
 not execute. How a loop of the checks module is lowered is not G6's to judge (issue #400); the rules above
-that hold for the checks module (no host fallback among them) still do. The
+that hold for the checks module, the ban on a host fallback among them, still do. The
 producer is told the same, and told that a kernel the trace never saw is launched where the cases
 reach it with a launch configuration the device accepts, and removed only when its work is not
 needed, never moved to a host loop (issue #307 PR-3).

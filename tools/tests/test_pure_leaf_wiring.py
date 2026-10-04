@@ -2954,20 +2954,19 @@ class PureRenderTests(unittest.TestCase):
 
     # Issue #399: a sentence that names `ok` beside a logical value gives that value a meaning.
     # A bound on growth, not a detector: a rewording that names no value ("reported through
-    # `ok`") passes. It over-refuses too — "whether it is true or false is never a finding"
-    # is refused — so a sentence of that kind is added by editing this row deliberately.
-    # Sentences are read across a hard wrap (the documents it reads are wrapped), and a
-    # Fortran logical literal is one token, so its dots do not end a sentence.
+    # `ok`") passes. It over-refuses too — "whether `ok` is true or false is never a finding"
+    # is refused, and so is the English word ("it is ok to leave a flag false") — so a sentence
+    # of that kind is added by editing this row deliberately. A sentence ends at `.` or `;`
+    # before whitespace, or at a blank line; every other newline is a hard wrap and is read
+    # through (two bullets with no closing punctuation are read as one sentence). A Fortran
+    # logical literal is one token, so its dots do not end a sentence.
     _OK_NAME_RE = re.compile(r"\bok\b|\b(?:setup|run)_ok\b")
     _OK_VALUE_RE = re.compile(r"\b(?:true|false)\b", re.IGNORECASE)
 
     @classmethod
     def _sentences_giving_ok_a_value(cls, text: str) -> list[str]:
         text = re.sub(r"\.(true|false)\.", r"\1", text, flags=re.IGNORECASE)
-        # A newline continues the sentence unless a blank line, bullet, heading, table row or
-        # fence follows it.
-        text = re.sub(r"(?<=\S)\n(?=[^\s#|`-])", " ", text)
-        return [s for s in re.split(r"(?<=[.;])\s+|\n", text)
+        return [s for s in re.split(r"(?<=[.;])\s+|\n\s*\n", text)
                 if cls._OK_NAME_RE.search(s) and cls._OK_VALUE_RE.search(s)]
 
     def test_checks_module_loops_and_ok_are_not_findings_on_every_target(self) -> None:
@@ -2983,12 +2982,14 @@ class PureRenderTests(unittest.TestCase):
         from tools.backends import registry
         # The sentence reader must refuse the wording #399 removed and the rewordings round 1
         # planted, and pass the sentences that remain — or it observes nothing.
-        # One refused sample per alternative of each pattern and per joining rule, and one kept
-        # sample per sentence boundary, so narrowing any of them is red (round 2 narrowed nine
-        # with the previous self-test green).
+        # One refused sample per alternative of each pattern, per Fortran literal and per kind
+        # of hard wrap, and one kept sample per sentence boundary and for the word boundary,
+        # so narrowing any of them is red.
         for refused in ("`ok` false rejects a guard / xfail input (e.g. an invalid grid size).",
                         "A rejected guard / xfail case returns .false. in `ok`;",
-                        "a rejected case (`case_setup` setting `ok`\nto false) still leaves",
+                        "a guard case returns .true. in `ok` and the run stops.",
+                        "a rejected case sets `ok` to\n`.false.` and still leaves",
+                        "a rejected case rejects with ok\n  = false on the guard path.",
                         "`ok`: false rejects a guard input.",
                         "a guard case leaves ok as False.",
                         "the runner stops when setup_ok is false.",
@@ -2996,8 +2997,8 @@ class PureRenderTests(unittest.TestCase):
             self.assertTrue(self._sentences_giving_ok_a_value(refused), refused)
         for kept in ("Assign `ok` on every path. `found` false when the metric is absent.",
                      "Assign `ok` on every path; `found` false when the metric is absent.",
-                     "- Assign `ok` on every path\n- `found` false when the metric is absent.",
-                     "Assign `ok`.\n\n`found` false when the metric is absent.",
+                     "Assign `ok` on every path\n\n`found` false when the metric is absent.",
+                     "Assign `ok` on every path.\n`found` false when the metric is absent.",
                      "Assign `ok` on every path. The lookup returns true when the id is known."):
             self.assertEqual(self._sentences_giving_ok_a_value(kept), [], kept)
         contract = wc._checks_contract_abi_sections(
