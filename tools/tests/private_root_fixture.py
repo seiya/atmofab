@@ -156,6 +156,42 @@ def isolated_homes_per_test_suite(tests):
     return _PerTestHomesRoot(flat)
 
 
+# --------------------------------------------------------------------------------------
+# No test launches a real provider CLI for a usage window's reset instant (issue #405).
+#
+# `tools/usage_reset.py` spawns `codex app-server` / `claude -p` through its module-level
+# `_spawn`. Under pytest the conftest autouse fixture replaces it with `refuse_provider_probe`;
+# conftest does not load under plain `unittest`, where a module that drives the wait with
+# `wait_usage_reset=True` would otherwise launch whichever CLI is on the leaf `PATH` — measured
+# in review: 48 real spawn attempts across three modules. Those modules call the pair below
+# from `setUpModule` / `tearDownModule`. Witnessed from outside the process
+# (`test_usage_reset.UnittestRunnerHermeticityTests`), for the reason the paragraph above the
+# homes redirect gives.
+_MODULE_PROBE_REFUSALS: dict[str, object] = {}
+
+
+def refuse_provider_probe(*_args, **_kwargs):
+    """The `usage_reset._spawn` a test sees: every probe reads as `probe_failed`."""
+    raise OSError("the test suite launches no provider CLI")
+
+
+def refuse_provider_probes_for_module(module_name: str) -> None:
+    """Call from a module's `setUpModule`; pair with the restore below."""
+    from unittest import mock
+
+    from tools import usage_reset
+    patcher = mock.patch.object(usage_reset, "_spawn", refuse_provider_probe)
+    patcher.start()
+    _MODULE_PROBE_REFUSALS[module_name] = patcher
+
+
+def restore_provider_probes_for_module(module_name: str) -> None:
+    """Call from a module's `tearDownModule`."""
+    patcher = _MODULE_PROBE_REFUSALS.pop(module_name, None)
+    if patcher is not None:
+        patcher.stop()  # type: ignore[attr-defined]
+
+
 def redirect_isolated_homes_root_for_module(module_name: str) -> None:
     """Call from a module's `setUpModule`; pair with the restore below."""
     import os

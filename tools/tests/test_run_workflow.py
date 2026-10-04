@@ -424,10 +424,16 @@ class RunWorkflowTests(unittest.TestCase):
     def test_the_wait_usage_reset_help_states_the_schedule_the_conductor_sleeps(self) -> None:
         """The help is the operator's only statement of what the flag buys, and it used to
         describe a mechanism the conductor no longer had (TODO's "predates human-form reset
-        support"). It is now DERIVED from `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS`, and this pins
-        the derivation: every schedule entry and the wait count appear in `--help`, and the
-        retired vocabulary (a reset time read from the leaf, the 6h cap) does not."""
-        from tools.workflow_conductor import USAGE_LIMIT_WAIT_SCHEDULE_SECONDS
+        support"). It is DERIVED from `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS` and
+        `USAGE_RESET_MARGIN_SECONDS`, and this pins the derivation: the provider-reported
+        instant, the margin, every fallback schedule entry and the wait count appear in
+        `--help`, the dead leaf's output is disclaimed as a source (issue #405), and the
+        retired vocabulary (the 6h cap, an epoch read from the leaf) does not."""
+        from tools.workflow_conductor import (
+            MAX_USAGE_RESET_WAIT_SECONDS,
+            USAGE_LIMIT_WAIT_SCHEDULE_SECONDS,
+            USAGE_RESET_MARGIN_SECONDS,
+        )
         out = io.StringIO()
         with redirect_stdout(out), self.assertRaises(SystemExit):
             run_workflow._parse_args(["--help"])
@@ -436,7 +442,10 @@ class RunWorkflowTests(unittest.TestCase):
         for seconds in USAGE_LIMIT_WAIT_SCHEDULE_SECONDS:
             self.assertIn(f"{int(seconds)}s", flag)
         self.assertIn(f"at most {len(USAGE_LIMIT_WAIT_SCHEDULE_SECONDS)} waits per substep", flag)
-        self.assertIn("No reset time is read from the leaf", flag)
+        self.assertIn("reset instant the provider reports", flag)
+        self.assertIn(f"plus {int(USAGE_RESET_MARGIN_SECONDS)}s", flag)
+        self.assertIn(f"at most {int(MAX_USAGE_RESET_WAIT_SECONDS)}s per wait", flag)
+        self.assertIn("Nothing is read from the dead leaf's output", flag)
         self.assertIn("Default OFF", flag)
         self.assertNotIn("6h", flag)
         self.assertNotIn("epoch", flag)
@@ -7696,18 +7705,48 @@ class StdoutFormatTests(unittest.TestCase):
             "(cap 7200s, ATMOFAB_LEAF_TIMEOUT_SECONDS) — process group killed, "
             "phase fails closed",
         )
-        # An opt-in usage-limit wait: the run is deliberately parked on the fixed schedule, so the
-        # wait is announced — with its place in the budget — rather than left as a silent
-        # multi-hour gap the operator might kill.
+        # An opt-in usage-limit wait: the run is deliberately parked, so the wait is announced —
+        # with its place in the budget and what decided its length — rather than left as a
+        # silent multi-hour gap the operator might kill. Both sources (issue #405).
         wait_line = f({"status": "info", "event": "leaf_usage_limit_wait",
                        "node_key": "n", "step": "generate", "substep": "generate",
                        "tag": "llm_usage_limit", "wait_seconds": 900.0, "wait_attempt": 1,
                        "max_waits": 3, "dead_agent_run_id": "ar_dead", "evidence": "e",
-                       "orchestration_id": "o"})
+                       "reset_source": "schedule", "reset_epoch": None,
+                       "reset_window": None, "fallback_reason": "probe_failed",
+                       "reset_detail": "d", "orchestration_id": "o"})
         self.assertEqual(
             wait_line,
             "    [warn   ] usage limit in generate.generate [wait 1/3]: "
-            "sleeping 900.0s on the fixed schedule, then re-launching",
+            "sleeping 900s on the fixed schedule (probe_failed), then re-launching",
+        )
+        # A provider that NAMED a window the conductor declined (a weekly window beyond the
+        # cap): the line says schedule, not "until the provider-reported reset".
+        beyond = f({"status": "info", "event": "leaf_usage_limit_wait",
+                    "node_key": "n", "step": "generate", "substep": "generate",
+                    "tag": "llm_usage_limit", "wait_seconds": 900.0, "wait_attempt": 1,
+                    "max_waits": 3, "dead_agent_run_id": "ar_dead", "evidence": "e",
+                    "reset_source": "schedule", "reset_epoch": 1791690820,
+                    "reset_window": "seven_day", "fallback_reason": "instant_beyond_cap",
+                    "reset_detail": "d", "orchestration_id": "o"})
+        self.assertEqual(
+            beyond,
+            "    [warn   ] usage limit in generate.generate [wait 1/3]: "
+            "sleeping 900s on the fixed schedule (instant_beyond_cap), then re-launching",
+        )
+        provider_line = f({"status": "info", "event": "leaf_usage_limit_wait",
+                           "node_key": "n", "step": "generate", "substep": "generate",
+                           "tag": "llm_usage_limit", "wait_seconds": 1920.4837261537,
+                           "wait_attempt": 1, "max_waits": 3, "dead_agent_run_id": "ar_dead",
+                           "evidence": "e", "reset_source": "provider",
+                           "reset_epoch": 1791125452, "reset_window": "primary(300min)",
+                           "fallback_reason": None, "reset_detail": "d",
+                           "orchestration_id": "o"})
+        self.assertEqual(
+            provider_line,
+            "    [warn   ] usage limit in generate.generate [wait 1/3]: "
+            "sleeping 1920s until the provider-reported reset (primary(300min)), "
+            "then re-launching",
         )
         # The claim-degradation warning. `human` is the DEFAULT format, so a payload the
         # renderer has no arm for falls through to the raw-JSON fallback — which is the leak

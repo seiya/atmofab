@@ -34,7 +34,22 @@ from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, VERDICT_SEVERITIES
 from tools.tests.test_pure_leaf_producer import (
     _NODE, _write_node, _PureFakeConductor, _valid_bundle, _envelope, _conductor,
 )
+from tools import usage_reset
 from tools.tests.llm_samples import sample_config_with as _cfg
+from tools.tests.private_root_fixture import (
+    refuse_provider_probes_for_module,
+    restore_provider_probes_for_module,
+)
+
+
+def setUpModule() -> None:
+    # Outside pytest conftest does not load, so this module refuses a real reset probe itself
+    # (issue #405; `private_root_fixture.refuse_provider_probes_for_module`).
+    refuse_provider_probes_for_module(__name__)
+
+
+def tearDownModule() -> None:
+    restore_provider_probes_for_module(__name__)
 
 
 def _verdict(status: str = "pass", *, severity: str | None = None,
@@ -953,6 +968,28 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual(oc.attempts, 2)             # launch count (the wait launch is counted)
         self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
         self.assertTrue((c.repo_root / refs.source_dir() / "source_meta.json").exists())
+
+    def test_the_reviewer_wait_asks_the_provider_of_its_own_entry(self) -> None:
+        """Issue #405, the reviewer half: the reset probe is asked with the reviewer loop's OWN
+        `entry` (a per-substep override is the provider whose window is read). The substep's
+        entry is made distinguishable by a sentinel model."""
+        import dataclasses
+        c, refs = self._waiting(wc.ProcResult(1, "", "usage limit reached"))
+        orig_entry_for = c.entry_for
+
+        def _entry_for(phase, substep):
+            entry = orig_entry_for(phase, substep)
+            if (phase, substep) == ("generate", "verify"):
+                return dataclasses.replace(entry, model="per-substep-sentinel")
+            return entry
+        c.entry_for = _entry_for  # type: ignore[assignment]
+        asked: list = []
+        c._read_usage_reset = (  # type: ignore[assignment]
+            lambda entry, arid: asked.append(entry) or usage_reset.ResetReading(
+                None, None, usage_reset.FAILURE_PROBE_FAILED, "stub"))
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual([e.model for e in asked], ["per-substep-sentinel"])
 
     def test_wait_usage_reset_recovers_a_real_cli_abort_in_either_shape(self) -> None:
         """REGRESSION, production shapes: the CLI reports a usage limit on STDOUT with a 0-byte
