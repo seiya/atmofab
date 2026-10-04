@@ -2966,7 +2966,7 @@ class PureRenderTests(unittest.TestCase):
         text = re.sub(r"\.(true|false)\.", r"\1", text, flags=re.IGNORECASE)
         # A newline continues the sentence unless a blank line, bullet, heading, table row or
         # fence follows it.
-        text = re.sub(r"(?<=\S)\n(?=[^\n\s#|`-])", " ", text)
+        text = re.sub(r"(?<=\S)\n(?=[^\s#|`-])", " ", text)
         return [s for s in re.split(r"(?<=[.;])\s+|\n", text)
                 if cls._OK_NAME_RE.search(s) and cls._OK_VALUE_RE.search(s)]
 
@@ -2987,7 +2987,7 @@ class PureRenderTests(unittest.TestCase):
         # sample per sentence boundary, so narrowing any of them is red (round 2 narrowed nine
         # with the previous self-test green).
         for refused in ("`ok` false rejects a guard / xfail input (e.g. an invalid grid size).",
-                        "A rejected guard / xfail case returns `.false.` in `ok`;",
+                        "A rejected guard / xfail case returns .false. in `ok`;",
                         "a rejected case (`case_setup` setting `ok`\nto false) still leaves",
                         "`ok`: false rejects a guard input.",
                         "a guard case leaves ok as False.",
