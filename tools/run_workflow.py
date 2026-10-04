@@ -3421,6 +3421,14 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
                 f"with NO concurrency gate; one driver per workspace is yours to enforce "
                 f"(docs/RUNBOOK.md §3-1)")
 
+    if status == "info" and event == "launch_check_refused":
+        # The refusal's whole detail, unelided: it names every dependency that is not ready
+        # and the remedy, and the terminal summary that follows carries the same text only
+        # as far as `reason_detail` holds it (issue #383).
+        node = payload.get("node_key", "?")
+        return (f"    [fail_closed] {node} {payload.get('phase', '?')}: launch check refused "
+                f"({payload.get('reason_code', '?')}): {payload.get('detail', '?')}")
+
     if status == "info" and event == "ir_superseded":
         node = payload.get("node_key", "?")
         return f"    [warn   ] IR superseded for {node}: {payload.get('detail', '?')}"
@@ -4093,17 +4101,21 @@ def _run_node(
                     / "orchestration_meta.json") or {}
                 cur_status = str(meta_now.get("status") or "").strip().lower()
                 if cur_status in {"fail_closed", "blocked", "timeout", "cancel"}:
+                    # `detail` is what the runtime RECORDED with the status (record-launch
+                    # persists its whole refusal there); the exception that unwound the
+                    # conductor is reported beside it as `error`, not instead of it.
                     print(json.dumps(
                         {"status": cur_status,
                          "reason": meta_now.get("reason_code") or "conductor_terminal",
-                         "detail": str(exc), "orchestration_id": orchestration_id},
+                         "detail": meta_now.get("reason_detail") or str(exc),
+                         "error": str(exc), "orchestration_id": orchestration_id},
                         ensure_ascii=False))
                     return 2
                 _runtime_command(
                     repo_root, env,
                     ["set-status", "--repo-root", str(repo_root), "--orchestration-id",
                      orchestration_id, "--status", "fail", "--reason-code",
-                     "conductor_error", "--reason-detail", str(exc)[:200]],
+                     "conductor_error", "--reason-detail", _truncate_reason_detail(str(exc))],
                 )
                 print(json.dumps(
                     {"status": "fail", "reason": "conductor_error", "detail": str(exc),

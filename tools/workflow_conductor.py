@@ -232,6 +232,7 @@ from tools.orchestration_runtime import AUDIT_LOG_BASENAMES as _OPTIONAL_OUTPUT_
 # same resolvers the certification predicate will read, stamped by this conductor on every
 # launch and step_result of the attempt.
 from tools.orchestration_runtime import (
+    FAIL_CLOSED_REASON_CODES,
     DerivationInputsUnresolvable,
     phase_derivation,
 )
@@ -893,6 +894,21 @@ class SandboxEnforcementError(RuntimeError):
     """Raised when bwrap enforcement is mandatory but a leaf cannot be sandboxed
     (no usable profile). Surfaced so the conductor terminalizes as `fail_closed` rather
     than a generic conductor error."""
+
+
+class LaunchCheckRefused(RuntimeError):
+    """Raised when the runtime's `workflow-launch-check` refuses a phase start.
+
+    Surfaced as its own type so `conduct` terminalizes as `fail_closed` under the check's
+    OWN reason code with the check's whole detail, instead of unwinding to `run_workflow`'s
+    generic `conductor_error` — which recorded the refusal under a reason that names nothing
+    and cut its detail at 200 characters, losing the dependency list and the remedy (issue
+    #383). The message is unchanged from the `RuntimeError` this used to be."""
+
+    def __init__(self, step: str, reason_code: str, reason_detail: str) -> None:
+        super().__init__(f"workflow-launch-check blocked {step}: {reason_code} {reason_detail}")
+        self.reason_code = reason_code
+        self.reason_detail = reason_detail
 
 
 def classify_build_failure(failure_category: str | None) -> RouteDecision:
@@ -3487,11 +3503,17 @@ MAX_USAGE_RESET_WAIT_SECONDS = sum(USAGE_LIMIT_WAIT_SCHEDULE_SECONDS)
 _PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS = 2000
 
 
-#: `set_status` persists `reason_detail` clipped to this many characters
-#: (`orchestration_runtime`'s writer). The conductor composes the reason to fit rather than
-#: letting the writer decide what to drop: the writer cuts the TAIL, and the tail is where the
-#: `[attempts=N]` marker lives.
+#: The conductor's own cap on a phase failure's persisted `reason_detail`. The runtime's writer
+#: does not clip (`update_orchestration_status` stores the detail stripped, whole); the 200 is a
+#: convention of this module, and the conductor composes the reason to fit it rather than cutting
+#: blindly: a cut takes the TAIL, and the tail is where the `[attempts=N]` marker lives.
 _PHASE_REASON_DETAIL_MAX_CHARS = 200
+
+#: The cap on a launch-check refusal's persisted `reason_detail`. Wider than a phase failure's on
+#: purpose: the refusal's detail IS the diagnosis — every dependency that is not ready, each with
+#: the stage and input that refused it, then the remedy — and #383's real one ran to about 780
+#: characters. The cap only bounds the argv element `set-status` receives.
+_LAUNCH_CHECK_REASON_DETAIL_MAX_CHARS = 4000
 
 
 def _pure_assembly_detail(exc: BaseException) -> str:
@@ -8859,8 +8881,8 @@ class Conductor:
             "--backend", (entry or self.entry_for(None, None)).backend_token,
         ])
         if out.get("status") != "pass":
-            raise RuntimeError(
-                f"workflow-launch-check blocked {step}: {out.get('reason_code')} {out.get('reason_detail')}")
+            raise LaunchCheckRefused(step, str(out.get("reason_code")),
+                                     str(out.get("reason_detail")))
         return out
 
     def reserve_root(self, node_key: str, step: str, reserved_id: str, by_arid: str) -> dict[str, Any]:
@@ -14242,6 +14264,22 @@ class Conductor:
                 # it bubble to run_workflow's generic conductor_error/fail handler.
                 self.set_status("fail_closed", reason_code="sandbox_enforcement_violation",
                                 reason_detail=str(exc)[:200])
+                return "fail_closed"
+            except LaunchCheckRefused as exc:
+                # The runtime refused the phase start (a dependency not ready, preflight, the
+                # session policy). Its reason is a fail_closed code already; one outside the
+                # allowlist (`backend_not_probed`) is carried under the generic code and leads
+                # the detail, so nothing the check said is lost (issue #383).
+                detail = exc.reason_detail
+                if exc.reason_code in FAIL_CLOSED_REASON_CODES:
+                    reason_code = exc.reason_code
+                else:
+                    reason_code = "conductor_phase_fail_closed"
+                    detail = f"{exc.reason_code}: {detail}"
+                self.emit("launch_check_refused", node_key=refs.node_key, phase=phase,
+                          reason_code=exc.reason_code, detail=exc.reason_detail)
+                self.set_status("fail_closed", reason_code=reason_code,
+                                reason_detail=detail[:_LAUNCH_CHECK_REASON_DETAIL_MAX_CHARS])
                 return "fail_closed"
             if outcome.skipped:
                 # Certified by the artifacts already on disk: no body ran, so an elapsed

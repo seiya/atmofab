@@ -2270,6 +2270,92 @@ class CompileClaimTest(unittest.TestCase):
         self.assertEqual(subs[-2], "write-step-result")
 
 
+class LaunchCheckRefusalTest(unittest.TestCase):
+    """Issue #383: a phase start the runtime's launch check refuses ends `fail_closed` under the
+    check's own reason code with its whole detail, rather than unwinding to `run_workflow`'s
+    `conductor_error` with the detail cut at 200 characters."""
+
+    _NODE = "problem/spec_p@0.1.0"
+    # The shape of the real #383 refusal: every dependency named, then the remedy. Longer than
+    # every 200-character cut, so a cut anywhere shows.
+    _DETAIL = ("dependency_readiness_detail_not_pass:aggregate_verdict_verified; dependency not "
+               "ready: " + "; ".join(
+                   f"component/dep_{i}@0.1.1 validate: derivation_key_mismatch:comparand"
+                   for i in range(6))
+               + " — re-run with `--with-deps` to certify the dependency closure")
+
+    def _conductor(self, reason_code: str) -> _FakeConductor:
+        detail = self._DETAIL
+
+        class _C(_FakeConductor):
+            def runtime(self, args, *, input=None):  # type: ignore[override]
+                out = super().runtime(args, input=input)
+                if args[0] == "workflow-launch-check":
+                    return {"status": "fail_closed", "reason_code": reason_code,
+                            "reason_detail": detail}
+                return out
+
+        c = _C(repo_root=_SHARED_REPO_ROOT, orchestration_id="orch_x",
+               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+        c.calls = []
+        return c
+
+    def _refs(self) -> wc.NodeRefs:
+        return wc.NodeRefs(target_id=_TARGET_ID,
+            node_key=self._NODE, spec_path="spec/problem/spec_p",
+            ir_id="p_20260101_001", pipeline_id="p_20260101_001",
+            source_id="src_20260101_001", binary_id="bin_20260101_001",
+            run_id="run_20260101_001", source_binary_id="bin_20260101_001")
+
+    def _conduct(self, c: _FakeConductor) -> tuple[str, list[dict]]:
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            result = c.conduct(self._refs(), "compile")
+        events = [json.loads(line) for line in buf.getvalue().splitlines() if line.strip()]
+        return result, events
+
+    def test_a_launch_check_refusal_ends_fail_closed_under_its_own_reason_code(self) -> None:
+        self.assertGreater(len(self._DETAIL), 200)
+        c = self._conductor("dependency_not_ready")
+        result, events = self._conduct(c)
+        self.assertEqual(result, "fail_closed")
+        [status] = [kw for sub, kw in c.calls if sub == "set-status"]
+        self.assertEqual((status["--status"], status["--reason-code"], status["--reason-detail"]),
+                         ("fail_closed", "dependency_not_ready", self._DETAIL))
+        [ev] = [e for e in events if e.get("event") == "launch_check_refused"]
+        self.assertEqual((ev["node_key"], ev["phase"], ev["reason_code"], ev["detail"]),
+                         (self._NODE, "compile", "dependency_not_ready", self._DETAIL))
+        # Refused before any leaf: nothing was launched.
+        self.assertNotIn("record-launch", [sub for sub, _ in c.calls])
+
+    def test_a_refusal_code_outside_the_allowlist_keeps_the_code_in_the_detail(self) -> None:
+        """`backend_not_probed` is a launch-check code the runtime refuses for `fail_closed`;
+        it is carried under the generic conductor code and LEADS the detail."""
+        self.assertNotIn("backend_not_probed", wc.FAIL_CLOSED_REASON_CODES)
+        c = self._conductor("backend_not_probed")
+        result, events = self._conduct(c)
+        self.assertEqual(result, "fail_closed")
+        [status] = [kw for sub, kw in c.calls if sub == "set-status"]
+        self.assertEqual((status["--status"], status["--reason-code"], status["--reason-detail"]),
+                         ("fail_closed", "conductor_phase_fail_closed",
+                          f"backend_not_probed: {self._DETAIL}"))
+        [ev] = [e for e in events if e.get("event") == "launch_check_refused"]
+        self.assertEqual((ev["reason_code"], ev["detail"]), ("backend_not_probed", self._DETAIL))
+
+    def test_the_persisted_detail_is_bounded(self) -> None:
+        """The cap bounds the one argv element `set-status` receives; the event keeps it all."""
+        long_detail = "y" * (wc._LAUNCH_CHECK_REASON_DETAIL_MAX_CHARS + 50)
+        self._DETAIL = long_detail
+        c = self._conductor("dependency_not_ready")
+        result, events = self._conduct(c)
+        self.assertEqual(result, "fail_closed")
+        [status] = [kw for sub, kw in c.calls if sub == "set-status"]
+        self.assertEqual(status["--reason-detail"],
+                         long_detail[:wc._LAUNCH_CHECK_REASON_DETAIL_MAX_CHARS])
+        [ev] = [e for e in events if e.get("event") == "launch_check_refused"]
+        self.assertEqual(ev["detail"], long_detail)
+
+
 class PhaseDerivationWiringTest(unittest.TestCase):
     """`run_phase` computes the phase's derivation ONCE at phase start (issue #250) and the
     conductor records it three ways: on every launch of that attempt (`record_launch`
@@ -4617,8 +4703,11 @@ class TransportFailureTest(unittest.TestCase):
         # A not-built+validated dependency closure fails the validate phase closed at the
         # PRE-LAUNCH guard (before workflow_launch_check and before any substep's record-launch).
         # This is load-bearing: record-launch is itself dependency-gated, so the readiness check
-        # must fire here — otherwise workflow_launch_check would raise `dependency_not_ready` as
-        # an uncaught RuntimeError before the pre_judge substep could run. No launch is recorded.
+        # must fire here — otherwise workflow_launch_check would refuse with
+        # `dependency_not_ready` (a `LaunchCheckRefused`, terminalized by `conduct` as a named
+        # fail_closed — `LaunchCheckRefusalTest`) before the pre_judge substep could run, and
+        # the closure would be named by the launch check rather than by this guard. No launch
+        # is recorded.
         class _C(self._C):  # type: ignore[misc]
             def _judge_pre_spawn_dag_block(self, refs):  # type: ignore[override]
                 return "dependency closure not built+validated ... missing ['component/dep']"

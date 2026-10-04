@@ -778,6 +778,86 @@ class RunWorkflowTests(unittest.TestCase):
             fa = repo_root / "workspace" / "orchestrations" / "orch_devfail" / "failure_analysis.json"
             self.assertTrue(fa.exists(), "conductor dev failure must write failure_analysis.json")
 
+    def _main_with_raising_conductor(self, repo_root: Path, orchestration_id: str,
+                                     exc: BaseException, meta_now: dict | None = None,
+                                     ) -> tuple[int, dict, list[list[str]]]:
+        """`main` with the runtime CLI faked and a conductor that raises `exc`. When `meta_now`
+        is given it is written as the orchestration's meta first, standing in for a runtime
+        that terminalized the run itself before the exception unwound (record-launch)."""
+        import tools.workflow_conductor as wc
+        calls: list[list[str]] = []
+
+        def fake_runtime_command(root, env, args):  # type: ignore[no-untyped-def]
+            calls.append(list(args))
+            if args[0] == "init":
+                return run_workflow.RuntimeResult(
+                    payload={"status": "ok", "orchestration_agent_run_id": "oar"},
+                    raw_stdout="{}")
+            if args[0] == "preflight":
+                return run_workflow.RuntimeResult(
+                    payload={"status": "pass", "can_launch_step_agents": True,
+                             "can_launch_substep_agents": True},
+                    raw_stdout="{}")
+            return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
+
+        def raising_conductor(**kw):  # type: ignore[no-untyped-def]
+            if meta_now is not None:
+                orch = repo_root / "workspace" / "orchestrations" / orchestration_id
+                orch.mkdir(parents=True, exist_ok=True)
+                (orch / "orchestration_meta.json").write_text(json.dumps(meta_now))
+            raise exc
+
+        orig_rt, orig_rc = run_workflow._runtime_command, wc.run_conductor
+        buf = io.StringIO()
+        try:
+            run_workflow._runtime_command = fake_runtime_command  # type: ignore[assignment]
+            wc.run_conductor = raising_conductor  # type: ignore[assignment]
+            with redirect_stdout(buf):
+                code = run_workflow.main([
+                    "spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                    "--orchestration-id", orchestration_id, "--mode", "dev",
+                    "--stdout-format", "jsonl"])
+        finally:
+            run_workflow._runtime_command = orig_rt  # type: ignore[assignment]
+            wc.run_conductor = orig_rc  # type: ignore[assignment]
+        return code, json.loads(buf.getvalue().strip().splitlines()[-1]), calls
+
+    def test_a_conductor_error_detail_keeps_both_ends(self) -> None:
+        """The recorded `conductor_error` detail keeps the head that names the failing call
+        AND the tail that says why, rather than a 200-character head cut (issue #383)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            message = "WHICH-CALL " + "z" * 600 + " WHY-IT-DIED"
+            code, out, calls = self._main_with_raising_conductor(
+                repo_root, "orch_err", RuntimeError(message))
+        self.assertEqual(code, 2)
+        self.assertEqual((out["status"], out["reason"], out["detail"]),
+                         ("fail", "conductor_error", message))
+        [set_status] = [a for a in calls if a[0] == "set-status"]
+        recorded = set_status[set_status.index("--reason-detail") + 1]
+        self.assertEqual(recorded, run_workflow._truncate_reason_detail(message))
+        self.assertTrue(recorded.startswith("WHICH-CALL"))
+        self.assertTrue(recorded.endswith("WHY-IT-DIED"))
+
+    def test_a_runtime_set_terminal_prints_the_recorded_detail(self) -> None:
+        """When the runtime terminalized the run itself (record-launch persists its whole
+        refusal), the final line's `detail` is what it RECORDED, and the exception that
+        unwound the conductor is reported beside it as `error`; nothing is re-recorded."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            recorded = "dependency not ready: " + "d" * 700 + " — re-run with `--with-deps`"
+            code, out, calls = self._main_with_raising_conductor(
+                repo_root, "orch_term", RuntimeError("record-launch refused"),
+                meta_now={"status": "fail_closed", "reason_code": "dependency_not_ready",
+                          "reason_detail": recorded})
+        self.assertEqual(code, 2)
+        self.assertEqual(
+            (out["status"], out["reason"], out["detail"], out["error"]),
+            ("fail_closed", "dependency_not_ready", recorded, "record-launch refused"))
+        self.assertNotIn("set-status", [a[0] for a in calls])
+
     def test_wait_usage_reset_flag_threads_into_run_conductor(self) -> None:
         # The opt-in flag must reach the conductor: argparse -> _run_node -> run_conductor kwarg.
         import tools.workflow_conductor as wc
@@ -7789,6 +7869,16 @@ class StdoutFormatTests(unittest.TestCase):
                 f"    [warn   ] waiting for {scope} k: another driver holds its claim "
                 "(docs/RUNBOOK.md §3-1)",
             )
+        # A launch-check refusal is rendered WHOLE: an 800-character detail survives, because
+        # it names every dependency that is not ready and the remedy (issue #383).
+        long_detail = "dependency not ready: " + "x" * 800 + " — re-run with `--with-deps`"
+        self.assertEqual(
+            f({"status": "info", "event": "launch_check_refused", "orchestration_id": "o",
+               "node_key": "problem/p@0.1.0", "phase": "validate",
+               "reason_code": "dependency_not_ready", "detail": long_detail}),
+            "    [fail_closed] problem/p@0.1.0 validate: launch check refused "
+            f"(dependency_not_ready): {long_detail}",
+        )
         self.assertEqual(
             f({"status": "info", "event": "ir_superseded", "orchestration_id": "o",
                "node_key": "component/x@0.1.0", "detail": "--resume re-derives from Compile"}),
