@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import textwrap
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -300,14 +301,21 @@ class ExchangeTests(unittest.TestCase):
         self.assertEqual(reading.failure, ur.FAILURE_PROBE_FAILED)
         self.assertIn("stdout held open after exit", reading.detail)
         child = int(pidfile.read_text())
-        # Reaped by init once killed; a zombie or a missing pid both mean it is gone.
-        try:
-            os.kill(child, 0)
-            stat = Path(f"/proc/{child}/stat").read_text()
-            alive = stat.split(") ", 1)[1][:1] != "Z"
-        except (ProcessLookupError, FileNotFoundError):
-            alive = False
-        self.assertFalse(alive, "the descendant outlived the probe")
+        # Reaped by init once killed; a zombie or a missing pid both mean it is gone. SIGKILL is
+        # delivered asynchronously, so a loaded host can show it running for a moment after
+        # the call returns: allow a bounded settle (a descendant nobody killed never dies).
+        def _alive() -> bool:
+            try:
+                os.kill(child, 0)
+                stat = Path(f"/proc/{child}/stat").read_text()
+                return stat.split(") ", 1)[1][:1] != "Z"
+            except (ProcessLookupError, FileNotFoundError):
+                return False
+        settle = threading.Event()
+        deadline = time.monotonic() + 5
+        while _alive() and time.monotonic() < deadline:
+            settle.wait(0.05)
+        self.assertFalse(_alive(), "the descendant outlived the probe")
 
     def test_a_flooding_cli_is_drained_but_not_retained(self) -> None:
         script = self._script("flood.py", "import sys\nfor _ in range(20000):\n"
