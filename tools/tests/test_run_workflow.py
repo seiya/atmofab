@@ -858,6 +858,57 @@ class RunWorkflowTests(unittest.TestCase):
             ("fail_closed", "dependency_not_ready", recorded, "record-launch refused"))
         self.assertNotIn("set-status", [a[0] for a in calls])
 
+    def test_a_dev_fail_closed_carries_the_recorded_detail_to_the_line_and_the_analysis(
+            self) -> None:
+        """A conductor that terminalized the run itself (a launch-check refusal, issue #383)
+        returns `fail_closed`; in dev the final line's `detail` and `failure_analysis.json`'s
+        `reason_detail` are what the runtime RECORDED, whole — the operator's two reads of it."""
+        import tools.workflow_conductor as wc
+        recorded = "dependency not ready: " + "d" * 700 + " — re-run with `--with-deps`"
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+
+            def fake_runtime_command(root, env, args):  # type: ignore[no-untyped-def]
+                if args[0] == "init":
+                    return run_workflow.RuntimeResult(
+                        payload={"status": "ok", "orchestration_agent_run_id": "oar"},
+                        raw_stdout="{}")
+                if args[0] == "preflight":
+                    return run_workflow.RuntimeResult(
+                        payload={"status": "pass", "can_launch_step_agents": True,
+                                 "can_launch_substep_agents": True},
+                        raw_stdout="{}")
+                return run_workflow.RuntimeResult(payload={"status": "ok"}, raw_stdout="{}")
+
+            def conductor(**kw):  # type: ignore[no-untyped-def]
+                orch = repo_root / "workspace" / "orchestrations" / "orch_fc"
+                orch.mkdir(parents=True, exist_ok=True)
+                (orch / "orchestration_meta.json").write_text(json.dumps(
+                    {"status": "fail_closed", "reason_code": "dependency_not_ready",
+                     "reason_detail": recorded}))
+                return "fail_closed"
+
+            orig_rt, orig_rc = run_workflow._runtime_command, wc.run_conductor
+            buf = io.StringIO()
+            try:
+                run_workflow._runtime_command = fake_runtime_command  # type: ignore[assignment]
+                wc.run_conductor = conductor  # type: ignore[assignment]
+                with redirect_stdout(buf):
+                    code = run_workflow.main([
+                        "spec/problem/test.md", "build", "--repo-root", str(repo_root),
+                        "--orchestration-id", "orch_fc", "--mode", "dev",
+                        "--stdout-format", "jsonl"])
+            finally:
+                run_workflow._runtime_command = orig_rt  # type: ignore[assignment]
+                wc.run_conductor = orig_rc  # type: ignore[assignment]
+            out = json.loads(buf.getvalue().strip().splitlines()[-1])
+            analysis = json.loads((repo_root / out["analysis_ref"]).read_text())
+        self.assertEqual(code, 2)
+        self.assertEqual((out["workflow_status"], out["detail"]), ("fail_closed", recorded))
+        self.assertEqual((analysis["reason_code"], analysis["reason_detail"]),
+                         ("dependency_not_ready", recorded))
+
     def test_wait_usage_reset_flag_threads_into_run_conductor(self) -> None:
         # The opt-in flag must reach the conductor: argparse -> _run_node -> run_conductor kwarg.
         import tools.workflow_conductor as wc
