@@ -11261,7 +11261,6 @@ class Conductor:
             "variables": schema.get("variables", []),
             "time_variable": schema.get("time_variable"),
             "time_shape_expr": schema.get("time_shape_expr"),
-            "min_samples": entry.get("min_samples", 1),
             "samples": samples,
         }
         (sdir / "snapshot_schema.json").write_text(

@@ -1477,7 +1477,6 @@ def _validate_raw_evidence(
         expected_state_variables,
         expected_time_variable,
         expected_time_shape_expr,
-        required_snapshot_min_samples,
     ) = _state_snapshot_requirement_details(repo_root, execution)
 
     required = [
@@ -1766,16 +1765,6 @@ def _validate_raw_evidence(
                         violations.append(
                             f"{schema_path}: time_shape_expr must match io_contract ({expected_time_shape_expr})"
                         )
-
-                # `min_samples` counts distinct CASE snapshots: the files at the top level, as
-                # `_author_snapshot_schema`'s `samples` does. A host-rendered runner's
-                # `initial/<case_id>.json` (Z6, issue #255) is a second capture of the same
-                # case — shape-checked above through the recursive walk, and not a sample.
-                case_samples = [p for p in snapshot_data_files if p.parent == snapshots_dir]
-                if len(case_samples) < required_snapshot_min_samples:
-                    violations.append(
-                        f"{snapshots_dir}: snapshot data files must be >= {required_snapshot_min_samples}"
-                    )
 
     diagnostics_path = execution.node_dir / "diagnostics.json"
     metrics_basis_path = execution.node_dir / "raw" / "metrics_basis.json"
@@ -4308,19 +4297,18 @@ def _shape_matches_expr(shape_expr: str, actual_shape: list[int]) -> bool:
 
 def _state_snapshot_requirement_details(
     repo_root: Path, execution: NodeExecution
-) -> tuple[dict[str, str], str, str, int]:
+) -> tuple[dict[str, str], str, str]:
     required_variables: dict[str, str] = {}
     required_time_variable = ""
     required_time_shape_expr = "scalar"
-    min_samples = 1
 
     raw_requirements = _raw_requirements_for_execution(repo_root, execution)
     if not isinstance(raw_requirements, dict):
-        return required_variables, required_time_variable, required_time_shape_expr, min_samples
+        return required_variables, required_time_variable, required_time_shape_expr
 
     required_evidence = raw_requirements.get("required_evidence")
     if not isinstance(required_evidence, list):
-        return required_variables, required_time_variable, required_time_shape_expr, min_samples
+        return required_variables, required_time_variable, required_time_shape_expr
 
     for item in required_evidence:
         if not isinstance(item, dict):
@@ -4332,11 +4320,7 @@ def _state_snapshot_requirement_details(
         if artifact != "state_snapshots":
             continue
         if isinstance(item.get("required"), bool) and not item["required"]:
-            return required_variables, required_time_variable, required_time_shape_expr, min_samples
-
-        raw_min_samples = item.get("min_samples")
-        if isinstance(raw_min_samples, int) and raw_min_samples >= 1:
-            min_samples = raw_min_samples
+            return required_variables, required_time_variable, required_time_shape_expr
 
         schema = item.get("schema")
         if isinstance(schema, dict):
@@ -4366,9 +4350,9 @@ def _state_snapshot_requirement_details(
             if isinstance(raw_time_shape, str) and raw_time_shape.strip():
                 required_time_shape_expr = _canonical_shape_expr(raw_time_shape)
 
-        return required_variables, required_time_variable, required_time_shape_expr, min_samples
+        return required_variables, required_time_variable, required_time_shape_expr
 
-    return required_variables, required_time_variable, required_time_shape_expr, min_samples
+    return required_variables, required_time_variable, required_time_shape_expr
 
 
 def _raw_requirements_for_execution(
@@ -4672,14 +4656,6 @@ def _validate_io_contract_file(
         if required_value is not None and not isinstance(required_value, bool):
             violations.append(
                 f"{contract_path}:raw_requirements.required_evidence[{idx}].required must be bool when present"
-            )
-
-        min_samples = item.get("min_samples")
-        if min_samples is not None and (
-            not isinstance(min_samples, int) or min_samples < 1
-        ):
-            violations.append(
-                f"{contract_path}:raw_requirements.required_evidence[{idx}].min_samples must be integer >= 1 when present"
             )
 
         if artifact != "state_snapshots":

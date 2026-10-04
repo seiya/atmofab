@@ -50,6 +50,10 @@ from typing import Any, NamedTuple
 #: 2: each snapshot case additionally carries `initial` — the summary of the host-rendered
 #: runner's capture right after `case_setup` (`raw/state_snapshots/initial/<case_id>.json`,
 #: Z6, issue #255) — so the judge sees both capture points of a case.
+#: `schema.min_samples` was dropped without a bump (issue #396): `phase_04_validate.md` §4-2-1,
+#: canonical for the contents, never listed it, and it echoed the IR's declaration rather than
+#: a fact about `raw/`. The version is in the `validate` transformation tuple, so a bump would
+#: re-derive every certified Validate for a display key no gate reads.
 RAW_EXCERPT_POLICY_VERSION = 2
 
 #: Spellings the IR may use for a raw-evidence artifact, mapped to its canonical name.
@@ -524,7 +528,6 @@ def _state_snapshots(raw_dir: Path, problems: list[str]) -> dict[str, Any]:
             "time_variable": time_variable,
             "declared_variables": [
                 {"name": n, "shape_expr": declared[n]} for n in sorted(declared)],
-            "min_samples": schema.get("min_samples") if isinstance(schema, dict) else None,
         },
         "cases": cases,
     }
