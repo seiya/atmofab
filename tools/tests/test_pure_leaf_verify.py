@@ -127,8 +127,9 @@ class PureVerifyContextTests(unittest.TestCase):
                             "logical, intent(out) :: ok",
                             "character(len=4), intent(out) :: status"):
                 self.assertIn(present, doc[neutral_end:])
-            # Issue #399: the runner reads no `ok`, so no sentence of the reviewer's document
-            # may give a value of it a meaning — the reviewer failed guard cases on exactly that.
+            # Issue #399: the wording that gave a value of `ok` a meaning is gone from the
+            # reviewer's document (the sentence-level rule is
+            # `test_checks_module_loops_and_ok_are_not_findings_on_every_target`).
             for refused in ("rejects a guard", "`ok` false", "ok = .false.", "ok=.false.",
                             "returned `ok`", "returning `ok"):
                 self.assertNotIn(refused, doc)
