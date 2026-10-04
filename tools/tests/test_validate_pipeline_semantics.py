@@ -11461,8 +11461,9 @@ end program shallow_water2d_runner
             "raw_requirements": {"required_evidence": [
                 {"artifact": "metrics_basis.json", "required": True},
                 # `min_samples` is inert since issue #396; kept here as the witness that an IR
-                # still carrying it passes the Compile-static gate.
-                {"artifact": "state_snapshots", "required": True, "min_samples": 1,
+                # still carrying it passes the Compile-static gate — at a value (0) the deleted
+                # `integer >= 1` type check refused, so restoring that check is red too.
+                {"artifact": "state_snapshots", "required": True, "min_samples": 0,
                  "schema": {"variables": [{"name": "h", "shape_expr": "[2,2]"},
                                           {"name": "hu", "shape_expr": "[2,2]"},
                                           {"name": "hv", "shape_expr": "[2,2]"}],
