@@ -13235,9 +13235,10 @@ class Conductor:
         # Validate dependency-DAG readiness is checked HERE, before the generic launch gate.
         # This is load-bearing: workflow_launch_check (and EVERY substep's own record-launch,
         # including pre_judge's) is itself dependency-gated (`_dependency_ready`), so a
-        # not-built+validated closure would raise `dependency_not_ready` as an uncaught
-        # RuntimeError before the `pre_judge` substep could ever run. Fail fast with the clean
-        # `validate_pre_judge_dag_incomplete` fail_closed (the historic pre-spawn behavior).
+        # not-built+validated closure would be refused `dependency_not_ready` (a
+        # `LaunchCheckRefused`, terminalized by `conduct`) before the `pre_judge` substep could
+        # ever run. Fail fast with the `validate_pre_judge_dag_incomplete` fail_closed (the
+        # historic pre-spawn behavior), which names the full closure.
         # `_dependency_ready` only checks DIRECT deps, whereas `_judge_pre_spawn_dag_block`
         # checks the full `dependency.all_nodes` closure, so this also catches transitive gaps
         # the launch gate would miss. The deterministic `pre_judge` substep (index 0) re-runs
