@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """The provider-reported reset instant of an exhausted usage window (issue #405).
 
 Under `--wait-usage-reset` an `llm_usage_limit` death is slept out and the substep re-launched.
@@ -38,7 +37,8 @@ import signal
 import subprocess
 import threading
 import time
-from typing import Any, Callable, Mapping, NamedTuple
+from collections.abc import Callable, Mapping
+from typing import Any, NamedTuple
 
 # Measured 1.2 s (codex) / 2.6 s (claude). A slow probe only delays the schedule fallback.
 USAGE_RESET_PROBE_TIMEOUT_SECONDS = 60.0

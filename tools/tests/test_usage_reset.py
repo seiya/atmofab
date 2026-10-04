@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Tests for tools/usage_reset.py — the provider-reported reset instant (issue #405)."""
 
 from __future__ import annotations
@@ -184,7 +183,7 @@ class ExchangeTests(unittest.TestCase):
         # The fake refuses a caller that closes stdin first, which is what `subprocess.run(
         # input=...)` does: the same script under that shape gives no `id: 1` line.
         done = subprocess.run([sys.executable, str(script)], text=True, capture_output=True,
-                              input='{"id":0}\n{}\n{"id":1}\n', timeout=10)
+                              input='{"id":0}\n{}\n{"id":1}\n', timeout=10, check=False)
         self.assertNotIn('"id": 1', done.stdout)
 
     def test_the_claude_exchange_reads_to_eof(self) -> None:
