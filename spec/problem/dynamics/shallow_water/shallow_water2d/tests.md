@@ -3,10 +3,10 @@
 ## 0. Meta information
 - `status`: `draft`
 - `test_profile_id`: `shallow_water2d_baseline`
-- `test_profile_version`: `0.3.0`
+- `test_profile_version`: `0.3.1`
 - `spec_ref.spec_kind`: `problem`
 - `spec_ref.spec_id`: `shallow_water2d`
-- `spec_ref.spec_version`: `0.4.3`
+- `spec_ref.spec_version`: `0.4.4`
 - `spec_ref.controlled_spec_path`: `spec/problem/dynamics/shallow_water/shallow_water2d/controlled_spec.md`
 
 ## 1. Test purpose
@@ -78,7 +78,6 @@ A theoretical-agreement judgment for variables other than `h` is not required in
   4. $dt=(t_{end}-t_{start})/\mathrm{n\_step}$.
 - $\mathrm{cfl\_target}=0.45$.
 - The stop condition is $n=\mathrm{n\_step}$.
-- The output times are $0.0,0.05,0.10,0.15,0.20$.
 
 ## 4. Case-expansion rules
 ### 4-1. family definition
