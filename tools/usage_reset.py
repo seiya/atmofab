@@ -7,7 +7,8 @@ comes back. The conductor spells no provider name: `RESET_READERS` is the one pe
 declaration, keyed by every provider `tools/llm_config.SUPPORTED_PROVIDERS` declares, and a
 provider with no structured source declares `None`.
 
-What is read, per provider (measured 2026-10-04, codex-cli 0.159.2, Claude Code 2.1.289):
+What is read, per provider (measured 2026-10-04, codex-cli 0.159.2, Claude Code 2.1.289; the
+measurements are recorded on issue #405, https://github.com/seiya/atmofab/issues/405#issuecomment-5981915756):
 
   codex_cli   `codex app-server --stdio`, JSON-RPC `account/rateLimits/read`. Its `primary` /
               `secondary` windows each carry `usedPercent` and `resetsAt` (unix seconds). The

@@ -444,7 +444,7 @@ class RunWorkflowTests(unittest.TestCase):
         self.assertIn(f"at most {len(USAGE_LIMIT_WAIT_SCHEDULE_SECONDS)} waits per substep", flag)
         self.assertIn("reset instant the provider reports", flag)
         self.assertIn(f"plus {int(USAGE_RESET_MARGIN_SECONDS)}s", flag)
-        self.assertIn(f"at most {int(MAX_USAGE_RESET_WAIT_SECONDS)}s", flag)
+        self.assertIn(f"at most {int(MAX_USAGE_RESET_WAIT_SECONDS)}s per wait", flag)
         self.assertIn("Nothing is read from the dead leaf's output", flag)
         self.assertIn("Default OFF", flag)
         self.assertNotIn("6h", flag)

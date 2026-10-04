@@ -33,6 +33,8 @@ def tearDownModule() -> None:
 
 
 # Measurement 1 of the issue #405 plan (codex-cli 0.159.2, 2026-10-04), trimmed to what is read.
+# The plan and its measurements are recorded on the issue:
+# https://github.com/seiya/atmofab/issues/405#issuecomment-5981915756
 _CODEX_RESULT = {"rateLimits": {
     "limitId": "codex",
     "primary": {"usedPercent": 100, "windowDurationMins": 300, "resetsAt": 1791125452},

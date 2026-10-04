@@ -6481,9 +6481,12 @@ class LeafTransientRetryTest(unittest.TestCase):
         Classified out of scope by `AGENTS.md` §Development premises: a leaf that takes this is
         closer to NOTHING — what it arms is the same turn again with the same repair carriers
         (cold for a first attempt, the same `reuse` repair for an interrupted one), not a weaker
-        judgment of its result, and the cost is bounded by the schedule (three sleeps, three
-        launches, each at most `MAX_USAGE_RESET_WAIT_SECONDS` whatever the provider reports)
-        after which the death is terminal with the tag intact. This pins that bound:
+        judgment of its result, and the cost is bounded: three sleeps, three launches, after
+        which the death is terminal with the tag intact. Each sleep is at most
+        `MAX_USAGE_RESET_WAIT_SECONDS` whatever the provider reports (issue #405), so the worst
+        case is three times that; the per-wait cap is pinned by
+        `test_an_instant_beyond_the_cap_falls_back_to_the_schedule`, not here — the probe is
+        refused in this suite, so THIS test sees the schedule path only. It pins the count:
         the stdout shape is a pure leaf's real one — ONE line of `--output-format json` envelope
         with the phrase inside model-authored text — and an EMPTY stderr."""
         dead = wc.ProcResult(
@@ -22212,6 +22215,44 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 for event, fields in events[:-1]:
                     self.assertEqual(fields["reset_source"], "schedule")
                     self.assertEqual(fields["fallback_reason"], expected)
+
+    def test_every_provider_takes_a_reported_instant_the_same_way(self) -> None:
+        """The provider half of the test above (issue #405 disclosure review): when a reading
+        carries an instant, EVERY provider sample — codex_cli is the issue's own case — waits
+        that instant plus the margin and records `reset_source: provider`. Without this the
+        provider branch was driven on a claude entry alone, so a provider-specific defect in it
+        stayed green. The reading is stubbed (an HTTP provider declares no source in
+        production; the branch is still provider-blind and pinned so), the clock is pinned."""
+        now = 1_791_000_000.0
+        for backend in ("claude", "codex", "openai_compatible", "anthropic_api"):
+            with self.subTest(backend=backend):
+                c = _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="o",
+                                       orchestration_agent_run_id="O", env={},
+                                       llm_config=_sample_config(backend), wait_usage_reset=True)
+                entry = c.entry_for("generate", "generate")
+                slept: list[float] = []
+                events: list = []
+                asked: list = []
+                c._sleep_backoff = slept.append                        # type: ignore[assignment]
+                c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
+                c._read_usage_reset = (                                # type: ignore[assignment]
+                    lambda e, arid: asked.append(e.provider) or usage_reset.ResetReading(
+                        int(now) + 1800, "w", None, "d"))
+                refs = wc.NodeRefs(target_id=_TARGET_ID,
+                    node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                    ir_id="x_1_001", pipeline_id="x_1_001", source_id="src_1_001",
+                    binary_id="bin_1_001", run_id="run_1_001", source_binary_id="bin_1_001")
+                with mock.patch.object(wc.time, "time", return_value=now):
+                    granted = c._usage_limit_wait(
+                        refs=refs, phase="generate", substep="generate", child_arid="child-1",
+                        waits_done=0, infra_error=("llm_usage_limit", "usage limit reached"),
+                        entry=entry)
+                self.assertTrue(granted)
+                self.assertEqual(asked, [entry.provider])
+                self.assertEqual(slept, [1800 + wc.USAGE_RESET_MARGIN_SECONDS])
+                ((_event, fields),) = events
+                self.assertEqual((fields["reset_source"], fields["fallback_reason"]),
+                                 ("provider", None))
 
     def test_the_reset_probe_is_asked_with_the_leafs_own_launch_shape(self) -> None:
         """Issue #405: `_read_usage_reset` hands the reader the dead leaf's OWN command base
