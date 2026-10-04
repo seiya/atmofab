@@ -62,7 +62,7 @@ def _ir(primary: list[dict] | None, *, coordinates: list[dict] | None = None,
         schema["coordinates"] = coordinates
     io_contract = {
         "raw_requirements": {"required_evidence": [
-            {"artifact": "state_snapshots", "required": True, "min_samples": 1,
+            {"artifact": "state_snapshots", "required": True,
              "schema": schema}]},
         "test_predicates": [
             {"test_id": "t_mass", "expected_outcome": "pass", "target_cases": ["a", "b"],

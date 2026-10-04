@@ -507,10 +507,23 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # left invalid by this re-pin; nothing selects it, because an IR directory is keyed by
     # `spec_version` (`workflow_conductor.node_key_safe`: `<kind>__<id>__<version>`) and the
     # spec on disk is 0.2.2.
-    "compile-docs-11": "033e228bb452e4b6a9aad2ad75c1256f8bf11b19acc486dd0268eeb405eb3c29",
+    # Re-pinned by issue #396 (same reasoning form): the schema block loses its
+    # `min_samples: <int>` line, which no sentence of the document gave a meaning; the snapshot
+    # count is the per-case deliverable gate's. The Compile-static gate loses the key's type
+    # check and gains nothing, so no IR's Compile verdict moves the wrong way: measured
+    # 2026-10-04 over the 271 `spec.ir.yaml` under `workspace/ir`, every one carries the key and
+    # the deleted check refused none. What moves is `post_execute`: the 4 IRs declaring a floor
+    # above their case count (`tc4_forcing` 0.1.1 `…_20261003_001`/`_002`/`_004`/`_005`, 24 on
+    # 12 cases) stop failing a count no runner can meet. A key a stale IR still carries is
+    # ignored, so a bump would re-derive every node's Compile for nothing. (Measured by diffing
+    # `compile_documents_tuple()` against origin/main dd5bbcb8's: the `phase_contract_document`
+    # row and no other.)
+    "compile-docs-11": "bc88a25ad5cfac068f292bd6569e1aeb9632aad355d19600b256dc1c40ba3c60",
     # ...and the digest `compile-docs-11` SHIPPED with (origin/main 1807917d), kept so a later
     # version returning to those bytes collides (`test_no_empty_bump_or_silent_revert`).
     "compile-docs-11@1807917d": "d07c8ad3e8c38ef2b4fa5b923459ba4e71bdfe3b605febd2fb50952cadd2fb1b",
+    # The digest `compile-docs-11` shipped with at dd5bbcb8 (before issue #396's re-pin above):
+    "compile-docs-11@dd5bbcb8": "033e228bb452e4b6a9aad2ad75c1256f8bf11b19acc486dd0268eeb405eb3c29",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -868,7 +881,14 @@ PINNED_EXECUTE: dict[str, str] = {
     # and every certified Validate re-derives — with the new record — whatever this version
     # says. A bump here would move nothing more. (Measured by diffing `execute_tuple()` against
     # origin/main 7b67f5f3's: the `_execute_inproc` row and no other.)
-    "execute-8": "db99ce42579cf0221c5eabaf0cdd8aa904997bcd8eb6b6d93cf900eba6c36157",
+    # Re-pinned by issue #396: `Conductor._author_snapshot_schema` stops copying the IR's
+    # `min_samples` into `raw/state_snapshots/snapshot_schema.json`. As for issue #346 the
+    # record's bytes DO change, but nothing reads the key: the `post_execute` gate reads the
+    # file's `variables` / `time_variable` / `time_shape_expr`, and the judge's excerpt no
+    # longer copies it. (Measured by diffing `execute_tuple()` against origin/main dd5bbcb8's:
+    # the `Conductor._author_snapshot_schema` row and no other.) The digest `execute-8` shipped
+    # with at dd5bbcb8 is kept below.
+    "execute-8": "48ecddf30462b52c87f07f8a76b47db7a2738c6ddd2f97452b81b75c41c41e43",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -934,6 +954,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # origin/main 6add2b17's: the `_execute_inproc` row and no other.) The digest `execute-8`
     # shipped with at 6add2b17:
     "execute-8@6add2b17": "eb6aa6fcc8641e0f35a9aa9b28f8316d17c25ee03a408d7192d10a7ef92e1aa0",
+    "execute-8@dd5bbcb8": "db99ce42579cf0221c5eabaf0cdd8aa904997bcd8eb6b6d93cf900eba6c36157",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

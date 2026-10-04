@@ -67,7 +67,7 @@ def _io_contract() -> dict:
         "raw_requirements": {
             "required_evidence": [
                 {"artifact": "metrics_basis.json", "required": True},
-                {"artifact": "state_snapshots", "required": True, "min_samples": 1},
+                {"artifact": "state_snapshots", "required": True},
             ],
         },
     }
@@ -142,7 +142,7 @@ def _write_run_node(repo: Path, *, bundle: bool = False) -> wc.NodeRefs:
                        "u": [[1.0, 2.0]], "dx": 0.5}]}), encoding="utf-8")
     (run_dir / "raw" / "state_snapshots" / "snapshot_schema.json").write_text(json.dumps(
         {"variables": [{"name": "u", "shape_expr": "[nx]"}], "time_variable": "t",
-         "time_shape_expr": "scalar", "min_samples": 1}), encoding="utf-8")
+         "time_shape_expr": "scalar"}), encoding="utf-8")
     (run_dir / "raw" / "state_snapshots" / "case_a.json").write_text(
         json.dumps({"u": [1.0, 2.0], "t": 0.5}), encoding="utf-8")
     return refs

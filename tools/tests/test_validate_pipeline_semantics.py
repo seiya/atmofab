@@ -574,7 +574,6 @@ def _create_minimal_execution_tree(
                     {
                         "artifact": "state_snapshots",
                         "required": True,
-                        "min_samples": 1,
                         "schema": {
                             "variables": [
                                 {"name": "h", "shape_expr": "[2,2]"},
@@ -1212,7 +1211,6 @@ end program shallow_water2d_runner
                     {
                         "artifact": "state_snapshots",
                         "required": True,
-                        "min_samples": 1,
                         "schema": {
                             "variables": [{"name": "h", "shape_expr": "[2,2]"}],
                             "time_variable": "time",
@@ -1756,7 +1754,6 @@ end program shallow_water2d_runner
                                 {
                                     "artifact": "state_snapshots",
                                     "required": True,
-                                    "min_samples": 1,
                                 },
                             ]
                         }
@@ -1821,7 +1818,6 @@ end program shallow_water2d_runner
                                     {
                                         "artifact": "state_snapshots",
                                         "required": True,
-                                        "min_samples": 1,
                                         "schema": schema,
                                     }
                                 ]
@@ -1845,7 +1841,6 @@ end program shallow_water2d_runner
                 snapshots_dir.mkdir(parents=True, exist_ok=True)
                 _write_json(snapshots_dir / "snapshot_schema.json", {
                     **schema,
-                    "min_samples": 1,
                     "samples": ["c_valid.json", "c_guard.json"],
                 })
                 valid_case = {"snapshot_index": 0, "case_id": "c_valid",
@@ -1940,7 +1935,6 @@ end program shallow_water2d_runner
                                 {
                                     "artifact": "state_snapshots",
                                     "required": True,
-                                    "min_samples": 1,
                                     "schema": schema,
                                 }
                             ]
@@ -1959,7 +1953,7 @@ end program shallow_water2d_runner
             snapshots_dir = node_dir / "raw" / "state_snapshots"
             snapshots_dir.mkdir(parents=True, exist_ok=True)
             _write_json(snapshots_dir / "snapshot_schema.json", {
-                **schema, "min_samples": 1,
+                **schema,
                 "samples": ["l0_scale_identity_pass_0000.json",
                             "l0_invalid_length_xfail_0000.json"],
             })
@@ -2006,7 +2000,7 @@ end program shallow_water2d_runner
             "raw_requirements": {
                 "required_evidence": [
                     {"artifact": "state_snapshots", "required": True,
-                     "min_samples": 1, "schema": schema}
+                     "schema": schema}
                 ]
             },
             "test_evidence_requirements": evidence,
@@ -2069,7 +2063,7 @@ end program shallow_water2d_runner
             snapshots_dir = node_dir / "raw" / "state_snapshots"
             snapshots_dir.mkdir(parents=True, exist_ok=True)
             _write_json(snapshots_dir / "snapshot_schema.json", {
-                **schema, "min_samples": 1,
+                **schema,
                 "samples": ["case_equal_state.json", "case_dry_state.json"]})
             # Exactly what the host renderer emits: only this case's required variables.
             _write_json(snapshots_dir / "case_equal_state.json", {
@@ -2130,7 +2124,7 @@ end program shallow_water2d_runner
             snapshots_dir = node_dir / "raw" / "state_snapshots"
             snapshots_dir.mkdir(parents=True, exist_ok=True)
             _write_json(snapshots_dir / "snapshot_schema.json", {
-                **schema, "min_samples": 1,
+                **schema,
                 "samples": ["case_equal_state.json", "case_dry_state.json"]})
             # A per-TEST snapshot for t_a: it carries `test_id` and omits `guard_fired`, which
             # only the SIBLING test t_b requires. Correct under the t_a scope; a violation if
@@ -2179,7 +2173,7 @@ end program shallow_water2d_runner
         snapshots_dir = node_dir / "raw" / "state_snapshots"
         snapshots_dir.mkdir(parents=True, exist_ok=True)
         _write_json(snapshots_dir / "snapshot_schema.json", {
-            **schema, "min_samples": 1,
+            **schema,
             "samples": ["case_equal_state.json", "other.json"]})
         _write_json(snapshots_dir / "case_equal_state.json", {
             "t": 0.0, "case_id": "case_equal_state",
@@ -2252,7 +2246,7 @@ end program shallow_water2d_runner
             snapshots_dir = node_dir / "raw" / "state_snapshots"
             snapshots_dir.mkdir(parents=True, exist_ok=True)
             _write_json(snapshots_dir / "snapshot_schema.json", {
-                **schema, "min_samples": 1, "samples": ["c1.json"]})
+                **schema, "samples": ["c1.json"]})
             # Omits F_star, which the union {t_a, t_b} requires but the legacy t_legacy does not.
             _write_json(snapshots_dir / "c1.json", {
                 "t": 0.0, "case_id": "c1", "U_L": [1.0, 2.0, 3.0]})
@@ -2296,7 +2290,7 @@ end program shallow_water2d_runner
             snapshots_dir = node_dir / "raw" / "state_snapshots"
             snapshots_dir.mkdir(parents=True, exist_ok=True)
             _write_json(snapshots_dir / "snapshot_schema.json", {
-                **schema, "min_samples": 1, "samples": ["case_equal_state.json"]})
+                **schema, "samples": ["case_equal_state.json"]})
             _write_json(snapshots_dir / "case_equal_state.json", {
                 "t": 0.0, "case_id": "case_equal_state", "U_L": [1.0, 2.0, 3.0]})
 
@@ -2340,7 +2334,7 @@ end program shallow_water2d_runner
             snapshots_dir = node_dir / "raw" / "state_snapshots"
             snapshots_dir.mkdir(parents=True, exist_ok=True)
             _write_json(snapshots_dir / "snapshot_schema.json", {
-                **schema, "min_samples": 1, "samples": ["c_used.json", "c_legacy.json"]})
+                **schema, "samples": ["c_used.json", "c_legacy.json"]})
             _write_json(snapshots_dir / "c_used.json", {
                 "t": 0.0, "case_id": "c_used", "U_L": [1.0, 2.0, 3.0]})
             # c_legacy omits F_star, which its legacy test t_b requires.
@@ -2392,7 +2386,7 @@ end program shallow_water2d_runner
             snapshots_dir = node_dir / "raw" / "state_snapshots"
             snapshots_dir.mkdir(parents=True, exist_ok=True)
             _write_json(snapshots_dir / "snapshot_schema.json", {
-                **schema, "min_samples": 1, "samples": ["case_equal_state.json"]})
+                **schema, "samples": ["case_equal_state.json"]})
             _write_json(snapshots_dir / "case_equal_state.json", {
                 "t": 0.0, "case_id": "case_equal_state", "U_L": [1.0, 2.0, 3.0]})
 
@@ -2473,7 +2467,7 @@ end program shallow_water2d_runner
             snapshots_dir = node_dir / "raw" / "state_snapshots"
             snapshots_dir.mkdir(parents=True, exist_ok=True)
             _write_json(snapshots_dir / "snapshot_schema.json", {
-                **schema, "min_samples": 1,
+                **schema,
                 "samples": ["case_equal_state.json", "case_dry_state.json"]})
             # Union member `guard_fired` omitted -> must be flagged.
             _write_json(snapshots_dir / "case_equal_state.json", {
@@ -2538,7 +2532,6 @@ end program shallow_water2d_runner
                                 {
                                     "artifact": "state_snapshots",
                                     "required": True,
-                                    "min_samples": 1,
                                     "schema": schema,
                                 }
                             ]
@@ -2551,7 +2544,7 @@ end program shallow_water2d_runner
             snapshots_dir = node_dir / "raw" / "state_snapshots"
             snapshots_dir.mkdir(parents=True, exist_ok=True)
             _write_json(snapshots_dir / "snapshot_schema.json", {
-                **schema, "min_samples": 1, "samples": ["c_only.json"],
+                **schema, "samples": ["c_only.json"],
             })
             # Snapshot omits the declared output `y`.
             _write_json(snapshots_dir / "c_only.json",
@@ -5048,7 +5041,6 @@ end program shallow_water2d_runner
                             {
                                 "artifact": "state_snapshots",
                                 "required": True,
-                                "min_samples": 1,
                                 "schema": {
                                     "variables": [
                                         {"name": "h", "shape_expr": "[2,2]"},
@@ -9038,7 +9030,6 @@ end program shallow_water2d_runner
                             {
                                 "artifact": "state_snapshots",
                                 "required": True,
-                                "min_samples": 1,
                                 "schema": {
                                     "variables": [
                                         {"name": "h", "shape_expr": "[2,2]"},
@@ -9158,7 +9149,6 @@ end program shallow_water2d_runner
                             {
                                 "artifact": "state_snapshots",
                                 "required": True,
-                                "min_samples": 1,
                                 "schema": {
                                     "variables": [
                                         {"name": "h", "shape_expr": "[2,2]"},
@@ -9236,7 +9226,6 @@ end program shallow_water2d_runner
                             {
                                 "artifact": "state_snapshots",
                                 "required": True,
-                                "min_samples": 1,
                                 "schema": {
                                     "variables": [
                                         {"name": "h", "shape_expr": "[2,2]"}
@@ -9934,7 +9923,7 @@ end program shallow_water2d_runner
                     "semantic_dependency": {"required_sources": []},
                     "raw_requirements": {
                         "required_evidence": [
-                            {"artifact": "ghost_cells", "required": True, "min_samples": 1}
+                            {"artifact": "ghost_cells", "required": True}
                         ]
                     },
                 },
@@ -10114,12 +10103,15 @@ end program shallow_water2d_runner
             control,
         )
 
-    def test_initial_captures_are_shape_checked_and_not_counted_as_samples(self) -> None:
+    def test_initial_captures_are_shape_checked_and_a_declared_min_samples_is_inert(self) -> None:
         """Z6 (issue #255): `raw/state_snapshots/initial/<case_id>.json` is walked by the same
         recursive scan as the final snapshot — a wrong shape or a missing required variable
-        there is refused (the witness the rglob had none of) — and it is NOT a `min_samples`
-        sample: with one case and `min_samples: 2`, an `initial/` file does not make up the
-        count (it did before this row, halving the floor on every host-rendered node)."""
+        there is refused (the witness the rglob had none of).
+
+        Issue #396: `min_samples` left the contract. The snapshot count is fixed by the
+        per-case deliverable gate (one `<case_id>.json` per declared case, checked in the same
+        execute attempt), so an IR that still declares a floor above its case count — the
+        Codex IR declared 24 on 12 cases — yields no violation here."""
         def _violations(initial: object, min_samples: int) -> list[str]:
             with tempfile.TemporaryDirectory() as tmp:
                 repo_root = Path(tmp)
@@ -10161,10 +10153,6 @@ end program shallow_water2d_runner
                     / "shallow-water2d_20260415_001" / "runs" / "run_test_001"
                     / "problem__shallow_water2d__0.3.0" / "raw" / "state_snapshots"
                 )
-                schema_path = snapshots_dir / "snapshot_schema.json"
-                schema = json.loads(schema_path.read_text(encoding="utf-8"))
-                schema["min_samples"] = min_samples
-                _write_json(schema_path, schema)
                 if initial is not None:
                     case_path = snapshots_dir / "snapshot000.json"
                     doc = json.loads(case_path.read_text(encoding="utf-8"))
@@ -10180,9 +10168,9 @@ end program shallow_water2d_runner
         bad_shape = _violations({"h": [1.0]}, 1)
         self.assertTrue(any("initial" in v and "does not match declared shape_expr" in v
                             for v in bad_shape), bad_shape)
-        # ...and it is not a sample: the floor of 2 is not met by 1 final + 1 initial
-        short = _violations({}, 2)
-        self.assertTrue(any("snapshot data files must be >= 2" in v for v in short), short)
+        # ...and a declared floor above the one case's count is inert (issue #396)
+        self.assertEqual([], _violations({}, 2))
+        self.assertEqual([], _violations({}, 24))
 
     def test_detects_snapshot_output_shape_mismatch_inside_io_contract(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -10226,7 +10214,6 @@ end program shallow_water2d_runner
                             {
                                 "artifact": "state_snapshots",
                                 "required": True,
-                                "min_samples": 1,
                                 "schema": {
                                     "variables": [
                                         {"name": "h", "shape_expr": "[2,2]"}
@@ -10293,7 +10280,6 @@ end program shallow_water2d_runner
                                 {
                                     "artifact": "state_snapshots",
                                     "required": True,
-                                    "min_samples": 1,
                                     "schema": {
                                         "variables": [{"name": "h", "shape_expr": "[2,2]"}],
                                         "time_variable": "time",
@@ -10364,7 +10350,6 @@ end program shallow_water2d_runner
                             {
                                 "artifact": "state_snapshots",
                                 "required": True,
-                                "min_samples": 1,
                                 "schema": {
                                     "variables": [
                                         {"name": "h", "shape_expr": "[2,2]"}
@@ -10416,7 +10401,6 @@ end program shallow_water2d_runner
                         {
                             "artifact": "state_snapshots",
                             "required": True,
-                            "min_samples": 1,
                             "schema": {
                                 "variables": [{"name": "h", "shape_expr": "[2,2]"}],
                                 "time_variable": "snapshot_index",
@@ -10609,7 +10593,6 @@ end program shallow_water2d_runner
                             {
                                 "artifact": "state_snapshots",
                                 "required": True,
-                                "min_samples": 1,
                                 "schema": {
                                     "variables": [
                                         {"name": "h", "shape_expr": "[2,2]"}
@@ -11477,6 +11460,8 @@ end program shallow_water2d_runner
             "semantic_dependency": {"required_sources": []},
             "raw_requirements": {"required_evidence": [
                 {"artifact": "metrics_basis.json", "required": True},
+                # `min_samples` is inert since issue #396; kept here as the witness that an IR
+                # still carrying it passes the Compile-static gate.
                 {"artifact": "state_snapshots", "required": True, "min_samples": 1,
                  "schema": {"variables": [{"name": "h", "shape_expr": "[2,2]"},
                                           {"name": "hu", "shape_expr": "[2,2]"},
@@ -11624,7 +11609,7 @@ end program shallow_water2d_runner
         # be captured by nothing (a round-3 reviewer constructed exactly that).
         with tempfile.TemporaryDirectory() as tmp:
             v = self._compile_with_flat_contract(Path(tmp), flat, extra_snapshot_entry={
-                "artifact": "state_snapshots", "required": True, "min_samples": 1,
+                "artifact": "state_snapshots", "required": True,
                 "schema": {"variables": [{"name": "zz_uncaptured", "shape_expr": "[2,2]"}],
                            "time_variable": "t", "time_shape_expr": "scalar"}})
             self.assertTrue(any("declares state_snapshots a second time" in x for x in v), v)
