@@ -430,6 +430,7 @@ class RunWorkflowTests(unittest.TestCase):
         `--help`, the dead leaf's output is disclaimed as a source (issue #405), and the
         retired vocabulary (the 6h cap, an epoch read from the leaf) does not."""
         from tools.workflow_conductor import (
+            MAX_USAGE_RESET_WAIT_SECONDS,
             USAGE_LIMIT_WAIT_SCHEDULE_SECONDS,
             USAGE_RESET_MARGIN_SECONDS,
         )
@@ -443,6 +444,7 @@ class RunWorkflowTests(unittest.TestCase):
         self.assertIn(f"at most {len(USAGE_LIMIT_WAIT_SCHEDULE_SECONDS)} waits per substep", flag)
         self.assertIn("reset instant the provider reports", flag)
         self.assertIn(f"plus {int(USAGE_RESET_MARGIN_SECONDS)}s", flag)
+        self.assertIn(f"at most {int(MAX_USAGE_RESET_WAIT_SECONDS)}s", flag)
         self.assertIn("Nothing is read from the dead leaf's output", flag)
         self.assertIn("Default OFF", flag)
         self.assertNotIn("6h", flag)
@@ -7716,11 +7718,11 @@ class StdoutFormatTests(unittest.TestCase):
         self.assertEqual(
             wait_line,
             "    [warn   ] usage limit in generate.generate [wait 1/3]: "
-            "sleeping 900.0s on the fixed schedule (probe_failed), then re-launching",
+            "sleeping 900s on the fixed schedule (probe_failed), then re-launching",
         )
         provider_line = f({"status": "info", "event": "leaf_usage_limit_wait",
                            "node_key": "n", "step": "generate", "substep": "generate",
-                           "tag": "llm_usage_limit", "wait_seconds": 1920.0,
+                           "tag": "llm_usage_limit", "wait_seconds": 1920.4837261537,
                            "wait_attempt": 1, "max_waits": 3, "dead_agent_run_id": "ar_dead",
                            "evidence": "e", "reset_source": "provider",
                            "reset_epoch": 1791125452, "reset_window": "primary(300min)",
@@ -7729,7 +7731,7 @@ class StdoutFormatTests(unittest.TestCase):
         self.assertEqual(
             provider_line,
             "    [warn   ] usage limit in generate.generate [wait 1/3]: "
-            "sleeping 1920.0s until the provider-reported reset (primary(300min)), "
+            "sleeping 1920s until the provider-reported reset (primary(300min)), "
             "then re-launching",
         )
         # The claim-degradation warning. `human` is the DEFAULT format, so a payload the

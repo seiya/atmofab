@@ -2279,6 +2279,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     # the sleep the flag actually buys. A function-local import, like `run_conductor` below: the
     # conductor is not a module-level dependency of the driver.
     from tools.workflow_conductor import (
+        MAX_USAGE_RESET_WAIT_SECONDS,
         USAGE_LIMIT_WAIT_SCHEDULE_SECONDS,
         USAGE_RESET_MARGIN_SECONDS,
     )
@@ -2289,8 +2290,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
         help=(
             "Opt in to waiting out a leaf usage limit IN PLACE and re-launching the same "
             "substep: the conductor sleeps until the reset instant the provider reports "
-            f"(plus {int(USAGE_RESET_MARGIN_SECONDS)}s), falling back to a fixed schedule "
-            f"({_schedule}) when none is obtained; at most "
+            f"(plus {int(USAGE_RESET_MARGIN_SECONDS)}s, at most "
+            f"{int(MAX_USAGE_RESET_WAIT_SECONDS)}s), falling back to a fixed schedule "
+            f"({_schedule}) when none is obtained or it is further away; at most "
             f"{len(USAGE_LIMIT_WAIT_SCHEDULE_SECONDS)} waits per substep. Nothing is read "
             "from the dead leaf's output. Default OFF (a usage limit "
             "stays terminal for a manual --resume after the reset). NOT recovered automatically "
@@ -3394,6 +3396,8 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
         phase = payload.get("step", "?")
         substep = payload.get("substep") or "step"
         wait = payload.get("wait_seconds", "?")
+        if isinstance(wait, (int, float)) and not isinstance(wait, bool):
+            wait = f"{wait:.0f}"     # a provider wait is `epoch - now + margin`, a raw float
         attempt = payload.get("wait_attempt", "?")
         max_waits = payload.get("max_waits", "?")
         if payload.get("reset_source") == "provider":

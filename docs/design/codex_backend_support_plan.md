@@ -91,11 +91,10 @@ proposed.
 - Normalize Codex JSONL `error` and `turn.failed` events and stderr into the
   existing infrastructure-failure classifications.
 - Record `turn.completed.usage` when Codex emits it.
-- `--wait-usage-reset` needs nothing from Codex: since issue #170 the wait is
-  tag-driven and provider-independent (a fixed schedule on the `llm_usage_limit`
-  tag; canonical: `docs/ORCHESTRATION.md` "leaf transient retry"). No reset time
-  is read from any leaf's output. Since issue #405 the wait asks `codex app-server`
-  for the window's reset instant (`tools/usage_reset.py`).
+- `--wait-usage-reset`: since issue #405 the wait asks `codex app-server` for the
+  exhausted window's reset instant (`tools/usage_reset.py`), with the fixed schedule
+  of issue #170 as the fallback (canonical: `docs/ORCHESTRATION.md` "leaf transient
+  retry"). No reset time is read from any leaf's output.
 
 ### Pure Generate CLI approximation
 
