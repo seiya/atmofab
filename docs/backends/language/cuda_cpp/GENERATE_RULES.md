@@ -100,9 +100,10 @@ Neither the floor nor the trace sees whether a kernel does its loop's work: the 
 kernel exist, and the trace that each defined kernel ran at least once. A loop the plan puts on
 the device that the source computes on the host — beside a stub kernel, or behind a branch that
 sends every case the run covers to the host (a size threshold above them) — is `generate.verify`'s
-to fail (G6). A loop the plan keeps on the host is the plan's claim, held like a declared `none`:
-its reason must be about the loop itself (a carried dependence, a reduction, a copy that only
-reshapes host state, a check over the host state a checks callback receives), not about a gate or a run in which a kernel did not execute. The
+to fail (G6). A loop of the model source the plan keeps on the host is the plan's claim, held
+like a declared `none`: its reason must be about the loop itself (a carried dependence, a
+reduction, a copy that only reshapes host state), not about a gate or a run in which a kernel did
+not execute. A loop of the checks module is not G6's to judge (issue #400). The
 producer is told the same, and told that a kernel the trace never saw is launched where the cases
 reach it with a launch configuration the device accepts, and removed only when its work is not
 needed, never moved to a host loop (issue #307 PR-3).
