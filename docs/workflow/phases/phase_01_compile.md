@@ -92,7 +92,6 @@ io_contract:
     required_evidence:
       - artifact: "<state_snapshots | metrics_basis.json>"  # normalizes to this enum (optional raw/ prefix, case-insensitive); author the canonical bare form, with the .json suffix on metrics_basis.json
         required: true|false
-        min_samples: <int>
         schema:               # required when artifact=state_snapshots
           variables:          # PRIMARY STATE ONLY (Z6, issue #255): each entry is a state variable the generated checks module HOLDS as a module-level float64 variable of this exact name, captured by the host-rendered runner right after case_setup (raw/state_snapshots/initial/<case_id>.json) and right after case_run (raw/state_snapshots/<case_id>.json). A quantity the checks COMPUTE (a norm, a maximum, a CFL number, a mass, a flag) is a diagnostics_contract metric, and an input the case declares (nx, dx, g, ...) is already in case.test_case_set[].inputs — neither is a snapshot variable. On a node whose OWN runner writes the snapshots (the `infrastructure` harness self-test, the `harness` bundle shape) the variables are that self-test's recorded outputs — the sentinel echoes, the round-trip deviation, the flags its `tests.md` §6 names — and that writer is the trust root (A6), so this rule and V3 (iv) do not apply there. Every name is a bindable identifier (`[A-Za-z][A-Za-z0-9_]*`, ≤ 60 chars, pairwise distinct case-insensitively, not one of the checks-ABI procedure names); the bundle must bind each one (CODEGEN_BUNDLE_CONTRACT.md §State bindings)
             - name: "<name>"
