@@ -77,17 +77,18 @@ def _provider_command_base(entry: ResolvedLeafEntry) -> list[str]:
     """The argv prefix a CLI leaf is launched through: the entry's configured wrapper command
     (with any flags) if it has one, else the bare backend binary name.
 
-    ONE definition, because TWO places have to agree about it or they confine a different
-    executable than the leaf runs: `leaf_command`, and `record_launch`'s `backend_command`
-    (which decides the CLI binary the sandbox profile binds, so it is the one that CONFINES).
-    A third is the host-side reset probe (`Conductor._read_usage_reset`, issue #405): it
-    asks the SAME binary for the usage window's reset instant, so the reading describes the
-    account the leaf ran against. (An earlier `/usage` probe went with issue #170 and came
-    back in this form; a fourth user, `_ensure_codex_feature_cache`, certified the codex hooks
-    feature of that binary and went with the leaf hook layer in Z4, issue #171.) The count has been wrong here before — written as three while four were listed,
-    one of them the read-only diagnostician's in-process bwrap profile, which issue #169
-    deleted (that leaf's profile is the runtime's now, built from this same
-    `backend_command`). Re-count the list when you change it; nothing compares the two."""
+    ONE definition, because THREE places have to agree about it or they confine (or probe) a
+    different executable than the leaf runs: `leaf_command`; `record_launch`'s
+    `backend_command` (which decides the CLI binary the sandbox profile binds, so it is the one
+    that CONFINES); and the host-side reset probe (`Conductor._read_usage_reset`, issue #405),
+    which asks the SAME binary for the usage window's reset instant so the reading describes
+    the account the leaf ran against. An earlier `/usage` probe went with issue #170 and came
+    back in this form; `_ensure_codex_feature_cache`, which certified the codex hooks feature
+    of that binary, went with the leaf hook layer in Z4 (issue #171). The count has been wrong
+    here before — written as three while four were listed, one of them the read-only
+    diagnostician's in-process bwrap profile, which issue #169 deleted (that leaf's profile is
+    the runtime's now, built from this same `backend_command`). Re-count the list when you
+    change it; nothing compares the two."""
     base = shlex.split(entry.command) if entry.command.strip() else []
     return base or [entry.backend_token]
 
@@ -12269,8 +12270,11 @@ class Conductor:
             # it would leave litter no later step removes.
             tmp_parent = self.repo_root / "workspace" / "tmp"
             tmp_parent.mkdir(parents=True, exist_ok=True)
+            # `ignore_cleanup_errors`: a reading already taken is not thrown away because
+            # something the CLI left behind is still writing into the directory.
             with tempfile.TemporaryDirectory(prefix=f"{child_arid}.usage_probe.",
-                                             dir=tmp_parent) as probe_tmp:
+                                             dir=tmp_parent,
+                                             ignore_cleanup_errors=True) as probe_tmp:
                 env["TMPDIR"] = probe_tmp
                 return usage_reset.read_reset_instant(
                     entry.provider, command_base=_provider_command_base(entry), model=model,

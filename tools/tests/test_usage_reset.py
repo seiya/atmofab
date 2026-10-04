@@ -219,9 +219,10 @@ class ExchangeTests(unittest.TestCase):
                 "codex_cli", command_base=[sys.executable, str(script)], model="",
                 env={"PATH": "/usr/bin:/bin", "FAKE_RECORD": str(record)}, cwd=str(self.tmp))
         self.assertEqual(reading.epoch, 1791125452, reading)
-        # The read stops at the answer line and closes stdin then (the fake exits on EOF);
-        # a read that did not stop there would wait out the deadline.
-        self.assertLess(time.monotonic() - start, 10)
+        # The read stops at the answer line and closes stdin then (the fake exits on EOF); a
+        # read that did not stop there waits out the deadline, and one that did not close
+        # stdin waits out the 5 s reap before the group kill.
+        self.assertLess(time.monotonic() - start, 4)
         # The leaf's environment carries no CODEX_HOME; the probe reads the ORIGIN home.
         self.assertEqual(record.read_text(), str(origin))
         # The fake refuses a caller that closes stdin first, which is what `subprocess.run(
@@ -243,7 +244,7 @@ class ExchangeTests(unittest.TestCase):
                 model="haiku", env={"PATH": "/usr/bin:/bin"}, cwd=str(self.tmp))
         # `-p` reads its prompt to EOF, so stdin is closed right after the prompt; a probe
         # that held it open would reach the answer only at the deadline.
-        self.assertLess(time.monotonic() - start, 10)
+        self.assertLess(time.monotonic() - start, 4)
         self.assertEqual((reading.epoch, reading.window), (1791128400, "five_hour"), reading)
         seen = json.loads(record.read_text())
         # The WHOLE argv: measurement 4 was taken with exactly these flags (`--verbose` is what
@@ -297,9 +298,10 @@ class ExchangeTests(unittest.TestCase):
             reading = ur.read_reset_instant(
                 "claude_cli", command_base=["/bin/sh", str(script)], model="",
                 env={"PATH": "/usr/bin:/bin"}, cwd=str(self.tmp))
-        self.assertLess(time.monotonic() - start, 10)
-        self.assertEqual(reading.failure, ur.FAILURE_PROBE_FAILED)
-        self.assertIn("stdout held open after exit", reading.detail)
+        elapsed = time.monotonic() - start
+        self.assertLess(elapsed, 10, reading)
+        self.assertEqual(reading.failure, ur.FAILURE_PROBE_FAILED, reading)
+        self.assertIn("stdout held open after exit", reading.detail, (reading, elapsed))
         child = int(pidfile.read_text())
         # Reaped by init once killed; a zombie or a missing pid both mean it is gone. SIGKILL is
         # delivered asynchronously, so a loaded host can show it running for a moment after
@@ -316,6 +318,33 @@ class ExchangeTests(unittest.TestCase):
         while _alive() and time.monotonic() < deadline:
             settle.wait(0.05)
         self.assertFalse(_alive(), "the descendant outlived the probe")
+
+    def test_an_interrupted_probe_is_killed_before_the_interruption_propagates(self) -> None:
+        """Codex review (round 2): the probe runs in a session of its own, so the driver's
+        Ctrl-C does not reach it; an interruption raised inside the exchange must still kill
+        the probe's group on the way out."""
+        spawned: list = []
+
+        def _spawn(*args, **kwargs):
+            proc = subprocess.Popen(*args, **kwargs)
+            spawned.append(proc)
+            return proc
+        real_monotonic = time.monotonic
+        calls = [0]
+
+        def _monotonic():
+            calls[0] += 1
+            if calls[0] == 3:            # inside the read loop, after the spawn
+                raise KeyboardInterrupt
+            return real_monotonic()
+        with mock.patch.object(ur, "_spawn", _spawn), \
+                mock.patch.object(ur.time, "monotonic", _monotonic), \
+                self.assertRaises(KeyboardInterrupt):
+            ur._exchange(["/bin/sh", "-c", "exec /usr/bin/tail -f /dev/null"],
+                         env={"PATH": "/usr/bin:/bin"}, cwd=str(self.tmp), send="",
+                         close_stdin_after_send=False, until=lambda _l: False, timeout=30)
+        (proc,) = spawned
+        self.assertIsNotNone(proc.returncode)          # reaped: killed, not left running
 
     def test_a_flooding_cli_is_drained_but_not_retained(self) -> None:
         script = self._script("flood.py", "import sys\nfor _ in range(20000):\n"
@@ -343,6 +372,10 @@ class BoundsTests(unittest.TestCase):
 
     def test_an_id_of_true_is_not_the_answer(self) -> None:
         self.assertTrue(ur._codex_answer_line('{"id": 1, "result": {}}'))
+        # A JSON line that is not an object (a notification array, a bare number) is not the
+        # answer, and must not raise in the reader thread.
+        self.assertFalse(ur._codex_answer_line("[1]"))
+        self.assertFalse(ur._codex_answer_line("1"))
         self.assertFalse(ur._codex_answer_line('{"id": true, "result": {}}'))
         self.assertFalse(ur._codex_answer_line('{"id": 1.0, "result": {}}'))
 

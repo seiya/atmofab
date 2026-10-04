@@ -7720,6 +7720,20 @@ class StdoutFormatTests(unittest.TestCase):
             "    [warn   ] usage limit in generate.generate [wait 1/3]: "
             "sleeping 900s on the fixed schedule (probe_failed), then re-launching",
         )
+        # A provider that NAMED a window the conductor declined (a weekly window beyond the
+        # cap): the line says schedule, not "until the provider-reported reset".
+        beyond = f({"status": "info", "event": "leaf_usage_limit_wait",
+                    "node_key": "n", "step": "generate", "substep": "generate",
+                    "tag": "llm_usage_limit", "wait_seconds": 900.0, "wait_attempt": 1,
+                    "max_waits": 3, "dead_agent_run_id": "ar_dead", "evidence": "e",
+                    "reset_source": "schedule", "reset_epoch": 1791690820,
+                    "reset_window": "seven_day", "fallback_reason": "instant_beyond_cap",
+                    "reset_detail": "d", "orchestration_id": "o"})
+        self.assertEqual(
+            beyond,
+            "    [warn   ] usage limit in generate.generate [wait 1/3]: "
+            "sleeping 900s on the fixed schedule (instant_beyond_cap), then re-launching",
+        )
         provider_line = f({"status": "info", "event": "leaf_usage_limit_wait",
                            "node_key": "n", "step": "generate", "substep": "generate",
                            "tag": "llm_usage_limit", "wait_seconds": 1920.4837261537,

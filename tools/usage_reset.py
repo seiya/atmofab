@@ -246,41 +246,46 @@ def _exchange(argv: list[str], *, env: Mapping[str, str], cwd: str, send: str,
 
     thread = threading.Thread(target=_reader, daemon=True)
     thread.start()
+    # Everything after the spawn sits inside this `try`: the probe runs in a session of its
+    # own, so the driver's Ctrl-C / SIGTERM does not reach it, and an interruption that left
+    # this function before the `finally` would leave it running (a claude probe mid-turn).
     try:
-        assert proc.stdin is not None
-        proc.stdin.write(send)
-        proc.stdin.flush()
-        if close_stdin_after_send:
-            proc.stdin.close()
-    except OSError:
-        pass  # the process died early; what it printed (if anything) is still read
-    exited_at: float | None = None
-    while not done.is_set():
-        now = time.monotonic()
-        if now >= deadline:
-            break
-        if exited_at is None and proc.poll() is not None:
-            exited_at = now
-        if exited_at is not None and now - exited_at >= _POST_EXIT_READ_GRACE_SECONDS:
-            break
-        done.wait(min(0.05, deadline - now))
-    finished = done.is_set()
-    why = ("answered" if finished
-           else "timed out" if exited_at is None else "stdout held open after exit")
-    try:
-        if proc.stdin is not None and not proc.stdin.closed:
-            proc.stdin.close()
-    except OSError:
-        pass
-    try:
-        proc.wait(timeout=max(0.1, min(5.0, deadline - time.monotonic())))
-    except subprocess.TimeoutExpired:
-        pass
-    try:
-        os.killpg(proc.pid, signal.SIGKILL)
-    except OSError:
-        pass  # the group is already empty
-    proc.wait()
+        try:
+            assert proc.stdin is not None
+            proc.stdin.write(send)
+            proc.stdin.flush()
+            if close_stdin_after_send:
+                proc.stdin.close()
+        except OSError:
+            pass  # the process died early; what it printed (if anything) is still read
+        exited_at: float | None = None
+        while not done.is_set():
+            now = time.monotonic()
+            if now >= deadline:
+                break
+            if exited_at is None and proc.poll() is not None:
+                exited_at = now
+            if exited_at is not None and now - exited_at >= _POST_EXIT_READ_GRACE_SECONDS:
+                break
+            done.wait(min(0.05, deadline - now))
+        finished = done.is_set()
+        why = ("answered" if finished
+               else "timed out" if exited_at is None else "stdout held open after exit")
+        try:
+            if proc.stdin is not None and not proc.stdin.closed:
+                proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            proc.wait(timeout=max(0.1, min(5.0, deadline - time.monotonic())))
+        except subprocess.TimeoutExpired:
+            pass
+    finally:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except OSError:
+            pass  # the group is already empty
+        proc.wait()
     if finished and proc.returncode not in (0, None) and not lines:
         why = f"exit {proc.returncode}"
     return list(lines), why
