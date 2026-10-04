@@ -24142,7 +24142,13 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
 
     _NEEDLE = "that contract describes a repeated body"
 
-    def _violations(self, *, _drop: tuple[str, ...] = (), **overrides) -> list[str]:
+    def _violations(
+        self,
+        *,
+        _drop: tuple[str, ...] = (),
+        _direct_spec_vars: set[str] | None = None,
+        **overrides,
+    ) -> list[str]:
         contract = copy.deepcopy(self._BASE_CONTRACT)
         contract.update(overrides)
         for key in _drop:
@@ -24158,7 +24164,7 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
                 contract_path,
                 violations,
                 multidim_node_key=None,
-                direct_spec_vars=None,
+                direct_spec_vars=_direct_spec_vars,
             )
         return violations
 
@@ -24210,6 +24216,76 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
                     any(v.endswith(":iteration_contract must be object") for v in violations),
                     violations,
                 )
+
+    def test_absent_temporaries_and_derived_field_rules_read_as_empty(self) -> None:
+        """Issue #406, the #398 sibling: the contract never requires `temporaries` or
+        `derived_field_rules`, and a Compile IR with nothing to list omitted both and died at
+        Compile.static on "must be list" alone. An absent key now takes every rule `[]` takes,
+        so the one rule with force — a step token with no provenance is an undefined binding —
+        still fires on absence. A PRESENT non-list stays refused, and `update_semantics` (no
+        recorded incident) is deliberately left refusing absence."""
+
+        def stripped(violations: list[str]) -> list[str]:
+            # Each call writes under its own tempdir, so compare without the path.
+            return [v.split("spec.ir.yaml:", 1)[1] for v in violations]
+
+        drops = (("temporaries",), ("derived_field_rules",),
+                 ("temporaries", "derived_field_rules"))
+        for drop in drops:
+            with self.subTest(drop=drop):
+                absent = stripped(self._violations(_drop=drop))
+                empty = stripped(self._violations(**{key: [] for key in drop}))
+                self.assertEqual(absent, empty)
+                self.assertFalse(any("must be list" in v for v in absent), absent)
+                # The comparison above holds if both sides drift together; pin the result.
+                self.assertEqual(absent, [])
+
+        # The rule with force still fires on absence. `F_h` is granted by `temporaries` alone
+        # in the base contract; it is `step_02.outputs[0]` and `step_03.inputs[1]`.
+        undefined = ["steps[1].outputs[0] token 'F_h'", "steps[2].inputs[1] token 'F_h'"]
+        spec_vars = {"h"}
+
+        def bindings(violations: list[str]) -> list[str]:
+            return [v for v in stripped(violations) if "(undefined binding)" in v]
+
+        self.assertEqual(bindings(self._violations(_direct_spec_vars=spec_vars)), [])
+        # The same token granted by a `derived_field_rules` entry alone.
+        by_rule = {"temporaries": [],
+                   "derived_field_rules": [{"name": "F_h", "rule": "flux of h"}]}
+        self.assertEqual(
+            bindings(self._violations(_direct_spec_vars=spec_vars, **by_rule)), [])
+        # Dropping the one key that grants `F_h` yields exactly the `[]` result: one undefined
+        # binding per untraceable token. Before the drop, the key is the token's only
+        # provenance (the two controls above show it then yields none).
+        cases = {
+            "temporaries": {},
+            "derived_field_rules": by_rule,
+        }
+        for key, rest in cases.items():
+            with self.subTest(provenance=key):
+                absent = bindings(self._violations(
+                    _drop=(key,), _direct_spec_vars=spec_vars, **rest))
+                as_empty = bindings(self._violations(
+                    _direct_spec_vars=spec_vars, **{**rest, key: []}))
+                self.assertEqual(absent, as_empty)
+                self.assertEqual(len(absent), len(undefined), absent)
+                for line, prefix in zip(absent, undefined):
+                    self.assertTrue(line.startswith(prefix), (line, prefix))
+
+        for key in ("temporaries", "derived_field_rules"):
+            for present in (None, {}, "none"):
+                with self.subTest(key=key, present=present):
+                    violations = self._violations(**{key: present})
+                    self.assertTrue(
+                        any(v.endswith(f":{key} must be list") for v in violations),
+                        violations,
+                    )
+
+        # Scope pin (issue #406 decision 3): absence of `update_semantics` is still refused.
+        self.assertTrue(
+            any(v.endswith(":update_semantics must be object")
+                for v in self._violations(_drop=("update_semantics",))),
+        )
 
     def test_loop_shaped_contract_under_sequence_is_flagged(self) -> None:
         """The live defect: `execution_mode: sequence` on a time-marching problem node whose

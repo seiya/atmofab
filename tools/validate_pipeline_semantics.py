@@ -5350,7 +5350,10 @@ def _validate_algorithm_contract_file(
     if not isinstance(update_semantics, dict):
         violations.append(f"{contract_path}:update_semantics must be object")
 
-    temporaries = contract.get("temporaries")
+    # An absent `temporaries` / `derived_field_rules` reads as `[]`: the contract never requires
+    # either key on a node with nothing to list (issue #406, the #398 sibling). A PRESENT
+    # non-list, `null` included, is still refused below.
+    temporaries = contract.get("temporaries", [])
     if not isinstance(temporaries, list):
         violations.append(f"{contract_path}:temporaries must be list")
     else:
@@ -5386,7 +5389,7 @@ def _validate_algorithm_contract_file(
                         f"{contract_path}:temporaries[{idx}].shape_expr invalid ({shape_err})"
                     )
 
-    derived_field_rules = contract.get("derived_field_rules")
+    derived_field_rules = contract.get("derived_field_rules", [])
     if not isinstance(derived_field_rules, list):
         violations.append(f"{contract_path}:derived_field_rules must be list")
 
