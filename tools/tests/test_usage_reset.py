@@ -122,6 +122,22 @@ class ClaudeParseTests(unittest.TestCase):
                 reading = ur.parse_claude_rate_limit_events(_stream(_rejected(bad)))
                 self.assertIsNone(reading.epoch)
 
+    def test_only_a_rate_limit_event_line_is_read(self) -> None:
+        """The `type` decides, not the presence of a `rate_limit_info` member: another
+        top-level line carrying one is not the CLI's rate-limit event."""
+        other = dict(_rejected(), type="system")
+        reading = ur.parse_claude_rate_limit_events(_stream(other))
+        self.assertIsNone(reading.epoch)
+        self.assertEqual(reading.failure, ur.FAILURE_PROBE_FAILED)
+
+    def test_a_malformed_last_event_supersedes_an_earlier_rejected_one(self) -> None:
+        """The LAST event is the reading even when it carries no `rate_limit_info`: an earlier
+        `rejected` instant is not resurrected past it."""
+        stdout = _stream(_rejected(), {"type": "rate_limit_event"})
+        reading = ur.parse_claude_rate_limit_events(stdout)
+        self.assertIsNone(reading.epoch)
+        self.assertEqual(reading.failure, ur.FAILURE_NO_EXHAUSTED_WINDOW)
+
     def test_a_rate_limit_event_inside_model_text_is_not_read(self) -> None:
         """A model's text reaches stdout JSON-encoded inside a `result` / `assistant` object,
         so a forged event in it is a string field, never a top-level line."""
@@ -136,6 +152,8 @@ _FAKE_CODEX = textwrap.dedent('''
     # Mirrors measurement 2: the real app-server answers `account/rateLimits/read` only while
     # its stdin is still open. Here: once the request is in, an EOF within 0.5 s means the
     # caller closed stdin, and the fake exits without answering.
+    import os
+    open(os.environ["FAKE_RECORD"], "w").write(os.environ.get("CODEX_HOME", "<unset>"))
     for _ in range(3):
         if not sys.stdin.readline():
             sys.exit(0)
@@ -175,14 +193,19 @@ class ExchangeTests(unittest.TestCase):
 
     def test_the_codex_exchange_holds_stdin_open_until_the_answer(self) -> None:
         script = self._script("codex.py", f"RESULT = {_CODEX_RESULT!r}\n" + _FAKE_CODEX)
-        with mock.patch.dict("os.environ", {"CODEX_HOME": str(self.tmp)}):
+        record = self.tmp / "codex_home.txt"
+        origin = self.tmp / "origin-home"
+        with mock.patch.dict("os.environ", {"CODEX_HOME": str(origin)}):
             reading = ur.read_reset_instant(
                 "codex_cli", command_base=[sys.executable, str(script)], model="",
-                env={"PATH": "/usr/bin:/bin"}, cwd=str(self.tmp))
+                env={"PATH": "/usr/bin:/bin", "FAKE_RECORD": str(record)}, cwd=str(self.tmp))
         self.assertEqual(reading.epoch, 1791125452, reading)
+        # The leaf's environment carries no CODEX_HOME; the probe reads the ORIGIN home.
+        self.assertEqual(record.read_text(), str(origin))
         # The fake refuses a caller that closes stdin first, which is what `subprocess.run(
         # input=...)` does: the same script under that shape gives no `id: 1` line.
         done = subprocess.run([sys.executable, str(script)], text=True, capture_output=True,
+                              env={"PATH": "/usr/bin:/bin", "FAKE_RECORD": str(record)},
                               input='{"id":0}\n{}\n{"id":1}\n', timeout=10, check=False)
         self.assertNotIn('"id": 1', done.stdout)
 
