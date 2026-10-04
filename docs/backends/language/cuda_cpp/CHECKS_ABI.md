@@ -78,12 +78,12 @@ missing or internal one is refused by the static check (`source.unpublished_boun
 runner reads each one as `<spec_id>_checks::<name>` and hands the harness emitters a non-owning
 `atmofab::View` over it. At each capture point a `std::vector` must be non-empty and an
 `atmofab::Array` must have every `extent[k]` positive with `data.size()` their product; otherwise
-the run stops (`bound state <name> is not allocated at capture`). A rejected case (`case_setup`
-setting `ok = false`) still leaves every bound array so sized.
+the run stops (`bound state <name> is not allocated at capture`). A rejected guard / xfail case
+still leaves every bound array so sized.
 
 ## 2. The semantics, spelled in CUDA C++
 
-A rejected guard / xfail case sets `ok = false` in `case_setup`; `status` is `"pass"`, `"fail"`
+`status` is `"pass"`, `"fail"`
 or `"na  "` — the not-applicable value is written at the contract's width 4, right-padded, and
 the certified harness trims the padding before it writes the status, so `diagnostics.json` reads
 `"na"` as on every other target; an honestly unavailable metric sets `found = true`,
