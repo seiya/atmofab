@@ -2952,14 +2952,22 @@ class PureRenderTests(unittest.TestCase):
         ):
             self.assertIn(token, prompt)
 
-    # Issue #399: a sentence that names `ok` and a logical value gives that value a meaning. The
-    # reader is a sentence, not a phrase list, so a reworded restatement is refused too.
-    _OK_NAME_RE = re.compile(r"`ok`|\bok\s*=|=\s*ok\b|\bok\)|\b(?:setup|run)_ok\b")
-    _OK_VALUE_RE = re.compile(r"\b(?:true|false)\b|\.(?:true|false)\.", re.IGNORECASE)
+    # Issue #399: a sentence that names `ok` beside a logical value gives that value a meaning.
+    # A bound on growth, not a detector: a rewording that names no value ("reported through
+    # `ok`") passes. It over-refuses too — "whether it is true or false is never a finding"
+    # is refused — so a sentence of that kind is added by editing this row deliberately.
+    # Sentences are read across a hard wrap (the documents it reads are wrapped), and a
+    # Fortran logical literal is one token, so its dots do not end a sentence.
+    _OK_NAME_RE = re.compile(r"\bok\b|\b(?:setup|run)_ok\b")
+    _OK_VALUE_RE = re.compile(r"\b(?:true|false)\b", re.IGNORECASE)
 
     @classmethod
     def _sentences_giving_ok_a_value(cls, text: str) -> list[str]:
-        return [s for s in re.split(r"(?<=[.;:])\s+|\n", text)
+        text = re.sub(r"\.(true|false)\.", r"\1", text, flags=re.IGNORECASE)
+        # A newline continues the sentence unless a blank line, bullet, heading, table row or
+        # fence follows it.
+        text = re.sub(r"(?<=\S)\n(?=[^\n\s#|`-])", " ", text)
+        return [s for s in re.split(r"(?<=[.;])\s+|\n", text)
                 if cls._OK_NAME_RE.search(s) and cls._OK_VALUE_RE.search(s)]
 
     def test_checks_module_loops_and_ok_are_not_findings_on_every_target(self) -> None:
@@ -2975,16 +2983,23 @@ class PureRenderTests(unittest.TestCase):
         from tools.backends import registry
         # The sentence reader must refuse the wording #399 removed and the rewordings round 1
         # planted, and pass the sentences that remain — or it observes nothing.
+        # One refused sample per alternative of each pattern and per joining rule, and one kept
+        # sample per sentence boundary, so narrowing any of them is red (round 2 narrowed nine
+        # with the previous self-test green).
         for refused in ("`ok` false rejects a guard / xfail input (e.g. an invalid grid size).",
-                        "A rejected guard / xfail case returns `ok = .false.` from `case_setup`;",
-                        "A rejected guard / xfail case sets `ok = false` in `case_setup`;",
                         "A rejected guard / xfail case returns `.false.` in `ok`;",
-                        "a false `ok` marks a rejected guard input.",
-                        "set `ok` to false for a rejected input."):
+                        "a rejected case (`case_setup` setting `ok`\nto false) still leaves",
+                        "`ok`: false rejects a guard input.",
+                        "a guard case leaves ok as False.",
+                        "the runner stops when setup_ok is false.",
+                        "the runner stops unless run_ok is true."):
             self.assertTrue(self._sentences_giving_ok_a_value(refused), refused)
-        for kept in ("Assign `ok` on every path like every other `out` argument;",
-                     "`found` false when this case does not produce that metric."):
-            self.assertEqual(self._sentences_giving_ok_a_value(kept), [])
+        for kept in ("Assign `ok` on every path. `found` false when the metric is absent.",
+                     "Assign `ok` on every path; `found` false when the metric is absent.",
+                     "- Assign `ok` on every path\n- `found` false when the metric is absent.",
+                     "Assign `ok`.\n\n`found` false when the metric is absent.",
+                     "Assign `ok` on every path. The lookup returns true when the id is known."):
+            self.assertEqual(self._sentences_giving_ok_a_value(kept), [], kept)
         contract = wc._checks_contract_abi_sections(
             (Path(wc.__file__).resolve().parents[1]
              / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8"))
@@ -3011,9 +3026,9 @@ class PureRenderTests(unittest.TestCase):
                     "are lowered: whether a checks-module loop is serial, parallel or on the "
                     "host is never a finding, and the plan need not name it or give a reason "
                     "for it.",
-                    "That exemption is about speed only — what a target fragment below requires "
-                    "of the checks module for correctness, G5, and that the checks module "
-                    "computes no state update of its own all still hold.",
+                    "That exemption is about speed only — whatever a target fragment below "
+                    "requires of the checks module, G5, and that the checks module computes no "
+                    "state update of its own all still hold.",
                 ):
                     self.assertIn(sentence, verify)
                 for sentence in (

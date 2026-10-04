@@ -871,7 +871,7 @@ PINNED: dict[str, str] = {
     # `82d5071e` (orch_20261004T053000Z_77ee7ba6) failed a guard case's `ok=true`; `9584fbf8`,
     # `97ecd3cd` and `4cec9676` (orch_20261004T005821Z_d87fb2fb) failed serial / host loops of
     # the checks module.
-    "pure-66": "7f8961d053d6c8ceecdf4f7d176cf4a82bb077126e28b9c5022830f4bb532ca1",
+    "pure-66": "1530294f3ed428dc6753d09a7eda334f0c6812a676ca4cdcca1069d7d6c2fce6",
 }
 
 
