@@ -2952,6 +2952,49 @@ class PureRenderTests(unittest.TestCase):
         ):
             self.assertIn(token, prompt)
 
+    def test_checks_module_loops_and_ok_are_not_findings_on_every_target(self) -> None:
+        """Issues #399 / #400, both halves on every (language, parallel) pair a target composes:
+        the reviewer's G6 says a checks-module loop's lowering is never a finding and the
+        producer's rule (7) says it needs no plan entry (#400); the producer's clause (C) says
+        the runner does not read `ok`, and the reviewer's inlined checks contract, in both
+        language bindings, gives no value of `ok` a meaning (#399). The CUDA G6 and producer
+        fragments no longer offer a checks callback as a reason to keep a loop on the host."""
+        from tools.backends import registry
+        contract = wc._checks_contract_abi_sections(
+            (Path(wc.__file__).resolve().parents[1]
+             / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8"))
+        self.assertIn("The runner does not read `ok`, here or from `case_run`", contract)
+        templates = ort._load_launch_prompt_templates()
+
+        def composed(key: str, language: str, parallel: str) -> str:
+            return ort._compose_fragments(
+                templates[key], ort._PROMPT_TEMPLATE_FILES[key],
+                {"pure_language": language, "pure_parallel": parallel})
+
+        for language, parallel in (("fortran", "openmp"), ("fortran", "mpi"),
+                                   ("cuda_cpp", "cuda")):
+            with self.subTest(language=language, parallel=parallel):
+                verify = composed("pure generate.verify", language, parallel)
+                generate = composed("pure generate.generate", language, parallel)
+                self.assertIn("G6 does not judge how its loops are lowered: whether a "
+                              "checks-module loop is serial, parallel or on the host is never "
+                              "a finding", verify)
+                self.assertIn("parallelizable loops of the model source serial", verify)
+                self.assertIn("the checks module is measurement code, its loops need no "
+                              "lowering", generate)
+                self.assertIn("the runner does not read it, and a rejected input is reported "
+                              "by the IR's input-guard check", generate)
+                self.assertNotIn("a checks callback receives", verify)
+                self.assertNotIn("a checks callback receives", generate)
+                binding = wc._checks_contract_abi_sections(
+                    registry.capability_module("language", language, "checks_abi").document())
+                for doc in (contract, binding, generate):
+                    # "the path that rejects a guard / xfail input" stays in the producer's
+                    # allocation rule: it names the input guard, not a value of `ok`.
+                    for refused in ("`ok` false", "ok = .false.", "ok=.false.", "ok = false",
+                                    "returned `ok", "returning\n`ok", "returning `ok"):
+                        self.assertNotIn(refused, doc)
+
     def test_pure_launch_prompt_renders_exemplar_block(self) -> None:
         # Complements the fence/scan test below with the CONTENT assertion: an injected exemplar
         # must actually reach the rendered prompt (heading + source body), which is what defect B

@@ -114,7 +114,7 @@
       "fortran-intent": 1,
       "fortran-kind": 2,
       "fortran-subroutine": 4,
-      "fortran-suffix": 5,
+      "fortran-suffix": 4,
       "make-control-file": 4,
       "make-variable": 1,
       "parallel-construct": 3,
