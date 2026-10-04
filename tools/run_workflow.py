@@ -2278,16 +2278,21 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     # The schedule is spelled by the conductor and rendered here, so the help cannot drift from
     # the sleep the flag actually buys. A function-local import, like `run_conductor` below: the
     # conductor is not a module-level dependency of the driver.
-    from tools.workflow_conductor import USAGE_LIMIT_WAIT_SCHEDULE_SECONDS
+    from tools.workflow_conductor import (
+        USAGE_LIMIT_WAIT_SCHEDULE_SECONDS,
+        USAGE_RESET_MARGIN_SECONDS,
+    )
     _schedule = ", ".join(f"{int(seconds)}s" for seconds in USAGE_LIMIT_WAIT_SCHEDULE_SECONDS)
     parser.add_argument(
         "--wait-usage-reset",
         action="store_true",
         help=(
-            "Opt in to waiting out a leaf usage limit IN PLACE on a fixed schedule "
-            f"({_schedule}; at most {len(USAGE_LIMIT_WAIT_SCHEDULE_SECONDS)} waits per substep) "
-            "and re-launching "
-            "the same substep. No reset time is read from the leaf. Default OFF (a usage limit "
+            "Opt in to waiting out a leaf usage limit IN PLACE and re-launching the same "
+            "substep: the conductor sleeps until the reset instant the provider reports "
+            f"(plus {int(USAGE_RESET_MARGIN_SECONDS)}s), falling back to a fixed schedule "
+            f"({_schedule}) when none is obtained; at most "
+            f"{len(USAGE_LIMIT_WAIT_SCHEDULE_SECONDS)} waits per substep. Nothing is read "
+            "from the dead leaf's output. Default OFF (a usage limit "
             "stays terminal for a manual --resume after the reset). NOT recovered automatically "
             "on --resume — re-pass --wait-usage-reset to keep it active."
         ),
@@ -3391,8 +3396,13 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
         wait = payload.get("wait_seconds", "?")
         attempt = payload.get("wait_attempt", "?")
         max_waits = payload.get("max_waits", "?")
+        if payload.get("reset_source") == "provider":
+            how = (f"until the provider-reported reset "
+                   f"({payload.get('reset_window') or '?'})")
+        else:
+            how = f"on the fixed schedule ({payload.get('fallback_reason') or '?'})"
         return (f"    [warn   ] usage limit in {phase}.{substep} [wait {attempt}/{max_waits}]: "
-                f"sleeping {wait}s on the fixed schedule, then re-launching")
+                f"sleeping {wait}s {how}, then re-launching")
 
     if status == "info" and event in ("start_claim_degraded", "start_claim_waiting"):
         kind = payload.get("claim_kind", "?")

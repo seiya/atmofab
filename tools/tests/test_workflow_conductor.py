@@ -44,6 +44,7 @@ from tools.tests.target_fixtures import FORTRAN_CPU as _BB_PROFILE  # noqa: E402
 _FORTRAN_BUNDLE_FACTS = _bb_registry.capability_module(
     "language", _BB_PROFILE.toolchain["language"], "bundle_facts")
 from tools import orchestration_runtime as ort
+from tools import usage_reset
 from tools.tests.orchestration_fixtures import accept_any_certified_ir, certify_node
 from tools.tests.private_root_fixture import (
     isolated_homes_per_test_suite,
@@ -1374,14 +1375,15 @@ class _FakeConductor(wc.Conductor):
                                      agent_model_override=proc.model, usage=usage_row,
                                      resume_mode=proc.resume_mode))
             elapsed = max(0.0, time.monotonic() - started)
-            # `--wait-usage-reset`: an `llm_usage_limit` death is waited out on the fixed
-            # schedule and the SAME turn re-launched, exactly as the real pure loops do it.
+            # `--wait-usage-reset`: an `llm_usage_limit` death is waited out (the provider's
+            # reset instant, else the fixed schedule) and the SAME turn re-launched, exactly as
+            # the real pure loops do it, with this substep's own `entry`.
             # Neither the attempt count nor the resume target moves — a wait is not a repair
             # turn.
             if (infra_error is not None and infra_error[0] == "llm_usage_limit"
                     and self._usage_limit_wait(
                         refs=refs, phase=phase, substep=substep, child_arid=child_arid,
-                        waits_done=usage_waits, infra_error=infra_error)):
+                        waits_done=usage_waits, infra_error=infra_error, entry=entry)):
                 usage_waits += 1
                 continue
             if proc.returncode != 0 and self._pure_transient_retry(
@@ -6215,10 +6217,12 @@ class LeafTransientRetryTest(unittest.TestCase):
         self.assertNotIn("[attempts=", reason)      # one launch, so no exhausted-budget note
         self.assertNotIn("write-step-result", [s for s, _ in c.calls])
 
-    # --- --wait-usage-reset: the fixed-schedule wait on the `llm_usage_limit` tag (issue #170) ---
-    # The wait is decided from the classifier's TAG alone: no reset instant is read from the dead
-    # leaf's output and no provider is asked for one. What these pin is the schedule, its budget,
-    # its independence from the transient budget, and the two events' fields.
+    # --- --wait-usage-reset: the wait on the `llm_usage_limit` tag (issues #170, #405) ---
+    # The wait is ARMED by the classifier's TAG alone: nothing is read from the dead leaf's
+    # output. Its LENGTH is the provider-reported reset instant plus the margin (#405), and the
+    # fixed schedule is the fallback. Unless a test stubs `_read_usage_reset`, the conftest
+    # fixture makes every probe fail, so the tests below the provider block pin the fallback:
+    # the schedule, its budget, its independence from the transient budget, the events' fields.
 
     _QUOTA_STDERR = "Claude AI usage limit reached"
 
@@ -6227,6 +6231,144 @@ class LeafTransientRetryTest(unittest.TestCase):
         c.events = []
         c.emit = lambda event, **f: c.events.append((event, f))  # type: ignore[assignment]
         return c
+
+    def _reading(self, epoch=None, failure=None, window="primary(300min)"):
+        return usage_reset.ResetReading(epoch, window if epoch is not None else None,
+                                        failure, "detail")
+
+    def _stub_reading(self, c, *readings):
+        """Replace the provider probe with a queue of readings; record each call's entry."""
+        queue = list(readings)
+        c.read_calls = []
+
+        def _read(entry, child_arid):
+            c.read_calls.append((entry, child_arid))
+            item = queue.pop(0) if len(queue) > 1 else queue[0]
+            return item() if callable(item) else item
+        c._read_usage_reset = _read  # type: ignore[assignment]
+
+    def test_a_provider_instant_sets_the_wait_to_the_reset_plus_margin(self) -> None:
+        """Issue #405: the wait is the provider-reported instant minus now, plus
+        `USAGE_RESET_MARGIN_SECONDS` — not the schedule entry — and the event says so."""
+        dead = wc.ProcResult(1, "", self._QUOTA_STDERR)
+        c = self._wait_conductor([dead, wc.ProcResult(0, "done", "")])
+        target = int(time.time()) + 1800
+        self._stub_reading(c, self._reading(epoch=target))
+        oc = c.run_substep(self._refs(), "compile", "verify")
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual(len(c.slept), 1)
+        self.assertAlmostEqual(c.slept[0], 1800 + wc.USAGE_RESET_MARGIN_SECONDS, delta=5)
+        (wait,) = [f for e, f in c.events if e == "leaf_usage_limit_wait"]
+        self.assertEqual(wait["reset_source"], "provider")
+        self.assertIsNone(wait["fallback_reason"])
+        self.assertEqual(wait["reset_epoch"], target)
+        self.assertEqual(wait["reset_window"], "primary(300min)")
+        self.assertEqual(wait["reset_detail"], "detail")
+        self.assertEqual(wait["wait_seconds"], c.slept[0])
+
+    def test_an_instant_in_the_past_falls_back_to_the_schedule(self) -> None:
+        dead = wc.ProcResult(1, "", self._QUOTA_STDERR)
+        c = self._wait_conductor([dead, wc.ProcResult(0, "done", "")])
+        past = int(time.time()) - 60
+        self._stub_reading(c, self._reading(epoch=past))
+        c.run_substep(self._refs(), "compile", "verify")
+        self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
+        (wait,) = [f for e, f in c.events if e == "leaf_usage_limit_wait"]
+        self.assertEqual((wait["reset_source"], wait["fallback_reason"]),
+                         ("schedule", "instant_past"))
+        self.assertEqual(wait["reset_epoch"], past)     # the provider's value, though rejected
+
+    def test_an_instant_beyond_the_cap_falls_back_to_the_schedule(self) -> None:
+        """A wait longer than `MAX_USAGE_RESET_WAIT_SECONDS` (a weekly window) is not granted;
+        the boundary — instant plus margin exactly AT the cap — is. The clock is pinned so the
+        boundary is exact."""
+        self.assertEqual(wc.MAX_USAGE_RESET_WAIT_SECONDS,
+                         sum(wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS))
+        now = 1_791_000_000.0
+        at_cap = int(now + wc.MAX_USAGE_RESET_WAIT_SECONDS - wc.USAGE_RESET_MARGIN_SECONDS)
+        for epoch, expected_sleep, source, reason in (
+                (at_cap, wc.MAX_USAGE_RESET_WAIT_SECONDS, "provider", None),
+                (at_cap + 1, wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0], "schedule",
+                 "instant_beyond_cap")):
+            with self.subTest(epoch=epoch):
+                c = self._wait_conductor([])
+                self._stub_reading(c, self._reading(epoch=epoch))
+                with mock.patch.object(wc.time, "time", return_value=now):
+                    granted = c._usage_limit_wait(
+                        refs=self._refs(), phase="compile", substep="verify",
+                        child_arid="child-1", waits_done=0,
+                        infra_error=("llm_usage_limit", self._QUOTA_STDERR),
+                        entry=c.entry_for("compile", "verify"))
+                self.assertTrue(granted)
+                self.assertEqual(c.slept, [expected_sleep])
+                (wait,) = [f for e, f in c.events if e == "leaf_usage_limit_wait"]
+                self.assertEqual((wait["reset_source"], wait["fallback_reason"]),
+                                 (source, reason))
+
+    def test_a_failed_probe_falls_back_to_the_schedule(self) -> None:
+        for failure in (usage_reset.FAILURE_PROBE_FAILED, usage_reset.FAILURE_NO_SOURCE,
+                        usage_reset.FAILURE_NO_EXHAUSTED_WINDOW):
+            with self.subTest(failure=failure):
+                dead = wc.ProcResult(1, "", self._QUOTA_STDERR)
+                c = self._wait_conductor([dead, wc.ProcResult(0, "done", "")])
+                self._stub_reading(c, self._reading(failure=failure))
+                c.run_substep(self._refs(), "compile", "verify")
+                self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
+                (wait,) = [f for e, f in c.events if e == "leaf_usage_limit_wait"]
+                self.assertEqual((wait["reset_source"], wait["fallback_reason"]),
+                                 ("schedule", failure))
+                self.assertIsNone(wait["reset_epoch"])
+
+    def test_a_raising_probe_reads_as_probe_failed(self) -> None:
+        """`_read_usage_reset` guards its whole body: a `_child_env` raise (the CODEX_HOME /
+        ATMOFAB_HOME conflict) after the dead attempt is finalized is the schedule fallback,
+        not a crashed run."""
+        dead = wc.ProcResult(1, "", self._QUOTA_STDERR)
+        c = self._wait_conductor([dead, wc.ProcResult(0, "done", "")])
+
+        def _raise(*_a, **_k):
+            raise RuntimeError("home conflict")
+        with mock.patch.object(usage_reset, "no_source_reading", return_value=None), \
+                mock.patch.object(type(c), "_child_env", _raise):
+            reading = c._read_usage_reset(c.entry_for("compile", "verify"), "child-1")
+        self.assertEqual(reading.failure, usage_reset.FAILURE_PROBE_FAILED)
+        self.assertIn("home conflict", reading.detail)
+
+    def test_a_spent_budget_is_declined_before_the_provider_is_asked(self) -> None:
+        dead = wc.ProcResult(1, "", self._QUOTA_STDERR)
+        c = self._wait_conductor([dead] * (wc.MAX_USAGE_LIMIT_WAITS + 1))
+        self._stub_reading(c, self._reading(failure=usage_reset.FAILURE_PROBE_FAILED))
+        with redirect_stdout(io.StringIO()):
+            c.run_phase(self._refs(), "compile")
+        self.assertEqual(len(c.read_calls), wc.MAX_USAGE_LIMIT_WAITS)   # 3 asks for 4 deaths
+        self.assertEqual([f["reason"] for e, f in c.events
+                          if e == "leaf_usage_limit_wait_declined"], ["budget_spent"])
+
+    def test_a_provider_wait_spends_one_of_the_three_waits(self) -> None:
+        """A provider-sourced wait is charged like a scheduled one: after it, the next two
+        deaths fall back to schedule entries 1 and 2 (not 0 and 1), and the fourth death is
+        `budget_spent`."""
+        dead = wc.ProcResult(1, "", self._QUOTA_STDERR)
+        c = self._wait_conductor([dead] * (wc.MAX_USAGE_LIMIT_WAITS + 1))
+        self._stub_reading(c, lambda: self._reading(epoch=int(time.time()) + 600),
+                           self._reading(failure=usage_reset.FAILURE_PROBE_FAILED))
+        with redirect_stdout(io.StringIO()):
+            oc = c.run_phase(self._refs(), "compile")
+        self.assertEqual(oc.decision.action, "fail_closed")
+        self.assertEqual(len(c.slept), 3)
+        self.assertAlmostEqual(c.slept[0], 600 + wc.USAGE_RESET_MARGIN_SECONDS, delta=5)
+        self.assertEqual(c.slept[1:], list(wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[1:]))
+        self.assertEqual([f["reason"] for e, f in c.events
+                          if e == "leaf_usage_limit_wait_declined"], ["budget_spent"])
+
+    def test_the_flag_off_path_asks_no_provider(self) -> None:
+        dead = wc.ProcResult(1, "", self._QUOTA_STDERR)
+        c = self._conductor([dead])
+        self._stub_reading(c, self._reading(epoch=int(time.time()) + 600))
+        with redirect_stdout(io.StringIO()):
+            c.run_phase(self._refs(), "compile")
+        self.assertEqual(c.read_calls, [])
+        self.assertEqual(c.slept, [])
 
     def test_usage_limit_wait_follows_the_fixed_schedule(self) -> None:
         """--wait-usage-reset ON: each `llm_usage_limit` death sleeps the next entry of
@@ -6272,12 +6414,33 @@ class LeafTransientRetryTest(unittest.TestCase):
         self.assertEqual(rendered, "15 min, then 1 h, then 4 h (5 h 15 min in total)")
         doc = (Path(wc.__file__).resolve().parents[1] / "docs" / "ORCHESTRATION.md").read_text(
             encoding="utf-8")
-        marker = "The wait is a **fixed schedule**, `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS`"
+        marker = "The fallback is a **fixed schedule**, `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS`"
         self.assertEqual(doc.count(marker), 1)
         sentence = doc.split(marker, 1)[1].split(". ", 1)[0]
         self.assertIn(rendered, sentence)
         self.assertIn(f"`MAX_USAGE_LIMIT_WAITS` = {wc.MAX_USAGE_LIMIT_WAITS} waits per `substep`",
                       sentence)
+
+    def test_the_documented_margin_cap_and_probe_timeout_are_the_constants(self) -> None:
+        """`docs/ORCHESTRATION.md` "leaf transient retry" states the issue #405 margin, cap and
+        probe timeout as numbers next to their names. Coupled by NUMBER (atmofab-enforcement-
+        change rule 3-a): each is rendered from its constant and looked for as
+        "`NAME` = <n> s", so an edit to a constant that leaves the prose behind is red.
+        Self-test: the renders are checked against today's literals first."""
+        rendered = {
+            "USAGE_RESET_MARGIN_SECONDS": f"{int(wc.USAGE_RESET_MARGIN_SECONDS)} s",
+            "MAX_USAGE_RESET_WAIT_SECONDS": f"{int(wc.MAX_USAGE_RESET_WAIT_SECONDS)} s",
+            "USAGE_RESET_PROBE_TIMEOUT_SECONDS":
+                f"{int(usage_reset.USAGE_RESET_PROBE_TIMEOUT_SECONDS)} s",
+        }
+        self.assertEqual(rendered, {"USAGE_RESET_MARGIN_SECONDS": "120 s",
+                                    "MAX_USAGE_RESET_WAIT_SECONDS": "18900 s",
+                                    "USAGE_RESET_PROBE_TIMEOUT_SECONDS": "60 s"})
+        doc = (Path(wc.__file__).resolve().parents[1] / "docs" / "ORCHESTRATION.md").read_text(
+            encoding="utf-8")
+        for name, value in rendered.items():
+            with self.subTest(name=name):
+                self.assertEqual(doc.count(f"`{name}` = {value}"), 1)
 
     def test_usage_limit_wait_budget_is_the_schedule_length_then_fails_closed(self) -> None:
         """The wait budget is `MAX_USAGE_LIMIT_WAITS` (= the schedule's length) per substep: the
@@ -6314,7 +6477,8 @@ class LeafTransientRetryTest(unittest.TestCase):
         closer to NOTHING — what it arms is the same turn again with the same repair carriers
         (cold for a first attempt, the same `reuse` repair for an interrupted one), not a weaker
         judgment of its result, and the cost is bounded by the schedule (three sleeps, three
-        launches) after which the death is terminal with the tag intact. This pins that bound:
+        launches, each at most `MAX_USAGE_RESET_WAIT_SECONDS` whatever the provider reports)
+        after which the death is terminal with the tag intact. This pins that bound:
         the stdout shape is a pure leaf's real one — ONE line of `--output-format json` envelope
         with the phrase inside model-authored text — and an EMPTY stderr."""
         dead = wc.ProcResult(
@@ -22002,13 +22166,16 @@ class LeafEntryThreadingTests(unittest.TestCase):
 
     # --- capability predicates replace the backend tests --------------------------------
 
-    def test_the_wait_is_provider_independent(self) -> None:
+    def test_every_provider_falls_back_to_the_same_schedule(self) -> None:
         """`AGENTS.md` §Development premises (no vendor lock-in): the `--wait-usage-reset` wait
-        is decided from the `llm_usage_limit` tag alone, so a codex leaf and an HTTP leaf get the
-        SAME schedule a claude leaf gets — the inverse of the retired `usage_probe` capability,
-        which only `claude_cli` held and which left every other provider's usage-limit death
-        effectively unwaitable. Driven on a REAL `Conductor` per provider sample, with only the
-        sleep and the event write replaced."""
+        is ARMED by the `llm_usage_limit` tag alone, and when no reset instant is obtained a
+        codex leaf and an HTTP leaf get the SAME schedule a claude leaf gets — the inverse of
+        the retired `usage_probe` capability, which only `claude_cli` held and which left every
+        other provider's usage-limit death effectively unwaitable. The reason differs by what
+        the provider declares (issue #405): an HTTP provider has no source (`no_source`), a
+        CLI provider's probe is refused by the suite's conftest (`probe_failed`). Driven on a
+        REAL `Conductor` per provider sample, with only the sleep and the event write
+        replaced."""
         for backend in ("claude", "codex", "openai_compatible", "anthropic_api"):
             with self.subTest(backend=backend):
                 c = _TargetedConductor(repo_root=_SHARED_REPO_ROOT, orchestration_id="o",
@@ -22027,13 +22194,19 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 granted = [c._usage_limit_wait(refs=refs, phase="generate", substep="generate",
                                                child_arid=f"child-{n + 1}", waits_done=n,
                                                infra_error=("llm_usage_limit",
-                                                            "usage limit reached"))
+                                                            "usage limit reached"),
+                                               entry=entry)
                            for n in range(wc.MAX_USAGE_LIMIT_WAITS + 1)]
                 self.assertEqual(granted, [True] * wc.MAX_USAGE_LIMIT_WAITS + [False])
                 self.assertEqual(slept, list(wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS))
                 self.assertEqual([e for e, _ in events],
                                  ["leaf_usage_limit_wait"] * wc.MAX_USAGE_LIMIT_WAITS
                                  + ["leaf_usage_limit_wait_declined"])
+                expected = (usage_reset.FAILURE_PROBE_FAILED if entry.provider in lc.CLI_PROVIDERS
+                            else usage_reset.FAILURE_NO_SOURCE)
+                for event, fields in events[:-1]:
+                    self.assertEqual(fields["reset_source"], "schedule")
+                    self.assertEqual(fields["fallback_reason"], expected)
 
     def test_pure_session_resumable_is_false_without_the_warm_resume_capability(self) -> None:
         c = wc.Conductor(

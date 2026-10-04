@@ -47,6 +47,7 @@ from typing import Any, ClassVar, NamedTuple
 
 import yaml
 
+from tools import usage_reset
 from tools.backends import registry as backend_registry
 from tools.execution_sites import Site
 from tools.host_execution import KERNEL_TRACE_ARTIFACT
@@ -78,10 +79,11 @@ def _provider_command_base(entry: ResolvedLeafEntry) -> list[str]:
     ONE definition, because TWO places have to agree about it or they confine a different
     executable than the leaf runs: `leaf_command`, and `record_launch`'s `backend_command`
     (which decides the CLI binary the sandbox profile binds, so it is the one that CONFINES).
-    A third, the host-side `/usage` probe, went with issue #170 (the usage-limit wait no
-    longer asks the provider anything), and a fourth, `_ensure_codex_feature_cache`, certified
-    the codex hooks feature of that binary and went with the leaf hook layer in Z4 (issue
-    #171). The count has been wrong here before — written as three while four were listed,
+    A third is the host-side reset probe (`Conductor._read_usage_reset`, issue #405): it
+    asks the SAME binary for the usage window's reset instant, so the reading describes the
+    account the leaf ran against. (An earlier `/usage` probe went with issue #170 and came
+    back in this form; a fourth user, `_ensure_codex_feature_cache`, certified the codex hooks
+    feature of that binary and went with the leaf hook layer in Z4, issue #171.) The count has been wrong here before — written as three while four were listed,
     one of them the read-only diagnostician's in-process bwrap profile, which issue #169
     deleted (that leaf's profile is the runtime's now, built from this same
     `backend_command`). Re-count the list when you change it; nothing compares the two."""
@@ -3376,7 +3378,8 @@ _LEAF_INFRA_ERROR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 #   - `llm_usage_limit` is a hard stop lasting hours, not a transient. Retrying it on this
 #     schedule burns the budget in seconds and only delays the operator's `--resume` (manual BY
 #     DESIGN; see deterministic_followups L5). The opt-in `--wait-usage-reset` waits it out on its
-#     own budget and its own schedule (`USAGE_LIMIT_WAIT_SCHEDULE_SECONDS`, below).
+#     own budget, until the provider-reported reset instant or, failing one, on its own schedule
+#     (`USAGE_LIMIT_WAIT_SCHEDULE_SECONDS`, below).
 #   - `llm_client_error` (4xx) is a rejected REQUEST: an expired credential, an unsupported
 #     parameter, an oversized prompt. Every re-launch sends the same request and gets the same 4xx.
 #   - `llm_permission_probe_unavailable` needs an operator/config fix, not another attempt.
@@ -3436,7 +3439,8 @@ TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS = 600.0
 #     the post-reset resume needs;
 #   - a 4xx retried is three re-launches of a request the API rejects identically every time.
 # Under the opt-in `--wait-usage-reset` a promoted `llm_usage_limit` can ARM a wait, bounded at
-# `MAX_USAGE_LIMIT_WAITS` sleeps of `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS`. A leaf whose own stdout
+# `MAX_USAGE_LIMIT_WAITS` sleeps of at most `MAX_USAGE_RESET_WAIT_SECONDS` each (the instant
+# comes from the provider, never from the leaf's output). A leaf whose own stdout
 # names a quota gains nothing by it — what it arms is the SAME turn again with the same repair
 # carriers (cold for a first attempt, the same `reuse` repair for an interrupted repair turn),
 # not a weaker judgment of its result — so the promotion is not narrowed for the flag.
@@ -3451,13 +3455,24 @@ _LEAF_RETRY_NOTICE_RE = re.compile(r"\bretrying\b|attempt \d+/\d+")
 
 # --wait-usage-reset (opt-in; default OFF keeps `llm_usage_limit` terminal for a manual --resume).
 # A usage limit is a provider-side stop lasting up to a session window. With the flag set the
-# conductor sleeps this FIXED schedule and re-launches the same substep, indexed by the number of
-# usage-limit deaths this substep has already waited out. No reset instant is read from the leaf's
-# output or from any provider endpoint: the schedule is the same for every declared provider, and
-# the decision is the classifier's tag alone. The wait after the last entry is declined
-# (`leaf_usage_limit_wait_declined`, reason `budget_spent`) and the death is terminal.
+# conductor asks the provider for the window's reset instant (`tools/usage_reset.py`, issue
+# #405), sleeps until it plus `USAGE_RESET_MARGIN_SECONDS`, and re-launches the same substep.
+# Nothing is read from the dead leaf's output; the classifier's tag alone ARMS the wait. The
+# FIXED schedule below is the fallback whenever no usable instant comes back — a provider with
+# no source, a failed probe, no exhausted window, an instant already past, or one further away
+# than `MAX_USAGE_RESET_WAIT_SECONDS` — indexed by the number of usage-limit deaths this substep
+# has already waited out. Either kind of wait spends one of the `MAX_USAGE_LIMIT_WAITS`; the wait
+# after the last is declined (`leaf_usage_limit_wait_declined`, reason `budget_spent`) and the
+# death is terminal.
 USAGE_LIMIT_WAIT_SCHEDULE_SECONDS: tuple[float, ...] = (900.0, 3600.0, 14400.0)
 MAX_USAGE_LIMIT_WAITS = len(USAGE_LIMIT_WAIT_SCHEDULE_SECONDS)   # per substep; separate from the transient budget
+# Past the reported instant: the re-launch's `record-launch` re-runs the preflight live probe,
+# and waking a hair early finds the window still shut.
+USAGE_RESET_MARGIN_SECONDS = 120.0
+# The longest provider-sourced wait: the schedule's own total (5 h 15 min). A session window
+# plus the margin fits; a weekly window does not, falls back to the schedule and ends
+# `budget_spent`, so a run is not left sleeping for days while holding its start claims.
+MAX_USAGE_RESET_WAIT_SECONDS = sum(USAGE_LIMIT_WAIT_SCHEDULE_SECONDS)
 
 
 #: The `pure_context_assembly_failed` EVENT's detail cap. Wider than the persisted
@@ -3636,7 +3651,8 @@ class Conductor:
     env: dict[str, str] = field(default_factory=dict)
     workflow_mode: str = "dev"
     # --wait-usage-reset (opt-in, default OFF): when a leaf dies of an `llm_usage_limit`, sleep
-    # the fixed `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS` and re-launch the substep in place instead of
+    # until the provider-reported reset instant (else the fixed `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS`)
+    # and re-launch the substep in place instead of
     # fail-closing the run for a next-day manual `--resume` (`_usage_limit_wait`). Off keeps the
     # prior behavior exactly.
     wait_usage_reset: bool = False
@@ -7960,11 +7976,13 @@ class Conductor:
                 return SubstepOutcome(child_arid, "pass", [], proc.returncode,
                                       None, len(per_attempt))
 
-            # --wait-usage-reset (opt-in): an `llm_usage_limit` death is waited out on the fixed
-            # schedule and the SAME turn re-launched, rather than falling to the terminal fail
-            # branch for a next-day --resume. Decided from the classified TAG alone — `pure_transport`
-            # is set for ANY nonzero leaf exit, so the tag is required explicitly, and nothing about
-            # the dead leaf's output, its stream or its provider is consulted. `attempt` and
+            # --wait-usage-reset (opt-in): an `llm_usage_limit` death is waited out — until the
+            # reset instant THIS substep's provider reports, else on the fixed schedule — and the
+            # SAME turn re-launched, rather than falling to the terminal fail branch for a next-day
+            # --resume. ARMED by the classified TAG alone — `pure_transport` is set for ANY nonzero
+            # leaf exit, so the tag is required explicitly, and nothing about the dead leaf's
+            # output or its stream is consulted. `entry` is this substep's own, so a per-substep
+            # provider override is the provider asked. `attempt` and
             # `resume_session_id` are UNCHANGED (a wait is not a repair turn): a cold first attempt
             # retries cold; an interrupted repair turn re-runs against the same carriers (which the
             # bookkeeping guard above kept intact). per_attempt keeps the dead attempt's row.
@@ -7972,7 +7990,7 @@ class Conductor:
                     and infra_error[0] == "llm_usage_limit"
                     and self._usage_limit_wait(refs=refs, phase=phase, substep=substep,
                                                child_arid=child_arid, waits_done=usage_waits,
-                                               infra_error=infra_error)):
+                                               infra_error=infra_error, entry=entry)):
                 usage_waits += 1
                 continue
             # A transient transport failure (a rate limit, an overloaded provider, a dropped
@@ -8721,17 +8739,18 @@ class Conductor:
                                      agent_model_override=model,
                                      usage=usage, resume_mode=proc.resume_mode))
 
-            # --wait-usage-reset (opt-in): an `llm_usage_limit` death is waited out on the fixed
-            # schedule and the SAME turn re-launched, rather than falling to the terminal fail
-            # branch. Decided from the classified TAG alone (`pure_transport` is set for ANY nonzero
-            # exit, so the tag is required explicitly). `attempt` / `resume_session_id` are
+            # --wait-usage-reset (opt-in): an `llm_usage_limit` death is waited out — until the
+            # reset instant THIS substep's provider reports, else on the fixed schedule — and the
+            # SAME turn re-launched, rather than falling to the terminal fail branch. ARMED by the
+            # classified TAG alone (`pure_transport` is set for ANY nonzero exit, so the tag is
+            # required explicitly). `attempt` / `resume_session_id` are
             # UNCHANGED (a wait is not a repair turn; persona separation is preserved — the reviewer
             # only ever resumes its OWN prior attempt). Mirrors the producer loop.
             if (category == "pure_transport" and infra_error is not None
                     and infra_error[0] == "llm_usage_limit"
                     and self._usage_limit_wait(refs=refs, phase=phase, substep=substep,
                                                child_arid=child_arid, waits_done=usage_waits,
-                                               infra_error=infra_error)):
+                                               infra_error=infra_error, entry=entry)):
                 usage_waits += 1
                 continue
             # A transient transport failure (a rate limit, an overloaded provider, a dropped
@@ -12161,26 +12180,36 @@ class Conductor:
         return True
 
     def _usage_limit_wait(self, *, refs: NodeRefs, phase: str, substep: str | None,
-                          child_arid: str, waits_done: int, infra_error: tuple[str, str]) -> bool:
-        """Wait out an `llm_usage_limit` death on the fixed schedule and return True once the
-        caller may re-launch; False leaves the death terminal (flag off, or the schedule is spent).
+                          child_arid: str, waits_done: int, infra_error: tuple[str, str],
+                          entry: ResolvedLeafEntry) -> bool:
+        """Wait out an `llm_usage_limit` death and return True once the caller may re-launch;
+        False leaves the death terminal (flag off, or the budget is spent).
 
         The sibling of `_pure_transient_retry` for the one non-transient tag the conductor can
-        recover from in place: `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS` indexed by the number of
-        usage-limit deaths this substep has already waited out, and a separate budget from the
-        transient retries (a transient tag is never `llm_usage_limit`). Decided from the TAG alone:
-        nothing here reads the dead leaf's output for a reset instant or asks the provider for one,
-        so every declared provider gets the same wait. The caller has already required
-        `infra_error[0] == "llm_usage_limit"`; the tag is taken from the tuple rather than
-        spelled here so the events can never name a tag the death did not carry. `evidence` is
-        the classifier's own line (`infra_error[1]`), emitted verbatim as `leaf_transient_retry`
-        does — and with the same residual: on the codex transport that line is `json.dumps` of a
-        parsed JSONL event, so an escaped lone surrogate in it would reach `emit` as a real one
-        (the claude and HTTP transports hand over decoded process output, where it cannot).
-        Flag off emits nothing: the caller falls through to the
-        transient branch, which does not retry this tag, and the death stays terminal for a manual
-        `--resume`. The declined event carries the ONE reason left (`budget_spent`), so a run that
-        opted in and still fail_closed is greppable."""
+        recover from in place, on a separate budget from the transient retries (a transient tag
+        is never `llm_usage_limit`). ARMED by the TAG alone; nothing here reads the dead leaf's
+        output. HOW LONG comes from the provider (issue #405): `_read_usage_reset` asks the
+        dead leaf's own provider (`entry`) for the exhausted window's reset instant, and the
+        wait is that instant plus `USAGE_RESET_MARGIN_SECONDS`. Every case with no usable
+        instant falls back to `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[waits_done]`, and the event
+        names why (`fallback_reason`): the reader's own failure (`no_source`, `probe_failed`,
+        `no_exhausted_window`), or a bound this method applies — `instant_past`, or
+        `instant_beyond_cap` when the wait would exceed `MAX_USAGE_RESET_WAIT_SECONDS`. Either
+        kind of wait spends one of the `MAX_USAGE_LIMIT_WAITS`, so a credits stop the reset
+        does not cure dies again and takes the next one, and the budget is checked BEFORE the
+        provider is asked: a spent budget cannot wait whatever the provider says.
+
+        The caller has already required `infra_error[0] == "llm_usage_limit"`; the tag is taken
+        from the tuple rather than spelled here so the events can never name a tag the death
+        did not carry. `evidence` is the classifier's own line (`infra_error[1]`), emitted
+        verbatim as `leaf_transient_retry` does — and with the same residual: on the codex
+        transport that line is `json.dumps` of a parsed JSONL event, so an escaped lone
+        surrogate in it would reach `emit` as a real one (the claude and HTTP transports hand
+        over decoded process output, where it cannot). Flag off emits nothing and asks no
+        provider: the caller falls through to the transient branch, which does not retry this
+        tag, and the death stays terminal for a manual `--resume`. The declined event carries
+        the ONE reason left (`budget_spent`), so a run that opted in and still fail_closed is
+        greppable."""
         if not self.wait_usage_reset:
             return False
         tag, evidence = infra_error
@@ -12190,13 +12219,58 @@ class Conductor:
                       wait_attempt=waits_done + 1, dead_agent_run_id=child_arid,
                       evidence=evidence)
             return False
+        reading = self._read_usage_reset(entry, child_arid)
+        now = time.time()
         delay = USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[waits_done]
+        reset_source = "schedule"
+        fallback_reason = reading.failure
+        if reading.epoch is not None:
+            remaining = reading.epoch - now
+            if remaining <= 0:
+                fallback_reason = "instant_past"
+            elif remaining + USAGE_RESET_MARGIN_SECONDS > MAX_USAGE_RESET_WAIT_SECONDS:
+                fallback_reason = "instant_beyond_cap"
+            else:
+                delay = remaining + USAGE_RESET_MARGIN_SECONDS
+                reset_source = "provider"
+                fallback_reason = None
         self.emit("leaf_usage_limit_wait", node_key=refs.node_key, step=phase, substep=substep,
                   tag=tag, wait_seconds=delay, wait_attempt=waits_done + 1,
                   max_waits=MAX_USAGE_LIMIT_WAITS, dead_agent_run_id=child_arid,
-                  evidence=evidence)
+                  evidence=evidence, reset_source=reset_source, reset_epoch=reading.epoch,
+                  reset_window=reading.window, fallback_reason=fallback_reason,
+                  reset_detail=reading.detail)
         self._sleep_backoff(delay)
         return True
+
+    def _read_usage_reset(self, entry: ResolvedLeafEntry,
+                          child_arid: str) -> usage_reset.ResetReading:
+        """Ask `entry`'s provider when its exhausted usage window resets. Never raises.
+
+        Isolated like `_sleep_backoff` so tests replace it. The probe runs host-side with the
+        dead leaf's command base, its declared model (passed exactly when the leaf's launch
+        passes `--model`, so the reading is judged against the same per-model windows) and its
+        filtered environment; `tools/usage_reset.py` owns the per-provider readers, so no
+        provider name is spelled here. The WHOLE body is guarded: `_child_env` can raise (a
+        `CODEX_HOME` / `ATMOFAB_HOME` conflict), and a raise here — after the dead attempt is
+        already finalized — must read as `probe_failed`, the schedule fallback, not crash the
+        run. A provider that declares no reader is answered before the environment is built,
+        so its reading is `no_source` rather than whatever building a probe it will never run
+        might raise."""
+        unsourced = usage_reset.no_source_reading(entry.provider)
+        if unsourced is not None:
+            return unsourced
+        try:
+            model = entry.model.strip() if entry.model_declared else ""
+            env = self._child_env(child_arid, entry)
+            Path(env["TMPDIR"]).mkdir(parents=True, exist_ok=True)
+            return usage_reset.read_reset_instant(
+                entry.provider, command_base=_provider_command_base(entry), model=model,
+                env=env, cwd=str(self.repo_root))
+        except Exception as exc:  # noqa: BLE001 — see the docstring
+            return usage_reset.ResetReading(
+                None, None, usage_reset.FAILURE_PROBE_FAILED,
+                f"{type(exc).__name__}: {exc}"[:400])
 
     def _sleep_backoff(self, seconds: float) -> None:
         """Wait out a transient LLM-infrastructure failure before re-launching the leaf.

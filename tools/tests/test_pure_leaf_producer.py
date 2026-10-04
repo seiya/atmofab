@@ -28,6 +28,7 @@ from tools.tests.target_fixtures import composed_pure_template
 import tools.workflow_conductor as wc
 import tools.validate_pipeline_semantics as vps
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+from tools import usage_reset
 from tools.tests.llm_samples import sample_config_with as _cfg
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
@@ -1628,6 +1629,35 @@ class PureUsageLimitWaitTest(unittest.TestCase):
             # both launches are visible as per_attempt rows; the dead one is labeled pure_transport
             self.assertEqual(len(meta["per_attempt"]), 2)
             self.assertEqual(meta["per_attempt"][0]["failure_category"], "pure_transport")
+
+    def test_the_wait_asks_the_provider_of_this_substeps_own_entry(self) -> None:
+        """Issue #405: the reset probe is asked with the producer loop's OWN `entry`, so a
+        per-substep provider/model override is the one whose window is read — not the run's
+        default entry. The substep's entry is made distinguishable by a sentinel model."""
+        import dataclasses
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _write_node(repo)
+            c = self._conductor(
+                repo,
+                [wc.ProcResult(1, "", "Claude AI usage limit reached"),
+                 wc.ProcResult(0, _envelope(_valid_bundle()), "")],
+                wait_usage_reset=True)
+            orig_entry_for = c.entry_for
+
+            def _entry_for(phase, substep):
+                entry = orig_entry_for(phase, substep)
+                if (phase, substep) == ("generate", "generate"):
+                    return dataclasses.replace(entry, model="per-substep-sentinel")
+                return entry
+            c.entry_for = _entry_for  # type: ignore[assignment]
+            asked: list = []
+            c._read_usage_reset = (  # type: ignore[assignment]
+                lambda entry, arid: asked.append(entry) or usage_reset.ResetReading(
+                    None, None, usage_reset.FAILURE_PROBE_FAILED, "stub"))
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            self.assertEqual(oc.status, "pass")
+            self.assertEqual([e.model for e in asked], ["per-substep-sentinel"])
 
     def test_transport_usage_limit_waits_on_the_real_cli_abort_envelope(self) -> None:
         """REGRESSION, the production shape THIS loop actually met: the only recorded usage limit to

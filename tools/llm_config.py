@@ -122,8 +122,10 @@ CAP_WARM_RESUME = "warm_resume"
 # transport or a grant that no longer exists. `mcp_tools` said a leaf could be granted build-runtime MCP tools; no leaf
 # holds a tool since Z4 (issue #171), and PR-2 of that issue retired the capability gate the
 # grant was spent at. `usage_probe` said the provider answered a host-side `/usage` probe;
-# issue #170 made the usage-limit wait tag-driven (a fixed schedule, the same for every
-# provider), so there is nothing left to ask a provider.
+# issue #170 made the usage-limit wait tag-driven. Issue #405 has the wait ask the provider
+# for its reset instant again, but the source is the per-provider table
+# `tools/usage_reset.RESET_READERS` — which is both the declaration and the dispatch to the
+# reader — not a capability, so `usage_probe` stays refused.
 KNOWN_CAPABILITIES: frozenset[str] = frozenset({
     CAP_PURE, CAP_WARM_RESUME,
 })

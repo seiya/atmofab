@@ -13750,9 +13750,7 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
         config = "[projects." + json.dumps(str(repo_root.resolve())) + "]\ntrust_level = \"untrusted\"\n"
         config_path = home / "config.toml"
         _secure_backend_home_file(config_path, config.encode("utf-8"))
-        raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("ATMOFAB_HOME", "").strip()
-        origin = Path(raw).expanduser() if raw else Path.home() / ".codex"
-        auth = origin / "auth.json"
+        auth = codex_origin_home() / "auth.json"
         if not auth.is_file():
             raise ValueError(f"Codex auth.json not found for isolated home: {auth}")
         auth_destination = home / "auth.json"
@@ -13766,6 +13764,17 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
         "config": str(config_path.resolve()),
         "lineage_id": lineage_token,
     }
+
+def codex_origin_home() -> Path:
+    """The operator's ORIGIN Codex home: `$CODEX_HOME`, else the deprecated `$ATMOFAB_HOME`,
+    else `~/.codex`. ONE resolver, because two places must name the same home: the isolated
+    lineage home binds this home's `auth.json` (`_prepare_codex_workflow_home`), and the
+    host-side reset probe (`tools/usage_reset.py`, issue #405) reads the account's windows with
+    it. A conflict between the two variables is refused by the conductor's `_child_env`
+    before either runs."""
+    raw = os.environ.get("CODEX_HOME", "").strip() or os.environ.get("ATMOFAB_HOME", "").strip()
+    return Path(raw).expanduser() if raw else Path.home() / ".codex"
+
 
 def _probe_bwrap_sandbox() -> tuple[list[dict[str, Any]], bool]:
     """Preflight probe: confirm the host can sandbox a leaf (bwrap present + user

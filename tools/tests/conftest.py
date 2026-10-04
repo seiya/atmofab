@@ -237,6 +237,25 @@ def _redirect_operator_private_roots(tmp_path, monkeypatch):
     yield roots
 
 
+@pytest.fixture(autouse=True)
+def _no_real_usage_reset_probe(monkeypatch):
+    """No test launches a real provider CLI to ask for a usage window's reset instant.
+
+    `tools/usage_reset.py` (issue #405) spawns `codex app-server` / `claude -p` through its
+    module-level `_spawn`; this replaces it with one that raises, which `read_reset_instant`
+    turns into `probe_failed`. So every `wait_usage_reset=True` test that does not stub
+    `Conductor._read_usage_reset` exercises the fixed-schedule fallback, deterministically and
+    for free. A test of the exchange itself restores `subprocess.Popen` and points the probe
+    at a fake CLI.
+    """
+    from tools import usage_reset
+
+    def _refuse(*_args, **_kwargs):
+        raise OSError("the test suite launches no provider CLI (conftest)")
+
+    monkeypatch.setattr(usage_reset, "_spawn", _refuse)
+
+
 @pytest.fixture(scope="session", autouse=True)
 def _forbid_anything_in_operator_secret_root():
     """Fail any test about to resolve one of the private roots to the real `~/.atmofab`."""

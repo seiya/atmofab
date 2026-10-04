@@ -526,7 +526,9 @@ re-run confirming Build passes on attempt 1 (operator-gated).
 - **L5 — PARTIALLY CLOSED (2026-07-12).** **Status (2026-09-15, issue #170)**: the reset-instant
   scrape and the `/usage` probe described below are retired; `--wait-usage-reset` now sleeps a
   fixed schedule on the `llm_usage_limit` tag alone (`docs/ORCHESTRATION.md` "leaf transient
-  retry"). The default (manual `--resume`) is unchanged. What follows is the history of the
+  retry"). **Status (2026-10-04, issue #405)**: the wait asks the provider again, for a
+  structured reset instant (`tools/usage_reset.py`), with the schedule as the fallback; nothing
+  is read from the dead leaf's output. The default (manual `--resume`) is unchanged. What follows is the history of the
   retired mechanism, kept as the record of why it was built and what it cost.
   A leaf that dies of an LLM-infrastructure fault ends as
   a clean resumable `fail_closed` (`leaf_transport_error`). The split is now by infra tag:
