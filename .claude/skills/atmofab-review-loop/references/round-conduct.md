@@ -177,7 +177,13 @@ alone (`origin/main...HEAD` equals stage B's diff). That is the shape the stagin
     this skill gives as its example (`until ! pgrep -f mut5.py` matching its own zsh command line).
     Pick them up with `ps -eo pid,ppid,etimes,args | grep -E "sleep|until|pgrep"` and `kill` by PID
     — `pkill -f` re-enacts the first accident. **Before killing anything, confirm no process doing
-    real work is alive at the same time**: the orphan and the work it was waiting for look alike
+    real work is alive at the same time**: the orphan and the work it was waiting for look alike.
+    The author is not exempt: on issue #405, after a hand mutation left a `tail -f /dev/null`
+    descendant alive, I ran `pkill -f "tail -f /dev/null" -u $USER -n` in the same command as the
+    `ps` that checked for it. The newest process whose arguments carry that pattern is the zsh
+    running the command, so the kill targeted the session's own shell; nothing visible broke, and
+    the stray `tail` had in fact already exited. Matching on `comm` (`awk '$2=="tail"'`) instead
+    of on `args` is what removes the self-match
   - **The symptom disguises itself as "the subagent is running and never returns".** I once waited
     on the precedent that long runs happen, when there was no work to wait for. When `ListAgents`
     shows running, suspect that agent's child processes
