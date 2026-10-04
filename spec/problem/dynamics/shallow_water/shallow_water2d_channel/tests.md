@@ -3,10 +3,10 @@
 ## 0. Meta information
 - `status`: `draft`
 - `test_profile_id`: `shallow_water2d_channel_baseline`
-- `test_profile_version`: `0.3.0`
+- `test_profile_version`: `0.3.1`
 - `spec_ref.spec_kind`: `problem`
 - `spec_ref.spec_id`: `shallow_water2d_channel`
-- `spec_ref.spec_version`: `0.2.2`
+- `spec_ref.spec_version`: `0.2.3`
 - `spec_ref.controlled_spec_path`: `spec/problem/dynamics/shallow_water/shallow_water2d_channel/controlled_spec.md`
 
 ## 1. Test purpose
@@ -50,7 +50,6 @@ The error against the reference at $t_{end}$ is dominated by the spatial discret
 - $\mathrm{cfl\_target}=0.45$.
 - The time passed to the time-update `component` at step $n$ ($n=0..\mathrm{n\_step}-1$) is $t_{start}+n\,dt$.
 - The stop condition is $n=\mathrm{n\_step}$. The number of steps performed is a state variable of the case: the state the host captures after `case_setup` and after `case_run` consists of `h`, `hu`, `hv` (`nx` × `ny` each) and the scalar `n_step` (`0` after setup, the count of `RK4` steps performed after the run, incremented by the step loop at each step), and it is emitted as the diagnostic `run.n_step`.
-- The output times are $0,\ 21600,\ 43200,\ 64800,\ 86400$ (`s`); a case with an overridden `t_end` outputs at the same interval of $21600$ up to its $t_{end}$.
 
 ## 4. Case-expansion rules
 ### 4-1. family definition

@@ -3,10 +3,10 @@
 ## 0. Meta information
 - `status`: `draft`
 - `test_profile_id`: `advdiff1d_linear_baseline`
-- `test_profile_version`: `0.4.1`
+- `test_profile_version`: `0.4.2`
 - `spec_ref.spec_kind`: `problem`
 - `spec_ref.spec_id`: `advdiff1d_linear`
-- `spec_ref.spec_version`: `0.4.3`
+- `spec_ref.spec_version`: `0.4.4`
 - `spec_ref.controlled_spec_path`: `spec/problem/dynamics/advection_diffusion/advdiff1d_linear/controlled_spec.md`
 
 ## 1. Test purpose
@@ -36,7 +36,6 @@ This suite verifies, for the discrete implementation of the 1D linear advection-
 - $\text{cfl\_adv}=0.6$ and $\text{cfl\_dif}=0.25$.
 - The default of `dt_scale` is `1.0`, and the case value is fixed by the 4-1 table. `dt_scale` enters the procedure only at step 1; it does not scale $dt$ or $\text{n\_step}$ directly, so the integration still lands exactly on $t_{end}$.
 - The stop condition is $n = \text{n\_step}$.
-- The output times are $t_{start} + j\cdot (t_{end}-t_{start})/5$ for $j = 0,1,2,3,4,5$, so the last output time is $t_{end}$. For a case that does not override $t_{end}$ this is $0.0, 0.1, 0.2, 0.3, 0.4, 0.5$.
 - The per-case state snapshot is emitted at $t_{end}$, which is the evaluation time of every metric of 5-4.
 
 ## 4. Case-expansion rules

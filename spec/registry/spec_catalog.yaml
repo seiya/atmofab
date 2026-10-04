@@ -1,9 +1,9 @@
 catalog_version: 0.2.0
-updated_at: 2026-09-29
+updated_at: 2026-10-04
 specs:
   - spec_kind: problem
     spec_id: advdiff1d_linear
-    spec_version: 0.4.3
+    spec_version: 0.4.4
     status: controlled_draft
     domain: dynamics
     family: advection_diffusion
@@ -14,7 +14,7 @@ specs:
 
   - spec_kind: problem
     spec_id: shallow_water2d
-    spec_version: 0.4.3
+    spec_version: 0.4.4
     status: controlled_draft
     domain: dynamics
     family: shallow_water
@@ -25,7 +25,7 @@ specs:
 
   - spec_kind: problem
     spec_id: shallow_water2d_channel
-    spec_version: 0.2.2
+    spec_version: 0.2.3
     status: controlled_draft
     domain: dynamics
     family: shallow_water
