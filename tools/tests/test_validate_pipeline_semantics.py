@@ -24142,9 +24142,11 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
 
     _NEEDLE = "that contract describes a repeated body"
 
-    def _violations(self, **overrides) -> list[str]:
+    def _violations(self, *, _drop: tuple[str, ...] = (), **overrides) -> list[str]:
         contract = copy.deepcopy(self._BASE_CONTRACT)
         contract.update(overrides)
+        for key in _drop:
+            del contract[key]
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
@@ -24162,6 +24164,52 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
 
     def _converse(self, violations: list[str]) -> list[str]:
         return [v for v in violations if self._NEEDLE in v]
+
+    def test_an_absent_iteration_contract_reads_as_empty(self) -> None:
+        """Issue #398: the contract never requires `iteration_contract` on a node without a
+        top-level loop, and four Codex Compile IRs (all `conditional`) omitted it and died at
+        Compile.static on "must be object" alone. An absent key now takes every rule `{}` takes,
+        so the one rule with force — `iterative` needs a non-empty contract — still fires on
+        absence. A PRESENT non-object stays refused."""
+        conditional = {"execution_mode": "conditional", "control_condition": "n_step > 0"}
+        cases = {
+            "sequence": {},
+            "conditional": conditional,
+            "columnwise": {"execution_mode": "columnwise"},
+            "iterative": {"execution_mode": "iterative"},
+        }
+        for mode, overrides in cases.items():
+            with self.subTest(mode=mode):
+                # Each call writes under its own tempdir, so compare without the path.
+                absent = [v.split("spec.ir.yaml:", 1)[1]
+                          for v in self._violations(_drop=("iteration_contract",), **overrides)]
+                empty = [v.split("spec.ir.yaml:", 1)[1]
+                         for v in self._violations(iteration_contract={}, **overrides)]
+                self.assertEqual(absent, empty)
+                self.assertFalse(any("must be object" in v for v in absent), absent)
+        # The rows above compare equal results; these pin what the results ARE, so an absent
+        # key cannot pass by both sides drifting together.
+        self.assertEqual(self._violations(_drop=("iteration_contract",)), [])
+        self.assertEqual(self._violations(_drop=("iteration_contract",), **conditional), [])
+        iterative = self._violations(_drop=("iteration_contract",), execution_mode="iterative")
+        self.assertEqual(
+            [v for v in iterative if "iteration_contract" in v],
+            [v for v in iterative
+             if v.endswith(":iteration_contract must be non-empty when execution_mode=iterative")],
+        )
+        self.assertEqual(
+            sum(v.endswith(":iteration_contract must be non-empty when execution_mode=iterative")
+                for v in iterative),
+            1,
+            iterative,
+        )
+        for present in (None, [], "none"):
+            with self.subTest(present=present):
+                violations = self._violations(iteration_contract=present)
+                self.assertTrue(
+                    any(v.endswith(":iteration_contract must be object") for v in violations),
+                    violations,
+                )
 
     def test_loop_shaped_contract_under_sequence_is_flagged(self) -> None:
         """The live defect: `execution_mode: sequence` on a time-marching problem node whose

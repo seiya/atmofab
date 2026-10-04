@@ -5319,7 +5319,9 @@ def _validate_algorithm_contract_file(
         if is_empty:
             violations.append(f"{contract_path}:control_condition must be non-empty when execution_mode=conditional")
 
-    iteration_contract = contract.get("iteration_contract")
+    # An absent key reads as `{}`: the contract never requires it on a node without a top-level
+    # loop (issue #398). A PRESENT non-object, `null` included, is still refused below.
+    iteration_contract = contract.get("iteration_contract", {})
     if not isinstance(iteration_contract, dict):
         violations.append(f"{contract_path}:iteration_contract must be object")
     elif execution_mode == "iterative" and not iteration_contract:
