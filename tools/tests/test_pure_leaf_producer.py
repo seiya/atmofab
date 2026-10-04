@@ -30,9 +30,24 @@ import tools.validate_pipeline_semantics as vps
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
 from tools import usage_reset
 from tools.tests.llm_samples import sample_config_with as _cfg
+from tools.tests.private_root_fixture import (
+    refuse_provider_probes_for_module,
+    restore_provider_probes_for_module,
+)
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
 from tools.backends import registry as _backend_registry
+
+
+def setUpModule() -> None:
+    # Outside pytest conftest does not load, so this module refuses a real reset probe itself
+    # (issue #405; `private_root_fixture.refuse_provider_probes_for_module`).
+    refuse_provider_probes_for_module(__name__)
+
+
+def tearDownModule() -> None:
+    restore_provider_probes_for_module(__name__)
+
 
 #: The runner name the target language's `bundle_facts` gives a node (issue #289, R4-b PR-3: the
 #: validator's own spelling of it, `_expected_runner_name`, was retired for this one).

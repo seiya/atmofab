@@ -246,14 +246,13 @@ def _no_real_usage_reset_probe(monkeypatch):
     turns into `probe_failed`. So every `wait_usage_reset=True` test that does not stub
     `Conductor._read_usage_reset` exercises the fixed-schedule fallback, deterministically and
     for free. A test of the exchange itself restores `subprocess.Popen` and points the probe
-    at a fake CLI.
+    at a fake CLI. Outside pytest the modules that drive the wait refuse the same way from
+    `setUpModule` (`private_root_fixture.refuse_provider_probes_for_module`).
     """
     from tools import usage_reset
+    from tools.tests.private_root_fixture import refuse_provider_probe
 
-    def _refuse(*_args, **_kwargs):
-        raise OSError("the test suite launches no provider CLI (conftest)")
-
-    monkeypatch.setattr(usage_reset, "_spawn", _refuse)
+    monkeypatch.setattr(usage_reset, "_spawn", refuse_provider_probe)
 
 
 @pytest.fixture(scope="session", autouse=True)

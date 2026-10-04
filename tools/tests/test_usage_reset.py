@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -14,6 +15,21 @@ from unittest import mock
 
 from tools import llm_config
 from tools import usage_reset as ur
+from tools.tests.private_root_fixture import (
+    refuse_provider_probes_for_module,
+    restore_provider_probes_for_module,
+)
+
+
+def setUpModule() -> None:
+    # Outside pytest conftest does not load, so this module refuses a real reset probe itself
+    # (issue #405; `private_root_fixture.refuse_provider_probes_for_module`).
+    refuse_provider_probes_for_module(__name__)
+
+
+def tearDownModule() -> None:
+    restore_provider_probes_for_module(__name__)
+
 
 # Measurement 1 of the issue #405 plan (codex-cli 0.159.2, 2026-10-04), trimmed to what is read.
 _CODEX_RESULT = {"rateLimits": {
@@ -195,11 +211,16 @@ class ExchangeTests(unittest.TestCase):
         script = self._script("codex.py", f"RESULT = {_CODEX_RESULT!r}\n" + _FAKE_CODEX)
         record = self.tmp / "codex_home.txt"
         origin = self.tmp / "origin-home"
-        with mock.patch.dict("os.environ", {"CODEX_HOME": str(origin)}):
+        start = time.monotonic()
+        with mock.patch.dict("os.environ", {"CODEX_HOME": str(origin)}), \
+                mock.patch.object(ur, "USAGE_RESET_PROBE_TIMEOUT_SECONDS", 30.0):
             reading = ur.read_reset_instant(
                 "codex_cli", command_base=[sys.executable, str(script)], model="",
                 env={"PATH": "/usr/bin:/bin", "FAKE_RECORD": str(record)}, cwd=str(self.tmp))
         self.assertEqual(reading.epoch, 1791125452, reading)
+        # The read stops at the answer line and closes stdin then (the fake exits on EOF);
+        # a read that did not stop there would wait out the deadline.
+        self.assertLess(time.monotonic() - start, 10)
         # The leaf's environment carries no CODEX_HOME; the probe reads the ORIGIN home.
         self.assertEqual(record.read_text(), str(origin))
         # The fake refuses a caller that closes stdin first, which is what `subprocess.run(
@@ -214,18 +235,24 @@ class ExchangeTests(unittest.TestCase):
         script = self._script(
             "claude.py", f"STREAM = {_stream({'type': 'assistant'}, _rejected())!r}\n"
             + _FAKE_CLAUDE)
-        reading = ur.read_reset_instant(
-            "claude_cli", command_base=[sys.executable, str(script), str(record)],
-            model="haiku", env={"PATH": "/usr/bin:/bin"}, cwd=str(self.tmp))
+        start = time.monotonic()
+        with mock.patch.object(ur, "USAGE_RESET_PROBE_TIMEOUT_SECONDS", 30.0):
+            reading = ur.read_reset_instant(
+                "claude_cli", command_base=[sys.executable, str(script), str(record)],
+                model="haiku", env={"PATH": "/usr/bin:/bin"}, cwd=str(self.tmp))
+        # `-p` reads its prompt to EOF, so stdin is closed right after the prompt; a probe
+        # that held it open would reach the answer only at the deadline.
+        self.assertLess(time.monotonic() - start, 10)
         self.assertEqual((reading.epoch, reading.window), (1791128400, "five_hour"), reading)
         seen = json.loads(record.read_text())
-        self.assertEqual(seen["argv"][:2], ["--model", "haiku"])
-        for flag in ("--safe-mode", "--strict-mcp-config", "--no-session-persistence", "-p"):
-            self.assertIn(flag, seen["argv"])
-        i = seen["argv"].index("--output-format")
-        self.assertEqual(seen["argv"][i + 1], "stream-json")
-        self.assertEqual(seen["argv"][seen["argv"].index("--tools") + 1], "")
-        self.assertTrue(seen["prompt"])
+        # The WHOLE argv: measurement 4 was taken with exactly these flags (`--verbose` is what
+        # puts the event into a `-p` stream-json stream).
+        self.assertEqual(seen["argv"], [
+            "--model", "haiku", "--safe-mode", "--system-prompt",
+            ur._CLAUDE_PROBE_SYSTEM_PROMPT, "--tools", "", "--strict-mcp-config",
+            "--disable-slash-commands", "--no-session-persistence",
+            "--output-format", "stream-json", "--verbose", "-p"])
+        self.assertEqual(seen["prompt"], ur._CLAUDE_PROBE_PROMPT)
 
     def test_a_claude_probe_without_a_declared_model_passes_none(self) -> None:
         record = self.tmp / "argv.json"
@@ -254,6 +281,71 @@ class ExchangeTests(unittest.TestCase):
         self.assertEqual(reading.failure, ur.FAILURE_PROBE_FAILED)
 
 
+    def test_a_cli_that_exits_leaving_a_descendant_on_stdout_is_not_waited_out(self) -> None:
+        """A CLI process that exits while a descendant in its group still holds stdout: the
+        read is abandoned shortly after the exit, not at the deadline, and the descendant is
+        killed with the group rather than outliving the call."""
+        pidfile = self.tmp / "child.pid"
+        script = self._script("leave.sh", textwrap.dedent(f'''
+            /usr/bin/tail -f /dev/null &
+            echo $! > {pidfile}
+            exit 0
+        '''))
+        start = time.monotonic()
+        with mock.patch.object(ur, "USAGE_RESET_PROBE_TIMEOUT_SECONDS", 30.0):
+            reading = ur.read_reset_instant(
+                "claude_cli", command_base=["/bin/sh", str(script)], model="",
+                env={"PATH": "/usr/bin:/bin"}, cwd=str(self.tmp))
+        self.assertLess(time.monotonic() - start, 10)
+        self.assertEqual(reading.failure, ur.FAILURE_PROBE_FAILED)
+        self.assertIn("stdout held open after exit", reading.detail)
+        child = int(pidfile.read_text())
+        # Reaped by init once killed; a zombie or a missing pid both mean it is gone.
+        try:
+            os.kill(child, 0)
+            stat = Path(f"/proc/{child}/stat").read_text()
+            alive = stat.split(") ", 1)[1][:1] != "Z"
+        except (ProcessLookupError, FileNotFoundError):
+            alive = False
+        self.assertFalse(alive, "the descendant outlived the probe")
+
+    def test_a_flooding_cli_is_drained_but_not_retained(self) -> None:
+        script = self._script("flood.py", "import sys\nfor _ in range(20000):\n"
+                                          "    sys.stdout.write('x' * 99 + '\\n')\n")
+        with mock.patch.object(ur, "_STDOUT_RETAIN_MAX_CHARS", 10_000):
+            lines, _why = ur._exchange([sys.executable, str(script)], env={"PATH": "/usr/bin"},
+                                       cwd=str(self.tmp), send="", close_stdin_after_send=True,
+                                       until=lambda _l: False, timeout=30)
+        retained = sum(len(line) for line in lines)
+        self.assertGreater(20000 * 99, 10_000)          # the probe straddles the cap
+        self.assertLessEqual(retained, 10_000 + 99)
+
+
+class BoundsTests(unittest.TestCase):
+    def test_an_absurd_epoch_is_not_an_instant(self) -> None:
+        """A JSON integer is unbounded and `epoch - time.time()` overflows past ~1.8e308."""
+        for bad in (10 ** 400, -(10 ** 400), 2 ** 53 + 1):
+            with self.subTest(bad=bad):
+                result = json.loads(json.dumps(_CODEX_RESULT))
+                result["rateLimits"]["primary"]["resetsAt"] = bad
+                self.assertIsNone(ur.parse_codex_rate_limits(result).epoch)
+                self.assertIsNone(ur.parse_claude_rate_limit_events(
+                    _stream(_rejected(bad))).epoch)
+        self.assertEqual(ur.parse_codex_rate_limits(_CODEX_RESULT).epoch, 1791125452)
+
+    def test_an_id_of_true_is_not_the_answer(self) -> None:
+        self.assertTrue(ur._codex_answer_line('{"id": 1, "result": {}}'))
+        self.assertFalse(ur._codex_answer_line('{"id": true, "result": {}}'))
+        self.assertFalse(ur._codex_answer_line('{"id": 1.0, "result": {}}'))
+
+    def test_the_detail_is_clipped(self) -> None:
+        result = json.loads(json.dumps(_CODEX_RESULT))
+        result["rateLimits"]["rateLimitReachedType"] = "x" * 5000
+        detail = ur.parse_codex_rate_limits(result).detail
+        self.assertEqual(len(detail), ur._DETAIL_MAX_CHARS)
+        self.assertEqual(ur._DETAIL_MAX_CHARS, 400)   # the bound docs/ORCHESTRATION.md states
+
+
 class NeverRaisesTests(unittest.TestCase):
     def test_read_reset_instant_never_raises(self) -> None:
         def _boom(**_kwargs):
@@ -265,11 +357,57 @@ class NeverRaisesTests(unittest.TestCase):
         self.assertIn("reader bug", reading.detail)
 
     def test_the_suite_launches_no_provider_cli(self) -> None:
-        """The conftest fixture is in force: a real reader reaches `_spawn` and fails."""
-        reading = ur.read_reset_instant("claude_cli", command_base=["claude"], model="",
-                                        env={}, cwd=".")
+        """The refusal is in force (conftest under pytest, `setUpModule` under unittest): a
+        reader pointed at a CLI that WOULD answer with an instant still reads `probe_failed`
+        with the refusal's own text."""
+        with tempfile.TemporaryDirectory() as tmp:
+            script = Path(tmp) / "claude.py"
+            script.write_text(f"STREAM = {_stream(_rejected())!r}\n"
+                              "import sys\nsys.stdin.read()\nsys.stdout.write(STREAM)\n")
+            reading = ur.read_reset_instant(
+                "claude_cli", command_base=[sys.executable, str(script)], model="",
+                env={"PATH": "/usr/bin:/bin"}, cwd=tmp)
         self.assertEqual(reading.failure, ur.FAILURE_PROBE_FAILED)
         self.assertIn("launches no provider CLI", reading.detail)
+
+
+class UnittestRunnerHermeticityTests(unittest.TestCase):
+    """The refusal holds OUTSIDE pytest too, where conftest does not load. Witnessed from a
+    subprocess, because inside this process conftest has already patched `_spawn` and a
+    deleted `setUpModule` would change nothing the suite can see."""
+
+    _MODULES = ("tools.tests.test_usage_reset", "tools.tests.test_workflow_conductor",
+                "tools.tests.test_pure_leaf_producer", "tools.tests.test_pure_leaf_verify")
+
+    def test_each_module_that_drives_the_wait_refuses_a_real_probe_under_unittest(self) -> None:
+        repo = Path(__file__).resolve().parents[2]
+        with tempfile.TemporaryDirectory() as tmp:
+            marker = Path(tmp) / "spawned"
+            script = Path(tmp) / "cli.py"
+            script.write_text(f"open({str(marker)!r}, 'a').write('x')\n"
+                              "import sys\nsys.stdin.read()\n")
+            code = textwrap.dedent(f'''
+                import importlib, sys
+                from tools import usage_reset as ur
+                for name in {self._MODULES!r}:
+                    mod = importlib.import_module(name)
+                    mod.setUpModule()
+                    try:
+                        r = ur.read_reset_instant("claude_cli",
+                            command_base=[sys.executable, {str(script)!r}], model="",
+                            env={{"PATH": "/usr/bin:/bin"}}, cwd={tmp!r})
+                        assert "launches no provider CLI" in r.detail, (name, r)
+                    finally:
+                        mod.tearDownModule()
+                # Self-test: with every module torn down the same call DOES spawn.
+                ur.read_reset_instant("claude_cli",
+                    command_base=[sys.executable, {str(script)!r}], model="",
+                    env={{"PATH": "/usr/bin:/bin"}}, cwd={tmp!r})
+            ''')
+            done = subprocess.run([sys.executable, "-c", code], cwd=repo, text=True,
+                                  capture_output=True, timeout=300, check=False)
+            self.assertEqual(done.returncode, 0, done.stderr[-2000:])
+            self.assertEqual(marker.read_text(), "x")   # only the self-test's spawn
 
 
 if __name__ == "__main__":

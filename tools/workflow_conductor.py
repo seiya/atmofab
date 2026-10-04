@@ -37,6 +37,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import tempfile
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -12263,10 +12264,17 @@ class Conductor:
         try:
             model = entry.model.strip() if entry.model_declared else ""
             env = self._child_env(child_arid, entry)
-            Path(env["TMPDIR"]).mkdir(parents=True, exist_ok=True)
-            return usage_reset.read_reset_instant(
-                entry.provider, command_base=_provider_command_base(entry), model=model,
-                env=env, cwd=str(self.repo_root))
+            # A TMPDIR of the probe's own, removed with it: the dead attempt's
+            # `workspace/tmp/<arid>` was already cleaned when it was finalized, and recreating
+            # it would leave litter no later step removes.
+            tmp_parent = self.repo_root / "workspace" / "tmp"
+            tmp_parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.TemporaryDirectory(prefix=f"{child_arid}.usage_probe.",
+                                             dir=tmp_parent) as probe_tmp:
+                env["TMPDIR"] = probe_tmp
+                return usage_reset.read_reset_instant(
+                    entry.provider, command_base=_provider_command_base(entry), model=model,
+                    env=env, cwd=str(self.repo_root))
         except Exception as exc:  # noqa: BLE001 — see the docstring
             return usage_reset.ResetReading(
                 None, None, usage_reset.FAILURE_PROBE_FAILED,

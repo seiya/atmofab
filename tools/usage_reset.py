@@ -16,8 +16,8 @@ What is read, per provider (measured 2026-10-04, codex-cli 0.159.2, Claude Code 
               exchange holds stdin until the answer line arrives.
   claude_cli  a one-line `-p` turn under `--output-format stream-json --verbose`, whose stream
               carries the CLI's own `rate_limit_event` (`status` in allowed / allowed_warning /
-              rejected, `resetsAt` unix seconds, `rateLimitType`). Zero tokens when the window
-              is shut, one trivial turn when it is open. The leaf's own launch keeps
+              rejected, `resetsAt` unix seconds, `rateLimitType`). One trivial turn when the window
+              is open (measured: $0.000628 on haiku); the shut window was not measured. The leaf's own launch keeps
               `--output-format json`, whose single envelope carries no such event, which is why
               this is a probe and not a read of the dead leaf.
   HTTP        none. What tags `llm_usage_limit` on an HTTP leaf is a billing text naming no
@@ -69,9 +69,15 @@ def _compact(value: Any) -> str:
     return _clip(json.dumps(value, separators=(",", ":"), sort_keys=True, ensure_ascii=True))
 
 
+# Bounds an epoch to what a float clock can subtract from: a JSON integer is unbounded, and
+# `epoch - time.time()` raises `OverflowError` past ~1.8e308. Anything this large is not an
+# instant anyway; the conductor's own cap rejects it long before.
+_EPOCH_ABS_MAX = 2 ** 53
+
+
 def _epoch_or_none(value: Any) -> int | None:
-    """A unix-seconds `int`; `bool`, floats and strings are not vouched for and drop out."""
-    if isinstance(value, bool) or not isinstance(value, int):
+    """A unix-seconds `int`; `bool`, floats, strings and absurd magnitudes drop out."""
+    if isinstance(value, bool) or not isinstance(value, int) or abs(value) > _EPOCH_ABS_MAX:
         return None
     return value
 
@@ -122,7 +128,8 @@ def _codex_answer_line(line: str) -> bool:
         obj = json.loads(line)
     except ValueError:
         return False
-    return isinstance(obj, dict) and obj.get("id") == 1
+    # `type(...) is int`: `True == 1` in Python, and `{"id": true}` is not the answer.
+    return isinstance(obj, dict) and type(obj.get("id")) is int and obj["id"] == 1
 
 
 def _read_codex_cli(*, command_base: list[str], model: str, env: Mapping[str, str],
@@ -199,11 +206,20 @@ def _read_claude_cli(*, command_base: list[str], model: str, env: Mapping[str, s
 
 # --- the one spawn -----------------------------------------------------------------------
 
+# Bounds what one probe may hold in memory. The real answers are a few kilobytes; a CLI that
+# floods stdout past this is drained (so it cannot block on a full pipe) but not retained.
+_STDOUT_RETAIN_MAX_CHARS = 1_000_000
+# After the CLI process itself has exited, how long its stdout may stay open (a descendant it
+# left in its group holding the pipe) before the read is abandoned.
+_POST_EXIT_READ_GRACE_SECONDS = 2.0
+
+
 def _exchange(argv: list[str], *, env: Mapping[str, str], cwd: str, send: str,
               close_stdin_after_send: bool, until: Callable[[str], bool],
               timeout: float | None = None) -> tuple[list[str], str]:
-    """Spawn `argv`, write `send`, and collect stdout lines until `until(line)`, EOF or the
-    deadline; then close stdin, reap, and kill the process group if it outlives the deadline.
+    """Spawn `argv`, write `send`, and collect stdout lines until `until(line)`, EOF, the
+    process's exit (plus a short grace), or the deadline; then close stdin, reap, and kill the
+    process group — always, so a descendant the CLI left behind does not outlive the call.
     Returns the lines read and a short reason the read stopped (for a failure's detail)."""
     deadline = time.monotonic() + (USAGE_RESET_PROBE_TIMEOUT_SECONDS if timeout is None
                                    else timeout)
@@ -211,14 +227,18 @@ def _exchange(argv: list[str], *, env: Mapping[str, str], cwd: str, send: str,
                   stderr=subprocess.DEVNULL, env=dict(env), cwd=cwd, text=True,
                   encoding="utf-8", errors="replace", start_new_session=True)
     lines: list[str] = []
+    retained = [0]
     done = threading.Event()
 
     def _reader() -> None:
         try:
             assert proc.stdout is not None
             for raw in proc.stdout:
+                if retained[0] >= _STDOUT_RETAIN_MAX_CHARS:
+                    continue  # keep draining, stop retaining
                 line = raw.rstrip("\n")
                 lines.append(line)
+                retained[0] += len(line)
                 if until(line):
                     break
         finally:
@@ -234,8 +254,19 @@ def _exchange(argv: list[str], *, env: Mapping[str, str], cwd: str, send: str,
             proc.stdin.close()
     except OSError:
         pass  # the process died early; what it printed (if anything) is still read
-    finished = done.wait(max(0.0, deadline - time.monotonic()))
-    why = "answered" if finished else "timed out"
+    exited_at: float | None = None
+    while not done.is_set():
+        now = time.monotonic()
+        if now >= deadline:
+            break
+        if exited_at is None and proc.poll() is not None:
+            exited_at = now
+        if exited_at is not None and now - exited_at >= _POST_EXIT_READ_GRACE_SECONDS:
+            break
+        done.wait(min(0.05, deadline - now))
+    finished = done.is_set()
+    why = ("answered" if finished
+           else "timed out" if exited_at is None else "stdout held open after exit")
     try:
         if proc.stdin is not None and not proc.stdin.closed:
             proc.stdin.close()
@@ -244,11 +275,12 @@ def _exchange(argv: list[str], *, env: Mapping[str, str], cwd: str, send: str,
     try:
         proc.wait(timeout=max(0.1, min(5.0, deadline - time.monotonic())))
     except subprocess.TimeoutExpired:
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except OSError:
-            pass
-        proc.wait()
+        pass
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)
+    except OSError:
+        pass  # the group is already empty
+    proc.wait()
     if finished and proc.returncode not in (0, None) and not lines:
         why = f"exit {proc.returncode}"
     return list(lines), why

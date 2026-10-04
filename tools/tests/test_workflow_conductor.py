@@ -49,7 +49,9 @@ from tools.tests.orchestration_fixtures import accept_any_certified_ir, certify_
 from tools.tests.private_root_fixture import (
     isolated_homes_per_test_suite,
     redirect_isolated_homes_root_for_module,
+    refuse_provider_probes_for_module,
     restore_isolated_homes_root_for_module,
+    restore_provider_probes_for_module,
 )
 from tools.tests.llm_samples import sample_config as _sample_config
 from tools.tests.llm_samples import sample_config_with as _cfg
@@ -79,6 +81,8 @@ def setUpModule() -> None:
     # backend homes through `record_launch`, and without this it writes them into
     # the operator's real `~/.atmofab/homes` whenever it is run outside pytest.
     redirect_isolated_homes_root_for_module(__name__)
+    # No real provider CLI is probed for a reset instant outside pytest either (issue #405).
+    refuse_provider_probes_for_module(__name__)
     # The target's harness must resolve in the shared scratch catalog (issue #284: every
     # pipeline closure of a non-infrastructure node holds it).
     _register_target_harness(_SHARED_REPO_ROOT)
@@ -94,6 +98,7 @@ def _register_target_harness(repo: Path) -> None:
 
 
 def tearDownModule() -> None:
+    restore_provider_probes_for_module(__name__)
     restore_isolated_homes_root_for_module(__name__)
 
 
@@ -22207,6 +22212,46 @@ class LeafEntryThreadingTests(unittest.TestCase):
                 for event, fields in events[:-1]:
                     self.assertEqual(fields["reset_source"], "schedule")
                     self.assertEqual(fields["fallback_reason"], expected)
+
+    def test_the_reset_probe_is_asked_with_the_leafs_own_launch_shape(self) -> None:
+        """Issue #405: `_read_usage_reset` hands the reader the dead leaf's OWN command base
+        (a per-entry `command:` wrapper, not the bare binary), its model exactly when the
+        launch passes `--model` (declared → passed, run-wide override → not), the filtered
+        leaf environment without the leaf's TMPDIR, cwd = the checkout, and a TMPDIR of the
+        probe's own that exists during the call and is gone after it."""
+        repo = self._scratch_repo_root()
+        c = wc.Conductor(
+            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
+            env={"PATH": "/usr/bin:/bin", "ANTHROPIC_BASE_URL": "http://elsewhere"},
+            llm_config=lc.apply_defaults_overrides(self._config_text(
+                "defaults:\n  provider: claude_cli\n"
+                "  command: /opt/wrap/claude --sandbox\n"
+                "phases:\n  generate:\n    substeps:\n      generate:\n"
+                "        model: haiku\n"), model="opus"))
+        seen: list[dict] = []
+
+        def _record(provider, **kw):
+            kw["provider"] = provider
+            kw["tmp_existed"] = Path(kw["env"]["TMPDIR"]).is_dir()
+            seen.append(kw)
+            return usage_reset.ResetReading(None, None, "probe_failed", "stub")
+        with mock.patch.object(usage_reset, "read_reset_instant", _record):
+            c._read_usage_reset(c.entry_for("generate", "generate"), "ar-dead-1")
+            c._read_usage_reset(c.entry_for("validate", "judge"), "ar-dead-2")
+        declared, overridden = seen
+        self.assertEqual(declared["provider"], "claude_cli")
+        self.assertEqual(declared["command_base"], ["/opt/wrap/claude", "--sandbox"])
+        self.assertEqual(declared["model"], "haiku")
+        self.assertEqual(overridden["model"], "")       # not declared by the file: not pinned
+        self.assertEqual(declared["cwd"], str(repo))
+        self.assertNotIn("ANTHROPIC_BASE_URL", declared["env"])   # the leaf's filtered env
+        for kw, arid in ((declared, "ar-dead-1"), (overridden, "ar-dead-2")):
+            tmp = Path(kw["env"]["TMPDIR"])
+            self.assertTrue(kw["tmp_existed"])
+            self.assertFalse(tmp.exists())                         # removed with the probe
+            self.assertEqual(tmp.parent, repo / "workspace" / "tmp")
+            self.assertTrue(tmp.name.startswith(f"{arid}.usage_probe."))
+        self.assertFalse((repo / "workspace" / "tmp" / "ar-dead-1").exists())
 
     def test_pure_session_resumable_is_false_without_the_warm_resume_capability(self) -> None:
         c = wc.Conductor(

@@ -36,6 +36,20 @@ from tools.tests.test_pure_leaf_producer import (
 )
 from tools import usage_reset
 from tools.tests.llm_samples import sample_config_with as _cfg
+from tools.tests.private_root_fixture import (
+    refuse_provider_probes_for_module,
+    restore_provider_probes_for_module,
+)
+
+
+def setUpModule() -> None:
+    # Outside pytest conftest does not load, so this module refuses a real reset probe itself
+    # (issue #405; `private_root_fixture.refuse_provider_probes_for_module`).
+    refuse_provider_probes_for_module(__name__)
+
+
+def tearDownModule() -> None:
+    restore_provider_probes_for_module(__name__)
 
 
 def _verdict(status: str = "pass", *, severity: str | None = None,
