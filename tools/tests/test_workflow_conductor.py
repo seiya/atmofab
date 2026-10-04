@@ -17166,7 +17166,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 {"case_id": "l0_scale_identity_pass", "inputs": {"n": 4}},
                 {"case_id": "l0_invalid_length_xfail", "inputs": {"n": 4}}]}
             ir["io_contract"]["raw_requirements"] = {"required_evidence": [
-                {"artifact": "state_snapshots", "required": True, "min_samples": 1,
+                {"artifact": "state_snapshots", "required": True,
                  "schema": {"variables": [{"name": "u", "shape_expr": "[n]"}],
                             "time_variable": "t", "time_shape_expr": "scalar"}}]}
             ir["io_contract"]["primary_predicates"] = [
@@ -17244,7 +17244,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 {"case_id": "l0_scale_identity_pass", "inputs": {"n": 2}},
                 {"case_id": "l0_invalid_length_xfail", "inputs": {"n": 2}}]}
             ir["io_contract"]["raw_requirements"] = {"required_evidence": [
-                {"artifact": "state_snapshots", "required": True, "min_samples": 1,
+                {"artifact": "state_snapshots", "required": True,
                  "schema": {"variables": [{"name": "u", "shape_expr": "[n]"}],
                             "time_variable": "t", "time_shape_expr": "scalar"}}]}
             ir["io_contract"]["primary_predicates"] = [
@@ -21601,7 +21601,7 @@ class ExecutePromoterTest(unittest.TestCase):
                 (sdir / f"{cid}.json").write_text("{}", encoding="utf-8")
             ir = {
                 "io_contract": {"raw_requirements": {"required_evidence": [
-                    {"artifact": "state_snapshots", "required": True, "min_samples": 1,
+                    {"artifact": "state_snapshots", "required": True,
                      "schema": {"variables": [{"name": "u", "shape_expr": "[n]"}],
                                 "time_variable": "t", "time_shape_expr": "scalar"}},
                 ]}},
@@ -21613,7 +21613,7 @@ class ExecutePromoterTest(unittest.TestCase):
             doc = json.loads((sdir / "snapshot_schema.json").read_text())
             self.assertEqual(doc["samples"], ["left.json", "right.json", "invalid.json"])
             self.assertEqual(doc["time_variable"], "t")
-            self.assertEqual(doc["min_samples"], 1)
+            self.assertNotIn("min_samples", doc)
 
     def test_author_quality_check_pass_and_mismatch(self) -> None:
         import tempfile

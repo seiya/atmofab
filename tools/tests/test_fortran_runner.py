@@ -86,7 +86,7 @@ def _boundary_ir() -> dict:
         },
         "io_contract": {
             "raw_requirements": {"required_evidence": [
-                {"artifact": "state_snapshots", "required": True, "min_samples": 3, "schema": {
+                {"artifact": "state_snapshots", "required": True, "schema": {
                     "variables": [
                         {"name": "field_ghost", "shape_expr": "[4, 4]"},
                         {"name": "field_interior", "shape_expr": "[2, 2]"},
@@ -95,7 +95,7 @@ def _boundary_ir() -> dict:
                     ],
                     "time_variable": "t", "time_shape_expr": "scalar",
                 }},
-                {"artifact": "metrics_basis.json", "required": True, "min_samples": 1},
+                {"artifact": "metrics_basis.json", "required": True},
             ]},
             "test_evidence_requirements": [
                 {"test_id": "l0_periodic_x_wrap_pass",

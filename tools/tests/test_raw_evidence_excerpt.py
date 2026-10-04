@@ -36,7 +36,7 @@ def _contract(**overrides) -> dict:
         "raw_requirements": {
             "required_evidence": [
                 {"artifact": "metrics_basis.json", "required": True},
-                {"artifact": "state_snapshots", "required": True, "min_samples": 1},
+                {"artifact": "state_snapshots", "required": True},
             ],
         },
     }
@@ -431,11 +431,21 @@ class StateSnapshotsTest(unittest.TestCase):
         self.assertEqual(self._snapshots(),
                          {"present": False, "schema": None, "cases": []})
 
+    def test_a_recorded_min_samples_is_not_echoed(self):
+        """Issue #396: `snapshot_schema.json` written before the key left the contract still
+        carries `min_samples`; the excerpt's `schema` does not copy it."""
+        self.raw.write("state_snapshots/snapshot_schema.json", {
+            "variables": [{"name": "h", "shape_expr": "[nx, ny]"}],
+            "time_variable": "t", "min_samples": 24})
+        self.raw.write("state_snapshots/case_a.json", {"h": [[1.0, 2.0]], "t": 0.5})
+        self.assertEqual(set(self._snapshots()["schema"]),
+                         {"time_variable", "declared_variables"})
+
     def test_case_is_summarized_against_the_declared_shape(self):
         self.raw.write("state_snapshots/snapshot_schema.json", {
             "variables": [{"name": "h", "shape_expr": "[nx, ny]"},
                           {"name": "z_b", "shape_expr": "[nx, ny]"}],
-            "time_variable": "t", "min_samples": 1})
+            "time_variable": "t"})
         self.raw.write("state_snapshots/case_a.json",
                        {"h": [[1.0, 2.0]], "t": 0.5})
         snapshots = self._snapshots()
@@ -465,7 +475,7 @@ class StateSnapshotsTest(unittest.TestCase):
         # capture (a harness self-test) carries `initial: None`.
         self.raw.write("state_snapshots/snapshot_schema.json", {
             "variables": [{"name": "h", "shape_expr": "[nx, ny]"}],
-            "time_variable": "t", "min_samples": 1})
+            "time_variable": "t"})
         self.raw.write("state_snapshots/case_a.json", {"h": [[3.0, 4.0]], "t": 1.0})
         self.raw.write("state_snapshots/initial/case_a.json", {"h": [[1.0, 2.0]], "t": 0.0})
         self.raw.write("state_snapshots/case_b.json", {"h": [[5.0, 6.0]], "t": 1.0})
