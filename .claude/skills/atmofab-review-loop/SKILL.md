@@ -215,6 +215,14 @@ when a rule does not obviously apply:
   per-process root (four concurrent copies: 0 failures in 8 runs), and the CLASS stays, because
   other fixtures still name literal `/tmp` paths. **So: when a kill surprises you, re-run with
   `--jobs 1` before anything else.**
+  **Issue #405 found a second cause: a flaky test the BRANCH ITSELF added, red only under load —
+  and the script's own parallel jobs are that load.** A docstring-only hunk came back `killed`;
+  the hand revert was green twice and red once. The red was a new row asserting a SIGKILLed
+  descendant was gone, checked before the asynchronous kill had landed: six concurrent copies of
+  the suite (`seq 6 | xargs -P6 -I{} python3 -m pytest …`) failed it 1 in 6, and serial runs
+  never did. **So a hand revert that is not reproducibly red is a flake finding, not a verdict
+  on the hunk** — run the suite concurrently to name the test, fix the test (a bounded settle,
+  never a longer fixed wait), and confirm the mutant it exists for is still red
   A kill that has a cause and still pins nothing is a DEPENDENCY kill. Reverting a hunk that
   defines a name another hunk of the range calls raises `NameError`, and the script scores
   that `killed`. Neither the #153 kills nor #282's dead-clause kill has been re-run serially,
@@ -590,7 +598,11 @@ nor resets the two-consecutive-clean-security-rounds condition.**
   - **The end-of-round check is `ListAgents` and `ps`, both** — pick orphans up with
     `ps -eo pid,ppid,etimes,args | grep -E "sleep|until|pgrep"` and `kill` by PID (`pkill -f`
     re-enacts the first accident), after confirming no process doing real work is alive at the
-    same time. It is a **reconciliation**: keep the PID of every wait you start and match the
+    same time. **The same holds for YOUR OWN cleanup, not only a reviewer's**: on issue #405 I
+    cleared a mutant's leftover `tail -f /dev/null` with `pkill -f "tail -f /dev/null" -u $USER
+    -n` — the pattern is in the command line of the shell running it, so `-f` matches that shell
+    and `-n` (newest) selects it. Select on the process NAME, not its arguments
+    (`ps -eo pid,comm,args | awk '$2=="tail"'`), and `kill` the PIDs it prints. It is a **reconciliation**: keep the PID of every wait you start and match the
     list — and remember **a backgrounded wait returns immediately**, so a turn that launches one
     has not waited
   - **The symptom disguises itself as "the subagent is running and never returns"** — when
