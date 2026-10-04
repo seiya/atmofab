@@ -118,14 +118,21 @@ class PureVerifyContextTests(unittest.TestCase):
             for present in ("## 2. Semantics the harness relies on",
                             "## 3. Module-level state is expected",
                             "## 4. Prohibitions",
-                            "`ok` false",
+                            "The runner does not read `ok`",
                             "runner always captures the case's state"):
                 self.assertIn(present, doc[:neutral_end])
             for present in ("### 1-b. The bound state in Fortran",
                             "## 2. The semantics, spelled in Fortran",
                             "## 4. Prohibitions in Fortran",
-                            "ok = .false.", "character(len=4), intent(out) :: status"):
+                            "logical, intent(out) :: ok",
+                            "character(len=4), intent(out) :: status"):
                 self.assertIn(present, doc[neutral_end:])
+            # Issue #399: the wording that gave a value of `ok` a meaning is gone from the
+            # reviewer's document (the sentence-level rule is
+            # `test_checks_module_loops_and_ok_are_not_findings_on_every_target`).
+            for refused in ("rejects a guard", "`ok` false", "ok = .false.", "ok=.false.",
+                            "returned `ok`", "returning `ok"):
+                self.assertNotIn(refused, doc)
             # Every literal here must occur in the REAL documents, or the assertion is true of
             # any slice and pins nothing — an earlier version of this test named a preamble
             # sentence the same commit had rewritten away.

@@ -2952,6 +2952,111 @@ class PureRenderTests(unittest.TestCase):
         ):
             self.assertIn(token, prompt)
 
+    # Issue #399: a sentence that names `ok` beside a logical value gives that value a meaning.
+    # A bound on growth, not a detector: a rewording that names no value ("reported through
+    # `ok`") passes. It over-refuses too — "whether `ok` is true or false is never a finding"
+    # is refused, and so is the English word ("it is ok to leave a flag false") — so a sentence
+    # of that kind is added by editing this row deliberately. A sentence ends at `.` or `;`
+    # before whitespace, or at a blank line; every other newline is a hard wrap and is read
+    # through (two bullets with no closing punctuation are read as one sentence). A Fortran
+    # logical literal is one token, so its dots do not end a sentence.
+    _OK_NAME_RE = re.compile(r"\bok\b|\b(?:setup|run)_ok\b")
+    _OK_VALUE_RE = re.compile(r"\b(?:true|false)\b", re.IGNORECASE)
+
+    @classmethod
+    def _sentences_giving_ok_a_value(cls, text: str) -> list[str]:
+        text = re.sub(r"\.(true|false)\.", r"\1", text, flags=re.IGNORECASE)
+        return [s for s in re.split(r"(?<=[.;])\s+|\n\s*\n", text)
+                if cls._OK_NAME_RE.search(s) and cls._OK_VALUE_RE.search(s)]
+
+    def test_checks_module_loops_and_ok_are_not_findings_on_every_target(self) -> None:
+        """Issues #399 / #400, both halves on every (language, parallel) pair a target composes.
+        #400: the reviewer's G6 exempts a checks-module loop's lowering and bounds the exemption
+        to speed, the CUDA G6 and producer fragments scope their host-loop sentences to the model
+        source, and the producer's rule (7) says the plan is about the model source. #399: the
+        reviewer's inlined checks contract says the runner reads no `ok` and no value of it is a
+        finding, the producer's clause (C) says the same and still requires `ok` assigned, and
+        no sentence of the contract, either binding, or either composed prompt names `ok`
+        beside a logical value. Each new sentence is pinned WHOLE, so a reversal or a deleted
+        clause is red (round 1 reversed and deleted clauses of each with this row green)."""
+        from tools.backends import registry
+        # The sentence reader must refuse the wording #399 removed and the rewordings round 1
+        # planted, and pass the sentences that remain — or it observes nothing.
+        # One refused sample per alternative of each pattern, per Fortran literal and per kind
+        # of hard wrap, and one kept sample per sentence boundary and for the word boundary,
+        # so narrowing any of them is red.
+        for refused in ("`ok` false rejects a guard / xfail input (e.g. an invalid grid size).",
+                        "A rejected guard / xfail case returns .false. in `ok`;",
+                        "a guard case returns .true. in `ok` and the run stops.",
+                        "a rejected case sets `ok` to\n`.false.` and still leaves",
+                        "a rejected case rejects with ok\n  = false on the guard path.",
+                        "`ok`: false rejects a guard input.",
+                        "a guard case leaves ok as False.",
+                        "the runner stops when setup_ok is false.",
+                        "the runner stops unless run_ok is true."):
+            self.assertTrue(self._sentences_giving_ok_a_value(refused), refused)
+        for kept in ("Assign `ok` on every path. `found` false when the metric is absent.",
+                     "Assign `ok` on every path; `found` false when the metric is absent.",
+                     "Assign `ok` on every path\n\n`found` false when the metric is absent.",
+                     "Assign `ok` on every path.\n`found` false when the metric is absent.",
+                     "Assign `ok` on every path. The lookup returns true when the id is known."):
+            self.assertEqual(self._sentences_giving_ok_a_value(kept), [], kept)
+        contract = wc._checks_contract_abi_sections(
+            (Path(wc.__file__).resolve().parents[1]
+             / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").read_text(encoding="utf-8"))
+        self.assertIn(
+            "The runner does not read `ok`, here or from `case_run`: every case proceeds, so its "
+            "snapshot and its input-guard check are produced, and that check is the guard's "
+            "evidence — the value of `ok` is never a finding.", contract)
+        templates = ort._load_launch_prompt_templates()
+
+        def composed(key: str, language: str, parallel: str) -> str:
+            return ort._compose_fragments(
+                templates[key], ort._PROMPT_TEMPLATE_FILES[key],
+                {"pure_language": language, "pure_parallel": parallel})
+
+        for language, parallel in (("fortran", "openmp"), ("fortran", "mpi"),
+                                   ("cuda_cpp", "cuda")):
+            with self.subTest(language=language, parallel=parallel):
+                verify = composed("pure generate.verify", language, parallel)
+                generate = composed("pure generate.generate", language, parallel)
+                for sentence in (
+                    "a plan that leaves a `cpu`+`openmp` target's parallelizable loops of the "
+                    "model source serial without saying why is a fail",
+                    "The checks module is measurement code, so G6 does not judge how its loops "
+                    "are lowered: whether a checks-module loop is serial, parallel or on the "
+                    "host is never a finding, and the plan need not name it or give a reason "
+                    "for it.",
+                    "That exemption is about speed only — whatever a target fragment below "
+                    "requires of the checks module, G5, and that the checks module computes no "
+                    "state update of its own all still hold.",
+                ):
+                    self.assertIn(sentence, verify)
+                for sentence in (
+                    "The plan is about the model source: the checks module is measurement code, "
+                    "its loops need no lowering, and the plan names them only where a target "
+                    "fragment below requires it.",
+                    "Assign `ok` on every path like every other `out` argument; the runner does "
+                    "not read it, and a rejected input is reported by the IR's input-guard "
+                    "check, not by `ok`.",
+                ):
+                    self.assertIn(sentence, generate)
+                if language == "cuda_cpp":
+                    self.assertIn("A loop of the model source the plan keeps on the host is "
+                                  "the plan's own claim", verify)
+                    self.assertIn("a plainly parallelizable loop of the model source kept on "
+                                  "the host without such a reason", verify)
+                    self.assertIn("A loop of the model source you do keep on the host is named "
+                                  "in the plan", generate)
+                for text in (verify, generate):
+                    self.assertNotIn("a checks callback receives", text)
+                    self.assertNotIn("A loop the plan keeps on the host", text)
+                    self.assertNotIn("A loop you do keep on the host", text)
+                binding = wc._checks_contract_abi_sections(
+                    registry.capability_module("language", language, "checks_abi").document())
+                for doc in (contract, binding, generate, verify):
+                    self.assertEqual(self._sentences_giving_ok_a_value(doc), [])
+
     def test_pure_launch_prompt_renders_exemplar_block(self) -> None:
         # Complements the fence/scan test below with the CONTENT assertion: an injected exemplar
         # must actually reach the rendered prompt (heading + source body), which is what defect B

@@ -46,7 +46,7 @@ reached by the runner as a call. The argument roles, in order, are fixed:
 
 | Callback | Arguments (name: direction, type) | What it does |
 |---|---|---|
-| `case_setup` | `case_id`: in, string; `ok`: out, logical | Initialize this case's state from the spec's fixed inputs and constants. `ok` false rejects a guard / xfail input (e.g. an invalid grid size); the case still proceeds, so its snapshot and its input-guard check are produced. |
+| `case_setup` | `case_id`: in, string; `ok`: out, logical | Initialize this case's state from the spec's fixed inputs and constants. The runner does not read `ok`, here or from `case_run`: every case proceeds, so its snapshot and its input-guard check are produced, and that check is the guard's evidence — the value of `ok` is never a finding. |
 | `case_run` | `case_id`: in, string; `steps`: out, integer; `cells_updated`: out, integer; `ok`: out, logical | Run the model kernel's time loop for this case — by calling the model's published operation (`<spec_id>__<op>`), from `case_run` or from a procedure of the checks module that `case_run` reaches; the checks module computes no state update of its own, and the `Generate.gate` static check refuses a `case_run` from which no published operation is reachable; it checks a reach, not a use, so whether the state IS the operation's result stays the reviewer's to judge — and return the perf counters. A non-time-stepping component uses `steps` = 1 and `cells_updated` = the cells touched. |
 | `get_time` | `t`: out, float64 | The scalar time of this case at the capture point (0 for an untimed component). Called right AFTER each of the two captures, for the time the snapshot is written with, so no generated procedure runs between `case_setup` / `case_run` returning and the state being serialized. |
 | `checks_compute` | `case_id`: in, string; `check_id`: in, string; `status`: out, string of width 4 | The honest per-case result for ONE check. The runner calls it once per (case, check id), supplying `check_id` as a literal from the IR's `diagnostics_contract.checks[].id`; the module authors no id and sets `status` to one of `pass` / `fail` / `na` (width 4, right-padded) on EVERY `check_id` branch, the default branch included. An xfail case's failing guard still reports `fail` (the harness folds). |
@@ -82,7 +82,7 @@ shape on every path, the rejected-input path included.
 ## 2. Semantics the harness relies on
 
 - **Bound state is shape-valid at both capture points, even for a rejected case.** A
-  guard/xfail case whose `case_setup` returned `ok` false must STILL leave every
+  guard/xfail case must STILL leave every
   bound array allocated to its declared shape and every bound scalar defined (the
   runner always captures the case's state, right after `case_setup` and right after
   `case_run`). Leave a defined placeholder (e.g. zeros of the right shape), never an

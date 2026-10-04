@@ -30,9 +30,7 @@ names cannot satisfy the ABI. Author them verbatim:
 public :: case_setup, case_run, get_time
 public :: checks_compute, metric_compute
 
-! Initialize this case's state from the spec's fixed inputs/constants. ok=.false.
-! rejects a guard / xfail input (e.g. an invalid grid size) — the case still
-! proceeds so its snapshot + input_guard check are produced.
+! Initialize this case's state from the spec's fixed inputs/constants.
 subroutine case_setup(case_id, ok)
   character(len=*), intent(in) :: case_id
   logical, intent(out) :: ok
@@ -110,8 +108,7 @@ reads an array, and serializes it through the harness emitters at the two captur
 
 Publication is checked under the same scan as the ABI names: under a bare `private` a
 `public ::` statement must name the variable; under the default-public accessibility it is
-published unless a `private ::` names it. A rejected case (`case_setup` returning
-`ok = .false.`) still leaves every bound array allocated to its declared shape.
+published unless a `private ::` names it. A rejected guard / xfail case still leaves every bound array allocated to its declared shape.
 
 ### 1-c. The distributed binding in Fortran
 
@@ -137,7 +134,7 @@ harness only with an `only:` list of its distributed-state operations
 ## 2. The semantics, spelled in Fortran
 
 The neutral §2 is procedure semantics; what it leaves to the language is the spelling of its
-values. A rejected guard / xfail case returns `ok = .false.` from `case_setup`; `status` is
+values. `status` is
 `'pass'`, `'fail'` or `'na  '` (width 4, right-padded); an honestly unavailable metric sets
 `found = .true.`, `is_na = .true.` and `reason_na` (deferred-length, allocated by the
 assignment), and a metric that does not apply to the case sets `found = .false.`; a rejected

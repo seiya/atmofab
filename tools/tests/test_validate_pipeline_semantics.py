@@ -15057,6 +15057,10 @@ end program shallow_water2d_runner
         )
         self.assertIn("`!$omp` presence floor", phase_02,
                       "phase_02 no longer documents the Generate.gate presence floor")
+        # Issue #400: a checks-module loop's lowering is not G6's to judge, so phase_02 no longer
+        # hands those loops to the reviewer.
+        self.assertNotIn("always yours", phase_02)
+        self.assertIn("G6 does not judge how its loops are lowered", phase_02)
         self.assertIn(
             "_validate_parallel_presence_floor", phase_02,
             "phase_02 no longer names the emitting checker (doc<->gate drift guard)",

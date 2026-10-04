@@ -858,6 +858,20 @@ PINNED: dict[str, str] = {
     # one finding each — three defects that issue #391 reports were all present in attempt 2
     # — and ended `generate exceeded 3`.
     "pure-65": "53acee8bb3f6845d851e93f887ad72a245aa7a76f35db08ddaf949c8a2421957",
+    # pure-66 (issues #399, #400): `CHECKS_MODULE_CONTRACT.md` §1 says the runner reads `ok`
+    # from neither callback, so no value of `ok` is a finding, and both bindings and both
+    # producer fragments' clause (C) drop every sentence that gave a value of `ok` a meaning
+    # (#399); G6 and rule (7) say the checks module is measurement code whose loop lowering is
+    # never a finding and needs no plan entry, and the CUDA fragments scope their host-loop
+    # sentences to the model source (#400). Measured by diffing this tuple against origin/main
+    # 39a324cb's: `pure_generate_verify.txt`, `pure_generate_generate.txt`, the two `cuda_cpp`
+    # fragments, the `fortran` generate fragment, `checks_contract_abi_sections` and both
+    # `checks_abi_binding_sections` moved and no other member. Witnesses: verify `9584fbf8`
+    # (orch_20261004T005822Z_ad2580df), `97ecd3cd` (orch_20261004T033948Z_aa04589e) and
+    # `82d5071e` (orch_20261004T053000Z_77ee7ba6) failed a guard case's `ok=true`; `9584fbf8`,
+    # `97ecd3cd` and `4cec9676` (orch_20261004T005821Z_d87fb2fb) failed serial / host loops of
+    # the checks module.
+    "pure-66": "1530294f3ed428dc6753d09a7eda334f0c6812a676ca4cdcca1069d7d6c2fce6",
 }
 
 
