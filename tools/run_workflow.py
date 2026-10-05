@@ -958,7 +958,9 @@ _RESUMABLE_TERMINAL_STATUSES: frozenset[str] = frozenset(
 )
 
 
-def _warn_about_resumable_priors(repo_root: Path, spec_ref: str, stdout_format: str) -> None:
+def _warn_about_resumable_priors(repo_root: Path, spec_ref: str,
+                                 target_profile: TargetProfile | None,
+                                 stdout_format: str) -> None:
     """Before a COLD run starts over, say that a resumable orchestration for this spec exists.
 
     Inform, never prohibit: the operator asked for a cold run and gets one. What they must not
@@ -969,8 +971,16 @@ def _warn_about_resumable_priors(repo_root: Path, spec_ref: str, stdout_format: 
     `_cold_start_running_guard`, which classified each candidate's recorded driver through
     `/proc` and warned only on a `dead` or `unknown` verdict. That classification is deleted
     with the probe — and it is not needed here, because the SPEC CLAIM has already established
-    that no driver is running this spec. What is left is the useful half: a non-terminal
-    orchestration for this spec exists and can be resumed instead of abandoned.
+    that no driver is running this spec for this target. What is left is the useful half: a
+    non-terminal orchestration for this spec and target exists and can be resumed instead of
+    abandoned.
+
+    The claim is per target (`_spec_claim_key`, issue #284), so a run of the same spec for
+    another target may be live right now; it is not this run's checkpoint, and resuming it is
+    no alternative to this run. A candidate whose recorded `invocation.target.target_id`
+    names another target is skipped (issue #412). One that recorded no target predates the
+    field and is still reported, as is every candidate when `target_profile` is None — that
+    caller claimed the bare spec, which covers every target.
 
     Rescanned per call rather than sampled once, because a `--with-deps` closure reaches its
     later nodes hours after it started. Best-effort throughout: an unreadable workspace warns
@@ -992,6 +1002,13 @@ def _warn_about_resumable_priors(repo_root: Path, spec_ref: str, stdout_format: 
         status = str(meta.get("status") or "").strip().lower()
         if not status or status in _RESUMABLE_TERMINAL_STATUSES:
             continue
+        if target_profile is not None:
+            invocation = meta.get("invocation")
+            recorded = invocation.get("target") if isinstance(invocation, dict) else None
+            recorded_id = recorded.get("target_id") if isinstance(recorded, dict) else None
+            if (isinstance(recorded_id, str) and recorded_id.strip()
+                    and recorded_id.strip() != target_profile.target_id):
+                continue
         _emit_unlogged_event(
             {
                 "status": "info",
@@ -3195,9 +3212,10 @@ def _run_main(
                 _emit_unlogged_event(
                     _concurrent_cold_start_envelope(spec_ref), args.stdout_format)
                 return 2
-            # The claim proves no driver is running this spec; it proves nothing about whether
-            # a resumable checkpoint exists, so say so before starting over.
-            _warn_about_resumable_priors(repo_root, spec_ref, args.stdout_format)
+            # The claim proves no driver is running this spec for this target; it proves nothing
+            # about whether a resumable checkpoint exists, so say so before starting over.
+            _warn_about_resumable_priors(
+                repo_root, spec_ref, target_profile, args.stdout_format)
             # The spec claim above is the whole cold gate since issue #177. It used to be
             # followed by a scan of this spec's other non-terminal orchestrations, probing each
             # one's recorded driver through `/proc` — which answered `unknown` for any run
@@ -4838,7 +4856,8 @@ def _run_closure_member(
             )
             return 0
         if not resume_mode:
-            _warn_about_resumable_priors(repo_root, spec_ref, stdout_format)
+            _warn_about_resumable_priors(
+                repo_root, spec_ref, target_profile, stdout_format)
         invocation = None if resume_mode else _build_invocation_record(
             argv=raw_argv,
             spec_ref=spec_ref,
@@ -5573,11 +5592,12 @@ def _run_with_dependency_closure(
                 )
                 return 2
             # Same as the single-node cold path: the claim proves no driver is running this
-            # spec, and proves nothing about whether a resumable checkpoint exists. A closure
+            # spec for this target, and proves nothing about a resumable checkpoint. A closure
             # starts SEVERAL billed orchestrations, so this is the path where starting over
             # silently costs the most — and it was the one the restored warning did not reach.
             if not dep_resume:
-                _warn_about_resumable_priors(repo_root, spec_ref, stdout_format)
+                _warn_about_resumable_priors(
+                    repo_root, spec_ref, target_profile, stdout_format)
             # No per-node liveness gate: `_run_node` takes this node's own exclusive claim
             # (`orch` when resuming a member, `spec` when starting one cold) and refuses with
             # `concurrent_orchestration_running` if another driver holds it. That serializes
@@ -5799,7 +5819,8 @@ def _run_with_dependency_closure(
             )
             return 2
         if not target_resume:
-            _warn_about_resumable_priors(repo_root, target_spec_ref, stdout_format)
+            _warn_about_resumable_priors(
+                repo_root, target_spec_ref, target_profile, stdout_format)
         # No liveness gate for the target node either: `_run_node` takes its own exclusive
         # claim, which is what serializes it against a competing driver.
         target_invocation = None if target_resume else _build_invocation_record(

@@ -2060,7 +2060,7 @@ class RunWorkflowTests(unittest.TestCase):
             buf = io.StringIO()
             with redirect_stdout(buf):
                 run_workflow._warn_about_resumable_priors(
-                    repo_root, "spec/problem/test.md", "jsonl")
+                    repo_root, "spec/problem/test.md", None, "jsonl")
             events = [json.loads(line) for line in buf.getvalue().splitlines()
                       if line.strip().startswith("{")]
             warned = [e for e in events if e.get("event") == "prior_incomplete_orchestration"]
@@ -2070,6 +2070,44 @@ class RunWorkflowTests(unittest.TestCase):
                 warned[0]["resume_command"],
                 "python3 tools/run_workflow.py --resume --orchestration-id orch_abandoned")
             self.assertEqual(warned[0]["orchestration_status"], "running")
+
+    def test_the_resumable_prior_warning_skips_a_run_of_another_target(self) -> None:
+        """Issue #412: the spec claim is per target, so a live run of the same spec for another
+        target is not this run's checkpoint. Measured before the fix: a concurrent `cpp_gpu`
+        run named every live `fortran_cpu` orchestration as its own resumable prior."""
+        spec = "spec/problem/test.md"
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            for oid, target_id in (
+                ("orch_same_target", "t_a"),
+                ("orch_other_target", "t_b"),
+                ("orch_no_target", None),
+            ):
+                invocation = {"target": {"target_id": target_id}} if target_id else {}
+                d = repo_root / "workspace" / "orchestrations" / oid
+                d.mkdir(parents=True, exist_ok=True)
+                (d / "orchestration_meta.json").write_text(
+                    json.dumps({"orchestration_id": oid, "status": "running", "spec_ref": spec,
+                                "invocation": invocation}),
+                    encoding="utf-8")
+
+            def warned_for(profile: tp.TargetProfile | None) -> list[str]:
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    run_workflow._warn_about_resumable_priors(repo_root, spec, profile, "jsonl")
+                return sorted(
+                    json.loads(line)["orchestration_id"] for line in buf.getvalue().splitlines()
+                    if line.strip().startswith("{")
+                    and json.loads(line).get("event") == "prior_incomplete_orchestration")
+
+            self.assertEqual(
+                warned_for(tp.TargetProfile(target_id="t_a", doc={}, sha256="sha256:0")),
+                ["orch_no_target", "orch_same_target"],
+                "another target's run is skipped; one that recorded no target is kept")
+            self.assertEqual(
+                warned_for(None),
+                ["orch_no_target", "orch_other_target", "orch_same_target"],
+                "a caller with no target claimed the bare spec, which covers every target")
 
     def test_a_resumed_run_holds_its_orchestration_claim_for_the_whole_run(self) -> None:
         """The single load-bearing property of the design this PR ships, and it had no witness
