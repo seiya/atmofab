@@ -885,6 +885,18 @@ PINNED: dict[str, str] = {
     # imports the model was refused against the host's own control file, and the leaf's repair
     # (the module moved into the model file) was refused for importing `dp`.
     "pure-67": "5f860e7c20d192c2a76cc45deeeadb593d505a7de5ccb7b3ee9809dfe9fa3bf6",
+    # pure-68 (issue #417): both generate templates gained the "IR is the whole behavior"
+    # obligation — m3c rule (8), harness rule (12): an input rejection, validation, early
+    # termination or call the IR and the inlined contracts do not state is an addition the
+    # reviewer fails (G4 / H4), and an IR-restricted operation is not widened to every case —
+    # and the m3c rules header names the reviewer as rule 8's holder. Measured by diffing this
+    # tuple against origin/main a4d290a0's: `pure_generate_generate.txt` and
+    # `pure_generate_generate_harness.txt` moved and no other member. Witnesses:
+    # orch_20261005T093823Z_2a477319 (codex, `harness_fortran_cpu_mpi`, fail_closed — extra
+    # `parse_cases` rejections and a duplicate-id termination present from attempt 1) and
+    # orch_20261005T093823Z_19c47ceb (codex, `harness_fortran_cpu` — `check_performance` called
+    # unconditionally where the IR restricts it to one case).
+    "pure-68": "bdfcf2d61cfc845aba9e75f828fc03b8ffdd65793432c50738eec4cc3b7c8c38",
 }
 
 
