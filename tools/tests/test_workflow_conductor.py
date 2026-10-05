@@ -19202,31 +19202,54 @@ class DeterministicLintTest(unittest.TestCase):
                     c._gate_lint_check(refs, "child-1")
 
     def test_every_conductor_server_import_follows_the_loader(self) -> None:
-        """Issue #422: in `tools/workflow_conductor.py`, every function that imports from
-        `build_runtime_server` calls `_build_runtime_server_module()` on a line before its first
-        such import, and no code string equals `"mcp_servers"`. Read with `ast`, so a docstring
-        that mentions the path does not count, and a string that merely cites a file under that
-        directory (a README pointer) is not refused.
+        """Issue #422: in `tools/workflow_conductor.py`, every function that imports
+        `build_runtime_server` (`from ... import` or `import`) has, as a TOP-LEVEL statement of
+        its own body and on a line before its first such import, a bare call
+        `_build_runtime_server_module()`; and no code string equals `"mcp_servers"`. Read with
+        `ast`, so a docstring that mentions the path does not count, and a string that merely
+        cites a file under that directory (a README pointer) is not refused.
 
-        What this proves is that no gate body (five today, and any added later) depends on
-        another frame having imported the server first — the order dependence the issue
-        measured — and that none builds the directory's path itself. It does not prove that the
-        loader resolves the right directory; the behavioural row above drives that, through the
-        lint gate, with the module out of `sys.modules`."""
+        Top-level means a call inside a branch, a loop, a nested `def` or a lambda does not
+        count, so a loader that might not run does not satisfy the row. What it does not see: an
+        import spelled through `importlib`, and a `return` placed between the call and the
+        import. And it refuses some legitimate spellings — the call made through the module
+        attribute, or a nested helper that imports without calling the loader itself — whose
+        remedy is to call the loader by its bare name in that function. That the loader
+        resolves the right directory is the behavioural row above's claim, driven through the
+        lint gate with the module out of `sys.modules`."""
         import ast
         tree = ast.parse(Path(wc.__file__).read_text(encoding="utf-8"))
+
+        def _imports_server(node: ast.AST) -> bool:
+            if isinstance(node, ast.ImportFrom):
+                return node.module == "build_runtime_server"
+            if isinstance(node, ast.Import):
+                return any(a.name == "build_runtime_server" for a in node.names)
+            return False
+
+        def _is_load(stmt: ast.stmt) -> bool:
+            return (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+                    and isinstance(stmt.value.func, ast.Name)
+                    and stmt.value.func.id == "_build_runtime_server_module")
+
         importers, unguarded = [], []
         for fn in ast.walk(tree):
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            imports = [n.lineno for n in ast.walk(fn)
-                       if isinstance(n, ast.ImportFrom) and n.module == "build_runtime_server"]
+            # The function's own statements, not those of a function nested in it, which is
+            # judged as a function of its own.
+            own, stack = [], list(fn.body)
+            while stack:
+                node = stack.pop()
+                own.append(node)
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda,
+                                         ast.ClassDef)):
+                    stack.extend(ast.iter_child_nodes(node))
+            imports = [n.lineno for n in own if _imports_server(n)]
             if not imports:
                 continue
             importers.append(fn.name)
-            loads = [n.lineno for n in ast.walk(fn)
-                     if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-                     and n.func.id == "_build_runtime_server_module"]
+            loads = [st.lineno for st in fn.body if _is_load(st)]
             if not loads or min(loads) > min(imports):
                 unguarded.append(fn.name)
         # The detector's own surface: the five gate bodies issue #422 named must be found, or a
