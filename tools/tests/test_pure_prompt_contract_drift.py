@@ -900,7 +900,7 @@ PINNED: dict[str, str] = {
     # `parse_cases` rejections and a duplicate-id termination present from attempt 1) and
     # orch_20261005T093823Z_19c47ceb (codex, `harness_fortran_cpu` — `check_performance` called
     # unconditionally where the IR restricts it to one case).
-    "pure-68": "9cb260b802c0c41b58bd8bc43e06f0e568745e22325f6e9463c8fa93baee8c71",
+    "pure-68": "e869785af7f184dd7eaf0be86f936cf6dbc5c2c93f5f00d73630328909b180c2",
 }
 
 
