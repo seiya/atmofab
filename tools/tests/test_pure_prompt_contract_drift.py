@@ -872,6 +872,19 @@ PINNED: dict[str, str] = {
     # `97ecd3cd` and `4cec9676` (orch_20261004T005821Z_d87fb2fb) failed serial / host loops of
     # the checks module.
     "pure-66": "1530294f3ed428dc6753d09a7eda334f0c6812a676ca4cdcca1069d7d6c2fce6",
+    # pure-67 (issue #415): both generate templates say the leaf does not author the build
+    # control file, and state the order the host writes into it — the model first, every
+    # private role after it, a unit-shared file before the member's own within a role — and
+    # what `compile_after` may and may not order; the Fortran binding's §5 and both Fortran
+    # generate fragments say a §5.1 module parameter has one binding in the model file (a
+    # further module there spells the kind under a name of its own).
+    # Measured by diffing this tuple against origin/main d0c5e7ae's: `pure_generate_generate.txt`,
+    # `pure_generate_generate_harness.txt`, both `fortran` generate fragments and the
+    # `fortran` `checks_contract_gate_guards_section` moved and no other member. Witness:
+    # orch_20261005T053107Z_cb3247f1 (codex, `harness_fortran_cpu_mpi`) — a private file that
+    # imports the model was refused against the host's own control file, and the leaf's repair
+    # (the module moved into the model file) was refused for importing `dp`.
+    "pure-67": "5f860e7c20d192c2a76cc45deeeadb593d505a7de5ccb7b3ee9809dfe9fa3bf6",
 }
 
 

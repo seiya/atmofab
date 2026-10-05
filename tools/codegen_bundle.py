@@ -73,8 +73,12 @@ UNIT_SHAREABLE_ROLES: frozenset[str] = frozenset({"helper", "internal_module"})
 #: declare no modules (v1.1.0): an executable entry is not something another file `use`s.
 ENTRY_BEARING_ROLE = "runner"
 # Compile order derives from the role alone — no `use`-statement analysis of generated code.
+# The model comes first: it compiles alone against the dependency closure (the model-alone
+# probe, issue #389), so a private file is never something it `use`s — a private file serves
+# the checks / runner file and may `use` the model (its kinds, its types), which is why every
+# private role builds after it (issue #415).
 ROLE_BUILD_PRECEDENCE: tuple[str, ...] = (
-    "internal_module", "helper", "model", "checks", "runner")
+    "model", "internal_module", "helper", "checks", "runner")
 
 def _language_bundle(language: str) -> Any | None:
     """The language backend's `bundle_facts` module, or `None` when it declares none.
@@ -985,7 +989,8 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
                 # An edge may refine order WITHIN a role, or agree with role precedence — it
                 # must never REVERSE it. `model.compile_after = [checks]` would force checks
                 # before model, contradicting ROLE_BUILD_PRECEDENCE and breaking the M3c
-                # order (checks `use`s the model).
+                # order (checks `use`s the model); `model.compile_after = [helper]` would
+                # make the model depend on a private file, which the model-alone rule forbids.
                 violations.append(
                     f"files[{index}].compile_after {dep!r} has role "
                     f"{files_by_path[dep].get('role')!r}, which build precedence orders after "
