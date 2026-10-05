@@ -193,8 +193,8 @@ never parses the source.
 |---|---|---|
 | `model` | the physics kernel and the published operation of a member | yes (`operation`) |
 | `checks` | the member's checks module (`CHECKS_MODULE_CONTRACT.md`) | yes (`checks_interface`) |
-| `helper` | a private procedure set the `checks` / `runner` file calls | no |
-| `internal_module` | an internal module (shared types, work arrays) the `checks` / `runner` file uses | no |
+| `helper` | a private procedure set the `checks` / `runner` file (or another private file) calls | no |
+| `internal_module` | an internal module (shared types, parameters, work arrays) the `checks` / `runner` file (or another private file) uses | no |
 | `runner` | the unit member's executable entry (added in 1.1.0) | no |
 
 There is **no build or script role**: this is the backbone of the no-arbitrary-command rule.
