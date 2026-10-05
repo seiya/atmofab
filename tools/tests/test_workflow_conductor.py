@@ -2356,9 +2356,11 @@ class CrossTargetStopTest(unittest.TestCase):
                 self.assertEqual((status["--status"], status["--reason-code"]),
                                  ("fail", "cross_target_disagreement"))
                 detail = status["--reason-detail"]
+                self.assertEqual(detail, (
+                    "disagrees with cpp_gpu; re-running does not resolve it "
+                    "(docs/RUNBOOK.md §3-0); workspace/orchestrations/orch_x/cross_target/"
+                    "component__spec_x__0.1.0.json"))
                 self.assertLessEqual(len(detail), wc._PHASE_REASON_DETAIL_MAX_CHARS)
-                self.assertTrue(detail.startswith(
-                    "disagrees with cpp_gpu; re-running does not resolve it"), detail)
                 [ev] = [e for e in events if e.get("event") == "cross_target_agreement"]
                 self.assertEqual((ev["status"], ev["agreement"], ev["disagreeing"],
                                   ev["targets"]),
@@ -2379,7 +2381,8 @@ class CrossTargetStopTest(unittest.TestCase):
         self.assertEqual(result, "fail")
         [status] = [cap for sub, cap in c.calls if sub == "set-status"]
         self.assertEqual(status["--reason-code"], "cross_target_unevaluable")
-        self.assertTrue(status["--reason-detail"].startswith("--resume once repaired"))
+        self.assertTrue(status["--reason-detail"].startswith(
+            "repair the cause per docs/RUNBOOK.md §3-0; Validate stays certified: "))
         self.assertIn("broken_t does not load", status["--reason-detail"])
         # a long cause is cut to the persisted cap, remedy first (round 1: unpinned)
         long_error = "CrossTargetUnevaluable: " + "x" * 400
@@ -2388,7 +2391,8 @@ class CrossTargetStopTest(unittest.TestCase):
         self._conduct(c)
         [status] = [cap for sub, cap in c.calls if sub == "set-status"]
         self.assertEqual(len(status["--reason-detail"]), wc._PHASE_REASON_DETAIL_MAX_CHARS)
-        self.assertTrue(status["--reason-detail"].startswith("--resume once repaired"))
+        self.assertTrue(status["--reason-detail"].startswith(
+            "repair the cause per docs/RUNBOOK.md §3-0; Validate stays certified: "))
 
     def test_an_adopted_validate_is_asked_too_and_launches_nothing(self) -> None:
         c = self._conductor(self._CROSS, certified="all")

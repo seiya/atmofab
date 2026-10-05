@@ -14196,8 +14196,8 @@ class Conductor:
                       f"(docs/RUNBOOK.md §3-0); {rel}")
             return "cross_target_disagreement", detail
         if status == "unevaluable":
-            detail = (f"--resume once repaired; Validate stays certified "
-                      f"(docs/RUNBOOK.md §3-0): {cross.get('error')}")
+            detail = (f"repair the cause per docs/RUNBOOK.md §3-0; Validate stays certified: "
+                      f"{cross.get('error')}")
             return "cross_target_unevaluable", detail
         return None
 

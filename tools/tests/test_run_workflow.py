@@ -7990,7 +7990,7 @@ class StdoutFormatTests(unittest.TestCase):
             f({"status": "info", "event": "cross_target_agreement", "agreement": "unevaluable",
                "error": "CrossTargetUnevaluable: comparand: target t does not load"}),
             "  [phase   ] cross-target unevaluable: CrossTargetUnevaluable: comparand: target t "
-            "does not load — --resume once repaired (docs/RUNBOOK.md §3-0)")
+            "does not load — repair the cause per docs/RUNBOOK.md §3-0")
         for agreement, targets, shown in (("agree", ["cpp_gpu"], "cpp_gpu"),
                                           ("no_comparand", [], "none")):
             self.assertEqual(

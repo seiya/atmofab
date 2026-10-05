@@ -3434,7 +3434,7 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
             return "\n".join(lines)
         if st == "unevaluable":
             return (f"  [phase   ] cross-target unevaluable: {payload.get('error', '?')} — "
-                    f"--resume once repaired (docs/RUNBOOK.md §3-0)")
+                    f"repair the cause per docs/RUNBOOK.md §3-0")
         targets = ",".join(map(str, payload.get("targets") or [])) or "none"
         return f"  [phase   ] cross-target {st} (compared with: {targets})"
 

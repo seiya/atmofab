@@ -29127,7 +29127,9 @@ class CrossTargetAgreementTests(unittest.TestCase):
         rows = (("a declared target that does not load", broken_profile, "broken_t"),
                 ("a comparand run without captures", comparand_without_captures,
                  "no state snapshot"),
-                ("a non-numeric comparand capture", non_numeric_comparand, "structural:"),
+                ("a non-numeric comparand capture", non_numeric_comparand,
+                 "structural:cross_target_state_agreement: a.json: variable 'u' is not a "
+                 "rectangular numeric array"),
                 ("own captures removed", own_captures_removed, "no state snapshot"),
                 ("the IR does not read", ir_unreadable, "PyYAML missing"),
                 ("the evaluator raises", evaluator_raises, "ZeroDivisionError"))
@@ -29189,6 +29191,16 @@ class CrossTargetAgreementTests(unittest.TestCase):
         self.assertIn("is repaired at the cause it names", str(reason))
         self.assertNotIn("not resolved by re-running", str(reason))
         self.assertNotIn("--with-deps", str(reason))
+        # beside a dependency that is merely stale, the `--with-deps` remedy stays for that one
+        # (round 2: the mixed case had no row)
+        (self.repo / "spec" / "targets" / "broken_t.yaml").unlink()
+        with mock.patch.object(ort, "_stale_dependency_details", return_value=[
+                f"{self.NODE} validate: cross_target_disagreement:{self.b.target_id}",
+                "component/spec_y@0.1.0 validate: verdict_not_found"]):
+            ok, reason = ort._dependency_ready(self.repo, "orch_c", step="validate")
+        self.assertFalse(ok)
+        self.assertIn("re-run with `--with-deps` to certify the dependency closure", str(reason))
+        self.assertIn("a cross-target disagreement is not resolved by re-running", str(reason))
 
     def test_the_completion_vouch_refuses_a_disagreeing_node(self) -> None:
         self._preflight(self.repo, oid="orch_a")
