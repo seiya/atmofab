@@ -28877,6 +28877,16 @@ class ResolveComparandsTests(unittest.TestCase):
                                     "comparand: target broken_t does not load"):
             self._resolve()
 
+    def test_declared_targets_that_do_not_list_are_unevaluable(self) -> None:
+        """A misspelled profile (`*.yml`) makes the declared-target listing refuse: a broken
+        listing must not quietly drop every reference (mutation round 0: this raise had no
+        row)."""
+        self._seed_b()
+        (self.repo / "spec" / "targets" / "typo.yml").write_text("target_id: typo\n")
+        with self.assertRaisesRegex(ort.CrossTargetUnevaluable,
+                                    "comparand: the declared targets do not list"):
+            self._resolve()
+
     def test_an_eligible_run_with_no_capture_is_unresolvable(self) -> None:
         b = self._seed_b()
         node = self._run(b, "run_20260102_001",
