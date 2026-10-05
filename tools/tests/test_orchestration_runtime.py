@@ -28983,7 +28983,7 @@ class CrossTargetAgreementTests(unittest.TestCase):
         node = self.repo / refs["pipeline_ref"] / "runs" / run_id / refs["safe"]
         sdir = node / "raw" / "state_snapshots"
         (sdir / "initial").mkdir(parents=True, exist_ok=True)
-        (sdir / "initial" / "a.json").write_text(json.dumps({"u": [0.0, 0.0], "t": 0.0}))
+        (sdir / "initial" / "a.json").write_text(json.dumps({"u": [0.0] * len(u), "t": 0.0}))
         (sdir / "a.json").write_text(json.dumps({"u": u, "t": 1.0}))
         return node
 
@@ -29049,8 +29049,17 @@ class CrossTargetAgreementTests(unittest.TestCase):
                                  f"cross_target_disagreement:{self.b.target_id}"))
 
     def test_a_disagreement_stops_both_targets(self) -> None:
+        """Both by value and by SHAPE: a captured variable whose shape differs between the two
+        variants is a disagreement (`comparand_shape_mismatch`, recorded with no value), not an
+        agreement (round 1: a mutant counting only valued evaluations survived)."""
+        for b_u in ([1.0, 2.5], [1.0, 2.0, 3.0]):
+            with self.subTest(b_u=b_u):
+                self.setUp()
+                self._stops_both(b_u)
+
+    def _stops_both(self, b_u: list[float]) -> None:
         a = self._certify(_TP, [1.0, 2.0], orch="orch_a")
-        b = self._certify(self.b, [1.0, 2.5], orch="orch_b")
+        b = self._certify(self.b, b_u, orch="orch_b")
         for target, other, refs in ((_TP, self.b, b), (self.b, _TP, a)):
             with self.subTest(target=target.target_id):
                 agreement = self._agreement(target)
@@ -29139,6 +29148,8 @@ class CrossTargetAgreementTests(unittest.TestCase):
                 self.assertTrue(str(detail).startswith(
                     f"{self.NODE} validate: cross_target_unevaluable:"), detail)
                 self.assertIn(cause, str(detail))
+                # repo-relative: an absolute workspace path would spend the reason's budget
+                self.assertNotIn(str(self.repo), str(agreement.error))
 
     def test_the_launch_gate_names_a_disagreeing_dependency(self) -> None:
         """A consumer of the node: its launch check refuses on the dependency's disagreement,
@@ -29219,3 +29230,35 @@ class CrossTargetAgreementTests(unittest.TestCase):
                                reason="test", trigger_agent_run_id="t")
         out = ask("validate")
         self.assertEqual((out["certified"], out["cross_target"]), (False, None))
+
+
+class CrossTargetNotReadyReasonTests(unittest.TestCase):
+    """The readiness reason a not-ready agreement reports (issue #383)."""
+
+    def _agreement(self, status: str, **kw: Any) -> Any:
+        from tools.primary_evidence import CrossTargetAgreement
+        fields = {"comparands": [], "absent": [], "disagreeing": [], "records": [],
+                  "own_run": None, "error": None, **kw}
+        return CrossTargetAgreement(status, **fields)
+
+    def test_ready_statuses_report_nothing(self) -> None:
+        for status in ("not_applicable", "no_comparand", "agree"):
+            with self.subTest(status=status):
+                self.assertIsNone(ort.cross_target_not_ready_reason(self._agreement(status)))
+
+    def test_a_disagreement_names_every_target(self) -> None:
+        self.assertEqual(ort.cross_target_not_ready_reason(
+            self._agreement("disagree", disagreeing=["cpp_gpu", "t9"])),
+            "cross_target_disagreement:cpp_gpu,t9")
+
+    def test_a_long_cause_keeps_both_ends_within_the_cap(self) -> None:
+        cap = ort._CROSS_TARGET_CAUSE_MAX_CHARS
+        error = "WHAT-FAILED " + "p" * (cap * 3) + " WHY\nIT-FAILED"
+        self.assertGreater(len(error), cap)
+        reason = ort.cross_target_not_ready_reason(self._agreement("unevaluable", error=error))
+        cause = reason.removeprefix("cross_target_unevaluable:")
+        self.assertEqual(len(cause), cap)
+        self.assertTrue(cause.startswith("WHAT-FAILED"))
+        self.assertTrue(cause.endswith("WHY IT-FAILED"))
+        short = ort.cross_target_not_ready_reason(self._agreement("unevaluable", error="e"))
+        self.assertEqual(short, "cross_target_unevaluable:e")

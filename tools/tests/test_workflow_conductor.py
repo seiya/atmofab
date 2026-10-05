@@ -2291,7 +2291,9 @@ class CrossTargetStopTest(unittest.TestCase):
         "records": [{"quantity": "cross_target_state_agreement",
                      "expr": "maxabs(final.u - comparand.final.u)", "op": "le",
                      "kind": "physics", "satisfied": False,
-                     "evaluated": [{"comparand": "cpp_gpu", "case": "a", "value": 0.5,
+                     "evaluated": [{"comparand": "cpp_gpu", "case": "b", "value": 0.0,
+                                    "rhs": 1e-12, "satisfied": True},
+                                   {"comparand": "cpp_gpu", "case": "a", "value": 0.5,
                                     "rhs": 1e-12, "satisfied": False}]}],
     }
 
@@ -2379,6 +2381,14 @@ class CrossTargetStopTest(unittest.TestCase):
         self.assertEqual(status["--reason-code"], "cross_target_unevaluable")
         self.assertTrue(status["--reason-detail"].startswith("--resume once repaired"))
         self.assertIn("broken_t does not load", status["--reason-detail"])
+        # a long cause is cut to the persisted cap, remedy first (round 1: unpinned)
+        long_error = "CrossTargetUnevaluable: " + "x" * 400
+        self.setUp()
+        c = self._conductor({**cross, "error": long_error})
+        self._conduct(c)
+        [status] = [cap for sub, cap in c.calls if sub == "set-status"]
+        self.assertEqual(len(status["--reason-detail"]), wc._PHASE_REASON_DETAIL_MAX_CHARS)
+        self.assertTrue(status["--reason-detail"].startswith("--resume once repaired"))
 
     def test_an_adopted_validate_is_asked_too_and_launches_nothing(self) -> None:
         c = self._conductor(self._CROSS, certified="all")
