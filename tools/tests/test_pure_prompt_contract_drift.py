@@ -886,21 +886,22 @@ PINNED: dict[str, str] = {
     # (the module moved into the model file) was refused for importing `dp`.
     "pure-67": "5f860e7c20d192c2a76cc45deeeadb593d505a7de5ccb7b3ee9809dfe9fa3bf6",
     # pure-68 (issue #417): both generate templates gained the "IR is the whole behavior"
-    # obligation — m3c rule (8), harness rule (12): an input rejection, validation, early
-    # termination or call the IR and the inlined contracts do not state is an addition the
-    # reviewer fails (G4 / H4), and an IR-restricted operation is not widened to every case;
-    # what another rule requires, and reporting a failure the runtime itself returns (an I/O,
-    # allocation, device-call or argument-retrieval status), are not additions — and the m3c
-    # rules header names the reviewer as rule 8's holder. Re-pinned in place at round 1 (not
-    # shipped): the first wording told the producer to drop the runtime-status stops a passing
-    # H4 had accepted in orch_20261005T093823Z_19c47ceb's bundle. Measured by diffing this
-    # tuple against origin/main a4d290a0's: `pure_generate_generate.txt` and
-    # `pure_generate_generate_harness.txt` moved and no other member. Witnesses:
-    # orch_20261005T093823Z_2a477319 (codex, `harness_fortran_cpu_mpi`, fail_closed — extra
-    # `parse_cases` rejections and a duplicate-id termination present from attempt 1) and
-    # orch_20261005T093823Z_19c47ceb (codex, `harness_fortran_cpu` — `check_performance` called
-    # unconditionally where the IR restricts it to one case).
-    "pure-68": "e869785af7f184dd7eaf0be86f936cf6dbc5c2c93f5f00d73630328909b180c2",
+    # obligation — m3c rule (8), harness rule (12) — and each rules header names the reviewer as
+    # its holder. An input rejection, validation, early termination or call the IR and the
+    # inlined contracts do not state is an addition, and an IR-restricted operation is not
+    # widened to every case. Not additions: what another rule of that prompt requires, and
+    # reporting a failure the runtime itself returns (m3c: I/O, allocation, device-call status;
+    # harness: I/O, allocation, argument-retrieval status) ONLY where that report changes no
+    # answer for an input the IR accepts. A validation stop the IR omits (an argument range or
+    # count check) stays an addition by intent. Measured by diffing this tuple against
+    # origin/main a4d290a0's: `pure_generate_generate.txt` and
+    # `pure_generate_generate_harness.txt` moved and no other member. Re-pinned in place during
+    # the review loop (not shipped). Witnesses: orch_20261005T093823Z_2a477319 (codex,
+    # `harness_fortran_cpu_mpi`, fail_closed — extra `parse_cases` rejections and a duplicate-id
+    # termination present from attempt 1) and orch_20261005T093823Z_19c47ceb (codex,
+    # `harness_fortran_cpu` — `check_performance` called unconditionally where the IR restricts
+    # it to one case).
+    "pure-68": "ae5a76f956625dddb12890c30af121e1f7089b72c6f65a6c9a12382d3970f5cc",
 }
 
 
