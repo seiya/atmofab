@@ -979,8 +979,9 @@ def _warn_about_resumable_priors(repo_root: Path, spec_ref: str,
     another target may be live right now; it is not this run's checkpoint, and resuming it is
     no alternative to this run. A candidate whose recorded `invocation.target.target_id`
     names another target is skipped (issue #412). One that recorded no target predates the
-    field and is still reported, as is every candidate when `target_profile` is None — that
-    caller claimed the bare spec, which covers every target.
+    field and is still reported, as is every candidate when `target_profile` is None: there is
+    then no target to filter by (no production caller passes None; `_run_main` resolves the
+    target before it claims).
 
     Rescanned per call rather than sampled once, because a `--with-deps` closure reaches its
     later nodes hours after it started. Best-effort throughout: an unreadable workspace warns
