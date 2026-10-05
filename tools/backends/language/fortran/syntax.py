@@ -74,7 +74,9 @@ def compile_order(project_dir: Path) -> list[str]:
     nested path is returned so that the caller's source-name rule refuses it rather than the
     walk dropping it unseen (issue #420: a nested `logical_path` is compiled and linked by the
     bundle's Makefile, so a source this function skipped was linked code no gate judged). A
-    symlink is not filtered here for the same reason — it reaches the rule and is judged there.
+    symlinked FILE is not filtered here for the same reason — it reaches the rule and is judged
+    there. A symlinked DIRECTORY is not descended into (`rglob` on Python 3.10, measured); the
+    stage copies no symlink and the host writes none into `src/`.
 
     `use` of a module no local file defines (intrinsic modules, and genuinely missing
     dependencies) is ignored for ordering — if it is a real omission the compiler emits

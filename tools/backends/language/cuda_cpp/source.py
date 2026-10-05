@@ -184,8 +184,8 @@ def preprocessor_violations(path: Path, text: str) -> list[str]:
 
 
 def leaf_sources(src_dir: Path) -> list[Path]:
-    """Every regular `.cu` file under `src_dir`, at any depth (a bundle file may sit in a
-    subdirectory and be included from there), symbolic links not followed."""
+    """Every regular `.cu` file under `src_dir`, at any depth, symbolic links not followed.
+    A nested one is read so that the gate below can refuse it."""
     return sorted(p for p in src_dir.rglob("*")
                   if p.is_file() and not p.is_symlink()
                   and p.suffix.lower() in MODULE_SOURCE_SUFFIXES)
@@ -244,7 +244,10 @@ def model_source_gates(
             # Build compiles every `.cu` as its own object, and the syntax stage compiles only
             # the top level (the compiler tool takes no path below its directory): a nested one
             # would reach Build uncompiled for the target, or — included from a top-level file
-            # as well — be compiled twice (round 3 of this change's review).
+            # as well — be compiled twice (round 3 of this change's review). Since issue #420 the
+            # syntax stage refuses a nested `.cu` itself, and the static stage runs only after
+            # it passes, so inside `Generate.gate` this refusal is a second statement of the
+            # same rule, kept for a caller that runs the static gates alone.
             violations.append(
                 f"{source}: a CUDA C++ source in a subdirectory is refused — every `.cu` is a "
                 "translation unit of its own and sits beside the host-rendered header at the top "
