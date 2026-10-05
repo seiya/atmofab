@@ -7215,7 +7215,7 @@ def _allowed_output_paths_for_launch(
             # conductor-authored (workflow_conductor._write_dependency_graph) and NOT a leaf
             # deliverable — it is absent from compile_required ({spec.ir.yaml,
             # ir_meta.json}; a membership allowlist, NOT a required set — an
-            # under-declaring request is accepted, see TODO.md), so a compile.generate /
+            # under-declaring request is accepted; only deterministic substeps reach it), so a compile.generate /
             # compile.verify leaf declaring it as an output is rejected here.
             # The retired view-only companion `algorithm.summary.md` is likewise absent:
             # the conductor's compile.generate allowed_output_paths never listed it, so a
@@ -7935,7 +7935,7 @@ CLAUDE_LEAF_ENV_EXTRAS = ("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_DISABLE_
 # egress (the leaf cannot reach the API at all) rather than silently redirecting, which is
 # the failure mode the whole closure exists to prevent. An operator on a proxied host adds
 # them here with a justification — this comment is the record that the decision was made
-# and what it costs, which is what TODO.md's "proxy variables included" asks for.
+# and what it costs.
 LEAF_ENV_NAMED_EXCLUSIONS = (
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
     "http_proxy", "https_proxy", "no_proxy", "all_proxy",

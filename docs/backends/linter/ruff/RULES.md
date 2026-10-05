@@ -100,7 +100,8 @@ the canonical statement of that set for a reader; the machine-readable definitio
     could. `fortitude` behaves identically and `cppcheck` does not (exit 1, classified as a
     refusal). It is recorded rather than closed because the gain is measured to be nothing: a leaf
     that hides a source from the linter has hidden it from the compiler too, and the build control
-    file pins its sources by name. `TODO.md` carries it.
+    file pins its sources by name. It is also unreachable since Z4 (issue #171): the host writes
+    every artifact as a regular file, so no leaf can create such a directory.
   - **A symlinked directory whose target lies OUTSIDE the walk root is not entered.** Measured on
     all four builds: `walk/pkg -> ../real` with the fixture in `real/` gives
     `warning: No Python files found under the given path(s)`, `All checks passed!`, exit 0, while

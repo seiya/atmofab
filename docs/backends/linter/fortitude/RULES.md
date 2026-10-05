@@ -20,9 +20,10 @@ statement of that set for a reader; the machine-readable definition is
   on 0.9.0 / 0.9.2 — two builds inside the supported range disagreeing on one source. Lines of
   98, 99 and 101 agree on all three. The leaf-read contract already requires lines UNDER 100 (99
   the longest that passes), so a conforming source is unaffected; what the divergence reaches is
-  a non-conforming one, and the host-rendered runner, whose own guard permits exactly 100
-  (`tools/backends/language/fortran/runner.py` rejects `> MAX_RENDERED_LINE`, not `>=`). `TODO.md`
-  carries that pair. An earlier version of this section claimed verdict identity across the range
+  a non-conforming one, and — until PR #256 — the host-rendered runner, whose own guard
+  permitted exactly 100 (`tools/backends/language/fortran/runner.py` has rejected
+  `>= MAX_RENDERED_LINE` since then, so a rendered line of exactly 100 columns is refused at
+  render). An earlier version of this section claimed verdict identity across the range
   without qualification; two other documents cited THIS one as recording the divergence while it
   did not, which is the drift that made the exception invisible to a reader.
 - A rule the vendor enables by default in a future release does not enter a certification gate by

@@ -340,8 +340,8 @@ def collect_failure_analysis(root: Path) -> dict[str, Any]:
     `present=False` is not a verdict by itself: a run that passed writes none, a run that
     failed should have one. The renderer puts `orchestration_meta.json#status` next to it
     so the reader can tell which. An unreadable or non-JSON file RAISES — `audit()` records
-    it under `diagnostic_failures` — rather than being read as absent (`TODO.md` records
-    the `_load_json_if_dict` swallow this section deliberately does not use).
+    it under `diagnostic_failures` — rather than being read as absent (unlike
+    `_load_json_if_dict`, whose swallow this section deliberately does not use).
     """
     canonical_path = root / "failure_analysis.json"
     result: dict[str, Any] = {"present": canonical_path.is_file(),
