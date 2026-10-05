@@ -171,14 +171,21 @@ def render_tuple() -> dict[str, str]:
         "workflow_conductor.compiler_wrapper": _source_digest(wc.compiler_wrapper),
         "registry compiler_wrapper attr": registry_attr("compiler_wrapper"),
         **compiler_wrapper_declarations(),
-        # The ORDER the bundle-derived control file states (issue #415): the graph it is
-        # rendered from, the role precedence that orders it (a value, which no source digest of
-        # the functions reading it carried), and the sort and topological order under it.
+        # The graph the bundle-derived control file is rendered from (issue #415): the role
+        # precedence that orders it (a value, which no source digest of the functions reading
+        # it carried), `derive_build_graph`, and every module-local function it calls directly
+        # (listed from its AST at issue #415's round 1) plus `_role_rank` under the sort key.
         "codegen_bundle.derive_build_graph": _source_digest(cb.derive_build_graph),
         "codegen_bundle.ROLE_BUILD_PRECEDENCE": json.dumps(cb.ROLE_BUILD_PRECEDENCE),
         "codegen_bundle._role_rank": _source_digest(cb._role_rank),
         "codegen_bundle._bundle_file_sort_key": _source_digest(cb._bundle_file_sort_key),
         "codegen_bundle._topological_order": _source_digest(cb._topological_order),
+        "codegen_bundle._object_name": _source_digest(cb._object_name),
+        "codegen_bundle.optimization_unit_members": _source_digest(cb.optimization_unit_members),
+        "codegen_bundle._spec_id_of_node_key": _source_digest(cb._spec_id_of_node_key),
+        "codegen_bundle._is_node_key": _source_digest(cb._is_node_key),
+        "codegen_bundle._projected_toolchain": _source_digest(cb._projected_toolchain),
+        "codegen_bundle.language_facts": _source_digest(cb.language_facts),
     }
 
 
@@ -721,9 +728,10 @@ PINNED_RENDER: dict[str, str] = {
     # file (`internal_module`, `helper`) after it, so the bundle-derived control file of every
     # bundle that carries a private file changes its order and prerequisites. A bump, not a
     # re-pin: a certified bundle with a private file (a `helper` the checks module `use`s, for
-    # one) no longer reproduces the control file it was certified with. The tuple gained five
-    # `codegen_bundle` rows — the order was a value no row digested.
-    "render-8": "3c561ae08d49309a812a12ba3c2c10bd0e4c9c2735d0c19677bdf906b9671659",
+    # one) no longer reproduces the control file it was certified with. The tuple gained eleven
+    # `codegen_bundle` rows — the order was a value no row digested, and neither were the graph
+    # derivation and its callees.
+    "render-8": "8db4b92c9d015a824f61a58ac26f5272411f8c0f00e83e97afb726105c649cb6",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
