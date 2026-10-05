@@ -531,10 +531,21 @@ def _validate_syntax_sources(sources: list[str], project_dir: str, tool_name: st
         if resolved.parent != root or not resolved.is_file():
             offending.append(name)
     if offending:
-        raise SyntaxSourceNameError(
+        message = (
             f"{tool_name} sources must be {language} source files in project_dir; "
             "refused: " + ", ".join(sorted(offending))
         )
+        # Auto-discovery walks at any depth (`compile_order`) so that a nested source reaches
+        # this rule instead of being skipped while the build still compiles and links it
+        # (issue #420). The refusal is the only place the author learns the rule, so it says
+        # what to do: the conductor hands this text to the leaf as its failure excerpt.
+        if any("/" in name for name in offending):
+            message += (
+                "; the syntax check compiles only the top level of project_dir, so a source "
+                "below it is never checked — move every source file to the top level of the "
+                "directory"
+            )
+        raise SyntaxSourceNameError(message)
 
 
 SERVER_VERSION = "0.1.0"

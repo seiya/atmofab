@@ -11,8 +11,10 @@
 
 - **Extension.** A CUDA C++ bundle file has the extension `.cu` (`SOURCE_EXTENSIONS`); a leaf
   ships no header. Every bundle file sits at the top level of the source directory: a `.cu` in a
-  subdirectory is refused by the `Generate.gate` static check (`source.model_source_gates`), since
-  Build would compile it as an object the syntax stage never compiled.
+  subdirectory is refused by the `Generate.gate` syntax stage, which compiles the top level only
+  and refuses a nested source rather than skipping it (issue #420), and by the static check
+  (`source.model_source_gates`), since Build would compile it as an object the syntax stage never
+  compiled.
 - **Separate compilation against a host-rendered header.** Every `.cu` is compiled on its own and
   the objects are linked — the build graph's ordinary shape (`codegen_bundle.derive_build_graph`).
   The declarations a source needs of a node's published surface are in `<spec_id>_model.cuh`,

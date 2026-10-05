@@ -67,7 +67,14 @@ _USE_STMT_RE = re.compile(
 
 
 def compile_order(project_dir: Path) -> list[str]:
-    """Topologically order the free-form Fortran sources in `project_dir` (define-before-use).
+    """Topologically order the free-form Fortran sources under `project_dir` (define-before-use).
+
+    Every source at ANY depth is returned, as its POSIX path relative to `project_dir`; a
+    top-level source is its bare name, as before. The stage compiles the top level only, and a
+    nested path is returned so that the caller's source-name rule refuses it rather than the
+    walk dropping it unseen (issue #420: a nested `logical_path` is compiled and linked by the
+    bundle's Makefile, so a source this function skipped was linked code no gate judged). A
+    symlink is not filtered here for the same reason — it reaches the rule and is judged there.
 
     `use` of a module no local file defines (intrinsic modules, and genuinely missing
     dependencies) is ignored for ordering — if it is a real omission the compiler emits
@@ -75,8 +82,8 @@ def compile_order(project_dir: Path) -> list[str]:
     remaining files are appended name-sorted and the compiler diagnoses the cycle.
     """
     names = sorted(
-        p.name
-        for p in project_dir.iterdir()
+        p.relative_to(project_dir).as_posix()
+        for p in project_dir.rglob("*")
         if p.is_file() and p.suffix.lower() in SOURCE_SUFFIXES
     )
     provided_by: dict[str, str] = {}

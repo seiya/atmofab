@@ -30,7 +30,7 @@ over the certified harness (`tools/backends/language/cuda_cpp/runner.py`, issue 
 
 The mandatory syntax stage for `cuda_cpp` is
 `nvcc -std=<toolchain.standard> -arch=<hardware.architecture> -Xcompiler -fsyntax-only -odir <scratch> -rdc=true -c <sources>`
-over every `.cu` of the staged directory (all at its top level: a nested one is refused by the static check), each its own translation unit, with the host-rendered
+over every `.cu` of the staged directory (all at its top level: the stage refuses a nested one itself, and the static check refuses it as well), each its own translation unit, with the host-rendered
 header staged beside them (`STAGED_SUFFIXES`; `tools/backends/compiler/nvcc/syntax.py`). It promotes no warning class: the lint rule set
 already makes every warning an error. `-rdc=true` is the build's relocatable device code
 (`BUNDLE_BINDING.md` §4): without it a kernel's call to a `__host__ __device__` operation of

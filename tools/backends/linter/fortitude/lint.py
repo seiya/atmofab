@@ -33,10 +33,11 @@ in the backend document; the four facts that decided the shape of this file:
 * An old code is silently redirected to its new name (`S051` -> `MOD021`). A declared set is
   therefore checked by RESOLVING it (`--show-settings`) rather than by trusting the spelling.
 
-THREE CHANNELS decide the verdict from somewhere other than the source and this declaration, and
-each flag is load-bearing rather than cosmetic. The count is stated because the first version of
-this module said TWO and was wrong: it enumerated the channels it had closed rather than the ones
-the tool has, which is how the third stayed open.
+FOUR CHANNELS decide the verdict from somewhere other than the source and this declaration, and
+each flag is load-bearing rather than cosmetic. The count is stated because it has been wrong
+twice: the first version of this module said TWO, enumerating the channels it had closed rather
+than the ones the tool has, which is how the third stayed open; the fourth stayed open until issue
+#420.
 
 * A `fortitude.toml` discovered beside the sources switches rules off — measured on 0.8.0 and
   0.9.2 alike, a neighbouring `[check] ignore=[...]` turns a failing tree green. `--isolated`
@@ -67,6 +68,18 @@ the tool has, which is how the third stayed open.
   files scanned without the flag). A leaf cannot write either file today — the manifest admits
   only the exact files it declares — but that is a different layer's accident, not this
   declaration's doing.
+* A built-in exclusion list hides whole subdirectories from the walk. Measured on 0.8.0, 0.9.0 and
+  0.9.2, one directory per run, a defective `.f90` under `build/`, `dist/`, `venv/`, `_build/`,
+  `site-packages/`, `.venv/` or `.git/` passes (`All checks passed!`, exit 0), while the same file
+  under `sub/`, `.hid/`, `node_modules/`, `target/`, `__pycache__/` or `docs/` fails. The bundle
+  derives a Makefile that compiles and links a nested `logical_path`, so before issue #420 a
+  source under `build/` was linked code no lint judged. `--exclude=` empties the list (each of
+  the seven then fails, exit 1). The language's syntax stage now refuses a source below the top
+  level of the directory as well, so this flag is the lint half of one rule rather than the whole
+  of it. A symlinked DIRECTORY inside the walk root is not followed on any of the three builds,
+  with or without the flag (`1 files scanned` over a top-level file beside it), and a symlinked
+  FILE is scanned; the host writes no symlink into the directory it lints, so that is a statement
+  of reach rather than an open channel.
 
 `C003` is excluded FOR that second flag. It is the one rule this repository's own toolchain makes
 unsatisfiable — it wants the F2018 spec-list `implicit none (type, external)`, which is a compile
@@ -211,6 +224,7 @@ CHECK_FLAGS: tuple[str, ...] = (
     "--isolated",
     "--ignore-allow-comments",
     "--no-respect-gitignore",
+    "--exclude=",
     "--select", ",".join(RULE_CODES),
 )
 
