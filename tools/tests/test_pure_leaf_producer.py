@@ -2673,7 +2673,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
                 if line and not line.startswith("<"):
                     self.assertIn(line, lifted, f"harness generate lift dropped: {line[:70]}")
         self.assertIn("EXACTLY ONE file of role `model`", lifted)
-        self.assertIn("(11)", lifted)  # the last authoring rule
+        self.assertIn("(12)", lifted)  # the last authoring rule (issue #417)
 
     def test_cold_repair_paragraphs_are_lifted_in_template_order(self) -> None:
         # The loop iterated `PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES` while its docstring said
