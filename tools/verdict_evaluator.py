@@ -95,9 +95,9 @@ _QUANTITY_RE = re.compile(r"^[a-z][a-z0-9_.]*$")
 _KIND_PASS = "pass"
 _KIND_PHYSICS = "physics"      # a diagnostics value was present but the comparison was false
 _KIND_STRUCTURAL = "structural"  # a required diagnostics ref was absent/unresolvable (contract gap)
-#: A cross-target primary record with no comparand bound (issue #324): satisfied, nothing
-#: evaluated — the first variant of a node has no reference. Why each other declared target
-#: is not one is the record's `verdict.json#comparands_absent` (issue #345).
+#: A cross-target primary record with no comparand (issue #324): satisfied, nothing evaluated.
+#: Since issue #383 it is the only cross-target record a verdict holds — the verdict evaluates
+#: no comparison, and the cross-target agreement does, outside it.
 _KIND_NO_COMPARAND = "no_comparand"
 
 

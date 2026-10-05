@@ -68,7 +68,7 @@ For details `python3 tools/orchestration_runtime.py <sub> --help`, for the overv
 | `preflight` | judge the launchability of the execution platform |
 | `preflight-status` | read back an existing preflight.json |
 | `record-timeout` | the canonical recovery for an API stream idle timeout |
-| `check-phase-certified` | is the phase already CERTIFIED by the artifacts on disk (an output whose stage meta is `pass`, whose `artifact_hashes` still match and whose stamped `derivation_key` equals the key recomputed now — `docs/ORCHESTRATION.md` §13a)? The canonical skip decision, on every run — cold and resumed alike |
+| `check-phase-certified` | is the phase already CERTIFIED by the artifacts on disk (an output whose stage meta is `pass`, whose `artifact_hashes` still match and whose stamped `derivation_key` equals the key recomputed now — `docs/ORCHESTRATION.md` §13a)? The canonical skip decision, on every run — cold and resumed alike. For a certified `validate` it also reports `cross_target`, the node's `cross-target agreement` (`docs/ORCHESTRATION.md` §13d); `certified` does not depend on it |
 | `revoke-artifact` | rewrite a phase's stage meta to `verification_status: revoked` — the half of a re-derivation decision that reaches the ARTIFACT |
 | `reset-phase` | reset a phase and everything downstream to `not_started` in `phase_state.json` |
 

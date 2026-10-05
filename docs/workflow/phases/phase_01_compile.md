@@ -174,13 +174,13 @@ io_contract:
     # not show that every step ran.
     # A CROSS-TARGET judgment (tests.md "The cross-target judgment is applied", issue #324) is transcribed HERE
     # ONLY, as one entry per variable it names: `expr` compares this run's `final.<var>` with
-    # `comparand.final.<var>` — the same capture, in the same case, of another target's certified run of this
-    # node, which the host selects and binds — by the tolerance and normaliser the judgment states. It has NO
+    # `comparand.final.<var>` — the same capture, in the same case, of another target's eligible run of this
+    # node, which the host selects — by the tolerance and normaliser the judgment states. It has NO
     # test_predicates condition (the generated checks module never sees another target's state), so its
     # `quantity` is the name tests.md gives the agreement and no condition carries it; it corroborates
     # nothing, and the coverage gate neither requires nor counts it; the --stage compile gate requires one under
-    # every test whose tests.md definition carries that sentence and refuses one under any other test. On a
-    # target with no comparand it holds vacuously; with one, a disagreement fails the test.
+    # every test whose tests.md definition carries that sentence and refuses one under any other test. No
+    # verdict evaluates it: the host's cross-target agreement does, and a disagreement stops every target.
     - test_id: "<test_id>"                 # a tests.md test_id (⊆ the test_predicates set)
       quantity: "<name>"                   # the quantity the expression evaluates; matches the secondary condition it corroborates (a cross-target predicate corroborates none: its quantity is the name tests.md gives the agreement)
       target_cases: ["<case_id>", ...]     # EXACTLY the target_cases of this test's test_predicates entry (set equality, gated): a corroborant ranges over every case its test ranges over, never over the easiest one alone
@@ -208,9 +208,9 @@ io_contract:
   #               target_cases (a cross-case reduction: the coarse case's state, inputs and coordinates); the
   #               case_id is written exactly as case.test_case_set declares it;
   #               comparand.initial.<var> / comparand.final.<var> (grammar 3) — the same capture, in the same case,
-  #               of the COMPARAND: another target's certified run of this node, bound by the host. A predicate
-  #               that reads one is a CROSS-TARGET predicate: it must read this run's own state too, and it is
-  #               evaluated once per bound comparand in every case it reads (with none bound it holds vacuously)
+  #               of the COMPARAND: another target's eligible run of this node, selected by the host. A predicate
+  #               that reads one is a CROSS-TARGET predicate: it must read this run's own state too, and the
+  #               cross-target agreement evaluates it once per comparand in every case it reads
   #   functions   sum, mean, min, max (one argument reduces; two to eight are elementwise), abs, sqrt, exp, log,
   #               log2, sin, cos, norm2 (sqrt of the sum of squares), maxabs, ceil, floor,
   #               atan2(y, x) (elementwise, in [-pi, pi]; grammar 4 — a discrete mode's phase),
@@ -232,8 +232,8 @@ io_contract:
   #               shape, a capture file absent / ragged / non-numeric / non-finite / of the wrong rank, a variable the
   #               case's capture does not hold, an `initial.<var>` of a node whose own runner writes no `initial/`
   #               capture (a harness self-test: its predicates read `final.<var>` and `inputs.<path>`) — each is a
-  #               STRUCTURAL failure of that predicate at Validate.execute; a comparand variable whose shape differs
-  #               from this run's is a cross-target DISAGREEMENT (a physics failure of that predicate), not structural
+  #               STRUCTURAL failure of that predicate at Validate.execute (of a cross-target one: an unevaluable
+  #               agreement); a comparand variable whose shape differs from this run's is a DISAGREEMENT, not structural
   # worked translations of tests.md prose (the fidelity V3 reads):
   #   positivity            expr: "min(final.h)"                                  op: ge  value: 0.05   (the END-STATE minimum, under the SAME quantity name as the secondary condition on the runner's run-wide minimum — `h_min` on both; the host corroborates the quantity at the captures it holds, and a secondary that sampled every step is the same quantity over a wider window, which V3 (i) accepts)
   #   harness sentinel      case: "l0_array_emit_pass"  expr: "maxabs(final.a2 - inputs.initial.a2)"   op: le  value: 1.0e-12   (a self-test's emitted array against the sentinel the case DECLARES, re-parsed by the host: the emitter round-trip judged from the raw file)
@@ -259,7 +259,7 @@ io_contract:
   #   reading one case never stands for a condition over several. A pass test asserting only verdict.* is
   #   therefore no longer refused as degenerate: its judgment is conjoined with a host-evaluated
   #   predicate, never reduced to the runner's own verdict.overall. A cross-target predicate is outside this
-  #   rule in both directions: it covers no condition (it holds vacuously where no comparand exists), and no
+  #   rule in both directions: it covers no condition (a run's own verdict never evaluates it), and no
   #   condition requires one.
   # test_predicates ref vocabulary (all resolvable at --stage compile):
   #   verdict.<field>   -> a diagnostics_contract.verdict.fields entry (overall/failed_checks)
