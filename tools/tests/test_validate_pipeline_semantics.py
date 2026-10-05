@@ -19085,7 +19085,7 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
 
     def test_a_public_attribute_on_the_type_header_is_not_drift(self) -> None:
         # Issue #343: §5.1 renders `type :: t`, and `type, public :: t` publishes the same type.
-        # Every codex harness source used the attributed form and was refused as five
+        # Four codex harness sources used the attributed form and each was refused as five
         # component-layout drifts. The combined component line is the spelling that run wrote.
         for header in ("type, public :: hx__h_named", "TYPE , PUBLIC :: hx__h_named"):
             src = self._with_type_header(header)
@@ -19105,6 +19105,12 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
             self.assertTrue(self._type_drift(self._with_type_header(header)), header)
         self.assertTrue(self._type_drift(self._with_type_header(
             "type, public :: hx__h_named", "    integer :: extra\n")))
+        # Only the HEADER loses `public`: a component's attributes are compared as written.
+        public_component = self._GOOD_SOURCE.replace(
+            "    character(len=:), allocatable :: name\n",
+            "    character(len=:), allocatable, public :: name\n", 1)
+        self.assertNotEqual(public_component, self._GOOD_SOURCE)
+        self.assertTrue(self._type_drift(public_component))
 
     def test_argument_name_drift_flagged(self) -> None:
         # rename dummy `n` -> `count` in the writer's header AND its decl: the pinned header line

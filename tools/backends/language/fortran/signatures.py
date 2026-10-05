@@ -353,13 +353,18 @@ def type_layout_list(lines: list[str]) -> tuple[str, ...]:
     """A derived type stanza's ordered atom list (``stanza_line_list``) with a ``public``
     attribute dropped from its HEADER, so ``type, public :: t`` and ``type :: t`` plus a separate
     ``public :: t`` compare equal. §5.1 renders the header bare (``_render_type``), and both are
-    the same published type; the attributed form is what one leaf provider writes by habit, and
-    every such source was refused as a component-layout drift (issue #343).
+    the same published type; four codex harness sources wrote the attributed form, and each was
+    refused as five component-layout drifts (issue #343).
 
-    ``public`` alone: ``private`` would hide the type the block publishes, and ``abstract`` /
-    ``sequence`` change what it is, so those headers still differ. Components are untouched — a
-    component's attributes are part of the layout. The one comparison both readers of a type
-    layout use, `generated_source_violations` and `runner.assert_harness_pin`."""
+    ``public`` alone: ``private`` would hide the type the block publishes, and ``abstract``
+    changes what it is, so those headers still differ. Components are untouched — a component's
+    attributes are part of the layout. Both readers of a GENERATED SOURCE's type layout use it,
+    `generated_source_violations` and `runner.assert_harness_pin`; the IR-vs-§5.1 comparisons
+    keep `stanza_line_list`, because both of their sides are host-rendered bare headers.
+
+    The guard is an intent marker, not a live decision: a type stanza's first atom is always its
+    header, which `_TYPE_HEADER_RE` requires to carry ``::``, and a bare ``type::t`` has no
+    attribute to drop either way."""
     atoms = list(stanza_line_list(lines))
     if atoms and atoms[0].startswith("type,") and "::" in atoms[0]:
         lhs, _sep, rhs = atoms[0].partition("::")
