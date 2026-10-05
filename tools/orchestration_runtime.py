@@ -6527,16 +6527,22 @@ def _dependency_ready(
             details = _stale_dependency_details(repo_root, spec_ref, target=target)
             if not details:
                 return False, reason
-            cross = [d for d in details if ": cross_target_" in d]
+            disagree = [d for d in details if ": cross_target_disagreement:" in d]
+            unevaluable = [d for d in details if ": cross_target_unevaluable:" in d]
             remedies = []
-            if len(cross) < len(details):
+            if len(disagree) + len(unevaluable) < len(details):
                 remedies.append("re-run with `--with-deps` to certify the dependency closure")
-            if cross:
+            if disagree:
                 # Re-running does not resolve a disagreement: both variants stand certified
                 # on their own keys (issue #383).
                 remedies.append(
                     "a cross-target disagreement is not resolved by re-running; see "
                     "docs/RUNBOOK.md §3-0 (certifying one node on several targets)")
+            if unevaluable:
+                remedies.append(
+                    "a cross-target comparison that cannot be evaluated is repaired at the "
+                    "cause it names; see docs/RUNBOOK.md §3-0 (certifying one node on several "
+                    "targets)")
             return False, (
                 f"{reason}; dependency not ready: " + "; ".join(details)
                 + " — " + "; ".join(remedies)

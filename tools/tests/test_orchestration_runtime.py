@@ -29168,6 +29168,16 @@ class CrossTargetAgreementTests(unittest.TestCase):
         self.assertIn(f"cross_target_disagreement:{self.b.target_id}", str(reason))
         self.assertIn("a cross-target disagreement is not resolved by re-running", str(reason))
         self.assertNotIn("--with-deps", str(reason))
+        self.assertNotIn("cannot be evaluated", str(reason))
+        # an unevaluable comparison is repaired at its cause — not the disagreement's remedy
+        # (round 1: one `cross_target_` match told both the same thing)
+        (self.repo / "spec" / "targets" / "broken_t.yaml").write_text("target_id: [\n")
+        ok, reason = ort._dependency_ready(self.repo, "orch_c", step="validate")
+        self.assertFalse(ok)
+        self.assertIn(f"{self.NODE} validate: cross_target_unevaluable:", str(reason))
+        self.assertIn("is repaired at the cause it names", str(reason))
+        self.assertNotIn("not resolved by re-running", str(reason))
+        self.assertNotIn("--with-deps", str(reason))
 
     def test_the_completion_vouch_refuses_a_disagreeing_node(self) -> None:
         self._preflight(self.repo, oid="orch_a")
