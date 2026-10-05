@@ -1445,6 +1445,19 @@ class HarnessPinTest(unittest.TestCase):
                               f"integer, parameter, public :: {name}", 1)
         assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, src)
 
+    def test_a_public_type_header_passes_the_pin_and_a_private_one_does_not(self) -> None:
+        # Issue #343: the pin compares a type layout the way the Generate gate does
+        # (`type_layout_list`), so a harness the gate certifies with `type, public :: t` must
+        # not stop every dependent's render here; `private` still differs.
+        header = "type :: harness_fortran_cpu__h_named"
+        self.assertIn(header, self.src)
+        assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs,
+                           self.src.replace(header, "type, public :: harness_fortran_cpu__h_named"))
+        with self.assertRaises(RenderError) as cm:
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src.replace(
+                header, "type, private :: harness_fortran_cpu__h_named"))
+        self.assertIn("harness_fortran_cpu__h_named", str(cm.exception))
+
     def test_attribute_form_with_a_drifted_value_still_fails_the_pin(self) -> None:
         src = self.src.replace("integer, parameter :: case_id_len = 64",
                                "integer, parameter, public :: case_id_len = 32", 1)

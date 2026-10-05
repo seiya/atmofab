@@ -19070,6 +19070,42 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
             ex = self._seed(tmp, source=self._GOOD_SOURCE)
             self.assertEqual(self._run(ex, tmp), [])
 
+    _TYPE_HEADER = "  type :: hx__h_named\n"
+
+    def _with_type_header(self, header: str, extra_component: str = "") -> str:
+        self.assertIn(self._TYPE_HEADER, self._GOOD_SOURCE)
+        return self._GOOD_SOURCE.replace(
+            self._TYPE_HEADER, f"  {header}\n{extra_component}", 1)
+
+    def _type_drift(self, source: str) -> bool:
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            violations = self._run(self._seed(tmp, source=source), tmp)
+        return any("derived type 'hx__h_named' drifts" in v for v in violations)
+
+    def test_a_public_attribute_on_the_type_header_is_not_drift(self) -> None:
+        # Issue #343: §5.1 renders `type :: t`, and `type, public :: t` publishes the same type.
+        # Every codex harness source used the attributed form and was refused as five
+        # component-layout drifts. The combined component line is the spelling that run wrote.
+        for header in ("type, public :: hx__h_named", "TYPE , PUBLIC :: hx__h_named"):
+            src = self._with_type_header(header)
+            with tempfile.TemporaryDirectory() as t:
+                tmp = Path(t)
+                self.assertEqual(self._run(self._seed(tmp, source=src), tmp), [], header)
+        combined = self._with_type_header("type, public :: hx__h_named").replace(
+            "    character(len=:), allocatable :: name\n"
+            "    character(len=:), allocatable :: json\n",
+            "    character(len=:), allocatable :: name, json\n", 1)
+        self.assertFalse(self._type_drift(combined))
+
+    def test_only_public_is_dropped_from_the_type_header(self) -> None:
+        # `private` hides the type §5.1 publishes and `abstract` changes what it is; neither is
+        # the bare header, and a component added beside a `public` header is still an extra.
+        for header in ("type, private :: hx__h_named", "type, public, abstract :: hx__h_named"):
+            self.assertTrue(self._type_drift(self._with_type_header(header)), header)
+        self.assertTrue(self._type_drift(self._with_type_header(
+            "type, public :: hx__h_named", "    integer :: extra\n")))
+
     def test_argument_name_drift_flagged(self) -> None:
         # rename dummy `n` -> `count` in the writer's header AND its decl: the pinned header line
         # is no longer present.
