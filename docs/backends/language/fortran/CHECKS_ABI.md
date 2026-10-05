@@ -178,6 +178,10 @@ node's self-test).
   acceptance gate refuses a dummy without the attribute (`m3c_checks_abi_violation`,
   issue #261) — a no-metrics stub included; the rendered runner states the declaration
   in a comment.
+- **A §5.1 module parameter (`dp`, `case_id_len`, …) has ONE binding in the model file**,
+  the model module's own `parameter`. An import counts as a binding, so a further module in
+  that file spells the kind or length under a name of its own (`real64`, a literal length)
+  rather than importing it. Any other file imports it from `<spec_id>_model` normally.
 - **`spec_id` ≤ 55 characters** so the derived `<spec_id>_checks` / `_runner` /
   `_model` identifiers stay within the f2008 63-character limit (on an M3c node the
   renderer fails closed above this).

@@ -119,9 +119,10 @@ class MultiFileSourceTest(unittest.TestCase):
 
         graph = cb.derive_build_graph(doc, toolchain={"language": "fortran"})
         self.assertEqual([unit["object"] for unit in graph["compile_units"]], [
-            # internal_module (unit-shared first) -> helper -> model -> checks
-            "unit_constants.o", "adv1d_types.o", "adv1d_limiter.o",
-            "adv1d_model.o", "adv1d_checks.o",
+            # model -> internal_module (unit-shared first) -> helper -> checks: the model
+            # compiles alone, and a private file may `use` it (issue #415)
+            "adv1d_model.o", "unit_constants.o", "adv1d_types.o", "adv1d_limiter.o",
+            "adv1d_checks.o",
         ])
         self.assertEqual(len(graph["link"]["objects"]), 5)
 
@@ -131,7 +132,7 @@ class MultiFileSourceTest(unittest.TestCase):
                          _file("a_helper.f90", "helper", ADV)]
         self.assertEqual(cb.validate_bundle(doc), [])
         graph = cb.derive_build_graph(doc, toolchain={})
-        self.assertEqual([unit["object"] for unit in graph["compile_units"]][:2],
+        self.assertEqual([unit["object"] for unit in graph["compile_units"]][1:3],
                          ["a_helper.o", "z_helper.o"])
 
 
@@ -668,6 +669,25 @@ class CompileAfterTest(unittest.TestCase):
         doc["files"] += [_file("types.f90", "internal_module", ADV),
                          dict(_file("h.f90", "helper", ADV), compile_after=["types.f90"])]
         self.assertEqual(cb.validate_bundle(doc), [])
+
+    def test_a_private_file_may_follow_the_model(self) -> None:
+        # helper -> model agrees with precedence: the model compiles alone, and a private
+        # file that serves the checks / runner file may `use` it (issue #415).
+        doc = _minimal_bundle()
+        doc["files"].append(
+            dict(_file("h.f90", "helper", ADV), compile_after=["adv1d_model.f90"]))
+        self.assertEqual(cb.validate_bundle(doc), [])
+
+    def test_the_model_may_not_follow_a_private_file(self) -> None:
+        # model -> helper reverses precedence: it is the bundle-layer form of the model-alone
+        # rule (a consumer is staged the model file and nothing else of the bundle).
+        doc = _minimal_bundle()
+        doc["files"].append(_file("h.f90", "helper", ADV))
+        doc["files"][0]["compile_after"] = ["h.f90"]
+        self.assertIn(
+            "files[0].compile_after 'h.f90' has role 'helper', which build precedence orders "
+            "after this 'model' file (compile_after must not reverse ROLE_BUILD_PRECEDENCE)",
+            cb.validate_bundle(doc))
 
     def test_cycles_are_rejected(self) -> None:
         doc = _minimal_bundle()
@@ -1532,8 +1552,8 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
         doc = _multi_node_bundle()
         graph = cb.derive_build_graph(doc, toolchain={})
         self.assertEqual([unit["object"] for unit in graph["compile_units"]], [
-            "unit_types.o",                         # unit-shared internal module first
             "adv_flux_model.o", "adv1d_model.o",    # models in member order
+            "unit_types.o",                         # then the unit-shared internal module
             "adv_flux_checks.o", "adv1d_checks.o",  # checks in member order
         ])
 
@@ -1705,8 +1725,8 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
         self.assertEqual(cb.optimization_unit_members(doc), (ADV, FLUX))
         graph = cb.derive_build_graph(doc, toolchain={})
         self.assertEqual([unit["object"] for unit in graph["compile_units"]], [
-            "unit_types.o",
             "adv1d_model.o", "adv_flux_model.o",
+            "unit_types.o",
             "adv1d_checks.o", "adv_flux_checks.o",
         ])
 
@@ -3057,8 +3077,55 @@ class RunnerRoleTest(unittest.TestCase):
         doc["files"].insert(0, _file("hfc_types.f90", "internal_module", HARNESS))
         graph = cb.derive_build_graph(doc, toolchain={"language": "fortran"})
         self.assertEqual([unit["object"] for unit in graph["compile_units"]],
-                         ["hfc_types.o", "harness_fortran_cpu_model.o",
+                         ["harness_fortran_cpu_model.o", "hfc_types.o",
                           "harness_fortran_cpu_runner.o"])
+
+    def test_a_private_file_that_imports_the_model_passes_the_host_rendered_gate(self) -> None:
+        """Issue #415: the measured refusal. A harness whose private file `use`s the model (its
+        kinds and types — the file serves the runner) and whose runner `use`s both is the
+        shape the contract asks for; the HOST renders its control file from the derived graph,
+        and the host's own module-prerequisite gate must accept it. Before the fix
+        `ROLE_BUILD_PRECEDENCE` put every private role before the model, so the rendered
+        control file gave the private object no prerequisite and this gate refused the host's
+        own file (`missing prerequisite for used module`). Drives the production chain:
+        `derive_build_graph` -> the build system's `render_from_graph` -> `validate_src_dir`."""
+        from tools.backends import registry
+        from tools.backends.build_system.make import gates
+        from tools.backends.language.fortran import source as fortran_source
+        doc = self._harness_bundle()
+        contents = {
+            "harness_fortran_cpu_model.f90":
+                "module harness_fortran_cpu_model\nimplicit none\n"
+                "integer, parameter :: dp = kind(1.0d0)\n"
+                "end module harness_fortran_cpu_model\n",
+            "hfc_selftest.f90":
+                "module hfc_selftest\nuse harness_fortran_cpu_model, only: dp\nimplicit none\n"
+                "end module hfc_selftest\n",
+            "harness_fortran_cpu_runner.f90":
+                "program harness_fortran_cpu_runner\nuse harness_fortran_cpu_model\n"
+                "use hfc_selftest\nimplicit none\nend program harness_fortran_cpu_runner\n",
+        }
+        doc["files"].insert(0, _file("hfc_selftest.f90", "internal_module", HARNESS,
+                                     modules=["hfc_selftest"]))
+        for entry in doc["files"]:
+            entry["content"] = contents[entry["logical_path"]]
+        self.assertEqual(cb.validate_bundle(doc), [])
+        graph = cb.derive_build_graph(doc, toolchain={"language": "fortran"})
+        rules = registry.capability_module("language", "fortran", "control_file").rules(
+            standard="f2008", parallel_backend="none")
+        makefile = registry.capability_module("build_system", "make", "control_file") \
+            .render_from_graph(rules=rules, compiler="gfortran",
+                               bin_name="harness_fortran_cpu_runner", cases_default="c1",
+                               graph=graph)
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp)
+            for entry in doc["files"]:
+                (src / entry["logical_path"]).write_text(entry["content"], encoding="utf-8")
+            (src / "Makefile").write_text(makefile, encoding="utf-8")
+            violations: list[str] = []
+            gates.validate_src_dir(src, violations, source_reading=fortran_source,
+                                   language="fortran")
+        self.assertEqual(violations, [])
 
     def test_a_bundle_runner_colliding_with_host_glue_fails_assembly(self) -> None:
         # The structural guarantee that a runner role cannot be smuggled onto an M3c node

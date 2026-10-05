@@ -84,6 +84,7 @@ def registry_attr(capability: str) -> str:
 def render_tuple() -> dict[str, str]:
     """The host-rendered runner and control file: the language backend's runner renderer, the
     host render module, the IR-shaped and the bundle-derived control-file writers."""
+    import tools.codegen_bundle as cb
     return {
         "tools/host_render.py": _file_digest("tools/host_render.py"),
         "tools/backends/language/fortran/runner.py":
@@ -170,6 +171,14 @@ def render_tuple() -> dict[str, str]:
         "workflow_conductor.compiler_wrapper": _source_digest(wc.compiler_wrapper),
         "registry compiler_wrapper attr": registry_attr("compiler_wrapper"),
         **compiler_wrapper_declarations(),
+        # The ORDER the bundle-derived control file states (issue #415): the graph it is
+        # rendered from, the role precedence that orders it (a value, which no source digest of
+        # the functions reading it carried), and the sort and topological order under it.
+        "codegen_bundle.derive_build_graph": _source_digest(cb.derive_build_graph),
+        "codegen_bundle.ROLE_BUILD_PRECEDENCE": json.dumps(cb.ROLE_BUILD_PRECEDENCE),
+        "codegen_bundle._role_rank": _source_digest(cb._role_rank),
+        "codegen_bundle._bundle_file_sort_key": _source_digest(cb._bundle_file_sort_key),
+        "codegen_bundle._topological_order": _source_digest(cb._topological_order),
     }
 
 
@@ -708,6 +717,13 @@ PINNED_RENDER: dict[str, str] = {
     # backend modules and no other row.) The digest `render-7` shipped with at 98dd37aa:
     "render-7@98dd37aa": "4b6b9b354f6b21b021b48aec6a69b2ea49d3031f56562c5a385d1ad0035ef562",
     "render-7": "1c56ef99a4e417db86388ffba46905d112a9318b02e3cc2af9d1b347e027e788",
+    # Bumped (issue #415): `ROLE_BUILD_PRECEDENCE` builds the model FIRST and every private
+    # file (`internal_module`, `helper`) after it, so the bundle-derived control file of every
+    # bundle that carries a private file changes its order and prerequisites. A bump, not a
+    # re-pin: a certified bundle with a private file (a `helper` the checks module `use`s, for
+    # one) no longer reproduces the control file it was certified with. The tuple gained five
+    # `codegen_bundle` rows — the order was a value no row digested.
+    "render-8": "3c561ae08d49309a812a12ba3c2c10bd0e4c9c2735d0c19677bdf906b9671659",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

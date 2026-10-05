@@ -193,8 +193,8 @@ never parses the source.
 |---|---|---|
 | `model` | the physics kernel and the published operation of a member | yes (`operation`) |
 | `checks` | the member's checks module (`CHECKS_MODULE_CONTRACT.md`) | yes (`checks_interface`) |
-| `helper` | a private procedure set the generated code calls internally | no |
-| `internal_module` | an internal module (shared types, parameters, work arrays) | no |
+| `helper` | a private procedure set the `checks` / `runner` file calls | no |
+| `internal_module` | an internal module (shared types, work arrays) the `checks` / `runner` file uses | no |
 | `runner` | the unit member's executable entry (added in 1.1.0) | no |
 
 There is **no build or script role**: this is the backbone of the no-arbitrary-command rule.
@@ -221,7 +221,8 @@ one either, for the opposite reason: it is the executable entry, which nothing m
 A `helper` / `internal_module` file is reachable from the `checks` (or `runner`) file only. A
 consumer is staged exactly a member's `model` file, so the `model` compiles alone against the
 dependency closure; the producing node's `Generate.gate` syntax check compiles it that way
-(issue #389).
+(issue #389). A private file may `use` the model in turn, and builds after it (see
+"Build-graph derivation"; issue #415).
 
 ### `logical_path`
 
@@ -255,7 +256,8 @@ Each entry must resolve to another `files[]` entry, must not name the file itsel
 whole edge set must be acyclic. An edge may order files **within** a role or **agree with**
 role precedence; it must never **reverse** it — a `model` file cannot declare
 `compile_after` on a `checks` file, because `ROLE_BUILD_PRECEDENCE` already orders the model
-first and the checks module `use`s it. The host never infers these edges by parsing the
+first and the checks module `use`s it, nor on a `helper` / `internal_module` file, because the
+model compiles alone (the edge is the bundle-layer form of that rule). The host never infers these edges by parsing the
 source; the bundle declares them, and `derive_build_graph` topologically sorts by them.
 
 ### Language
@@ -594,8 +596,12 @@ import-statement analysis of the generated source:
    boundary, so a false reject of an independent-branch closure is worse than a skipped check.
    The safety property it protects (a buildable order) is not the closure's to guarantee; the
    bundle's own acyclicity is enforced by `compile_after` (the cycle check) regardless;
-2. the bundle files by `ROLE_BUILD_PRECEDENCE = (internal_module, helper, model, checks)`,
-   tie-broken by unit-member order and then by `logical_path` lexical order. A unit-shared
+2. the bundle files by `ROLE_BUILD_PRECEDENCE = (model, internal_module, helper, checks,
+   runner)`, tie-broken by unit-member order and then by `logical_path` lexical order. The
+   model comes first because it compiles alone; every private role follows it, so a private
+   file may `use` the model with no declaration (issue #415; until then the private roles
+   preceded the model, and the host's own control file was refused for a private file that
+   `use`d it). A unit-shared
    file (`member_node_key: null`) precedes every member-specific file of the same role: it
    is what they may `use`. This base order is then refined by a **stable topological sort**
    over `compile_after`, so a file compiles after every bundle file it declares a dependency
@@ -631,7 +637,7 @@ result: `json.dumps(graph, sort_keys=True)` is byte-identical. This is what lets
 graph become a derivation input in `Z5`.
 
 **Parity.** For a bundle of the `harness` shape the derived order is
-`internal_module` → `helper` → `model` → `runner` — `checks` sits between the last two in
+`model` → `internal_module` → `helper` → `runner` — `checks` sits between the last two in
 `ROLE_BUILD_PRECEDENCE`, and this shape forbids that role, so no bundle of it can carry one —
 and the executable entry is last
 in the link exactly where the host glue is on the other shape; there is no `_write_makefile`
