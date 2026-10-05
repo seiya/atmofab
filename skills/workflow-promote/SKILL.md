@@ -15,6 +15,7 @@ Fix the promotion responsibility of the Promote stage, and register the official
 ## Requirements
 - Require `verdict.json`'s `overall=pass` as an input condition.
 - Require `aggregate_verdict.json`'s `overall=pass` as an input condition.
+- Require that `python3 tools/orchestration_runtime.py check-phase-certified --repo-root . --orchestration-id <id of a run of that target> --node-key <node_key> --step validate --target <target_id> --no-record` (the orchestration's `preflight.json` is read; `--no-record` writes nothing to it) reports `certified: true`, a `cross_target.status` that is neither `disagree` nor `unevaluable`, and `pipeline_ref`, `source_id`, `binary_id` and `run_id` equal to the promotion source's — the answer is about the node's SELECTED Validate run, so an older run of the same node is not covered by it and is not promoted: `verdict.json` and `aggregate_verdict.json` read `pass` for a variant that disagrees with another target's, because the cross-target comparison is outside the verdict ([issue #383](https://github.com/seiya/atmofab/issues/383); `docs/RUNBOOK.md` §3-0).
 - Require that the adopted `source_id`, `binary_id`, and `run_id` are traceable in `lineage.json` and `trial_meta.json`.
 - At registration, record `release_id`, `target_id`, `source_pipeline_id`, `source_source_id`, `source_binary_id`, `source_run_id`, `artifact_root`, `promoted_at`, and `status` as required.
 - Forbid overwriting an existing `release_id`.

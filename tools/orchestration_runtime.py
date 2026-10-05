@@ -1287,9 +1287,9 @@ class DerivationResolver:
     resolver with no target refuses every pipeline phase by name (`target_unresolved`) rather
     than guessing which target the caller meant.
 
-    The one exception to "one resolver, one target" is `resolve_comparands` (issue #324): a
-    validate key with a cross-target predicate binds OTHER targets' certified builds, and the
-    resolver it builds for each lives and dies inside that function. Only that function passes
+    The one exception to "one resolver, one target" is `resolve_comparands` (issue #324): the
+    cross-target agreement (`cross_target_agreement`, issue #383) reads OTHER targets' certified
+    builds, and the resolver it builds for each lives and dies inside that function. Only that function passes
     `comparand=True` (issue #345): the build key's host-probed leaves
     (`HOST_PROBED_TOOLCHAIN_LEAVES`) are then not probed but read off each candidate's own stamp
     (`_comparand_candidate_key`), because this host's probe of another target's compiler — which
@@ -1487,8 +1487,8 @@ class DerivationResolver:
         # re-derivation it asked for — is selected as usual. For a comparand resolver the
         # candidates matched under their OWN stamped toolchain leaves, so a revocation shadows
         # older eligible Builds across compiler versions too, not only those of one key. That
-        # drops the other target from the comparands (this run's cross-target record then has
-        # none to read) rather than comparing against a variant older than one the operator
+        # drops the other target from the comparands (the cross-target agreement then reads
+        # none from it) rather than comparing against a variant older than one the operator
         # decided must be re-derived; the revocation is resolved by that re-derivation.
         revoked_orders = [order for order, detail in refused if detail.get("revoked")]
         if revoked_orders:
@@ -1628,6 +1628,13 @@ def _verify_dep_stage_detail(
     `pipeline_ref` and `aggregate_verdict` are questions about ONE target (issue #284): the
     resolver's, or `target` when no resolver is passed. With neither, they answer
     `target_unresolved` — never ready — and `ir_ref`, which is target-free, still answers.
+
+    `aggregate_verdict` also asks the dependency's cross-target agreement once its Validate is
+    certified (`cross_target_agreement`, issue #383): a dependency whose variant disagrees with
+    another target's, or whose comparison cannot be evaluated, is not ready
+    (`<node> validate: cross_target_disagreement:<targets>` /
+    `cross_target_unevaluable:<cause>`), though its Validate stays certified on its own key.
+    This one clause reaches the launch gate, `_stale_dependency_details` and the closure driver.
     """
     if not (
         _is_safe_path_token(kind)
@@ -1641,9 +1648,14 @@ def _verify_dep_stage_detail(
     node_key = f"{kind}/{spec_id}@{version}"
     resolver = resolver or DerivationResolver(repo_root, target=target)
     sel = resolver.select(node_key, step)
-    if sel.ok:
-        return (True, None)
-    return (False, f"{node_key} {step}: {sel.reason}")
+    if not sel.ok:
+        return (False, f"{node_key} {step}: {sel.reason}")
+    if step == "validate":
+        not_ready = cross_target_not_ready_reason(
+            cross_target_agreement(repo_root, node_key, resolver=resolver))
+        if not_ready is not None:
+            return (False, f"{node_key} {step}: {not_ready}")
+    return (True, None)
 
 
 def _target_harness_entries_for_spec_ref(
@@ -1887,7 +1899,27 @@ def _phase_certified(
     spec_ref: str | None = None,
     target: TargetProfile | None = None,
 ) -> tuple[bool, dict[str, Any]]:
-    """Is `(node_key, step)` certified? Returns `(certified, detail)`.
+    """`_phase_certification` without its resolver."""
+    certified, detail, _resolver = _phase_certification(
+        repo_root, orchestration_id, node_key, step, spec_ref=spec_ref, target=target)
+    return (certified, detail)
+
+
+def _phase_certification(
+    repo_root: Path,
+    orchestration_id: str,
+    node_key: str,
+    step: str,
+    *,
+    spec_ref: str | None = None,
+    target: TargetProfile | None = None,
+) -> tuple[bool, dict[str, Any], DerivationResolver]:
+    """Is `(node_key, step)` certified? Returns `(certified, detail, resolver)` — the resolver
+    that answered, so a caller asking the cross-target agreement of the same selection
+    (`cross_target_agreement`) shares its memo.
+
+    "Certified" keeps meaning derived on its own key: a Validate whose variant disagrees with
+    another target's is still certified here (issue #383); the agreement is asked beside it.
 
     `detail` always carries `reason` (the FIRST clause that refused, `None` on success), the
     refs of the SELECTED outputs that did resolve (`ir_ref` / `pipeline_ref` / `source_id`
@@ -1926,11 +1958,11 @@ def _phase_certified(
         target=target)
     ok, detail = _ir_certification(repo_root, node_key.strip(), resolver=resolver)
     if not ok:
-        return (False, detail)
+        return (False, detail, resolver)
     if step_token == "compile":
-        return (True, detail)
+        return (True, detail, resolver)
     sel = resolver.select(node_key.strip(), step_token)
-    return (sel.ok, sel.detail())
+    return (sel.ok, sel.detail(), resolver)
 
 
 def _certifiable_artifact_refs(required_outputs: Sequence[str], meta_ref: str) -> list[str]:
@@ -2266,12 +2298,10 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 #             ir — the compile output hash (the case set and the predicates);
 #             spec.tests — the judge reads `tests.md`;
 #             run_policy — the execution policy `_execute_inproc` imposes: `{target_id,
-#               profile, threads_per_rank, preset}`;
-#             comparand[] — ONLY when the IR has a cross-target primary predicate (issue
-#               #324): `{target_id, evidence}` of every other target's certified variant the
-#               predicate is evaluated against (`resolve_comparands`), `evidence` being the
-#               hash of that run's captured snapshot bytes. A comparand that appears or whose
-#               captures change moves this key (`derivation_key_mismatch:comparand...`).
+#               profile, threads_per_rank, preset}`.
+#             Nothing of another target is an input (issue #383, reversing #324's
+#             `comparand[]` member): the cross-target comparison is `cross_target_agreement`,
+#             evaluated on demand beside this key, never stored in it.
 #
 # Generate, Build and Validate are `node_key × target` facts (issue #284): their outputs live
 # under `workspace/pipelines/<safe>/<target_id>/`, every closure member is selected for the
@@ -2638,15 +2668,24 @@ def _pipeline_closure_for_key(
             f"not resolve ({exc.detail})") from exc
 
 
-#: The `own_verdict` values that make a run another target's reference (issue #324).
-COMPARAND_OWN_VERDICTS: frozenset[str] = frozenset({"pass", "xfail"})
+#: The `self_verdict` values that make a run another target's reference (issue #324; read off
+#: `self_verdict` since issue #383, which took the comparison out of the verdict).
+COMPARAND_VERDICTS: frozenset[str] = frozenset({"pass", "xfail"})
+
+
+class CrossTargetUnevaluable(RuntimeError):
+    """`resolve_comparands` could not establish another target's reference: a declared target
+    does not list or load, or an eligible run holds no capture (issue #383). Not a phase-start
+    failure: `cross_target_agreement` turns it into an `unevaluable` agreement, which is not
+    ready, and names the cause."""
 
 
 def resolve_comparands(
     repo_root: Path, *, node_key: str, ir_hash: str, target: TargetProfile,
     spec_refs: Mapping[str, str] | None = None,
 ) -> Any:
-    """The comparands of `node_key`'s Validate on `target` (issue #324, R4-d): for every OTHER
+    """The comparands of `node_key`'s cross-target agreement on `target` (issue #324, R4-d;
+    read by `cross_target_agreement` since issue #383): for every OTHER
     declared target B (`list_target_ids`, in target-id order), B's certified variant of the
     same node over the same IR, as a `primary_evidence.ComparandEvidence` — or, when B has
     none, B's entry in `absent` with the reason (issue #345). Returns a
@@ -2663,16 +2702,18 @@ def resolve_comparands(
     holds a `verdict.json` (the execute gate passed) that
       - was evaluated over THIS IR (`verdict.json#ir_hash == ir_hash`: a Build can stay
         certified across an IR re-derivation that reproduced its sources, so the binary alone
-        does not say which IR's cases and predicates a run was judged on — Codex, round 2),
-      - has an `own_verdict` in `COMPARAND_OWN_VERDICTS` (a verdict written before R4-d has
-        neither field and is never a comparand), and
-      - if its `self_verdict` passed too, finished Validate: the judge passed it
-        (`semantic_review.json` decided `pass`) and so did the post-judge gate
-        (`post_judge_meta.json#status` is `pass`). The judge and the gate run on every run
-        whose verdict passes, so one without both was rejected or never finished. A run that
-        failed ONLY a cross-target record never reaches either and stays eligible (plan
-        decision 6: a disagreement between two variants that each pass their own tests stops
-        both);
+        does not say which IR's cases and predicates a run was judged on — Codex, round 2;
+        a verdict written before R4-d has no `ir_hash` and is never a comparand),
+      - has a `self_verdict` in `COMPARAND_VERDICTS`, and
+      - finished Validate: the judge passed it (`semantic_review.json` decided `pass`) and so
+        did the post-judge gate (`post_judge_meta.json#status` is `pass`). The judge and the
+        gate run on every run whose verdict passes, so one without both was rejected or never
+        finished.
+    A run's verdict carries no comparison since issue #383, so a variant that passes its own
+    tests is a reference whatever another target's captures say; a disagreement between two
+    such variants is then seen by BOTH targets' agreements, which is what stops both (plan
+    decision 6 of issue #324). A verdict-8 run that failed only a cross-target record has a
+    failing `self_verdict` and is no reference;
     whose `trial_meta.json#source_binary_id` is the selected binary; and whose
     `validate_meta.json`, when present, is not revoked (`verification_status: revoked`, which
     `_revoke_stage_meta` writes; post_judge writes `pass` before its gate runs, so the meta
@@ -2682,14 +2723,13 @@ def resolve_comparands(
     refused: the comparand resolver's Build `reason`, `compile_ir_mismatch`, or
     `no_eligible_run`.
 
-    Cycle-free by construction: B is selected up to BUILD, whose key carries no comparand, and
-    whether B's own Validate is certified is never asked — B's verdict depends on this run's
-    evidence, so asking would recurse. This is the one place a resolver for a target other
-    than the run's is built, and it never leaves this function.
+    Cycle-free by construction: B is selected up to BUILD, and whether B's own Validate is
+    certified is never asked. This is the one place a resolver for a target other than the
+    run's is built, and it never leaves this function.
 
-    Raises `DerivationInputsUnresolvable` when the declared targets cannot be listed or one
-    of them does not load (a broken profile must not quietly drop a reference), and when an
-    eligible run holds no capture to hash."""
+    Raises `CrossTargetUnevaluable` when the declared targets cannot be listed or one of them
+    does not load (a broken profile must not quietly drop a reference), and when an eligible
+    run holds no capture to hash."""
     from tools.primary_evidence import (
         ComparandEvidence,
         ComparandResolution,
@@ -2701,9 +2741,8 @@ def resolve_comparands(
     try:
         target_ids = list_target_ids(repo_root)
     except TargetProfileError as exc:
-        raise DerivationInputsUnresolvable(
-            f"derivation_inputs_unresolvable: comparand: the declared targets do not list "
-            f"({exc.detail})") from exc
+        raise CrossTargetUnevaluable(
+            f"comparand: the declared targets do not list ({exc.detail})") from exc
     safe = _node_key_to_safe(node_key)
     out: list[Any] = []
     absent: list[dict[str, str]] = []
@@ -2713,9 +2752,8 @@ def resolve_comparands(
         try:
             other = load_target_profile(repo_root, tid)
         except TargetProfileError as exc:
-            raise DerivationInputsUnresolvable(
-                f"derivation_inputs_unresolvable: comparand: target {tid} does not load "
-                f"({exc.detail})") from exc
+            raise CrossTargetUnevaluable(
+                f"comparand: target {tid} does not load ({exc.detail})") from exc
         resolver = DerivationResolver(repo_root, spec_refs=spec_refs, target=other,
                                       comparand=True)
         build = resolver.select(node_key, "build")
@@ -2740,14 +2778,13 @@ def resolve_comparands(
                 continue
             if verdict.get("ir_hash") != ir_hash:
                 continue
-            if verdict.get("own_verdict") not in COMPARAND_OWN_VERDICTS:
+            if verdict.get("self_verdict") not in COMPARAND_VERDICTS:
                 continue
-            if verdict.get("self_verdict") in COMPARAND_OWN_VERDICTS:
-                review = _read_json_or_none(node_dir / "semantic_review.json")
-                gate = _read_json_or_none(node_dir / "post_judge_meta.json")
-                if not (isinstance(review, dict) and review.get("decision") == "pass"
-                        and isinstance(gate, dict) and gate.get("status") == "pass"):
-                    continue
+            review = _read_json_or_none(node_dir / "semantic_review.json")
+            gate = _read_json_or_none(node_dir / "post_judge_meta.json")
+            if not (isinstance(review, dict) and review.get("decision") == "pass"
+                    and isinstance(gate, dict) and gate.get("status") == "pass"):
+                continue
             meta = _read_json_or_none(node_dir / "validate_meta.json")
             if isinstance(meta, dict) and str(
                     meta.get("verification_status", "")).strip().lower() == "revoked":
@@ -2761,27 +2798,124 @@ def resolve_comparands(
         try:
             evidence = comparand_evidence_sha256(node_dir)
         except PrimaryEvidenceError as exc:
-            raise DerivationInputsUnresolvable(
-                f"derivation_inputs_unresolvable: comparand: {tid} run {run_id} of "
-                f"{node_key}: {exc}") from exc
+            raise CrossTargetUnevaluable(
+                f"comparand: {tid} run {run_id} of {node_key}: {exc}") from exc
         out.append(ComparandEvidence(
             target_id=tid, pipeline_ref=str(build.pipeline_ref), run_id=run_id,
             run_dir=node_dir, evidence=evidence))
     return ComparandResolution(comparands=out, absent=absent)
 
 
-def _ir_cross_target_predicates(repo_root: Path, ir: str, node_key: str) -> list[Any]:
-    """`primary_evidence.cross_target_predicates` of the IR at `ir` (a repo-relative IR
-    directory); an IR that does not read is an unresolvable input."""
-    from tools.primary_evidence import cross_target_predicates
-    yaml = _require_yaml()
+#: The longest cause an `unevaluable` agreement carries into a readiness reason.
+_CROSS_TARGET_CAUSE_MAX_CHARS = 200
+
+
+def cross_target_agreement(
+    repo_root: Path, node_key: str, *, resolver: DerivationResolver,
+) -> Any:
+    """Whether `node_key`'s certified Validate on `resolver.target` agrees, NOW, with every
+    other declared target's eligible run under the IR's cross-target predicates (issue #383).
+    Returns a `primary_evidence.CrossTargetAgreement`; never raises.
+
+    The comparison is a deterministic host computation over two runs' captures, so it is not
+    keyed and not stored: it is asked beside `DerivationResolver.select(node_key, "validate")`
+    — which keeps meaning "derived on its own key" — wherever "is this node ready" or "may this
+    run pass" is asked (`_verify_dep_stage_detail`, the completion vouch,
+    `check_phase_certified`). Another target's certification therefore moves no key of this
+    one (#383's race), and a disagreement makes the node not ready on BOTH targets, since each
+    target's agreement reads the other's run.
+
+    Steps: the certified Validate selection (its run node directory holds this target's
+    captures) → its IR → `cross_target_predicates` (none: `not_applicable`) →
+    `resolve_comparands` over the IR hash the selection's key carries (none: `no_comparand`,
+    with `absent`) → `evaluate_primary_predicates(..., cross_target_only=True)`. A `physics`
+    record against a target is `disagree` naming it; a `structural` record, and any exception
+    (a target that does not load, a comparand run without captures, this run's own captures
+    gone, an IR that does not read), is `unevaluable` — not ready, with the cause. A Validate
+    that is not certified is `unevaluable` too; the callers ask only after it is.
+
+    Recursion-free: `resolve_comparands` selects other targets up to Build only, and no key
+    reads a dependency's Validate."""
+    from tools.primary_evidence import (
+        CrossTargetAgreement,
+        comparand_evidence_sha256,
+        cross_target_predicates,
+        evaluate_primary_predicates,
+    )
+    node_key = node_key.strip()
+
+    def unevaluable(error: str, *, comparands: list[dict[str, str]] | None = None,
+                    absent: list[dict[str, str]] | None = None,
+                    records: list[dict[str, Any]] | None = None,
+                    own_run: dict[str, str] | None = None) -> Any:
+        return CrossTargetAgreement("unevaluable", comparands or [], absent or [], [],
+                                    records or [], own_run, error)
+
     try:
-        doc = yaml.safe_load((repo_root / ir / "spec.ir.yaml").read_text(encoding="utf-8"))
-    except (OSError, ValueError, yaml.YAMLError) as exc:
-        raise DerivationInputsUnresolvable(
-            f"derivation_inputs_unresolvable: validate derivation of {node_key}: "
-            f"{ir}/spec.ir.yaml does not read ({type(exc).__name__})") from exc
-    return cross_target_predicates(doc if isinstance(doc, dict) else {})
+        sel = resolver.select(node_key, "validate")
+        if not sel.ok:
+            return unevaluable(f"validate_not_certified:{sel.reason}")
+        run_dir = sel.stage_dir()
+        if run_dir is None or not sel.ir_ref:
+            return unevaluable("validate_selection_has_no_run")
+        yaml = _require_yaml()
+        ir = yaml.safe_load((repo_root / sel.ir_ref / "spec.ir.yaml").read_text(
+            encoding="utf-8"))
+        ir = ir if isinstance(ir, dict) else {}
+        if not cross_target_predicates(ir):
+            return CrossTargetAgreement("not_applicable", [], [], [], [], None, None)
+        if resolver.target is None:
+            return unevaluable("target_unresolved")
+        ir_hash = (sel.derivation_inputs or {}).get("ir")
+        if not isinstance(ir_hash, str) or not ir_hash:
+            return unevaluable("validate_key_has_no_ir")
+        spec = resolver.spec_ref(node_key)
+        resolution = resolve_comparands(
+            repo_root, node_key=node_key, ir_hash=ir_hash, target=resolver.target,
+            spec_refs={node_key: spec} if spec else None)
+        own_run = {"pipeline_ref": str(sel.pipeline_ref), "run_id": str(sel.run_id),
+                   "evidence": comparand_evidence_sha256(run_dir)}
+        comparands = [c.detail() for c in resolution.comparands]
+        absent = list(resolution.absent)
+        if not resolution.comparands:
+            return CrossTargetAgreement("no_comparand", [], absent, [], [], own_run, None)
+        records = evaluate_primary_predicates(
+            ir, run_dir, comparands=resolution.comparands, cross_target_only=True)
+        structural = [r for r in records if r.get("kind") == "structural"]
+        if structural:
+            errors = [str(ev.get("error")) for r in structural
+                      for ev in (r.get("evaluated") or [])
+                      if isinstance(ev, dict) and ev.get("error")]
+            return unevaluable(
+                f"structural:{structural[0].get('quantity')}: "
+                f"{errors[0] if errors else 'not evaluated'}".replace(f"{repo_root}/", ""),
+                comparands=comparands, absent=absent, records=records, own_run=own_run)
+        disagreeing = sorted({
+            str(ev.get("comparand")) for r in records
+            for ev in (r.get("evaluated") or [])
+            if isinstance(ev, dict) and ev.get("comparand") is not None
+            and not ev.get("satisfied")})
+        return CrossTargetAgreement("disagree" if disagreeing else "agree", comparands,
+                                    absent, disagreeing, records, own_run, None)
+    except Exception as exc:  # noqa: BLE001 - an agreement that cannot be evaluated is not ready
+        # Repo-relative: an absolute workspace path would spend the readiness reason's budget
+        # before the message says why.
+        return unevaluable(f"{type(exc).__name__}: {exc}".replace(f"{repo_root}/", ""))
+
+
+def cross_target_not_ready_reason(agreement: Any) -> str | None:
+    """The readiness reason a not-ready agreement reports (`cross_target_disagreement:<target
+    ids>` / `cross_target_unevaluable:<cause>`), or None when it is ready."""
+    if agreement.status == "disagree":
+        return "cross_target_disagreement:" + ",".join(agreement.disagreeing)
+    if agreement.status == "unevaluable":
+        cause = str(agreement.error or "unknown").replace("\n", " ")
+        if len(cause) > _CROSS_TARGET_CAUSE_MAX_CHARS:
+            # both ends: the head names what failed, the tail says why
+            head = _CROSS_TARGET_CAUSE_MAX_CHARS // 3
+            cause = f"{cause[:head]}...{cause[-(_CROSS_TARGET_CAUSE_MAX_CHARS - head - 3):]}"
+        return "cross_target_unevaluable:" + cause
+    return None
 
 
 def phase_derivation_inputs(
@@ -2940,15 +3074,6 @@ def phase_derivation_inputs(
             "preset": "make_test",
         },
     }
-    # The comparands a cross-target predicate reads (issue #324): present only when the IR
-    # has one, so every other node's key is what it was before R4-d. The resolution's
-    # `absent` (issue #345) stays out of the key: a target that becomes a comparand moves the
-    # key through `comparand[]` already, and why one did not is a record, not an input.
-    if _ir_cross_target_predicates(repo_root, ir, node_key):
-        inputs["comparand"] = [
-            {"target_id": c.target_id, "evidence": c.evidence}
-            for c in resolve_comparands(repo_root, node_key=node_key, ir_hash=ir_hash,
-                                        target=target, spec_refs={node_key: spec}).comparands]
     return inputs
 
 
@@ -3113,6 +3238,10 @@ def check_phase_certified(
     it is given — an undeclared id raises `TargetProfileError` even for `compile`, whose
     answer does not read it — so a misspelled target is refused rather than silently unused.
 
+    `cross_target` is the node's cross-target agreement (`cross_target_agreement`, issue #383)
+    as a document when `step` is `validate` and it is certified, else None. `certified` keeps
+    its meaning — derived on its own key — and the agreement is reported beside it.
+
     `record=False` (`--no-record`) answers WITHOUT the transition: the conductor asks that way
     for a phase named in `--rederive`, which runs although certified — recording it skipped
     would be a false record (`skip_certified` is "a skipped step carrying the adopted artifact",
@@ -3132,9 +3261,12 @@ def check_phase_certified(
     _require_preflight_launchable(repo_root, orchestration_id, enforce_live_probe=False)
     target = (load_target_profile(repo_root, target_id.strip())
               if isinstance(target_id, str) and target_id.strip() else None)
-    certified, detail = _phase_certified(
+    certified, detail, resolver = _phase_certification(
         repo_root, orchestration_id, node_key, step, target=target)
     step_token = step.strip().lower()
+    cross_target = (
+        cross_target_agreement(repo_root, node_key, resolver=resolver).document()
+        if certified and step_token == "validate" else None)
     if certified and record:
         _transition_node_step_phase_state(
             repo_root,
@@ -3174,6 +3306,7 @@ def check_phase_certified(
         "revocation_severity": detail.get("revocation_severity"),
         "revocation_repair_strategy": detail.get("revocation_repair_strategy"),
         "phase_state": current_state,
+        "cross_target": cross_target,
     }
 
 
@@ -6394,9 +6527,25 @@ def _dependency_ready(
             details = _stale_dependency_details(repo_root, spec_ref, target=target)
             if not details:
                 return False, reason
+            disagree = [d for d in details if ": cross_target_disagreement:" in d]
+            unevaluable = [d for d in details if ": cross_target_unevaluable:" in d]
+            remedies = []
+            if len(disagree) + len(unevaluable) < len(details):
+                remedies.append("re-run with `--with-deps` to certify the dependency closure")
+            if disagree:
+                # Re-running does not resolve a disagreement: both variants stand certified
+                # on their own keys (issue #383).
+                remedies.append(
+                    "a cross-target disagreement is not resolved by re-running; see "
+                    "docs/RUNBOOK.md §3-0 (certifying one node on several targets)")
+            if unevaluable:
+                remedies.append(
+                    "a cross-target comparison that cannot be evaluated is repaired at the "
+                    "cause it names; see docs/RUNBOOK.md §3-0 (certifying one node on several "
+                    "targets)")
             return False, (
                 f"{reason}; dependency not ready: " + "; ".join(details)
-                + " — re-run with `--with-deps` to certify the dependency closure"
+                + " — " + "; ".join(remedies)
             )
 
         if step_token == "compile":
@@ -12195,12 +12344,23 @@ def _validate_orchestration_completion_for_pass(
     # statement rather than two.
     for node_key in reserved_nodes:
         for phase in STEP_KEYS_FOR_NODE_STATE[:_until_phase_index(repo_root, orchestration_id) + 1]:
-            certified, detail = _phase_certified(repo_root, orchestration_id, node_key, phase)
+            certified, detail, resolver = _phase_certification(
+                repo_root, orchestration_id, node_key, phase)
             if not certified:
                 raise RuntimeError(
                     f"cannot mark orchestration pass: {node_key}/{phase} is not certified: "
                     f"{detail.get('reason')}"
                 )
+            # A certified Validate whose variant disagrees with another target's, or whose
+            # comparison cannot be evaluated, does not pass (issue #383). Evaluated HERE, not
+            # only by the conductor's pre-pass ask, so a path that misses that ask cannot
+            # record `pass` over a disagreement.
+            if phase == "validate":
+                not_ready = cross_target_not_ready_reason(
+                    cross_target_agreement(repo_root, node_key, resolver=resolver))
+                if not_ready is not None:
+                    raise RuntimeError(
+                        f"cannot mark orchestration pass: {node_key}/validate: {not_ready}")
     # EMPTY edges is the new legitimate case; MALFORMED is not. The rule this replaced refused
     # both together — not by detecting malformation, but because `_load_graph` NORMALIZES a
     # corrupt graph to `{"edges": []}` and the old rule refused empty. So the raw file is what

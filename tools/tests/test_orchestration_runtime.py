@@ -28469,15 +28469,16 @@ class InterfaceHeaderBindingTests(unittest.TestCase):
 
 class ResolveComparandsTests(unittest.TestCase):
     """R4-d (issue #324): `resolve_comparands` over a fixture store holding two targets'
-    certified chains of one node over one IR, and the validate key's `comparand` member.
+    certified chains of one node over one IR — read by the cross-target agreement since issue
+    #383, which also took the `comparand` member out of the validate key.
 
     Pinned per eligibility clause, each by a run that fails only that clause and would
-    otherwise be selected (it is the NEWEST run): no `verdict.json`, another binary, an
-    `own_verdict` of fail, a judge that did not pass, a revoked meta; and the fallback to
-    `self_verdict` for a verdict written before `own_verdict`. Also pinned: B's build not
-    certified, B's IR not this run's, a target that does not load, an eligible run with no
-    capture, the member's absence for an IR with no cross-target predicate, and the key
-    moving when a comparand appears and when its bytes change."""
+    otherwise be selected (it is the NEWEST run): no `verdict.json`, another binary, a
+    `self_verdict` of fail (a verdict-8 run that failed only a cross-target record included),
+    another or no IR, a judge that did not pass, a post-judge gate that did not pass, a revoked
+    meta. Also pinned: B's build not certified, B's IR not this run's, a target that does not
+    load and an eligible run with no capture (`CrossTargetUnevaluable`), and the validate key
+    carrying no comparand member — a legacy stamp that does reads as a mismatch on it."""
 
     NODE = "component/spec_x@0.1.0"
     CROSS_IR = yaml.safe_dump({"io_contract": {"primary_predicates": [{
@@ -28552,7 +28553,7 @@ class ResolveComparandsTests(unittest.TestCase):
 
     def _seed_b(self) -> dict[str, str]:
         """A and B certified; B's fixture run then carries what an R4-d verdict carries
-        (`own_verdict`, `ir_hash`), which `certify_node`'s stub verdict does not."""
+        (`ir_hash`), which `certify_node`'s stub verdict does not."""
         self._certify(_TP)
         b = self._certify(self.b, orch="orch_b")
         self._stamp_fixture_verdict(b)
@@ -28562,15 +28563,14 @@ class ResolveComparandsTests(unittest.TestCase):
         path = (self.repo / refs["pipeline_ref"] / "runs" / "run_20260101_001" / refs["safe"]
                 / "verdict.json")
         doc = json.loads(path.read_text())
-        path.write_text(json.dumps({**doc, "own_verdict": doc["self_verdict"],
-                                    "ir_hash": self._ir_hash()}))
+        path.write_text(json.dumps({**doc, "ir_hash": self._ir_hash()}))
 
     def test_the_latest_eligible_run_of_the_other_target_is_selected(self) -> None:
         from tools.primary_evidence import comparand_evidence_sha256
         b = self._seed_b()
-        self._run(b, "run_20260102_001", verdict={"self_verdict": "pass", "own_verdict": "pass"})
+        self._run(b, "run_20260102_001", verdict={"self_verdict": "pass"})
         newest = self._run(b, "run_20260102_002", capture='{"u": [3.0, 4.0]}',
-                           verdict={"self_verdict": "fail", "own_verdict": "pass"})
+                           verdict={"self_verdict": "pass"})
         [comp] = self._resolve()
         self.assertEqual((comp.target_id, comp.run_id, comp.pipeline_ref),
                          (self.b.target_id, "run_20260102_002", b["pipeline_ref"]))
@@ -28578,12 +28578,15 @@ class ResolveComparandsTests(unittest.TestCase):
         self.assertEqual(comp.evidence, comparand_evidence_sha256(newest))
 
     def test_each_eligibility_clause_excludes_the_newest_run(self) -> None:
-        good = {"self_verdict": "pass", "own_verdict": "pass"}
+        good = {"self_verdict": "pass"}
         rows = [
             ("no verdict", {"verdict": None}),
             ("another binary", {"verdict": good, "binary_id": "bin_20260101_999"}),
-            ("own fail", {"verdict": {"self_verdict": "fail", "own_verdict": "fail"}}),
-            ("a verdict from before own_verdict", {"verdict": {"self_verdict": "pass"}}),
+            ("self fail", {"verdict": {"self_verdict": "fail"}}),
+            # issue #383: the verdict is the run's own; a verdict-8 run whose only failure was
+            # a cross-target record is no reference any more
+            ("verdict-8 failed only a cross-target record",
+             {"verdict": {"self_verdict": "fail", "own_verdict": "pass"}}),
             ("evaluated over another IR",
              {"verdict": {**good, "ir_hash": "sha256:" + "0" * 64}}),
             ("no IR recorded", {"verdict": {**good, "ir_hash": None}}),
@@ -28613,16 +28616,25 @@ class ResolveComparandsTests(unittest.TestCase):
 
     def test_an_xfail_run_the_judge_passed_is_eligible(self) -> None:
         b = self._seed_b()
-        self._run(b, "run_20260102_001", verdict={"self_verdict": "xfail", "own_verdict": "xfail"})
+        self._run(b, "run_20260102_001", verdict={"self_verdict": "xfail"})
         self.assertEqual([c.run_id for c in self._resolve()], ["run_20260102_001"])
 
-    def test_a_run_that_failed_only_a_cross_target_record_needs_no_review(self) -> None:
-        """The judge never runs on a failing verdict, so a run whose own evidence passed and
-        whose cross-target record failed stays a reference without one (plan decision 6)."""
+    def test_a_verdict_8_run_that_failed_only_a_cross_target_record_is_not_a_comparand(
+            self) -> None:
+        """Before issue #383 such a run (own evidence passed, cross record failed, so no judge)
+        stayed a reference without a review. The verdict is the run's own now, so its failing
+        `self_verdict` excludes it — with no review, and with one."""
         b = self._seed_b()
-        self._run(b, "run_20260102_001", review=None,
-                  verdict={"self_verdict": "fail", "own_verdict": "pass"})
-        self.assertEqual([c.run_id for c in self._resolve()], ["run_20260102_001"])
+        (self.repo / b["pipeline_ref"] / "runs" / "run_20260101_001" / b["safe"]
+         / "verdict.json").unlink()
+        for review in (None, {"decision": "pass"}):
+            with self.subTest(review=review):
+                run_id = "run_20260102_001" if review is None else "run_20260102_002"
+                self._run(b, run_id, review=review,
+                          verdict={"self_verdict": "fail", "own_verdict": "pass"})
+                self.assertEqual(self._resolve(), [])
+        self._run(b, "run_20260102_003", verdict={"self_verdict": "pass"})
+        self.assertEqual([c.run_id for c in self._resolve()], ["run_20260102_003"])
 
     def test_the_certified_fixture_run_itself_is_eligible(self) -> None:
         """`certify_node` writes a passing verdict, review and gate record, so its run is a
@@ -28645,7 +28657,7 @@ class ResolveComparandsTests(unittest.TestCase):
         self.assertEqual((res.comparands, res.absent),
                          ([], [{"target_id": self.b.target_id, "reason": "binary_not_found"}]))
         b = self._certify(self.b, orch="orch_b")
-        self._run(b, "run_20260102_001", verdict={"self_verdict": "pass", "own_verdict": "pass"})
+        self._run(b, "run_20260102_001", verdict={"self_verdict": "pass"})
         res = self._resolution()
         self.assertEqual((len(res.comparands), res.absent), (1, []))
         res = self._resolution(ir_hash="sha256:" + "0" * 64)
@@ -28655,7 +28667,7 @@ class ResolveComparandsTests(unittest.TestCase):
 
     def test_a_certified_build_with_no_eligible_run_is_recorded_as_such(self) -> None:
         b = self._seed_b()
-        self._run(b, "run_20260102_001", verdict={"self_verdict": "fail", "own_verdict": "fail"})
+        self._run(b, "run_20260102_001", verdict={"self_verdict": "fail"})
         # the fixture run is B's only other run: make it ineligible too
         (self.repo / b["pipeline_ref"] / "runs" / "run_20260101_001" / b["safe"]
          / "verdict.json").unlink()
@@ -28691,7 +28703,7 @@ class ResolveComparandsTests(unittest.TestCase):
         the run's own target is in neither, and `absent` is in target-id order."""
         from tools.tests.target_fixtures import install_target_profile, second_target
         b = self._seed_b()
-        self._run(b, "run_20260102_001", verdict={"self_verdict": "pass", "own_verdict": "pass"})
+        self._run(b, "run_20260102_001", verdict={"self_verdict": "pass"})
         c = second_target(target_id="fortran_cpu_t0")
         d = second_target(target_id="fortran_cpu_t9")
         install_target_profile(self.repo, c)
@@ -28788,7 +28800,7 @@ class ResolveComparandsTests(unittest.TestCase):
                              ["derivation_key"])
             self.assertEqual(self._resolve(), [])   # only bin_001 has a run
             self._run(b2, "run_20260102_001",
-                      verdict={"self_verdict": "pass", "own_verdict": "pass"})
+                      verdict={"self_verdict": "pass"})
             self.assertEqual([c.run_id for c in self._resolve()], ["run_20260102_001"])
 
     def test_a_comparand_mismatch_is_diagnosed_off_the_moved_input(self) -> None:
@@ -28820,7 +28832,7 @@ class ResolveComparandsTests(unittest.TestCase):
         with self._probe_answers("v1"):
             b = self._seed_b()
             self._run(b, "run_20260102_001",
-                      verdict={"self_verdict": "pass", "own_verdict": "pass"})
+                      verdict={"self_verdict": "pass"})
         with self._probe_answers("v2"):
             b2 = certify_node(self.repo, "orch_b", self.NODE, through="build", target=self.b,
                               binary_id="bin_20260101_002", ir_text=self.CROSS_IR)
@@ -28861,19 +28873,31 @@ class ResolveComparandsTests(unittest.TestCase):
     def test_a_declared_target_that_does_not_load_is_unresolvable(self) -> None:
         self._seed_b()
         (self.repo / "spec" / "targets" / "broken_t.yaml").write_text("target_id: [\n")
-        with self.assertRaisesRegex(ort.DerivationInputsUnresolvable,
+        with self.assertRaisesRegex(ort.CrossTargetUnevaluable,
                                     "comparand: target broken_t does not load"):
+            self._resolve()
+
+    def test_declared_targets_that_do_not_list_are_unevaluable(self) -> None:
+        """A misspelled profile (`*.yml`) makes the declared-target listing refuse: a broken
+        listing must not quietly drop every reference (mutation round 0: this raise had no
+        row)."""
+        self._seed_b()
+        (self.repo / "spec" / "targets" / "typo.yml").write_text("target_id: typo\n")
+        with self.assertRaisesRegex(ort.CrossTargetUnevaluable,
+                                    "comparand: the declared targets do not list"):
             self._resolve()
 
     def test_an_eligible_run_with_no_capture_is_unresolvable(self) -> None:
         b = self._seed_b()
         node = self._run(b, "run_20260102_001",
-                         verdict={"self_verdict": "pass", "own_verdict": "pass"})
+                         verdict={"self_verdict": "pass"})
         shutil.rmtree(node / "raw")
-        with self.assertRaisesRegex(ort.DerivationInputsUnresolvable, "no state snapshot"):
+        with self.assertRaisesRegex(ort.CrossTargetUnevaluable, "no state snapshot"):
             self._resolve()
 
-    def test_the_validate_key_member(self) -> None:
+    def test_the_validate_key_has_no_comparand_member(self) -> None:
+        """Issue #383: another target's eligible run — appearing, then its captures moving —
+        moves nothing of this target's validate key, and A stays certified throughout."""
         from tools.orchestration_runtime import _phase_certified
         a = self._certify(_TP)
         spec = spec_ref_of(self.NODE)
@@ -28884,39 +28908,33 @@ class ResolveComparandsTests(unittest.TestCase):
                 ir_ref=a["ir_ref"], binary_ref=f"{a['pipeline_ref']}/binary/{a['binary_id']}",
                 target=_TP)
 
-        self.assertEqual(inputs()["comparand"], [])
-        self.assertEqual(set(inputs()), {"binary", "ir", "spec", "run_policy", "comparand"})
+        before = inputs()
+        self.assertEqual(set(before), {"binary", "ir", "spec", "run_policy"})
+        b = self._certify(self.b, orch="orch_b")
+        node = self._run(b, "run_20260102_002", verdict={"self_verdict": "pass"})
+        self.assertEqual(len(self._resolve()), 1)
+        self.assertEqual(inputs(), before)
+        (node / "raw" / "state_snapshots" / "a.json").write_text('{"u": [1.0, 2.5]}')
+        self.assertEqual(inputs(), before)
         self.assertTrue(_phase_certified(self.repo, "orch_a", self.NODE, "validate",
                                          target=_TP)[0])
-        b = self._certify(self.b, orch="orch_b")
-        node = self._run(b, "run_20260102_001",
-                         verdict={"self_verdict": "pass", "own_verdict": "pass"})
-        [member] = inputs()["comparand"]
-        # why a declared target is not a comparand (issue #345) is a record, not a key input:
-        # with B declared and absent, the key holds the same members (round 1: a mutant keying
-        # `absent` survived every file)
-        (node / "verdict.json").unlink()
-        self.assertEqual([x["target_id"] for x in self._resolution().absent],
-                         [self.b.target_id])
-        self.assertEqual(set(inputs()), {"binary", "ir", "spec", "run_policy", "comparand"})
-        node = self._run(b, "run_20260102_002",
-                         verdict={"self_verdict": "pass", "own_verdict": "pass"})
-        [member] = inputs()["comparand"]
-        self.assertEqual(member["target_id"], self.b.target_id)
+
+    def test_a_legacy_stamp_with_a_comparand_member_reads_as_a_mismatch_on_it(self) -> None:
+        """A verdict-8 Validate of a cross-target node was stamped with `comparand[]`: it
+        reads `derivation_key_mismatch:comparand` once and re-derives (a key present on one
+        side only)."""
+        from tools.derivation import derivation_key
+        from tools.orchestration_runtime import _phase_certified
+        a = self._certify(_TP)
+        path = (self.repo / a["pipeline_ref"] / "runs" / "run_20260101_001" / a["safe"]
+                / "validate_meta.json")
+        doc = json.loads(path.read_text())
+        doc["derivation_inputs"]["comparand"] = [
+            {"target_id": self.b.target_id, "evidence": "sha256:" + "1" * 64}]
+        doc["derivation_key"] = derivation_key("validate", doc["derivation_inputs"])
+        path.write_text(json.dumps(doc))
         ok, detail = _phase_certified(self.repo, "orch_a", self.NODE, "validate", target=_TP)
         self.assertEqual((ok, detail["reason"]), (False, "derivation_key_mismatch:comparand"))
-        # stamp A under the new key, then move B's bytes: the ELEMENT names itself
-        from tools.tests.orchestration_fixtures import stamp_derivation
-        stamp_derivation(self.repo, self.NODE, "validate",
-                         f"{a['pipeline_ref']}/runs/run_20260101_001/{a['safe']}/validate_meta.json",
-                         target=_TP, ir_ref=a["ir_ref"],
-                         binary_ref=f"{a['pipeline_ref']}/binary/{a['binary_id']}")
-        self.assertTrue(_phase_certified(self.repo, "orch_a", self.NODE, "validate",
-                                         target=_TP)[0])
-        (node / "raw" / "state_snapshots" / "a.json").write_text('{"u": [1.0, 2.5]}')
-        ok, detail = _phase_certified(self.repo, "orch_a", self.NODE, "validate", target=_TP)
-        self.assertEqual((ok, detail["reason"]),
-                         (False, "derivation_key_mismatch:comparand[0].evidence"))
 
     def test_no_member_without_a_cross_target_predicate(self) -> None:
         a = self._certify(_TP, ir_text=f"node_key: {self.NODE}\n")
@@ -28925,3 +28943,334 @@ class ResolveComparandsTests(unittest.TestCase):
             ir_ref=a["ir_ref"], binary_ref=f"{a['pipeline_ref']}/binary/{a['binary_id']}",
             target=_TP)
         self.assertEqual(set(inputs), {"binary", "ir", "spec", "run_policy"})
+
+
+class CrossTargetAgreementTests(unittest.TestCase):
+    """Issue #383: `cross_target_agreement` over a fixture store holding two targets'
+    certified chains of one node over one IR, and the askers that read it — readiness
+    (`_verify_dep_stage_detail`, which the launch gate and the closure driver go through), the
+    completion vouch and `check_phase_certified`. The agreement is evaluated on demand: it
+    moves no key, and a disagreement makes the node not ready on BOTH targets."""
+
+    NODE = "component/spec_x@0.1.0"
+    IR = yaml.safe_dump({
+        "case": {"test_case_set": [{"case_id": "a", "inputs": {"n": 2}}]},
+        "io_contract": {
+            "raw_requirements": {"required_evidence": [{
+                "artifact": "state_snapshots", "required": True,
+                "schema": {"variables": [{"name": "u", "shape_expr": "[n]"}],
+                           "time_variable": "t", "time_shape_expr": "scalar"}}]},
+            "primary_predicates": [{
+                "test_id": "t", "quantity": "cross_target_state_agreement",
+                "target_cases": ["a"], "expr": "maxabs(final.u - comparand.final.u)",
+                "op": "le", "value": 1e-12, "per_case": True}]}})
+    PLAIN_IR = yaml.safe_dump({"case": {"test_case_set": [{"case_id": "a"}]}})
+    RUN = "run_20260101_001"
+
+    def setUp(self) -> None:
+        from tools.tests.target_fixtures import SECOND_TARGET
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.repo = Path(self.tmp.name)
+        self.b = SECOND_TARGET
+        patcher = accept_any_certified_ir()
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    _preflight = PhaseCertificationTests._preflight
+
+    def _capture(self, refs: dict[str, str], u: list[Any], *, run_id: str = RUN) -> Path:
+        node = self.repo / refs["pipeline_ref"] / "runs" / run_id / refs["safe"]
+        sdir = node / "raw" / "state_snapshots"
+        (sdir / "initial").mkdir(parents=True, exist_ok=True)
+        (sdir / "initial" / "a.json").write_text(json.dumps({"u": [0.0] * len(u), "t": 0.0}))
+        (sdir / "a.json").write_text(json.dumps({"u": u, "t": 1.0}))
+        return node
+
+    def _certify(self, target: Any, u: list[Any], *, orch: str,
+                 ir_text: str | None = None) -> dict[str, str]:
+        """A certified chain of the node for `target` whose Validate run holds `u`, its
+        verdict stamped with the IR hash (what makes it another target's comparand)."""
+        refs = certify_node(self.repo, orch, self.NODE, target=target,
+                            ir_text=ir_text if ir_text is not None else self.IR)
+        node = self._capture(refs, u)
+        verdict = node / "verdict.json"
+        doc = json.loads(verdict.read_text())
+        ir_hash = ort.DerivationResolver(self.repo, target=target).select(
+            self.NODE, "compile").output_hash
+        verdict.write_text(json.dumps({**doc, "ir_hash": ir_hash}))
+        # `verdict.json` is a hashed Validate deliverable: re-pin it, as the certifying run
+        # would have stamped the verdict it wrote
+        meta_path = node / "validate_meta.json"
+        meta = json.loads(meta_path.read_text())
+        rel = verdict.relative_to(self.repo).as_posix()
+        self.assertIn(rel, meta["artifact_hashes"])
+        meta["artifact_hashes"][rel] = "sha256:" + hashlib.sha256(verdict.read_bytes()).hexdigest()
+        meta_path.write_text(json.dumps(meta))
+        return refs
+
+    def _agreement(self, target: Any, resolver: Any = None) -> Any:
+        return ort.cross_target_agreement(
+            self.repo, self.NODE,
+            resolver=resolver or ort.DerivationResolver(self.repo, target=target))
+
+    def _ready(self, target: Any, resolver: Any = None) -> tuple[bool, str | None]:
+        kind, spec_id, version = ort._parse_node_key_strict(self.NODE)
+        return ort._verify_dep_stage_detail(self.repo, kind, spec_id, version,
+                                            "aggregate_verdict", target=target,
+                                            resolver=resolver)
+
+    def _key(self, target: Any) -> str | None:
+        ok, detail = ort._phase_certified(self.repo, "orch_a", self.NODE, "validate",
+                                          target=target)
+        self.assertTrue(ok, detail)
+        return detail["derivation_key"]
+
+    def test_another_targets_certification_does_not_move_the_validate_key(self) -> None:
+        """The #383 reproduction: A validated first, then B certifies. A's Validate key does
+        not move and A stays ready while B agrees; once B's captures disagree, A's Validate is
+        still certified on its own key and A is not ready, naming B."""
+        from tools.tests.target_fixtures import install_target_profile
+        install_target_profile(self.repo, self.b)
+        self._certify(_TP, [1.0, 2.0], orch="orch_a")
+        key = self._key(_TP)
+        self.assertEqual(self._agreement(_TP).status, "no_comparand")
+        self.assertEqual(self._ready(_TP), (True, None))
+        b = self._certify(self.b, [1.0, 2.0], orch="orch_b")
+        self.assertEqual(self._key(_TP), key)
+        agreement = self._agreement(_TP)
+        self.assertEqual((agreement.status, [c["target_id"] for c in agreement.comparands]),
+                         ("agree", [self.b.target_id]))
+        self.assertEqual(self._ready(_TP), (True, None))
+        self._capture(b, [1.0, 2.5])
+        self.assertEqual(self._key(_TP), key)
+        self.assertEqual(self._ready(_TP),
+                         (False, f"{self.NODE} validate: "
+                                 f"cross_target_disagreement:{self.b.target_id}"))
+
+    def test_a_disagreement_stops_both_targets(self) -> None:
+        """Both by value and by SHAPE: a captured variable whose shape differs between the two
+        variants is a disagreement (`comparand_shape_mismatch`, recorded with no value), not an
+        agreement (round 1: a mutant counting only valued evaluations survived)."""
+        for b_u in ([1.0, 2.5], [1.0, 2.0, 3.0]):
+            with self.subTest(b_u=b_u):
+                self.setUp()
+                self._stops_both(b_u)
+
+    def _stops_both(self, b_u: list[float]) -> None:
+        a = self._certify(_TP, [1.0, 2.0], orch="orch_a")
+        b = self._certify(self.b, b_u, orch="orch_b")
+        for target, other, refs in ((_TP, self.b, b), (self.b, _TP, a)):
+            with self.subTest(target=target.target_id):
+                agreement = self._agreement(target)
+                self.assertEqual((agreement.status, agreement.disagreeing),
+                                 ("disagree", [other.target_id]))
+                self.assertEqual([c["run_id"] for c in agreement.comparands], [self.RUN])
+                self.assertEqual(agreement.comparands[0]["pipeline_ref"],
+                                 refs["pipeline_ref"])
+                [rec] = agreement.records
+                self.assertEqual(rec["kind"], "physics")
+                self.assertFalse(self._ready(target)[0])
+
+    def test_no_other_certified_variant_is_ready_and_records_absent(self) -> None:
+        from tools.tests.target_fixtures import install_target_profile
+        install_target_profile(self.repo, self.b)
+        a = self._certify(_TP, [1.0, 2.0], orch="orch_a")
+        agreement = self._agreement(_TP)
+        self.assertEqual(agreement.status, "no_comparand")
+        # B is declared and has built nothing: its comparand resolver's first refusal
+        self.assertEqual(agreement.absent,
+                         [{"target_id": self.b.target_id, "reason": "source_not_found"}])
+        self.assertEqual(agreement.own_run["run_id"], self.RUN)
+        self.assertEqual(agreement.own_run["pipeline_ref"], a["pipeline_ref"])
+        self.assertEqual(self._ready(_TP), (True, None))
+
+    def test_an_ir_without_a_cross_target_predicate_is_not_asked(self) -> None:
+        self._certify(_TP, [1.0, 2.0], orch="orch_a", ir_text=self.PLAIN_IR)
+        with mock.patch.object(ort, "resolve_comparands",
+                               side_effect=AssertionError("resolved a comparand")):
+            self.assertEqual(self._agreement(_TP).status, "not_applicable")
+            self.assertEqual(self._ready(_TP), (True, None))
+
+    def test_an_unevaluable_comparison_is_not_ready_and_never_raises(self) -> None:
+        """Each row breaks one thing the comparison needs, after both targets agreed. The
+        agreement answers `unevaluable` with the cause, and readiness names it. The resolver
+        has selected A's Validate before the break, so a break that would also stop the
+        selection (the IR read) reaches the agreement alone."""
+        import contextlib
+        def broken_profile(a: dict, b: dict) -> Any:
+            (self.repo / "spec" / "targets" / "broken_t.yaml").write_text("target_id: [\n")
+            return contextlib.nullcontext()
+
+        def comparand_without_captures(a: dict, b: dict) -> Any:
+            shutil.rmtree(self.repo / b["pipeline_ref"] / "runs" / self.RUN / b["safe"]
+                          / "raw")
+            return contextlib.nullcontext()
+
+        def non_numeric_comparand(a: dict, b: dict) -> Any:
+            self._capture(b, ["x", 2.0])
+            return contextlib.nullcontext()
+
+        def own_captures_removed(a: dict, b: dict) -> Any:
+            shutil.rmtree(self.repo / a["pipeline_ref"] / "runs" / self.RUN / a["safe"]
+                          / "raw")
+            return contextlib.nullcontext()
+
+        def ir_unreadable(a: dict, b: dict) -> Any:
+            return mock.patch.object(ort, "_require_yaml",
+                                     side_effect=RuntimeError("PyYAML missing"))
+
+        def evaluator_raises(a: dict, b: dict) -> Any:
+            return mock.patch("tools.primary_evidence.evaluate_primary_predicates",
+                              side_effect=ZeroDivisionError("boom"))
+
+        rows = (("a declared target that does not load", broken_profile, "broken_t"),
+                ("a comparand run without captures", comparand_without_captures,
+                 "no state snapshot"),
+                ("a non-numeric comparand capture", non_numeric_comparand,
+                 "structural:cross_target_state_agreement: a.json: variable 'u' is not a "
+                 "rectangular numeric array"),
+                ("own captures removed", own_captures_removed, "no state snapshot"),
+                ("the IR does not read", ir_unreadable, "PyYAML missing"),
+                ("the evaluator raises", evaluator_raises, "ZeroDivisionError"))
+        for label, breaker, cause in rows:
+            with self.subTest(label):
+                self.setUp()
+                a = self._certify(_TP, [1.0, 2.0], orch="orch_a")
+                b = self._certify(self.b, [1.0, 2.0], orch="orch_b")
+                self.assertEqual(self._agreement(_TP).status, "agree")
+                resolver = ort.DerivationResolver(self.repo, target=_TP)
+                self.assertTrue(resolver.select(self.NODE, "validate").ok)
+                with breaker(a, b):
+                    agreement = self._agreement(_TP, resolver)
+                    ok, detail = self._ready(_TP, resolver)
+                self.assertEqual(agreement.status, "unevaluable")
+                self.assertIn(cause, str(agreement.error))
+                self.assertFalse(ok)
+                self.assertTrue(str(detail).startswith(
+                    f"{self.NODE} validate: cross_target_unevaluable:"), detail)
+                self.assertIn(cause, str(detail))
+                # repo-relative: an absolute workspace path would spend the reason's budget
+                self.assertNotIn(str(self.repo), str(agreement.error))
+
+    def test_the_launch_gate_names_a_disagreeing_dependency(self) -> None:
+        """A consumer of the node: its launch check refuses on the dependency's disagreement,
+        names it, and tells the operator that re-running does not resolve it — and, with a
+        stale dependency beside it, keeps the `--with-deps` remedy for that one."""
+        self._certify(_TP, [1.0, 2.0], orch="orch_a")
+        self._certify(self.b, [1.0, 2.5], orch="orch_b")
+        consumer = "component/spec_c@0.1.0"
+        ensure_spec_entry(self.repo, consumer)
+        spec = self.repo / spec_ref_of(consumer)
+        (spec / "deps.yaml").write_text(
+            "spec_id: spec_c\nspec_kind: component\ndependencies:\n  components:\n"
+            "    - component_id: spec_x\n      version_constraint: \">=0.1.0 <1.0.0\"\n"
+            "  profiles: []\n", encoding="utf-8")
+        ort._load_spec_catalog.cache_clear()
+        details = ort._stale_dependency_details(self.repo, spec_ref_of(consumer), target=_TP)
+        self.assertIn(f"{self.NODE} validate: cross_target_disagreement:{self.b.target_id}",
+                      details)
+        init_orchestration(repo_root=self.repo, orchestration_id="orch_c",
+                           spec_ref=spec_ref_of(consumer))
+        record_orchestration_target(self.repo, "orch_c", _TP)
+        write_preflight(repo_root=self.repo, orchestration_id="orch_c",
+                        payload=_launchable_preflight_dict(checked_at="2026-04-15T10:00:00Z"))
+        ort.mark_dependency_readiness(repo_root=self.repo, orchestration_id="orch_c")
+        ok, reason = ort._dependency_ready(self.repo, "orch_c", step="validate")
+        self.assertFalse(ok)
+        self.assertIn(f"cross_target_disagreement:{self.b.target_id}", str(reason))
+        self.assertIn("a cross-target disagreement is not resolved by re-running", str(reason))
+        self.assertNotIn("--with-deps", str(reason))
+        self.assertNotIn("cannot be evaluated", str(reason))
+        # an unevaluable comparison is repaired at its cause — not the disagreement's remedy
+        # (round 1: one `cross_target_` match told both the same thing)
+        (self.repo / "spec" / "targets" / "broken_t.yaml").write_text("target_id: [\n")
+        ok, reason = ort._dependency_ready(self.repo, "orch_c", step="validate")
+        self.assertFalse(ok)
+        self.assertIn(f"{self.NODE} validate: cross_target_unevaluable:", str(reason))
+        self.assertIn("is repaired at the cause it names", str(reason))
+        self.assertNotIn("not resolved by re-running", str(reason))
+        self.assertNotIn("--with-deps", str(reason))
+        # beside a dependency that is merely stale, the `--with-deps` remedy stays for that one
+        # (round 2: the mixed case had no row)
+        (self.repo / "spec" / "targets" / "broken_t.yaml").unlink()
+        with mock.patch.object(ort, "_stale_dependency_details", return_value=[
+                f"{self.NODE} validate: cross_target_disagreement:{self.b.target_id}",
+                "component/spec_y@0.1.0 validate: verdict_not_found"]):
+            ok, reason = ort._dependency_ready(self.repo, "orch_c", step="validate")
+        self.assertFalse(ok)
+        self.assertIn("re-run with `--with-deps` to certify the dependency closure", str(reason))
+        self.assertIn("a cross-target disagreement is not resolved by re-running", str(reason))
+
+    def test_the_completion_vouch_refuses_a_disagreeing_node(self) -> None:
+        self._preflight(self.repo, oid="orch_a")
+        self._certify(_TP, [1.0, 2.0], orch="orch_a")
+        b = self._certify(self.b, [1.0, 2.5], orch="orch_b")
+        with self.assertRaisesRegex(
+                RuntimeError, rf"{re.escape(self.NODE)}/validate: "
+                              rf"cross_target_disagreement:{self.b.target_id}"):
+            update_orchestration_status(repo_root=self.repo, orchestration_id="orch_a",
+                                        status="pass")
+        # the over-refusal probe: once the variants agree, the same run passes
+        self._capture(b, [1.0, 2.0])
+        self.assertEqual(update_orchestration_status(
+            repo_root=self.repo, orchestration_id="orch_a", status="pass")["status"], "pass")
+
+    def test_check_phase_certified_reports_the_agreement_beside_certified(self) -> None:
+        self._preflight(self.repo, oid="orch_a")
+        a = self._certify(_TP, [1.0, 2.0], orch="orch_a")
+        b = self._certify(self.b, [1.0, 2.5], orch="orch_b")
+
+        def ask(step: str) -> dict[str, Any]:
+            return ort.check_phase_certified(self.repo, "orch_a", node_key=self.NODE,
+                                             step=step, record=False,
+                                             target_id=_TP.target_id)
+
+        out = ask("validate")
+        self.assertTrue(out["certified"])
+        self.assertEqual((out["cross_target"]["status"], out["cross_target"]["disagreeing"]),
+                         ("disagree", [self.b.target_id]))
+        self.assertEqual(out["cross_target"]["comparands"][0]["pipeline_ref"],
+                         b["pipeline_ref"])
+        self.assertEqual(json.loads(json.dumps(out))["cross_target"], out["cross_target"])
+        for step in ("compile", "generate", "build"):
+            with self.subTest(step=step):
+                self.assertIsNone(ask(step)["cross_target"])
+        # not certified: no agreement is reported
+        ort._revoke_stage_meta(self.repo, self.repo / a["pipeline_ref"] / "runs" / self.RUN
+                               / a["safe"] / "validate_meta.json",
+                               reason="test", trigger_agent_run_id="t")
+        out = ask("validate")
+        self.assertEqual((out["certified"], out["cross_target"]), (False, None))
+
+
+class CrossTargetNotReadyReasonTests(unittest.TestCase):
+    """The readiness reason a not-ready agreement reports (issue #383)."""
+
+    def _agreement(self, status: str, **kw: Any) -> Any:
+        from tools.primary_evidence import CrossTargetAgreement
+        fields = {"comparands": [], "absent": [], "disagreeing": [], "records": [],
+                  "own_run": None, "error": None, **kw}
+        return CrossTargetAgreement(status, **fields)
+
+    def test_ready_statuses_report_nothing(self) -> None:
+        for status in ("not_applicable", "no_comparand", "agree"):
+            with self.subTest(status=status):
+                self.assertIsNone(ort.cross_target_not_ready_reason(self._agreement(status)))
+
+    def test_a_disagreement_names_every_target(self) -> None:
+        self.assertEqual(ort.cross_target_not_ready_reason(
+            self._agreement("disagree", disagreeing=["cpp_gpu", "t9"])),
+            "cross_target_disagreement:cpp_gpu,t9")
+
+    def test_a_long_cause_keeps_both_ends_within_the_cap(self) -> None:
+        cap = ort._CROSS_TARGET_CAUSE_MAX_CHARS
+        error = "WHAT-FAILED " + "p" * (cap * 3) + " WHY\nIT-FAILED"
+        self.assertGreater(len(error), cap)
+        reason = ort.cross_target_not_ready_reason(self._agreement("unevaluable", error=error))
+        cause = reason.removeprefix("cross_target_unevaluable:")
+        self.assertEqual(len(cause), cap)
+        self.assertTrue(cause.startswith("WHAT-FAILED"))
+        self.assertTrue(cause.endswith("WHY IT-FAILED"))
+        short = ort.cross_target_not_ready_reason(self._agreement("unevaluable", error="e"))
+        self.assertEqual(short, "cross_target_unevaluable:e")

@@ -68,13 +68,15 @@ Names, and where each resolves:
   translation pair needs the base case's state).
 - ``comparand.initial.<var>`` / ``comparand.final.<var>`` (grammar 3, issue #324) — the same
   capture read in the same case of ANOTHER TARGET's certified variant of this node: the
-  comparand run the host selected (`orchestration_runtime.resolve_comparands`) and bound into
-  the validate key by the hash of its snapshot bytes. A predicate that names one is a
-  CROSS-TARGET predicate: it is evaluated once per comparand, it must read this run's own
-  state too (a comparison of the comparand with a constant values nothing this run produced),
-  and it is no corroborant — `coverage_violations` does not count it, because it has no
-  secondary condition (generated code cannot read another target's state) and because it
-  holds vacuously on a target with no comparand. `comparand.inputs` / `comparand.<coordinate>`
+  comparand run the host selected (`orchestration_runtime.resolve_comparands`). A predicate
+  that names one is a CROSS-TARGET predicate: it is evaluated once per comparand, it must read
+  this run's own state too (a comparison of the comparand with a constant values nothing this
+  run produced), and it is no corroborant — `coverage_violations` does not count it, because
+  it has no secondary condition (generated code cannot read another target's state) and
+  because a run's own verdict never evaluates it. Since issue #383 a cross-target predicate is
+  not part of any run's verdict: `verdict.json` carries a `no_comparand` placeholder for it,
+  and the comparison is the cross-target agreement, evaluated on demand
+  (`orchestration_runtime.cross_target_agreement`) wherever "is this node ready" is asked. `comparand.inputs` / `comparand.<coordinate>`
   are not names (the comparand shares this run's IR, so they would be this case's own), and
   `comparand` does not combine with `at('<case>')` in either order.
 - a `bind` name — a named sub-expression, evaluated in `bind` order; a bind may reference
@@ -413,15 +415,16 @@ def is_cross_target_predicate(pred: Any) -> bool:
 
 
 def cross_target_predicates(ir: dict[str, Any]) -> list[dict[str, Any]]:
-    """The cross-target entries of an IR's `io_contract.primary_predicates`, in order. The
-    validate key carries a `comparand` member exactly when this is non-empty."""
+    """The cross-target entries of an IR's `io_contract.primary_predicates`, in order. A node
+    is asked for its cross-target agreement exactly when this is non-empty (issue #383)."""
     return [p for p in primary_predicates(ir) if is_cross_target_predicate(p)]
 
 
 class ComparandEvidence(NamedTuple):
-    """One comparand bound into a validate key: another target's certified run of the same
+    """One comparand of a cross-target agreement: another target's eligible run of the same
     node over the same IR. `run_dir` is the run node directory (absolute) the captures are
-    read from; `evidence` is `comparand_evidence_sha256(run_dir)` at selection time."""
+    read from; `evidence` is `comparand_evidence_sha256(run_dir)` at selection time — a record
+    of which bytes the agreement read, not an input of any key."""
     target_id: str
     pipeline_ref: str
     run_id: str
@@ -435,7 +438,7 @@ class ComparandEvidence(NamedTuple):
 
 class ComparandResolution(NamedTuple):
     """The answer of `orchestration_runtime.resolve_comparands` for one node on one target
-    (issue #345): `comparands`, the other declared targets whose certified variant is bound,
+    (issue #345): `comparands`, the other declared targets whose eligible variant is read,
     and `absent`, one `{"target_id", "reason"}` per other declared target that contributed
     nothing, in target-id order. Every other declared target is in exactly one of the two.
     `reason` is the comparand resolver's Build refusal — the first refusal along B's chain up
@@ -443,11 +446,38 @@ class ComparandResolution(NamedTuple):
     `derivation_key_mismatch:ir` from B's Generate when B was generated from an IR other than
     the node's standing certified one —, `revoked`, ...) — `compile_ir_mismatch` (B stands on
     the standing IR and the IR this run validates is not it) or `no_eligible_run`. The record is
-    as of this resolution. Only
-    `comparands` is keyed: a target that turns into a comparand moves the key through
-    `comparand[]` already."""
+    as of this resolution; nothing of it is keyed (issue #383)."""
     comparands: list[ComparandEvidence]
     absent: list[dict[str, str]]
+
+
+class CrossTargetAgreement(NamedTuple):
+    """The answer of `orchestration_runtime.cross_target_agreement` for one node on one target
+    (issue #383): whether its certified Validate run agrees with every other target's eligible
+    run under the IR's cross-target predicates, evaluated NOW.
+
+    `status` is `not_applicable` (the IR declares no cross-target predicate), `no_comparand`
+    (no other target has an eligible run), `agree`, `disagree` or `unevaluable`; only the last
+    two make a node not ready (`orchestration_runtime.cross_target_not_ready_reason`).
+    `comparands` are the other targets' runs read
+    (`ComparandEvidence.detail`), `absent` the other declared targets that contributed none and
+    why (`ComparandResolution.absent`), `disagreeing` the target ids a comparison failed
+    against (`physics` — a value or a state shape that disagrees), `records` the cross-target
+    records `evaluate_primary_predicates(..., cross_target_only=True)` returned,
+    `own_run` `{pipeline_ref, run_id, evidence}` of this target's run, and `error` what made the
+    comparison `unevaluable` (an exception, or a `structural` record), else None."""
+    status: str
+    comparands: list[dict[str, str]]
+    absent: list[dict[str, str]]
+    disagreeing: list[str]
+    records: list[dict[str, Any]]
+    own_run: dict[str, str] | None
+    error: str | None
+
+    def document(self) -> dict[str, Any]:
+        return {"status": self.status, "comparands": list(self.comparands),
+                "absent": list(self.absent), "disagreeing": list(self.disagreeing),
+                "records": list(self.records), "own_run": self.own_run, "error": self.error}
 
 
 #: The host-authored file under `raw/state_snapshots/` that is not a capture: the snapshot
@@ -1024,7 +1054,8 @@ def primary_predicates(ir: dict[str, Any]) -> list[Any]:
 
 
 def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
-                                comparands: Sequence[ComparandEvidence] = ()
+                                comparands: Sequence[ComparandEvidence] = (),
+                                cross_target_only: bool = False,
                                 ) -> list[dict[str, Any]]:
     """Evaluate every `io_contract.primary_predicates[]` entry of ``ir`` against the captures
     under ``run_dir``. Returns one record per predicate, in order::
@@ -1041,8 +1072,7 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
     of the certified IR.
 
     A CROSS-TARGET predicate (`predicate_reads_comparand`, grammar 3) is evaluated once per
-    entry of ``comparands`` — the other targets' certified runs the validate key bound — and
-    per target case, each ``evaluated[]`` element naming its ``comparand`` target id; the
+    entry of ``comparands`` — the other targets' eligible runs — and per target case, each ``evaluated[]`` element naming its ``comparand`` target id; the
     record's ``comparands`` lists the comparand runs (`ComparandEvidence.detail`). A mismatch
     against one comparand stops that comparand's cases and the rest are still evaluated; a
     captured variable whose SHAPE differs between the two runs is such a mismatch
@@ -1050,7 +1080,12 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
     comparand makes the record ``structural``. With no comparand at
     all the record is ``kind: no_comparand``, satisfied, with nothing evaluated — the first
     variant of a node has no reference, and the record says so rather than looking like a
-    comparison that held. Every other predicate's record carries ``comparands: []``."""
+    comparison that held. Every other predicate's record carries ``comparands: []``.
+
+    The verdict author passes no comparand, so in a `verdict.json` every cross-target record is
+    the ``no_comparand`` placeholder (issue #383). ``cross_target_only`` evaluates the
+    cross-target predicates alone, every other one skipped and absent from the result: the
+    cross-target agreement (`orchestration_runtime.cross_target_agreement`) asks that way."""
     preds = primary_predicates(ir)
     if not preds:
         return []
@@ -1095,6 +1130,8 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
                 f"{loc}: reads no captured state variable (initial.<var> / final.<var>) in "
                 "expr or a bind expr reaches")
         cross = predicate_reads_comparand(expr_refs, bind_refs)
+        if cross_target_only and not cross:
+            continue
         scope, contexts = _predicate_scope(pred, loc)
         targets = [c.strip() for c in pred["target_cases"]]
         record: dict[str, Any] = {
@@ -1404,9 +1441,9 @@ def coverage_violations(test_predicates: Any, primary_predicates: Any) -> list[s
     a malformed scope or an unparsable expression (each covers nothing).
 
     A CROSS-TARGET predicate (`is_cross_target_predicate`) covers nothing either, whatever its
-    `test_id` and `quantity` (issue #324): it compares this run with another target's, holds
-    vacuously on a target with no comparand (`kind: no_comparand`), and so cannot stand in for
-    a corroborant of this run's own secondary evidence."""
+    `test_id` and `quantity` (issue #324): it compares this run with another target's, is a
+    `no_comparand` placeholder in every run's own verdict (issue #383), and so cannot stand in
+    for a corroborant of this run's own secondary evidence."""
     if not isinstance(test_predicates, list):
         return []
     if not isinstance(primary_predicates, list):
@@ -1493,7 +1530,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--comparand", action="append", default=[], metavar="TARGET_ID=RUN_DIR",
                         help="bind another target's run node directory as a comparand of the "
                              "cross-target predicates (repeatable; the host's own selection is "
-                             "orchestration_runtime.resolve_comparands)")
+                             "orchestration_runtime.resolve_comparands, read by "
+                             "orchestration_runtime.cross_target_agreement)")
     args = parser.parse_args(argv)
     try:
         ir = _read_ir(args.ir)

@@ -10022,8 +10022,8 @@ def _validate_test_predicates(
         violations.append(f"{derived_path}:io_contract.test_predicates: {msg}")
 
     # Cross-target transcription (issue #324): a cross-target predicate covers no condition, so
-    # the coverage gate cannot see one omitted — and an IR without one binds no comparand, so a
-    # disagreeing variant certifies. Pin the SET: every test whose tests.md definition applies
+    # the coverage gate cannot see one omitted — and a node whose IR has none is asked no
+    # cross-target agreement (issue #383), so a disagreeing variant certifies. Pin the SET: every test whose tests.md definition applies
     # the cross-target judgment carries at least one cross-target predicate, and no other test
     # carries one. Which variables, normaliser and threshold is V3 (v)'s judgment.
     if tests_path is not None and _is_readable_file(tests_path):

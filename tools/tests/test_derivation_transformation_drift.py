@@ -330,17 +330,11 @@ def verdict_tuple() -> dict[str, str]:
         "Conductor._author_execute_verdict": _source_digest(wc.Conductor._author_execute_verdict),
         "Conductor._author_derived_validate_artifacts":
             _source_digest(wc.Conductor._author_derived_validate_artifacts),
-        # R4-d (issue #324): the comparand selection policy (`zero_base_architecture.md`'s
-        # "comparand selection policy version", folded into this transformation) — which other
-        # target's run a cross-target predicate reads, and the verdicts that make one eligible
-        # — and the `aggregate_verdict.json#cross_target` record the derived author writes.
-        "orchestration_runtime.resolve_comparands": _source_digest(ort.resolve_comparands),
-        "orchestration_runtime.COMPARAND_OWN_VERDICTS":
-            hashlib.sha256(json.dumps(sorted(ort.COMPARAND_OWN_VERDICTS)).encode()).hexdigest(),
-        "workflow_conductor._verdict_cross_target": _source_digest(wc._verdict_cross_target),
-        # Issue #345 PR-2: the binding the verdict author reads — the comparand runs evaluated
-        # and the `comparands_absent` record — comes from this second resolution, not the key's.
-        "Conductor._bind_comparands": _source_digest(wc.Conductor._bind_comparands),
+        # The comparand selection (`resolve_comparands`, `COMPARAND_OWN_VERDICTS`), the
+        # `aggregate_verdict.json#cross_target` author and the comparand binding were members
+        # from R4-d (issue #324) through verdict-8. Issue #383 (verdict-9) took the comparison
+        # out of the verdict and its key: the cross-target agreement is evaluated on demand and
+        # stored in no certified artifact, so it is no transformation of this phase.
     }
 
 
@@ -518,7 +512,16 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # ignored, so a bump would re-derive every node's Compile for nothing. (Measured by diffing
     # `compile_documents_tuple()` against origin/main dd5bbcb8's: the `phase_contract_document`
     # row and no other.)
-    "compile-docs-11": "bc88a25ad5cfac068f292bd6569e1aeb9632aad355d19600b256dc1c40ba3c60",
+    # Re-pinned by issue #383 (same reasoning form): the cross-target lines of the schema block
+    # say the predicate is evaluated by the host's cross-target agreement and never in a run's
+    # verdict, where they said it "holds vacuously" with no comparand and that a disagreement
+    # "fails the test"; the normaliser line says the comparand's side does not decide the
+    # agreement (it said "the verdict"). What a valid IR is does not change: no gate reads those comment lines,
+    # and the --stage compile gate's cross-target rules (`validate_pipeline_semantics`) are
+    # untouched, so a bump would re-derive every node's Compile for nothing.
+    "compile-docs-11": "4414d17503b9d455d3e32bcb4b72b0991b0d884b17bf0a794ce4ec67d28d6a55",
+    # The digest `compile-docs-11` shipped with at e6654c17 (before issue #383's re-pin above):
+    "compile-docs-11@e6654c17": "bc88a25ad5cfac068f292bd6569e1aeb9632aad355d19600b256dc1c40ba3c60",
     # ...and the digest `compile-docs-11` SHIPPED with (origin/main 1807917d), kept so a later
     # version returning to those bytes collides (`test_no_empty_bump_or_silent_revert`).
     "compile-docs-11@1807917d": "d07c8ad3e8c38ef2b4fa5b923459ba4e71bdfe3b605febd2fb50952cadd2fb1b",
@@ -1056,6 +1059,12 @@ PINNED_VERDICT: dict[str, str] = {
     # Re-pinned in round 3: the `ComparandResolution` docstring states which side is stale for
     # `derivation_key_mismatch:ir` and `compile_ir_mismatch`.
     "verdict-8": "40e7bdc9359fdf43b9f8a661f33839fdc7bcf120ed46a85f547710b0045d5659",
+    # verdict-9 (issue #383): the verdict evaluates no cross-target comparison — every
+    # cross-target record is the `no_comparand` placeholder, an evaluated one is refused,
+    # `own_verdict` and `comparands_absent` are gone — and the tuple loses the comparand
+    # selection, the binding and the `aggregate_verdict.json#cross_target` author, which no
+    # certified artifact carries any more (the agreement is evaluated on demand).
+    "verdict-9": "4eaaaabfd095b10841108ef2c82084eac4ac86c6c02293b34c00f47dbc39c001",
 }
 
 

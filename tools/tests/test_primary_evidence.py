@@ -14,8 +14,8 @@ What is PINNED here and what is SAMPLED (`atmofab-enforcement-change` §4):
   names — (a) a diagnostics that passes every secondary condition while the captured state
   fails the corroborant, and (c) one decoy case among two — fail the test with
   `corroboration=disagree`, and an IR with no primary predicate produces the same document
-  with `primary=None` as with `primary=[]` (since issue #324 both carry `own_verdict`, which
-  the document before this module did not).
+  with `primary=None` as with `primary=[]` (issue #324 added `own_verdict` to both and issue
+  #383 removed it again).
 
 The captures are SYNTHETIC (a seeded numpy array written in the runner's JSON shape). The
 recorded-run fixture the plan names (a `shallow_water2d` n032 case with its `initial/`
@@ -1625,8 +1625,10 @@ class CrossTargetSchemaAndCoverageTest(unittest.TestCase):
 
 
 class CrossTargetVerdictTest(unittest.TestCase):
-    """`evaluate_verdict` over cross-target records: `own_verdict` leaves them out,
-    `self_verdict` does not, and they are no corroborant."""
+    """`evaluate_verdict` over cross-target records (issue #383): the verdict evaluates no
+    comparison, so every cross-target record it accepts is the `no_comparand` placeholder, an
+    evaluated one is refused, and a cross-target record is no corroborant. `own_verdict` is
+    gone: the verdict IS the run's own."""
 
     def setUp(self) -> None:
         self.h = _field()
@@ -1638,66 +1640,98 @@ class CrossTargetVerdictTest(unittest.TestCase):
                 run.write_state(cid, self.h, self.h)
             self.runs[name] = run
 
-    def _verdict(self, preds: list[dict], comparands: list[str], diag: dict | None = None):
+    def _primary(self, preds: list[dict], comparands: list[str], **kw):
         ir = _ir(preds)
-        primary = pe.evaluate_primary_predicates(
+        return ir, pe.evaluate_primary_predicates(
             ir, self.runs["own"].root,
-            comparands=[_comparand(self.runs[t], t) for t in comparands])
+            comparands=[_comparand(self.runs[t], t) for t in comparands], **kw)
+
+    def _verdict(self, preds: list[dict], comparands: list[str], diag: dict | None = None):
+        ir, primary = self._primary(preds, comparands)
         return evaluate_verdict(ir["io_contract"]["test_predicates"], diag or _diag_all_pass(),
                                 run_id="r", node_key="n", primary=primary)
 
-    def test_agreement_passes_both_verdicts(self) -> None:
-        doc = self._verdict([MASS, SYM, CROSS], ["gpu", "mpi"])
-        self.assertEqual((doc["self_verdict"], doc["own_verdict"], doc["failure_class"]),
-                         ("pass", "pass", "pass"))
-        self.assertEqual(list(doc)[:4], ["node_key", "run_id", "self_verdict", "own_verdict"])
-        t_mass = doc["per_test"][0]
-        self.assertEqual([r["quantity"] for r in t_mass["basis"]["primary"]],
-                         ["mass_drift_rel", "cross_target_state_agreement"])
-        self.assertEqual(t_mass["basis"]["corroboration"], "agree")
-
-    def test_one_disagreeing_comparand_fails_self_but_not_own(self) -> None:
-        self.runs["gpu"].write_state("b", self.h, self.h * (1 + 1e-6))
-        doc = self._verdict([MASS, SYM, CROSS], ["gpu", "mpi"])
-        self.assertEqual((doc["self_verdict"], doc["own_verdict"], doc["failure_class"]),
-                         ("fail", "pass", "physics_fail"))
-        t_mass = doc["per_test"][0]
-        self.assertEqual(t_mass["status"], "fail")
-        # the secondary evidence and its own corroborant still agree: the disagreement is
-        # between targets, not between this run's checks and its state
-        self.assertEqual(t_mass["basis"]["corroboration"], "agree")
-
-    def test_structural_cross_record(self) -> None:
-        (self.runs["gpu"].sdir / "a.json").unlink()
-        doc = self._verdict([MASS, SYM, CROSS], ["gpu"])
-        self.assertEqual((doc["self_verdict"], doc["own_verdict"], doc["failure_class"]),
-                         ("fail", "pass", "structural_violation"))
-        # the comparand's gap is not this run's: its own evidence still corroborates
-        self.assertEqual(doc["per_test"][0]["basis"]["corroboration"], "agree")
-
-    def test_no_comparand_passes(self) -> None:
+    def test_the_verdict_takes_the_placeholder_and_writes_no_own_verdict(self) -> None:
         doc = self._verdict([MASS, SYM, CROSS], [])
-        self.assertEqual((doc["self_verdict"], doc["own_verdict"]), ("pass", "pass"))
+        self.assertEqual((doc["self_verdict"], doc["failure_class"]), ("pass", "pass"))
+        self.assertEqual(list(doc), ["node_key", "run_id", "self_verdict", "failure_class",
+                                     "per_test"])
+        t_mass = doc["per_test"][0]
+        self.assertEqual([(r["quantity"], r["kind"]) for r in t_mass["basis"]["primary"]],
+                         [("mass_drift_rel", "pass"),
+                          ("cross_target_state_agreement", "no_comparand")])
+        # the placeholder is no corroborant: corroboration compares the own record alone
+        self.assertEqual(t_mass["basis"]["corroboration"], "agree")
 
-    def test_own_failure_is_own_verdict(self) -> None:
+    def test_an_evaluated_cross_target_record_is_refused_by_the_verdict(self) -> None:
+        """Every evaluated shape — agreeing, disagreeing, structural — is a comparison the
+        verdict would otherwise ignore, so it raises rather than being dropped."""
+        self.runs["mpi"].write_state("b", self.h, self.h * (1 + 1e-6))
+        (self.runs["gpu"].sdir / "a.json").unlink()
+        ir = _ir([MASS, SYM, CROSS])
+        for name, kind in (("own", "pass"), ("mpi", "physics"), ("gpu", "structural")):
+            with self.subTest(kind=kind):
+                primary = pe.evaluate_primary_predicates(
+                    ir, self.runs["own"].root, comparands=[_comparand(self.runs[name], name)])
+                cross = [r for r in primary if r["quantity"] == "cross_target_state_agreement"]
+                self.assertEqual(cross[0]["kind"], kind)
+                with self.assertRaisesRegex(PredicateError, "evaluated cross-target"):
+                    evaluate_verdict(ir["io_contract"]["test_predicates"], _diag_all_pass(),
+                                     primary=primary)
+        # a placeholder carrying anything evaluated is refused too, one field at a time
+        ir, primary = self._primary([MASS, SYM, CROSS], [])
+        placeholder = next(r for r in primary if r["kind"] == "no_comparand")
+        for field, value in (("evaluated", [{"case": "a", "satisfied": True}]),
+                             ("comparands", [{"target_id": "gpu"}]),
+                             ("satisfied", False)):
+            with self.subTest(field=field):
+                bad = [dict(r) if r is not placeholder else {**r, field: value}
+                       for r in primary]
+                with self.assertRaisesRegex(PredicateError, "evaluated cross-target"):
+                    evaluate_verdict(ir["io_contract"]["test_predicates"], _diag_all_pass(),
+                                     primary=bad)
+
+    def test_own_failure_fails_the_verdict(self) -> None:
         self.runs["own"].write_state("a", self.h, self.h * 0.5)   # loses mass in case a
         doc = self._verdict([MASS, SYM, CROSS], [])
-        self.assertEqual((doc["self_verdict"], doc["own_verdict"]), ("fail", "fail"))
+        self.assertEqual(doc["self_verdict"], "fail")
 
     def test_the_coverage_recheck_does_not_count_a_cross_record(self) -> None:
         # t_mass's condition holds per case; its only same-quantity OWN record reads case a,
-        # and a cross record of the same quantity reads both
+        # and a cross placeholder of the same quantity reads both
         own_a = {**MASS, "per_case": None, "case": "a"}
         own_a.pop("per_case")
         cross = {**CROSS, "quantity": "mass_drift_rel"}
+        _ir_doc, primary = self._primary([own_a, cross, SYM], [])
+        self.assertEqual(
+            [sorted(r["cases_read"]) for r in primary if r["kind"] == "no_comparand"],
+            [["a", "b"]])
         with self.assertRaisesRegex(PredicateError, "reads every case"):
-            self._verdict([own_a, cross, SYM], ["gpu"])
+            self._verdict([own_a, cross, SYM], [])
 
-    def test_no_primary_still_writes_own_verdict(self) -> None:
+    def test_no_verdict_carries_own_verdict(self) -> None:
         ir = _ir(None)
         doc = evaluate_verdict(ir["io_contract"]["test_predicates"], _diag_all_pass())
-        self.assertEqual(doc["own_verdict"], doc["self_verdict"])
-        self.assertEqual(evaluate_verdict([], {})["own_verdict"], "fail")
+        self.assertNotIn("own_verdict", doc)
+        self.assertNotIn("own_verdict", evaluate_verdict([], {}))
+
+    def test_cross_target_only_evaluates_the_cross_target_predicates_alone(self) -> None:
+        """The agreement's evaluation: the cross-target predicates only, each against every
+        comparand, and nothing else evaluated — a broken own predicate is not even read."""
+        self.runs["mpi"].write_state("b", self.h, self.h * (1 + 1e-6))
+        broken = {**MASS, "expr": "final.nosuch / initial.h"}
+        _ir_doc, records = self._primary([broken, SYM, CROSS], ["gpu", "mpi"],
+                                         cross_target_only=True)
+        self.assertEqual([r["quantity"] for r in records], ["cross_target_state_agreement"])
+        [rec] = records
+        self.assertEqual(rec["kind"], "physics")
+        self.assertEqual([c["target_id"] for c in rec["comparands"]], ["gpu", "mpi"])
+        self.assertEqual(sorted({ev["comparand"] for ev in rec["evaluated"]}), ["gpu", "mpi"])
+        self.assertEqual({ev["comparand"] for ev in rec["evaluated"] if not ev["satisfied"]},
+                         {"mpi"})
+        # without the keyword the broken own predicate is evaluated (and recorded structural)
+        _ir_doc, everything = self._primary([broken, SYM, CROSS], ["gpu", "mpi"])
+        self.assertEqual(everything[0]["kind"], "structural")
 
 
 class CrossTargetCliTest(unittest.TestCase):
