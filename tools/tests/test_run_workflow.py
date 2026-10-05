@@ -2082,8 +2082,13 @@ class RunWorkflowTests(unittest.TestCase):
                 ("orch_same_target", "t_a"),
                 ("orch_other_target", "t_b"),
                 ("orch_no_target", None),
+                # No writer produces these two; the filter reads them the way a resume's
+                # `_load_resume_params` does (stripped, blank = no target), so each is kept.
+                ("orch_padded_same_target", " t_a "),
+                ("orch_blank_target", "  "),
             ):
-                invocation = {"target": {"target_id": target_id}} if target_id else {}
+                invocation = ({"target": {"target_id": target_id}}
+                              if target_id is not None else {})
                 d = repo_root / "workspace" / "orchestrations" / oid
                 d.mkdir(parents=True, exist_ok=True)
                 (d / "orchestration_meta.json").write_text(
@@ -2102,11 +2107,13 @@ class RunWorkflowTests(unittest.TestCase):
 
             self.assertEqual(
                 warned_for(tp.TargetProfile(target_id="t_a", doc={}, sha256="sha256:0")),
-                ["orch_no_target", "orch_same_target"],
+                ["orch_blank_target", "orch_no_target", "orch_padded_same_target",
+                 "orch_same_target"],
                 "another target's run is skipped; one that recorded no target is kept")
             self.assertEqual(
                 warned_for(None),
-                ["orch_no_target", "orch_other_target", "orch_same_target"],
+                ["orch_blank_target", "orch_no_target", "orch_other_target",
+                 "orch_padded_same_target", "orch_same_target"],
                 "a caller with no target claimed the bare spec, which covers every target")
 
     def test_a_resumed_run_holds_its_orchestration_claim_for_the_whole_run(self) -> None:
