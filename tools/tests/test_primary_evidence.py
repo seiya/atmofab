@@ -14,8 +14,8 @@ What is PINNED here and what is SAMPLED (`atmofab-enforcement-change` §4):
   names — (a) a diagnostics that passes every secondary condition while the captured state
   fails the corroborant, and (c) one decoy case among two — fail the test with
   `corroboration=disagree`, and an IR with no primary predicate produces the same document
-  with `primary=None` as with `primary=[]` (since issue #324 both carry `own_verdict`, which
-  the document before this module did not).
+  with `primary=None` as with `primary=[]` (issue #324 added `own_verdict` to both and issue
+  #383 removed it again).
 
 The captures are SYNTHETIC (a seeded numpy array written in the runner's JSON shape). The
 recorded-run fixture the plan names (a `shallow_water2d` n032 case with its `initial/`

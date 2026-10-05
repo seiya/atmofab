@@ -14192,8 +14192,11 @@ class Conductor:
                   report=report, record=rel)
         if status == "disagree":
             tids = ",".join(str(t) for t in (cross.get("disagreeing") or []))
+            # No path here: a real node's record path runs past the 200-character cap and would
+            # be cut into a path that does not exist. The event names the record whole.
             detail = (f"disagrees with {tids}; re-running does not resolve it "
-                      f"(docs/RUNBOOK.md §3-0); {rel}")
+                      f"(docs/RUNBOOK.md §3-0); the comparisons are in this orchestration's "
+                      f"cross_target/ record")
             return "cross_target_disagreement", detail
         if status == "unevaluable":
             detail = (f"repair the cause per docs/RUNBOOK.md §3-0; Validate stays certified: "

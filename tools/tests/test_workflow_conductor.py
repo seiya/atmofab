@@ -2358,13 +2358,13 @@ class CrossTargetStopTest(unittest.TestCase):
                 detail = status["--reason-detail"]
                 self.assertEqual(detail, (
                     "disagrees with cpp_gpu; re-running does not resolve it "
-                    "(docs/RUNBOOK.md §3-0); workspace/orchestrations/orch_x/cross_target/"
-                    "component__spec_x__0.1.0.json"))
-                self.assertLessEqual(len(detail), wc._PHASE_REASON_DETAIL_MAX_CHARS)
+                    "(docs/RUNBOOK.md §3-0); the comparisons are in this orchestration's "
+                    "cross_target/ record"))
                 [ev] = [e for e in events if e.get("event") == "cross_target_agreement"]
                 self.assertEqual((ev["status"], ev["agreement"], ev["disagreeing"],
                                   ev["targets"]),
                                  ("info", "disagree", ["cpp_gpu"], ["cpp_gpu"]))
+                self.assertEqual(ev["record"], self._record().relative_to(self.repo).as_posix())
                 self.assertEqual(ev["report"], [
                     "quantity='cross_target_state_agreement' "
                     "expr='maxabs(final.u - comparand.final.u)' op='le' comparand='cpp_gpu' "
@@ -2372,6 +2372,20 @@ class CrossTargetStopTest(unittest.TestCase):
                     "case='a' value=0.5 rhs=1e-12"])
                 # nothing is revoked: re-deriving either variant would reproduce it
                 self.assertNotIn("revoke-artifact", [sub for sub, _ in c.calls])
+
+    def test_the_disagreement_detail_fits_the_cap_whole_for_a_real_node(self) -> None:
+        """Round 3: with the record path in it, a real component node's detail ran to 211-232
+        characters and was cut into a path that does not exist. Two long target ids and the
+        longest-named node of the shallow-water closure: the detail is persisted uncut."""
+        self._NODE = "component/dynamics_shallow_water_reconstruction_2d_muscl_mc@0.1.1"
+        targets = ["fortran_cpu_mpi", "cpp_gpu_long_target_id"]
+        c = self._conductor({**self._CROSS, "disagreeing": targets})
+        self._conduct(c)
+        [status] = [cap for sub, cap in c.calls if sub == "set-status"]
+        detail = status["--reason-detail"]
+        self.assertTrue(detail.startswith(f"disagrees with {','.join(targets)};"), detail)
+        self.assertTrue(detail.endswith("cross_target/ record"), detail)
+        self.assertLess(len(detail), wc._PHASE_REASON_DETAIL_MAX_CHARS)
 
     def test_an_unevaluable_comparison_fails_named(self) -> None:
         cross = {**self._CROSS, "status": "unevaluable", "disagreeing": [], "records": [],
