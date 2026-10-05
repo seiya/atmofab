@@ -248,7 +248,7 @@ io_contract:
   #   translation pair      case: "<shifted>"  expr: "norm2(final.h - roll(at('<base>').final.h, inputs.initial.shift_x_fraction * inputs.grid.nx, 0)) / norm2(final.h)"
   #   cross-target agreement  quantity: "cross_target_state_agreement"  per_case: true  (one entry per variable the judgment names, over its test's target cases)
   #                         expr: "maxabs(final.u - comparand.final.u) / max(maxabs(final.u), maxabs(comparand.final.u), 1.0)"  op: le  value: 1.0e-12
-  #                         (the normaliser is the one tests.md states; this one is symmetric in the two variants, so which of them is the comparand does not decide the verdict)
+  #                         (the normaliser is the one tests.md states; this one is symmetric in the two variants, so which of them is the comparand does not decide the agreement)
   # COVERAGE (--stage compile, primary_evidence.coverage_violations): every condition's (test_id, quantity)
   #   has a primary_predicates entry — a verdict.* condition and an xfail test included (the guard's
   #   corroborant states the state fact the guard leaves behind) — that READS every case the condition

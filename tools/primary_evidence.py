@@ -438,7 +438,7 @@ class ComparandEvidence(NamedTuple):
 
 class ComparandResolution(NamedTuple):
     """The answer of `orchestration_runtime.resolve_comparands` for one node on one target
-    (issue #345): `comparands`, the other declared targets whose certified variant is bound,
+    (issue #345): `comparands`, the other declared targets whose eligible variant is read,
     and `absent`, one `{"target_id", "reason"}` per other declared target that contributed
     nothing, in target-id order. Every other declared target is in exactly one of the two.
     `reason` is the comparand resolver's Build refusal — the first refusal along B's chain up
@@ -451,20 +451,15 @@ class ComparandResolution(NamedTuple):
     absent: list[dict[str, str]]
 
 
-#: The statuses of a `CrossTargetAgreement` (issue #383). Only `disagree` and `unevaluable`
-#: make a node not ready; `no_comparand` (no other target has an eligible run) and
-#: `not_applicable` (the IR declares no cross-target predicate) are ready, like `agree`.
-CROSS_TARGET_STATUSES: tuple[str, ...] = (
-    "not_applicable", "no_comparand", "agree", "disagree", "unevaluable")
-CROSS_TARGET_NOT_READY: frozenset[str] = frozenset({"disagree", "unevaluable"})
-
-
 class CrossTargetAgreement(NamedTuple):
     """The answer of `orchestration_runtime.cross_target_agreement` for one node on one target
     (issue #383): whether its certified Validate run agrees with every other target's eligible
     run under the IR's cross-target predicates, evaluated NOW.
 
-    `status` is one of `CROSS_TARGET_STATUSES`. `comparands` are the other targets' runs read
+    `status` is `not_applicable` (the IR declares no cross-target predicate), `no_comparand`
+    (no other target has an eligible run), `agree`, `disagree` or `unevaluable`; only the last
+    two make a node not ready (`orchestration_runtime.cross_target_not_ready_reason`).
+    `comparands` are the other targets' runs read
     (`ComparandEvidence.detail`), `absent` the other declared targets that contributed none and
     why (`ComparandResolution.absent`), `disagreeing` the target ids a comparison failed
     against (`physics` — a value or a state shape that disagrees), `records` the cross-target

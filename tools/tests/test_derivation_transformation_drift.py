@@ -515,10 +515,11 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Re-pinned by issue #383 (same reasoning form): the cross-target lines of the schema block
     # say the predicate is evaluated by the host's cross-target agreement and never in a run's
     # verdict, where they said it "holds vacuously" with no comparand and that a disagreement
-    # "fails the test". What a valid IR is does not change: no gate reads those comment lines,
+    # "fails the test"; the normaliser line says the comparand's side does not decide the
+    # agreement (it said "the verdict"). What a valid IR is does not change: no gate reads those comment lines,
     # and the --stage compile gate's cross-target rules (`validate_pipeline_semantics`) are
     # untouched, so a bump would re-derive every node's Compile for nothing.
-    "compile-docs-11": "d63d25e2857c1c7cb77983184939220dedb551904bc842f05809a18adae0d426",
+    "compile-docs-11": "4414d17503b9d455d3e32bcb4b72b0991b0d884b17bf0a794ce4ec67d28d6a55",
     # The digest `compile-docs-11` shipped with at e6654c17 (before issue #383's re-pin above):
     "compile-docs-11@e6654c17": "bc88a25ad5cfac068f292bd6569e1aeb9632aad355d19600b256dc1c40ba3c60",
     # ...and the digest `compile-docs-11` SHIPPED with (origin/main 1807917d), kept so a later
@@ -1063,7 +1064,7 @@ PINNED_VERDICT: dict[str, str] = {
     # `own_verdict` and `comparands_absent` are gone — and the tuple loses the comparand
     # selection, the binding and the `aggregate_verdict.json#cross_target` author, which no
     # certified artifact carries any more (the agreement is evaluated on demand).
-    "verdict-9": "08ee0b3cdae3f97e74e8c324f09733bee0de07676c9d5440b4e472ee2ea88d05",
+    "verdict-9": "4eaaaabfd095b10841108ef2c82084eac4ac86c6c02293b34c00f47dbc39c001",
 }
 
 
