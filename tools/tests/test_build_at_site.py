@@ -17,7 +17,6 @@ import json
 import os
 import stat
 import subprocess
-import sys
 import tempfile
 import textwrap
 import unittest
@@ -37,10 +36,7 @@ from tools.tests.llm_samples import sample_config_with as _cfg
 from tools.tests.target_fixtures import TARGET_ID, profile_with
 from tools.tests.test_execute_at_site import _real_gate_free_run
 from tools.tests.test_remote_execution import _SCP_SHIM, _SSH_SHIM
-from tools.tests.test_workflow_conductor import _TargetedConductor
-
-sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "mcp_servers"))
-import build_runtime_server
+from tools.tests.test_workflow_conductor import _server, _TargetedConductor
 
 #: The version the site's fake compiler answers: no real compiler prints it.
 _SITE_VERSION = "ZZ Fortran (site build) 99.1.0"
@@ -192,15 +188,15 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
         self.assertEqual(entry["tool_name"], "compile_project")
         self.assertEqual(entry["cwd"], str(n.src))
         # `command` is what the local server would have run: the local paths.
-        jobs = build_runtime_server.default_build_jobs()
-        self.assertEqual(entry["command"], build_runtime_server.build_command(
+        jobs = _server().default_build_jobs()
+        self.assertEqual(entry["command"], _server().build_command(
             "make", None, jobs,
             [f"OBJDIR={n.obj}", f"BINDIR={n.bin}", "BIN=spec_x_runner"]))
-        self.assertEqual(entry["site"]["remote_command"], build_runtime_server.build_command(
+        self.assertEqual(entry["site"]["remote_command"], _server().build_command(
             "make", None, jobs,
             [f"OBJDIR={n.job}/build", f"BINDIR={n.job}/bin", "BIN=spec_x_runner"]))
         self.assertEqual(entry["site"]["remote_cwd"], f"{n.job}/src")
-        self.assertEqual(entry["timeout_sec"], build_runtime_server.COMPILE_PROJECT_TIMEOUT_SEC)
+        self.assertEqual(entry["timeout_sec"], _server().COMPILE_PROJECT_TIMEOUT_SEC)
         # The site's diagnostics are kept whole, as the local build keeps them.
         self.assertEqual(entry["capture_limit"], wc._FULL_CAPTURE_LIMIT)
         self.assertEqual(n.meta()["environment"]["build_site"]["host"], "box")
@@ -360,7 +356,7 @@ class BuildAtTheLocalSiteTests(unittest.TestCase):
                         fake_compile.args = args
                         return {"ok": True, "return_code": 0, "command_id": "cid"}
 
-                    with mock.patch.object(build_runtime_server, "tool_compile_project",
+                    with mock.patch.object(_server(), "tool_compile_project",
                                            fake_compile):
                         n.build()
                     self.assertEqual(fake_compile.args["project_dir"], str(n.src))
