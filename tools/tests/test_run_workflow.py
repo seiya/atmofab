@@ -6011,6 +6011,61 @@ class DependencyClosureTests(unittest.TestCase):
             self.assertEqual(b["rerun_reason"]["detail"],
                              "component/b@0.1.0 build: derivation_key_mismatch:closure[0].source")
 
+    def test_the_driver_stops_named_when_a_member_disagrees_across_targets(self) -> None:
+        """Issue #383, through the REAL readiness wire: a certified member whose variant
+        disagrees with another target's is not skipped — its readiness names
+        `cross_target_disagreement` — so the driver runs it, its conductor ends `fail` (named,
+        `CrossTargetStopTest`), and the closure stops there without reaching the target. Only
+        the agreement is faked; its own evaluation is `CrossTargetAgreementTests`'."""
+        from tools.orchestration_runtime import _load_spec_catalog
+        from tools.primary_evidence import CrossTargetAgreement
+        import tools.orchestration_runtime as ort
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            self._seed_diamond(repo_root)
+            _load_spec_catalog.cache_clear()
+            self._seed_certified_node(repo_root, "component", "c", "0.1.0",
+                                      dep_body="module c_model\nend module c_model\n")
+            self._seed_certified_node(repo_root, "component", "b", "0.1.0")
+
+            def agreement(_repo, node_key, *, resolver):  # type: ignore[no-untyped-def]
+                if node_key == "component/c@0.1.0":
+                    return CrossTargetAgreement("disagree", [], [], ["cpp_gpu"], [], None, None)
+                return CrossTargetAgreement("not_applicable", [], [], [], [], None, None)
+
+            ran: list[str] = []
+
+            def fake_run_node(**kw):  # type: ignore[no-untyped-def]
+                ran.append(str(kw.get("spec_ref")))
+                return 2 if kw.get("spec_ref") == "spec/component/c" else 0
+
+            orig = run_workflow._run_node
+            run_workflow._run_node = fake_run_node  # type: ignore[assignment]
+            buf = io.StringIO()
+            try:
+                with mock.patch.object(ort, "cross_target_agreement", side_effect=agreement), \
+                        redirect_stdout(buf):
+                    rc = run_workflow._run_with_dependency_closure(
+                        repo_root=repo_root,
+                        base_env={"PATH": os.environ.get("PATH", "")},
+                        target_orchestration_id="orch_target",
+                        target_spec_ref="spec/problem/a",
+                        target_source_dependency_ref="spec/problem/a/deps.yaml",
+                        until_phase="Validate", llm="claude", llm_command="claude",
+                        llm_config=_sample_config("claude"), workflow_mode="dev",
+                        agent_model=None, status="running", run_conductor=False,
+                        stdout_format="jsonl", target_profile=_TP_RW)
+            finally:
+                run_workflow._run_node = orig  # type: ignore[assignment]
+            events = [json.loads(ln) for ln in buf.getvalue().splitlines() if ln.strip()]
+        self.assertNotEqual(rc, 0)
+        self.assertEqual(ran, ["spec/component/c"])
+        [begin] = [e for e in events if e.get("event") == "dependency_node_begin"
+                   and e.get("spec_ref") == "spec/component/c"]
+        self.assertIn("component/c@0.1.0 validate: cross_target_disagreement:cpp_gpu",
+                      json.dumps(begin))
+
     def test_the_driver_re_runs_a_consumer_whose_dependency_resolution_moved(self) -> None:
         """The 13a twin of the test above, driven end to end through the REAL readiness
         machinery (issue #178 round 0: deleting the resolution comparison from the primitive
@@ -7920,6 +7975,28 @@ class StdoutFormatTests(unittest.TestCase):
                 f"    [warn   ] waiting for {scope} k: another driver holds its claim "
                 "(docs/RUNBOOK.md §3-1)",
             )
+        # The cross-target agreement (issue #383): a disagreement lists every failing
+        # comparison under its line, unelided; the other statuses are one line.
+        self.assertEqual(
+            f({"status": "info", "event": "cross_target_agreement", "node_key": "c/x@0.1.0",
+               "agreement": "disagree", "disagreeing": ["cpp_gpu", "gpu2"],
+               "record": "workspace/orchestrations/o/cross_target/c.json",
+               "report": ["quantity='q' case='a' value=0.5", "quantity='q' case='b'"]}),
+            "  [phase   ] cross-target disagree with cpp_gpu,gpu2 — re-running does not "
+            "resolve it (docs/RUNBOOK.md §3-0); record "
+            "workspace/orchestrations/o/cross_target/c.json\n"
+            "    - quantity='q' case='a' value=0.5\n    - quantity='q' case='b'")
+        self.assertEqual(
+            f({"status": "info", "event": "cross_target_agreement", "agreement": "unevaluable",
+               "error": "CrossTargetUnevaluable: comparand: target t does not load"}),
+            "  [phase   ] cross-target unevaluable: CrossTargetUnevaluable: comparand: target t "
+            "does not load — --resume once repaired (docs/RUNBOOK.md §3-0)")
+        for agreement, targets, shown in (("agree", ["cpp_gpu"], "cpp_gpu"),
+                                          ("no_comparand", [], "none")):
+            self.assertEqual(
+                f({"status": "info", "event": "cross_target_agreement",
+                   "agreement": agreement, "targets": targets}),
+                f"  [phase   ] cross-target {agreement} (compared with: {shown})")
         # A launch-check refusal is rendered WHOLE: an 800-character detail survives, because
         # it names every dependency that is not ready and the remedy (issue #383).
         long_detail = "dependency not ready: " + "x" * 800 + " — re-run with `--with-deps`"

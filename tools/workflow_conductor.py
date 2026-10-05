@@ -411,59 +411,6 @@ def _execute_failure_excerpt(text: str) -> str:
 _VERDICT_FAIL_MARKER = "[execute fail: verdict]"
 
 
-def _verdict_cross_target(verdict_doc: Any) -> dict[str, Any] | None:
-    """`{own_verdict, comparands[, absent]}` of a `verdict.json` that carries a cross-target
-    primary record (issue #324) — the comparand runs listed once per target, in first-seen
-    order, and `absent`, `verdict.json#comparands_absent` (issue #345) when the verdict carries
-    it — or None when it carries none. Read off the verdict file, not the conductor's binding:
-    the aggregate is written at post-judge, possibly by a resumed conductor."""
-    from tools.verdict_evaluator import is_cross_target_record
-    per_test = verdict_doc.get("per_test") if isinstance(verdict_doc, dict) else None
-    seen: dict[str, dict[str, Any]] = {}
-    any_cross = False
-    for item in (per_test if isinstance(per_test, list) else []):
-        basis = item.get("basis") if isinstance(item, dict) else None
-        records = basis.get("primary") if isinstance(basis, dict) else None
-        for rec in (records if isinstance(records, list) else []):
-            if not isinstance(rec, dict) or not is_cross_target_record(rec):
-                continue
-            any_cross = True
-            for comp in (rec.get("comparands") if isinstance(rec.get("comparands"), list)
-                         else []):
-                if isinstance(comp, dict) and str(comp.get("target_id")) not in seen:
-                    seen[str(comp.get("target_id"))] = comp
-    if not any_cross:
-        return None
-    out: dict[str, Any] = {"own_verdict": verdict_doc.get("own_verdict"),
-                           "comparands": list(seen.values())}
-    if isinstance(verdict_doc.get("comparands_absent"), list):
-        out["absent"] = verdict_doc["comparands_absent"]
-    return out
-
-
-#: The `verdict.json` fields the judge is not handed (issue #345): `comparands_absent` records
-#: why each OTHER declared target is not a comparand. It is a record for the operator about
-#: other targets' state, not evidence of this run, and a cross-target record that holds
-#: vacuously is already what `tests.md` sanctions for a target with no other certified variant.
-_JUDGE_VERDICT_OMITTED_FIELDS: tuple[str, ...] = ("comparands_absent",)
-
-
-def _judge_verdict_view(text: str) -> str:
-    """The `verdict.json` text the judge leaf is handed: the file as written, less
-    `_JUDGE_VERDICT_OMITTED_FIELDS`. A verdict carrying none of them is returned byte for byte;
-    one that does is re-serialised in the writer's form (`_write_run_node_meta`), so the view
-    differs from the file by those keys alone. Text that does not parse as a JSON object is
-    returned unchanged: judging a malformed verdict is the judge's job, not this view's."""
-    try:
-        doc = json.loads(text)
-    except ValueError:
-        return text
-    if not isinstance(doc, dict) or not any(k in doc for k in _JUDGE_VERDICT_OMITTED_FIELDS):
-        return text
-    view = {k: v for k, v in doc.items() if k not in _JUDGE_VERDICT_OMITTED_FIELDS}
-    return json.dumps(view, indent=2, ensure_ascii=False) + "\n"
-
-
 def _verdict_failure_report(verdict_doc: dict[str, Any]) -> str:
     """The `[execute fail: verdict]` block for a `self_verdict=fail` run.
 
@@ -514,16 +461,6 @@ def _verdict_failure_report(verdict_doc: dict[str, Any]) -> str:
                     continue
                 parts = [f"primary quantity={rec.get('quantity')!r}",
                          f"expr={rec.get('expr')!r}", f"op={rec.get('op')!r}"]
-                if ev.get("comparand") is not None:
-                    # a cross-target record (issue #324): which other target's variant, and
-                    # the run of it this verdict read
-                    parts.append(f"comparand={ev['comparand']!r}")
-                    for comp in (rec.get("comparands") if isinstance(rec.get("comparands"), list)
-                                 else []):
-                        if isinstance(comp, dict) and comp.get("target_id") == ev["comparand"]:
-                            parts.append(f"comparand_run="
-                                         f"{comp.get('pipeline_ref')}/runs/{comp.get('run_id')}")
-                            break
                 if ev.get("case") is not None:
                     parts.append(f"case={ev['case']!r}")
                 if ev.get("reason"):
@@ -538,6 +475,36 @@ def _verdict_failure_report(verdict_doc: dict[str, Any]) -> str:
         if isinstance(basis, dict) and basis.get("corroboration"):
             lines.append(f"  corroboration={basis['corroboration']}")
     return "\n".join(lines)
+
+
+def _cross_target_disagreement_report(cross: Mapping[str, Any]) -> list[str]:
+    """One line per unsatisfied evaluation of a cross-target agreement (issue #383; the
+    `cross_target` document `check-phase-certified` reports): the quantity, the expression,
+    the comparand target and the run of it that was read, the case, and the value against the
+    bound — or the reason (`comparand_shape_mismatch`, an evaluation error)."""
+    runs = {str(c.get("target_id")): f"{c.get('pipeline_ref')}/runs/{c.get('run_id')}"
+            for c in (cross.get("comparands") or []) if isinstance(c, dict)}
+    lines: list[str] = []
+    for rec in (cross.get("records") or []):
+        if not isinstance(rec, dict):
+            continue
+        for ev in (rec.get("evaluated") or []):
+            if not isinstance(ev, dict) or ev.get("satisfied"):
+                continue
+            tid = str(ev.get("comparand"))
+            parts = [f"quantity={rec.get('quantity')!r}", f"expr={rec.get('expr')!r}",
+                     f"op={rec.get('op')!r}", f"comparand={tid!r}",
+                     f"comparand_run={runs.get(tid, '?')}", f"case={ev.get('case')!r}"]
+            if ev.get("reason"):
+                parts.append(f"reason={ev['reason']}")
+            if ev.get("error"):
+                parts.append(f"error={ev['error']!r}")
+            if "value" in ev:
+                parts.append(f"value={ev['value']!r}")
+            if "rhs" in ev:
+                parts.append(f"rhs={ev['rhs']!r}")
+            lines.append(" ".join(parts))
+    return lines
 
 
 # Validate.execute STRUCTURAL failure_category -> (retry_target_phase, repair_strategy).
@@ -3718,15 +3685,6 @@ class Conductor:
     #: it resolves itself, so what is staged is what the key says even when a member is
     #: re-certified between the key and the copy (a parallel closure does that).
     _phase_closure_bindings: dict[tuple[str, str], list[dict[str, Any]]] = field(
-        default_factory=dict, init=False, repr=False)
-    #: The comparands each node's Validate attempt in flight bound (issue #324): the
-    #: The `primary_evidence.ComparandResolution` of a node's validate key: `comparands`, one
-    #: `ComparandEvidence` per `comparand[]` entry of the key, and `absent`, every other
-    #: declared target that is not one and why (issue #345) — resolved at phase start by
-    #: `_phase_derivation` and checked there against the key. Set exactly when the key carries
-    #: a `comparand` member; `_author_execute_verdict` evaluates the cross-target predicates
-    #: against `comparands`, records `absent`, and refuses to evaluate them without.
-    _phase_comparand_bindings: dict[str, Any] = field(
         default_factory=dict, init=False, repr=False)
     #: The artifact directories THIS conductor process created with an exclusive `mkdir`
     #: (`_mint_seq_dir`): an id is this process's to write under exactly when its directory
@@ -8328,7 +8286,6 @@ class Conductor:
         excerpt = raw_evidence_excerpt(
             self.repo_root / paths["raw_evidence_excerpt_document"], io_contract)
         context = {key: _read(key) for key, _ in self._PURE_JUDGE_RUN_NODE_DOCUMENTS}
-        context["verdict_document"] = _judge_verdict_view(context["verdict_document"])
         context.update({
             "tests_document": _read("tests_document"),
             "io_contract_document": yaml.safe_dump(io_contract, sort_keys=False,
@@ -11944,34 +11901,12 @@ class Conductor:
         verdict; classify_failure's execute branch then routes it to the escalate diagnostician
         (prod) / fail_closed (dev) — the diagnostician can reopen Compile for the IR defect —
         rather than crashing execute."""
-        from tools.primary_evidence import (
-            comparand_evidence_sha256,
-            cross_target_predicates,
-            evaluate_primary_predicates,
-        )
+        from tools.primary_evidence import evaluate_primary_predicates
         from tools.verdict_evaluator import evaluate_verdict, PredicateError
 
-        # The comparands the validate key bound (issue #324). Checked OUTSIDE the evaluation
-        # below, so a failure here is the conductor's (a transport fail_closed), not a
-        # structural verdict the leaf's repair would be charged with: a cross-target
-        # predicate with no binding would read as `no_comparand` and pass vacuously, and a
-        # comparand whose captures moved since the key was taken is not what the key names.
-        comparands: list[Any] = []
-        absent: list[dict[str, str]] | None = None
-        if cross_target_predicates(ir if isinstance(ir, dict) else {}):
-            bound = self._phase_comparand_bindings.get(refs.node_key)
-            if bound is None:
-                raise RuntimeError(
-                    f"comparand_unbound: {refs.node_key} has cross-target predicates but this "
-                    "Validate attempt bound no comparand set (phase_derivation did not run)")
-            for comp in bound.comparands:
-                if comparand_evidence_sha256(comp.run_dir) != comp.evidence:
-                    raise RuntimeError(
-                        f"comparand_evidence_moved:{comp.target_id}: the captures of "
-                        f"{comp.pipeline_ref}/runs/{comp.run_id} changed after the validate "
-                        "key bound them")
-            comparands = list(bound.comparands)
-            absent = list(bound.absent)
+        # No comparand (issue #383): a cross-target predicate is the `no_comparand` placeholder
+        # in every verdict. The comparison is the cross-target agreement, asked beside the
+        # certification (`orchestration_runtime.cross_target_agreement`), never stored here.
 
         io_contract = (ir.get("io_contract") or {}) if isinstance(ir, dict) else {}
         predicates = io_contract.get("test_predicates") if isinstance(io_contract, dict) else None
@@ -11979,8 +11914,7 @@ class Conductor:
             if not isinstance(predicates, list) or not predicates:
                 raise PredicateError(
                     "io_contract.test_predicates missing/empty (Compile must author it)")
-            primary = evaluate_primary_predicates(ir, self.repo_root / refs.run_node_dir(),
-                                                  comparands=comparands)
+            primary = evaluate_primary_predicates(ir, self.repo_root / refs.run_node_dir())
             doc = evaluate_verdict(predicates, run_diag,
                                    run_id=refs.run_id, node_key=refs.node_key,
                                    primary=primary)
@@ -12009,11 +11943,6 @@ class Conductor:
         ir_hash = inputs.get("ir") if isinstance(inputs, dict) else None
         if isinstance(ir_hash, str) and ir_hash:
             doc["ir_hash"] = ir_hash
-        # Every other declared target that is not a comparand, and why (issue #345): what tells
-        # "that target has no certified variant" from "it was left out" when a cross-target
-        # record reads `no_comparand`. Written exactly when the IR has a cross-target predicate.
-        if absent is not None:
-            doc["comparands_absent"] = absent
         self._write_run_node_meta(refs, "verdict.json", doc)
         return doc
 
@@ -12423,34 +12352,7 @@ class Conductor:
             self._phase_closure_bindings[(refs.node_key, phase)] = self._bind_closure_sources(
                 refs, phase, derivation["derivation_inputs"].get("closure") or [],
                 resolver=resolver)
-        if phase == "validate":
-            self._phase_comparand_bindings.pop(refs.node_key, None)
-            inputs = derivation.get("derivation_inputs")
-            if isinstance(inputs, dict) and "comparand" in inputs:
-                self._phase_comparand_bindings[refs.node_key] = self._bind_comparands(
-                    refs, inputs)
         return derivation
-
-    def _bind_comparands(self, refs: NodeRefs, inputs: Mapping[str, Any]) -> Any:
-        """The comparand runs a validate key's `comparand[]` member names (issue #324),
-        re-resolved by `resolve_comparands` — which builds its own resolver per other target,
-        so this is a second resolution — and refused unless its `comparands` name the same
-        targets with the same evidence hashes in the same order: the verdict must read the
-        bytes the key bound. Returns the whole `ComparandResolution`, its `absent` included
-        (issue #345). Raises `DerivationInputsUnresolvable`."""
-        from tools.orchestration_runtime import resolve_comparands
-        bound = resolve_comparands(
-            self.repo_root, node_key=refs.node_key, ir_hash=str(inputs.get("ir")),
-            target=self.target, spec_refs={refs.node_key: refs.spec_path})
-        keyed = [(str(c.get("target_id")), str(c.get("evidence")))
-                 for c in (inputs.get("comparand") or []) if isinstance(c, dict)]
-        if [(c.target_id, c.evidence) for c in bound.comparands] != keyed:
-            raise DerivationInputsUnresolvable(
-                f"derivation_inputs_unresolvable: validate derivation of {refs.node_key} bound "
-                f"comparands {keyed} but they resolve to "
-                f"{[(c.target_id, c.evidence) for c in bound.comparands]} (another target's "
-                "run landed between the key and the binding; run it again)")
-        return bound
 
     def _bind_closure_sources(self, refs: NodeRefs, phase: str,
                               closure: Sequence[dict[str, Any]], *,
@@ -13002,12 +12904,6 @@ class Conductor:
         if blocked:
             agg_doc["blocked_reason"] = blocked_reason
             agg_doc["blocking_direct_deps"] = blocking_direct_deps
-        # The cross-target comparison (issue #324), for the operator: which other targets'
-        # variants this verdict was compared with, and the verdict the run earns on its own
-        # evidence. Written only when the verdict carries a cross-target record.
-        cross = _verdict_cross_target(verdict)
-        if cross is not None:
-            agg_doc["cross_target"] = cross
         self._write_run_node_meta(refs, "aggregate_verdict.json", agg_doc)
 
         failure_class = verdict.get("failure_class")
@@ -14238,6 +14134,73 @@ class Conductor:
         return (f"--resume re-derives Generate onwards on the standing IR; IR {refs.ir_id} "
                 "was superseded by another run's Compile")
 
+    def _cross_target_stop(self, refs: NodeRefs,
+                           phases: Sequence[str]) -> tuple[str, str] | None:
+        """The node's cross-target agreement, asked just before `set-status pass` when this
+        chain reached Validate (issue #383) — `(reason_code, reason_detail)` to stop under,
+        else None.
+
+        The comparison is not in the verdict any more: Validate certifies on the node's own
+        evidence, and whether that variant agrees with another target's eligible run is
+        evaluated on demand (`orchestration_runtime.cross_target_agreement`, reported by
+        `check-phase-certified` as `cross_target`). An adopted Validate reaches here too (a
+        skipped phase advances the same loop), so a closure member whose only problem is a
+        disagreement stops named with no launch.
+
+        Writes `workspace/orchestrations/<id>/cross_target/<node_key_safe>.json` for every
+        status but `not_applicable` — not into the run directory, whose deliverables Validate's
+        `artifact_hashes` pin, and because the agreement is a relation between two runs at one
+        time, which a file in a certified run directory would misstate once the other target
+        moves. On `disagree` / `unevaluable` the run ends `fail` under
+        `cross_target_disagreement` / `cross_target_unevaluable`, in dev and prod alike,
+        revoking nothing: re-deriving either variant on its own evidence would reproduce it.
+        No `cross_target` answer (a runtime that does not report one) is not a conductor
+        failure; the completion vouch evaluates the same clause and decides."""
+        if "validate" not in phases:
+            return None
+        cert = self.check_phase_certified(refs.node_key, "validate", record=False)
+        cross = cert.get("cross_target") if cert.get("certified") else None
+        if not isinstance(cross, dict):
+            return None
+        status = str(cross.get("status") or "")
+        if status == "not_applicable":
+            return None
+        from tools.orchestration_runtime import _node_key_to_safe
+        report = _cross_target_disagreement_report(cross)
+        rel = (f"workspace/orchestrations/{self.orchestration_id}/cross_target/"
+               f"{_node_key_to_safe(refs.node_key)}.json")
+        record = {
+            "node_key": refs.node_key, "target_id": self.target.target_id,
+            "evaluated_at": datetime.now(timezone.utc).isoformat(),
+            **cross,
+        }
+        try:
+            path = self.repo_root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n",
+                            encoding="utf-8")
+        except OSError as exc:
+            # A record, not the decision: losing it must not change the answer.
+            self.emit("cross_target_record_unpersisted", node_key=refs.node_key,
+                      error=str(exc)[:200])
+        targets = [str(c.get("target_id")) for c in (cross.get("comparands") or [])
+                   if isinstance(c, dict)]
+        # `agreement`, never `status`: the payload's `status` is the event's own (`info`).
+        self.emit("cross_target_agreement", node_key=refs.node_key, agreement=status,
+                  targets=targets, disagreeing=list(cross.get("disagreeing") or []),
+                  absent=list(cross.get("absent") or []), error=cross.get("error"),
+                  report=report, record=rel)
+        if status == "disagree":
+            tids = ",".join(str(t) for t in (cross.get("disagreeing") or []))
+            detail = (f"disagrees with {tids}; re-running does not resolve it "
+                      f"(docs/RUNBOOK.md §3-0); {rel}")
+            return "cross_target_disagreement", detail
+        if status == "unevaluable":
+            detail = (f"--resume once repaired; Validate stays certified "
+                      f"(docs/RUNBOOK.md §3-0): {cross.get('error')}")
+            return "cross_target_unevaluable", detail
+        return None
+
     def _conduct_phases(self, refs: NodeRefs, until_phase: str) -> str:
         """`conduct`'s phase loop; `conduct` owns the compile claim's release."""
         phases = phases_through(until_phase)
@@ -14487,6 +14450,12 @@ class Conductor:
             self.emit("ir_superseded", node_key=refs.node_key, detail=superseded)
             self.set_status("fail", reason_code="ir_superseded",
                             reason_detail=superseded[:_PHASE_REASON_DETAIL_MAX_CHARS])
+            return "fail"
+        cross_stop = self._cross_target_stop(refs, phases)
+        if cross_stop is not None:
+            code, detail = cross_stop
+            self.set_status("fail", reason_code=code,
+                            reason_detail=detail[:_PHASE_REASON_DETAIL_MAX_CHARS])
             return "fail"
         self.set_status("pass")
         return "pass"

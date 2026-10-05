@@ -330,17 +330,11 @@ def verdict_tuple() -> dict[str, str]:
         "Conductor._author_execute_verdict": _source_digest(wc.Conductor._author_execute_verdict),
         "Conductor._author_derived_validate_artifacts":
             _source_digest(wc.Conductor._author_derived_validate_artifacts),
-        # R4-d (issue #324): the comparand selection policy (`zero_base_architecture.md`'s
-        # "comparand selection policy version", folded into this transformation) — which other
-        # target's run a cross-target predicate reads, and the verdicts that make one eligible
-        # — and the `aggregate_verdict.json#cross_target` record the derived author writes.
-        "orchestration_runtime.resolve_comparands": _source_digest(ort.resolve_comparands),
-        "orchestration_runtime.COMPARAND_OWN_VERDICTS":
-            hashlib.sha256(json.dumps(sorted(ort.COMPARAND_OWN_VERDICTS)).encode()).hexdigest(),
-        "workflow_conductor._verdict_cross_target": _source_digest(wc._verdict_cross_target),
-        # Issue #345 PR-2: the binding the verdict author reads — the comparand runs evaluated
-        # and the `comparands_absent` record — comes from this second resolution, not the key's.
-        "Conductor._bind_comparands": _source_digest(wc.Conductor._bind_comparands),
+        # The comparand selection (`resolve_comparands`, `COMPARAND_OWN_VERDICTS`), the
+        # `aggregate_verdict.json#cross_target` author and the comparand binding were members
+        # from R4-d (issue #324) through verdict-8. Issue #383 (verdict-9) took the comparison
+        # out of the verdict and its key: the cross-target agreement is evaluated on demand and
+        # stored in no certified artifact, so it is no transformation of this phase.
     }
 
 
@@ -1056,6 +1050,12 @@ PINNED_VERDICT: dict[str, str] = {
     # Re-pinned in round 3: the `ComparandResolution` docstring states which side is stale for
     # `derivation_key_mismatch:ir` and `compile_ir_mismatch`.
     "verdict-8": "40e7bdc9359fdf43b9f8a661f33839fdc7bcf120ed46a85f547710b0045d5659",
+    # verdict-9 (issue #383): the verdict evaluates no cross-target comparison — every
+    # cross-target record is the `no_comparand` placeholder, an evaluated one is refused,
+    # `own_verdict` and `comparands_absent` are gone — and the tuple loses the comparand
+    # selection, the binding and the `aggregate_verdict.json#cross_target` author, which no
+    # certified artifact carries any more (the agreement is evaluated on demand).
+    "verdict-9": "230b2115eda9c7110a4781b9171ff8ddf43aca1498a9de575a36c675647b72cb",
 }
 
 

@@ -223,29 +223,22 @@ class PureJudgeContextTests(_Fixture):
         self.assertEqual(excerpt["coverage"]["missing"], [])
         self.assertEqual(excerpt["problems"], [])
 
-    def test_the_verdict_is_handed_over_without_comparands_absent(self) -> None:
-        """Issue #345: `comparands_absent` records why OTHER targets are not comparands; the
-        judge reviews this run and is not handed it. Every other field reaches the judge, and a
-        verdict without the field is inlined byte for byte."""
-        from tools.workflow_conductor import _judge_verdict_view
+    def test_the_verdict_is_handed_over_byte_for_byte(self) -> None:
+        """The judge is handed `verdict.json` exactly as written. Issue #345's view, which
+        dropped `comparands_absent`, went with the field in issue #383: no verdict carries
+        it, so whatever the file holds — keys out of order, a non-ASCII value, a field the
+        writer no longer produces — reaches the judge unchanged."""
         path = self.run_node("verdict.json")
         plain = path.read_text(encoding="utf-8")
         self.assertEqual(self.conductor()._build_pure_judge_context(self.refs)
                          ["verdict_document"], plain)
-        # keys out of sorted order and a non-ASCII value, so the writer's form is observed
-        doc = {"z_first": "Δt", **json.loads(plain)}
+        doc = {"z_first": "Δt", **json.loads(plain),
+               "comparands_absent": [{"target_id": "cpp_gpu", "reason": "no_eligible_run"}]}
         self.assertNotEqual(list(doc), sorted(doc))
-        absent = [{"target_id": "cpp_gpu", "reason": "no_eligible_run"}]
-        path.write_text(json.dumps({**doc, "comparands_absent": absent}, indent=2,
-                                   ensure_ascii=False) + "\n", encoding="utf-8")
-        view = self.conductor()._build_pure_judge_context(self.refs)["verdict_document"]
-        self.assertNotIn("comparands_absent", view)
-        self.assertNotIn("no_eligible_run", view)
-        # the writer's form (`_write_run_node_meta`), less the omitted key
-        self.assertEqual(view, json.dumps(doc, indent=2, ensure_ascii=False) + "\n")
-        # text that is not a JSON object reaches the judge unchanged
-        for text in ("{not json", "[1, 2]"):
-            self.assertEqual(_judge_verdict_view(text), text)
+        text = json.dumps(doc, ensure_ascii=False)   # not the writer's form
+        path.write_text(text, encoding="utf-8")
+        self.assertEqual(self.conductor()._build_pure_judge_context(self.refs)
+                         ["verdict_document"], text)
 
     def test_every_missing_document_raises(self) -> None:
         """The judge's disposition, and the one thing that must not be copied from its

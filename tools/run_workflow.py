@@ -3421,6 +3421,23 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
                 f"with NO concurrency gate; one driver per workspace is yours to enforce "
                 f"(docs/RUNBOOK.md §3-1)")
 
+    if status == "info" and event == "cross_target_agreement":
+        # Issue #383: the node's variant against every other target's eligible run, asked
+        # before the run passes. A disagreement lists each failing comparison, unelided.
+        st = payload.get("agreement", "?")
+        if st == "disagree":
+            lines = [f"  [phase   ] cross-target disagree with "
+                     f"{','.join(map(str, payload.get('disagreeing') or [])) or '?'} — "
+                     f"re-running does not resolve it (docs/RUNBOOK.md §3-0); "
+                     f"record {payload.get('record', '?')}"]
+            lines += [f"    - {line}" for line in (payload.get("report") or [])]
+            return "\n".join(lines)
+        if st == "unevaluable":
+            return (f"  [phase   ] cross-target unevaluable: {payload.get('error', '?')} — "
+                    f"--resume once repaired (docs/RUNBOOK.md §3-0)")
+        targets = ",".join(map(str, payload.get("targets") or [])) or "none"
+        return f"  [phase   ] cross-target {st} (compared with: {targets})"
+
     if status == "info" and event == "launch_check_refused":
         # The refusal's whole detail, unelided: it names every dependency that is not ready
         # and the remedy. This line is where the operator reads it — the terminal summary that

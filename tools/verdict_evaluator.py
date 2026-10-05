@@ -409,18 +409,17 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
     ``PredicateError``. With ``primary`` None or empty no ``primary`` / ``corroboration`` key
     is written.
 
-    A CROSS-TARGET record (`is_cross_target_record`, issue #324) fails its test like any other
-    unsatisfied record (a ``no_comparand`` one is satisfied), and is no corroborant:
+    A CROSS-TARGET record (`is_cross_target_record`, issue #324) is no corroborant:
     ``basis.corroboration`` compares the ``pass_when`` result with the test's OTHER records
-    only, and the coverage re-check does not count it. ``own_verdict`` is the verdict this run
-    earns with every cross-target record left out — the reduction of the per-test statuses the
-    run's own evidence gives — and is what makes a run eligible as another target's comparand
-    (`orchestration_runtime.resolve_comparands`): a variant that fails its own tests is no
-    reference, while a run that fails only a cross-target record keeps ``own_verdict`` and
-    stays one: the other targets' keys move to it and their next Validate fails against it
-    too, so a disagreement between two variants that each pass their own tests stops both
-    (plan decision 6 of issue #324; `docs/RUNBOOK.md` §3-0, cross-target predicates, says
-    how the operator resolves it).
+    only, and the coverage re-check does not count it. Since issue #383 the verdict evaluates
+    no comparison: every cross-target record it is handed must be the ``no_comparand``
+    placeholder — satisfied, with no comparand and nothing evaluated — and one that is not
+    raises ``PredicateError`` (dropping it would leave an evaluated comparison silently
+    ignored). The comparison is the cross-target agreement
+    (`orchestration_runtime.cross_target_agreement`), asked where "is this node ready" is
+    asked, so a disagreement between two variants that each pass their own tests stops both
+    (plan decision 6 of issue #324; `docs/RUNBOOK.md` §3-0, cross-target predicates, says how
+    the operator resolves it).
 
     The judge leaf no longer authors this — it authors ``semantic_review.json`` only.
     """
@@ -442,12 +441,10 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
         if run_id is not None:
             doc["run_id"] = run_id
         doc["self_verdict"] = "fail"
-        doc["own_verdict"] = "fail"
         doc["failure_class"] = "structural_violation"
         doc["per_test"] = []
         return doc
     per_test: list[dict[str, Any]] = []
-    own_statuses: list[str] = []
     saw_structural = False
     saw_physics = False
     for pred in predicates:
@@ -457,12 +454,20 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
         if not isinstance(test_id, str) or not test_id.strip():
             raise PredicateError("test_predicates entry missing a non-empty test_id")
         status, kind, basis = evaluate_predicate(pred, diagnostics)
-        own_status = status
         records = primary_by_test.pop(test_id.strip(), None)
         if records:
             own = [r for r in records if not is_cross_target_record(r)]
-            cross = [r for r in records if is_cross_target_record(r)]
             for rec in records:
+                if is_cross_target_record(rec) and not (
+                        rec.get("kind") == _KIND_NO_COMPARAND and rec.get("satisfied") is True
+                        and not rec.get("comparands") and not rec.get("evaluated")):
+                    # Issue #383: the verdict is evaluated with no comparand, so a cross-target
+                    # record is the placeholder. Anything else is a comparison this verdict
+                    # would otherwise ignore — refused, never dropped.
+                    raise PredicateError(
+                        f"primary record for {test_id.strip()!r} quantity "
+                        f"{rec.get('quantity')!r} is an evaluated cross-target comparison; the "
+                        "verdict evaluates none (the cross-target agreement does)")
                 # The Compile gate pins this; re-checked here so a record over a subset of the
                 # test's cases never reads as corroboration of the whole test.
                 if "target_cases" in rec and set(map(str, rec["target_cases"])) != {
@@ -512,22 +517,11 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
                     kind = _KIND_STRUCTURAL
                 elif kind == _KIND_PASS:
                     kind = _KIND_PHYSICS
-            own_status = status
-            # The cross-target records (issue #324): a disagreement with another target's
-            # certified variant, or a comparand the host could not value, fails the test —
-            # but not `own_verdict`, which is read off `own_status`.
-            if not all(bool(r.get("satisfied")) for r in cross):
-                status = "fail"
-                if any(r.get("kind") == _KIND_STRUCTURAL for r in cross):
-                    kind = _KIND_STRUCTURAL
-                elif kind == _KIND_PASS:
-                    kind = _KIND_PHYSICS
         if kind == _KIND_STRUCTURAL:
             saw_structural = True
         elif kind == _KIND_PHYSICS:
             saw_physics = True
         per_test.append({"test_id": test_id.strip(), "status": status, "basis": basis})
-        own_statuses.append(own_status)
     if primary_by_test:
         # A primary record for a test no predicate carries would silently judge nothing;
         # Compile pins primary test_ids ⊆ tests.md == predicate test_ids, so this is an IR defect.
@@ -536,7 +530,6 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
             f"{sorted(primary_by_test)}")
 
     self_verdict = _reduce_statuses([item["status"] for item in per_test])
-    own_verdict = _reduce_statuses(own_statuses)
 
     if not saw_structural and not saw_physics:
         failure_class = "pass"
@@ -551,7 +544,6 @@ def evaluate_verdict(predicates: list[dict[str, Any]], diagnostics: dict[str, An
     if run_id is not None:
         doc["run_id"] = run_id
     doc["self_verdict"] = self_verdict
-    doc["own_verdict"] = own_verdict
     doc["failure_class"] = failure_class
     doc["per_test"] = per_test
     return doc
