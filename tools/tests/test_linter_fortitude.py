@@ -129,7 +129,8 @@ class DeclarationTests(unittest.TestCase):
         self.assertEqual(
             lint.check_argv("."),
             (lint.EXECUTABLE, "check", "--isolated", "--ignore-allow-comments",
-             "--no-respect-gitignore", "--select", ",".join(lint.RULE_CODES), "."),
+             "--no-respect-gitignore", "--exclude=", "--select", ",".join(lint.RULE_CODES),
+             "."),
         )
 
     def test_the_default_target_is_the_directory_the_gate_points_at(self) -> None:
@@ -423,6 +424,34 @@ class ResolutionAgainstTheInstalledBuildTests(unittest.TestCase):
             _run(without_flag, self.dir).returncode, 0,
             "the .gitignore hid nothing even WITHOUT the flag, so the case above observes "
             "nothing about it")
+
+    #: The walker's built-in exclusion list as measured on 0.8.0, 0.9.0 and 0.9.2 (issue #420).
+    _BUILTIN_EXCLUDED_DIRECTORIES = (
+        "build", "dist", "venv", "_build", "site-packages", ".venv", ".git",
+    )
+
+    def test_the_builtin_exclude_list_changes_no_verdict(self) -> None:
+        """The fourth channel: a subdirectory the walker skips by name (issue #420).
+
+        A bundle's nested `logical_path` is compiled and linked by the derived Makefile, so a
+        source under `build/` that the walk skips was linked code no lint judged — `All checks
+        passed!`, exit 0. Each measured name gets its own fixture and its own negative control,
+        so a build that drops one name from its list (the control then fails) is visible as that
+        name rather than as the whole row.
+        """
+        for name in self._BUILTIN_EXCLUDED_DIRECTORIES:
+            with self.subTest(directory=name), tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                (root / name).mkdir()
+                (root / name / "atmofab_probe_bad.f90").write_text(_DEFECTIVE_SOURCE)
+                self.assertEqual(
+                    _run(list(lint.check_argv(".")), root).returncode, 1,
+                    f"a defective source under {name}/ passed the declared invocation")
+                without_flag = [a for a in lint.check_argv(".") if a != "--exclude="]
+                self.assertEqual(
+                    _run(without_flag, root).returncode, 0,
+                    f"{name}/ was walked even WITHOUT the flag, so the case above observes "
+                    f"nothing about it")
 
     def test_a_plain_implicit_none_needs_no_directive(self) -> None:
         """The other half of dropping `C003`, and the reason the two are one decision.

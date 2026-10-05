@@ -1501,10 +1501,12 @@ def node_key_safe(node_key: str) -> str:
 
 def stage_syntax_inputs(src_dir: Path, stage_dir: Path, staged_suffixes: tuple[str, ...]) -> None:
     """Copy every file of `src_dir` whose suffix is one of `staged_suffixes` (lowercased) into
-    `stage_dir`, at ANY depth and at the same relative path, so the syntax stage compiles the
-    include tree the lint check and Build see (issue #289, R4-b PR-4: a bundle file may sit in a
-    subdirectory and be included from there — flat copying dropped it and failed a correct
-    source). A symbolic link is not followed."""
+    `stage_dir`, at ANY depth and at the same relative path, so the syntax stage sees the tree
+    the lint check and Build see (issue #289, R4-b PR-4: flat copying dropped a nested file and
+    failed a correct source). A nested SOURCE is copied so that the stage refuses it — the
+    stage compiles the top level only and its `compile_order` walks at any depth (issue #420);
+    a nested non-source file an includer reads is copied for the includer. A symbolic link is
+    not followed."""
     for path in sorted(src_dir.rglob("*")):
         if path.is_file() and not path.is_symlink() and path.suffix.lower() in staged_suffixes:
             target = stage_dir / path.relative_to(src_dir)

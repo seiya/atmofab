@@ -19495,6 +19495,39 @@ class DeterministicSyntaxTest(unittest.TestCase):
         self.assertEqual(out["attribution"], "leaf")
         self.assertEqual(out["failure_category"], "syntax_error")
 
+    def test_gate_syntax_check_refuses_a_nested_source_through_the_real_tool(self) -> None:
+        """Issue #420, driven through the REAL `tool_run_syntax_check` rather than a stand-in.
+
+        A `src/build/x.f90` is staged at its relative path, the language's `compile_order`
+        returns it, and the tool's name rule refuses it before any compiler runs. The gate must
+        record that as the leaf's content failure, hand the leaf the nested path and the move
+        instruction as its excerpt, and route it to a warm retry — not skip the file (the defect)
+        and not fail closed (a transport failure the leaf cannot clear)."""
+        import sys
+        import tempfile
+        # The conductor imports the server from the SEEDED repo's `mcp_servers/`, which this
+        # fixture does not carry; the real module comes from this checkout's.
+        mcp_dir = str(Path("mcp_servers").resolve())
+        if mcp_dir not in sys.path:
+            sys.path.insert(0, mcp_dir)
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._m3c_refs()
+            self._seed_m3c(repo, refs)
+            nested = repo / refs.source_dir() / "src" / "build"
+            nested.mkdir()
+            (nested / "x.f90").write_text("module x\nend module x\n", encoding="utf-8")
+            c = self._conductor(repo)
+            c._stage_dependency_sources = lambda r, d, **kw: []  # type: ignore[assignment]
+            c._dependency_closure_nodes = lambda r: []  # type: ignore[assignment]
+            out = c._gate_syntax_check(refs, "child-1")
+        self.assertEqual(out["status"], "fail")
+        self.assertEqual(out["attribution"], "leaf")
+        self.assertEqual(out["failure_category"], "syntax_error")
+        self.assertIn("build/x.f90", out["failure_excerpt"])
+        self.assertIn("move every source file to the top level", out["failure_excerpt"])
+        self.assertEqual(wc.classify_gate_failure([out["failure_category"]]).action, "retry")
+
     def test_the_syntax_leaf_probe_is_isolated_and_carries_the_staged_closure(self) -> None:
         """Two decisions of the syntax probe, both unwitnessed until a census asked.
 

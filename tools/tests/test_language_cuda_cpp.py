@@ -2529,6 +2529,12 @@ class ToolAdapterTests(unittest.TestCase):
             for name in ("b.cu", "a.cu", "c.txt"):
                 (Path(tmp) / name).write_text("")
             self.assertEqual(["a.cu", "b.cu"], cpp_syntax.compile_order(Path(tmp)))
+            # Issue #420: a nested `.cu` is returned, as a relative path, so the stage's name
+            # rule refuses it; a nested header is not a source and is not returned.
+            (Path(tmp) / "sub").mkdir()
+            (Path(tmp) / "sub" / "n.cu").write_text("")
+            (Path(tmp) / "sub" / "n.cuh").write_text("")
+            self.assertEqual(["a.cu", "b.cu", "sub/n.cu"], cpp_syntax.compile_order(Path(tmp)))
 
     def test_relocatable_device_code_is_in_every_argv_that_compiles_device_code(self) -> None:
         """Issue #380: the build, the syntax stage and the lint all compile a kernel's call to a

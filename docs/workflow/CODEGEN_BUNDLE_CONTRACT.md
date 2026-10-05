@@ -246,6 +246,11 @@ within the bundle. The rules (canonical implementation:
   derivation"): `a/b.<ext>` and `a__b.<ext>` both flatten to `a__b.o`, and a colliding pair
   would compile as one object and silently drop the other from the link.
 
+A nested `logical_path` is admissible to these rules, and a SOURCE at one is still refused
+later: the `Generate.gate` syntax stage compiles only the top level of the source directory
+and refuses a source below it rather than skipping it, for every declared language (issue
+#420; each language's `BUNDLE_BINDING.md` §1).
+
 ### `compile_after`
 
 `compile_after` is an optional array of other files' `logical_path`s that must compile

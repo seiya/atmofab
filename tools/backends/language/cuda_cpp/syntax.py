@@ -31,11 +31,14 @@ PROMOTED_WARNINGS: tuple[str, ...] = ()
 
 
 def compile_order(project_dir: Path) -> list[str]:
-    """The `.cu` sources in `project_dir`, name-sorted. Each is its own translation unit and
+    """The `.cu` sources under `project_dir`, name-sorted. Each is its own translation unit and
     reaches another's surface only through a header in the same directory, so no order between
-    them is needed. Only the top level: a `.cu` in a subdirectory is refused by the static check
+    them is needed. Every source at ANY depth is returned, as its POSIX path relative to
+    `project_dir` (a top-level source is its bare name): the stage compiles the top level only,
+    and a nested `.cu` is returned so that the caller's source-name rule refuses it rather than
+    the walk dropping it unseen (issue #420). The static check refuses a nested `.cu` as well
     (`source.model_source_gates`)."""
     return sorted(
-        p.name for p in project_dir.iterdir()
+        p.relative_to(project_dir).as_posix() for p in project_dir.rglob("*")
         if p.is_file() and p.suffix.lower() in SOURCE_SUFFIXES
     )

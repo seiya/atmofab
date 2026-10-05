@@ -242,7 +242,9 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         ("language",),
         "The `Generate.gate` syntax-only stage knows which files of this value are sources, the "
         "order they are handed to the compiler in, and which warning classes it promotes to "
-        "errors. Without it the stage has nothing to check, and a node of this value is refused "
+        "errors. Its `compile_order` returns every source under the directory at any depth, "
+        "nested ones as relative paths, so that the stage refuses a source below the top level "
+        "rather than skipping it. Without it the stage has nothing to check, and a node of this value is refused "
         "rather than passed through unchecked.",
     ),
     "interface_header": (

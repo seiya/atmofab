@@ -208,6 +208,36 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
         # `module procedure` must not register a module named "procedure"/f.
         self.assertEqual(_fortran_syntax().compile_order(d), ["a.f90", "b.f90"])
 
+    def test_source_order_returns_a_nested_source_as_a_relative_path(self) -> None:
+        # Issue #420: the walk reaches every depth so that the name rule refuses a nested
+        # source instead of the stage skipping it while the build links it. The top-level
+        # answer is the one the rows above pin, unchanged.
+        d = self._src_dir({
+            "a_runner.f90": "program p\n  use z_model, only: x\nend program p\n",
+            "z_model.f90": "module z_model\n  integer :: x\nend module z_model\n",
+        })
+        (d / "sub").mkdir()
+        (d / "sub" / "x.f90").write_text("module x_mod\nend module x_mod\n", encoding="utf-8")
+        order = _fortran_syntax().compile_order(d)
+        self.assertIn("sub/x.f90", order)
+        self.assertEqual([n for n in order if "/" not in n], ["z_model.f90", "a_runner.f90"])
+
+    def test_every_syntax_language_walks_at_any_depth(self) -> None:
+        """Held for every `language` that provides `syntax_promotions`, so a later language
+        backend meets the contract without a test of its own (issue #420)."""
+        from tools.backends import registry
+        languages = [lang for lang in registry.backend_ids("language")
+                     if registry.provides("language", lang, "syntax_promotions")]
+        self.assertTrue(languages)
+        for lang in languages:
+            with self.subTest(language=lang):
+                module = registry.capability_module("language", lang, "syntax_promotions")
+                suffix = tuple(module.SOURCE_SUFFIXES)[0]
+                d = self._src_dir({})
+                (d / "deep" / "er").mkdir(parents=True)
+                (d / "deep" / "er" / f"n{suffix}").write_text("\n", encoding="utf-8")
+                self.assertEqual(module.compile_order(d), [f"deep/er/n{suffix}"])
+
     def test_rejects_custom_command(self) -> None:
         d = self._src_dir({})
         with self.assertRaises(ValueError):
@@ -1314,6 +1344,44 @@ class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
                         self.assertRaises(ValueError) as ctx:
                     self.mod.tool_run_syntax_check({"project_dir": str(self.project_dir), "compiler": "gfortran", "std": "f2008"})
                 self.assertIn("fortran source files in project_dir", str(ctx.exception))
+
+    def test_a_nested_source_is_refused_with_the_move_instruction(self) -> None:
+        """Issue #420: a source below the top level is refused, not compiled and not skipped.
+
+        The refusal is the author's only statement of the rule — the conductor hands this text
+        to the leaf as its failure excerpt — so it must name the file and say where it goes.
+        Raised before the compiler-availability and no-source skips, so a directory whose ONLY
+        source is nested fails closed rather than reporting `skipped`."""
+        only_nested = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, only_nested, ignore_errors=True)
+        (self.project_dir / "build").mkdir()
+        (self.project_dir / "build" / "x.f90").write_text("module x\nend module x\n",
+                                                          encoding="utf-8")
+        (only_nested / "build").mkdir()
+        (only_nested / "build" / "x.f90").write_text("module x\nend module x\n",
+                                                     encoding="utf-8")
+        for project_dir in (self.project_dir, only_nested):
+            for which in ("/usr/bin/gfortran", None):
+                with self.subTest(project_dir=project_dir.name, compiler_installed=bool(which)):
+                    with mock.patch.object(self.mod.shutil, "which", return_value=which), \
+                            self.assertRaises(self.mod.SyntaxSourceNameError) as ctx:
+                        self.mod.tool_run_syntax_check(
+                            {"project_dir": str(project_dir), "compiler": "gfortran",
+                             "std": "f2008"})
+                    message = str(ctx.exception)
+                    self.assertIn("refused: build/x.f90", message)
+                    self.assertIn("move every source file to the top level", message)
+
+    def test_a_flat_refusal_carries_no_move_instruction(self) -> None:
+        # The sentence is conditional on a `/`: an option-shaped top-level name is not cured by
+        # moving it, and telling the author to move it would be an instruction that cannot
+        # converge.
+        (self.project_dir / "-o.f90").write_text("program r\nend program r\n", encoding="utf-8")
+        with mock.patch.object(self.mod.shutil, "which", return_value=None), \
+                self.assertRaises(self.mod.SyntaxSourceNameError) as ctx:
+            self.mod.tool_run_syntax_check(
+                {"project_dir": str(self.project_dir), "compiler": "gfortran", "std": "f2008"})
+        self.assertNotIn("top level", str(ctx.exception))
 
     def test_staged_source_names_are_accepted(self) -> None:
         with mock.patch.object(self.mod.shutil, "which", return_value=None):

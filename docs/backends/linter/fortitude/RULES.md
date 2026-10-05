@@ -37,10 +37,10 @@ statement of that set for a reader; the machine-readable definition is
   adjusting it. Suppressing individual rules with `--ignore` was rejected: it answers one release
   and leaves the next default addition to enter unreviewed.
 - The invocation closes one channel per flag. Each is a bullet below, and the flags are checked
-  against `CHECK_FLAGS` by test, so a flag that leaves the code leaves this list. The count is stated because it has been wrong once: the module
+  against `CHECK_FLAGS` by test, so a flag that leaves the code leaves this list. The count is stated because it has been wrong twice: the module
   docstring of `tools/backends/linter/fortitude/lint.py` is canonical for the enumeration, and it
   records that an earlier version counted the channels it had closed rather than the ones the
-  tool has.
+  tool has, and that the fourth stayed open until issue #420.
   - `--isolated` — closes a configuration file discovered next to the sources (measured on 0.8.0
     and 0.9.2: a neighbouring `fortitude.toml` carrying `[check] ignore = [...]` turns a failing
     tree green without it).
@@ -50,15 +50,24 @@ statement of that set for a reader; the machine-readable definition is
     module to `All checks passed` under this very `--select`.
   - `--no-respect-gitignore` — closes an ignore file. Measured on 0.8.0 and 0.9.2: a `.gitignore`
     whose pattern matches the sources takes a five-finding tree to `0 files scanned. All checks
-    passed!`, exit 0 — with no diagnostic at all, so it is quieter than either of the other two.
-- **What the flags do NOT close is the FILE SET.** The walk still skips `build/` / `dist/` /
-  `venv/` / `.venv/` / `.git/` subdirectories (measured on 0.8.0 and 0.9.2; `docs/`,
-  `node_modules/`, `target/`, `__pycache__/` and a plain hidden directory are scanned), and it
-  reads `.f90` only — a `body.inc` pulled in by an `include` line is compiled by the compiler
-  and never linted. Neither is reachable today: no leaf writes a file (Z4, issue #171 — the host writes every artifact), and before that an agentic leaf's manifest admitted only the exact
-  files it declares, and the pure path's `logical_path` allowlist is `.f90` alone. `TODO.md`
-  carries it as a bound on growth. It is named here because this section states a COUNT, and a
-  count of closed channels is not a claim that nothing else decides the verdict.
+    passed!`, exit 0 — with no diagnostic at all, so it is quieter than either of the two above.
+  - `--exclude=` — closes the walker's built-in exclusion list, which hides whole subdirectories
+    by name. Measured on 0.8.0, 0.9.0 and 0.9.2, one directory per run: a defective `.f90` under
+    `build/`, `dist/`, `venv/`, `_build/`, `site-packages/`, `.venv/` or `.git/` passes
+    (`All checks passed!`, exit 0) without the flag and fails with it; under `sub/`, `.hid/`,
+    `node_modules/`, `target/`, `__pycache__/` or `docs/` it fails either way. The bundle's
+    derived Makefile compiles and links a nested source, so before issue #420 a file under
+    `build/` was linked code no lint judged. The language's syntax stage now also refuses a
+    source below the top level of `src/`, so this flag is the lint half of one rule.
+- **What the flags do NOT close is the rest of the FILE SET.** The walk reads `.f90` only — a
+  `body.inc` pulled in by an `include` line is compiled by the compiler and never linted. That is
+  not reachable today: no leaf writes a file (Z4, issue #171 — the host writes every artifact),
+  and the pure path's `logical_path` allowlist is `.f90` alone. The walk also does not follow a
+  symlinked DIRECTORY inside its root (measured on 0.8.0, 0.9.0 and 0.9.2, with or without
+  `--exclude=`: `1 files scanned` over a top-level file beside it), while a symlinked FILE is
+  scanned; the host writes no symlink into `src/`, so this is a statement of reach rather than an
+  open channel. It is named here because this section states a COUNT, and a count of closed
+  channels is not a claim that nothing else decides the verdict.
 - **How loud the allow-comment closure is depends on what the directive names.** A code OUTSIDE
   the declared set earns `FORT005` (`disabled-allow-comment`); a declared code on otherwise clean
   source earns `FORT002` (`unused-allow-comment`); a declared code on source that actually

@@ -10,6 +10,10 @@
 - **Extension.** A Fortran bundle file is free-form f2008 with the extension `.f90`
   (`SOURCE_EXTENSIONS`). It is an allowlist, not a recognizer: `.f` / `.f95` are Fortran too, but
   the build rules the host authors match `.f90` only.
+- **Placement.** Every bundle file sits at the top level of the source directory. A `.f90` in a
+  subdirectory is refused by the `Generate.gate` syntax stage, which compiles the top level only
+  and walks at any depth so that a nested source is refused rather than skipped: the derived
+  Makefile would compile and link it as an object the stage never checked (issue #420).
 - **`modules`.** A module is a Fortran `module`. One compiled `.mod` file is written per module
   name, and Fortran names are case-insensitive, so the contract's case-folded module-name
   uniqueness is exactly the language's own rule.
