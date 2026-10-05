@@ -60,6 +60,17 @@ from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
 from tools.tests.target_fixtures import FORTRAN_CPU as _TP
 from tools.tests.target_fixtures import SECOND_TARGET
 
+def _server():
+    """The build-runtime server module, through the loader the conductor's gate bodies use
+    (`orchestration_runtime._build_runtime_server_module`, issue #422).
+
+    It returns whatever module object is current in `sys.modules`, and
+    `tools/tests/test_build_runtime_server.py` replaces that object on every load, so call
+    this per use and never cache its result at import: a row that patches an attribute on a
+    stale object patches nothing the conductor reads."""
+    return wc_runtime._build_runtime_server_module()
+
+
 # One repo root per test PROCESS, for the conductors below that need a path and build no
 # directory of their own. It was the literal `/tmp/repo`, which concurrent processes shared:
 # parallel `mutation_check.py` jobs, or a reviewer's run beside yours, overwrote each other's
@@ -16473,11 +16484,9 @@ class DeterministicBuildTest(unittest.TestCase):
         # path (bin/<spec_id>_runner) must produce a clean fail (verification_status=fail,
         # make_error -> regenerate), NOT a pass binary_meta pointing at a missing file
         # (which escalated/fail_closed).
-        import sys
         import tempfile
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16509,11 +16518,9 @@ class DeterministicBuildTest(unittest.TestCase):
         The other Build tests replace `tool_compile_project` wholesale, so none of them
         crosses the validation the workflow depends on; this one replaces `_run_command`
         instead, leaving every check in the path."""
-        import sys
         import tempfile
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16542,11 +16549,9 @@ class DeterministicBuildTest(unittest.TestCase):
     def test_build_inproc_imposes_canonical_bin_override(self) -> None:
         # The binary name is imposed (not derived from the Makefile): Build passes
         # BIN=<spec_id>_runner on the make command line and produces the binary there.
-        import sys
         import tempfile
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16578,11 +16583,9 @@ class DeterministicBuildTest(unittest.TestCase):
         profile pins none) and its `--version` line, resolved by the runtime's one reader so
         the record and the build derivation key's `toolchain` member are the same value.
         Until #250 `compiler` was `""`."""
-        import sys
         import tempfile
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16632,11 +16635,9 @@ class DeterministicBuildTest(unittest.TestCase):
         sha256 — the record `orchestration_runtime._dependency_binding_freshness` reads. Driven
         through `_build_inproc` rather than asserted on a hand-built dict, so the wiring between
         the stager's return value and the record is what is pinned (issue #153)."""
-        import sys
         import tempfile
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16691,11 +16692,9 @@ class DeterministicBuildTest(unittest.TestCase):
         non-empty closure fails readiness closed — so omitting it here would make every leaf
         (the harness of every closure) permanently stale. Since issue #284 the one leaf is an
         `infrastructure` node: a physics node's closure holds its target's harness."""
-        import sys
         import tempfile
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16722,11 +16721,9 @@ class DeterministicBuildTest(unittest.TestCase):
         # (refs.source_id). `_write_runner` binds the harness pin to source_ir_id, so a wrong
         # constant here (e.g. source_id) would silently break the binding — distinct ir_id vs
         # source_id values catch a swap.
-        import sys
         import tempfile
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16756,11 +16753,9 @@ class DeterministicBuildTest(unittest.TestCase):
         # (--cases <spec> <case_id>...), so the make-test re-run's diagnostics match for the
         # quality_check value comparison. The conductor imposes SPEC/CASES via the make-test
         # env (the test target invokes `$(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`).
-        import sys
         import tempfile
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16809,10 +16804,7 @@ class DeterministicBuildTest(unittest.TestCase):
         failure rather than terminating the run the way this substep's other two
         fail_closed causes (a broken `-std`, a dependency closure that will not compile)
         do — those the leaf cannot repair."""
-        import sys
         import tempfile
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore  # noqa: F401
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16853,11 +16845,9 @@ class DeterministicBuildTest(unittest.TestCase):
         about an argument the conductor supplies, so it must still raise — blaming the
         leaf for one would spend its retry budget on a message no regenerated source can
         clear."""
-        import sys
         import tempfile
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16891,11 +16881,9 @@ class DeterministicBuildTest(unittest.TestCase):
         spec id, `SPEC` from the IR path) rather than written out here. Replace
         `_run_command` rather than the tool functions, so the real payload crosses the
         real value rules."""
-        import sys
         import tempfile
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16943,11 +16931,9 @@ class DeterministicBuildTest(unittest.TestCase):
         """The traced run (issue #307): the prefixed binary command and the summary command
         cross the real `run_program` validation and reach the subprocess layer, in order, before
         the quality check."""
-        import sys
         import tempfile
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         from tools.host_execution import launch_shape
         target = self._traced_target()
@@ -17050,11 +17036,9 @@ class DeterministicBuildTest(unittest.TestCase):
     def _assert_execute_records_the_launch(self, target, shape,
                                            ir_text: str | None = None) -> dict:
         import platform as _platform
-        import sys
         import tempfile
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -17157,11 +17141,9 @@ class DeterministicBuildTest(unittest.TestCase):
         `_run_deterministic_substep` (so a raise arrives as the substep's transport failure).
         The fake `run_program` answers the binary's run, then — when the target is traced — the
         summary command, writing `SUMMARY` where the shape says the command writes it."""
-        import sys
         import tempfile
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         from tools.host_execution import launch_shape
         shape = launch_shape(target)
@@ -17362,11 +17344,9 @@ class DeterministicBuildTest(unittest.TestCase):
         fail_closed, since no leaf can repair where the binary runs. Since issue #293 the class
         declares `execution` and what refuses it here is the SITE half: a conductor with no
         site runs at the local site, whose default `executes` is `cpu`."""
-        import sys
         import tempfile
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         from tools.tests.target_fixtures import profile_with
         target = profile_with(hardware={"class": "gpu", "architecture": "sm_90"})
@@ -17391,11 +17371,9 @@ class DeterministicBuildTest(unittest.TestCase):
         # R2 guard: a structural (runtime-error) execute failure must leave NO verdict.json, so a
         # STALE one from a prior run cannot make classify_failure misroute the runner failure as a
         # predicate failure. Force run_program to fail after seeding a stale failing verdict.
-        import sys
         import tempfile
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -18204,11 +18182,9 @@ class DeterministicBuildTest(unittest.TestCase):
 
         ONE gate (issue #180), so the stub is exhaustive: any other subprocess is an error
         rather than a silent `gate_result`."""
-        import sys
         import subprocess as _sp
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                          orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
@@ -18529,11 +18505,9 @@ class DeterministicBuildTest(unittest.TestCase):
         # The runtime-error discriminator ("no trial_meta") must not depend on the external
         # run-id rotation invariant: a stale trial_meta in the run node dir is cleared up front,
         # so a runner runtime error cannot be misrouted as a warm structural repair.
-        import sys
         import tempfile
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -18559,11 +18533,9 @@ class DeterministicBuildTest(unittest.TestCase):
     def test_execute_inproc_runtime_error_writes_no_trial_meta(self) -> None:
         # The on-disk discriminator for the two no-verdict kinds: a runner runtime error returns
         # before any trial_meta is authored, so classify_failure keeps its cold restart.
-        import sys
         import tempfile
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -18672,10 +18644,8 @@ class DeterministicLintTest(unittest.TestCase):
             install_target_profile(repo, profile_with(toolchain={"language": language}))
 
     def _patch_linter(self, fn):
-        import sys
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
         return mock.patch.object(build_runtime_server, "tool_run_linter", fn)
 
     _M3C_NODE_KEY = "problem/adv1d@0.1.0"
@@ -19208,8 +19178,47 @@ class DeterministicLintTest(unittest.TestCase):
             refs = self._refs()
             self._seed(repo, refs, language="brainfuck")
             c = self._conductor(repo)
-            with self.assertRaises(RuntimeError):
+            with self.assertRaisesRegex(RuntimeError, "has no static lint preset"):
                 c._gate_lint_check(refs, "child-1")
+
+    def test_gate_lint_check_imports_the_server_from_the_code_not_the_repo_root(self) -> None:
+        """Issue #422: the gate body resolves the build-runtime server from the checkout's code
+        location, never from `self.repo_root`. With the module out of `sys.modules` and every
+        `mcp_servers` entry off `sys.path` (both restored on exit), a conductor over a seeded
+        repository that holds no `mcp_servers/` still reaches the unknown-language refusal,
+        which sits after the gate's server import. Spelling the import from `self.repo_root`
+        again raises `ModuleNotFoundError` here instead."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs, language="brainfuck")
+            self.assertFalse((repo / "mcp_servers").exists())
+            c = self._conductor(repo)
+            clean_path = [p for p in sys.path if not p.rstrip("/").endswith("mcp_servers")]
+            with mock.patch.dict(sys.modules), mock.patch.object(sys, "path", clean_path):
+                sys.modules.pop("build_runtime_server", None)
+                with self.assertRaisesRegex(RuntimeError, "has no static lint preset"):
+                    c._gate_lint_check(refs, "child-1")
+
+    def test_conductor_spells_no_server_path_of_its_own(self) -> None:
+        """Issue #422: no code string in `tools/workflow_conductor.py` names `mcp_servers`, so
+        every gate body (five today, and any added later) reaches the server only through
+        `orchestration_runtime._build_runtime_server_module`. Read with `ast`; a bare string
+        statement (a docstring) does not count. This proves the conductor spells no path of its
+        own; that the import WORKS without one is the behavioural row above's claim."""
+        import ast
+        tree = ast.parse(Path(wc.__file__).read_text(encoding="utf-8"))
+        docstrings = {
+            id(node.value) for node in ast.walk(tree)
+            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
+        }
+        hits = [
+            node.lineno for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            and "mcp_servers" in node.value and id(node) not in docstrings
+        ]
+        self.assertEqual([], hits)
 
 
 class DeterministicSyntaxTest(unittest.TestCase):
@@ -19248,10 +19257,8 @@ class DeterministicSyntaxTest(unittest.TestCase):
         install_target_profile(repo, profile_with(toolchain={"language": language}))
 
     def _patch_syntax(self, fn):
-        import sys
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
         return mock.patch.object(build_runtime_server, "tool_run_syntax_check", fn)
 
     def test_syntax_probe_stages_the_closure_from_bindings(self) -> None:
@@ -19475,7 +19482,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
         The leaf authored that name and can rename it, so the section must carry the same
         `attribution` shape as every other return rather than omitting the key."""
         import tempfile
-        from build_runtime_server import SyntaxSourceNameError  # type: ignore
+        SyntaxSourceNameError = _server().SyntaxSourceNameError
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._m3c_refs()
@@ -19503,13 +19510,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
         record that as the leaf's content failure, hand the leaf the nested path and the move
         instruction as its excerpt, and route it to a warm retry — not skip the file (the defect)
         and not fail closed (a transport failure the leaf cannot clear)."""
-        import sys
         import tempfile
-        # The conductor imports the server from the SEEDED repo's `mcp_servers/`, which this
-        # fixture does not carry; the real module comes from this checkout's.
-        mcp_dir = str(Path("mcp_servers").resolve())
-        if mcp_dir not in sys.path:
-            sys.path.insert(0, mcp_dir)
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._m3c_refs()
@@ -20869,10 +20870,8 @@ class DeterministicGateTest(unittest.TestCase):
         install_target_profile(repo, profile_with(toolchain={"language": language}))
 
     def _patches(self, linter, syntax, run=None):
-        import sys
         from unittest import mock
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
         ps = [
             mock.patch.object(build_runtime_server, "tool_run_linter", linter),
             mock.patch.object(build_runtime_server, "tool_run_syntax_check", syntax),
@@ -23422,8 +23421,7 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
     def _execute_with_real_gate(self, repo: Path, perf_body: bytes) -> tuple[dict, dict]:
         from unittest import mock
 
-        sys.path.insert(0, str(Path("mcp_servers").resolve()))
-        import build_runtime_server  # type: ignore
+        build_runtime_server = _server()
 
         refs = wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
@@ -23910,14 +23908,6 @@ class CudaCppLintAttributionTest(unittest.TestCase):
     with the real linter over a real render."""
 
     SID = "prob_rank"
-
-    def setUp(self) -> None:
-        # `_attribute_lint_findings` imports the build-runtime server from the checkout it runs
-        # in; the fixture repository is a scratch directory, so the real one is put on the path.
-        import sys
-        server_dir = str(REPO_ROOT / "mcp_servers")
-        if server_dir not in sys.path:
-            sys.path.insert(0, server_dir)
 
     def _tree(self, src: Path, *, leaf_finding: bool, host_finding: bool) -> set[str]:
         from tools.backends.language.cuda_cpp import header as cpp_header

@@ -234,6 +234,7 @@ from tools.orchestration_runtime import AUDIT_LOG_BASENAMES as _OPTIONAL_OUTPUT_
 from tools.orchestration_runtime import (
     FAIL_CLOSED_REASON_CODES,
     DerivationInputsUnresolvable,
+    _build_runtime_server_module,
     phase_derivation,
 )
 
@@ -9749,10 +9750,7 @@ class Conductor:
         `bin/`, and the job's output names the local paths it stands for.
         `binary_meta.json#environment` records where it was built, and `Validate.execute`
         refuses to run a binary at a site other than that one (`_execute_inproc`)."""
-        import sys as _sys
-        mcp_dir = str(self.repo_root / "mcp_servers")
-        if mcp_dir not in _sys.path:
-            _sys.path.insert(0, mcp_dir)
+        _build_runtime_server_module()
         from build_runtime_server import (
             COMPILE_PROJECT_TIMEOUT_SEC,
             build_command,
@@ -10247,10 +10245,7 @@ class Conductor:
         log the record of the gate proper.
         """
         import shutil
-        import sys as _sys
-        mcp_dir = str(self.repo_root / "mcp_servers")
-        if mcp_dir not in _sys.path:
-            _sys.path.insert(0, mcp_dir)
+        _build_runtime_server_module()
         from build_runtime_server import tool_run_linter
 
         src_dir = self.repo_root / refs.source_dir() / "src"
@@ -10355,10 +10350,7 @@ class Conductor:
         failure (status="fail") the gate routes to generate.generate via a warm-resume reopen; a
         genuine tool/infra error raises and surfaces as a transport fail_closed. The evidence is
         written even on a content fail (ok=false), which the post_generate certifier depends on."""
-        import sys as _sys
-        mcp_dir = str(self.repo_root / "mcp_servers")
-        if mcp_dir not in _sys.path:
-            _sys.path.insert(0, mcp_dir)
+        _build_runtime_server_module()
         from build_runtime_server import tool_run_linter
         # Same language->linter answer the post_generate validator certifies against (the
         # registry's), so the preset the conductor RUNS cannot drift from the one it EXPECTS.
@@ -10509,10 +10501,7 @@ class Conductor:
         the certified dependency-closure model sources (`_stage_dependency_sources`).
         Module files are compiler-/version-specific, so stages never share a dir and
         never touch Build's object directory."""
-        import sys as _sys
-        mcp_dir = str(self.repo_root / "mcp_servers")
-        if mcp_dir not in _sys.path:
-            _sys.path.insert(0, mcp_dir)
+        _build_runtime_server_module()
         from build_runtime_server import (
             SyntaxSourceNameError,
             syntax_adapter,
@@ -11379,10 +11368,7 @@ class Conductor:
         agent-owned metadata (snapshot_schema/quality_check/trial_meta/stdout/stderr),
         then run the post_execute gate. The runner's evidence bytes are never authored
         by an LLM (preserving Validate.judge's non-fabrication independence)."""
-        import sys as _sys
-        mcp_dir = str(self.repo_root / "mcp_servers")
-        if mcp_dir not in _sys.path:
-            _sys.path.insert(0, mcp_dir)
+        _build_runtime_server_module()
         from build_runtime_server import (
             QUALITY_CHECKS_TIMEOUT_SEC,
             RUN_PROGRAM_TIMEOUT_SEC,

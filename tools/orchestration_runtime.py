@@ -2555,9 +2555,15 @@ def _target_toolchain_identity(target: TargetProfile, *, probe: bool = True) -> 
 
 
 def _build_runtime_server_module() -> Any:
-    """The build-runtime server module, imported the way the conductor's in-process gate
-    bodies and `tools/host_prerequisites.py` import it (it is standalone-runnable and lives
-    outside `tools/`)."""
+    """The build-runtime server module (it is standalone-runnable and lives outside `tools/`).
+
+    The conductor's in-process gate bodies call this function before each of their
+    `from build_runtime_server import ...` statements (issue #422), so the server is resolved
+    from this file's location in the checkout and never from a `repo_root`: a run's
+    `--repo-root` is where its data lives, and a seeded repository holds no `mcp_servers/`.
+    `tools/host_prerequisites.py` resolves it from the code location the same way. The module
+    is looked up in `sys.modules` on every call, so a caller that patches or replaces it sees
+    the current object; do not bind the result at import time."""
     mcp_dir = str(Path(__file__).resolve().parent.parent / "mcp_servers")
     if mcp_dir not in sys.path:
         sys.path.insert(0, mcp_dir)

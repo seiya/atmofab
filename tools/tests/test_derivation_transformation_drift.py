@@ -785,7 +785,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "cef34f457ad57adbd5edbca28e5f860f30a893eac860873500a4d5120eebc683",
+    "build-2": "0ab2630ed277636003d05abd78ec03e8997eea696b639cbecbd5fd46b3d0060c",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build
@@ -806,6 +806,13 @@ PINNED_BUILD: dict[str, str] = {
     # against origin/main 6add2b17's: that row and no other.) The digest `build-2` shipped with
     # at 6add2b17:
     "build-2@6add2b17": "df6a89f5d73fccd79faf1909db6a184ba70d985df2f725ca8ec422a92395b580",
+    # Re-pinned (issue #422), behaviour-preserving: the server import preamble of
+    # `Conductor._build_inproc` calls `orchestration_runtime._build_runtime_server_module()`
+    # instead of putting `<repo_root>/mcp_servers` on `sys.path`, so the server is resolved
+    # from the checkout's code location; the names imported and the build they run are
+    # unchanged. (Measured by diffing `build_tuple()` against origin/main 72fdbd56's: that row
+    # and no other.) The digest `build-2` shipped with at 72fdbd56:
+    "build-2@72fdbd56": "cef34f457ad57adbd5edbca28e5f860f30a893eac860873500a4d5120eebc683",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -923,7 +930,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # longer copies it. (Measured by diffing `execute_tuple()` against origin/main dd5bbcb8's:
     # the `Conductor._author_snapshot_schema` row and no other.) The digest `execute-8` shipped
     # with at dd5bbcb8 is kept below.
-    "execute-8": "48ecddf30462b52c87f07f8a76b47db7a2738c6ddd2f97452b81b75c41c41e43",
+    "execute-8": "0012a7a9ab3bbb200b40a047f470602ebc9874b3b897f5db85301878036268ab",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -990,6 +997,13 @@ PINNED_EXECUTE: dict[str, str] = {
     # shipped with at 6add2b17:
     "execute-8@6add2b17": "eb6aa6fcc8641e0f35a9aa9b28f8316d17c25ee03a408d7192d10a7ef92e1aa0",
     "execute-8@dd5bbcb8": "db99ce42579cf0221c5eabaf0cdd8aa904997bcd8eb6b6d93cf900eba6c36157",
+    # Re-pinned (issue #422), behaviour-preserving: the server import preamble of
+    # `Conductor._execute_inproc`, as in `build-2`'s re-pin — the server is resolved through
+    # `orchestration_runtime._build_runtime_server_module()` rather than from
+    # `<repo_root>/mcp_servers`. (Measured by diffing `execute_tuple()` against origin/main
+    # 72fdbd56's: the `_execute_inproc` row and no other.) The digest `execute-8` shipped with
+    # at 72fdbd56:
+    "execute-8@72fdbd56": "48ecddf30462b52c87f07f8a76b47db7a2738c6ddd2f97452b81b75c41c41e43",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
