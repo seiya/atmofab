@@ -13238,7 +13238,8 @@ class Conductor:
         # not-built+validated closure would be refused `dependency_not_ready` (a
         # `LaunchCheckRefused`, terminalized by `conduct`) before the `pre_judge` substep could
         # ever run. Fail fast with the `validate_pre_judge_dag_incomplete` fail_closed (the
-        # historic pre-spawn behavior), which names the full closure.
+        # historic pre-spawn behavior); its `judge_pre_spawn_blocked` event names the closure
+        # members that are not ready, transitive ones included.
         # `_dependency_ready` only checks DIRECT deps, whereas `_judge_pre_spawn_dag_block`
         # checks the full `dependency.all_nodes` closure, so this also catches transitive gaps
         # the launch gate would miss. The deterministic `pre_judge` substep (index 0) re-runs

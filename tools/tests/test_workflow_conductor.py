@@ -2276,8 +2276,9 @@ class LaunchCheckRefusalTest(unittest.TestCase):
     `conductor_error` with the detail cut at 200 characters."""
 
     _NODE = "problem/spec_p@0.1.0"
-    # The shape of the real #383 refusal: every dependency named, then the remedy. Longer than
-    # every 200-character cut, so a cut anywhere shows.
+    # The shape of the real #383 refusal (a Validate start, hence its opening reason; a Compile
+    # start opens `direct_dependency_compile_readiness_not_pass` instead): every dependency
+    # named, then the remedy. Longer than every 200-character cut, so a cut anywhere shows.
     _DETAIL = ("dependency_readiness_detail_not_pass:aggregate_verdict_verified; dependency not "
                "ready: " + "; ".join(
                    f"component/dep_{i}@0.1.1 validate: derivation_key_mismatch:comparand"
@@ -4706,8 +4707,8 @@ class TransportFailureTest(unittest.TestCase):
         # must fire here — otherwise workflow_launch_check would refuse with
         # `dependency_not_ready` (a `LaunchCheckRefused`, terminalized by `conduct` as a named
         # fail_closed — `LaunchCheckRefusalTest`) before the pre_judge substep could run, and
-        # the closure would be named by the launch check rather than by this guard. No launch
-        # is recorded.
+        # the launch check would name only the DIRECT dependencies, where this guard covers the
+        # whole closure. No launch is recorded.
         class _C(self._C):  # type: ignore[misc]
             def _judge_pre_spawn_dag_block(self, refs):  # type: ignore[override]
                 return "dependency closure not built+validated ... missing ['component/dep']"

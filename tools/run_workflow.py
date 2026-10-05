@@ -3423,8 +3423,8 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
 
     if status == "info" and event == "launch_check_refused":
         # The refusal's whole detail, unelided: it names every dependency that is not ready
-        # and the remedy, and the terminal summary that follows carries the same text only
-        # as far as `reason_detail` holds it (issue #383).
+        # and the remedy. This line is where the operator reads it — the terminal summary that
+        # follows elides its detail in human output (dev) or carries none (prod) (issue #383).
         node = payload.get("node_key", "?")
         return (f"    [fail_closed] {node} {payload.get('phase', '?')}: launch check refused "
                 f"({payload.get('reason_code', '?')}): {payload.get('detail', '?')}")
