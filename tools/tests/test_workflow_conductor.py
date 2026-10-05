@@ -19201,22 +19201,43 @@ class DeterministicLintTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "has no static lint preset"):
                     c._gate_lint_check(refs, "child-1")
 
-    def test_conductor_spells_no_server_path_of_its_own(self) -> None:
-        """Issue #422: no code string in `tools/workflow_conductor.py` names `mcp_servers`, so
-        every gate body (five today, and any added later) reaches the server only through
-        `orchestration_runtime._build_runtime_server_module`. Read with `ast`; a bare string
-        statement (a docstring) does not count. This proves the conductor spells no path of its
-        own; that the import WORKS without one is the behavioural row above's claim."""
+    def test_every_conductor_server_import_follows_the_loader(self) -> None:
+        """Issue #422: in `tools/workflow_conductor.py`, every function that imports from
+        `build_runtime_server` calls `_build_runtime_server_module()` on a line before its first
+        such import, and no code string equals `"mcp_servers"`. Read with `ast`, so a docstring
+        that mentions the path does not count, and a string that merely cites a file under that
+        directory (a README pointer) is not refused.
+
+        What this proves is that no gate body (five today, and any added later) depends on
+        another frame having imported the server first — the order dependence the issue
+        measured — and that none builds the directory's path itself. It does not prove that the
+        loader resolves the right directory; the behavioural row above drives that, through the
+        lint gate, with the module out of `sys.modules`."""
         import ast
         tree = ast.parse(Path(wc.__file__).read_text(encoding="utf-8"))
-        docstrings = {
-            id(node.value) for node in ast.walk(tree)
-            if isinstance(node, ast.Expr) and isinstance(node.value, ast.Constant)
-        }
+        importers, unguarded = [], []
+        for fn in ast.walk(tree):
+            if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            imports = [n.lineno for n in ast.walk(fn)
+                       if isinstance(n, ast.ImportFrom) and n.module == "build_runtime_server"]
+            if not imports:
+                continue
+            importers.append(fn.name)
+            loads = [n.lineno for n in ast.walk(fn)
+                     if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+                     and n.func.id == "_build_runtime_server_module"]
+            if not loads or min(loads) > min(imports):
+                unguarded.append(fn.name)
+        # The detector's own surface: the five gate bodies issue #422 named must be found, or a
+        # rename that hid them from this walk would leave the row green over nothing.
+        self.assertLessEqual(
+            {"_build_inproc", "_attribute_lint_findings", "_gate_lint_check",
+             "_gate_syntax_check", "_execute_inproc"}, set(importers))
+        self.assertEqual([], unguarded)
         hits = [
             node.lineno for node in ast.walk(tree)
-            if isinstance(node, ast.Constant) and isinstance(node.value, str)
-            and "mcp_servers" in node.value and id(node) not in docstrings
+            if isinstance(node, ast.Constant) and node.value == "mcp_servers"
         ]
         self.assertEqual([], hits)
 
