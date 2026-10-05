@@ -707,7 +707,7 @@ PINNED_RENDER: dict[str, str] = {
     # (Measured by diffing `render_tuple()` against origin/main 98dd37aa's: the two Fortran
     # backend modules and no other row.) The digest `render-7` shipped with at 98dd37aa:
     "render-7@98dd37aa": "4b6b9b354f6b21b021b48aec6a69b2ea49d3031f56562c5a385d1ad0035ef562",
-    "render-7": "c593d4763d5198822420701cd740ec7572d4e16bcbbc273b96813dcced1582ff",
+    "render-7": "1c56ef99a4e417db86388ffba46905d112a9318b02e3cc2af9d1b347e027e788",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

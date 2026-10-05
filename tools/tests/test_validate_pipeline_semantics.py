@@ -19085,8 +19085,9 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
 
     def test_a_public_attribute_on_the_type_header_is_not_drift(self) -> None:
         # Issue #343: §5.1 renders `type :: t`, and `type, public :: t` publishes the same type.
-        # Four codex harness sources used the attributed form and each was refused as five
-        # component-layout drifts. The combined component line is the spelling that run wrote.
+        # Four codex harness sources used the attributed form; each carries five drifts under the
+        # plain comparison, and the two that reached the static gate were refused for them. The
+        # combined component line is the spelling the 2026-10-05 run wrote.
         for header in ("type, public :: hx__h_named", "TYPE , PUBLIC :: hx__h_named"):
             src = self._with_type_header(header)
             with tempfile.TemporaryDirectory() as t:

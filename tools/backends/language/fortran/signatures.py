@@ -351,16 +351,20 @@ def stanza_line_list(lines: list[str]) -> tuple[str, ...]:
 
 def type_layout_list(lines: list[str]) -> tuple[str, ...]:
     """A derived type stanza's ordered atom list (``stanza_line_list``) with a ``public``
-    attribute dropped from its HEADER, so ``type, public :: t`` and ``type :: t`` plus a separate
-    ``public :: t`` compare equal. §5.1 renders the header bare (``_render_type``), and both are
-    the same published type; four codex harness sources wrote the attributed form, and each was
-    refused as five component-layout drifts (issue #343).
+    attribute dropped from its HEADER, so ``type, public :: t`` compares equal to §5.1's bare
+    ``type :: t`` (``_render_type``). Four codex harness sources wrote the attributed form on the
+    §5.1 types; each carries five component-layout drifts under the plain comparison, and the two
+    of them that reached the static gate were refused for those (issue #343; the other two failed
+    the syntax check first).
 
-    ``public`` alone: ``private`` would hide the type the block publishes, and ``abstract``
-    changes what it is, so those headers still differ. Components are untouched — a component's
-    attributes are part of the layout. Both readers of a GENERATED SOURCE's type layout use it,
-    `generated_source_violations` and `runner.assert_harness_pin`; the IR-vs-§5.1 comparisons
-    keep `stanza_line_list`, because both of their sides are host-rendered bare headers.
+    Accessibility is NOT compared: a bare ``type :: t`` hidden by a module-level ``private :: t``
+    passes this comparison, and a separate ``public :: t`` is never read. ``public`` alone is
+    dropped so that no attributed header other than the one this fix is for becomes newly
+    accepted — ``private`` and ``abstract`` still differ, as they did. Components are untouched —
+    a component's attributes are part of the layout. Both readers of a GENERATED SOURCE's type
+    layout use it, `generated_source_violations` and `runner.assert_harness_pin`; the
+    IR-vs-§5.1 comparisons keep `stanza_line_list`, because both of their sides are
+    host-rendered bare headers.
 
     The guard is an intent marker, not a live decision: a type stanza's first atom is always its
     header, which `_TYPE_HEADER_RE` requires to carry ``::``, and a bare ``type::t`` has no
