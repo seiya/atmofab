@@ -699,7 +699,15 @@ PINNED_RENDER: dict[str, str] = {
     # the new `procedures` argument, which no renderer calls). Re-pinned in place within PR-1's
     # review (round 3), before it shipped: the §5.1 pin's drift message names the specifier the
     # definition must carry (`__device__`) instead of "both" — a message only.
-    "render-7": "4b6b9b354f6b21b021b48aec6a69b2ea49d3031f56562c5a385d1ad0035ef562",
+    # Re-pinned (issue #343), behaviour-preserving for this transformation: the harness pin
+    # compares a derived type's layout through `signatures.type_layout_list`, which drops a
+    # `public` attribute from the type HEADER, so a certified harness written
+    # `type, public :: t` no longer stops a dependent's render. Every harness the pin
+    # accepted before renders the same bytes; one it refused had no render to change.
+    # (Measured by diffing `render_tuple()` against origin/main 98dd37aa's: the two Fortran
+    # backend modules and no other row.) The digest `render-7` shipped with at 98dd37aa:
+    "render-7@98dd37aa": "4b6b9b354f6b21b021b48aec6a69b2ea49d3031f56562c5a385d1ad0035ef562",
+    "render-7": "1c56ef99a4e417db86388ffba46905d112a9318b02e3cc2af9d1b347e027e788",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

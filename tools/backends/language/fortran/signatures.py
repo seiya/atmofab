@@ -349,6 +349,35 @@ def stanza_line_list(lines: list[str]) -> tuple[str, ...]:
     return stanza_atoms(lines)
 
 
+def type_layout_list(lines: list[str]) -> tuple[str, ...]:
+    """A derived type stanza's ordered atom list (``stanza_line_list``) with a ``public``
+    attribute dropped from its HEADER, so ``type, public :: t`` compares equal to §5.1's bare
+    ``type :: t`` (``_render_type``). Four codex harness sources wrote the attributed form on the
+    §5.1 types; each carries five component-layout drifts under the plain comparison, and the two
+    of them that reached the static gate were refused for those (issue #343; the other two failed
+    the syntax check first).
+
+    Accessibility is NOT compared: a bare ``type :: t`` hidden by a module-level ``private :: t``
+    passes this comparison, and a separate ``public :: t`` is never read. ``public`` alone is
+    dropped so that no attributed header other than the one this fix is for becomes newly
+    accepted — ``private`` and ``abstract`` still differ, as they did. Components are untouched —
+    a component's attributes are part of the layout. Both readers of a GENERATED SOURCE's type
+    layout use it, `generated_source_violations` and `runner.assert_harness_pin`; the
+    IR-vs-§5.1 comparisons keep `stanza_line_list`, because both of their sides are
+    host-rendered bare headers.
+
+    The guard is an intent marker, not a live decision: a type stanza's first atom is always its
+    header, which `_TYPE_HEADER_RE` requires to carry ``::``, and a bare ``type::t`` has no
+    attribute to drop either way."""
+    atoms = list(stanza_line_list(lines))
+    if atoms and atoms[0].startswith("type,") and "::" in atoms[0]:
+        lhs, _sep, rhs = atoms[0].partition("::")
+        attrs = fortran_lines.split_top_level_commas(lhs)
+        kept = [a for a in attrs if a != "public"]
+        atoms[0] = ",".join(kept) + "::" + rhs
+    return tuple(atoms)
+
+
 _ACCESS_SPEC_ATTRIBUTES = frozenset({"public", "private"})
 
 
@@ -1126,7 +1155,12 @@ def generated_source_violations(
             # inserted — is part of the compatibility contract (§5), so the source type block must
             # equal §5.1's atom list EXACTLY. Ordered-subsequence would accept an inserted extra
             # component (widening the published layout); set equality would accept a reorder.
-            if have != stanza_line_list(spec_lines):
+            # `have` is this name's stanza from `src_lists`, where a type wins over a procedure
+            # of the same name; a name the source defines only as a procedure has no type
+            # stanza and keeps its procedure atoms, which never equal a type layout.
+            src_type = src_types.get(name)
+            got = type_layout_list(src_type) if src_type is not None else have
+            if got != type_layout_list(spec_lines):
                 violations.append(
                     f"{target}: derived type '{name}' drifts from controlled_spec §5.1 — its "
                     "published component layout (names/types/order, no extras) does not match the "

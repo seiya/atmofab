@@ -1544,7 +1544,8 @@ def assert_harness_pin(
     # `validate_pipeline_semantics`, where it sat as five private names — Fortran knowledge in a
     # neutral module, which this module then had to reach back into (docs/BACKEND_BOUNDARY.md).
     from tools.backends.language.fortran.signatures import (
-        parse_interface_stanzas, source_atoms, stanza_atoms, stanza_line_set, stanza_line_list)
+        parse_interface_stanzas, source_atoms, stanza_atoms, stanza_line_set, stanza_line_list,
+        type_layout_list)
 
     pin = _harness_pin(harness_spec_id)
     exp_ops, exp_types, exp_ifaces, exp_errs = parse_interface_stanzas(pin.interface)
@@ -1642,7 +1643,7 @@ def assert_harness_pin(
             raise RenderError(
                 f"certified harness model source omits {symbol!r}: {_PIN_DRIFT_HINT}")
         if is_type:
-            src_ok = stanza_line_list(src_stanza) == stanza_line_list(exp_stanza)
+            src_ok = type_layout_list(src_stanza) == type_layout_list(exp_stanza)
         else:
             have = frozenset(stanza_atoms(src_stanza))
             src_ok = stanza_line_set(exp_stanza).issubset(have)
