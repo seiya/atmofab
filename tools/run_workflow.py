@@ -3426,10 +3426,10 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
         # before the run passes. A disagreement lists each failing comparison, unelided.
         st = payload.get("agreement", "?")
         if st == "disagree":
-            lines = [f"  [phase   ] cross-target disagree with "
-                     f"{','.join(map(str, payload.get('disagreeing') or [])) or '?'} — "
-                     f"re-running does not resolve it (docs/RUNBOOK.md §3-0); "
-                     f"record {payload.get('record', '?')}"]
+            lines = [(f"  [phase   ] cross-target disagree with "
+                      f"{','.join(map(str, payload.get('disagreeing') or [])) or '?'} — "
+                      f"re-running does not resolve it (docs/RUNBOOK.md §3-0); "
+                      f"record {payload.get('record', '?')}")]
             lines += [f"    - {line}" for line in (payload.get("report") or [])]
             return "\n".join(lines)
         if st == "unevaluable":

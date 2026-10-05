@@ -1731,7 +1731,7 @@ class CrossTargetVerdictTest(unittest.TestCase):
                          {"mpi"})
         # without the keyword the broken own predicate is evaluated (and recorded structural)
         _ir_doc, everything = self._primary([broken, SYM, CROSS], ["gpu", "mpi"])
-        self.assertEqual([r["kind"] for r in everything][0], "structural")
+        self.assertEqual(everything[0]["kind"], "structural")
 
 
 class CrossTargetCliTest(unittest.TestCase):
