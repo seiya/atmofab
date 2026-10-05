@@ -43,8 +43,9 @@ SUITE_OWNED_ENV = {
         "test; ALSO set process-globally for the duration of test_run_workflow.py by its "
         "`setUpModule` — a pre-existing setter this table did not declare",
     "ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK":
-        "a module-level `os.environ.setdefault` in test_orchestration_runtime.py and the "
-        "three test_pure_leaf_* modules, so it appears once any of them is imported",
+        "a module-level `os.environ.setdefault` in eight test modules "
+        "(test_orchestration_runtime.py, test_target_keyed_store.py, test_target_free_compile.py "
+        "and five test_pure_leaf_* modules), so it appears once any of them is imported",
 }
 
 # Populated by the conftest hook; a witness reads it rather than inferring the guard from a
@@ -223,7 +224,7 @@ def restore_operator_env(environ) -> None:
     """Put back what was stripped.
 
     NOT "leaves the caller's environment as it found it": the suite ADDS names of its own
-    — the four modules that `setdefault` ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK at
+    — the eight modules that `setdefault` ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK at
     import — and those were never in the record, so they survive this.
 
     UNWITNESSED and currently unreachable: no `pytest.main(` exists anywhere in this

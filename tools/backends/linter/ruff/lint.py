@@ -120,7 +120,8 @@ decides the verdict, and because this enumeration has already been wrong once:
   then reports success anyway. No flag changes it; only a caller that refuses a run reporting zero
   files could. `fortitude` behaves identically (`0 files scanned, 1 could not be read`, exit 0)
   and `cppcheck` does not (exit 1, which its `unusable_invocation_reason` classifies as a refusal).
-  `TODO.md` carries it; it is recorded here rather than closed because the gain is measured to be
+  It is unreachable since Z4 (issue #171), where the host writes every artifact as a regular
+  file; it is recorded here rather than closed because the gain is measured to be
   nothing — a leaf that hides a source from the linter has hidden it from the compiler too, and
   the build control file pins its sources by name.
 * A SYMLINKED DIRECTORY whose target lies OUTSIDE the walk root is not entered. Measured on all
@@ -139,7 +140,7 @@ decides the verdict, and because this enumeration has already been wrong once:
   bounds it today is write authority — the leaf would need a link target outside `project_dir` —
   not the linter. No flag closes it; a caller refusing a run that reports zero files over a
   directory known to be non-empty would, which is the same caller-side check the read-error entry
-  needs. `TODO.md` carries both.
+  needs. Since Z4 no leaf holds write authority, so neither is reachable.
 * THE EXTENSIONS the walk reads, and what `__init__.py` semantics imply for a package. Unchanged
   by any flag above.
 

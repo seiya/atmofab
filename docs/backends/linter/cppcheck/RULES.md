@@ -158,7 +158,7 @@ from does not enumerate what the tool reports.
   this backend — a sub-preset should be skipped over a tree holding nothing it can analyse.
   Unreachable today: the launch gate (`target_profile.target_profile_violations`) refuses a target
   profile whose `toolchain.language` is not an implemented `language` value, `mixed` included, and
-  the corpus is `fortran` throughout. `TODO.md` carries it.
+  `mixed` is not a declared `language` value at all. `TODO.md` carries it.
 
 ## Supported versions
 `>=2.7,<2.18`, declared as `MIN_VERSION` / `BELOW_VERSION` in `lint.py` and quoted by

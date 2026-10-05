@@ -22353,11 +22353,13 @@ class RealCorpusPublishedSurfaceTests(unittest.TestCase):
     identity and can distinguish nothing — and it is why the control below renames §5 instead, which
     is the one input this class holds fixed.
 
-    Nothing else catches it either: the node_key does not move, so readiness leaves the node `ready`,
-    no gate re-runs, and the widened §5.1 sits latent until something unrelated re-certifies the
-    node. The rule that a §5.1 change carries a `spec_version` bump is DISCIPLINE, not enforcement —
-    `docs/design/deterministic_followups.md` §"Issue #153" says the same, and this docstring said
-    otherwise for two commits.
+    What does catch it is the derivation key, not this class. Since issue #250 PR-2 every phase's
+    key hashes the node's own `controlled_spec.md` (`orchestration_runtime`'s `spec.controlled_spec`
+    component), so a widened §5.1 makes the certified IR stale (`derivation_key_mismatch:
+    spec.controlled_spec`), Compile re-derives, and `Generate.gate` pins the source against the new
+    §5.1 on the next run that reaches the node. Until such a run, the edit sits in the spec only.
+    This paragraph said, until that PR, that nothing caught it and that a `spec_version` bump was
+    the only guard — both true on 2026-09-04, when it was written.
 
     What it does NOT check, stated so the green is not read too widely: it builds the IR the spec
     implies rather than reading a certified one, so it cannot see a Compile leaf that transcribes

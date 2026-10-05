@@ -51,9 +51,10 @@ gone.
 `tools/hooks/cli.py` — the leaf hook layer whose pattern check this script sized — is
 DELETED. A `pure-function leaf` holds no tool, so there is no tool call for a hook to judge
 and no narrowing left to re-check. What the script still measures is what the CLI itself
-reads for a given `--tools` set, which is the open question `TODO.md` records about
-`--safe-mode` and the operator's `~/.claude`; read a result as evidence about the CLI, not
-about a check this repository runs.
+reads for a given `--tools` set, which bears on whether `--safe-mode` closes a pure leaf's
+reads of the operator's `~/.claude` — a question `TODO.md` dropped on 2026-10-05 as out of
+scope (a leaf with no tool gains nothing toward a verdict from it); read a result as evidence
+about the CLI, not about a check this repository runs.
 """
 from __future__ import annotations
 
