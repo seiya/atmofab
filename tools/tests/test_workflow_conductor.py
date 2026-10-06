@@ -16528,6 +16528,10 @@ class DeterministicBuildTest(unittest.TestCase):
         self.assertEqual(extract("x.cuh:3: warning", "S", cuda), ["S/x.cuh"])
         self.assertEqual(extract("a_model.f03:7:3: Error", "S", fortran),
                          ["S/a_model.f03"])
+        # The suffixes are literal (escaped): `.` in `.f90` is not "any character".
+        self.assertEqual(extract("a_modelxf90:1: Error", "S", fortran), [])
+        # Case-insensitive, as the literal list it replaced was.
+        self.assertEqual(extract("P_MODEL.CU(4): error", "S", cuda), ["S/P_MODEL.CU"])
         # A sentence-final period still ends the token; a further suffix does not.
         self.assertEqual(extract("Error in b.f90. See c.f90.o", "S", fortran), ["S/b.f90"])
         # Link-error residue: an object name maps back to a source only through the build
