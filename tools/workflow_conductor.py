@@ -9569,15 +9569,17 @@ class Conductor:
     def _extract_failure_source_refs(stderr: str, src_ref: str,
                                      suffixes: Sequence[str]) -> list[str]:
         """Source paths the compiler/linker named in its error output, rebased under
-        the canonical `<src_ref>` so Generate can target only the offending files
-        (phase_03 retry trigger). Best-effort: empty when nothing parseable.
+        the canonical `<src_ref>`, recorded as `binary_meta.json#failure_source_refs`.
+        Best-effort: empty when nothing parseable. A record only: no repair reader takes it
+        today (`_read_repair_findings` has no Build clause; see TODO.md).
 
         `suffixes` are the node's LANGUAGE's — its `syntax_promotions.STAGED_SUFFIXES`, the
         set the build compiles, headers included (issue #424). A path-like token counts only
         when it ENDS in one of them — no word character and no further `.suffix` follows (a
-        sentence-final period still ends it) — so `p_model.cu` is never cut down to a `p_model.c`
-        nobody authored. The re-rooting of the basename under `src_ref` is the
-        conductor's: what it attributes is a file the leaf authored under `src/`. An empty
+        sentence-final period still ends it) — so a longer suffix is never cut down to a
+        shorter one the build does not compile. Only the basename is kept and re-rooted under
+        `src_ref`, so a file the compiler named from elsewhere — a staged dependency source in
+        the object directory, a host-rendered file — is recorded under `src/` too. An empty
         tuple is refused — a language that declares no staged suffix cannot attribute, and
         answering `[]` for it would read as "nothing parseable" (fail-open)."""
         if not suffixes:
