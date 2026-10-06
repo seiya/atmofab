@@ -1520,10 +1520,11 @@ def derive_build_graph(doc: Mapping[str, Any], *,
     Determinism: permuting `files[]` does not change the result — `json.dumps(graph,
     sort_keys=True)` is byte-identical.
 
-    Raises `RuntimeError` when two sources of any origin derive the same object name. The
-    within-bundle case is already a `validate_bundle` clause; the cross-origin case is a
-    defect in the HOST's assembly inputs (the closure, the glue), which no bundle validator
-    can see, so assembly is where it fails closed.
+    Raises `RuntimeError` when two sources of any origin derive the same object name — two
+    bundle files included: the object name is the target build system's, which the
+    toolchain-free `validate_bundle` does not know, so this is the only place the collision is
+    refused (issue #424 PR-2 deleted the bundle-level copy). The cross-origin case is a defect
+    in the HOST's assembly inputs (the closure, the glue), which no bundle validator can see.
     """
     members = optimization_unit_members(doc)
     files = [entry for entry in (doc.get("files") or []) if isinstance(entry, dict)]
@@ -1596,10 +1597,10 @@ def derive_build_graph(doc: Mapping[str, Any], *,
         sources.append(f"glue:{glue}")
         objects.append(object_name(glue))
 
-    # Fail closed on a collision the bundle validator cannot see: a bundle file whose
-    # object name equals a staged dependency's or the host-rendered glue's. `validate_bundle`
-    # checks uniqueness WITHIN the bundle, but the closure and the glue are host inputs, so
-    # only assembly can compare the three origins. A bundle file at the runner's path would
+    # Fail closed on any object-name collision, over all three origins: two bundle files, or
+    # a bundle file whose object name equals a staged dependency's or the host-rendered glue's.
+    # The closure and the glue are host inputs, and the object name is the build system's, so
+    # only assembly can compare them. A bundle file at the runner's path would
     # otherwise overwrite the host-rendered glue object — exactly the contract-boundary
     # capture that the M3c shape's refusal of a `runner`-role file exists to deny. Since
     # v1.1.0 a bundle CAN carry a runner, but only on a node the host renders no glue for

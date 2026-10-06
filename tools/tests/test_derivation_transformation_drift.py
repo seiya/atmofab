@@ -757,7 +757,7 @@ PINNED_RENDER: dict[str, str] = {
     # one) no longer reproduces the control file it was certified with. The tuple gained eleven
     # `codegen_bundle` rows — the order was a value no row digested, and neither were the graph
     # derivation and its callees.
-    "render-8": "5e7f78b22c0ac638321ae6afa7463a3b5d679d08cb479d06aa6eadbebe7d0675",
+    "render-8": "ef7898a0ebc1366ded1727455564e10780d0fe8bc9d324f3cc7201102c9ede54",
     # Re-pinned (issue #424 PR-2), behaviour-preserving: the object-name rule moved from
     # `codegen_bundle._object_name` to the build system's `control_file.object_name` (the row
     # is now the dispatch, `_object_name_rule`), and the control file's basename is read off
@@ -820,7 +820,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "473edb8a3ce4f77e71218247f0c8eefdd62808f78cfee017f9e8b0cc5595dd38",
+    "build-2": "adfe319a3adfba2f94d6b6f9756883b76346db0ac842c49622c0114c6864d3ea",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build

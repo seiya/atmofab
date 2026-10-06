@@ -13,8 +13,9 @@ Two halves, both moved unchanged out of the neutral core:
   (`failure.py`), from the conductor.
 
 `CONTROL_FILE_BASENAME` is the file the build system reads; `object_name` is the object a source
-compiles to, which both renderers and the bundle's build graph
-(`codegen_bundle.derive_build_graph`) key on.
+compiles to, which the bundle's build graph (`codegen_bundle.derive_build_graph`) keys every object
+on and `render_from_graph` renders. `render_node` spells the same `<stem>.o` itself; the two are
+held equal by `test_m3c_parity_with_the_conductor_authored_makefile`, not by a shared call.
 
 Stdlib only; imports nothing from the neutral core.
 """
