@@ -82,9 +82,9 @@ resolves to, how to install it, and where else it must be found are the backend 
 
 | target | backend documents naming its tools and how to install them |
 |---|---|
-| `fortran_cpu` (`spec/targets/fortran_cpu.yaml`) | [docs/backends/linter/fortitude/RULES.md](backends/linter/fortitude/RULES.md) §Installation; [docs/backends/compiler/gfortran/TOOLCHAIN.md](backends/compiler/gfortran/TOOLCHAIN.md); `make`, from the platform's own package (`sudo apt-get install make` on Debian/Ubuntu) |
+| `fortran_cpu` (`spec/targets/fortran_cpu.yaml`) | [docs/backends/linter/fortitude/RULES.md](backends/linter/fortitude/RULES.md) §Installation; [docs/backends/compiler/gfortran/TOOLCHAIN.md](backends/compiler/gfortran/TOOLCHAIN.md); [docs/backends/build_system/make/CONTROL_FILE.md](backends/build_system/make/CONTROL_FILE.md) §3 (`make`) |
 | `fortran_cpu_mpi` (`spec/targets/fortran_cpu_mpi.yaml`) | the `fortran_cpu` row, plus [docs/backends/parallel/mpi/LAUNCHER.md](backends/parallel/mpi/LAUNCHER.md) §3 (the compiler wrapper and the launcher) |
-| `cpp_gpu` (`spec/targets/cpp_gpu.yaml`) | [docs/backends/compiler/nvcc/TOOLCHAIN.md](backends/compiler/nvcc/TOOLCHAIN.md) (one program in the lint, syntax-only and build-compiler roles, and the execution site's build); `make`, from the platform's own package (`sudo apt-get install make` on Debian/Ubuntu); [docs/backends/parallel/cuda/DEVICE_TRACE.md](backends/parallel/cuda/DEVICE_TRACE.md) §3 (the device trace) |
+| `cpp_gpu` (`spec/targets/cpp_gpu.yaml`) | [docs/backends/compiler/nvcc/TOOLCHAIN.md](backends/compiler/nvcc/TOOLCHAIN.md) (one program in the lint, syntax-only and build-compiler roles, and the execution site's build); [docs/backends/build_system/make/CONTROL_FILE.md](backends/build_system/make/CONTROL_FILE.md) §3 (`make`); [docs/backends/parallel/cuda/DEVICE_TRACE.md](backends/parallel/cuda/DEVICE_TRACE.md) §3 (the device trace) |
 
 A compiler wrapper and a launcher must come from one installation whose language binding is built
 for the target's compiler; the startup probe checks the pair and refuses the run
