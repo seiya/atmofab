@@ -20274,15 +20274,29 @@ class DeclaredCharacteristicsGateTests(unittest.TestCase):
             # and without `::` it sees no type at all (0 violations at origin/main too).
             "local type shadowing the pinned type, other case": (cls._writer(
                 "    type :: HX__H_NAMED\n      integer :: k\n    end type HX__H_NAMED\n" + p,
-                "    print *, entries(1)%k, n\n"), "defines its own derived type `hx__h_named`"),
+                "    print *, entries(1)%k, n\n"),
+                "defines its own derived type `hx__h_named`, so `entries`'s type names that local "
+                "type and not the published one — remove the local definition"),
             "local type shadowing the pinned type, no ::": (cls._writer(
                 "    type hx__h_named\n      integer :: k\n    end type hx__h_named\n" + p,
-                "    print *, entries(1)%k, n\n"), "defines its own derived type `hx__h_named`"),
+                "    print *, entries(1)%k, n\n"),
+                "defines its own derived type `hx__h_named`, so `entries`'s type names that local "
+                "type and not the published one — remove the local definition"),
             # Round 1: the same import with `::` and the pinned name SECOND in the list. The atom
             # reading split it into three atoms and examined only the first name.
             "B4 import of the pinned name second in a ::-form list": (
                 cls._writer("    use, non_intrinsic :: hx_dep_model, only: hx_dep__t, hx__h_named\n"
                             + p), "hx__h_named"),
+            # Round 2: `use ::` with no module nature, and the import in the second statement of a
+            # `;`-joined line — each read whole now, and neither had a row.
+            "B4 `use ::` import from a dependency module": (
+                cls._writer("    use :: hx_dep_model, only: hx__h_named\n" + p),
+                "from a module other than the publishing one — §5.1 pins the type as this "
+                "module's own"),
+            "B4 import in the second statement of a ;-joined line": (
+                cls._writer("    use hx_dep_model, only: hx_dep__t; use hx_dep_model, only: "
+                            "hx__h_named\n" + p),
+                "imports the §5.1 derived type name `hx__h_named`"),
             "B5 interface body in the specification part": (cls._writer(
                 "    type(hx__h_named), intent(in) :: entries(:)\n"
                 "    integer, intent(inout) :: n\n"

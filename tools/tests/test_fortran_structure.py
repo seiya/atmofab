@@ -155,6 +155,14 @@ class ProcedureDeclarationsTests(unittest.TestCase):
               integer :: q
             end subroutine inner
           end subroutine s
+          function f(x) result(r)
+            type Local_F
+              integer :: k
+            end type Local_F
+            integer, intent(in) :: x
+            integer :: r
+            r = x
+          end function f
         end module m
         submodule (m) impl
         contains
@@ -183,7 +191,9 @@ class ProcedureDeclarationsTests(unittest.TestCase):
 
     def test_module_level_definitions_reads_header_and_own_declarations(self) -> None:
         definitions = self._definitions()
-        self.assertEqual(set(definitions), {"s", "mp"})
+        self.assertEqual(set(definitions), {"s", "f", "mp"})
+        # A function's own local types are read as a subroutine's are (round 2).
+        self.assertEqual(definitions["f"].local_types, ("local_f",))
         self.assertEqual(definitions["s"].header, "subroutine s(a, n)")
         self.assertEqual(definitions["s"].declarations[0],
                          ("variable_declaration", "integer, intent(in) :: a(:)"))

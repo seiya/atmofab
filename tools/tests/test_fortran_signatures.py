@@ -2096,7 +2096,10 @@ class DeclaredCharacteristicsTests(unittest.TestCase):
                        "its shape is scalar"),
             "init": ([("variable_declaration", "real(dp), intent(in) :: x(:) = 0")],
                      "its initialiser is `=0`"),
-            "undeclared": ([], "`x` is not declared by a type declaration"),
+            "undeclared": ([], "`x` is not declared by a type declaration or attribute statement "
+                           "of the procedure's own specification part (one inside a `block` or a "
+                           "contained procedure is not the procedure's) — declare it exactly as "
+                           "the pinned line does"),
             "no type": ([("variable_modification", "intent(in) :: x(:)")],
                         "no type declaration gives it a type"),
             "::-less": ([("variable_declaration", "real(dp) x(:)")], "write each declaration"),

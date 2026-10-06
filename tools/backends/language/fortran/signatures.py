@@ -1412,8 +1412,8 @@ def generated_source_violations(
                 f"{target}: procedure '{name}' drifts from controlled_spec §5.1 — {sentence} "
                 "(each dummy and the result are compared by what the definition's own "
                 "specification part declares: type, kind, shape and every attribute; a "
-                "declaration inside a `block`, an interface body or a contained procedure is "
-                "not the definition's)")
+                "declaration inside a `block` or a contained procedure is not the "
+                "definition's)")
 
     for name in sorted(op_stanzas) if definitions is not None else ():
         spec_lines = op_stanzas[name]
@@ -1584,7 +1584,7 @@ def generated_source_violations(
     # Read each `use` statement WHOLE: one normalised statement per `;`-split logical line. The atom
     # set was read here until issue #430 round 1, and `declaration_atoms` splits any line carrying
     # `::` on its top-level commas, so `use, non_intrinsic :: m, only: a, t` became three atoms of
-    # which only the first carried `only:` — a pinned name after the first in a `::`-form list was
+    # which only the second carried `only:` — a pinned name after the first in a `::`-form list was
     # never examined, and the module read as empty (which refused a same-file helper's identity
     # import written `use :: <publisher>, only: t`).
     use_statements = [
@@ -1609,10 +1609,11 @@ def generated_source_violations(
                     continue
                 violations.append(
                     f"{target}: generated model source imports the §5.1 derived type name "
-                    f"`{name}` (`{statement}`) — the pinned type is defined by this module, and a "
-                    f"`use` binding its name changes every dummy declared `type({name})` in that "
-                    "scope to the imported type; drop the name from the `use` (rename the "
-                    "imported entity to a name of its own if it is needed)")
+                    f"`{name}` (`{statement}`) from a module other than the publishing one — "
+                    "§5.1 pins the type as this module's own, and an imported binding of its name "
+                    f"makes every dummy declared `type({name})` in that scope the imported type. "
+                    f"Define `{name}` in this module itself and drop the name from the `use` "
+                    "(rename an imported entity you still need to a name of its own)")
                 break
             violations.append(
                 f"{target}: generated model source imports the §5.1 module parameter "
