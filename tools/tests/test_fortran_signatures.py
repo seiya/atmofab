@@ -2168,6 +2168,21 @@ class DeclaredCharacteristicsTests(unittest.TestCase):
         # The accepted header attribute is exactly `public`.
         self.assertEqual(fortran_signatures._ACCEPTED_TYPE_HEADER_EXTRAS, frozenset({"public"}))
 
+    def test_entity_differences_names_each_initialiser_case(self) -> None:
+        # Three branches; only the first is reachable from a rendered §5.1 today (no
+        # structured signature carries an initialiser), so the other two are pinned here.
+        E = fortran_signatures.Entity
+        diff = fortran_signatures._entity_differences
+        bare = E("integer", frozenset(), None, None)
+        init0 = E("integer", frozenset(), None, "=0")
+        init1 = E("integer", frozenset(), None, "=1")
+        self.assertEqual(diff(bare, init0),
+                         ["it carries the initialiser `=0`, which §5.1 does not pin"])
+        self.assertEqual(diff(init0, bare), ["it lacks the initialiser `=0`"])
+        self.assertEqual(diff(init0, init1),
+                         ["its initialiser is `=1` where §5.1 pins `=0`"])
+        self.assertEqual(diff(init0, init0), [])
+
     def test_source_atoms_reads_each_statement_of_a_semicolon_joined_line(self) -> None:
         atoms = fortran_signatures.source_atoms(
             "integer, parameter :: dp = real64; integer :: k\n")

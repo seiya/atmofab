@@ -758,7 +758,12 @@ def type_layout_drift(pinned_lines: list[str], *, definition: Any, count: int) -
     the body may hold component declarations and nothing else (§5.1 pins a plain component
     layout: `private`, `sequence`, a type-bound `contains` part are each a different type). The
     components are compared as an ORDERED list of `Entity` — name, type, kind, shape, every
-    attribute and the initialiser, position by position — since the layout is the order."""
+    attribute and the initialiser, position by position — since the layout is the order.
+
+    ACCESSIBILITY IS NOT COMPARED, here or anywhere in the §5.1 pin (it was not by the splitter
+    comparison this replaced either): a type left private by a module-level `private :: t` or a
+    `private` default passes. A consumer's `use` of it then fails at that consumer's compile, so
+    a leaf gains no certification from it — only a later, billed failure."""
     if count > 1:
         keep = ("keep the one at module level of the publishing module and give every other "
                 "type a name of its own" if definition is not None else
@@ -788,7 +793,8 @@ def type_layout_drift(pinned_lines: list[str], *, definition: Any, count: int) -
         try:
             pinned.extend((name, entity, line.strip())
                           for name, entity in parse_declaration(line, has_type_spec=True))
-        except SignatureParseError as exc:  # host-rendered; fail closed rather than skip a line
+        # Host-rendered, so unreachable today; fail closed rather than skip a line (not pinned).
+        except SignatureParseError as exc:
             out.append(f"the pinned line `{line.strip()}` cannot be read ({exc})")
             return out
     declared: list[tuple[str, Entity]] = []

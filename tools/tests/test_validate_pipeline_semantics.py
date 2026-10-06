@@ -20412,8 +20412,9 @@ class DerivedTypeLayoutGateTests(unittest.TestCase):
       pinned name a reader can be handed. Each must be refused, naming the type. A1, A2 and A8
       passed with 0 violations at origin/main fbf160a5 (the splitter read a type by its name AS
       WRITTEN, only in the `type ::` header form, and not inside an interface body); every other
-      hole was refused there already, A3 as "does not publish" (measured with this class's
-      sources run through origin/main's gate).
+      hole was refused there already — A0, A3 and A12 as "does not publish", A4 and A5 by the
+      splitter's duplicate report, A7 by the type-import refusal, the rest as a layout drift
+      (measured with this class's sources run through origin/main's gate).
     - `same()`: spellings of the pinned layout, each of which must pass. Four were refused at
       origin/main: the `::`-less and the upper-case header, the len-less `character(:)` and the
       `;`-joined components.
