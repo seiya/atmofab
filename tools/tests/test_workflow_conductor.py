@@ -16552,6 +16552,25 @@ class DeterministicBuildTest(unittest.TestCase):
         self.assertTrue(meta["failure_excerpt"].endswith("; zz rule"), meta["failure_excerpt"])
         self.assertEqual(meta["failure_source_refs"], [f"{refs.source_dir()}/src/ZZcontrol"])
 
+    def test_the_control_file_basename_is_the_build_system_s(self) -> None:
+        """`_control_file_basename` asks the target build system's `control_file` backend
+        (issue #424 PR-2; a class constant until then): moving the backend's basename moves
+        the file Generate declares as its deliverable."""
+        import tempfile
+        from unittest import mock
+
+        from tools.backends.build_system.make import control_file
+        with tempfile.TemporaryDirectory() as td:
+            c = _TargetedConductor(repo_root=Path(td), orchestration_id="t",
+                                   orchestration_agent_run_id="x", llm_config=_cfg("claude"),
+                                   env={})
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
+            self.assertEqual(c._control_file_basename(refs), "Makefile")
+            with mock.patch.object(control_file, "CONTROL_FILE_BASENAME", "ZZcontrol"):
+                self.assertEqual(c._control_file_basename(refs), "ZZcontrol")
+
     def test_build_refuses_a_build_system_that_does_not_build_in_its_source_tree(self) -> None:
         """Every command log of a build is placed beside the control file, which holds only for
         a build system that builds in its source tree (`control_file.BUILDS_IN_SOURCE`). One
