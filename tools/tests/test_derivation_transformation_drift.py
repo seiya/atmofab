@@ -754,7 +754,8 @@ PINNED_RENDER: dict[str, str] = {
     # review (round 3), before it shipped: the §5.1 pin's drift message names the specifier the
     # definition must carry (`__device__`) instead of "both" — a message only.
     # Re-pinned (issue #343), behaviour-preserving for this transformation: the harness pin
-    # compares a derived type's layout through `signatures.type_layout_list`, which drops a
+    # compared (until issue #430 PR-2 deleted it) a derived type's layout through
+    # `signatures.type_layout_list`, which drops a
     # `public` attribute from the type HEADER, so a certified harness written
     # `type, public :: t` no longer stops a dependent's render. Every harness the pin
     # accepted before renders the same bytes; one it refused had no render to change.
@@ -769,7 +770,17 @@ PINNED_RENDER: dict[str, str] = {
     # one) no longer reproduces the control file it was certified with. The tuple gained eleven
     # `codegen_bundle` rows — the order was a value no row digested, and neither were the graph
     # derivation and its callees.
-    "render-8": "b26c7a240962a990363ec0bc2ec3a12e47bfe8d661e9a4f2955b9382e730e666",
+    "render-8": "a7fdeaa8fb6c87c1abbb058a1f76f8103808713b055b1aa7f5f295a493eab773",
+    # Re-pinned (issue #430 PR-2), behaviour-preserving for this transformation: the §5.1 gate
+    # and `runner.assert_harness_pin` compare a §5.1 derived type with its one module-level
+    # definition in the publishing module (`signatures.type_layout_drift`, read through the
+    # structure front end) where they compared the whole-file splitter's stanza of that name
+    # (`type_layout_list`, deleted). The renderers are untouched — the same 2197 renders as
+    # PR-1's measurement give one sha256 at fbf160a5 and here — and the pin decides WHETHER a
+    # render happens, never its bytes. (Measured by diffing `render_tuple()` against origin/main
+    # fbf160a5's: `fortran/signatures.py` and `fortran/runner.py`, no other row.) The digest
+    # `render-8` shipped with at fbf160a5:
+    "render-8@fbf160a5": "b26c7a240962a990363ec0bc2ec3a12e47bfe8d661e9a4f2955b9382e730e666",
     # Re-pinned (issue #430 PR-1), behaviour-preserving for this transformation: the §5.1 gate
     # and `runner.assert_harness_pin` compare a generated procedure by what its definition
     # declares (`signatures.surface_drift`) where they compared atom membership. The renderers

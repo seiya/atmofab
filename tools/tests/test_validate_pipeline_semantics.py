@@ -20400,6 +20400,265 @@ class DeclaredCharacteristicsGateTests(unittest.TestCase):
                 self.assertEqual(self._gate(source), [])
 
 
+class DerivedTypeLayoutGateTests(unittest.TestCase):
+    """_validate_generated_signatures compares each §5.1 derived type with the ONE definition at
+    module level of the publishing module, component by component (issue #430 PR-2).
+
+    Same two directions as `DeclaredCharacteristicsGateTests`, over sources `gfortran
+    -fsyntax-only -std=f2008 -Werror=unused-dummy-argument -Werror=unused-variable` accepts (rc=0,
+    recorded in the PR):
+
+    - `holes()`: each publishes a type layout §5.1 does not declare, or a second type of the
+      pinned name a reader can be handed. Each must be refused, naming the type. A1, A2 and A8
+      passed with 0 violations at origin/main fbf160a5 (the splitter read a type by its name AS
+      WRITTEN, only in the `type ::` header form, and not inside an interface body); every other
+      hole was refused there already — A0, A3 and A12 as "does not publish", A4 and A5 by the
+      splitter's duplicate report, A7 by the type-import refusal, the rest as a layout drift
+      (measured with this class's sources run through origin/main's gate).
+    - `same()`: spellings of the pinned layout, each of which must pass. Four were refused at
+      origin/main: the `::`-less and the upper-case header, the len-less `character(:)` and the
+      `;`-joined components.
+
+    `test_the_component_currency_is_the_entity` runs a §5.1 of its own, carrying the component
+    shapes `_FENCE` does not (an array of a derived type, a fixed shape, a scalar integer), so
+    the O1 spelling of a COMPONENT — the shape harness attempt
+    `harness-fortran-cpu_20260925_001/src_20260925_001` wrote on
+    `type(<t>), dimension(:), allocatable :: checks`, and was refused for at the gate — and an initialiser are driven. Its three
+    ABI-identical spellings were each refused at origin/main.
+
+    What is SAMPLED, not pinned: the spellings. `type_layout_drift`'s branches are pinned one by
+    one in `test_fortran_signatures.py`."""
+
+    _C = InfrastructureGeneratedSignatureGateTests
+    _TYPE = (
+        "  type :: hx__h_named\n"
+        "    character(len=:), allocatable :: name\n"
+        "    character(len=:), allocatable :: json\n"
+        "  end type hx__h_named\n")
+    _DRIFTED = (
+        "    integer :: name\n"
+        "    character(len=:), allocatable :: json\n")
+    _COMPONENTS = (
+        "    character(len=:), allocatable :: name\n"
+        "    character(len=:), allocatable :: json\n")
+    # A private helper procedure defining its own type of the pinned name with the pinned layout:
+    # the decoy the splitter credited (A1).
+    _HELPER = (
+        "  subroutine hx__private_helper(k)\n"
+        "    integer, intent(in) :: k\n"
+        "    type :: hx__h_named\n"
+        "      character(len=:), allocatable :: name\n"
+        "      character(len=:), allocatable :: json\n"
+        "    end type hx__h_named\n"
+        "    type(hx__h_named) :: local\n"
+        "    local%name = repeat('x', k)\n"
+        "    print *, local%name\n"
+        "  end subroutine hx__private_helper\n")
+
+    @classmethod
+    def _with_type(cls, definition: str, *, helper: str = "", after: str = "") -> str:
+        live = DeclaredCharacteristicsGateTests._live()
+        assert cls._TYPE in live
+        source = live.replace(cls._TYPE, definition, 1)
+        if helper:
+            source = source.replace("end module hx_model\n", helper + "end module hx_model\n", 1)
+        return source + after
+
+    @classmethod
+    def holes(cls) -> dict[str, str]:
+        d = cls._DRIFTED
+        return {
+            "A1 no-:: header drifted, helper-local decoy": cls._with_type(
+                "  type hx__h_named\n" + d + "  end type hx__h_named\n", helper=cls._HELPER),
+            "A2 upper-case header drifted, helper-local decoy": cls._with_type(
+                "  TYPE :: HX__H_NAMED\n" + d + "  END TYPE HX__H_NAMED\n", helper=cls._HELPER),
+            "A3 no-:: header drifted": cls._with_type(
+                "  type hx__h_named\n" + d + "  end type hx__h_named\n"),
+            "A3 upper-case header drifted": cls._with_type(
+                "  TYPE :: HX__H_NAMED\n" + d + "  END TYPE HX__H_NAMED\n"),
+            "A4 the pinned layout, plus a helper-local type of the name": cls._with_type(
+                cls._TYPE, helper=cls._HELPER),
+            "A5 a second definition in a helper module of the same file": cls._with_type(
+                cls._TYPE, after=(
+                    "module hx_helper\n  implicit none\n  type :: hx__h_named\n"
+                    "    integer :: k\n  end type hx__h_named\nend module hx_helper\n")),
+            # Defined only in a helper module the publishing module imports it from: the import
+            # refusal fires, and the module defines no `hx__h_named` of its own. (Defined only in
+            # a SUBMODULE has no legal witness here: the module's own dummies cannot see it.)
+            "A7 defined in a helper module only": "module hx_helper\n  implicit none\n" + (
+                "  type :: hx__h_named\n" + cls._COMPONENTS
+                + "  end type hx__h_named\nend module hx_helper\n") + cls._with_type(
+                "").replace("  implicit none\n", "  use hx_helper, only: hx__h_named\n"
+                            "  implicit none\n", 1),
+            "A8 a second definition in an interface body": cls._with_type(
+                cls._TYPE + "  interface\n    subroutine hx__ext(k)\n"
+                "      integer, intent(in) :: k\n      type :: hx__h_named\n"
+                "        integer :: z\n      end type hx__h_named\n"
+                "    end subroutine hx__ext\n  end interface\n"),
+            # No definition of the pinned name at all; the dummy is declared with another type so
+            # the source stays legal.
+            "A0 not defined": cls._with_type(
+                cls._TYPE.replace("hx__h_named", "hx__h_other")).replace(
+                "type(hx__h_named), intent(in) :: entries(:)",
+                "type(hx__h_other), intent(in) :: entries(:)", 1),
+            "A9 an extra component with an initialiser": cls._with_type(
+                "  type :: hx__h_named\n" + cls._COMPONENTS
+                + "    integer :: extra = 0\n  end type hx__h_named\n"),
+            "A10 private statement": cls._with_type(
+                "  type :: hx__h_named\n    private\n" + cls._COMPONENTS
+                + "  end type hx__h_named\n"),
+            "A11 sequence statement": cls._with_type(
+                "  type :: hx__h_named\n    sequence\n" + cls._COMPONENTS
+                + "  end type hx__h_named\n"),
+            "A12 extends": cls._with_type(
+                "  type :: hx__base\n  end type hx__base\n"
+                "  type, extends(hx__base) :: hx__h_named\n" + cls._COMPONENTS
+                + "  end type hx__h_named\n"),
+            "A13 type-bound procedure part": cls._with_type(
+                "  type :: hx__h_named\n" + cls._COMPONENTS
+                + "  contains\n    procedure, nopass :: hx_tb => hx__emit_int\n"
+                "  end type hx__h_named\n"),
+            "private header": cls._with_type(cls._TYPE.replace(
+                "type :: hx__h_named", "type, private :: hx__h_named", 1)),
+            "a component carrying a shape": cls._with_type(cls._TYPE.replace(
+                "allocatable :: json", "allocatable :: json(:)", 1)),
+            "a component carrying an extra attribute": cls._with_type(cls._TYPE.replace(
+                "allocatable :: json", "allocatable, public :: json", 1)),
+        }
+
+    @classmethod
+    def same(cls) -> dict[str, str]:
+        return {
+            "public header (issue #343)": cls._with_type(cls._TYPE.replace(
+                "type :: hx__h_named", "type, public :: hx__h_named", 1)),
+            "no-:: header": cls._with_type(cls._TYPE.replace(
+                "type :: hx__h_named", "type hx__h_named", 1)),
+            "upper-case header and components": cls._with_type(cls._TYPE.upper()),
+            "end type without the name": cls._with_type(cls._TYPE.replace(
+                "end type hx__h_named", "end type", 1)),
+            "len-less character components": cls._with_type(
+                cls._TYPE.replace("character(len=:)", "character(:)")),
+            "a component per statement, ;-joined": cls._with_type(
+                "  type :: hx__h_named\n"
+                "    character(len=:), allocatable :: name; character(len=:), allocatable :: json\n"
+                "  end type hx__h_named\n"),
+            "two components in one statement": cls._with_type(
+                "  type :: hx__h_named\n    character(len=:), allocatable :: name, json\n"
+                "  end type hx__h_named\n"),
+            "a differently named type in a helper procedure": cls._with_type(
+                cls._TYPE, helper=cls._HELPER.replace("hx__h_named", "hx__h_local")),
+        }
+
+    def _gate(self, source: str) -> list[str]:
+        inst = self._C("test_faithful_source_passes")
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            return inst._run(inst._seed(tmp, source=source), tmp)
+
+    def test_each_hole_is_refused_naming_the_type(self) -> None:
+        live = DeclaredCharacteristicsGateTests._live()
+        for label, source in self.holes().items():
+            with self.subTest(label):
+                self.assertNotEqual(source, live)
+                violations = self._gate(source)
+                # The name, not this comparison's own wording: A4 and A5 write the second
+                # definition in the `type ::` form, which the whole-file splitter's duplicate report
+                # refuses first (and returns), as it did at origin/main.
+                self.assertTrue(any("hx__h_named" in v for v in violations), violations)
+
+    def test_each_spelling_of_the_pinned_layout_passes(self) -> None:
+        live = DeclaredCharacteristicsGateTests._live()
+        for label, source in self.same().items():
+            with self.subTest(label):
+                self.assertNotEqual(source, live)
+                self.assertEqual(self._gate(source), [])
+
+    def test_the_messages_name_what_drifted(self) -> None:
+        holes = self.holes()
+        expected = {
+            "A0 not defined": "does not publish controlled_spec §5.1 derived type 'hx__h_named'",
+            "A1 no-:: header drifted, helper-local decoy": "defines a derived type of this name 2 times",
+            "A3 no-:: header drifted": "component 1 (the pinned line `character(len=:), allocatable "
+                                        ":: name`): `name` — its type is `integer`",
+            "A7 defined in a helper module only": "outside the module's own specification part",
+            "A8 a second definition in an interface body": "2 times",
+            "A9 an extra component with an initialiser": "component 3, `extra`, is one §5.1 does "
+                                                         "not declare",
+            "A10 private statement": "`private_statement`",
+            "A12 extends": "`extends(hx__base)`",
+            "a component carrying a shape": "its shape is `(:)` where §5.1 pins scalar",
+        }
+        for label, phrase in expected.items():
+            with self.subTest(label):
+                violations = self._gate(holes[label])
+                self.assertTrue(any(phrase in v for v in violations), violations)
+
+    _LIST_FORTRAN = (
+        "integer, parameter :: dp = real64\n"
+        "type :: hx__h_named\n"
+        "  character(len=:), allocatable :: name\n"
+        "  character(len=:), allocatable :: json\n"
+        "end type hx__h_named\n"
+        "type :: hx__h_list\n"
+        "  type(hx__h_named), allocatable :: checks(:)\n"
+        "  real(dp) :: coef(3)\n"
+        "  integer :: n\n"
+        "end type hx__h_list\n")
+    _LIST_SOURCE = (
+        "module hx_model\n"
+        "  use, intrinsic :: iso_fortran_env, only: real64\n"
+        "  implicit none\n"
+        "  integer, parameter :: dp = real64\n"
+        "  type :: hx__h_named\n"
+        "    character(len=:), allocatable :: name\n"
+        "    character(len=:), allocatable :: json\n"
+        "  end type hx__h_named\n"
+        "  type :: hx__h_list\n"
+        "    type(hx__h_named), allocatable :: checks(:)\n"
+        "    real(dp) :: coef(3)\n"
+        "    integer :: n\n"
+        "  end type hx__h_list\n"
+        "end module hx_model\n")
+
+    def _list_gate(self, source: str) -> list[str]:
+        inst = self._C("test_faithful_source_passes")
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            return [str(v) for v in inst._run(inst._seed(
+                tmp, source=source,
+                section_51=_structured_section51_from_fortran(self._LIST_FORTRAN),
+                signatures=_structured_ir_signatures_from_fortran(self._LIST_FORTRAN)), tmp)]
+
+    def test_the_component_currency_is_the_entity(self) -> None:
+        self.assertEqual(self._list_gate(self._LIST_SOURCE), [])
+        same = {
+            "O1 dimension attribute on a component": (
+                "type(hx__h_named), allocatable :: checks(:)",
+                "type(hx__h_named), dimension(:), allocatable :: checks"),
+            "kind= selector and lower bound 1": (
+                "real(dp) :: coef(3)", "real(kind=dp) :: coef(1:3)"),
+            "dimension attribute with a fixed shape": (
+                "real(dp) :: coef(3)", "real(dp), dimension(3) :: coef"),
+        }
+        for label, (old, new) in same.items():
+            with self.subTest(label):
+                self.assertIn(old, self._LIST_SOURCE)
+                self.assertEqual(self._list_gate(self._LIST_SOURCE.replace(old, new, 1)), [])
+        holes = {
+            "an initialiser": ("integer :: n", "integer :: n = 0", "initialiser"),
+            "another fixed shape": ("real(dp) :: coef(3)", "real(dp) :: coef(4)", "shape"),
+            "another kind": ("real(dp) :: coef(3)", "real :: coef(3)", "its type is `real`"),
+            "pointer for allocatable": (
+                "type(hx__h_named), allocatable :: checks(:)",
+                "type(hx__h_named), pointer :: checks(:)", "`pointer`"),
+        }
+        for label, (old, new, phrase) in holes.items():
+            with self.subTest(label):
+                violations = self._list_gate(self._LIST_SOURCE.replace(old, new, 1))
+                self.assertTrue(any("derived type 'hx__h_list'" in v and phrase in v
+                                    for v in violations), violations)
+
+
 class PublishedProcedureDefinednessTests(unittest.TestCase):
     """_validate_generated_signatures: a §5.1 published procedure must be DEFINED, not merely
     prototyped.
@@ -20925,13 +21184,22 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
             with self.assertRaises(unavailable):
                 self.inst._run(execution, tmp)
 
-    def test_a_node_publishing_no_operations_is_not_parsed_at_all(self) -> None:
-        # The `if op_stanzas:` guard, which the census found unwitnessed: removing it made a
-        # node whose §5.1 publishes only TYPES fail on an unresolvable identifier in an unrelated
-        # private helper — legitimate work refused, and the guard is the only thing preventing it.
-        # The condition is driven at its source (an empty published-operation set from §5.1)
-        # rather than simulated downstream, and the fixture carries the wedge that would
-        # otherwise produce the refusal, so the row observes the guard and not its absence.
+    def test_a_type_only_node_is_parsed_and_an_empty_surface_is_refused_before_the_guard(self) -> None:
+        # The parse guard. It was `if op_stanzas:` until issue #430 PR-2, and this row then pinned
+        # that a node whose §5.1 publishes only TYPES was not parsed: the types were read by the
+        # whole-file splitter. They are read from the tree now (a module-level `type t` or
+        # `TYPE :: T` was invisible to the splitter, and a helper's local same-named type stood
+        # in for the published one), so a type-only node IS parsed, and an unresolvable source
+        # is refused for it exactly as for a node publishing operations — skipping the parse
+        # would skip the type comparison, which is a switch the leaf holds. What the guard still
+        # decides is the node publishing NEITHER: it has no definedness and no layout question,
+        # so an unresolvable private helper must not refuse it — but that node cannot reach the
+        # guard (below).
+        #
+        # The condition is driven at its source (§5.1 and the IR together, so the stale-IR guard
+        # does not return first — a first version of the old row mocked the §5.1 parse alone and
+        # passed for that unrelated reason), and the fixture carries the wedge that produces
+        # the refusal, so each half observes the guard and not its absence.
         wedged = self._C._GOOD_SOURCE.replace(
             "end module hx_model\n",
             "  subroutine hx__private_helper()\n"
@@ -20943,32 +21211,49 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
         self.assertTrue(
             any("structure front end could not resolve" in v for v in self._gate(wedged)),
             "the fixture must reach the parse when operations are published")
-        # A REAL type-only node, §5.1 and IR together. A first version of this row mocked the
-        # §5.1 parse alone and passed for an unrelated reason — the IR then disagreed with §5.1
-        # and the stale-IR guard returned before `op_stanzas` was ever consulted. The mutation
-        # `if op_stanzas:` -> `if True:` is what exposed it; without a fixture both halves of the
-        # contract agree on, this row observes the guard it names not at all.
         type_only_fortran = (
             "integer, parameter :: dp = real64\n"
             "type :: hx__h_named\n"
             "  character(len=:), allocatable :: name\n"
             "  character(len=:), allocatable :: json\n"
             "end type hx__h_named\n")
-        with tempfile.TemporaryDirectory() as t:
-            tmp = Path(t)
-            execution = self._C._seed(
-                self.inst, tmp, source=wedged,
-                section_51=_structured_section51_from_fortran(type_only_fortran),
-                signatures=_structured_ir_signatures_from_fortran(type_only_fortran))
-            violations = self.inst._run(execution, tmp)
+        nothing_fortran = "integer, parameter :: dp = real64\n"
+
+        def run(section_fortran: str, source: str) -> list[str]:
+            with tempfile.TemporaryDirectory() as t:
+                tmp = Path(t)
+                execution = self._C._seed(
+                    self.inst, tmp, source=source,
+                    section_51=_structured_section51_from_fortran(section_fortran),
+                    signatures=_structured_ir_signatures_from_fortran(section_fortran))
+                violations = [str(v) for v in self.inst._run(execution, tmp)]
+            self.assertFalse(
+                any("stale-dependency-ir" in v for v in violations),
+                ("the fixture must be a node the contract accepts, or the guard under test is "
+                 "never reached", violations))
+            return violations
+
+        type_only = run(type_only_fortran, wedged)
+        self.assertTrue(
+            any("structure front end could not resolve" in v for v in type_only),
+            ("a type-only node's types are compared from the tree, so an unresolvable source "
+             "is refused for it", type_only))
+        # And the refusal says why a type-only node needs the structure.
+        self.assertTrue(any("each published operation and type must be compared" in v
+                            for v in type_only), type_only)
+        clean = run(type_only_fortran, self._C._GOOD_SOURCE)
+        self.assertFalse(any("hx__h_named" in v for v in clean), clean)
+        # The node publishing NEITHER does not reach the guard through this gate: a §5.1 that
+        # declares no signature is refused before it ("parsed 0 signatures"), and an `interfaces`
+        # entry must be referenced by a published procedure's argument (`structured_signatures`
+        # refuses an unreferenced one), so it never comes alone. The guard is therefore defensive
+        # and NOT pinned — `pinned_surface = True` survives the suite (measured, issue #430 PR-2
+        # round 0) — and this half pins the premise that makes it so, rather than claiming to
+        # observe the guard.
+        nothing = run(nothing_fortran, wedged)
+        self.assertTrue(any("parsed 0 signatures" in v for v in nothing), nothing)
         self.assertFalse(
-            any("structure front end could not resolve" in str(v) for v in violations),
-            ("a node that publishes no operations has no definedness question, so its source "
-             "must not be parsed for one", violations))
-        self.assertFalse(
-            any("stale-dependency-ir" in str(v) for v in violations),
-            ("the fixture must be a node the contract accepts, or the guard under test is never "
-             "reached", violations))
+            any("structure front end could not resolve" in v for v in nothing), nothing)
 
     def test_a_file_set_with_no_single_publisher_fails_closed(self) -> None:
         # The definedness answer used to be UNIONED over `model_files`, which credits a prototype

@@ -758,6 +758,19 @@ def module_level_definitions(
         tree, unit_name, lambda start, stop: view[to_view(start):to_view(stop)])
 
 
+def module_level_type_definitions(
+    lowered: str, unit_name: str
+) -> fortran_structure.TypeReading:
+    """The derived types ``lowered`` defines at module level of the module ``unit_name``, and how
+    many times each type name is defined anywhere in it — what the §5.1 type comparison must read.
+    The reading is this module's (`structure_reading`), the rule the backend's
+    (`structure.module_level_type_definitions`, canonical for it). Raises the same two errors as
+    `structure_reading`."""
+    view, tree, to_view = structure_reading(lowered)
+    return fortran_structure.module_level_type_definitions(
+        tree, unit_name, lambda start, stop: view[to_view(start):to_view(stop)])
+
+
 
 def procedure_envelopes(lowered: str) -> list[ProcedureEnvelope]:
     """Every procedure DEFINITION in ``lowered``, with the body each gate must read.
