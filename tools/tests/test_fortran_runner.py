@@ -1539,6 +1539,21 @@ class HarnessPinTest(unittest.TestCase):
                 decl, decl + "    optional :: x\n", 1))
         self.assertIn("harness_fortran_cpu__emit_real", str(cm.exception))
 
+    def test_a_local_type_shadowing_a_pinned_type_fails_the_pin(self) -> None:
+        # Issue #430 round 1: a published procedure defining its own type under the name a dummy
+        # is pinned to makes that dummy's type the local one. The pin passes the definition's
+        # local types to `surface_drift` as the gate does.
+        header = "subroutine harness_fortran_cpu__write_metrics_basis("
+        self.assertIn(header, self.src)
+        start = self.src.index(header)
+        body = self.src.index("\n", start) + 1
+        shadowed = (self.src[:body] + "    type :: HARNESS_FORTRAN_CPU__H_MB_ENTRY\n"
+                    "      integer :: k\n    end type HARNESS_FORTRAN_CPU__H_MB_ENTRY\n"
+                    + self.src[body:])
+        with self.assertRaises(RenderError) as cm:
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, shadowed)
+        self.assertIn("harness_fortran_cpu__write_metrics_basis", str(cm.exception))
+
     def test_an_unresolvable_certified_source_is_a_render_error(self) -> None:
         wedged = self.src.replace(
             "contains\n",
