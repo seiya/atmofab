@@ -785,7 +785,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "0ab2630ed277636003d05abd78ec03e8997eea696b639cbecbd5fd46b3d0060c",
+    "build-2": "044347847c6a7b86593fc9622284ec137eb65ee4face4441c1a891f183106f70",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build
@@ -813,6 +813,15 @@ PINNED_BUILD: dict[str, str] = {
     # unchanged. (Measured by diffing `build_tuple()` against origin/main 72fdbd56's: that row
     # and no other.) The digest `build-2` shipped with at 72fdbd56:
     "build-2@72fdbd56": "cef34f457ad57adbd5edbca28e5f860f30a893eac860873500a4d5120eebc683",
+    # Re-pinned (issue #424), behaviour-preserving: `Conductor._build_inproc` hands
+    # `_extract_failure_source_refs` the node language's `syntax_promotions.STAGED_SUFFIXES`
+    # instead of a literal suffix list. Only a FAILED build's `failure_source_refs` changes
+    # (`p_model.cu` is no longer recorded as `src/p_model.c`), and a failed record is never
+    # reused; a passing build's invocation and binary are unchanged (round 2 of that PR also
+    # rewords the call-site comment, which moves the same row). (Measured by diffing
+    # `build_tuple()` against origin/main 3b1e8f73's: that row and no other.) The digest
+    # `build-2` shipped with at 3b1e8f73:
+    "build-2@3b1e8f73": "0ab2630ed277636003d05abd78ec03e8997eea696b639cbecbd5fd46b3d0060c",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",

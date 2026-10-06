@@ -9566,13 +9566,29 @@ class Conductor:
             return_code, stderr)
 
     @staticmethod
-    def _extract_failure_source_refs(stderr: str, src_ref: str) -> list[str]:
+    def _extract_failure_source_refs(stderr: str, src_ref: str,
+                                     suffixes: Sequence[str]) -> list[str]:
         """Source paths the compiler/linker named in its error output, rebased under
-        the canonical `<src_ref>` so Generate can target only the offending files
-        (phase_03 retry trigger). Best-effort: empty when nothing parseable."""
+        the canonical `<src_ref>`, recorded as `binary_meta.json#failure_source_refs`.
+        Best-effort: empty when nothing parseable. A record only: no repair reader takes it
+        today (`_read_repair_findings` has no Build clause; see TODO.md).
+
+        `suffixes` are the node's LANGUAGE's — its `syntax_promotions.STAGED_SUFFIXES`, the
+        set the build compiles, headers included (issue #424). A path-like token counts only
+        when it ENDS in one of them — no word character and no further `.suffix` follows (a
+        sentence-final period still ends it) — so a longer suffix is never cut down to a
+        shorter one the build does not compile. Only the basename is kept and re-rooted under
+        `src_ref`, so a file the compiler named from elsewhere — a staged dependency source in
+        the object directory, a host-rendered file — is recorded under `src/` too. An empty
+        tuple is refused — a language that declares no staged suffix cannot attribute, and
+        answering `[]` for it would read as "nothing parseable" (fail-open)."""
+        if not suffixes:
+            raise ValueError("failure-source attribution needs the language's staged "
+                             "suffixes; got none")
+        pattern = (r"([\w./-]+(?:" + "|".join(re.escape(s) for s in suffixes)
+                   + r"))(?!\w|\.\w)")
         names: set[str] = set()
-        for m in re.finditer(r"([\w./-]+\.(?:f90|f95|f|c|cc|cxx|cpp|h|hpp))",
-                             stderr or "", re.IGNORECASE):
+        for m in re.finditer(pattern, stderr or "", re.IGNORECASE):
             names.add(Path(m.group(1)).name)
         return sorted(f"{src_ref}/{n}" for n in names)
 
@@ -10007,9 +10023,14 @@ class Conductor:
             binary_meta["failure_category"] = self._classify_build_failure_category(
                 build_system, rc, stderr)
             binary_meta["failure_excerpt"] = "\n".join(stderr.splitlines()[-50:])
-            # Point Generate at the offending source(s) (phase_03 retry trigger).
+            # Record the source(s) the compiler named (a record only: no repair reader takes it; TODO.md).
+            # The suffixes are the language backend's. No `provides` guard: `syntax_promotions`
+            # is in `LANGUAGE_CAPABILITIES_EVERY_NODE`, so the launch gate already refused a
+            # language without it before Build could run.
             binary_meta["failure_source_refs"] = self._extract_failure_source_refs(
-                stderr, self._rel(src_dir))
+                stderr, self._rel(src_dir),
+                tuple(backend_registry.capability_module(
+                    "language", language, "syntax_promotions").STAGED_SUFFIXES))
 
         meta_path = self.repo_root / refs.binary_dir() / "binary_meta.json"
         meta_path.parent.mkdir(parents=True, exist_ok=True)

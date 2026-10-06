@@ -16510,6 +16510,75 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(meta["failure_category"], "make_error")
             self.assertTrue(meta["failure_source_refs"][0].endswith("/Makefile"))
 
+    def test_failure_source_refs_take_the_language_s_staged_suffixes(self) -> None:
+        """Attribution matches a token that ENDS in one of the node language's
+        `STAGED_SUFFIXES` (issue #424). The literal alternation it replaced cut `p_model.cu` to
+        a `src/p_model.c` nobody authored and `a_model.f03` to `.f`."""
+        from tools.backends import registry as backend_registry
+
+        def staged(language: str) -> tuple[str, ...]:
+            return tuple(backend_registry.capability_module(
+                "language", language, "syntax_promotions").STAGED_SUFFIXES)
+
+        extract = wc.Conductor._extract_failure_source_refs
+        fortran, cuda = staged("fortran"), staged("cuda_cpp")
+        cu_err = "src/p_model.cu(12): error: identifier undefined"
+        self.assertEqual(extract(cu_err, "S", fortran), [])
+        self.assertEqual(extract(cu_err, "S", cuda), ["S/p_model.cu"])
+        self.assertEqual(extract("x.cuh:3: warning", "S", cuda), ["S/x.cuh"])
+        self.assertEqual(extract("a_model.f03:7:3: Error", "S", fortran),
+                         ["S/a_model.f03"])
+        # The suffixes are literal (escaped): `.` in `.f90` is not "any character".
+        self.assertEqual(extract("a_modelxf90:1: Error", "S", fortran), [])
+        # Case-insensitive, as the literal list it replaced was.
+        self.assertEqual(extract("P_MODEL.CU(4): error", "S", cuda), ["S/P_MODEL.CU"])
+        # A sentence-final period still ends the token; a further suffix does not.
+        self.assertEqual(extract("Error in b.f90. See c.f90.o", "S", fortran), ["S/b.f90"])
+        # Link-error residue: an object name maps back to a source only through the build
+        # system's object naming, which this helper does not hold.
+        self.assertEqual(extract("nvlink error : Undefined reference in 'p.o'", "S", cuda),
+                         [])
+        with self.assertRaises(ValueError):
+            extract(cu_err, "S", ())
+
+    def test_build_inproc_attributes_a_cuda_failure_to_the_cu_source(self) -> None:
+        """Through `_build_inproc` on a `cuda_cpp` toolchain: a failed compile naming
+        `p_model.cu` and `p_model.cuh` records both, i.e. the call site hands the helper the
+        node language's whole staged suffix set rather than a literal list (issue #424)."""
+        import tempfile
+        from unittest import mock
+        build_runtime_server = _server()
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+            real_tc = c._read_toolchain(refs)
+
+            def fake_compile(args):
+                return {"ok": False, "return_code": 2, "command_id": "cid",
+                        "stderr": "src/p_model.cu(12): error: identifier \"q\" is undefined\n"
+                                  "src/p_model.cuh(4): error: expected a \";\""}
+
+            with mock.patch.object(build_runtime_server, "tool_compile_project", fake_compile), \
+                    mock.patch.object(c, "_read_toolchain",
+                                      return_value={**real_tc, "language": "cuda_cpp"}):
+                out = c._build_inproc(refs, "child-1")
+
+            self.assertEqual(out["returncode"], 0)
+            meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
+            self.assertEqual(meta["verification_status"], "fail")
+            # Both staged suffixes, the header's included: the call site hands the helper the
+            # whole `STAGED_SUFFIXES`, not the translation-unit subset.
+            self.assertEqual(meta["failure_source_refs"],
+                             [f"{refs.source_dir()}/src/p_model.cu",
+                              f"{refs.source_dir()}/src/p_model.cuh"])
+
     def test_build_inproc_payload_survives_the_real_mcp_validators(self) -> None:
         """The conductor's own compile payload must pass the server's orchestrated
         argument rules — the make-variable allowlist, the absolute-path-inside-the-repo
