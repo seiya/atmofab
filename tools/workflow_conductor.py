@@ -1737,9 +1737,9 @@ def build_launch_request(
         if diagnose:
             pass
         elif substep == "generate":
-            # The generate leaf is pure since Z4 (issue #171): it authors nothing, and the host
-            # writes every source, the build control file and lineage.json from the document
-            # it returns. Its output set is empty here as well as in the pure override below —
+            # The generate leaf is pure since Z4 (issue #171): it authors nothing; the host
+            # writes the sources from the document it returns, and the build control file and
+            # lineage.json itself. Its output set is empty here as well as in the pure override below —
             # the list of leaf-authored sources this branch used to spell (one language's names
             # and one build system's control file) had no reader (issue #424 PR-2).
             req["allowed_output_paths"] = []
@@ -9654,9 +9654,9 @@ class Conductor:
         No-op (returns []) unless the host authors the node's control file (`_conductor_authors_
         makefile`: the target's build system and language both declare `control_file`) —
         staging is paired with the conductor-authored control file (`_write_makefile` non-leaf
-        branch), which is the only consumer of the staged dependency model sources. For a
-        node whose control file a leaf authors, that leaf owns its own dependency build, so the
-        conductor must not stage sources under names it chose."""
+        branch), which is the only consumer of the staged dependency model sources. A node whose
+        control file the host does not author has no pure path (`_pure_leaf_substep`), so
+        nothing would compile what was staged."""
         if not self._conductor_authors_makefile(refs):
             return []
         nodes = self._dependency_closure_nodes(refs)
@@ -9781,8 +9781,9 @@ class Conductor:
         control_file = self._control_file_module(build_system)
         # Every command log below is placed at <src>/command_log.jsonl, which holds for a build
         # system that builds in its source tree. Where one that does not would log is
-        # undecided, so it is refused here, before anything runs, rather than assumed (the same
-        # refusal as `orchestration_runtime._builds_in_source`).
+        # undecided, so it is refused here, before anything runs, rather than assumed
+        # (`orchestration_runtime._builds_in_source` answers the same question for the
+        # runtime's cross-phase log placement, and answers False for such a build system).
         if not control_file.BUILDS_IN_SOURCE:
             raise RuntimeError(
                 f"build_system {build_system!r} does not build in its source tree, and no "
@@ -10019,7 +10020,7 @@ class Conductor:
             "failure_excerpt": None,
         }
         if binary_missing:
-            # Control-file build-rule defect -> restart (regenerate the control file).
+            # Control-file build-rule defect -> Generate restart (`BUILD_FAILURE_ROUTING`).
             category, rule = execute.BINARY_MISSING
             binary_meta["failure_category"] = category
             binary_meta["last_fail_reason"] = "binary_not_built_at_bindir"

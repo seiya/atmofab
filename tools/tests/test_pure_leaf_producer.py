@@ -958,12 +958,11 @@ class PureProducerSubstepTests(unittest.TestCase):
     def test_the_requests_host_authorship_stamp_comes_from_the_spec(self) -> None:
         """`runner_host_authored` was read BACK off the request
         (`orchestration_runtime._payload_is_m3c_physics`, deleted in Z4, derived the
-        physics-narrowed contract-doc set from it), and `build_launch_request` reads it again
-        for validate.execute's deliverables, so what stamps it decides whether a reader gets the
-        node's truth or a leftover constant.
+        physics-narrowed contract-doc set from it), so what stamps it decides whether a reader
+        gets the node's truth or a leftover constant.
 
-        Both loops used to write the literal `True, True`. That is correct for the two pairs
-        that reach them today — Generate runs pure only on the M3c shape — and it is a seam
+        Both loops used to write the literal `True, True`. That is correct for the m3c pairs
+        that bind it — on that shape the host renders the runner — and it is a seam
         rather than a fact, so it is now the spec's `runner_host_authored`, and the generate /
         compile specs bind `_runner_host_authored_m3c`, which returns that same constant WITH its
         reason attached. This row drives the seam: a spec whose flags answer False produces a

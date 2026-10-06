@@ -5,8 +5,10 @@ What the in-process Build / Validate.execute bodies (`tools/workflow_conductor.p
 `run_quality_checks` (`mcp_servers/build_runtime_server.py`) and the post_execute
 quality-check gate (`tools/validate_pipeline_semantics.py`) need to know about driving `make`:
 the argv a build runs, the variables it is handed, the quality-check preset it re-runs the
-binary through, and what a build that reported success without a binary means. Every member
-moved unchanged out of those three modules; the neutral core now asks the registry
+binary through, and what a build that reported success without a binary means. The values moved
+unchanged out of those three modules; `quality_check_preset` is new, answering for this build
+system's presets only where the validator's reader also answered `ctest` / `pytest` (equivalent
+for every target this tree declares). The neutral core now asks the registry
 (`registry.capability_module("build_system", <value>, "build_execute")`).
 
 The file make reads, and where it writes its command log, are `control_file`'s
@@ -40,8 +42,9 @@ QUALITY_CHECK_COMMANDS: dict[str, tuple[str, ...]] = {
 BUILD_ARTIFACT_SUFFIXES: tuple[str, ...] = (".o", ".a", ".so")
 
 #: `(failure_category, excerpt)` of a build that reported success and left no binary at the
-#: imposed `$(BINDIR)/$(BIN)`: the control file's build rule does not honour `BIN`, which
-#: regenerating the control file repairs.
+#: imposed `$(BINDIR)/$(BIN)`: the control file's build rule does not honour `BIN`. The category
+#: routes to a Generate restart (`workflow_conductor.BUILD_FAILURE_ROUTING`), which re-renders a
+#: host-authored control file from the same template.
 BINARY_MISSING: tuple[str, str] = (
     "make_error", "the Makefile build rule must produce $(BINDIR)/$(BIN)")
 
