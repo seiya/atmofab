@@ -222,7 +222,7 @@
       "fortran-implicit-none": 1,
       "fortran-kind": 1,
       "fortran-suffix": 22,
-      "make-control-file": 66,
+      "make-control-file": 65,
       "make-variable": 10
     }
   }

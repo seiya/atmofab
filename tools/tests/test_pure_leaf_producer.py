@@ -956,10 +956,11 @@ class PureProducerSubstepTests(unittest.TestCase):
             self._tmp.cleanup()
 
     def test_the_requests_host_authorship_stamp_comes_from_the_spec(self) -> None:
-        """`runner_host_authored` is read BACK off the request
-        (`orchestration_runtime._payload_is_m3c_physics` derives the physics-narrowed
-        contract-doc set from them), so what stamps them decides whether that derivation is
-        the node's truth or a leftover constant.
+        """`runner_host_authored` was read BACK off the request
+        (`orchestration_runtime._payload_is_m3c_physics`, deleted in Z4, derived the
+        physics-narrowed contract-doc set from it), and `build_launch_request` reads it again
+        for validate.execute's deliverables, so what stamps it decides whether a reader gets the
+        node's truth or a leftover constant.
 
         Both loops used to write the literal `True, True`. That is correct for the two pairs
         that reach them today — Generate runs pure only on the M3c shape — and it is a seam

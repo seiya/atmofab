@@ -1687,7 +1687,7 @@ def build_launch_request(
         # security-boundary path derived the SAME physics-narrowed contract-doc set as this
         # conductor path — no drift. That reader (`_payload_is_m3c_physics`) and the whole
         # contract-doc set went with the agentic leaf in Z4 (issue #171); the stamp is kept as
-        # recorded provenance of what the host rendered, and `_host_authored_render_flags`
+        # recorded provenance of what the host rendered, and `_runner_host_authored_m3c`
         # carries the accounting of its one remaining oddity.
         req["runner_host_authored"] = True
 
@@ -3595,10 +3595,10 @@ def _runner_host_authored_m3c(refs: NodeRefs) -> bool:
     `(makefile_host_authored, runner_host_authored)` pair until issue #424 PR-2 deleted the
     makefile half's one reader, `build_launch_request`'s generate-leaf output list.)
 
-    GENERATE reaches the pure loops only on the M3c shape (`_pure_leaf_substep` tests
-    `_conductor_authors_makefile` ∧ `_conductor_authors_runner` for its two pairs), where the
-    host authors both the control file and the runner — so for Generate this constant is the
-    node's truth. COMPILE carries no shape condition at all, deliberately: the Compile contract
+    GENERATE reaches the pure loops only on a bundle shape (`_pure_leaf_substep` asks
+    `_bundle_shape`, which answers `m3c` or `harness`). The `m3c` specs bind this constant, and
+    on that shape the host renders the runner — so for them it is the node's truth; the
+    `harness` specs bind `Conductor._node_runner_host_authored`, the node's own answer. COMPILE carries no shape condition at all, deliberately: the Compile contract
     does not depend on the node kind, and at `compile.generate` time there is no IR to read a
     shape from. So an `infrastructure` node's Compile does reach these loops and IS stamped
     `runner_host_authored=True` for a node whose runner the host does not author.
@@ -5629,8 +5629,10 @@ class Conductor:
     def _control_file_basename(self, refs: NodeRefs) -> str:
         """The basename of the build control file the host writes for this node: the target
         build system's `control_file` backend's (`CONTROL_FILE_BASENAME`, issue #424 PR-2; it
-        was one spelling here until then). Asked only where the host authors the file, so a
-        refusal is a host precondition (`_control_file_module`)."""
+        was one spelling here until then). Asked for every generate result
+        (`phase_required_outputs`) as well as by the writers; a build system that declares no
+        `control_file` is refused as a host precondition (`_control_file_module`), which the
+        launch gate already refuses at launch (`target_profile.toolchain_servable_reasons`)."""
         build_system = self._read_toolchain(refs)["build_system"]
         return str(self._control_file_module(build_system).CONTROL_FILE_BASENAME)
 
@@ -7230,7 +7232,7 @@ class Conductor:
 
         `runner_host_authored` carries the NODE's real value rather than the M3c constant the
         two older reviewers pass: the judge runs on every node kind, and the launch request's
-        stamp had one reader, and it is deleted (see `_host_authored_render_flags`)."""
+        stamp had one reader, and it is deleted (see `_runner_host_authored_m3c`)."""
         return self._PureReviewerSpec(
             build_context=self._build_pure_judge_context,
             write_project_meta=self._write_semantic_review,

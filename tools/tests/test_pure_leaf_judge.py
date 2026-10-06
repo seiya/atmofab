@@ -447,7 +447,8 @@ class PureJudgeLoopTests(_Fixture):
 
     def test_the_request_stamps_the_nodes_own_host_authorship(self) -> None:
         """Not the M3c constant the two older reviewers pass: the judge runs on every node
-        kind, and `_payload_is_m3c_physics` believes what the request says.
+        kind, and a reader of the request (`_payload_is_m3c_physics` until Z4 deleted it)
+        believes what it says.
 
         Only `runner_host_authored` reaches the payload (and only when TRUE, so absence is the
         node's False). Both directions: the fixture component IS one the host renders
