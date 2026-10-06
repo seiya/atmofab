@@ -116,10 +116,13 @@ _REQUIRED_NODE_TYPES = (
     # A derived type a procedure defines in its own specification part (`Procedure.local_types`):
     # a renamed node would make every such shadow of a published type invisible again.
     "derived_type_definition", "derived_type_statement", "type_name",
-    # The parts of a derived type definition the §5.1 type comparison reads (`DerivedType`): the
-    # one header attribute it accepts and the end statement it skips. A renamed `access_specifier`
-    # would make `type, public :: t` an unaccepted header (over-refusal); a renamed
-    # `end_type_statement` would read as a non-component statement (over-refusal too).
+    # The parts of a derived type definition the §5.1 type comparison reads (`DerivedType`).
+    # `_derived_type` reads every NAMED child of the opener other than `type_name` into
+    # `header_extras` by its text, so a renamed `access_specifier` changes nothing there; what
+    # would be silent is the node becoming UNNAMED, which drops `private` / `public` from the
+    # extras and lets `type, private :: t` through (fail-open). Listing it makes the grammar
+    # check notice when the type disappears from the grammar. A renamed `end_type_statement`
+    # would read as a non-component statement (over-refusal).
     "access_specifier", "end_type_statement",
 )
 
@@ -417,7 +420,9 @@ def parse_view(view: str) -> StructureTree:
         if node.is_named and node.type in ("module", "submodule"):
             program_unit = _program_unit(encoded, node, to_char)
             # An unnamed unit still opens a scope: a definition inside it is not at module level
-            # of any NAMED unit, so it must not inherit the enclosing one.
+            # of any NAMED unit, so it must not inherit the enclosing one. Defensive: a unit opener
+            # with no name parses with an ERROR node, which `structure_reading` refuses before any
+            # scope is read (not pinned).
             unit = (node.type, program_unit.name if program_unit is not None else "")
             if program_unit is not None:
                 units.append(program_unit)

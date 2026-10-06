@@ -769,7 +769,7 @@ PINNED_RENDER: dict[str, str] = {
     # one) no longer reproduces the control file it was certified with. The tuple gained eleven
     # `codegen_bundle` rows — the order was a value no row digested, and neither were the graph
     # derivation and its callees.
-    "render-8": "fce242110aa0ef509844692304424b81d779d7c2e5617015672e8b7f8eaaa5b9",
+    "render-8": "3145e8ec1ae78a3505cd12e09ca531d3a04b4c5e3f16db3e4129b65bc4b1a23f",
     # Re-pinned (issue #430 PR-2), behaviour-preserving for this transformation: the §5.1 gate
     # and `runner.assert_harness_pin` compare a §5.1 derived type with its one module-level
     # definition in the publishing module (`signatures.type_layout_drift`, read through the

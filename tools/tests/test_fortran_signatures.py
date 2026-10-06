@@ -2095,7 +2095,7 @@ class DeclaredCharacteristicsTests(unittest.TestCase):
             "scalar": ([("variable_declaration", "real(dp), intent(in) :: x")],
                        "its shape is scalar"),
             "init": ([("variable_declaration", "real(dp), intent(in) :: x(:) = 0")],
-                     "its initialiser is `=0`"),
+                     "it carries the initialiser `=0`, which §5.1 does not pin"),
             "undeclared": ([], "`x` is not declared by a type declaration or attribute statement "
                            "of the procedure's own specification part (one inside a `block` or a "
                            "contained procedure is not the procedure's) — declare it exactly as "
@@ -2141,7 +2141,7 @@ class DeclaredCharacteristicsTests(unittest.TestCase):
             "reorder": (d(good[::-1]), 1, "component 1 is `n` where §5.1 pins"),
             "missing": (d(good[:1]), 1, "component 2 is missing: §5.1 pins `integer :: n`"),
             "extra": (d([*good, "integer :: k"]), 1, "component 3, `k`, is one §5.1 does not"),
-            "init": (d([good[0], "integer :: n = 0"]), 1, "its initialiser is `=0`"),
+            "init": (d([good[0], "integer :: n = 0"]), 1, "it carries the initialiser `=0`, which §5.1 does not pin"),
             "attr": (d([good[0], "integer, pointer :: n"]), 1, "it carries `pointer`"),
             "lacks": (d(["real(dp) :: a(:)", "integer :: n"]), 1, "it lacks `allocatable`"),
             "shape": (d(["real(dp), allocatable :: a(:,:)", "integer :: n"]), 1,
@@ -2158,6 +2158,11 @@ class DeclaredCharacteristicsTests(unittest.TestCase):
         # misaligned, so its sentences would name components that are not drifted.
         self.assertEqual(len(drift(pinned, definition=d(["real(dp) a(:)", "integer :: n"]),
                                    count=1)), 1)
+        # Two definitions, none of them at module level: the remedy must not say to keep one.
+        none_there = drift(pinned, definition=None, count=2)
+        self.assertEqual(len(none_there), 1)
+        self.assertIn("none of them is at module level", none_there[0])
+        self.assertNotIn("keep the one at module level", none_there[0])
         # A second definition is reported alone: which one a reader gets is not decidable.
         self.assertEqual(len(drift(pinned, definition=d(good[::-1]), count=2)), 1)
         # The accepted header attribute is exactly `public`.

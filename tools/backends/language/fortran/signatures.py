@@ -637,8 +637,12 @@ def _entity_differences(want: Entity, have: Entity) -> list[str]:
         shape = (lambda dims: "scalar" if dims is None else f"`({','.join(dims)})`")
         diffs.append(f"its shape is {shape(have.dims)} where §5.1 pins {shape(want.dims)}")
     if have.init != want.init:
-        diffs.append(f"its initialiser is `{have.init}` where §5.1 pins `{want.init}`"
-                     if have.init is not None else f"it lacks the initialiser `{want.init}`")
+        if want.init is None:
+            diffs.append(f"it carries the initialiser `{have.init}`, which §5.1 does not pin")
+        elif have.init is None:
+            diffs.append(f"it lacks the initialiser `{want.init}`")
+        else:
+            diffs.append(f"its initialiser is `{have.init}` where §5.1 pins `{want.init}`")
     return diffs
 
 
@@ -756,11 +760,14 @@ def type_layout_drift(pinned_lines: list[str], *, definition: Any, count: int) -
     components are compared as an ORDERED list of `Entity` — name, type, kind, shape, every
     attribute and the initialiser, position by position — since the layout is the order."""
     if count > 1:
+        keep = ("keep the one at module level of the publishing module and give every other "
+                "type a name of its own" if definition is not None else
+                "none of them is at module level of the publishing module, so define the type "
+                "there, as §5.1 pins it, and give every other type a name of its own")
         return [f"the file defines a derived type of this name {count} times — §5.1 pins the "
                 "module's own definition, and a second one (in a helper module, a procedure, a "
                 "`block` or an interface body) is a type a reader of the name can be handed "
-                "instead; keep the one at module level of the publishing module and give any "
-                "other type a name of its own"]
+                f"instead; {keep}"]
     if definition is None:
         return []
     out: list[str] = []

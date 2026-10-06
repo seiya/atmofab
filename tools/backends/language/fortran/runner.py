@@ -1648,7 +1648,7 @@ def assert_harness_pin(
         raise RenderError(
             f"certified harness model source no longer resolves through the Fortran structure "
             f"front end ({len(exc.errors)} parse error(s){where}), so its published procedures "
-            "cannot be compared with the pinned interface. Check that the installed "
+            "and derived types cannot be compared with the pinned interface. Check that the installed "
             "tree-sitter / tree-sitter-fortran are the versions `requirements.txt` pins; if "
             "they are, re-certify the harness node (`run_workflow.py --with-deps`) so its "
             "source passes the current Generate.gate — do not edit the renderer pin") from exc
