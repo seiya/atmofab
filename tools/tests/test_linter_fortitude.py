@@ -928,17 +928,28 @@ class ProseCouplingTests(unittest.TestCase):
         # distribution there must carry exactly the declared range. The rest of RULES.md
         # (measurement recipes pinning `==<version>`, past ranges) is not an install line.
         from tools.tests.test_host_prerequisites import installation_section
-        self.assertRegex(runbook, r"fortitude/RULES\.md\)? §Installation",
-                         "docs/RUNBOOK.md no longer points an operator at the install line")
+        # The pointer is a ROW of §0-1's per-target table; the runbook's prose also cites the
+        # section (the issue #110 note), which must not satisfy this on its own.
+        self.assertTrue(
+            any(line.startswith("|") and re.search(r"fortitude/RULES\.md\)? §Installation", line)
+                for line in runbook.splitlines()),
+            "no row of docs/RUNBOOK.md §0-1's table points an operator at the install line")
         rules = (REPO_ROOT / "docs" / "backends" / "linter" / "fortitude" / "RULES.md").read_text()
         section = installation_section(rules)
         spellings = re.findall(r"install\s+['\"]?fortitude-lint([^\s'\"]*)", section)
         self.assertTrue(spellings, "docs/backends/linter/fortitude/RULES.md §Installation lost "
                                    "its install line")
         for spec in spellings:
-            self.assertEqual(spec, lint.SUPPORTED_VERSION_SPEC,
-                             f"an install spelling in RULES.md §Installation carries {spec!r}, "
-                             f"not the declared range")
+            # The declared range itself, or one pinned build the probe accepts (`==x.y.z` inside
+            # it); anything else installs a build the launch probe may refuse.
+            if spec.startswith("=="):
+                self.assertIsNone(lint.unsupported_version_reason(spec[2:]),
+                                  f"an install spelling in RULES.md §Installation pins {spec!r}, "
+                                  f"outside {lint.SUPPORTED_VERSION_SPEC}")
+            else:
+                self.assertEqual(spec, lint.SUPPORTED_VERSION_SPEC,
+                                 f"an install spelling in RULES.md §Installation carries "
+                                 f"{spec!r}, not the declared range")
 
 
 if __name__ == "__main__":
