@@ -170,6 +170,17 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
+    def test_the_quality_check_at_a_site_is_the_build_system_s(self) -> None:
+        """The site runs the build system's preset (`build_execute.QUALITY_CHECK_PRESET`, issue
+        #424 PR-2), not one spelled in the conductor: moving the backend's preset moves the
+        command the job runs and the one its log records."""
+        from tools.backends.build_system.make import execute
+        n = self.n
+        with mock.patch.object(execute, "QUALITY_CHECK_PRESET", "make_check"):
+            n.execute()
+        qc_log = n.log_entries(n.src / "command_log.jsonl")
+        self.assertEqual([e["command"] for e in qc_log], [["make", "check"]])
+
     def test_the_evidence_and_the_records_are_the_local_paths_own(self) -> None:
         n = self.n
         # The "site" answers `hostname` with a name of its own, so the platform record can only

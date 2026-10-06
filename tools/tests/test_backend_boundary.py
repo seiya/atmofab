@@ -2587,7 +2587,14 @@ class RegistryConsistencyTests(unittest.TestCase):
         ("build_system", "control_file"): (
             "CONTROL_FILE_BASENAME", "BUILDS_IN_SOURCE", "QUALITY_CHECK_PRESETS", "targets",
             "render_node", "render_from_graph", "classify_build_failure", "validate_src_dir",
-            "validate_test_no_relink", "validate_test_invokes_cases"),
+            "validate_test_no_relink", "validate_test_invokes_cases", "object_name"),
+        # Issue #424 PR-2: what the in-process Build / Validate.execute bodies, the server's
+        # build and quality-check argv, the post_execute quality-check gate, the source
+        # fingerprint and the validate key read.
+        ("build_system", "build_execute"): (
+            "build_overrides", "build_argv", "QUALITY_CHECK_PRESET", "QUALITY_CHECK_COMMANDS",
+            "quality_check_preset", "quality_check_env", "BUILD_ARTIFACT_SUFFIXES",
+            "BINARY_MISSING"),
         ("parallel", "parallel_directives"): ("presence_floor", "lowering_plan_declines"),
         # Issue #307: the launch seam's trace half (`tools/host_execution.py`), and the readers
         # of the summary and of a source's kernels that the post_execute kernel gate reads (its
@@ -2893,16 +2900,21 @@ class CapabilityOwnershipTests(unittest.TestCase):
         `backend_provides` to `provided` returns the package's module for a job the record only
         claims to do inlined: the wrong-module dispatch the function exists to prevent.
 
-        And on the UNMODIFIED tree the same call takes the refusal's FIRST clause — the one
-        saying the capability is still carried by the neutral core, rather than that nothing
-        implements it. A comment called that clause unreachable; it is one line away. Both are
-        asserted, because sending a reader to the wrong declaration is all this message does.
+        And an extracted record that still carries a capability inline takes the refusal's
+        FIRST clause — the one saying the capability is still carried by the neutral core,
+        rather than that nothing implements it. Both are asserted, because sending a reader to
+        the wrong declaration is all this message does.
         """
-        # (a) the live tree: the "still inlined" diagnosis, not the "nothing implements it" one.
-        # `make`'s `build_execute` is the live instance since issue #289's R4-b PR-3 moved both
-        # halves of `control_file` into their packages (it was `language/fortran`'s
-        # `control_file` until then).
-        with self.assertRaises(registry.BackendNotExtracted) as ctx:
+        # (a) the "still inlined" diagnosis, not the "nothing implements it" one. `make`'s
+        # `build_execute` was the live instance from issue #289's R4-b PR-3 (before it,
+        # `language/fortran`'s `control_file`) until issue #424 PR-2 moved it into the package;
+        # no extracted record carries a capability inline since, so the state is patched in.
+        make = registry.get("build_system", "make")
+        inlined_make = make._replace(
+            core_provides=frozenset({"build_execute"}),
+            backend_provides=make.backend_provides - {"build_execute"})
+        with self._patched(inlined_make), \
+                self.assertRaises(registry.BackendNotExtracted) as ctx:
             registry.capability_module("build_system", "make", "build_execute")
         self.assertIn("still carried by the neutral core", str(ctx.exception))
 

@@ -7756,7 +7756,7 @@ class NodeAllocationTest(unittest.TestCase):
         for phase in ("compile", "generate", "build", "validate"):
             with self.subTest(phase=phase):
                 declared = wc.phase_required_outputs(
-                    refs, phase, exe_name="spec_x_runner", bundle_facts=_FORTRAN_BUNDLE_FACTS)
+                    refs, phase, exe_name="spec_x_runner", bundle_facts=_FORTRAN_BUNDLE_FACTS, control_file_basename="Makefile")
                 ref = wc.Conductor._certified_meta_ref(phase, cert, refs.node_key)
                 self.assertIn(ref, declared)
 
@@ -7937,7 +7937,7 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
                        "last_fail_reason": None}, attempts=1)
             ort._stamp_certification(
                 root, "o1", node_key=self.NODE_KEY, step="generate",
-                required_outputs=wc.phase_required_outputs(refs, "generate", bundle_facts=_FORTRAN_BUNDLE_FACTS),
+                required_outputs=wc.phase_required_outputs(refs, "generate", bundle_facts=_FORTRAN_BUNDLE_FACTS, control_file_basename="Makefile"),
                 derivation=c._phase_derivation(refs, "generate"))
             ok, detail = ort._phase_certified(root, "o1", self.NODE_KEY, "generate", target=_TP)
             self.assertTrue(ok, detail)
@@ -14902,7 +14902,12 @@ class WriteMakefileTest(unittest.TestCase):
         """
         from tools.orchestration_runtime import control_file_host_authored
         self.assertTrue(control_file_host_authored("make", "fortran"))
-        self.assertTrue(control_file_host_authored(None, None))  # absent defaults, both sides
+        # An ABSENT token is not host-authored (fail-closed, issue #424 PR-2): it defaulted to
+        # one build system and one language until then, which the neutral core may not know.
+        for build_system, language in ((None, None), (None, "fortran"), ("make", None),
+                                       ("", "fortran"), ("make", "")):
+            self.assertFalse(control_file_host_authored(build_system, language),
+                             (build_system, language))
         for build_system, language in ((" make", "fortran"), ("make ", "fortran"),
                                        ("make", " fortran"), ("make", "fortran ")):
             self.assertFalse(control_file_host_authored(build_system, language),
@@ -15983,18 +15988,19 @@ class WriteRunnerTest(unittest.TestCase):
                     self.assertEqual(initial in rendered, authored)
                     self.assertEqual(bare in rendered, not authored)
 
-    def test_build_launch_request_swaps_runner_for_checks(self) -> None:
+    def test_build_launch_request_lists_no_source_for_either_shape(self) -> None:
+        # generate.generate is a pure leaf on every shape: it authors nothing, so neither the
+        # checks module (M3c) nor the runner (runner-authoring node) is in its output set. The
+        # swap this row used to pin lived in a list no leaf read (issue #424 PR-2 deleted it);
+        # which source is a Generate DELIVERABLE is `phase_required_outputs`' answer, pinned by
+        # `test_phase_required_outputs_symmetry` below.
         refs = self._refs()
-        # generate.generate authors the sources: on an M3c (runner_host_authored) node the leaf
-        # writes <spec_id>_checks.f90 instead of <spec_id>_runner.f90.
-        built = wc.build_launch_request(
-            refs, step="generate", substep="generate", orchestration_id="o",
-            orchestration_agent_run_id="ORCH", child_agent_run_id="c",
-            agent_model="m", workflow_mode="prod", runner_host_authored=True)
-        outs = built["allowed_output_paths"]
-        self.assertIn(f"{refs.source_dir()}/src/{self.SID}_checks.f90", outs)
-        self.assertNotIn(f"{refs.source_dir()}/src/{self.SID}_runner.f90", outs)
-        self.assertIn(f"{refs.source_dir()}/src/{self.SID}_model.f90", outs)
+        for runner_host_authored in (True, False):
+            built = wc.build_launch_request(
+                refs, step="generate", substep="generate", orchestration_id="o",
+                orchestration_agent_run_id="ORCH", child_agent_run_id="c",
+                agent_model="m", workflow_mode="prod", runner_host_authored=runner_host_authored)
+            self.assertEqual(built["allowed_output_paths"], [], runner_host_authored)
         # generate.verify writes ONLY source_meta.json — it inspects the sources, never rewrites
         # them — so no runner / checks / model appears in its output set at all.
         ver = wc.build_launch_request(
@@ -16002,13 +16008,6 @@ class WriteRunnerTest(unittest.TestCase):
             orchestration_agent_run_id="ORCH", child_agent_run_id="c",
             agent_model="m", workflow_mode="prod", runner_host_authored=True)
         self.assertEqual(ver["allowed_output_paths"], [f"{refs.source_dir()}/source_meta.json"])
-        # Default (runner-authoring node — the infrastructure self-test) keeps the runner.
-        leaf_authored = wc.build_launch_request(
-            refs, step="generate", substep="generate", orchestration_id="o",
-            orchestration_agent_run_id="ORCH", child_agent_run_id="c",
-            agent_model="m", workflow_mode="prod")
-        self.assertIn(f"{refs.source_dir()}/src/{self.SID}_runner.f90",
-                      leaf_authored["allowed_output_paths"])
 
     def test_phase_required_outputs_symmetry(self) -> None:
         """The phase's deliverables on both shapes (issue #250 made the host-rendered runner
@@ -16019,13 +16018,13 @@ class WriteRunnerTest(unittest.TestCase):
         refs = self._refs()
         src = refs.source_dir()
         m3c = wc.phase_required_outputs(refs, "generate", runner_host_authored=True,
-                                          bundle_facts=_FORTRAN_BUNDLE_FACTS)
+                                          bundle_facts=_FORTRAN_BUNDLE_FACTS, control_file_basename="Makefile")
         self.assertEqual(m3c, [
             f"{src}/src/{self.SID}_model.f90", f"{src}/src/{self.SID}_checks.f90",
             f"{src}/src/{self.SID}_runner.f90", f"{src}/src/Makefile",
             f"{src}/source_meta.json"])
         # Runner-authoring node (the infrastructure self-test): no checks module.
-        leaf_authored = wc.phase_required_outputs(refs, "generate", bundle_facts=_FORTRAN_BUNDLE_FACTS)
+        leaf_authored = wc.phase_required_outputs(refs, "generate", bundle_facts=_FORTRAN_BUNDLE_FACTS, control_file_basename="Makefile")
         self.assertEqual(leaf_authored, [
             f"{src}/src/{self.SID}_model.f90", f"{src}/src/{self.SID}_runner.f90",
             f"{src}/src/Makefile", f"{src}/source_meta.json"])
@@ -16038,11 +16037,17 @@ class WriteRunnerTest(unittest.TestCase):
                                 runner_basename=lambda s: f"{s}_runner.zz")
         self.assertEqual(
             wc.phase_required_outputs(refs, "generate", runner_host_authored=True,
-                                      bundle_facts=other)[:3],
+                                      bundle_facts=other, control_file_basename="Ctl.zz"),
             [f"{src}/src/{self.SID}_model.zz", f"{src}/src/{self.SID}_checks.zz",
-             f"{src}/src/{self.SID}_runner.zz"])
+             f"{src}/src/{self.SID}_runner.zz", f"{src}/src/Ctl.zz",
+             f"{src}/source_meta.json"])
         with self.assertRaises(ValueError):
             wc.phase_required_outputs(refs, "generate")
+        # The control file's name is the BUILD SYSTEM's (issue #424 PR-2): a caller that hands
+        # none is refused rather than given one build system's name by default.
+        with self.assertRaises(ValueError) as caught:
+            wc.phase_required_outputs(refs, "generate", bundle_facts=_FORTRAN_BUNDLE_FACTS)
+        self.assertIn("control file", str(caught.exception))
 
 
 class PureLeafSubstepPredicateTests(unittest.TestCase):
@@ -16313,37 +16318,30 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
 
 
 class GenerateLeafAuthorizationTest(unittest.TestCase):
-    """For a leaf node, src/Makefile is conductor-authored, so it is dropped from the leaf's
-    generate allowed_output_paths and required_outputs (it must not author it)."""
+    """A generate leaf authors nothing: the host writes src/ (the control file included), so
+    neither generate substep's launch lists a source among its outputs."""
 
     def _refs(self) -> wc.NodeRefs:
         return wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/foo_bar@0.1.0", spec_path="spec/component/foo_bar",
             ir_id="i1", pipeline_id="p1", source_id="s1", binary_id="b1")
 
-    def _launch(self, refs: wc.NodeRefs, substep: str, *, host_authored: bool) -> dict:
+    def _launch(self, refs: wc.NodeRefs, substep: str) -> dict:
         return wc.build_launch_request(
             refs, step="generate", substep=substep, orchestration_id="o",
             orchestration_agent_run_id="p", child_agent_run_id="c", agent_model="m",
-            workflow_mode="dev", makefile_host_authored=host_authored)
+            workflow_mode="dev")
 
-    def test_leaf_generate_launch_omits_makefile(self) -> None:
+    def test_generate_leaves_declare_no_source_output(self) -> None:
+        # Issue #424 PR-2 deleted the generate branch's leaf-authored list (model, runner or
+        # checks, the Makefile unless host-authored): every generate leaf is pure, so it was
+        # dead, and it spelled one language's and one build system's file names.
         refs = self._refs()
-        mk = f"{refs.source_dir()}/src/Makefile"
-        for substep in ("generate", "verify"):
-            req = self._launch(refs, substep, host_authored=True)
-            self.assertNotIn(mk, req["allowed_output_paths"], f"{substep} should omit Makefile")
-
-    def test_dependency_generate_launch_keeps_makefile(self) -> None:
-        refs = self._refs()
-        mk = f"{refs.source_dir()}/src/Makefile"
-        # generate.generate (leaf-authored Makefile for a c/cpp/mixed dependency node) keeps it.
-        req = self._launch(refs, "generate", host_authored=False)
-        self.assertIn(mk, req["allowed_output_paths"], "generate should keep Makefile")
-        # generate.verify writes ONLY source_meta.json — it inspects the Makefile, never rewrites
-        # it — so the Makefile is absent from its output set regardless of authorship.
-        ver = self._launch(refs, "verify", host_authored=False)
-        self.assertEqual(ver["allowed_output_paths"], [f"{refs.source_dir()}/source_meta.json"])
+        self.assertEqual(self._launch(refs, "generate")["allowed_output_paths"], [])
+        # generate.verify writes ONLY source_meta.json — it inspects the sources, never
+        # rewrites them.
+        self.assertEqual(self._launch(refs, "verify")["allowed_output_paths"],
+                         [f"{refs.source_dir()}/source_meta.json"])
 
     def test_phase_required_outputs_declares_every_bundle_source(self) -> None:
         """A `helper` / `internal_module` bundle file is written to `src/` and compiled by the
@@ -16356,7 +16354,7 @@ class GenerateLeafAuthorizationTest(unittest.TestCase):
             refs, "generate", runner_host_authored=True,
             bundle_sources=[f"{sid}_model.f90", "sw_private_helpers.f90",
                             f"{sid}_checks.f90", "sw_private_helpers.f90", " ", ""],
-            bundle_facts=_FORTRAN_BUNDLE_FACTS)
+            bundle_facts=_FORTRAN_BUNDLE_FACTS, control_file_basename="Makefile")
         self.assertEqual(outs, [
             f"{src}/src/{sid}_model.f90", f"{src}/src/{sid}_checks.f90",
             f"{src}/src/{sid}_runner.f90", f"{src}/src/sw_private_helpers.f90",
@@ -16386,9 +16384,9 @@ class GenerateLeafAuthorizationTest(unittest.TestCase):
         write authority, which is empty; this is the phase's output."""
         refs = self._refs()
         mk = f"{refs.source_dir()}/src/Makefile"
-        self.assertIn(mk, wc.phase_required_outputs(refs, "generate", bundle_facts=_FORTRAN_BUNDLE_FACTS))
+        self.assertIn(mk, wc.phase_required_outputs(refs, "generate", bundle_facts=_FORTRAN_BUNDLE_FACTS, control_file_basename="Makefile"))
         self.assertIn(mk, wc.phase_required_outputs(refs, "generate", runner_host_authored=True,
-                                          bundle_facts=_FORTRAN_BUNDLE_FACTS))
+                                          bundle_facts=_FORTRAN_BUNDLE_FACTS, control_file_basename="Makefile"))
 
 
 def _record_build_site(repo: Path, refs: wc.NodeRefs, site: str = "local") -> None:
@@ -16509,6 +16507,85 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(meta["verification_status"], "fail")
             self.assertEqual(meta["failure_category"], "make_error")
             self.assertTrue(meta["failure_source_refs"][0].endswith("/Makefile"))
+
+    def _binary_missing_build(self, repo: Path, compile_spy=None) -> tuple[wc.NodeRefs, dict]:
+        """A Build whose compile reports success and leaves no binary; returns the refs and the
+        `binary_meta.json` it wrote."""
+        from unittest import mock
+        build_runtime_server = _server()
+        c = _TargetedConductor(repo_root=repo, orchestration_id="t",
+                               orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+        refs = wc.NodeRefs(target_id=_TARGET_ID,
+            node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+            ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
+        (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+        (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+
+        def fake_compile(args):  # ok, but produces NO binary
+            if compile_spy is not None:
+                compile_spy.append(args)
+            return {"ok": True, "return_code": 0, "command_id": "cid"}
+
+        with mock.patch.object(build_runtime_server, "tool_compile_project", fake_compile):
+            c._build_inproc(refs, "child-1")
+        return refs, json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
+
+    def test_build_reads_what_driving_the_build_system_means_off_its_backend(self) -> None:
+        """The overrides a build is handed, the binary-missing record and the control file it
+        names are the build system's (`build_execute` / `control_file`, issue #424 PR-2): moving
+        the backend's values moves the build, so none of them is spelled in the conductor."""
+        import tempfile
+        from unittest import mock
+
+        from tools.backends.build_system.make import control_file, execute
+        seen: list[dict] = []
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(execute, "build_overrides",
+                                  lambda obj, bin_, exe: (f"ZZ_OBJ={obj}", f"ZZ_EXE={exe}")), \
+                mock.patch.object(execute, "BINARY_MISSING", ("zz_category", "zz rule")), \
+                mock.patch.object(control_file, "CONTROL_FILE_BASENAME", "ZZcontrol"):
+            refs, meta = self._binary_missing_build(Path(td), seen)
+        (args,) = seen
+        self.assertEqual([a.split("=", 1)[0] for a in args["extra_args"]], ["ZZ_OBJ", "ZZ_EXE"])
+        self.assertEqual(args["extra_args"][1], "ZZ_EXE=spec_x_runner")
+        self.assertEqual(meta["failure_category"], "zz_category")
+        self.assertTrue(meta["failure_excerpt"].endswith("; zz rule"), meta["failure_excerpt"])
+        self.assertEqual(meta["failure_source_refs"], [f"{refs.source_dir()}/src/ZZcontrol"])
+
+    def test_the_control_file_basename_is_the_build_system_s(self) -> None:
+        """`_control_file_basename` asks the target build system's `control_file` backend
+        (issue #424 PR-2; a class constant until then): moving the backend's basename moves
+        the file Generate declares as its deliverable."""
+        import tempfile
+        from unittest import mock
+
+        from tools.backends.build_system.make import control_file
+        with tempfile.TemporaryDirectory() as td:
+            c = _TargetedConductor(repo_root=Path(td), orchestration_id="t",
+                                   orchestration_agent_run_id="x", llm_config=_cfg("claude"),
+                                   env={})
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
+            self.assertEqual(c._control_file_basename(refs), "Makefile")
+            with mock.patch.object(control_file, "CONTROL_FILE_BASENAME", "ZZcontrol"):
+                self.assertEqual(c._control_file_basename(refs), "ZZcontrol")
+
+    def test_build_refuses_a_build_system_that_does_not_build_in_its_source_tree(self) -> None:
+        """Every command log of a build is placed beside the control file, which holds only for
+        a build system that builds in its source tree (`control_file.BUILDS_IN_SOURCE`). One
+        that does not is refused BEFORE anything runs, not logged at an assumed placement."""
+        import tempfile
+        from unittest import mock
+
+        from tools.backends.build_system.make import control_file
+        seen: list[dict] = []
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.object(control_file, "BUILDS_IN_SOURCE", False):
+            with self.assertRaises(RuntimeError) as caught:
+                self._binary_missing_build(Path(td), seen)
+        self.assertIn("does not build in its source tree", str(caught.exception))
+        self.assertEqual(seen, [])
 
     def test_failure_source_refs_take_the_language_s_staged_suffixes(self) -> None:
         """Attribution matches a token that ENDS in one of the node language's
@@ -16995,6 +17072,68 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(qc_env["CASES"], "c_alpha c_beta")
             self.assertEqual(qc_env["BIN"], "spec_x_runner")
             self.assertEqual(seen[1]["command"], ["make", "test"])
+
+    def test_execute_reads_the_quality_check_off_the_build_system(self) -> None:
+        """The quality check's preset and environment are the build system's
+        (`build_execute`, issue #424 PR-2): moving the backend's preset moves the command the
+        re-run executes and the preset `quality_check.json` records, and the environment is
+        the backend's composition."""
+        import tempfile
+        from unittest import mock
+
+        from tools.backends.build_system.make import execute
+        build_runtime_server = _server()
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
+                run_id="run_1", source_binary_id="bin_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo / refs.ir_ref / "spec.ir.yaml").write_text(
+                "case:\n  test_case_set:\n    - case_id: c_alpha\n", encoding="utf-8")
+            (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+            binary_bin = repo / refs.binary_dir() / "bin"
+            binary_bin.mkdir(parents=True, exist_ok=True)
+            (binary_bin / "spec_x_runner").write_text("binary\n", encoding="utf-8")
+            seen: list[dict] = []
+
+            def fake_run_command(**kwargs):
+                seen.append(kwargs)
+                return {"ok": True, "return_code": 0, "stdout": "", "stderr": "",
+                        "command_id": "cid"}
+
+            env_calls: list[tuple] = []
+            real_env = execute.quality_check_env
+
+            def spy_env(*args):
+                env_calls.append(args)
+                return {**real_env(*args), "ZZ_FROM_BACKEND": "1"}
+
+            authored: list[str] = []
+            real_author = wc.Conductor._author_quality_check
+
+            def spy_author(*args, **kwargs):
+                authored.append(args[5])
+                return real_author(*args, **kwargs)
+
+            with mock.patch.object(build_runtime_server, "_run_command", fake_run_command), \
+                    mock.patch.object(execute, "QUALITY_CHECK_PRESET", "make_check"), \
+                    mock.patch.object(execute, "quality_check_env", spy_env), \
+                    mock.patch.object(wc.Conductor, "_author_quality_check",
+                                      staticmethod(spy_author)):
+                try:
+                    _record_build_site(c.repo_root, refs)
+                    c._execute_inproc(refs, "child-1")
+                except Exception:
+                    pass  # downstream promotion/gates are irrelevant here
+            self.assertEqual(len(seen), 2, seen)
+            self.assertEqual(seen[1]["command"], ["make", "check"])
+            self.assertEqual(seen[1]["env"]["ZZ_FROM_BACKEND"], "1")
+            self.assertEqual(len(env_calls), 1)
+            self.assertEqual(authored, ["make_check"])
 
     def test_execute_inproc_traced_payload_survives_the_real_mcp_validators(self) -> None:
         """The traced run (issue #307): the prefixed binary command and the summary command
@@ -18879,7 +19018,7 @@ class DeterministicLintTest(unittest.TestCase):
             with self._patch_linter(_fn):
                 out = c._gate_lint_check(refs, "child-1")
         self.assertIn("sub/nested.f90", seen["leaf"])
-        self.assertEqual({c._runner_basename(refs), c.CONTROL_FILE_BASENAME}, seen["host"])
+        self.assertEqual({c._runner_basename(refs), c._control_file_basename(refs)}, seen["host"])
         # Union == the whole tree, which is the property the attribution rests on.
         self.assertEqual(
             seen["leaf"] | seen["host"],
@@ -18922,7 +19061,7 @@ class DeterministicLintTest(unittest.TestCase):
                 c._gate_lint_check(refs, "child-1")
         self.assertIn("sub/Makefile", seen["leaf"])
         self.assertNotIn("sub/Makefile", seen["host"])
-        self.assertEqual({c._runner_basename(refs), c.CONTROL_FILE_BASENAME}, seen["host"])
+        self.assertEqual({c._runner_basename(refs), c._control_file_basename(refs)}, seen["host"])
 
     def test_gate_lint_probe_runs_do_not_touch_the_nodes_command_log(self) -> None:
         """The probes certify nothing, so they must stay out of `<src>/command_log.jsonl`.
@@ -19133,7 +19272,7 @@ class DeterministicLintTest(unittest.TestCase):
             self.assertTrue(c._conductor_authors_makefile(refs))
             self.assertEqual(
                 c._host_rendered_src_names(refs),
-                frozenset({c._runner_basename(refs), c.CONTROL_FILE_BASENAME}))
+                frozenset({c._runner_basename(refs), c._control_file_basename(refs)}))
             # A non-M3c node (the default fixture: no infra dep, no meta) renders no runner, so
             # the runner must drop out of the set rather than be assumed present.
             plain = self._refs()

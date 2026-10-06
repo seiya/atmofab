@@ -902,6 +902,12 @@ PINNED: dict[str, str] = {
     # `harness_fortran_cpu` — `check_performance` called unconditionally where the IR restricts
     # it to one case).
     "pure-68": "ae5a76f956625dddb12890c30af121e1f7089b72c6f65a6c9a12382d3970f5cc",
+    # pure-69 (issue #424 PR-2): the generate verifier's scope sentence names "the host-authored
+    # build control file" where it spelled one build system's basename (`src/Makefile`); the
+    # leaf is told the same scope without being told which build system the target uses.
+    # Measured by diffing this tuple against origin/main 2e04c2c3's:
+    # `pure_generate_verify.txt` moved and no other member.
+    "pure-69": "78817eb8d6767bdabb91ac99cfa3b13127bc6df741452a81e59847a8d46ade83",
 }
 
 

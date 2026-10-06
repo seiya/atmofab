@@ -1332,7 +1332,7 @@ class PureVerifyLaunchRequestTests(unittest.TestCase):
                 refs, step="generate", substep="verify", orchestration_id="o",
                 orchestration_agent_run_id="orch", child_agent_run_id="c",
                 agent_model="opus", workflow_mode="dev",
-                makefile_host_authored=True, runner_host_authored=True,
+                runner_host_authored=True,
                 pure_leaf=True,
                 pure_context={"controlled_spec_document": "cs", "tests_document": "t",
                               "ir_document": "ir",
@@ -1483,7 +1483,7 @@ class PureStepResultValidationTests(unittest.TestCase):
                 encoding="utf-8")
         # Host-authored deliverables on disk (what the pure producer + verify write).
         required = wc.phase_required_outputs(refs, "generate", runner_host_authored=True,
-                                          bundle_facts=_FORTRAN_BUNDLE_FACTS)
+                                          bundle_facts=_FORTRAN_BUNDLE_FACTS, control_file_basename="Makefile")
         for ref in required:
             p = repo / ref
             p.parent.mkdir(parents=True, exist_ok=True)

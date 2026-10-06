@@ -24736,21 +24736,36 @@ class DerivationInputsTests(unittest.TestCase):
         and the validate run policy are the TARGET's, and the same shape of witness applies:
         non-default values in a profile reach them, and the IR's toolchain does not — a
         rewritten IR moves neither."""
+        from tools.backends import registry as backend_registry
         from tools.tests.target_fixtures import profile_with, second_target
-        with tempfile.TemporaryDirectory() as tmp:
+        # A non-default build system the host DRIVES: the run policy's preset is the build
+        # system's (`build_execute`, issue #424 PR-2), so a value no backend carries cannot
+        # reach Validate at all. `make`'s package under another id is that value.
+        alias = backend_registry.Backend(
+            "build_system", "zz_make_alias", "tools.backends.build_system.make",
+            backend_provides=frozenset({"control_file", "build_execute"}))
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+                backend_registry._BACKENDS, {("build_system", "zz_make_alias"): alias}):
             repo = Path(tmp)
             other = second_target(profile_with(
-                toolchain={"language": "cpp", "standard": "c++17", "build_system": "cmake",
-                           "compiler": "g++"},
+                toolchain={"language": "cpp", "standard": "c++17",
+                           "build_system": "zz_make_alias", "compiler": "g++"},
                 parallel={"backend": "cuda"}, hardware={"class": "gpu"},
                 execution={"threads_per_rank": 3}))
             refs = self._seed(repo, also_for=(other,))
             tc = self._inputs(repo, refs, "build", target=other)["toolchain"]
             self.assertEqual((tc["language"], tc["standard"], tc["build_system"], tc["backend"]),
-                             ("cpp", "c++17", "cmake", "cuda"))
+                             ("cpp", "c++17", "zz_make_alias", "cuda"))
             policy = self._inputs(repo, refs, "validate", target=other)["run_policy"]
-            self.assertEqual((policy["profile"], policy["threads_per_rank"]),
-                             (other.sha256, 3))
+            self.assertEqual((policy["profile"], policy["threads_per_rank"], policy["preset"]),
+                             (other.sha256, 3, "make_test"))
+            # The preset is READ off the build system's package, not spelled: moving the
+            # package's value moves the policy.
+            execute = backend_registry.capability_module("build_system", "make", "build_execute")
+            with mock.patch.object(execute, "QUALITY_CHECK_PRESET", "make_check"):
+                self.assertEqual(
+                    self._inputs(repo, refs, "validate", target=other)["run_policy"]["preset"],
+                    "make_check")
             before = (self._inputs(repo, refs, "build")["toolchain"],
                       self._inputs(repo, refs, "validate")["run_policy"])
             self._reir(repo, refs, self._IR_TEXT + "notes: rewritten for another toolchain\n")

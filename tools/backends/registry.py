@@ -363,6 +363,7 @@ CAPABILITY_MODULE_ATTR: dict[str, str] = {
     # `control_file` on both axes, a different half on each: the build system's package renders
     # the file and gates it, the language's says what it must say to compile that language.
     "control_file": "control_file",
+    "build_execute": "execute",
     "runner_render": "runner",
     "lint": "lint",
     # Same submodule as `lint`, a different declared job — the case this table's docstring
@@ -458,14 +459,13 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
                                         "signatures", "control_file", "interface_header"}),
         ),
         # Extracted for its control file (issue #289, R4-b PR-3): the control-file renderers the
-        # conductor held and the control-file gates the validator held. `build_execute` stays
-        # core: the in-process Build / Validate.execute path that drives make (the object /
-        # binary / run directory overrides, the `make_test` preset, the command-log placement) is
-        # still inlined in `tools/workflow_conductor.py`.
+        # conductor held and the control-file gates the validator held. `build_execute` followed
+        # in issue #424 PR-2: the object / binary / run directory overrides, the build argv, the
+        # quality-check preset and its argv, which the conductor, the server and the validator
+        # each spelled.
         Backend(
             "build_system", "make", "tools.backends.build_system.make",
-            core_provides=frozenset({"build_execute"}),
-            backend_provides=frozenset({"control_file"}),
+            backend_provides=frozenset({"control_file", "build_execute"}),
         ),
         # Extracted for its syntax-only adapter (issue #289, R4-b PR-2): the argv, the canary and
         # the version probe `run_syntax_check` used to hold inline.
@@ -979,8 +979,9 @@ def capability_module(axis: str, backend_id: str, capability: str) -> ModuleType
 
     `load` answers "is this value's code extracted"; this answers the narrower question a
     capability dispatch actually has: "does THIS record's package do THIS job". A record can be
-    extracted for one job and not another (the Fortran backend renders runners but its
-    control-file rules are still inlined), so loading on extraction alone would hand a seam a
+    extracted for one job and not another (the `make` package rendered the control file for two
+    PRs while the Build / Validate.execute path that drives it was still inlined, issue #289 to
+    #424), so loading on extraction alone would hand a seam a
     module that never claimed the work and let it fail on a missing attribute — or, worse, find a
     same-named one and render the wrong thing.
 
@@ -995,17 +996,19 @@ def capability_module(axis: str, backend_id: str, capability: str) -> ModuleType
     backend = _BACKENDS[(axis, str(backend_id or "").strip().lower())]
     # `backend_provides`, not `provided`, and LOAD BEARING — an earlier comment here called it
     # moot on the strength of a declaration rule that has since been removed as unsound. A
-    # capability can have a `CAPABILITY_MODULE_ATTR` row because it migrated on ONE axis while a
-    # record of another axis still carries it inlined: `control_file` is a question of two axes,
-    # and that is the ledger's next area. Widened to `provided`, this returns the package's
+    # capability can have a `CAPABILITY_MODULE_ATTR` row because it migrated for ONE value while
+    # another EXTRACTED record still carries it inlined — `make` was that record for
+    # `build_execute` until issue #424 PR-2, and no record is today (every record with a
+    # `core_provides` entry has no package, so `require_available` refuses it above). Widened to
+    # `provided`, this returns the package's
     # module for a job the record only claims to do in the neutral core — the wrong-module
     # dispatch the docstring above says this function exists to prevent.
     if capability not in backend.backend_provides:
         # BOTH clauses are reachable, and the difference is the whole value of the message: one
         # sends a reader to a capability that exists elsewhere, the other to a value nothing
-        # implements. `capability_module("language", "fortran", "control_file")` takes the first
-        # on the unmodified tree — a comment here once claimed it was unreachable, which was
-        # wrong by a one-line call.
+        # implements. The first is unreachable on the unmodified tree since issue #424 PR-2 (see
+        # above; `capability_module("build_system", "make", "build_execute")` took it before);
+        # a test drives it with a patched record.
         where = (
             "it is still carried by the neutral core" if capability in backend.core_provides
             else "nothing in this repository implements it for that value")

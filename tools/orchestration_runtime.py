@@ -3074,12 +3074,15 @@ def phase_derivation_inputs(
         "spec": {"tests": _spec_file_hash(repo_root, spec, "tests.md")},
         # The execution policy `_execute_inproc` imposes: the target it runs for (the launch
         # shape it hands `run_program` is composed from the profile, `tools/host_execution.py`,
-        # and the profile hash binds it), and the `make_test` quality-check preset.
+        # and the profile hash binds it), and the quality-check preset it re-runs the binary
+        # through — the target build system's (`build_execute`, issue #424 PR-2).
         "run_policy": {
             "target_id": target.target_id,
             "profile": target.sha256,
             "threads_per_rank": target.threads_per_rank,
-            "preset": "make_test",
+            "preset": backend_registry.capability_module(
+                "build_system", target.toolchain["build_system"],
+                "build_execute").QUALITY_CHECK_PRESET,
         },
     }
     return inputs
@@ -6961,14 +6964,17 @@ def control_file_host_authored(build_system: str | None, language: str | None) -
     input reaches that difference (``record_launch``'s readers strip before calling), so this
     guard changes nothing today; it makes the counterpart claim true for any caller.
 
-    What is NOT symmetric, and must not be: an ABSENT value defaults here the same way the
-    conductor defaults it, and whitespace-only is absent to this side's readers but present to
-    the conductor's. That divergence is the pre-existing one the agreement test pins.
+    An ABSENT value answers False: a toolchain that names no build system or no language has
+    no control file the host writes for it. The answer is RECORDED only: ``record_launch``
+    stamps it on the launch request, and no code reads it since the leaf's write set went with
+    Z4. Until issue #424 PR-2 an absent value defaulted here to one build system and
+    one language, which is knowledge of a backend the neutral core may not hold
+    (`docs/BACKEND_BOUNDARY.md`); no live input reaches the difference, because
+    ``record_launch`` passes the target profile's toolchain, whose loader requires both.
     """
     return all(
         value == value.strip() and backend_registry.provides(axis, value, "control_file")
-        for axis, value in (("build_system", (build_system or "make")),
-                            ("language", (language or "fortran"))))
+        for axis, value in (("build_system", build_system or ""), ("language", language or "")))
 
 
 def _pipeline_target_toolchain(repo_root: Path, pipeline_ref: str) -> dict[str, Any]:
@@ -15363,9 +15369,9 @@ def record_launch(
             request_payload["_resolved_build_system"] = str(_tc_resolved["build_system"])
             # The conductor authors the control file iff the neutral core has a writer for the
             # target's (build_system, language) — `Conductor._conductor_authors_makefile`, for
-            # leaf and dependency nodes alike (Model B). Mirrored so the leaf's
-            # `allowed_output_paths` keeps the file exactly when the conductor does not author
-            # it; computed here rather than as separate flags so the two cannot disagree.
+            # leaf and dependency nodes alike (Model B). Recorded on the request; its reader (the
+            # leaf's `allowed_output_paths` keeping the file when the conductor did not author
+            # it) went with the agentic leaf in Z4 (issue #171).
             request_payload["_resolved_makefile_host_authored"] = control_file_host_authored(
                 str(_tc_resolved["build_system"]), str(_tc_resolved["language"]))
         if is_pure:

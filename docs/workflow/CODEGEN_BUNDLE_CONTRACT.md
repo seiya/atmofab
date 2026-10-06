@@ -242,9 +242,10 @@ within the bundle. The rules (canonical implementation:
   (`.sh`, `.bash`, `.mk`, `.cmake`, `.py`).
 - Paths are unique **after case folding**, so a bundle cannot depend on a
   case-sensitive filesystem to keep `A.<ext>` and `a.<ext>` apart.
-- No two paths derive the same object name, compared case-folded (see "Build-graph
-  derivation"): `a/b.<ext>` and `a__b.<ext>` both flatten to `a__b.o`, and a colliding pair
-  would compile as one object and silently drop the other from the link.
+- Two paths that derive the same object name are not refused by these rules: the object
+  name is the target build system's, and the build-graph derivation refuses the collision for
+  every origin, the bundle's own files included (see "Build-graph derivation";
+  `bundle_assembly_collision`).
 
 A nested `logical_path` is admissible to these rules, and a SOURCE at one is still refused
 later: the `Generate.gate` syntax stage compiles only the top level of the source directory
@@ -619,11 +620,12 @@ before it), which is the same safe convention the current deterministic Makefile
 which — combined with the `compile_after` topological order — guarantees every declared
 dependency is already built.
 
-An object name is derived from its source path: the extension becomes `.o` and any `/` is
-flattened to `__` (`core/util.<ext>` → `core__util.o`), so a flat `<name>.<ext>` keeps the
-`<name>.o` the current Makefile uses. Derivation **fails closed** when two sources of any
-origin derive the same object name. Within the bundle that is already a validation
-violation; across origins only assembly can see it, and it is the case that matters: a
+An object name is derived from its source path by the target build system's `control_file`
+backend (`object_name`; `docs/backends/build_system/make/CONTROL_FILE.md` states the rule for
+`make`). Derivation **fails closed**, compared case-folded, when two sources of any origin
+derive the same object name — two bundle files would compile as one object and silently drop
+the other from the link. Across origins only assembly can see it, and it is the case that
+matters: a
 bundle file at the host-rendered runner's path would otherwise overwrite the glue object
 and so capture the contract boundary the `m3c` shape's refusal of the `runner` role denies
 it. On the `harness` shape there is no glue to capture: the host renders none, the assembly

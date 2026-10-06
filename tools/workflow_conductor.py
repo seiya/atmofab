@@ -1598,7 +1598,6 @@ def build_launch_request(
     case_ids: tuple[str, ...] = (),
     evidence_artifacts: tuple[str, ...] = ("state_snapshots",),
     exe_name: str | None = None,
-    makefile_host_authored: bool = False,
     runner_host_authored: bool = False,
     device_trace: bool = False,
     repair: dict[str, str] | None = None,
@@ -1688,7 +1687,7 @@ def build_launch_request(
         # security-boundary path derived the SAME physics-narrowed contract-doc set as this
         # conductor path — no drift. That reader (`_payload_is_m3c_physics`) and the whole
         # contract-doc set went with the agentic leaf in Z4 (issue #171); the stamp is kept as
-        # recorded provenance of what the host rendered, and `_host_authored_render_flags`
+        # recorded provenance of what the host rendered, and `_runner_host_authored_m3c`
         # carries the accounting of its one remaining oddity.
         req["runner_host_authored"] = True
 
@@ -1735,32 +1734,15 @@ def build_launch_request(
         req["source_id"] = refs.source_id
         req["dependency_ref"] = refs.ir_ref
         src = refs.source_dir()
-        # For any make+fortran node (leaf or dependency) the conductor authors src/Makefile
-        # host-side (_write_makefile), so it is NOT a leaf output — omit it from
-        # allowed_output_paths (and required outputs) exactly like lineage.json. c/cpp/mixed
-        # keep LLM authoring, so the leaf still lists it there.
-        make_entry = [] if makefile_host_authored else [f"{src}/src/Makefile"]
-        # R1/M3c-β: on a harness-backed node the conductor host-renders the runner glue
-        # (_write_runner), so the leaf authors <spec_id>_checks.f90 instead — swap it into the
-        # write set. The model is leaf-authored either way. c/cpp/mixed + non-M3c fortran nodes
-        # keep the leaf-authored <spec_id>_runner.f90.
-        runner_or_checks = (f"{src}/src/{refs.spec_id}_checks.f90" if runner_host_authored
-                            else f"{src}/src/{refs.spec_id}_runner.f90")
         if diagnose:
             pass
         elif substep == "generate":
-            # lineage.json is authored host-side by the conductor (_write_lineage), not by
-            # the leaf — it sits at the pipeline root which must stay non-writable to the
-            # sandboxed leaf. So it is NOT in the leaf's allowed_output_paths.
-            req["allowed_output_paths"] = [
-                # A dead list for a pure leaf (the pure override below empties it), spelled like
-                # its two siblings above; this function has no target to ask.
-                f"{src}/src/{refs.spec_id}_model.f90",
-                runner_or_checks,
-                *make_entry,
-                f"{src}/src/command_log.jsonl",
-                f"{src}/source_meta.json",
-            ]
+            # The generate leaf is pure since Z4 (issue #171): it authors nothing; the host
+            # writes the sources from the document it returns, and the build control file and
+            # lineage.json itself. Its output set is empty here as well as in the pure override below —
+            # the list of leaf-authored sources this branch used to spell (one language's names
+            # and one build system's control file) had no reader (issue #424 PR-2).
+            req["allowed_output_paths"] = []
         elif substep == "gate":
             # Deterministic in-process gate: the conductor authors gate_meta.json (the single
             # freshness-gated deliverable, unioning the lint / syntax / static checkers). The
@@ -3608,13 +3590,15 @@ def _local_site_record() -> dict[str, Any]:
             "remote_dir": None, "queue_wait_ms": 0}
 
 
-def _host_authored_m3c(refs: NodeRefs) -> tuple[bool, bool]:
-    """The `(makefile_host_authored, runner_host_authored)` stamp the two Z1/Z2 pure paths use.
+def _runner_host_authored_m3c(refs: NodeRefs) -> bool:
+    """The `runner_host_authored` stamp the two Z1/Z2 pure paths use. (It was a
+    `(makefile_host_authored, runner_host_authored)` pair until issue #424 PR-2 deleted the
+    makefile half's one reader, `build_launch_request`'s generate-leaf output list.)
 
-    GENERATE reaches the pure loops only on the M3c shape (`_pure_leaf_substep` tests
-    `_conductor_authors_makefile` ∧ `_conductor_authors_runner` for its two pairs), where the
-    host authors both the control file and the runner — so for Generate this constant is the
-    node's truth. COMPILE carries no shape condition at all, deliberately: the Compile contract
+    GENERATE reaches the pure loops only on a bundle shape (`_pure_leaf_substep` asks
+    `_bundle_shape`, which answers `m3c` or `harness`). The `m3c` specs bind this constant, and
+    on that shape the host renders the runner — so for them it is the node's truth; the
+    `harness` specs bind `Conductor._node_runner_host_authored`, the node's own answer. COMPILE carries no shape condition at all, deliberately: the Compile contract
     does not depend on the node kind, and at `compile.generate` time there is no IR to read a
     shape from. So an `infrastructure` node's Compile does reach these loops and IS stamped
     `runner_host_authored=True` for a node whose runner the host does not author.
@@ -3632,7 +3616,7 @@ def _host_authored_m3c(refs: NodeRefs) -> tuple[bool, bool]:
     that reading it on the compile path means deciding what the flag means for an
     `infrastructure` node first.
     """
-    return (True, True)
+    return True
 
 
 @dataclass
@@ -5642,8 +5626,15 @@ class Conductor:
         was written here until the language backend said it."""
         return str(self._language_facts().model_basename(refs.spec_id))
 
-    #: The basename of the build control file the host writes. ONE spelling, for the same reason.
-    CONTROL_FILE_BASENAME = "Makefile"
+    def _control_file_basename(self, refs: NodeRefs) -> str:
+        """The basename of the build control file the host writes for this node: the target
+        build system's `control_file` backend's (`CONTROL_FILE_BASENAME`, issue #424 PR-2; it
+        was one spelling here until then). Asked for every generate result
+        (`phase_required_outputs`) as well as by the writers; a build system that declares no
+        `control_file` is refused as a host precondition (`_control_file_module`), which the
+        launch gate already refuses at launch (`target_profile.toolchain_servable_reasons`)."""
+        build_system = self._read_toolchain(refs)["build_system"]
+        return str(self._control_file_module(build_system).CONTROL_FILE_BASENAME)
 
     def _host_rendered_src_names(self, refs: NodeRefs) -> frozenset[str]:
         """The basenames under `source/<source_id>/src/` that THIS REPOSITORY authors, not the leaf.
@@ -5684,7 +5675,7 @@ class Conductor:
             if checks_header is not None:
                 names.add(checks_header[0])
         if self._conductor_authors_makefile(refs):
-            names.add(self.CONTROL_FILE_BASENAME)
+            names.add(self._control_file_basename(refs))
         header = self._interface_header_module(refs)
         if header is not None:
             names.add(header.basename(spec_id_of(refs.node_key)))
@@ -6090,7 +6081,7 @@ class Conductor:
             closure=self._dependency_closure(refs),
             initial_capture_dir=authors_runner,
         )
-        path = self.repo_root / refs.source_dir() / "src" / self.CONTROL_FILE_BASENAME
+        path = self.repo_root / refs.source_dir() / "src" / self._control_file_basename(refs)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(template, encoding="utf-8")
 
@@ -6513,7 +6504,7 @@ class Conductor:
         bundle_path.write_text(
             json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         makefile = (self.repo_root / refs.source_dir() / "src"
-                    / self.CONTROL_FILE_BASENAME)
+                    / self._control_file_basename(refs))
         makefile.write_text(self._render_pure_makefile_from_graph(refs, graph), encoding="utf-8")
         self._write_interface_header(refs)
         return written
@@ -7103,14 +7094,14 @@ class Conductor:
 
     # --- the pure `validate.judge` reviewer (Z3, issue #169) ------------------
 
-    def _node_host_authored_flags(self, refs: NodeRefs) -> tuple[bool, bool]:
-        """The `(makefile_host_authored, runner_host_authored)` stamp read off the NODE.
+    def _node_runner_host_authored(self, refs: NodeRefs) -> bool:
+        """The `runner_host_authored` stamp read off the NODE.
 
-        `_host_authored_m3c` returns the constant `(True, True)`, which is the truth for the
+        `_runner_host_authored_m3c` returns the constant `True`, which is the truth for the
         pure paths that only ever see an M3c node. The judge sees every node kind, so it asks
         instead — the stamp's reader believed what the request said.
         """
-        return (self._conductor_authors_makefile(refs), self._conductor_authors_runner(refs))
+        return self._conductor_authors_runner(refs)
 
     def _write_judge_meta(self, refs: NodeRefs, **kwargs: Any) -> None:
         """The pure `validate.judge` reviewer's per-attempt record, in the run-node dir beside
@@ -7239,9 +7230,9 @@ class Conductor:
     def _pure_judge_spec(self) -> "Conductor._PureReviewerSpec":
         """The `validate.judge` half of the pure reviewer loop.
 
-        `host_authored_flags` carries the NODE's real values rather than the M3c constant the
+        `runner_host_authored` carries the NODE's real value rather than the M3c constant the
         two older reviewers pass: the judge runs on every node kind, and the launch request's
-        stamp had one reader, and it is deleted (see `_host_authored_render_flags`)."""
+        stamp had one reader, and it is deleted (see `_runner_host_authored_m3c`)."""
         return self._PureReviewerSpec(
             build_context=self._build_pure_judge_context,
             write_project_meta=self._write_semantic_review,
@@ -7252,7 +7243,7 @@ class Conductor:
             attempt_failed_event="pure_semantic_review_attempt_failed",
             summary_prefix="pure_judge",
             host_write_failed_reason="pure_judge_host_write_failed",
-            host_authored_flags=self._node_host_authored_flags,
+            runner_host_authored=self._node_runner_host_authored,
             violations=self._semantic_review_violations,
             schema_category=SEMANTIC_REVIEW_DOCUMENT_VIOLATION,
             status_of=lambda doc: doc["decision"],
@@ -7300,10 +7291,10 @@ class Conductor:
         host_write_failed_reason: str
         #: A certified sibling exemplar is resolved and attached only where a template renders it.
         wants_exemplar: bool
-        #: refs -> `(makefile_host_authored, runner_host_authored)` for the launch request.
-        #: The request's stamp HAD a reader (deleted in Z4, issue #171), so it must carry the
-        #: node's real values, not the shape the phase happened to have when it went pure.
-        host_authored_flags: Callable[[NodeRefs], tuple[bool, bool]]
+        #: refs -> `runner_host_authored` for the launch request. The request's stamp HAD a
+        #: reader (deleted in Z4, issue #171), so it must carry the node's real value, not the
+        #: shape the phase happened to have when it went pure.
+        runner_host_authored: Callable[[NodeRefs], bool]
         #: (launch record of the repair target) -> the document that producer attempt returned,
         #: re-serialized as the loop's `prior_document`, or None when the artifact is absent or
         #: unreadable. NEVER raises. The loop names neither the artifact nor its location; the
@@ -7335,8 +7326,8 @@ class Conductor:
         attempt_failed_event: str
         summary_prefix: str
         host_write_failed_reason: str
-        #: refs -> `(makefile_host_authored, runner_host_authored)`; see the producer spec.
-        host_authored_flags: Callable[[NodeRefs], tuple[bool, bool]]
+        #: refs -> `runner_host_authored`; see the producer spec.
+        runner_host_authored: Callable[[NodeRefs], bool]
         #: (parsed document) -> the schema violations, empty when clean. The loop knows only
         #: that a document is one JSON object; WHAT a well-formed one is belongs to the phase.
         violations: Callable[[dict[str, Any]], list[str]]
@@ -7500,7 +7491,7 @@ class Conductor:
                 accept_noun="IR",
                 host_write_failed_reason="pure_compile_host_write_failed",
                 wants_exemplar=False,
-                host_authored_flags=_host_authored_m3c,
+                runner_host_authored=_runner_host_authored_m3c,
                 prior_document=self._pure_ir_prior_document,
                 declared_fail=self._pure_ir_declared_fail,
                 write_declared_fail=self._write_declared_compile_fail,
@@ -7529,7 +7520,7 @@ class Conductor:
                 accept_noun="bundle",
                 host_write_failed_reason="pure_host_write_failed",
                 wants_exemplar=False,
-                host_authored_flags=self._node_host_authored_flags,
+                runner_host_authored=self._node_runner_host_authored,
                 prior_document=self._pure_bundle_prior_document,
                 pure_shape="harness",
             )
@@ -7550,7 +7541,7 @@ class Conductor:
             accept_noun="bundle",
             host_write_failed_reason="pure_host_write_failed",
             wants_exemplar=True,
-            host_authored_flags=_host_authored_m3c,
+            runner_host_authored=_runner_host_authored_m3c,
             prior_document=self._pure_bundle_prior_document,
         )
 
@@ -7622,7 +7613,7 @@ class Conductor:
         # The launch request's host-authorship stamp is the NODE's, resolved once here. It is
         # read back by the deleted contract-doc deriver, so a phase whose pure path also serves a node
         # the host authors nothing for must not stamp a constant.
-        makefile_host_authored, runner_host_authored = spec.host_authored_flags(refs)
+        runner_host_authored = spec.runner_host_authored(refs)
         per_attempt: list[dict[str, Any]] = []
         resume_session_id: str | None = None
         cold_repair_target: str | None = None
@@ -7724,7 +7715,6 @@ class Conductor:
                 orchestration_agent_run_id=self.orchestration_agent_run_id,
                 child_agent_run_id=child_arid,
                 agent_model=entry.model, workflow_mode=self.workflow_mode,
-                makefile_host_authored=makefile_host_authored,
                 runner_host_authored=runner_host_authored,
                 repair=repair_payload,
                 resolved_dependencies=resolved_dependencies,
@@ -8410,7 +8400,7 @@ class Conductor:
                 attempt_failed_event="pure_ir_verdict_attempt_failed",
                 summary_prefix="pure_compile_verify",
                 host_write_failed_reason="pure_compile_verify_host_write_failed",
-                host_authored_flags=_host_authored_m3c,
+                runner_host_authored=_runner_host_authored_m3c,
                 violations=self._verify_verdict_violations,
                 schema_category=GENERATE_VERDICT_SCHEMA_VIOLATION,
                 status_of=lambda doc: doc["verification_status"],
@@ -8429,7 +8419,7 @@ class Conductor:
                 attempt_failed_event="pure_verdict_attempt_failed",
                 summary_prefix="pure_verify",
                 host_write_failed_reason="pure_verify_host_write_failed",
-                host_authored_flags=self._node_host_authored_flags,
+                runner_host_authored=self._node_runner_host_authored,
                 violations=self._verify_verdict_violations,
                 schema_category=GENERATE_VERDICT_SCHEMA_VIOLATION,
                 status_of=lambda doc: doc["verification_status"],
@@ -8448,7 +8438,7 @@ class Conductor:
             attempt_failed_event="pure_verdict_attempt_failed",
             summary_prefix="pure_verify",
             host_write_failed_reason="pure_verify_host_write_failed",
-            host_authored_flags=_host_authored_m3c,
+            runner_host_authored=_runner_host_authored_m3c,
             violations=self._verify_verdict_violations,
             schema_category=GENERATE_VERDICT_SCHEMA_VIOLATION,
             status_of=lambda doc: doc["verification_status"],
@@ -8511,7 +8501,7 @@ class Conductor:
         # The launch request's host-authorship stamp is the NODE's, resolved once here. It is
         # read back by the deleted contract-doc deriver, so a phase whose pure path also serves a node
         # the host authors nothing for must not stamp a constant.
-        makefile_host_authored, runner_host_authored = spec.host_authored_flags(refs)
+        runner_host_authored = spec.runner_host_authored(refs)
         per_attempt: list[dict[str, Any]] = []
         resume_session_id: str | None = None
         cold_repair_target: str | None = None
@@ -8545,7 +8535,6 @@ class Conductor:
                 orchestration_agent_run_id=self.orchestration_agent_run_id,
                 child_agent_run_id=child_arid,
                 agent_model=entry.model, workflow_mode=self.workflow_mode,
-                makefile_host_authored=makefile_host_authored,
                 runner_host_authored=runner_host_authored,
                 repair=repair_payload,
                 resolved_dependencies=resolved_dependencies,
@@ -9534,28 +9523,37 @@ class Conductor:
     def _resolve_exe_name(self, refs: NodeRefs) -> str:
         """The canonical execution binary basename: `<spec_id>_runner`.
 
-        Build and Validate.execute IMPOSE this name on the Makefile (Build via the make
-        command line, Validate.execute via the make_test environment — which requires the
-        Makefile's `BIN ?=` overridable form, enforced by post_generate). The binary name
+        Build and Validate.execute IMPOSE this name on the build control file (Build through
+        the build's overrides, Validate.execute through the quality check's environment — the
+        build system's `build_execute`; post_generate enforces that the control file lets the
+        environment override it). The binary name
         is thus deterministic and consistent with the runner source/program names, instead
         of varying with whatever default `BIN` the generator chose."""
         return f"{refs.spec_id}_runner"
 
     @staticmethod
-    def _require_build_execute(build_system: str, phase: str) -> None:
-        """The in-process deterministic bodies hard-code one build system's layout
-        (OBJDIR/BINDIR/RUNDIR overrides, the quality-check preset, binary under
-        binary/<id>/bin, the command-log placement). A build system they do not drive would be
-        silently misplaced, so fail loudly unless the registry says the in-process path drives
-        it (`build_execute`, issue #289 R4-b PR-3 — until then this compared the value against
-        one spelling). The launch gate asks the same capability first
-        (`target_profile.toolchain_servable_reasons`)."""
+    def _require_build_execute(build_system: str, phase: str) -> Any:
+        """The target build system's `build_execute` module: what the in-process deterministic
+        bodies drive it with (the build's overrides, the quality-check preset and its
+        environment, issue #424 PR-2). A build system the registry does not say they drive is
+        refused loudly rather than driven with another one's variables (`build_execute`, issue
+        #289 R4-b PR-3 — until then this compared the value against one spelling); so is one
+        whose record claims the job without its package carrying it. The launch gate asks the
+        same capability first (`target_profile.toolchain_servable_reasons`)."""
         reason = backend_registry.missing_capability_reason(
             "build_system", str(build_system), "build_execute")
         if reason is not None:
             raise RuntimeError(
                 f"deterministic in-process {phase} does not drive build_system "
                 f"{build_system!r}: {reason}")
+        try:
+            return backend_registry.capability_module("build_system", str(build_system),
+                                                      "build_execute")
+        except (backend_registry.UnsupportedBackend,
+                backend_registry.BackendNotExtracted) as exc:
+            raise RuntimeError(
+                f"deterministic in-process {phase} does not drive build_system "
+                f"{build_system!r}: {exc}") from exc
 
     @staticmethod
     def _classify_build_failure_category(build_system: str, return_code: int,
@@ -9654,12 +9652,11 @@ class Conductor:
         the generate retry loop could fix.
 
         No-op (returns []) unless the host authors the node's control file (`_conductor_authors_
-        makefile`: the target's build system and language both declare `control_file` — today
-        make ∧ fortran) — staging is paired with the
-        conductor-authored Fortran Makefile (`_write_makefile` non-leaf branch), which is the
-        only consumer of the staged `<dep>_model.f90`. For a c/cpp/mixed dependency node the
-        Generate child still owns the (LLM-authored) Makefile and its own dependency build, so
-        the conductor must not stage Fortran sources (they do not exist under those names)."""
+        makefile`: the target's build system and language both declare `control_file`) —
+        staging is paired with the conductor-authored control file (`_write_makefile` non-leaf
+        branch), which is the only consumer of the staged dependency model sources. A node whose
+        control file the host does not author has no pure path (`_pure_leaf_substep`), so
+        nothing would compile what was staged."""
         if not self._conductor_authors_makefile(refs):
             return []
         nodes = self._dependency_closure_nodes(refs)
@@ -9777,7 +9774,20 @@ class Conductor:
         tc = self._read_toolchain(refs)
         language = tc["language"]
         build_system = tc["build_system"]
-        self._require_build_execute(build_system, "build")
+        # What driving the build system means — the variables a build is handed, what a build
+        # that left no binary means — is its backend's (`build_execute`, issue #424 PR-2); the
+        # file it reads and where it logs are its `control_file`'s.
+        execute = self._require_build_execute(build_system, "build")
+        control_file = self._control_file_module(build_system)
+        # Every command log below is placed at <src>/command_log.jsonl, which holds for a build
+        # system that builds in its source tree. Where one that does not would log is
+        # undecided, so it is refused here, before anything runs, rather than assumed
+        # (`orchestration_runtime._builds_in_source` answers the same question for the
+        # runtime's cross-phase log placement, and answers False for such a build system).
+        if not control_file.BUILDS_IN_SOURCE:
+            raise RuntimeError(
+                f"build_system {build_system!r} does not build in its source tree, and no "
+                f"command-log placement is decided for an out-of-source build")
 
         src_dir = self.repo_root / refs.source_dir() / "src"
         bin_dir = self.repo_root / refs.binary_dir() / "bin"
@@ -9791,11 +9801,11 @@ class Conductor:
             # site that does not execute the class, or a launcher target at a remote site, is
             # refused (`LaunchUnavailable`, a `deterministic_build_error`).
             launch_shape(self.target, site)
-        # DEPENDENCY BUILD (Model B, docs/design): for a make∧fortran node with dependencies,
-        # stage each closure `<dep>_model.f90` into obj_dir ($(OBJDIR)) BEFORE compile, so the
-        # conductor-authored dependency Makefile (_write_makefile non-leaf branch) compiles +
-        # links the closure. Self-gated: a no-op for a leaf node (empty closure) and for
-        # c/cpp/mixed nodes (LLM-authored Makefile owns its own dependency build). A staging
+        # DEPENDENCY BUILD (Model B, docs/design): for a node with dependencies whose control
+        # file the host authors, stage each closure model source into obj_dir (the build's
+        # object directory) BEFORE compile, so the conductor-authored dependency control file
+        # (_write_makefile non-leaf branch) compiles + links the closure. Self-gated: a no-op
+        # for a leaf node (empty closure) and for a node whose control file a leaf authors. A staging
         # failure raises -> _run_deterministic_substep catches it as a transport fail_closed
         # (build precondition: the dependency must be built ready first). The transient OBJDIR
         # stage never touches canonical src/ (phase_02 §41 carve-out). The returned bindings —
@@ -9815,12 +9825,10 @@ class Conductor:
         toolchain_identity = _target_toolchain_identity(self.target)
 
         def build_args(obj_path: str, bin_path: str) -> list[str]:
-            """OBJDIR/BINDIR out-of-source overrides + BIN imposed to the canonical
-            <spec_id>_runner (command-line override wins over any Makefile BIN assignment),
-            from one set of paths — the local ones or the job directory's — so the two sites
-            cannot build differently. Validate.execute imposes the same BIN via the make_test
-            env; see phase_03_build.md."""
-            return [f"OBJDIR={obj_path}", f"BINDIR={bin_path}", f"BIN={exe}"]
+            """The build system's command-line overrides (`execute.build_overrides`), from one
+            set of paths — the local ones or the job directory's — so the two sites cannot
+            build differently; see phase_03_build.md."""
+            return list(execute.build_overrides(obj_path, bin_path, exe))
 
         attribution = {"orchestration_id": self.orchestration_id, "agent_run_id": child_arid}
         if site is None or site.is_local:
@@ -9932,8 +9940,8 @@ class Conductor:
             ok = False
         # `command_log_ref` from the handler is cwd-relative (`_path_to_ref` uses
         # Path.cwd()), which is unreliable for the in-process caller — derive it from
-        # our repo_root + the known canonical placement instead. Make's in-source build
-        # writes the log to <src>/command_log.jsonl (project_dir = src_dir).
+        # our repo_root + the known canonical placement instead (`BUILDS_IN_SOURCE`, checked
+        # above: the log is <src>/command_log.jsonl, project_dir = src_dir).
         command_log_ref = self._rel(src_dir / "command_log.jsonl")
 
         # Full (untrimmed) per-step compiler logs in the binary dir (build has no
@@ -10012,13 +10020,14 @@ class Conductor:
             "failure_excerpt": None,
         }
         if binary_missing:
-            # Makefile build-rule defect -> restart (regenerate the Makefile).
-            binary_meta["failure_category"] = "make_error"
+            # Control-file build-rule defect -> Generate restart (`BUILD_FAILURE_ROUTING`).
+            category, rule = execute.BINARY_MISSING
+            binary_meta["failure_category"] = category
             binary_meta["last_fail_reason"] = "binary_not_built_at_bindir"
             binary_meta["failure_excerpt"] = (
-                f"compile reported success but no binary at bin/{exe} (imposed BIN); the "
-                f"Makefile build rule must produce $(BINDIR)/$(BIN)")
-            binary_meta["failure_source_refs"] = [f"{self._rel(src_dir)}/Makefile"]
+                f"compile reported success but no binary at bin/{exe} (imposed BIN); {rule}")
+            binary_meta["failure_source_refs"] = [
+                f"{self._rel(src_dir)}/{control_file.CONTROL_FILE_BASENAME}"]
         elif not ok:
             binary_meta["failure_category"] = self._classify_build_failure_category(
                 build_system, rc, stderr)
@@ -11331,10 +11340,10 @@ class Conductor:
                               qc_cmd_id: str | None, preset: str,
                               threads: int, ranks: int = 1) -> str:
         """quality_check.json = deterministic value-equality of run_program vs the
-        make-test re-run (per phase_04 §4-1). Returns the top-level status.
+        quality-check preset's re-run (per phase_04 §4-1). Returns the top-level status.
 
         `ranks` is the process count the run was launched with (the target's
-        `execution.ranks`, issue #316); the `make test` re-run starts the binary without a
+        `execution.ranks`, issue #316); the quality-check re-run starts the binary without a
         launcher, so it is one process — the serial reference the parallel run is compared
         against (phase_04 §4-2)."""
         def _check_map(d: dict[str, Any]) -> dict[str, Any]:
@@ -11421,7 +11430,7 @@ class Conductor:
         site = self.site
         launch = launch_shape(target, site)
         build_system = self._read_toolchain(refs)["build_system"]
-        self._require_build_execute(build_system, "validate.execute")
+        execute = self._require_build_execute(build_system, "validate.execute")
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
 
         node_dir = self.repo_root / refs.run_node_dir()
@@ -11524,21 +11533,13 @@ class Conductor:
             """The run's argv and the quality check's environment, from one set of paths — the
             local ones or the site's — so the two sites cannot run different commands.
 
-            The quality check's variables: BIN imposed to the canonical <spec_id>_runner so
-            `make test`'s `$(BINDIR)/$(BIN)` guard resolves the same binary Build produced.
-            make_test passes overrides via the environment only, which overrides the Makefile's
-            `BIN ?=` form (enforced by post_generate). SPEC/CASES imposed so `make test` invokes
-            the runner identically to run_program (`--cases <spec.ir.yaml> <case_id>...`) —
-            without this the test target's `--cases $(SPEC) $(CASES)` would fall back to the
-            Makefile's baked defaults; pinning them to the authoritative run_program spec/case
-            set keeps the quality_check a true apples-to-apples value comparison (the runner
-            requires `--cases` and aborts without it). No dependency-source staging here
-            (unlike _build_inproc): `make test` only runs the already-built binary (the `test:`
-            target has no build prerequisite, so it never recompiles), so the closure
-            `.f90`/`.mod` are not needed in OBJDIR."""
+            The quality check's variables are the build system's
+            (`execute.quality_check_env`, whose docstring says why each is imposed). No
+            dependency-source staging here (unlike _build_inproc): the quality check only runs
+            the already-built binary."""
             run_argv = launch.command([binary_path, "--cases", spec_path, *case_ids])
-            qc_env = {"OBJDIR": obj_path, "BINDIR": bin_path, "RUNDIR": qc_path,
-                      "BIN": str(exe), "SPEC": spec_path, "CASES": " ".join(case_ids)}
+            qc_env = execute.quality_check_env(obj_path, bin_path, qc_path, str(exe),
+                                               spec_path, case_ids)
             return run_argv, qc_env
 
         res_qc: dict[str, Any] | None
@@ -11568,11 +11569,11 @@ class Conductor:
                 "repo_root": str(self.repo_root),
                 **attribution,
             }) if launch.trace is not None and res_run.get("ok") else None
-            # 2. run_quality_checks (make_test re-run; output to a SEPARATE tmp), only after a
-            #    run (and its trace summary) that succeeded.
+            # 2. run_quality_checks (the build system's preset re-run; output to a SEPARATE
+            #    tmp), only after a run (and its trace summary) that succeeded.
             res_qc = tool_run_quality_checks({
                 "project_dir": str(src_dir),
-                "preset": "make_test",
+                "preset": execute.QUALITY_CHECK_PRESET,
                 "env": qc_env,
                 "command_log_path": str(qc_cmd_log),
                 "capture_limit": _FULL_CAPTURE_LIMIT,
@@ -11619,7 +11620,7 @@ class Conductor:
                                 command_log_path=cmd_log, capture_limit=_FULL_CAPTURE_LIMIT),
                     *trace_commands,
                     CommandSpec(tag="qc", tool_name="run_quality_checks",
-                                argv=tuple(quality_check_command("make_test")),
+                                argv=tuple(quality_check_command(execute.QUALITY_CHECK_PRESET)),
                                 cwd=f"{jdir}/src", record_cwd=str(src_dir), env=qc_env,
                                 timeout_sec=QUALITY_CHECKS_TIMEOUT_SEC,
                                 command_log_path=qc_cmd_log, capture_limit=_FULL_CAPTURE_LIMIT),
@@ -11698,7 +11699,7 @@ class Conductor:
         qc_diag = _read_json(qc_tmp / "diagnostics.json") or {}
         qc_status = self._author_quality_check(
             node_dir, run_diag, qc_diag, res_run.get("command_id"),
-            res_qc.get("command_id"), "make_test", threads, target.ranks)
+            res_qc.get("command_id"), execute.QUALITY_CHECK_PRESET, threads, target.ranks)
 
         (node_dir / "stdout.log").write_text(stdout, encoding="utf-8")
         (node_dir / "stderr.log").write_text(stderr, encoding="utf-8")
@@ -12022,8 +12023,6 @@ class Conductor:
             else ("state_snapshots",),
             # build's allowed_output_paths binary path = the imposed canonical exe name.
             exe_name=(self._resolve_exe_name(refs) if phase == "build" else None),
-            makefile_host_authored=(
-                phase == "generate" and self._conductor_authors_makefile(refs)),
             # `validate` too: execute's deliverable set depends on whether the runner is the
             # host-rendered glue (which writes the `initial/` captures) — Z6, issue #255.
             runner_host_authored=(
@@ -13172,8 +13171,9 @@ class Conductor:
         dep_surface: tuple[dict[str, Any], ...] = ()
         if phase in ("generate", "build", "validate"):
             dep_facts = tuple(self._write_lineage(refs))
-        # The conductor authors src/Makefile deterministically (runtime-owned, like
-        # lineage.json) for every make+fortran node BEFORE the substeps run: the generate leaf
+        # The conductor authors the build control file deterministically (runtime-owned, like
+        # lineage.json) for every node whose build system and language both declare
+        # `control_file`, BEFORE the substeps run: the generate leaf
         # must not author it, and generate.gate's static (post_generate) checker inspects it. The
         # template encodes the fixed runner->model use-graph and, for a dependency node, the
         # closure object rules (Model B); the dep sources are staged at build (see
@@ -13314,7 +13314,9 @@ class Conductor:
                 exe_name=(self._resolve_exe_name(refs) if phase == "build" else None),
                 runner_host_authored=(phase == "generate" and self._conductor_authors_runner(refs)),
                 bundle_sources=(self._bundle_source_names(refs) if phase == "generate" else ()),
-                bundle_facts=(self._language_facts() if phase == "generate" else None)),
+                bundle_facts=(self._language_facts() if phase == "generate" else None),
+                control_file_basename=(self._control_file_basename(refs)
+                                       if phase == "generate" else None)),
             "executor_agent_run_id": executor,
             "substep_agent_run_ids": substep_arids,
             "failed_substeps": failed,
@@ -14490,14 +14492,17 @@ PHASE_VALIDATION_STAGE: dict[str, str] = {
 def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = None,
                            *, runner_host_authored: bool = False,
                            bundle_sources: Sequence[str] = (),
-                           bundle_facts: Any = None) -> list[str]:
+                           bundle_facts: Any = None,
+                           control_file_basename: str | None = None) -> list[str]:
     """The deliverables a phase's terminal step_result declares — and, on a pass, the set
     `_stamp_certification` byte-pins into the certifying meta and hashes into the phase's
     output hash (issue #250). So this is the definition of what a phase's OUTPUT is.
 
     `bundle_facts` (generate only, REQUIRED there) is the target language's `bundle_facts`
     module, which names the model, checks and runner sources (issue #289, R4-b PR-3; this
-    function spelled one language's names until then).
+    function spelled one language's names until then). `control_file_basename` (generate only,
+    REQUIRED there) is the basename of the build control file the host writes
+    (`Conductor._control_file_basename`, issue #424 PR-2), for the same reason.
 
     `bundle_sources` (generate only) is every `files[].logical_path` of the ACCEPTED bundle,
     as `Conductor._bundle_source_names` reads it off `codegen_bundle.json`: the model and the
@@ -14522,6 +14527,10 @@ def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = No
             raise ValueError(
                 "phase_required_outputs(generate) needs the target language's bundle_facts: "
                 "the source names it declares are the language's, not this function's")
+        if not control_file_basename:
+            raise ValueError(
+                "phase_required_outputs(generate) needs the build control file's basename: it "
+                "is the target build system's, not this function's")
         checks_entry = ([f"{src}/src/{bundle_facts.checks_basename(refs.spec_id)}"]
                         if runner_host_authored else [])
         fixed = [
@@ -14534,7 +14543,7 @@ def phase_required_outputs(refs: NodeRefs, phase: str, exe_name: str | None = No
         return [
             *fixed,
             *[ref for ref in dict.fromkeys(extra) if ref not in fixed],
-            f"{src}/src/{Conductor.CONTROL_FILE_BASENAME}",
+            f"{src}/src/{control_file_basename}",
             f"{src}/source_meta.json",
         ]
     if phase == "build":

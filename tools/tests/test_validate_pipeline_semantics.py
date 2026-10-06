@@ -8640,6 +8640,115 @@ end program shallow_water2d_runner
                 any("run_quality_checks command_id=cmd_quality_001 uses forbidden executable" in v for v in violations)
             )
 
+    def _quality_check_violations(self, command: list[str], tmp: str) -> list[str]:
+        """The violations of a minimal fortran / make execution tree whose quality-check record
+        ran `command` (the fixture `test_rejects_pytest_quality_check_for_fortran_make_pipeline`
+        builds)."""
+        repo_root = Path(tmp)
+        _seed_shape_expr_schema_into(repo_root)
+        model_text = """module shallow_water2d_model
+use dynamics_shallow_water_flux_2d_rusanov_p0_model
+implicit none
+contains
+subroutine solve(flag)
+  logical, intent(out) :: flag
+  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)
+end subroutine solve
+end module shallow_water2d_model
+"""
+        runner_text = """program shallow_water2d_runner
+implicit none
+write(*,*) 'ok'
+end program shallow_water2d_runner
+"""
+        _create_minimal_execution_tree(
+            repo_root,
+            dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+            model_text=model_text,
+            runner_text=runner_text,
+            run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+        )
+
+        node_dir = (
+            repo_root
+            / "workspace"
+            / "pipelines"
+            / "problem__shallow_water2d__0.3.0" / _TARGET_ID
+            / "shallow-water2d_20260415_001"
+            / "runs"
+            / "run_test_001"
+            / "problem__shallow_water2d__0.3.0"
+        )
+        src_dir = (
+            repo_root
+            / "workspace"
+            / "pipelines"
+            / "problem__shallow_water2d__0.3.0" / _TARGET_ID
+            / "shallow-water2d_20260415_001"
+            / "source"
+            / "src_20260415_001"
+            / "src"
+        )
+        trial_meta_path = node_dir / "trial_meta.json"
+        trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
+        qc_log_ref = (
+            "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
+            "shallow-water2d_20260415_001/source/src_20260415_001/src/"
+            "command_log.jsonl"
+        )
+        trial_meta["source_command_ref"]["run_quality_checks"] = {
+            "command_id": "cmd_quality_001",
+            "tool_name": "run_quality_checks",
+            "command_log_ref": qc_log_ref,
+        }
+        trial_meta["source_source_id"] = "src_20260415_001"
+        _write_json(trial_meta_path, trial_meta)
+
+        qc_log_path = repo_root / qc_log_ref
+        with qc_log_path.open("a", encoding="utf-8") as handle:
+            handle.write(
+                json.dumps(
+                    {
+                        "command_id": "cmd_quality_001",
+                        "tool_name": "run_quality_checks",
+                        "cwd": str(src_dir),
+                        "command": command,
+                        "ok": True,
+                    },
+                    ensure_ascii=False,
+                )
+                + "\n"
+            )
+
+        return validate(repo_root=repo_root, workspace_root="workspace")
+
+    def test_rejects_a_make_quality_check_naming_no_preset_target(self) -> None:
+        """Which preset a recorded argv ran is the build system's question
+        (`build_execute.quality_check_preset`, issue #424 PR-2): `make all` names neither preset
+        target and is refused, `make test` / `make -j4 check` are read as their presets."""
+        for command, refused in ((["make", "all"], True), (["make"], True),
+                                 (["make", "tests"], True), (["/usr/bin/make", "-j4", "check"], False),
+                                 (["make", "test"], False)):
+            with self.subTest(command=command), tempfile.TemporaryDirectory() as tmp:
+                violations = self._quality_check_violations(command, tmp)
+                hit = [v for v in violations if "must use make_test/make_check" in v]
+                self.assertEqual(bool(hit), refused, violations)
+
+    def test_a_build_system_without_build_execute_cannot_vouch_for_a_quality_check(self) -> None:
+        """A build system whose package does not carry `build_execute` has nobody to say which
+        preset a record ran, so the record is refused with the registry's reason — not read by
+        another build system's rule (issue #424 PR-2)."""
+        from unittest import mock
+        make = backend_registry.get("build_system", "make")
+        inlined = make._replace(core_provides=frozenset({"build_execute"}),
+                                backend_provides=make.backend_provides - {"build_execute"})
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+                backend_registry._BACKENDS, {("build_system", "make"): inlined}):
+            violations = self._quality_check_violations(["make", "test"], tmp)
+        hit = [v for v in violations if "cannot be judged for toolchain.build_system=make" in v]
+        self.assertEqual(len(hit), 1, violations)
+        self.assertIn("still carried by the neutral core", hit[0])
+
     def test_rejects_pytest_quality_check_for_fortran_make_pipeline(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -27844,6 +27953,73 @@ class DeviceKernelExecutionGateTests(unittest.TestCase):
                                 capture_output=True, text=True, check=True)
         self.assertIn(f"  {vps.DEVICE_KERNELS_ABSENT_EXIT_CODE}  the traced run executed none",
                       helped.stdout)
+
+
+class SourceFingerprintTests(unittest.TestCase):
+    """`_source_fingerprint` — the digest the copy-based-reuse check compares across nodes.
+
+    The first direct rows (issue #424 PR-2, when the files it skips became the target's: the
+    build system's `BUILD_ARTIFACT_SUFFIXES` and the language's `MODULE_ARTIFACT_SUFFIX`)."""
+
+    _NK = "problem__fp__0.1.0"
+
+    def _fingerprint(self, repo: Path, pipeline_id: str, files: dict[str, str],
+                     target_id: str = _TARGET_ID) -> str | None:
+        pipeline_dir = repo / "workspace" / "pipelines" / self._NK / target_id / pipeline_id
+        src = pipeline_dir / "source" / "src_1" / "src"
+        for rel, text in files.items():
+            (src / rel).parent.mkdir(parents=True, exist_ok=True)
+            (src / rel).write_text(text, encoding="utf-8")
+        execution = vps.NodeExecution(node_key="problem/fp@0.1.0", node_dir=pipeline_dir,
+                                      exec_dir=pipeline_dir, pipeline_dir=pipeline_dir)
+        fp = vps._source_fingerprint(repo, execution)
+        return None if fp is None else fp.digest
+
+    def test_build_artifacts_do_not_move_the_digest_and_sources_do(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            install_target_profile(repo)
+            base = {"fp_model.f90": "module fp_model\nend module fp_model\n"}
+            plain = self._fingerprint(repo, "p1", base)
+            with_artifacts = self._fingerprint(repo, "p2", {
+                **base, "fp_model.o": "obj", "fp_model.mod": "mod", "libx.a": "a",
+                "libx.so": "so", "FP_MODEL.O": "upper"})
+            other_source = self._fingerprint(repo, "p3", {
+                "fp_model.f90": "module fp_model\n! changed\nend module fp_model\n"})
+            self.assertIsNotNone(plain)
+            self.assertEqual(plain, with_artifacts)
+            self.assertNotEqual(plain, other_source)
+            # A file the target names no artifact suffix for is a source: hashed.
+            self.assertNotEqual(plain, self._fingerprint(repo, "p4", {**base, "x.obj": "o"}))
+            # The skip set is the TARGET's, read when the digest is taken: a backend that no
+            # longer names `.o` makes an object file part of the source tree.
+            from unittest import mock
+
+            from tools.backends.build_system.make import execute
+            with mock.patch.object(execute, "BUILD_ARTIFACT_SUFFIXES", (".a", ".so")):
+                self.assertNotEqual(plain, self._fingerprint(
+                    repo, "p5", {**base, "fp_model.o": "obj"}))
+
+    def test_the_skipped_suffixes_are_the_targets(self) -> None:
+        """Read off the backends, so moving a backend's value moves the skip set — and a
+        pipeline whose target does not load skips nothing (its trees can only differ more)."""
+        from unittest import mock
+
+        from tools.backends.build_system.make import execute
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            install_target_profile(repo)
+            self.assertEqual(vps._build_artifact_suffixes(
+                repo, repo / "workspace" / "pipelines" / self._NK / _TARGET_ID / "p1"),
+                frozenset({".o", ".a", ".so", ".mod"}))
+            with mock.patch.object(execute, "BUILD_ARTIFACT_SUFFIXES", (".zz",)):
+                self.assertEqual(vps._build_artifact_suffixes(
+                    repo, repo / "workspace" / "pipelines" / self._NK / _TARGET_ID / "p1"),
+                    frozenset({".zz", ".mod"}))
+            self.assertEqual(vps._build_artifact_suffixes(
+                repo, repo / "workspace" / "pipelines" / self._NK / "zz_no_target" / "p1"),
+                frozenset())
+
 
 if __name__ == "__main__":
     unittest.main()

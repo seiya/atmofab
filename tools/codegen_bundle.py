@@ -920,25 +920,12 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
             violations.append(
                 f"files[{index}].member_node_key {member!r} is not a member of optimization_unit")
 
-    # The build graph keys objects on the derived object name, so two files deriving the
-    # same object (`a/b.<ext>` and `a__b.<ext>` both flatten to `a__b.o`) would silently
-    # compile to one object and drop the other from the link. Compared case-folded, for the
-    # same reason logical_path is: on a case-insensitive filesystem `A__B.o` and `a__b.o`
-    # are one file.
-    seen_objects: dict[str, str] = {}
-    for index, entry in enumerate(files):
-        path = entry.get("logical_path")
-        if not isinstance(path, str) or not path:
-            continue
-        obj = _object_name(path).casefold()
-        # A path already reported as a case-folded duplicate is ONE defect: do not also
-        # report the object name it necessarily shares.
-        if obj in seen_objects and seen_objects[obj].casefold() != path.casefold():
-            violations.append(
-                f"files[{index}].logical_path {path!r} derives the same object name as "
-                f"{seen_objects[obj]!r}")
-        else:
-            seen_objects.setdefault(obj, path)
+    # Two files deriving the same OBJECT name (`a/b.<ext>` and `a__b.<ext>` both flatten to
+    # `a__b.o` under make) are not refused here: the object name is the target build
+    # system's, which this toolchain-free validator does not know, and `derive_build_graph`
+    # refuses the collision over all three origins at assembly, in the same acceptance
+    # (`pure_bundle_contract_violation`, category `bundle_assembly_collision`; issue #424 PR-2
+    # deleted the in-bundle copy of that check that stood here).
 
     files_by_path = {
         entry.get("logical_path"): entry for entry in files
@@ -1423,12 +1410,16 @@ def unsatisfied_capability_requirements(
 # Deterministic build-graph derivation
 # --------------------------------------------------------------------------------------
 
-def _object_name(logical_path: str) -> str:
-    """The object basename for a bundle/glue source. A flat `<name>.<ext>` yields
-    `<name>.o` (parity with the current Makefile); a nested path is flattened with `__`
-    so two files with the same basename in different directories cannot collide."""
-    stem, _ = posixpath.splitext(logical_path)
-    return stem.replace("/", "__") + ".o"
+def _object_name_rule(build_system: str | None) -> Callable[[str], str]:
+    """The object a source compiles to under the target build system — its `control_file`
+    backend's `object_name` (issue #424 PR-2; `_object_name` here until then). A build system
+    with no control-file backend is refused with the registry's reason: the graph keys every
+    object on this name, and another build system's rule would key it wrongly."""
+    value = str(build_system or "")
+    reason = backend_registry.missing_capability_reason("build_system", value, "control_file")
+    if reason is not None:
+        raise RuntimeError(f"no object-name rule for build_system {build_system!r}: {reason}")
+    return backend_registry.capability_module("build_system", value, "control_file").object_name
 
 
 def _spec_id_of_node_key(node_key: str) -> str:
@@ -1529,10 +1520,11 @@ def derive_build_graph(doc: Mapping[str, Any], *,
     Determinism: permuting `files[]` does not change the result — `json.dumps(graph,
     sort_keys=True)` is byte-identical.
 
-    Raises `RuntimeError` when two sources of any origin derive the same object name. The
-    within-bundle case is already a `validate_bundle` clause; the cross-origin case is a
-    defect in the HOST's assembly inputs (the closure, the glue), which no bundle validator
-    can see, so assembly is where it fails closed.
+    Raises `RuntimeError` when two sources of any origin derive the same object name — two
+    bundle files included: the object name is the target build system's, which the
+    toolchain-free `validate_bundle` does not know, so this is the only place the collision is
+    refused (issue #424 PR-2 deleted the bundle-level copy). The cross-origin case is a defect
+    in the HOST's assembly inputs (the closure, the glue), which no bundle validator can see.
     """
     members = optimization_unit_members(doc)
     files = [entry for entry in (doc.get("files") or []) if isinstance(entry, dict)]
@@ -1580,8 +1572,9 @@ def derive_build_graph(doc: Mapping[str, Any], *,
     # language names it (one run is one target, so the closure shares the node's language).
     # Resolved only when there is a dependency to stage, so a closure-free graph asks nothing.
     facts = language_facts(toolchain.get("language")) if staged else None
+    object_name = _object_name_rule(toolchain.get("build_system"))
     sources: list[str] = [f"staged:{facts.model_basename(spec_id)}" for spec_id in staged]
-    objects: list[str] = [f"{spec_id}_model.o" for spec_id in staged]
+    objects: list[str] = [object_name(facts.model_basename(spec_id)) for spec_id in staged]
 
     # Role precedence is the DEFAULT order; explicit compile_after edges refine it so a file
     # compiles after any bundle file it `use`s (role precedence alone cannot order two files
@@ -1598,16 +1591,16 @@ def derive_build_graph(doc: Mapping[str, Any], *,
 
     for path in ordered_paths:
         sources.append(f"bundle:{path}")
-        objects.append(_object_name(path))
+        objects.append(object_name(path))
 
     for glue in host_glue_sources:
         sources.append(f"glue:{glue}")
-        objects.append(_object_name(glue))
+        objects.append(object_name(glue))
 
-    # Fail closed on a collision the bundle validator cannot see: a bundle file whose
-    # object name equals a staged dependency's or the host-rendered glue's. `validate_bundle`
-    # checks uniqueness WITHIN the bundle, but the closure and the glue are host inputs, so
-    # only assembly can compare the three origins. A bundle file at the runner's path would
+    # Fail closed on any object-name collision, over all three origins: two bundle files, or
+    # a bundle file whose object name equals a staged dependency's or the host-rendered glue's.
+    # The closure and the glue are host inputs, and the object name is the build system's, so
+    # only assembly can compare them. A bundle file at the runner's path would
     # otherwise overwrite the host-rendered glue object — exactly the contract-boundary
     # capture that the M3c shape's refusal of a `runner`-role file exists to deny. Since
     # v1.1.0 a bundle CAN carry a runner, but only on a node the host renders no glue for
