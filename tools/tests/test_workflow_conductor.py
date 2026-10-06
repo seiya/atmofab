@@ -16543,8 +16543,8 @@ class DeterministicBuildTest(unittest.TestCase):
 
     def test_build_inproc_attributes_a_cuda_failure_to_the_cu_source(self) -> None:
         """Through `_build_inproc` on a `cuda_cpp` toolchain: a failed compile naming
-        `p_model.cu` records `src/p_model.cu`, i.e. the call site hands the helper the node
-        language's suffixes rather than a literal list (issue #424)."""
+        `p_model.cu` and `p_model.cuh` records both, i.e. the call site hands the helper the
+        node language's whole staged suffix set rather than a literal list (issue #424)."""
         import tempfile
         from unittest import mock
         build_runtime_server = _server()
@@ -16562,7 +16562,8 @@ class DeterministicBuildTest(unittest.TestCase):
 
             def fake_compile(args):
                 return {"ok": False, "return_code": 2, "command_id": "cid",
-                        "stderr": "src/p_model.cu(12): error: identifier \"q\" is undefined"}
+                        "stderr": "src/p_model.cu(12): error: identifier \"q\" is undefined\n"
+                                  "src/p_model.cuh(4): error: expected a \";\""}
 
             with mock.patch.object(build_runtime_server, "tool_compile_project", fake_compile), \
                     mock.patch.object(c, "_read_toolchain",
@@ -16572,8 +16573,11 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(out["returncode"], 0)
             meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
             self.assertEqual(meta["verification_status"], "fail")
+            # Both staged suffixes, the header's included: the call site hands the helper the
+            # whole `STAGED_SUFFIXES`, not the translation-unit subset.
             self.assertEqual(meta["failure_source_refs"],
-                             [f"{refs.source_dir()}/src/p_model.cu"])
+                             [f"{refs.source_dir()}/src/p_model.cu",
+                              f"{refs.source_dir()}/src/p_model.cuh"])
 
     def test_build_inproc_payload_survives_the_real_mcp_validators(self) -> None:
         """The conductor's own compile payload must pass the server's orchestrated
