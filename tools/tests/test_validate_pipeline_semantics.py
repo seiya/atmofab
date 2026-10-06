@@ -14083,6 +14083,54 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
                 any("run_linter entries" in v and "requires" in v for v in violations),
                 violations)
 
+    def test_validate_generate_lint_a_second_composite_takes_the_composite_branch(self) -> None:
+        """A composite declared in `registry.COMPOSITE_LINTERS` other than `mixed` is a
+        composite to this gate too (issue #424): its language's evidence carries one entry per
+        member and is checked against those members. Keying the branch on the literal `"mixed"`
+        again sends this evidence to the simple branch, which demands exactly one entry, and
+        turns this row red."""
+        from tools.backends import registry
+        record = registry.Backend("linter", "zz_comp", None, core_provides=frozenset({"lint"}))
+        with unittest.mock.patch.dict(registry._BACKENDS, {("linter", "zz_comp"): record}), \
+                unittest.mock.patch.dict(registry.COMPOSITE_LINTERS,
+                                         {"zz_comp": ("cppcheck", "ruff")}), \
+                tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            meta_path = self._lint_evidence_fixture(repo_root, {
+                "checked_at": "t", "source_id": "src_x", "preset": "zz_comp", "ok": True,
+                "run_linter": [
+                    {"preset": "cppcheck", "command_id": "a",
+                     "command_log_ref": "workspace/x/command_log.jsonl"},
+                    {"preset": "ruff", "command_id": "b",
+                     "command_log_ref": "workspace/x/command_log.jsonl"},
+                ],
+            })
+            violations: list[str] = []
+            _validate_generate_lint_command_logs(
+                repo_root, meta_path, {"verification_status": "pass"}, "zz_comp", violations)
+            self.assertFalse(
+                any("exactly one entry" in v or "requires" in v for v in violations),
+                violations)
+        # ... and evidence missing a member is refused against the declared members.
+        with unittest.mock.patch.dict(registry._BACKENDS, {("linter", "zz_comp"): record}), \
+                unittest.mock.patch.dict(registry.COMPOSITE_LINTERS,
+                                         {"zz_comp": ("cppcheck", "ruff")}), \
+                tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            meta_path = self._lint_evidence_fixture(repo_root, {
+                "checked_at": "t", "source_id": "src_x", "preset": "zz_comp", "ok": True,
+                "run_linter": [
+                    {"preset": "cppcheck", "command_id": "a",
+                     "command_log_ref": "workspace/x/command_log.jsonl"},
+                ],
+            })
+            violations = []
+            _validate_generate_lint_command_logs(
+                repo_root, meta_path, {"verification_status": "pass"}, "zz_comp", violations)
+            self.assertTrue(
+                any("requires exactly 2 run_linter entries" in v and "(cppcheck, ruff)" in v
+                    for v in violations), violations)
+
     def test_validate_generate_lint_refuses_a_composite_named_as_one_entry(self) -> None:
         """An evidence entry may not name a composite as its preset: a composite has no
         invocation of its own, so its sub-runs are recorded one entry each. The refusal reads
