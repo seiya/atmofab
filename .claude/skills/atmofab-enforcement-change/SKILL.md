@@ -737,7 +737,13 @@ that could not converge in principle).
   (`references/judgment-episodes.md` §"a whole-function mock hid a missing argument" carries it).
   And **assert the value, not just the presence**: a row checking the new argument equals the
   DEFAULT value is killed by nothing that hardcodes the default — run it under a non-default
-  value (the same PR's rounds 1 and 2 found six rows that could not tell a hardcoded default from the real value)
+  value (the same PR's rounds 1 and 2 found six rows that could not tell a hardcoded default from the real value).
+  **The same holds when the change makes an INPUT required rather than adding a parameter, and
+  (b) then covers TEST callers behind a host skip too**: a row skipped for a missing tool is a
+  caller the green suite never ran. Issue #424 PR-2 made `derive_build_graph` refuse a toolchain
+  naming no build system, rewrote the 39 call sites in `test_codegen_bundle.py` the suite ran,
+  and left the one CUDA build-through row that skips without the compiler driver — red with the
+  driver on PATH, found in round 2 by Codex and the security reviewer independently. Enumerate call sites with `git grep`, not with the suite
 - **Do not call a sample a pin.** A test placed **outside** the place that defines the set cannot
   claim set identity — it can only sample rejections. **Write in the docstring what is pinned and
   what is sampled**, and if the predicate has several branches (`==` / `startswith` / trailing
