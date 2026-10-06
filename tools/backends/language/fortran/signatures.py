@@ -672,6 +672,12 @@ def _entity_differences(want: Entity, have: Entity) -> list[str]:
 # A normalised (lower-case, whitespace-free) `use` statement with an `only:` list: the module and
 # the list. A plain and an intrinsic-module import are both imports, with or without `::`.
 _USE_ONLY_RE = re.compile(r"use(?:,(?:non_)?intrinsic)?(?:::)?([a-z_][a-z0-9_]*),only:(.*)")
+# How a normalised type declaration opens: an intrinsic type keyword (a kind selector or `*n` may
+# follow) or a derived / polymorphic / procedure type-spec. Anything else opening a declaration
+# statement is an attribute.
+_TYPE_DECLARATION_START_RE = re.compile(
+    r"(?:integer|real|logical|complex|character|doubleprecision|doublecomplex)(?![a-z0-9_])"
+    r"|(?:type|class|procedure)\(")
 _DERIVED_TYPE_SPEC_RE = re.compile(r"(?:type|class)\(([a-z_][a-z0-9_]*)\)")
 
 
@@ -737,9 +743,10 @@ def surface_drift(
                        f"{have_merged.twice[name]} by two statements")
         elif have is None:
             out.append(
-                f"the pinned interface line `{line}`: `{name}` is not declared in the "
-                "procedure's own specification part (a declaration inside a `block`, an "
-                "interface body or a contained procedure does not declare it)")
+                f"the pinned interface line `{line}`: `{name}` is not declared by a type "
+                "declaration or attribute statement of the procedure's own specification part "
+                "(one inside a `block` or a contained procedure is not the procedure's) — "
+                "declare it exactly as the pinned line does")
         else:
             diffs = _entity_differences(want, have)
             if diffs:
@@ -1320,8 +1327,13 @@ def generated_source_violations(
         return
 
     def _prototype_declarations(lines: list[str]) -> list[tuple[str, str]]:
-        # A splitter line is a logical line, not a statement: split on `;` as the view does.
-        return [("variable_declaration", statement)
+        # A splitter line is a logical line, not a statement: split on `;` as the view does. The
+        # splitter carries no node types, so each statement is classified by how it opens — a
+        # type-spec keyword makes it a type declaration, anything else an attribute statement —
+        # or `optional :: x` in a prototype would read as a second TYPE for `x` (round 1).
+        return [(("variable_declaration"
+                  if _TYPE_DECLARATION_START_RE.match(fortran_lines.normalize_fortran_line(statement))
+                  else "variable_modification"), statement)
                 for line in lines[1:]
                 for statement in fortran_lines.split_fortran_statements(line)
                 if statement.strip()]

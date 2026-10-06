@@ -27899,6 +27899,25 @@ class ProcedureTypedSurfaceGateTests(unittest.TestCase):
         self.assertNotEqual(joined, self._MODEL)
         self.assertEqual(self._generate(joined), [])
 
+    def test_an_attribute_statement_in_a_prototype_is_read_as_an_attribute(self) -> None:
+        # Round 1: the splitter carries no node types, and every prototype statement was read as
+        # a type declaration — so `optional :: dudt` was reported as a second TYPE, and the
+        # ABI-identical two-statement form was refused the same way. Both now read as what they
+        # are: the extra attribute is named, the two-statement form passes.
+        optional = self._MODEL.replace(
+            "      real(dp), intent(out) :: dudt(:)\n",
+            "      real(dp), intent(out) :: dudt(:)\n      optional :: dudt\n", 1)
+        self.assertNotEqual(optional, self._MODEL)
+        v = self._generate(optional)
+        self.assertTrue(any("prototype 'hx_rhs_1d' drifts" in x and "it carries `optional`" in x
+                            for x in v), v)
+        self.assertFalse(any("given a type by two statements" in x for x in v), v)
+        split = self._MODEL.replace(
+            "      real(dp), intent(in) :: u(:)\n",
+            "      real(dp) :: u(:)\n      intent(in) :: u\n", 1)
+        self.assertNotEqual(split, self._MODEL)
+        self.assertEqual(self._generate(split), [])
+
     def test_a_pinned_prototype_spelled_twice_in_different_case_is_refused(self) -> None:
         # The splitter keys raw text and this gate keys lowercased names, so a drifted module
         # prototype `HX_RHS_1D` plus a block-local `hx_rhs_1d` carrying the pinned shape would
