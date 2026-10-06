@@ -507,9 +507,8 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
             backend_provides=frozenset({"lint", "lint_rules"}),
         ),
         # `mixed` stays in the neutral core, and the ground is that it has no invocation of its
-        # own: it is a COMPOSITE, defined by the presets it runs in order
-        # (`_LINT_PRESET_COMPOSITES` in the server), and naming an axis value is what the neutral
-        # core may do. It holds no rule id, no flag, and no executable name. Issue #120's
+        # own: it is a COMPOSITE, defined by the presets it runs in order (`COMPOSITE_LINTERS`
+        # below), and naming an axis value is what the neutral core may do. It holds no rule id, no flag, and no executable name. Issue #120's
         # acceptance was written as "core_provides={'lint'} appears on no linter record"; this
         # row is the exception to that wording, and the wording rather than the row is what was
         # wrong — the rule the migration serves is about knowing, not about naming.
@@ -594,6 +593,22 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
 }
 
 
+#: The linters that run several linters in order, each named by the presets it COMPOSES, in
+#: run order — declared once, here, beside the records (issue #424): the build-runtime server
+#: runs them from this, the post_generate validator expects exactly these sub-runs, and
+#: `linter_for_language` answers a composite's own token from it. A composite token is also the
+#: `language` value it lints: `mixed` names a COMPOSITE, not a language any backend implements,
+#: so no linter's `LANGUAGES` can carry it. Naming axis values is what the neutral core may do
+#: (`docs/BACKEND_BOUNDARY.md` §Design Policy); no member's argv or rule is spelled here.
+COMPOSITE_LINTERS: dict[str, tuple[str, ...]] = {"mixed": ("fortitude", "cppcheck")}
+
+
+def composite_linter_members(preset: str) -> tuple[str, ...] | None:
+    """The linters composite `preset` runs, in order, or `None` when `preset` is not a
+    composite (a simple linter, or no linter at all)."""
+    return COMPOSITE_LINTERS.get(str(preset or "").strip().lower())
+
+
 def _check_declarations() -> None:
     """Fail at import on a declaration this module's own vocabulary does not admit.
 
@@ -643,6 +658,26 @@ def _check_declarations() -> None:
                 f"{sorted(backend.backend_provides)} but has no backend package (module=None); "
                 f"a capability implemented in the neutral core belongs in core_provides"
             )
+    # A composite runs its members' own invocations, so each member must be a registered linter
+    # whose package carries `lint`; a member without one would be refused by `capability_module`
+    # mid-run, after the earlier members had executed. A composite that is itself an extracted
+    # linter would answer two invocations under one name. A composite with no record would be
+    # a preset no gate accepts (`unimplemented_reason`), and its record says the neutral core
+    # implements it — which is only true because it has no invocation of its own.
+    for composite, members in COMPOSITE_LINTERS.items():
+        record = _BACKENDS.get(("linter", composite))
+        if record is None or "lint" not in record.core_provides:
+            raise UnsupportedBackend(
+                f"composite linter '{composite}' needs a linter record carrying 'lint' in "
+                f"core_provides; it has no invocation of its own")
+        if not members:
+            raise UnsupportedBackend(f"composite linter '{composite}' composes no linter")
+        for member in members:
+            member_record = _BACKENDS.get(("linter", member))
+            if member_record is None or "lint" not in member_record.backend_provides:
+                raise UnsupportedBackend(
+                    f"composite linter '{composite}' composes '{member}', which is not a linter "
+                    f"whose package declares 'lint' (backend_provides)")
 
 
 _check_declarations()
@@ -743,11 +778,6 @@ def implemented_backend_ids(axis: str) -> tuple[str, ...]:
     return tuple(bid for bid in backend_ids(axis) if _BACKENDS[(axis, bid)].implemented)
 
 
-#: The one language token whose linter is not declared by a linter backend: `mixed` names a
-#: COMPOSITE (the `mixed` linter record runs several linters in order), not a language any
-#: backend implements, so no linter's `LANGUAGES` can carry it. Naming the pair here is naming
-#: two axis values, which is what the neutral core may do.
-_COMPOSITE_LINTER_FOR_LANGUAGE: dict[str, str] = {"mixed": "mixed"}
 
 
 def linter_for_language(language: str) -> str | None:
@@ -762,8 +792,8 @@ def linter_for_language(language: str) -> str | None:
     Loads the linter packages it asks — the reason this is a function rather than a table built
     at import (this module imports no backend package at import time)."""
     normalized = str(language or "").strip().lower()
-    if normalized in _COMPOSITE_LINTER_FOR_LANGUAGE:
-        return _COMPOSITE_LINTER_FOR_LANGUAGE[normalized]
+    if normalized in COMPOSITE_LINTERS:
+        return normalized
     matches = [
         bid for bid in backend_ids("linter")
         if "lint" in _BACKENDS[("linter", bid)].backend_provides

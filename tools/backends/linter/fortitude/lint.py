@@ -228,6 +228,14 @@ CHECK_FLAGS: tuple[str, ...] = (
     "--select", ",".join(RULE_CODES),
 )
 
+#: The column limit `S001` (`line-too-long`) enforces under `CHECK_FLAGS`: the tool's default,
+#: which `--isolated` keeps by refusing every configuration file that could move it. A line a
+#: host renders must stay strictly UNDER it, because `S001` compares with `>=` on 0.8.x and with
+#: `>` on 0.9.x (`docs/backends/linter/fortitude/RULES.md`), so a line of exactly this width fails
+#: on the floor build and passes on the ceiling ones. Read by the Fortran runner renderer through
+#: the registry (issue #424) — the renderer used to restate it as a literal of its own.
+LINE_LENGTH_LIMIT = 100
+
 #: The versions `RULE_CODES` was measured to resolve identically on. Inclusive floor, exclusive
 #: ceiling, compared as tuples of integers.
 #:

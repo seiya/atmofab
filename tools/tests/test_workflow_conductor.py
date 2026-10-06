@@ -19379,6 +19379,40 @@ class DeterministicLintTest(unittest.TestCase):
             self.assertEqual(ev["preset"], "mixed")
             self.assertEqual({e["preset"] for e in ev["run_linter"]}, {"fortitude", "cppcheck"})
 
+    def test_gate_lint_check_composite_is_the_registry_s_declaration(self) -> None:
+        """Whether a preset is a composite is `registry.COMPOSITE_LINTERS`' answer (issue #424),
+        not the literal `"mixed"`: a second composite declared there (with its core `lint`
+        record) has its sub-runs recorded one entry each. Restoring `preset == "mixed"` in
+        `_gate_lint_check` records the composite as one simple entry and turns this row red."""
+        import tempfile
+        from tools.backends import registry
+        from tools.hooks.lint_evidence import read_lint_evidence
+        record = registry.Backend("linter", "zz_comp", None, core_provides=frozenset({"lint"}))
+        with tempfile.TemporaryDirectory() as td, \
+                mock.patch.dict(registry._BACKENDS, {("linter", "zz_comp"): record}), \
+                mock.patch.dict(registry.COMPOSITE_LINTERS,
+                                {"zz_comp": ("cppcheck", "fortitude")}):
+            repo = Path(td)
+            refs = self._refs()
+            self._seed(repo, refs, language="zz_comp")
+            c = self._conductor(repo)
+            composite = {
+                "ok": True, "preset": "zz_comp",
+                "runs": [
+                    {"sub_preset": "cppcheck", "ok": True, "command_id": "c1",
+                     "return_code": 0},
+                    {"sub_preset": "fortitude", "ok": True, "command_id": "f1",
+                     "return_code": 0},
+                ],
+            }
+            with self._patch_linter(lambda args: composite):
+                c._gate_lint_check(refs, "child-1")
+            ev = read_lint_evidence(pipeline_root=repo / refs.pipeline_ref, source_id="src_1")
+            assert ev is not None
+            self.assertEqual(ev["preset"], "zz_comp")
+            self.assertEqual([e["preset"] for e in ev["run_linter"]], ["cppcheck", "fortitude"])
+            self.assertEqual([e["command_id"] for e in ev["run_linter"]], ["c1", "f1"])
+
     def test_gate_lint_check_unknown_language_raises(self) -> None:
         import tempfile
         with tempfile.TemporaryDirectory() as td:

@@ -54,11 +54,12 @@ def runner_output_document() -> str:
 #: The gate rule a certified exemplar most often predates, and how to satisfy it, appended to the
 #: neutral exemplar block's "where the exemplar and a contract disagree, the contract wins"
 #: (`orchestration_runtime._build_exemplar`). It names this language's compiler warning classes
-#: and its binding idiom, so it is this backend's (issue #289, R4-b PR-4; byte-identical to the
-#: text it replaces).
+#: and its binding idiom, so it is this backend's (issue #289, R4-b PR-4). It states the gate and
+#: the idiom itself and cites no document (issue #424): a pure leaf reads nothing from disk, so a
+#: path it is pointed at is a path it cannot follow. It is a member of the pure prompt contract
+#: digest (`tools/tests/test_pure_prompt_contract_drift.py`).
 EXEMPLAR_GATE_DRIFT_NOTE = (
     "In particular, an exemplar certified before the `Generate.gate` gate promoted its "
     "current `-Werror` classes can show an ABI-fixed dummy "
     "(`name` / `case_id`) left unreferenced — that shape now fails the gate; bind it with "
-    "`associate (unused_<name> => <name>); end associate` per §5 of the target "
-    "language's checks-ABI binding (`docs/backends/language/<language>/CHECKS_ABI.md`).")
+    "`associate (unused_<name> => <name>); end associate`.")

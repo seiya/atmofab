@@ -22,8 +22,9 @@ statement of that set for a reader; the machine-readable definition is
   the longest that passes), so a conforming source is unaffected; what the divergence reaches is
   a non-conforming one, and — until PR #256 — the host-rendered runner, whose own guard
   permitted exactly 100 (`tools/backends/language/fortran/runner.py` has rejected
-  `>= MAX_RENDERED_LINE` since then, so a rendered line of exactly 100 columns is refused at
-  render). An earlier version of this section claimed verdict identity across the range
+  `>= max_rendered_line()` since then — the limit is this linter's `LINE_LENGTH_LIMIT`, read
+  through the registry since issue #424 — so a rendered line of exactly 100 columns is refused
+  at render). An earlier version of this section claimed verdict identity across the range
   without qualification; two other documents cited THIS one as recording the divergence while it
   did not, which is the drift that made the exception invisible to a reader.
 - A rule the vendor enables by default in a future release does not enter a certification gate by

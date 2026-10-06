@@ -241,9 +241,10 @@ together with the bundle's `target_lowering_plan.parallelization`.
   - The `static lint` step reaches a registered linter's argv through `capability_module` only
     where that record declares `lint` in `backend_provides`. Every linter that HAS an argv does
     (issues #111 and #120), so no linter invocation is spelled in
-    `mcp_servers/build_runtime_server.py` any more. Registering another linter still widens the
-    evidence gate (which asks the registry) and not the server, which keeps its own accepted set
-    of preset NAMES. A linter's backend also says whether it walks the lint directory or is
+    `mcp_servers/build_runtime_server.py` any more. The preset NAMES are the registry's too since
+    issue #424: the server serves every linter record carrying `lint` in `backend_provides`, and
+    the composites in `registry.COMPOSITE_LINTERS`, so registering another linter widens the
+    server and the evidence gate together, with no server edit. A linter's backend also says whether it walks the lint directory or is
     handed its files by name (`SOURCE_SUFFIXES`, issue #289, R4-b PR-4), so the server lists no
     suffix of its own either. The criterion that forced each move is worth stating: the argv carries the
     RULE SET the gate applies, or the compiler-family arguments it applies it under, and both are
