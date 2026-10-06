@@ -20244,6 +20244,9 @@ class DeclaredCharacteristicsGateTests(unittest.TestCase):
         p = cls._PINNED
         return {
             "B1 optional statement": (cls._writer(p + "    optional :: n\n"), "`n`"),
+            # The attribute statement BEFORE the type declaration: the merge must union, whichever
+            # statement comes first (round 1: `attrs=new.attrs` survived with only the row above).
+            "B1r optional statement first": (cls._writer("    optional :: n\n" + p), "`n`"),
             "B2 value statement": (cls._writer(p + "    value :: n\n"), "`n`"),
             "B3 dimension statement": (cls._writer(
                 p.replace("integer,           intent(in) :: n\n", "integer, intent(in) :: n\n")
