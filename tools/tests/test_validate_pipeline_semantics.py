@@ -14083,6 +14083,39 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
                 any("run_linter entries" in v and "requires" in v for v in violations),
                 violations)
 
+    def test_validate_generate_lint_refuses_a_composite_named_as_one_entry(self) -> None:
+        """An evidence entry may not name a composite as its preset: a composite has no
+        invocation of its own, so its sub-runs are recorded one entry each. The refusal reads
+        `registry.COMPOSITE_LINTERS` (issue #424) and names the declared members; a second
+        composite declared there is refused the same way."""
+        from tools.backends import registry
+        record = registry.Backend("linter", "zz_comp", None, core_provides=frozenset({"lint"}))
+        with unittest.mock.patch.dict(registry._BACKENDS, {("linter", "zz_comp"): record}), \
+                unittest.mock.patch.dict(registry.COMPOSITE_LINTERS,
+                                         {"zz_comp": ("cppcheck", "ruff")}):
+            for composite, members in (("mixed", "fortitude and cppcheck"),
+                                       ("zz_comp", "cppcheck and ruff")):
+                with self.subTest(composite=composite), \
+                        tempfile.TemporaryDirectory() as tmp:
+                    repo_root = Path(tmp)
+                    meta_path = self._lint_evidence_fixture(repo_root, {
+                        "checked_at": "t", "source_id": "src_x", "preset": "mixed",
+                        "ok": True,
+                        "run_linter": [
+                            {"preset": composite, "command_id": "a",
+                             "command_log_ref": "workspace/x/command_log.jsonl"},
+                            {"preset": "cppcheck", "command_id": "b",
+                             "command_log_ref": "workspace/x/command_log.jsonl"},
+                        ],
+                    })
+                    violations: list[str] = []
+                    _validate_generate_lint_command_logs(
+                        repo_root, meta_path, {"verification_status": "pass"}, "mixed",
+                        violations)
+                    self.assertTrue(
+                        any(f"run_linter[0].preset must not be {composite!r}; record separate "
+                            f"{members} entries" in v for v in violations), violations)
+
     def test_validate_generate_lint_certifies_at_static_without_pass(self) -> None:
         # New flow: post_generate runs in generate.gate (its static check) BEFORE verify sets
         # verification_status=pass. The cert must still run (and catch a bad evidence)
