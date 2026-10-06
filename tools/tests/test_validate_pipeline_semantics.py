@@ -27954,9 +27954,6 @@ class DeviceKernelExecutionGateTests(unittest.TestCase):
         self.assertIn(f"  {vps.DEVICE_KERNELS_ABSENT_EXIT_CODE}  the traced run executed none",
                       helped.stdout)
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class SourceFingerprintTests(unittest.TestCase):
     """`_source_fingerprint` — the digest the copy-based-reuse check compares across nodes.
@@ -27994,6 +27991,14 @@ class SourceFingerprintTests(unittest.TestCase):
             self.assertNotEqual(plain, other_source)
             # A file the target names no artifact suffix for is a source: hashed.
             self.assertNotEqual(plain, self._fingerprint(repo, "p4", {**base, "x.obj": "o"}))
+            # The skip set is the TARGET's, read when the digest is taken: a backend that no
+            # longer names `.o` makes an object file part of the source tree.
+            from unittest import mock
+
+            from tools.backends.build_system.make import execute
+            with mock.patch.object(execute, "BUILD_ARTIFACT_SUFFIXES", (".a", ".so")):
+                self.assertNotEqual(plain, self._fingerprint(
+                    repo, "p5", {**base, "fp_model.o": "obj"}))
 
     def test_the_skipped_suffixes_are_the_targets(self) -> None:
         """Read off the backends, so moving a backend's value moves the skip set — and a
@@ -28014,3 +28019,7 @@ class SourceFingerprintTests(unittest.TestCase):
             self.assertEqual(vps._build_artifact_suffixes(
                 repo, repo / "workspace" / "pipelines" / self._NK / "zz_no_target" / "p1"),
                 frozenset())
+
+
+if __name__ == "__main__":
+    unittest.main()

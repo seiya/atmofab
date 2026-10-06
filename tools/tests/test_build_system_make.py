@@ -65,6 +65,10 @@ class BuildExecuteDeclarationTests(unittest.TestCase):
             ("make", "tests"): None,
             ("ctest",): None,
             ("pytest", "-q"): None,
+            # Another executable carrying a preset's target token is not that preset.
+            ("ninja", "test"): None,
+            ("ctest", "test"): None,
+            ("gmake", "check"): None,
             ("bash", "-c", "make test"): None,
             ("test", "make"): None,
             (): None,
