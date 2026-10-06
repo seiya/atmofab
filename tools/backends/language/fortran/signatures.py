@@ -1540,11 +1540,12 @@ def generated_source_violations(
     # The pinned TYPE names go through the same loop (issue #430 B4): a `use` binding a pinned type
     # name — `use aux, only: t_named => t`, in the module or local to one published procedure —
     # makes every dummy declared `type(t_named)` in that scope another type, while the module still
-    # defines the pinned one for the type comparison to find. What is refused for a type is a
-    # binding of its name to ANOTHER entity: a rename (`t_named => other`), or an import from a
-    # module other than the publishing one. Importing the pinned type from the publishing module
-    # under its own name binds the same type, and a helper module in the same file does exactly
-    # that in eight certified harness sources (census, 2026-10-06), so it is not refused. A rename
+    # defines the pinned one for the type comparison to find. What is refused for a type is an
+    # import of its name from a module OTHER than the publishing one, renamed or not. An import
+    # from the publishing module can only stand in a helper module of the same file (a module
+    # cannot `use` itself), where it changes no published declaration; eight certified harness
+    # sources' helper modules import the pinned types that way (census, 2026-10-06), so it is not
+    # refused. A rename
     # without `only:` (`use m, a => b`) and a bare `use m` are refused by the lint gate (C121,
     # measured) in the same substep, which is why this loop reads `only:` lists alone.
     type_names = sorted(type_stanzas)
@@ -1567,16 +1568,13 @@ def generated_source_violations(
             head, imported = atom.split("only:", 1)
             # `a=>b` binds `a`; a bare `b` binds `b`. Either way the pinned name must not appear on
             # the BINDING side of an import.
-            pairs = [(seg.split("=>")[0].strip(), seg.split("=>")[-1].strip())
-                     for seg in imported.split(",")]
-            bound = [local for local, _used in pairs]
+            bound = [seg.split("=>")[0].strip() for seg in imported.split(",")]
             if name.lower() not in bound:
                 continue
             if is_type:
                 # The module the `use` names: the atom is `use[,<nature>::|::]<module>,only:...`.
                 module = re.sub(r"^use(?:,(?:non_)?intrinsic)?(?:::)?", "", head).rstrip(",")
-                renamed = any(local == name.lower() and used != local for local, used in pairs)
-                if module in publishing_units and not renamed:
+                if module in publishing_units:
                     continue
                 violations.append(
                     f"{target}: generated model source imports the §5.1 derived type name "

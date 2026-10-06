@@ -1991,6 +1991,7 @@ class DeclaredCharacteristicsTests(unittest.TestCase):
         cts = fortran_signatures.canonical_type_spec
         self.assertEqual(cts("character(kind=c_char,len=1)"), "character(kind=c_char,len=1)")
         self.assertEqual(cts("character(kind=k)"), "character(kind=k)")
+        self.assertEqual(cts("character(len=1,kind=c_char)"), "character(len=1,kind=c_char)")
         self.assertEqual(cts("real(kind=selected_real_kind(15,307))"),
                          "real(selected_real_kind(15,307))")
         self.assertNotEqual(cts("character(kind=k)"), cts("character(k)"))
@@ -2005,7 +2006,8 @@ class DeclaredCharacteristicsTests(unittest.TestCase):
                          self._one("type(t), intent(in) :: e(:)"))
         _name, entity = self._one("real, dimension(:) :: a(3)")
         self.assertEqual(entity.dims, ("3",))
-        self.assertEqual(self._one("dimension :: x(:)", has_type_spec=False)[1].dims, (":",))
+        bare = self._one("dimension :: x(:)", has_type_spec=False)[1]
+        self.assertEqual((bare.dims, bare.attrs), ((":",), frozenset()))
         self.assertEqual(self._one("dimension x(1:)", has_type_spec=False)[1].dims, (":",))
 
     def test_attributes_are_a_set_and_each_is_kept(self) -> None:

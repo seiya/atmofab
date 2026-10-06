@@ -20261,6 +20261,10 @@ class DeclaredCharacteristicsGateTests(unittest.TestCase):
                     "module hx_aux\n  implicit none\n  type :: hx__h_named\n    integer :: k\n"
                     "  end type hx__h_named\nend module hx_aux\nmodule hx_model\n", 1),
                 "hx__h_named"),
+            # Not renamed, and from a module this file does not carry — a dependency's, staged
+            # beside the source (gfortran rc=0 with that module compiled first, as staging does).
+            "B4 import of the pinned name from a dependency module": (
+                cls._writer("    use hx_dep_model, only: hx__h_named\n" + p), "hx__h_named"),
             "B5 interface body in the specification part": (cls._writer(
                 "    type(hx__h_named), intent(in) :: entries(:)\n"
                 "    integer, intent(inout) :: n\n"
@@ -27864,6 +27868,33 @@ class ProcedureTypedSurfaceGateTests(unittest.TestCase):
             self.assertTrue(any("prototype 'hx_rhs_1d' drifts" in x
                                 and "it declares `t`, which the pinned prototype does not" in x
                                 for x in v), v)
+
+    def test_a_semicolon_joined_prototype_declaration_is_read_as_its_statements(self) -> None:
+        # Issue #430: a splitter line is a logical line, so a prototype's `;`-joined declarations
+        # are split before they are compared, as the structure view splits a definition's.
+        joined = self._MODEL.replace(
+            "      real(dp), intent(in) :: u(:)\n      real(dp), intent(out) :: dudt(:)\n",
+            "      real(dp), intent(in) :: u(:); real(dp), intent(out) :: dudt(:)\n", 1)
+        self.assertNotEqual(joined, self._MODEL)
+        self.assertEqual(self._generate(joined), [])
+
+    def test_a_pinned_prototype_spelled_twice_in_different_case_is_refused(self) -> None:
+        # The splitter keys raw text and this gate keys lowercased names, so a drifted module
+        # prototype `HX_RHS_1D` plus a block-local `hx_rhs_1d` carrying the pinned shape would
+        # leave the comparison to whichever came last (issue #430).
+        twice = self._MODEL.replace(
+            "    subroutine hx_rhs_1d(u, dudt)\n", "    subroutine HX_RHS_1D(u, dudt)\n", 1).replace(
+            "      real(dp), intent(out) :: dudt(:)\n    end subroutine hx_rhs_1d\n",
+            "      real(dp), intent(inout) :: dudt(:)\n    end subroutine hx_rhs_1d\n", 1).replace(
+            "    call rhs(u, k)\n",
+            "    call rhs(u, k)\n    block\n      interface\n"
+            "        subroutine hx_rhs_1d(u, dudt)\n          import :: dp\n"
+            "          real(dp), intent(in) :: u(:)\n          real(dp), intent(out) :: dudt(:)\n"
+            "        end subroutine hx_rhs_1d\n      end interface\n    end block\n", 1)
+        self.assertEqual(twice.count("HX_RHS_1D"), 1)
+        self.assertIn("block\n      interface", twice)
+        v = self._generate(twice)
+        self.assertTrue(any("more than one interface prototype of 'hx_rhs_1d'" in x for x in v), v)
 
     def test_a_prototype_defined_as_a_procedure_is_refused(self) -> None:
         # The model implements the callback itself instead of declaring its shape: the
