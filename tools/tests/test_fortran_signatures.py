@@ -2154,6 +2154,10 @@ class DeclaredCharacteristicsTests(unittest.TestCase):
             with self.subTest(label):
                 out = drift(pinned, definition=definition, count=count)
                 self.assertTrue(any(cue in sentence for sentence in out), out)
+        # An unreadable component stops the positional comparison: every later position would be
+        # misaligned, so its sentences would name components that are not drifted.
+        self.assertEqual(len(drift(pinned, definition=d(["real(dp) a(:)", "integer :: n"]),
+                                   count=1)), 1)
         # A second definition is reported alone: which one a reader gets is not decidable.
         self.assertEqual(len(drift(pinned, definition=d(good[::-1]), count=2)), 1)
         # The accepted header attribute is exactly `public`.

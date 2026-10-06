@@ -768,7 +768,12 @@ def module_level_type_definitions(
     published one. Reading the definition the module's own specification part carries leaves no
     other definition to read; counting every definition of the name, any scope, refuses the second
     one a reader of the name could be handed instead (a local type of the same name in a published
-    procedure makes that procedure's `type(t)` dummies the local type)."""
+    procedure makes that procedure's `type(t)` dummies the local type).
+
+    The ``in_interface`` term is implied by ``in_procedure`` for every definition the grammar can
+    place there (an interface block holds procedure bodies and `module procedure` statements, so a
+    type in one stands in a procedure body), and is not pinned: dropping it survives the suite. It
+    states the scope rather than deciding it."""
     wanted = unit_name.strip().lower()
     definitions: dict[str, TypeDefinition] = {}
     counts: dict[str, int] = {}

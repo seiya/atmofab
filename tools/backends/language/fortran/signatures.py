@@ -1426,7 +1426,9 @@ def generated_source_violations(
     definitions: dict[str, fortran_structure.Definition | None] | None = None
     type_reading: fortran_structure.TypeReading | None = None
     unit_absent: str | None = None
-    # A type-only §5.1 must reach the tree reader too: its types are read from it.
+    # A type-only §5.1 must reach the tree reader too: its types are read from it. The False
+    # branch is defensive and not pinned: a §5.1 with neither an operation nor a type declares no
+    # signature, which `_validate_generated_signatures` refuses before calling this.
     pinned_surface = bool(op_stanzas or type_stanzas)
     if pinned_surface and len(model_files) != 1:
         # APPENDED DIRECTLY, not via `_fail_closed_if_pinned`: that helper appends only when the

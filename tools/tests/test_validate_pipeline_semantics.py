@@ -20493,6 +20493,12 @@ class DerivedTypeLayoutGateTests(unittest.TestCase):
                 "      integer, intent(in) :: k\n      type :: hx__h_named\n"
                 "        integer :: z\n      end type hx__h_named\n"
                 "    end subroutine hx__ext\n  end interface\n"),
+            # No definition of the pinned name at all; the dummy is declared with another type so
+            # the source stays legal.
+            "A0 not defined": cls._with_type(
+                cls._TYPE.replace("hx__h_named", "hx__h_other")).replace(
+                "type(hx__h_named), intent(in) :: entries(:)",
+                "type(hx__h_other), intent(in) :: entries(:)", 1),
             "A9 an extra component with an initialiser": cls._with_type(
                 "  type :: hx__h_named\n" + cls._COMPONENTS
                 + "    integer :: extra = 0\n  end type hx__h_named\n"),
@@ -20568,6 +20574,7 @@ class DerivedTypeLayoutGateTests(unittest.TestCase):
     def test_the_messages_name_what_drifted(self) -> None:
         holes = self.holes()
         expected = {
+            "A0 not defined": "does not publish controlled_spec §5.1 derived type 'hx__h_named'",
             "A1 no-:: header drifted, helper-local decoy": "defines a derived type of this name 2 times",
             "A3 no-:: header drifted": "component 1 (the pinned line `character(len=:), allocatable "
                                         ":: name`): `name` — its type is `integer`",
@@ -21184,7 +21191,8 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
         # is refused for it exactly as for a node publishing operations — skipping the parse
         # would skip the type comparison, which is a switch the leaf holds. What the guard still
         # decides is the node publishing NEITHER: it has no definedness and no layout question,
-        # so an unresolvable private helper must not refuse it.
+        # so an unresolvable private helper must not refuse it — but that node cannot reach the
+        # guard (below).
         #
         # The condition is driven at its source (§5.1 and the IR together, so the stale-IR guard
         # does not return first — a first version of the old row mocked the §5.1 parse alone and
@@ -21228,13 +21236,22 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
             any("structure front end could not resolve" in v for v in type_only),
             ("a type-only node's types are compared from the tree, so an unresolvable source "
              "is refused for it", type_only))
+        # And the refusal says why a type-only node needs the structure.
+        self.assertTrue(any("each published operation and type must be compared" in v
+                            for v in type_only), type_only)
         clean = run(type_only_fortran, self._C._GOOD_SOURCE)
         self.assertFalse(any("hx__h_named" in v for v in clean), clean)
+        # The node publishing NEITHER does not reach the guard through this gate: a §5.1 that
+        # declares no signature is refused before it ("parsed 0 signatures"), and an `interfaces`
+        # entry must be referenced by a published procedure's argument (`structured_signatures`
+        # refuses an unreferenced one), so it never comes alone. The guard is therefore defensive
+        # and NOT pinned — `pinned_surface = True` survives the suite (measured, issue #430 PR-2
+        # round 0) — and this half pins the premise that makes it so, rather than claiming to
+        # observe the guard.
         nothing = run(nothing_fortran, wedged)
+        self.assertTrue(any("parsed 0 signatures" in v for v in nothing), nothing)
         self.assertFalse(
-            any("structure front end could not resolve" in v for v in nothing),
-            ("a node that publishes neither an operation nor a type has nothing the tree is read "
-             "for, so its source must not be parsed", nothing))
+            any("structure front end could not resolve" in v for v in nothing), nothing)
 
     def test_a_file_set_with_no_single_publisher_fails_closed(self) -> None:
         # The definedness answer used to be UNIONED over `model_files`, which credits a prototype
