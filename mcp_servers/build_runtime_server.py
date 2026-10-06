@@ -880,6 +880,21 @@ def default_build_jobs() -> int:
     return max(1, (os.cpu_count() or 1) // 2)
 
 
+def _build_execute_module(build_system: str) -> Any | None:
+    """The `build_execute` module of `build_system`'s package, or `None` when its record does
+    not carry the job in a package (no record, or a value only the table below runs).
+
+    Matched EXACTLY, as the table's rows are: the registry case-folds and strips a value, and
+    asking it with `MAKE` would serve a spelling `build_command` never accepted."""
+    registry = _backend_registry()
+    value = str(build_system or "")
+    if value not in registry.backend_ids("build_system"):
+        return None
+    if "build_execute" not in registry.get("build_system", value).backend_provides:
+        return None
+    return registry.capability_module("build_system", value, "build_execute")
+
+
 def build_command(
     build_system: str,
     target: str | None,
@@ -888,12 +903,15 @@ def build_command(
 ) -> list[str]:
     """The argv `compile_project` runs for `build_system`. Public so that a build at a remote
     site (issue #333), which no server runs, can be handed the argv this table gives, and run
-    what a build here would. Raises `ValueError` for a build system the server does not run."""
-    if build_system == "make":
-        cmd = ["make", f"-j{jobs}"]
-        if target:
-            cmd.append(target)
-        return cmd + extra_args
+    what a build here would. Raises `ValueError` for a build system the server does not run.
+
+    A build system whose registry record carries `build_execute` in its package answers from
+    that package (`build_argv`, issue #424 PR-2), so a second extracted build system needs no
+    edit here. The rows below are the build systems no backend owns yet; a backend that lands
+    for one of them takes its row."""
+    execute = _build_execute_module(build_system)
+    if execute is not None:
+        return list(execute.build_argv(target, jobs, extra_args))
     if build_system == "cmake":
         cmd = ["cmake", "--build", ".", "-j", str(jobs)]
         if target:
@@ -1033,13 +1051,42 @@ RUN_PROGRAM_TIMEOUT_SEC = 3600
 #: The same for `run_quality_checks`.
 QUALITY_CHECKS_TIMEOUT_SEC = 1800
 
-#: The argv of each `run_quality_checks` preset.
-_QUALITY_CHECK_PRESET_COMMANDS: dict[str, tuple[str, ...]] = {
-    "make_test": ("make", "test"),
-    "make_check": ("make", "check"),
+#: The argv of each `run_quality_checks` preset no build-system backend owns yet. A backend
+#: that lands for one of them takes its row.
+_UNOWNED_QUALITY_CHECK_PRESET_COMMANDS: dict[str, tuple[str, ...]] = {
     "ctest": ("ctest", "--output-on-failure"),
     "pytest": ("pytest", "-q"),
 }
+
+
+def _quality_check_preset_commands() -> dict[str, tuple[str, ...]]:
+    """The argv of each `run_quality_checks` preset: every build-system backend that carries
+    `build_execute` serves its own (`QUALITY_CHECK_COMMANDS`, issue #424 PR-2), and the table
+    above serves the rest. A preset name declared twice is refused rather than resolved by
+    order — the two would run different commands under one name."""
+    registry = _backend_registry()
+    commands: dict[str, tuple[str, ...]] = {}
+    owner: dict[str, str] = {}
+    sources = [(f"build_system backend {value!r}",
+                registry.capability_module("build_system", value,
+                                           "build_execute").QUALITY_CHECK_COMMANDS)
+               for value in registry.backend_ids("build_system")
+               if "build_execute" in registry.get("build_system", value).backend_provides]
+    sources.append(("the server's unowned table", _UNOWNED_QUALITY_CHECK_PRESET_COMMANDS))
+    for source, table in sources:
+        for preset, argv in table.items():
+            if preset in commands:
+                raise ValueError(
+                    f"run_quality_checks preset {preset!r} is declared by both {owner[preset]} "
+                    f"and {source}")
+            commands[preset] = tuple(argv)
+            owner[preset] = source
+    return commands
+
+
+#: Composed once at import, so a preset declared twice refuses the module rather than the first
+#: call (the same shape as `_check_lint_preset_declarations`).
+_QUALITY_CHECK_PRESET_COMMANDS: dict[str, tuple[str, ...]] = _quality_check_preset_commands()
 
 
 def quality_check_command(preset: str) -> list[str]:
@@ -1682,7 +1729,8 @@ TOOLS: dict[str, Tool] = {
         name="run_quality_checks",
         description=(
             "Run quality checks through standard workflows. "
-            "Supports presets (make_test/make_check/ctest/pytest)."
+            "Supports presets (make_test/make_check/ctest/pytest); make_test/make_check are "
+            "served by the make build-system backend."
         ),
         input_schema={
             "type": "object",

@@ -180,7 +180,9 @@ def render_tuple() -> dict[str, str]:
         "codegen_bundle._role_rank": _source_digest(cb._role_rank),
         "codegen_bundle._bundle_file_sort_key": _source_digest(cb._bundle_file_sort_key),
         "codegen_bundle._topological_order": _source_digest(cb._topological_order),
-        "codegen_bundle._object_name": _source_digest(cb._object_name),
+        # The object-name rule is the build system's `control_file.object_name` since issue
+        # #424 PR-2 (`make/control_file.py`, digested above); this is the dispatch to it.
+        "codegen_bundle._object_name_rule": _source_digest(cb._object_name_rule),
         "codegen_bundle.optimization_unit_members": _source_digest(cb.optimization_unit_members),
         "codegen_bundle._spec_id_of_node_key": _source_digest(cb._spec_id_of_node_key),
         "codegen_bundle._is_node_key": _source_digest(cb._is_node_key),
@@ -258,6 +260,17 @@ def build_tuple() -> dict[str, str]:
             _file_digest("tools/backends/build_system/make/__init__.py"),
         "tools/backends/build_system/make/control_file.py":
             _file_digest("tools/backends/build_system/make/control_file.py"),
+        # What driving the build system means — the overrides a build is handed, its argv, the
+        # binary-missing record — is the build system's `build_execute` since issue #424 PR-2;
+        # it was spelled in `_build_inproc` and `build_command`, which the rows above digest.
+        # The module, its attribute row, and the two dispatches that reach it.
+        "tools/backends/build_system/make/execute.py":
+            _file_digest("tools/backends/build_system/make/execute.py"),
+        "registry build_execute attr": registry_attr("build_execute"),
+        "Conductor._require_build_execute":
+            _source_digest(wc.Conductor._require_build_execute),
+        "build_runtime_server._build_execute_module":
+            _source_digest(server._build_execute_module),
     }
 
 
@@ -329,6 +342,19 @@ def execute_tuple() -> dict[str, str]:
             _source_digest(es.SitesConfig.site_for),
         "build_runtime_server.quality_check_command":
             _source_digest(server.quality_check_command),
+        # The preset table that function reads — a VALUE, which no source digest above carried
+        # while it was a literal — and, since issue #424 PR-2, the build system's
+        # `build_execute` it is composed from (the preset, its argv and its environment), the
+        # attribute row and the dispatch.
+        "build_runtime_server._QUALITY_CHECK_PRESET_COMMANDS":
+            json.dumps(server._QUALITY_CHECK_PRESET_COMMANDS, sort_keys=True),
+        "tools/backends/build_system/make/execute.py":
+            _file_digest("tools/backends/build_system/make/execute.py"),
+        "tools/backends/build_system/make/__init__.py":
+            _file_digest("tools/backends/build_system/make/__init__.py"),
+        "registry build_execute attr": registry_attr("build_execute"),
+        "Conductor._require_build_execute":
+            _source_digest(wc.Conductor._require_build_execute),
         "Conductor._promote_run_evidence": _source_digest(wc.Conductor._promote_run_evidence),
         "Conductor._author_quality_check": _source_digest(wc.Conductor._author_quality_check),
         "Conductor._author_snapshot_schema": _source_digest(wc.Conductor._author_snapshot_schema),
@@ -731,7 +757,16 @@ PINNED_RENDER: dict[str, str] = {
     # one) no longer reproduces the control file it was certified with. The tuple gained eleven
     # `codegen_bundle` rows — the order was a value no row digested, and neither were the graph
     # derivation and its callees.
-    "render-8": "8db4b92c9d015a824f61a58ac26f5272411f8c0f00e83e97afb726105c649cb6",
+    "render-8": "5e7f78b22c0ac638321ae6afa7463a3b5d679d08cb479d06aa6eadbebe7d0675",
+    # Re-pinned (issue #424 PR-2), behaviour-preserving: the object-name rule moved from
+    # `codegen_bundle._object_name` to the build system's `control_file.object_name` (the row
+    # is now the dispatch, `_object_name_rule`), and the control file's basename is read off
+    # the same backend by `_write_makefile` / `_write_pure_bundle_artifacts`; the names and
+    # the rendered bytes are unchanged. (Measured by diffing `render_tuple()` against
+    # origin/main 2e04c2c3's: `make/control_file.py`, `make/__init__.py`, `_write_makefile`,
+    # `_write_pure_bundle_artifacts`, `derive_build_graph` moved, `_object_name` became
+    # `_object_name_rule`, no other row.) The digest `render-8` shipped with at 2e04c2c3:
+    "render-8@2e04c2c3": "8db4b92c9d015a824f61a58ac26f5272411f8c0f00e83e97afb726105c649cb6",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -785,7 +820,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "044347847c6a7b86593fc9622284ec137eb65ee4face4441c1a891f183106f70",
+    "build-2": "473edb8a3ce4f77e71218247f0c8eefdd62808f78cfee017f9e8b0cc5595dd38",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build
@@ -822,6 +857,17 @@ PINNED_BUILD: dict[str, str] = {
     # `build_tuple()` against origin/main 3b1e8f73's: that row and no other.) The digest
     # `build-2` shipped with at 3b1e8f73:
     "build-2@3b1e8f73": "0ab2630ed277636003d05abd78ec03e8997eea696b639cbecbd5fd46b3d0060c",
+    # Re-pinned (issue #424 PR-2), behaviour-preserving: what driving make means — the
+    # OBJDIR / BINDIR / BIN overrides, the `make -j<n>` argv, the binary-missing record — moved
+    # from `_build_inproc` and `build_command` into `make/execute.py` (`build_execute`); the
+    # argv a build runs and the record it writes are unchanged. The tuple gained the module,
+    # its attribute row and the two dispatches (`_require_build_execute`,
+    # `_build_execute_module`), which carry what the moved literals carried. (Measured by
+    # diffing `build_tuple()` against origin/main 2e04c2c3's: `build_command`, `_build_inproc`,
+    # `_stage_dependency_sources` (prose), `derive_build_graph`, `make/__init__.py`,
+    # `make/control_file.py` moved, four rows added, no other row.) The digest `build-2`
+    # shipped with at 2e04c2c3:
+    "build-2@2e04c2c3": "044347847c6a7b86593fc9622284ec137eb65ee4face4441c1a891f183106f70",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -939,7 +985,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # longer copies it. (Measured by diffing `execute_tuple()` against origin/main dd5bbcb8's:
     # the `Conductor._author_snapshot_schema` row and no other.) The digest `execute-8` shipped
     # with at dd5bbcb8 is kept below.
-    "execute-8": "0012a7a9ab3bbb200b40a047f470602ebc9874b3b897f5db85301878036268ab",
+    "execute-8": "d648b35cf9e103c329dbe32302a04d92b5c1624c5a3f1a1380b895f58d732fa4",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -1013,6 +1059,15 @@ PINNED_EXECUTE: dict[str, str] = {
     # 72fdbd56's: the `_execute_inproc` row and no other.) The digest `execute-8` shipped with
     # at 72fdbd56:
     "execute-8@72fdbd56": "48ecddf30462b52c87f07f8a76b47db7a2738c6ddd2f97452b81b75c41c41e43",
+    # Re-pinned (issue #424 PR-2), behaviour-preserving: the quality check's preset, its argv
+    # and its environment moved from `_execute_inproc` and the server's literal preset table
+    # into `make/execute.py` (`build_execute`); the command the re-run executes and the
+    # environment it gets are unchanged. The tuple gained the preset table's VALUE (a literal no
+    # row digested), the module, the package `__init__`, its attribute row and
+    # `_require_build_execute`. (Measured by diffing `execute_tuple()` against origin/main
+    # 2e04c2c3's: `_execute_inproc` and `_author_quality_check` (prose) moved, five rows added,
+    # no other row.) The digest `execute-8` shipped with at 2e04c2c3:
+    "execute-8@2e04c2c3": "0012a7a9ab3bbb200b40a047f470602ebc9874b3b897f5db85301878036268ab",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

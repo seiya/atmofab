@@ -85,7 +85,7 @@
       "fortran-kind": 1,
       "fortran-subroutine": 1,
       "fortran-suffix": 2,
-      "make-control-file": 15,
+      "make-control-file": 14,
       "make-variable": 1
     },
     "docs/workflow/LAUNCH_PROMPT_REFERENCE.md": {
@@ -172,7 +172,7 @@
     },
     "tools/backends/registry.py": {
       "compiler-driver": 3,
-      "fortran": 11,
+      "fortran": 9,
       "fortran-subroutine": 1,
       "linter-cppcheck": 2,
       "linter-fortitude": 3,
@@ -183,19 +183,16 @@
       "fortran": 14,
       "fortran-subroutine": 6,
       "fortran-suffix": 1,
-      "make-control-file": 6
+      "make-control-file": 5
     },
     "tools/dependency_graph.py": {
       "make-control-file": 3
     },
     "tools/orchestration_runtime.py": {
-      "fortran": 10,
+      "fortran": 9,
       "fortran-subroutine": 5,
       "fortran-suffix": 10,
       "make-control-file": 8
-    },
-    "tools/prompt_templates/pure_generate_verify.txt": {
-      "make-control-file": 1
     },
     "tools/pure_leaf.py": {
       "fortran": 1
@@ -212,7 +209,6 @@
     "tools/validate_pipeline_semantics.py": {
       "compiler-driver": 1,
       "fortran": 13,
-      "fortran-module-file": 1,
       "fortran-subroutine": 4,
       "fortran-suffix": 4,
       "linter-cppcheck": 3,
@@ -222,13 +218,12 @@
     },
     "tools/workflow_conductor.py": {
       "compiler-driver": 5,
-      "fortran": 33,
+      "fortran": 26,
       "fortran-implicit-none": 1,
       "fortran-kind": 1,
-      "fortran-module-file": 1,
-      "fortran-suffix": 30,
-      "make-control-file": 97,
-      "make-variable": 16
+      "fortran-suffix": 22,
+      "make-control-file": 71,
+      "make-variable": 10
     }
   }
 }

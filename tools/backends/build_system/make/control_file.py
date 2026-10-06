@@ -12,13 +12,16 @@ Two halves, both moved unchanged out of the neutral core:
   `tools/validate_pipeline_semantics.py`, and the classification of a failed build's output
   (`failure.py`), from the conductor.
 
-`CONTROL_FILE_BASENAME` is the file the build system reads.
+`CONTROL_FILE_BASENAME` is the file the build system reads; `object_name` is the object a source
+compiles to, which both renderers and the bundle's build graph
+(`codegen_bundle.derive_build_graph`) key on.
 
 Stdlib only; imports nothing from the neutral core.
 """
 
 from __future__ import annotations
 
+import posixpath
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -45,6 +48,15 @@ BUILDS_IN_SOURCE = True
 #: target it requires the control file to declare. A compiled language's quality check must use
 #: one of them (`validate_pipeline_semantics._validate_quality_check_commands`).
 QUALITY_CHECK_PRESETS: dict[str, str] = {"make_test": "test", "make_check": "check"}
+
+
+def object_name(logical_path: str) -> str:
+    """The object basename a source compiles to. A flat `<name>.<ext>` yields `<name>.o`
+    (parity with the IR-shaped Makefile); a nested path is flattened with `__` so two files with
+    the same basename in different directories cannot collide. Moved unchanged from
+    `codegen_bundle._object_name` (issue #424 PR-2)."""
+    stem, _ = posixpath.splitext(logical_path)
+    return stem.replace("/", "__") + ".o"
 
 
 def _clean_recipe(rules: dict[str, Any]) -> str:

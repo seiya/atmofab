@@ -2040,7 +2040,7 @@ class PureLaunchRequestTests(unittest.TestCase):
                 refs, step="generate", substep="generate", orchestration_id="o",
                 orchestration_agent_run_id="orch", child_agent_run_id="c",
                 agent_model="opus", workflow_mode="dev",
-                makefile_host_authored=True, runner_host_authored=True,
+                runner_host_authored=True,
                 pure_leaf=True, pure_context={"harness_capabilities": "x", "target_profile": "y",
                                               "ir_document": "z", "tests_document": "t",
                                               "runner_document": "program r\nend program\n"})
@@ -3052,7 +3052,7 @@ class PureHarnessProducerEndToEndTests(unittest.TestCase):
         for entry in _harness_bundle()["files"]:
             self.assertEqual((src / entry["logical_path"]).read_text(encoding="utf-8"),
                              entry["content"])
-        control = (src / self.c.CONTROL_FILE_BASENAME).read_text(encoding="utf-8")
+        control = (src / self.c._control_file_basename(self.refs)).read_text(encoding="utf-8")
         self.assertIn(f"$(OBJDIR)/{_HARNESS_SPEC_ID}_model.o", control)
         self.assertIn(f"$(OBJDIR)/{_HARNESS_SPEC_ID}_runner.o", control)
         self.assertIn(f"BIN ?= {_HARNESS_SPEC_ID}_runner", control)
@@ -3372,7 +3372,7 @@ class PureHarnessShapeTests(unittest.TestCase):
         req = wc.build_launch_request(
             self.refs, step="generate", substep="generate", orchestration_id="o",
             orchestration_agent_run_id="p", child_agent_run_id="c", agent_model="m",
-            workflow_mode="dev", makefile_host_authored=makefile_ha,
+            workflow_mode="dev",
             runner_host_authored=runner_ha, pure_leaf=True,
             pure_shape=spec.pure_shape,
             # as `run_substep` passes it: the harness template carries a language fragment

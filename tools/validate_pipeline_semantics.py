@@ -199,7 +199,6 @@ ALGORITHM_STEP_KINDS = {
     "reduction",
     "diagnostic",
 }
-QUALITY_CHECK_ALLOWED_COMMANDS = {"make", "ctest", "pytest"}
 FORBIDDEN_QUALITY_CHECK_EXECUTABLES = {"python", "python3", "pypy", "bash", "sh", "zsh"}
 
 
@@ -3099,25 +3098,6 @@ def _resolve_logged_path(repo_root: Path, raw_path: str) -> Path:
     if path.is_absolute():
         return path
     return repo_root / path
-
-
-def _quality_check_preset_from_command(command: list[str]) -> str | None:
-    normalized = [str(token).strip().lower() for token in command if str(token).strip()]
-    if not normalized:
-        return None
-    executable = Path(normalized[0]).name.lower()
-    if executable == "make":
-        targets = set(normalized[1:])
-        if "test" in targets:
-            return "make_test"
-        if "check" in targets:
-            return "make_check"
-        return None
-    if executable == "ctest":
-        return "ctest"
-    if executable == "pytest":
-        return "pytest"
-    return None
 
 
 def _generate_src_dirs(pipeline_dir: Path) -> list[Path]:
@@ -6637,21 +6617,36 @@ def _validate_quality_check_commands(
             )
             continue
 
-        if executable not in QUALITY_CHECK_ALLOWED_COMMANDS:
-            allowed = sorted(QUALITY_CHECK_ALLOWED_COMMANDS)
+        # Which preset the recorded argv ran is the target build system's question
+        # (`build_execute.quality_check_preset`, issue #424 PR-2; an executable allowlist and a
+        # `make` block here until then). A build system whose package does not carry the job
+        # cannot answer it, so the record is refused with the registry's reason rather than
+        # read by another build system's rule — unreachable through the launch gate, which
+        # requires `build_execute` (`target_profile.toolchain_servable_reasons`).
+        execute_reason = backend_registry.missing_capability_reason(
+            "build_system", str(build_system or ""), "build_execute")
+        execute = None
+        if execute_reason is None:
+            try:
+                execute = backend_registry.capability_module(
+                    "build_system", str(build_system), "build_execute")
+            except (backend_registry.UnsupportedBackend,
+                    backend_registry.BackendNotExtracted) as exc:
+                execute_reason = str(exc)
+        if execute is None:
             violations.append(
-                f"{trial_meta_path}:run_quality_checks command_id={command_id} executable must be one of {allowed}"
+                f"{trial_meta_path}:run_quality_checks command_id={command_id} cannot be "
+                f"judged for toolchain.build_system={build_system}: {execute_reason}"
             )
             continue
-
-        if executable == "make":
-            targets = {token.lower() for token in normalized[1:]}
-            if "test" not in targets and "check" not in targets:
-                violations.append(
-                    f"{trial_meta_path}:run_quality_checks command_id={command_id} make command must include test/check target"
-                )
-
-        preset = _quality_check_preset_from_command(normalized)
+        preset = execute.quality_check_preset(normalized)
+        if preset is None and not _make_quality_check_applies(build_system, language):
+            violations.append(
+                f"{trial_meta_path}:run_quality_checks command_id={command_id} "
+                f"must use {'/'.join(execute.QUALITY_CHECK_COMMANDS)} for "
+                f"toolchain.build_system={build_system}"
+            )
+            continue
         raw_cwd = matched.get("cwd")
         cwd_path = (
             _resolve_logged_path(repo_root, raw_cwd)
@@ -6977,7 +6972,34 @@ def _validate_llm_semantic_review(
                 )
 
 
-def _source_fingerprint(execution: NodeExecution) -> SourceFingerprint | None:
+def _build_artifact_suffixes(repo_root: Path, pipeline_dir: Path) -> frozenset[str]:
+    """The suffixes of what a build writes beside its sources, for the pipeline's target: the
+    build system's objects and libraries (`build_execute.BUILD_ARTIFACT_SUFFIXES`) and the
+    language's module artifact (`source_reading.MODULE_ARTIFACT_SUFFIX`, which a language
+    without one declares `None`). Issue #424 PR-2; a fixed set of four suffixes until then.
+
+    A pipeline with no loadable target, or a value that does not carry the capability in its
+    package, contributes nothing: the fingerprint then hashes every file, which can only make
+    two trees LESS alike, and the unresolved target is reported on its own
+    (`_validate_pipeline_targets_resolve`)."""
+    build_system, language = _target_toolchain_from_pipeline_dir(repo_root, pipeline_dir)
+    suffixes: set[str] = set()
+    for axis, value, capability, read in (
+            ("build_system", build_system, "build_execute",
+             lambda module: module.BUILD_ARTIFACT_SUFFIXES),
+            ("language", language, "source_reading",
+             lambda module: (module.MODULE_ARTIFACT_SUFFIX,))):
+        if not backend_registry.provides(axis, value or "", capability):
+            continue
+        try:
+            module = backend_registry.capability_module(axis, str(value), capability)
+        except (backend_registry.UnsupportedBackend, backend_registry.BackendNotExtracted):
+            continue
+        suffixes.update(str(suffix).lower() for suffix in read(module) if suffix)
+    return frozenset(suffixes)
+
+
+def _source_fingerprint(repo_root: Path, execution: NodeExecution) -> SourceFingerprint | None:
     generate_root = execution.pipeline_dir / "source"
     gen_dirs = sorted(d for d in generate_root.iterdir() if d.is_dir()) if generate_root.exists() else []
     if not gen_dirs:
@@ -6987,12 +7009,13 @@ def _source_fingerprint(execution: NodeExecution) -> SourceFingerprint | None:
     if not src_dir.exists():
         return None
 
+    skipped = _build_artifact_suffixes(repo_root, execution.pipeline_dir)
     hasher = hashlib.sha256()
     included = 0
     for path in sorted(src_dir.rglob("*")):
         if not path.is_file():
             continue
-        if path.suffix.lower() in {".o", ".mod", ".a", ".so"}:
+        if path.suffix.lower() in skipped:
             continue
         if path.name in {"simulate"}:
             continue
@@ -10881,7 +10904,7 @@ def _validate_impl(
             require_llm_review=require_llm_review,
         )
 
-        fp = _source_fingerprint(execution)
+        fp = _source_fingerprint(repo_root, execution)
         if fp is not None:
             source_hash_map.setdefault(fp.digest, []).append(fp)
         dep_data = _dependency_resolved_for_execution(repo_root, execution)

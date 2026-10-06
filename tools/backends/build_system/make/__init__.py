@@ -10,10 +10,13 @@ a module name:
 * `parse` — the GNU-make sublanguage reader the gates stand on.
 * `gates` — the Makefile gates themselves (re-exported through `control_file`).
 * `failure` — the mechanical classification of a failed build's output.
-
-`build_execute` is still carried by the neutral core; see `docs/BACKEND_BOUNDARY.md`.
+* `execute` — the `build_execute` capability: the argv and variables the in-process Build /
+  Validate.execute bodies drive make with, and the quality-check preset (issue #424 PR-2).
 """
 
 from tools.backends.build_system.make import (
     control_file as control_file,  # noqa: F401  (re-export)
+)
+from tools.backends.build_system.make import (
+    execute as execute,  # noqa: F401  (re-export)
 )

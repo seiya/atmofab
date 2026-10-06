@@ -2811,5 +2811,66 @@ class FileTakingLinterTests(unittest.TestCase):
         self.assertEqual([list(self.mod._LINT_PRESET_COMMANDS["fortitude"])], self.calls)
 
 
+
+class BuildExecuteBackendTests(unittest.TestCase):
+    """The `make` rows are the make backend's `build_execute` since issue #424 PR-2: the server
+    asks the package, so a value there is what a build and a quality check run, and a second
+    extracted build system needs no row here."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        cls.mod = _load_server_module()
+
+    def _execute(self):
+        return self.mod._backend_registry().capability_module(
+            "build_system", "make", "build_execute")
+
+    def test_the_make_argv_is_the_backend_s(self) -> None:
+        execute = self._execute()
+        with mock.patch.object(execute, "build_argv",
+                               lambda target, jobs, extra: ["zz-make", str(jobs), *extra]):
+            self.assertEqual(self.mod.build_command("make", None, 3, ["A=1"]),
+                             ["zz-make", "3", "A=1"])
+            self.assertEqual(self.mod.build_system_executable("make"), "zz-make")
+        # The table answers a build system no backend carries `build_execute` for.
+        self.assertEqual(self.mod.build_command("ninja", None, 2, []), ["ninja", "-j2"])
+
+    def test_a_build_system_extracted_later_needs_no_server_row(self) -> None:
+        registry = self.mod._backend_registry()
+        alias = registry.Backend("build_system", "zz_make_alias",
+                                 "tools.backends.build_system.make",
+                                 backend_provides=frozenset({"control_file", "build_execute"}))
+        with mock.patch.dict(registry._BACKENDS, {("build_system", "zz_make_alias"): alias}):
+            self.assertEqual(self.mod.build_command("zz_make_alias", "all", 2, []),
+                             ["make", "-j2", "all"])
+        # Its presets join the table too — and here they are make's own names, so the
+        # composition refuses the second declaration rather than resolving it by order.
+        with mock.patch.dict(registry._BACKENDS, {("build_system", "zz_make_alias"): alias}), \
+                self.assertRaises(ValueError) as caught:
+            self.mod._quality_check_preset_commands()
+        self.assertIn("declared by both build_system backend 'make' and build_system backend "
+                      "'zz_make_alias'", str(caught.exception))
+
+    def test_the_quality_check_presets_are_composed_from_the_backends(self) -> None:
+        execute = self._execute()
+        self.assertEqual(
+            {k: v for k, v in self.mod._QUALITY_CHECK_PRESET_COMMANDS.items()
+             if k in execute.QUALITY_CHECK_COMMANDS},
+            {k: tuple(v) for k, v in execute.QUALITY_CHECK_COMMANDS.items()})
+        with mock.patch.object(execute, "QUALITY_CHECK_COMMANDS",
+                               {"zz_preset": ("make", "zz")}):
+            commands = self.mod._quality_check_preset_commands()
+        self.assertEqual(commands["zz_preset"], ("make", "zz"))
+        self.assertNotIn("make_test", commands)
+        self.assertEqual(commands["ctest"], ("ctest", "--output-on-failure"))
+
+    def test_a_preset_declared_twice_refuses_the_table(self) -> None:
+        execute = self._execute()
+        with mock.patch.object(execute, "QUALITY_CHECK_COMMANDS",
+                               {"pytest": ("make", "pytest")}), \
+                self.assertRaises(ValueError) as caught:
+            self.mod._quality_check_preset_commands()
+        self.assertIn("'pytest' is declared by both", str(caught.exception))
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

@@ -1555,8 +1555,10 @@ class PureRenderTests(unittest.TestCase):
         # the line names (`unused dummies, `intent(out)` dataflow`) became the marker
         # `{{language:gate_checked_classes}}`; composed for `fortran` the line is byte-identical
         # again. READ: unchanged pointer, nothing assigned.
+        # Re-taken for issue #424 PR-2: the scope clause names "the host-authored build control
+        # file" where it spelled `src/Makefile`. READ: no severity word moved, nothing assigned.
         "tools/prompt_templates/pure_generate_verify.txt: Review checklist (the semantic items "
-        "to judge the bundle aga #e27e39f5e316",
+        "to judge the bundle aga #b31abbfa9532",
         # `pure-37` (issue #169): the same input-side clause on the `harness` shape's reviewer
         # template, where it stands as its own paragraph rather than inside the checklist
         # sentence. Same judgment as the line above — it POINTS at the rubric's `major` bullet
@@ -2027,7 +2029,7 @@ class PureRenderTests(unittest.TestCase):
                       else "pure_ir_verdict_repair" if step == "compile"
                       else "pure_verdict_repair")
             for shape in (*self._RENDER_COLD_SHAPES, "pure-repair-warm", "pure-repair-cold"):
-                kw = dict(self._RENDER_COMMON, pure_leaf=True, makefile_host_authored=True,
+                kw = dict(self._RENDER_COMMON, pure_leaf=True,
                           runner_host_authored=True,
                           # The conductor names the target language on a generate launch only.
                           pure_language=("fortran" if step == "generate" else ""),
