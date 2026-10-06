@@ -3590,8 +3590,10 @@ def _local_site_record() -> dict[str, Any]:
             "remote_dir": None, "queue_wait_ms": 0}
 
 
-def _host_authored_m3c(refs: NodeRefs) -> tuple[bool, bool]:
-    """The `(makefile_host_authored, runner_host_authored)` stamp the two Z1/Z2 pure paths use.
+def _runner_host_authored_m3c(refs: NodeRefs) -> bool:
+    """The `runner_host_authored` stamp the two Z1/Z2 pure paths use. (It was a
+    `(makefile_host_authored, runner_host_authored)` pair until issue #424 PR-2 deleted the
+    makefile half's one reader, `build_launch_request`'s generate-leaf output list.)
 
     GENERATE reaches the pure loops only on the M3c shape (`_pure_leaf_substep` tests
     `_conductor_authors_makefile` ∧ `_conductor_authors_runner` for its two pairs), where the
@@ -3614,7 +3616,7 @@ def _host_authored_m3c(refs: NodeRefs) -> tuple[bool, bool]:
     that reading it on the compile path means deciding what the flag means for an
     `infrastructure` node first.
     """
-    return (True, True)
+    return True
 
 
 @dataclass
@@ -7090,14 +7092,14 @@ class Conductor:
 
     # --- the pure `validate.judge` reviewer (Z3, issue #169) ------------------
 
-    def _node_host_authored_flags(self, refs: NodeRefs) -> tuple[bool, bool]:
-        """The `(makefile_host_authored, runner_host_authored)` stamp read off the NODE.
+    def _node_runner_host_authored(self, refs: NodeRefs) -> bool:
+        """The `runner_host_authored` stamp read off the NODE.
 
-        `_host_authored_m3c` returns the constant `(True, True)`, which is the truth for the
+        `_runner_host_authored_m3c` returns the constant `True`, which is the truth for the
         pure paths that only ever see an M3c node. The judge sees every node kind, so it asks
         instead — the stamp's reader believed what the request said.
         """
-        return (self._conductor_authors_makefile(refs), self._conductor_authors_runner(refs))
+        return self._conductor_authors_runner(refs)
 
     def _write_judge_meta(self, refs: NodeRefs, **kwargs: Any) -> None:
         """The pure `validate.judge` reviewer's per-attempt record, in the run-node dir beside
@@ -7226,7 +7228,7 @@ class Conductor:
     def _pure_judge_spec(self) -> "Conductor._PureReviewerSpec":
         """The `validate.judge` half of the pure reviewer loop.
 
-        `host_authored_flags` carries the NODE's real values rather than the M3c constant the
+        `runner_host_authored` carries the NODE's real value rather than the M3c constant the
         two older reviewers pass: the judge runs on every node kind, and the launch request's
         stamp had one reader, and it is deleted (see `_host_authored_render_flags`)."""
         return self._PureReviewerSpec(
@@ -7239,7 +7241,7 @@ class Conductor:
             attempt_failed_event="pure_semantic_review_attempt_failed",
             summary_prefix="pure_judge",
             host_write_failed_reason="pure_judge_host_write_failed",
-            host_authored_flags=self._node_host_authored_flags,
+            runner_host_authored=self._node_runner_host_authored,
             violations=self._semantic_review_violations,
             schema_category=SEMANTIC_REVIEW_DOCUMENT_VIOLATION,
             status_of=lambda doc: doc["decision"],
@@ -7287,10 +7289,10 @@ class Conductor:
         host_write_failed_reason: str
         #: A certified sibling exemplar is resolved and attached only where a template renders it.
         wants_exemplar: bool
-        #: refs -> `(makefile_host_authored, runner_host_authored)` for the launch request.
-        #: The request's stamp HAD a reader (deleted in Z4, issue #171), so it must carry the
-        #: node's real values, not the shape the phase happened to have when it went pure.
-        host_authored_flags: Callable[[NodeRefs], tuple[bool, bool]]
+        #: refs -> `runner_host_authored` for the launch request. The request's stamp HAD a
+        #: reader (deleted in Z4, issue #171), so it must carry the node's real value, not the
+        #: shape the phase happened to have when it went pure.
+        runner_host_authored: Callable[[NodeRefs], bool]
         #: (launch record of the repair target) -> the document that producer attempt returned,
         #: re-serialized as the loop's `prior_document`, or None when the artifact is absent or
         #: unreadable. NEVER raises. The loop names neither the artifact nor its location; the
@@ -7322,8 +7324,8 @@ class Conductor:
         attempt_failed_event: str
         summary_prefix: str
         host_write_failed_reason: str
-        #: refs -> `(makefile_host_authored, runner_host_authored)`; see the producer spec.
-        host_authored_flags: Callable[[NodeRefs], tuple[bool, bool]]
+        #: refs -> `runner_host_authored`; see the producer spec.
+        runner_host_authored: Callable[[NodeRefs], bool]
         #: (parsed document) -> the schema violations, empty when clean. The loop knows only
         #: that a document is one JSON object; WHAT a well-formed one is belongs to the phase.
         violations: Callable[[dict[str, Any]], list[str]]
@@ -7487,7 +7489,7 @@ class Conductor:
                 accept_noun="IR",
                 host_write_failed_reason="pure_compile_host_write_failed",
                 wants_exemplar=False,
-                host_authored_flags=_host_authored_m3c,
+                runner_host_authored=_runner_host_authored_m3c,
                 prior_document=self._pure_ir_prior_document,
                 declared_fail=self._pure_ir_declared_fail,
                 write_declared_fail=self._write_declared_compile_fail,
@@ -7516,7 +7518,7 @@ class Conductor:
                 accept_noun="bundle",
                 host_write_failed_reason="pure_host_write_failed",
                 wants_exemplar=False,
-                host_authored_flags=self._node_host_authored_flags,
+                runner_host_authored=self._node_runner_host_authored,
                 prior_document=self._pure_bundle_prior_document,
                 pure_shape="harness",
             )
@@ -7537,7 +7539,7 @@ class Conductor:
             accept_noun="bundle",
             host_write_failed_reason="pure_host_write_failed",
             wants_exemplar=True,
-            host_authored_flags=_host_authored_m3c,
+            runner_host_authored=_runner_host_authored_m3c,
             prior_document=self._pure_bundle_prior_document,
         )
 
@@ -7609,7 +7611,7 @@ class Conductor:
         # The launch request's host-authorship stamp is the NODE's, resolved once here. It is
         # read back by the deleted contract-doc deriver, so a phase whose pure path also serves a node
         # the host authors nothing for must not stamp a constant.
-        _makefile_host_authored, runner_host_authored = spec.host_authored_flags(refs)
+        runner_host_authored = spec.runner_host_authored(refs)
         per_attempt: list[dict[str, Any]] = []
         resume_session_id: str | None = None
         cold_repair_target: str | None = None
@@ -8396,7 +8398,7 @@ class Conductor:
                 attempt_failed_event="pure_ir_verdict_attempt_failed",
                 summary_prefix="pure_compile_verify",
                 host_write_failed_reason="pure_compile_verify_host_write_failed",
-                host_authored_flags=_host_authored_m3c,
+                runner_host_authored=_runner_host_authored_m3c,
                 violations=self._verify_verdict_violations,
                 schema_category=GENERATE_VERDICT_SCHEMA_VIOLATION,
                 status_of=lambda doc: doc["verification_status"],
@@ -8415,7 +8417,7 @@ class Conductor:
                 attempt_failed_event="pure_verdict_attempt_failed",
                 summary_prefix="pure_verify",
                 host_write_failed_reason="pure_verify_host_write_failed",
-                host_authored_flags=self._node_host_authored_flags,
+                runner_host_authored=self._node_runner_host_authored,
                 violations=self._verify_verdict_violations,
                 schema_category=GENERATE_VERDICT_SCHEMA_VIOLATION,
                 status_of=lambda doc: doc["verification_status"],
@@ -8434,7 +8436,7 @@ class Conductor:
             attempt_failed_event="pure_verdict_attempt_failed",
             summary_prefix="pure_verify",
             host_write_failed_reason="pure_verify_host_write_failed",
-            host_authored_flags=_host_authored_m3c,
+            runner_host_authored=_runner_host_authored_m3c,
             violations=self._verify_verdict_violations,
             schema_category=GENERATE_VERDICT_SCHEMA_VIOLATION,
             status_of=lambda doc: doc["verification_status"],
@@ -8497,7 +8499,7 @@ class Conductor:
         # The launch request's host-authorship stamp is the NODE's, resolved once here. It is
         # read back by the deleted contract-doc deriver, so a phase whose pure path also serves a node
         # the host authors nothing for must not stamp a constant.
-        _makefile_host_authored, runner_host_authored = spec.host_authored_flags(refs)
+        runner_host_authored = spec.runner_host_authored(refs)
         per_attempt: list[dict[str, Any]] = []
         resume_session_id: str | None = None
         cold_repair_target: str | None = None

@@ -956,19 +956,19 @@ class PureProducerSubstepTests(unittest.TestCase):
             self._tmp.cleanup()
 
     def test_the_requests_host_authorship_stamp_comes_from_the_spec(self) -> None:
-        """`makefile_host_authored` / `runner_host_authored` are read BACK off the request
+        """`runner_host_authored` is read BACK off the request
         (`orchestration_runtime._payload_is_m3c_physics` derives the physics-narrowed
         contract-doc set from them), so what stamps them decides whether that derivation is
         the node's truth or a leftover constant.
 
         Both loops used to write the literal `True, True`. That is correct for the two pairs
         that reach them today — Generate runs pure only on the M3c shape — and it is a seam
-        rather than a fact, so it is now the spec's `host_authored_flags`, and the generate /
-        compile specs bind `_host_authored_m3c`, which returns that same constant WITH its
+        rather than a fact, so it is now the spec's `runner_host_authored`, and the generate /
+        compile specs bind `_runner_host_authored_m3c`, which returns that same constant WITH its
         reason attached. This row drives the seam: a spec whose flags answer False produces a
         request that does not stamp, which is what a pure path serving another shape depends
         on. Since issue #169's PR-3 an in-tree node DOES produce it — the `harness` shape binds
-        `_node_host_authored_flags`, and `PureHarnessShapeTests` drives that end — so this row
+        `_node_runner_host_authored`, and `PureHarnessShapeTests` drives that end — so this row
         is now the m3c side of a live pair rather than the only witness of the seam.
         """
         self._tmp = tempfile.TemporaryDirectory()
@@ -980,7 +980,7 @@ class PureProducerSubstepTests(unittest.TestCase):
         c.envelopes = [_envelope(_valid_bundle())]
         c._run_pure_generate_substep(refs, "generate", "generate", None, ())
         request = [cap["--request-json"] for sub, cap in c.calls if sub == "record-launch"][-1]
-        self.assertEqual(wc._host_authored_m3c(refs), (True, True))
+        self.assertIs(wc._runner_host_authored_m3c(refs), True)
         self.assertTrue(request.get("runner_host_authored"))
 
         # Through the seam: a spec that answers False stamps nothing. `build_launch_request`
@@ -989,7 +989,7 @@ class PureProducerSubstepTests(unittest.TestCase):
         c2 = _conductor(repo)
         c2.envelopes = [_envelope(_valid_bundle())]
         spec = c2._pure_producer_spec("generate")._replace(
-            host_authored_flags=lambda _refs: (False, False))
+            runner_host_authored=lambda _refs: False)
         c2._run_pure_producer_substep(refs, "generate", "generate", None, (), spec)
         request2 = [cap["--request-json"] for sub, cap in c2.calls if sub == "record-launch"][-1]
         self.assertNotIn("runner_host_authored", request2)
@@ -3366,9 +3366,10 @@ class PureHarnessShapeTests(unittest.TestCase):
         spec = self.c._pure_producer_spec("generate", self.c._bundle_shape(self.refs))
         self.assertEqual(spec.pure_shape, "harness")
         self.assertFalse(spec.wants_exemplar)
-        makefile_ha, runner_ha = spec.host_authored_flags(self.refs)
-        self.assertTrue(makefile_ha)
-        self.assertFalse(runner_ha)  # the host renders no runner on this shape
+        runner_ha = spec.runner_host_authored(self.refs)
+        # The host still authors this shape's control file; it renders no runner.
+        self.assertTrue(self.c._conductor_authors_makefile(self.refs))
+        self.assertFalse(runner_ha)
         req = wc.build_launch_request(
             self.refs, step="generate", substep="generate", orchestration_id="o",
             orchestration_agent_run_id="p", child_agent_run_id="c", agent_model="m",

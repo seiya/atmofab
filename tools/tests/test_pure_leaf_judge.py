@@ -450,8 +450,7 @@ class PureJudgeLoopTests(_Fixture):
         kind, and `_payload_is_m3c_physics` believes what the request says.
 
         Only `runner_host_authored` reaches the payload (and only when TRUE, so absence is the
-        node's False); `makefile_host_authored` decides the Makefile deliverable, which a pure
-        launch empties anyway. Both directions: the fixture component IS one the host renders
+        node's False). Both directions: the fixture component IS one the host renders
         a runner for under the checked-in target (since issue #284 the harness is the target's,
         so no dependency count decides it), and withdrawing the language's `runner_render`
         makes it one the host renders none for — the case the M3c constant would get wrong."""
