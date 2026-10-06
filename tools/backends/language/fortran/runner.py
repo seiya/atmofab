@@ -151,10 +151,11 @@ def max_rendered_line() -> int:
     A failure here is a host defect (two linters declaring this language, or the linter's
     module lacking the attribute), and inside the Compile dry render `ir_content_violations`'
     catch-all reports it as "IR is not renderable" — the `compile_static_violation` routing
-    residue TODO.md records for a registry/package disagreement. Neither shape reaches a run:
-    the first raises out of the launch host prerequisite probe
-    (`host_prerequisites.resolve_launch_axis_selection` asks `linter_for_language`), and the
-    second turns `test_fortran_runner`'s limit row red."""
+    residue TODO.md records for a registry/package disagreement. The first shape raises out of
+    the launch host prerequisite probe (`host_prerequisites.resolve_launch_axis_selection` asks
+    `linter_for_language`), so it does not reach a run. Nothing on the run path refuses the
+    second before the Compile dry render; what catches it is the suite, where most of
+    `test_fortran_runner` turns red."""
     from tools.backends import registry
 
     linter = registry.linter_for_language("fortran")

@@ -769,7 +769,7 @@ PINNED_RENDER: dict[str, str] = {
     # one) no longer reproduces the control file it was certified with. The tuple gained eleven
     # `codegen_bundle` rows — the order was a value no row digested, and neither were the graph
     # derivation and its callees.
-    "render-8": "a54fddc6d2a849e4fc06cfe6d944db1ef4296ca92a98a5f532be4159de8113b2",
+    "render-8": "4b4331fc1becda83f619d9785467eacf9ad8de77c26cb4403a460b79be3e27b9",
     # Re-pinned (issue #424 PR-3), behaviour-preserving: the runner renderer's column limit is
     # the fortran linter's `LINE_LENGTH_LIMIT` read through the registry (`max_rendered_line()`)
     # where it was the literal `MAX_RENDERED_LINE = 100`; the value is unchanged, so every
