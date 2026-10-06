@@ -146,7 +146,15 @@ def max_rendered_line() -> int:
     names), read through the registry rather than restated here (issue #424). The rendered
     runner must stay strictly under it because it is host-authored (a leaf cannot edit it to fix
     an overlong line). A backend may import the neutral core; the registry loads the linter
-    package lazily, so this module still imports no other backend at import time."""
+    package lazily, so this module still imports no other backend at import time.
+
+    A failure here is a host defect (two linters declaring this language, or the linter's
+    module lacking the attribute), and inside the Compile dry render `ir_content_violations`'
+    catch-all reports it as "IR is not renderable" — the `compile_static_violation` routing
+    residue TODO.md records for a registry/package disagreement. Neither shape reaches a run:
+    the first raises out of the launch host prerequisite probe
+    (`host_prerequisites.resolve_launch_axis_selection` asks `linter_for_language`), and the
+    second turns `test_fortran_runner`'s limit row red."""
     from tools.backends import registry
 
     linter = registry.linter_for_language("fortran")
