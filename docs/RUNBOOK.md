@@ -67,42 +67,29 @@ reason codes exist to give the other two families.)
 The executables the run's own toolchain implies. They are **not** named in the check: it reads
 argv[0] out of the tables that will actually run them, so what it looks for cannot drift from
 what a gate later launches (`tools/host_prerequisites.py`). The set is per TARGET: a run
-builds every node for one target profile, and the profile's `toolchain.language` decides the
-linter (`registry.linter_for_language`) and the compiler (the language backend's
-`bundle_facts.MANDATORY_SYNTAX_COMPILER`), its `toolchain.build_system` the build tool.
+builds every node for one target profile, and the profile names one value per axis, from which
+each role below is derived:
 
-#### Target `fortran_cpu` (`spec/targets/fortran_cpu.yaml`)
-
-| tool | purpose | when its absence used to surface |
+| role | derived from | when its absence used to surface |
 |---|---|---|
-| `fortitude` | the `static lint` tool the `Generate.gate` lint check runs via MCP `run_linter`. Supported versions: `>=0.8,<0.10` — see the version check below | `Generate.gate`, after `Compile` and `Generate.generate` had been billed |
-| `make` | the build system `Build` drives via MCP `compile_project` | `Build` — one phase later still |
-| `gfortran` | the compiler — both the mandatory `Generate.gate` syntax-only stage and the `FC` the build control file pins | `Generate.gate`, same as above: `run_syntax_check` reports a missing compiler as `skipped`, and the conductor turns a skipped MANDATORY stage into a fail_closed |
+| the `static lint` tool the `Generate.gate` lint check runs via MCP `run_linter` | the profile's `toolchain.language` (`registry.linter_for_language`) | `Generate.gate`, after `Compile` and `Generate.generate` had been billed |
+| the compiler — both the mandatory `Generate.gate` syntax-only stage and the compiler the build control file pins | the language backend's `bundle_facts.MANDATORY_SYNTAX_COMPILER`; the build control file pins the same program unless the parallel backend declares a compiler wrapper or the profile pins another `toolchain.compiler` (`workflow_conductor.build_compiler`) | `Generate.gate`, same as above: `run_syntax_check` reports a missing compiler as `skipped`, and the conductor turns a skipped MANDATORY stage into a fail_closed |
+| the build system `Build` drives via MCP `compile_project` | the profile's `toolchain.build_system` | `Build` — one phase later still |
+| the programs the parallel backend adds: a compiler wrapper, which takes the compiler's place in the build control file and in the syntax-only stage; a launcher and a device trace, which the binary runs under at `Validate.execute` and which are asked only of a run that executes the binary — of the site below, and of this host only when the local site executes the run | the profile's `parallel.backend` | `Validate.execute`, after the build (the wrapper: `Generate.gate`) |
 
-#### Target `fortran_cpu_mpi` (`spec/targets/fortran_cpu_mpi.yaml`)
+A program that serves several roles is listed once, under its first. Which program each role
+resolves to, how to install it, and where else it must be found are the backend documents':
 
-The three tools of the `fortran_cpu` table, plus the two programs the `mpi` parallel backend adds: a compiler wrapper, which takes the compiler's place in the build control file and in the syntax-only stage, and a launcher, which starts the binary's `execution.ranks` processes at `Validate.execute` and is asked only of a run that executes the binary. Both must come from one installation whose language binding is built for the target's compiler; the startup probe checks the pair and refuses the run (`parallel_toolchain_unusable`) otherwise. `docs/backends/parallel/mpi/LAUNCHER.md` §3 names the two programs, the installations measured and what the probe asks. A `component` or `problem` node runs over the target's harness like any other ([issue #316](https://github.com/seiya/atmofab/issues/316) PR-4): its kernel is distributed over the ranks through the harness (`docs/backends/parallel/mpi/GENERATE_RULES.md`), and the host-rendered runner gathers its state onto rank 0.
+| target | backend documents naming its tools and how to install them |
+|---|---|
+| `fortran_cpu` (`spec/targets/fortran_cpu.yaml`) | [docs/backends/linter/fortitude/RULES.md](backends/linter/fortitude/RULES.md) §Installation; [docs/backends/compiler/gfortran/TOOLCHAIN.md](backends/compiler/gfortran/TOOLCHAIN.md); [docs/backends/build_system/make/CONTROL_FILE.md](backends/build_system/make/CONTROL_FILE.md) §3 (`make`) |
+| `fortran_cpu_mpi` (`spec/targets/fortran_cpu_mpi.yaml`) | the `fortran_cpu` row, plus [docs/backends/parallel/mpi/LAUNCHER.md](backends/parallel/mpi/LAUNCHER.md) §3 (the compiler wrapper and the launcher) |
+| `cpp_gpu` (`spec/targets/cpp_gpu.yaml`) | [docs/backends/compiler/nvcc/TOOLCHAIN.md](backends/compiler/nvcc/TOOLCHAIN.md) (one program in the lint, syntax-only and build-compiler roles, and the execution site's build); [docs/backends/build_system/make/CONTROL_FILE.md](backends/build_system/make/CONTROL_FILE.md) §3 (`make`); [docs/backends/parallel/cuda/DEVICE_TRACE.md](backends/parallel/cuda/DEVICE_TRACE.md) §3 (the device trace) |
 
-#### Target `cpp_gpu` (`spec/targets/cpp_gpu.yaml`)
-
-| tool | purpose | when its absence used to surface |
-|---|---|---|
-| `nvcc` | the CUDA compiler driver, in three roles: the `static lint` tool (`linter/nvcc`, every warning an error), the mandatory `Generate.gate` syntax-only stage, and the `NVCC` the build control file pins. Supported versions: `>=13.0,<14.0` — see the version check below | `Generate.gate`, after `Compile` and `Generate.generate` had been billed |
-| `make` | the build system `Build` drives via MCP `compile_project` | `Build` |
-| `nsys` | Nsight Systems: the device trace `Validate.execute` runs the binary under, whose per-kernel summary it keeps as `kernel_trace.csv` (issue #307; `docs/backends/parallel/cuda/DEVICE_TRACE.md`). Needed by a run that reaches `Validate`, where the binary runs: asked of the site below, and of this host only when the local site executes the run. Measured on 2025.1.3 and 2026.3.2 | `Validate.execute`, after the build |
-
-The probe lists `nvcc` once, under its first role. It comes with the CUDA toolkit, which also
-supplies the runtime the build links. On this host it serves `Generate.gate`; the binary is BUILT
-at the execution site that executes the `gpu` class (issue #333, below), with that site's `nvcc`,
-which must then be on the site's non-interactive `PATH` where the build runs — or put there by
-the site's `setup` lines in `sites.yaml` (`docs/examples/sites.example.yaml`).
-
-Install them with the platform's own package manager, e.g. on Debian/Ubuntu for the CPU target:
-
-```
-sudo apt-get install gfortran make      # the toolchain
-pipx install 'fortitude-lint>=0.8,<0.10'   # or: pip install 'fortitude-lint>=0.8,<0.10'
-```
+A compiler wrapper and a launcher must come from one installation whose language binding is built
+for the target's compiler; the startup probe checks the pair and refuses the run
+(`parallel_toolchain_unusable`, below) otherwise. A `component` or `problem` node of
+`fortran_cpu_mpi` runs over the target's harness like any other ([issue #316](https://github.com/seiya/atmofab/issues/316) PR-4): its kernel is distributed over the ranks through the harness (`docs/backends/parallel/mpi/GENERATE_RULES.md`), and the host-rendered runner gathers its state onto rank 0.
 
 ### Refused at startup — `unsupported_required_host_tool_versions`
 
@@ -111,11 +98,11 @@ measured its gates against. Checked after the missing-tool arm, because an absen
 version to read.
 
 Every `static lint` tool carries a range, and the probe evaluates the range of whichever one the
-run's own axis selection resolves to — for the Fortran nodes in this tree, `fortitude` alone, the
-row in the table above. The `Generate.gate` lint check applies a rule set this repository declares
-rather than the linter's own default, and each set is measured against its own range. Neither the
-tool name, the range, nor the probe argv is written in the launch check — all three come from the
-backend package that owns the tool, so the check cannot look for a build the gate never runs.
+run's own axis selection resolves to. The `Generate.gate` lint check applies a rule set this
+repository declares rather than the linter's own default, and each set is measured against its
+own range. Neither the tool name, the range, nor the probe argv is written in the launch check —
+all three come from the backend package that owns the tool, so the check cannot look for a build
+the gate never runs.
 
 | linter | supported versions | declaration and measurement |
 |---|---|---|
@@ -127,31 +114,31 @@ backend package that owns the tool, so the check cannot look for a build the gat
 Which of them a run selects follows from its own `toolchain.language`: each linter backend
 declares the languages it lints (`LANGUAGES` in its `lint` module, answered by
 `registry.linter_for_language`) — not restated here, because what an operator meeting this
-refusal needs is the RANGE.
+refusal needs is the RANGE. The ranges are each backend's `SUPPORTED_VERSION_SPEC`, and
+`tools/tests/test_host_prerequisites.py` holds this table equal to them.
 
 Two rows are reachable today, one per language of the target profiles in this tree: `fortitude` for
-`fortran_cpu` and `fortran_cpu_mpi`, and `nvcc` (the CUDA compiler driver, which lints `cuda_cpp`) for `cpp_gpu`; an operator installs
-the one of the target they run. Two things a `cuda_cpp` profile meets before its first run: the
-phases up to `Generate` run on a host with no GPU (a `component` / `problem` node's runner is
-host-rendered over the certified harness since issue #289 R4-b PR-6, and nothing before
-`Validate` runs a kernel), and `Build` runs at the execution site the target maps to (issue
-#333: a binary is built at the site that runs it), so a run of the profile that reaches `Build`
-needs a site that executes `gpu` (the execution-site section below) — with none it is refused
-at launch (`target_profile_invalid`) and one that stops at `Generate` is not; and the build
-derivation key records the compiler as `nvcc`'s `release` line on THIS host (the one
-`Generate.gate` runs) and the target's `hardware.architecture`, not the host C++ compiler `nvcc`
-drives, so changing that compiler alone reuses a certified build. The site's own `nvcc` version
-is recorded in `binary_meta.json#environment.compiler_version`, not keyed. The other rows are here because the ranges are refused by the same launch arm the
-moment one of them is selected. The `missing_required_host_tools` table above deliberately does
-not grow the same rows: it renders the RESOLVED selection of each target profile in this tree, not a
-catalogue, and adding a program no run installs would make the install line above wrong.
+`fortran_cpu` and `fortran_cpu_mpi`, and `nvcc` for `cpp_gpu`; an operator installs the one of the
+target they run. Two things a `cuda_cpp` profile meets before its first run: the phases up to
+`Generate` run on a host with no GPU (a `component` / `problem` node's runner is host-rendered over
+the certified harness since issue #289 R4-b PR-6, and nothing before `Validate` runs a kernel), and
+`Build` runs at the execution site the target maps to (issue #333: a binary is built at the site
+that runs it), so a run of the profile that reaches `Build` needs a site that executes `gpu` (the
+execution-site section below) — with none it is refused at launch (`target_profile_invalid`) and
+one that stops at `Generate` is not. What the build derivation key records of that compiler, and
+where the site's own version is recorded, is
+[docs/backends/compiler/nvcc/TOOLCHAIN.md](backends/compiler/nvcc/TOOLCHAIN.md) §3. The other rows
+are here because the ranges are refused by the same launch arm the moment one of them is selected.
+The per-target pointer table above deliberately does not grow the same rows: it renders the
+RESOLVED selection of each target profile in this tree, not a catalogue.
 
 Without this arm the failure surfaces at the first `Generate.gate` and consumes the whole
-`Generate` retry budget on findings no leaf can act on: the linter's vendor enabled 18 additional
-rules by default in 0.9.0, and on this tree every finding they produce lands in the host-rendered
-runner (issue #110). The refusal names the installed version and the supported range; the remedy
-is to install a version inside the range, or to re-measure and widen it per that document's
-Operations Rules.
+`Generate` retry budget on findings no leaf can act on — the measured case is a linter release
+that enabled additional rules by default (issue #110;
+[docs/backends/linter/fortitude/RULES.md](backends/linter/fortitude/RULES.md) §Installation). The
+refusal names the installed version and the supported range; the remedy is to install a version
+inside the range, or to re-measure and widen it as the linter's document in the table above
+records its measurement (its Operations Rules, where it has that section).
 
 ### Refused at startup — `parallel_toolchain_unusable`
 
@@ -343,8 +330,8 @@ an isolated `CODEX_HOME`; both went with the leaf hook layer in Z4 (issue #171).
 - A trial that violates the verification of this section stops at the relevant phase, and artificial artifact generation for the purpose of satisfying a downstream phase's start condition is forbidden.
 
 ### 1-2-1. Supplementary static rules of `validate_pipeline_semantics.py` (around Generate)
-- **Target notation of `Makefile` object rules**: for a `src/` built for a target whose `toolchain.language` is `fortran` (the pipeline's target profile, issue #284) and consisting of multiple `module`, the object-dependency check mechanically derived from the `use` dependencies runs. The check adopts as a rule only the **literal** base name (e.g. `foo.o`) that remains after removing `$(NAME)` / `${NAME}` from the target token. The `.mod` / `.o` required for each `.o`'s prerequisite is enumerated as a **literal target line** (e.g. `foo.o: bar.o baz.mod`).
-- **Scope of the substring check for forbidden output names of the `runner`**: detect it as a **substring** of a forbidden name after lowercasing the full text of `*_runner.f90`. **Comment lines are not excluded.** `verdict.json` / `aggregate_verdict.json` / `summary.json` / `trial_meta.json` must not be contained in a comment or string literal.
+- **Object rules of the build control file**: for a `src/` of several module sources, the object-dependency check derived from the module dependencies the target language's backend reads out of them (`source_module_deps`) runs: each object's rule must list, for every module its source uses, the providing source's object or the module artifact named after that source's stem (CONTROL_FILE.md §1) as a prerequisite that resolve to a **literal** basename, and a variable reference not defined before the rule resolves to nothing and does not count. The binding — the rule notation, the out-of-source prefix agreement, and examples — is `docs/backends/build_system/make/CONTROL_FILE.md` §1.
+- **Scope of the substring check for forbidden output names of the `runner`**: detect it as a **substring** of a forbidden name after lowercasing the full text of the runner source (the file the language backend's `bundle_facts.runner_basename` names). **Comment lines are not excluded.** `verdict.json` / `aggregate_verdict.json` / `summary.json` / `trial_meta.json` must not be contained in a comment or string literal.
 - **Each `pipeline`'s `lineage.json`**: `workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>/lineage.json` is required for each `pipeline` to be checked.
 
 ## 1-3. Agent launch conventions (operationally required)
@@ -616,7 +603,7 @@ python3 tools/run_workflow.py --resume build
 - A `node` that has dependencies calls the dependency `operation` resolved by `spec.ir.yaml.dependency`.
 - A function equivalent to a dependency `operation` is not re-implemented in the depending `node`.
 - The implementation body of a dependency `node` is not copied, relocated, or redefined in the upper `node`'s `source/<source_id>/src/`.
-- In a `node` built for a target profile whose `toolchain.language=fortran` and that has a dependency `component`, `use <spec_id>_model` and `call <spec_id>__*` are implemented.
+- In a `node` that has a dependency `component`, the model imports each dependency's model module and calls its published operations, in the form the target language's backend binds (for `fortran`, `docs/backends/language/fortran/GENERATE_RULES.md` §3).
 - `trial_meta.json`'s `generated_by_stage` / `source_source_id` / `source_binary_id` / `source_command_ref` / `source_artifact_hash` are not missing (`run_id` is not made a separate field because the `runs/<run_id>/` directory path itself encodes it).
 - The `run_program` execution command referenced by `trial_meta.json`'s `source_command_ref` includes `spec.ir.yaml.case`.
 - A `node` that ended with `blocked` has `aggregate_verdict.json` / `summary.json` / `trial_meta.json`, and `blocked_reason` is recorded.

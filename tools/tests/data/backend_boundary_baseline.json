@@ -22,26 +22,20 @@
       "linter-ruff": 1
     },
     "docs/AGENT_SKILLS.md": {
-      "compiler-driver": 1,
-      "compiler-syntax-only": 1,
-      "fortran": 1
+      "fortran": 2
     },
     "docs/BACKEND_BOUNDARY.md": {
       "fortran": 6
     },
     "docs/BWRAP_ENABLEMENT.md": {
-      "fortran": 1,
-      "fortran-module-file": 2
+      "fortran": 1
     },
     "docs/CLI_REFERENCE.md": {
-      "fortran": 2,
-      "fortran-suffix": 1,
-      "make-control-file": 4
+      "make-control-file": 1
     },
     "docs/CONTROLLED_SPEC.md": {
-      "fortran": 7,
-      "fortran-kind": 3,
-      "fortran-subroutine": 1
+      "fortran": 6,
+      "fortran-kind": 2
     },
     "docs/DEVELOPMENT.md": {
       "compiler-driver": 1,
@@ -53,83 +47,45 @@
       "fortran": 7
     },
     "docs/ORCHESTRATION.md": {
-      "compiler-driver": 1,
-      "compiler-syntax-only": 1,
-      "fortran": 1,
-      "fortran-suffix": 2,
-      "make-control-file": 1,
-      "make-variable": 2
+      "fortran": 4
     },
     "docs/RUNBOOK.md": {
       "compiler-driver": 2,
       "fortran": 23,
-      "fortran-module-file": 2,
-      "fortran-suffix": 1,
       "linter-cppcheck": 3,
       "linter-fortitude": 10,
-      "linter-ruff": 3,
-      "make-control-file": 1,
-      "parallel-trace": 2
+      "linter-ruff": 3
     },
     "docs/SPEC.md": {
-      "fortran": 1,
-      "fortran-standard": 1,
-      "fortran-subroutine": 2
+      "fortran": 4
     },
     "docs/examples/sites.example.yaml": {
       "fortran": 1
     },
     "docs/workflow/CODEGEN_BUNDLE_CONTRACT.md": {
-      "fortran": 9,
-      "fortran-intent": 1,
+      "fortran": 13,
       "fortran-kind": 1,
-      "fortran-subroutine": 1,
       "fortran-suffix": 2,
-      "make-control-file": 14,
-      "make-variable": 1
-    },
-    "docs/workflow/LAUNCH_PROMPT_REFERENCE.md": {
-      "fortran-suffix": 1,
-      "parallel-directive": 1
+      "make-control-file": 5
     },
     "docs/workflow/MCP_COMMAND_LOG_PLACEMENT.md": {
-      "fortran": 5,
-      "fortran-module-file": 1,
-      "make-control-file": 7,
-      "make-variable": 3
+      "make-control-file": 1
     },
     "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": {
       "make-control-file": 1
     },
     "docs/workflow/WORKFLOW_CORE.md": {
-      "fortran": 1,
-      "fortran-suffix": 1,
-      "make-control-file": 2
+      "fortran": 2
     },
     "docs/workflow/phases/phase_01_compile.md": {
       "fortran-subroutine": 1
     },
     "docs/workflow/phases/phase_02_generate.md": {
-      "fortran": 25,
+      "fortran": 31,
       "fortran-intent": 1,
-      "fortran-kind": 2,
-      "fortran-subroutine": 4,
-      "fortran-suffix": 4,
-      "make-control-file": 4,
-      "make-variable": 1,
-      "parallel-construct": 3,
-      "parallel-directive": 3
-    },
-    "docs/workflow/phases/phase_03_build.md": {
-      "fortran-module-file": 2,
       "fortran-subroutine": 1,
-      "make-control-file": 4,
-      "make-variable": 3
-    },
-    "docs/workflow/phases/phase_04_validate.md": {
-      "fortran": 1,
-      "make-control-file": 3,
-      "make-variable": 1
+      "make-control-file": 1,
+      "parallel-directive": 1
     },
     "mcp_servers/README.md": {
       "compiler-driver": 5,

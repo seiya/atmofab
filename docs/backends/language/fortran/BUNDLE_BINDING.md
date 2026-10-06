@@ -35,6 +35,11 @@
 - **Imports.** The host renders an entrypoint's or a binding's import as
   `use <module>, only: <symbol>` (for a bound state variable, `use <spec_id>_checks, only:
   sb_<name> => <name>` — `docs/backends/language/fortran/CHECKS_ABI.md` §1-b).
+- **The retired signature-shape count.** Before `entrypoints` and `state_bindings` were declared
+  fields, a node's published update path was recovered from the generated source by counting
+  the `intent(out)` dummy arguments of a `subroutine`; the contract's "counting the output
+  arguments of a generated procedure" is that count, and no gate reads it now
+  (`docs/design/deterministic_followups.md`, "Problem state-array usage").
 
 ## 3. Build graph
 
@@ -48,3 +53,23 @@
   would overwrite that dependency's `.mod`, which is the Fortran form of the contract's
   cross-origin module-name collision.
 - **Objects.** `core/util.f90` flattens to `core__util.o`; a flat `<name>.f90` keeps `<name>.o`.
+
+## 4. Signature lowering
+
+How the language-neutral §5.1 / `public_api.signatures` form (`docs/CONTROLLED_SPEC.md`, "5.1 Canonical interface block")
+lowers to Fortran. The renderer is `tools/backends/language/fortran/signatures.py`
+(`render_signatures_to_fortran`), and its inverse parses a Fortran interface block back to the
+neutral form; where this section and the module differ, the module governs.
+
+- **Types.** `real` / `integer` / `logical` with a `kind` render as `real(<kind>)` (e.g.
+  `real(dp)`), without one as the bare type; `string` renders as `character(len=<len>)`, the
+  neutral length token `deferred` as `character(len=:)` and `assumed` as `character(len=*)`;
+  `derived` as `type(<name>)`; `procedure` as `procedure(<interface>)`.
+- **Ranks.** An argument with `dims` renders them verbatim (`coef(3)`); one without renders
+  `rank` assumed-shape colons (`(:)`, `(:,:)`).
+- **Module parameters.** Each renders as `integer, parameter :: <name> = <value>`, the neutral
+  kind value lowered (`float64` → `real64`, `float32` → `real32`); a number passes through. The
+  old Fortran tokens (`real64`, `:`, `*`) are refused in the neutral form.
+- **Names.** A published operation keeps its `<spec_id>__<op>` name; a `function` whose result
+  is named like the function renders with no `result(...)` clause, since Fortran forbids that
+  name.

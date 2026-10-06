@@ -17,7 +17,8 @@ rule that keeps it out of everything else.
 - `README.md`, `AGENTS.md`, `CLAUDE.md`.
 - `requirements*.txt`, the dependency declaration. These name the pip distributions of a
   `language` backend's parser and of the `linter` backends' tools, which is the same kind of
-  statement as the install line this rule already measures in `docs/RUNBOOK.md`.
+  statement as an install line — backend knowledge, which is why the install lines
+  `docs/RUNBOOK.md` carried moved to the backend documents (issue #424 PR-4).
 - `.github/**`, the CI workflow definitions and anything they run. A workflow's install step and
   its command lines name a `linter`'s distribution, a `compiler`'s executable and a
   `build_system`'s package, so they are in scope for the same reason. Every file under it, not

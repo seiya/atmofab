@@ -247,7 +247,8 @@ LINE_LENGTH_LIMIT = 100
 MIN_VERSION: tuple[int, int, int] = (0, 8, 0)
 BELOW_VERSION: tuple[int, int, int] = (0, 10, 0)
 
-#: The same range in the spelling an operator types (`docs/RUNBOOK.md` §0-1 quotes it).
+#: The same range in the spelling an operator types: the install line in
+#: `docs/backends/linter/fortitude/RULES.md` §Installation, and `docs/RUNBOOK.md` §0-1's range table.
 SUPPORTED_VERSION_SPEC = ">=0.8,<0.10"
 
 #: What the probe runs to learn the installed version. First line is `fortitude <x.y.z>`.

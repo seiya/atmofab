@@ -131,6 +131,10 @@ as untrusted model-authored input, exactly as it treats `files[].content`.
 }
 ```
 
+The example is a bundle for a `fortran` target: its file names, `language` value and
+`real_kind` value are that target's data, and `docs/backends/language/fortran/BUNDLE_BINDING.md`
+states the binding they follow.
+
 `files[].content` is inline. A detached-content variant (a content hash plus a
 side-channel payload) is not part of v1; if `Z2` requires one it is added as a minor
 version bump. Per the compatibility rule above, a `1.0` validator does not read a bundle
@@ -237,9 +241,9 @@ within the bundle. The rules (canonical implementation:
 - Each segment matches `[A-Za-z0-9_][A-Za-z0-9_.-]*`.
 - The extension is one allowed for the file's `language` (`LANGUAGE_EXTENSION_ALLOWLIST`,
   read from each language backend's `bundle_facts.SOURCE_EXTENSIONS`).
-- The basename is not a reserved build filename (`Makefile`, `makefile`, `GNUmakefile`,
-  `CMakeLists.txt`, `configure`) and the extension is not a build/script extension
-  (`.sh`, `.bash`, `.mk`, `.cmake`, `.py`).
+- The basename is not a reserved build filename (`RESERVED_LOGICAL_FILENAMES` in
+  `tools/codegen_bundle.py` is the set): a bundle file is never a build control file. The
+  extension is not a build/script extension (`.sh`, `.bash`, `.mk`, `.cmake`, `.py`).
 - Paths are unique **after case folding**, so a bundle cannot depend on a
   case-sensitive filesystem to keep `A.<ext>` and `a.<ext>` apart.
 - Two paths that derive the same object name are not refused by these rules: the object
@@ -326,12 +330,14 @@ declares it.
   to `pure_bundle_contract_violation` as `ir_published_operations` (single-sourced via
   `published_operations_from_ir`); it is inert on a legacy IR with no `public_api` pin or a
   non-`component` member. This keeps the bundle entrypoints, the generated `<spec_id>__`
-  subroutines (`_validate_component_generated_surface`), and the IR public_api one surface.
+  procedures (`_validate_component_generated_surface`), and the IR public_api one surface.
 
 `entrypoints` plus `state_bindings` are the structural anchors that replace
 signature-shape heuristics: the published update path of a node is a declared field,
-not something recovered by counting `intent(out)` dummy arguments
-(`docs/design/deterministic_followups.md`, "Problem state-array usage").
+not something recovered by counting the output arguments of a generated procedure
+(`docs/design/deterministic_followups.md`, "Problem state-array usage";
+`docs/backends/language/fortran/BUNDLE_BINDING.md` §2 states the `fortran` form of that
+retired count).
 
 ## Target lowering plan
 
@@ -616,7 +622,7 @@ import-statement analysis of the generated source:
 3. the host glue last.
 
 `prerequisite_objects` is the conservative total order (each unit depends on every unit
-before it), which is the same safe convention the current deterministic Makefile uses, and
+before it), which is the same safe convention the host-authored build control file uses, and
 which — combined with the `compile_after` topological order — guarantees every declared
 dependency is already built.
 
@@ -647,12 +653,13 @@ graph become a derivation input in `Z5`.
 `model` → `internal_module` → `helper` → `runner` — `checks` sits between the last two in
 `ROLE_BUILD_PRECEDENCE`, and this shape forbids that role, so no bundle of it can carry one —
 and the executable entry is last
-in the link exactly where the host glue is on the other shape; there is no `_write_makefile`
-counterpart to compare it against, because that renderer assumes the fixed model/checks/runner
-set. For a bundle of the `M3c` shape (one member, `model` + `checks`, a
+in the link exactly where the host glue is on the other shape; there is no IR-shaped
+counterpart to compare it against, because the IR-shaped control-file renderer assumes the fixed
+model/checks/runner set. For a bundle of the `M3c` shape (one member, `model` + `checks`, a
 dependency closure, host-rendered runner glue), the derived object order equals the
-object order of the IR-shaped Makefile the conductor renders via `_write_makefile`
-(dependency objects → model → checks → runner). `_write_makefile` is the Makefile author for Model B
+object order of the IR-shaped build control file the conductor renders via `_write_makefile`
+(the build system's `control_file.render_node`): dependency objects → model → checks → runner.
+`_write_makefile` is the control-file author for Model B
 dependency closures. Its reachability narrowed in Z4 (issue #171) and the accounting is
 worth stating: its sole call site is guarded by `not self._pure_leaf_substep(refs,
 "generate", "generate")`, so it now runs only for a node with no bundle shape — the shape
@@ -660,14 +667,13 @@ worth stating: its sole call site is guarded by `not self._pure_leaf_substep(ref
 derived object order against it, and because narrowing a renderer's reachability is not
 the same claim as it being dead (`atmofab-enforcement-change` rule 1-b). That equality is what the parity test pins: it compares
 `derive_build_graph(...)["link"]["objects"]` against the object list parsed out of the
-`_write_makefile`-authored Makefile. Under `Z2` a pure `M3c` node renders its Makefile
-from this derived graph (`_render_pure_makefile_from_graph`) while `_write_makefile` is
-unchanged, so the two renders are **not** byte-identical
-(they differ in header comments and in whether object paths are carried by
-`MODEL_SRC` / `MODEL_OBJ` variables or inlined per compile unit). What both must agree
-on is the derived build graph — the object set and its order — plus the overridable
-`FC` / `OBJDIR` / `BINDIR` / `BIN` / `SPEC` / `CASES` surface and the `test` / `clean`
-targets that `Build` and `Validate.execute` drive.
+`_write_makefile`-authored control file. Under `Z2` a pure `M3c` node renders its control
+file from this derived graph (`_render_pure_makefile_from_graph`, the build system's
+`control_file.render_from_graph`) while `_write_makefile` is unchanged, so the two renders are
+**not** byte-identical. What both must agree on is the derived build graph — the object set
+and its order — plus the overridable out-of-source surface and the targets that `Build` and
+`Validate.execute` drive. `docs/backends/build_system/make/CONTROL_FILE.md` §1 states, for
+`make`, where the two renders differ and which variables and targets they share.
 
 ### Design Policy: the command prohibition is structural
 

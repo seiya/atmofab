@@ -152,7 +152,8 @@ _SCANNED_GLOBS = (
     # The dependency declaration and the CI workflow (issue #161). Same reason as the two root
     # documents above and as `mcp_servers/`'s declaration files: these are where `linter`-,
     # `compiler`- and `language`-axis names are spelled, and an install line is exactly the kind
-    # of statement the ratchet already measures in `docs/RUNBOOK.md`. Added because the
+    # of statement that is backend knowledge (the runbook's own moved to `docs/backends/` in
+    # issue #424 PR-4). Added because the
     # declaration landed OUTSIDE the scan: the two `pipx install '<linter><range>'` lines deleted
     # from `docs/DEVELOPMENT.md` reappeared in `requirements-dev.txt`, the recorded debt fell by
     # two, and nothing had moved out of the neutral core.

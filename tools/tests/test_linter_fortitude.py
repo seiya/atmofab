@@ -904,11 +904,12 @@ class ProseCouplingTests(unittest.TestCase):
     def test_the_runbook_states_this_range_wherever_an_operator_reads_it(self) -> None:
         """Both sites, not "the range appears somewhere".
 
-        The document states this one at three sites since issue #120 — the host-tool table, the
-        install line, and the version-range table §0-1 gained — and a presence check is satisfied
-        while one of them drifts. The assertion below is `>= 2` rather than a count, deliberately:
-        a count here is a number that rots every time the document grows, which is the class this
-        branch spent two rounds correcting. What pins the TABLE is
+        The range is stated where an operator reads it: the version-range table of `docs/RUNBOOK.md`
+        §0-1, and — since issue #424 PR-4 moved it out of the runbook — the install line of
+        `docs/backends/linter/fortitude/RULES.md`; a presence check is satisfied while one of them
+        drifts. No count of occurrences is asserted, deliberately: a count here is
+        a number that rots every time the document grows, which is the class this branch spent two
+        rounds correcting. What pins the TABLE is
         `tools/tests/test_host_prerequisites.py`'s set identity over its range column. Measured: editing the first
         occurrence to a different range left an `assertIn` green.
 
@@ -919,10 +920,41 @@ class ProseCouplingTests(unittest.TestCase):
         range changed.
         """
         runbook = (REPO_ROOT / "docs" / "RUNBOOK.md").read_text()
-        self.assertGreaterEqual(runbook.count(lint.SUPPORTED_VERSION_SPEC), 2,
-                                "the range must reach both the tool table and the install line")
+        self.assertIn(lint.SUPPORTED_VERSION_SPEC, runbook,
+                      "the range must reach the runbook's version-range table")
         self.assertIn("unsupported_required_host_tool_versions", runbook)
-
+        # The install line moved to this linter's own document in issue #424 PR-4: RUNBOOK §0-1
+        # points at its `## Installation` section. What is read there is every mention of the
+        # distribution INSIDE a fenced code block — the lines an operator copies — whatever flags
+        # precede it (`-U`, `--upgrade`, `uv tool install`); prose in the section and the rest
+        # of RULES.md (measurement recipes pinning `==<version>`, past ranges) are not read.
+        # Each mention must carry the declared range, or pin one full `x.y.z` build the launch
+        # probe accepts. Any other specifier (`~=`, a two-part `==0.9`, a pre-release, none at
+        # all) is refused, though pip might resolve some of them in range: this pins what the
+        # document tells an operator to type, and a spelling the probe cannot vouch for is
+        # rewritten rather than reasoned about.
+        from tools.tests.test_host_prerequisites import installation_section
+        # The pointer is a ROW of §0-1's per-target table; the runbook's prose also cites the
+        # section (the issue #110 note), which must not satisfy this on its own.
+        self.assertTrue(
+            any(line.startswith("|") and re.search(r"fortitude/RULES\.md\)? §Installation", line)
+                for line in runbook.splitlines()),
+            "no row of docs/RUNBOOK.md §0-1's table points an operator at the install line")
+        rules = (REPO_ROOT / "docs" / "backends" / "linter" / "fortitude" / "RULES.md").read_text()
+        code = "\n".join(re.findall(r"^```[^\n]*\n(.*?)^```", installation_section(rules),
+                                    re.M | re.S))
+        specs = re.findall(r"fortitude-lint\s*([<>=~!][^\s'\"]*)?", code, re.I)
+        self.assertTrue(specs, "docs/backends/linter/fortitude/RULES.md §Installation has no "
+                               "install command naming fortitude-lint in a code block")
+        for spec in specs:
+            if spec == lint.SUPPORTED_VERSION_SPEC:
+                continue
+            pinned = re.fullmatch(r"==(\d+\.\d+\.\d+)", spec)
+            self.assertTrue(
+                pinned and lint.unsupported_version_reason(pinned.group(1)) is None,
+                f"an install command in RULES.md §Installation carries {spec or '(no specifier)'!r}"
+                f": neither the declared range {lint.SUPPORTED_VERSION_SPEC} nor a full x.y.z "
+                f"pin the launch probe accepts")
 
 if __name__ == "__main__":
     unittest.main()
