@@ -923,15 +923,22 @@ class ProseCouplingTests(unittest.TestCase):
         self.assertIn(lint.SUPPORTED_VERSION_SPEC, runbook,
                       "the range must reach the runbook's version-range table")
         self.assertIn("unsupported_required_host_tool_versions", runbook)
-        # The install line moved to this linter's own document in issue #424 PR-4, and RUNBOOK
-        # §0-1 points there; it must carry the range on both of its install spellings.
+        # The install line moved to this linter's own document in issue #424 PR-4: RUNBOOK §0-1
+        # points at its `## Installation` section, and every install spelling of the
+        # distribution there must carry exactly the declared range. The rest of RULES.md
+        # (measurement recipes pinning `==<version>`, past ranges) is not an install line.
+        from tools.tests.test_host_prerequisites import installation_section
+        self.assertRegex(runbook, r"fortitude/RULES\.md\)? §Installation",
+                         "docs/RUNBOOK.md no longer points an operator at the install line")
         rules = (REPO_ROOT / "docs" / "backends" / "linter" / "fortitude" / "RULES.md").read_text()
-        install = [line for line in rules.splitlines() if "install 'fortitude-lint" in line]
-        self.assertTrue(install, "docs/backends/linter/fortitude/RULES.md lost its install line")
-        for line in install:
-            self.assertEqual(line.count(lint.SUPPORTED_VERSION_SPEC),
-                             line.count("install 'fortitude-lint"),
-                             f"an install spelling in RULES.md is not the declared range:\n  {line}")
+        section = installation_section(rules)
+        spellings = re.findall(r"install\s+['\"]?fortitude-lint([^\s'\"]*)", section)
+        self.assertTrue(spellings, "docs/backends/linter/fortitude/RULES.md §Installation lost "
+                                   "its install line")
+        for spec in spellings:
+            self.assertEqual(spec, lint.SUPPORTED_VERSION_SPEC,
+                             f"an install spelling in RULES.md §Installation carries {spec!r}, "
+                             f"not the declared range")
 
 
 if __name__ == "__main__":

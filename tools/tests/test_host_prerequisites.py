@@ -27,6 +27,15 @@ from tools import workflow_conductor as conductor  # noqa: E402
 from tools.backends import registry as backend_registry  # noqa: E402
 from tools.tests.target_fixtures import FORTRAN_CPU  # noqa: E402
 
+
+def installation_section(document: str) -> str:
+    """The body of a backend document's `## Installation` section, or "" when it has none.
+
+    The section runs to the next `## ` heading. Shared with `test_linter_fortitude`, which reads
+    the same section for the install spellings."""
+    match = re.search(r"^## Installation[^\n]*\n(.*?)(?=^## |\Z)", document, re.M | re.S)
+    return match.group(1) if match else ""
+
 #: The selection a `fortran_cpu` run probes: the checkout declares several profiles, and the probe
 #: takes no default (issue #289, R4-b PR-5).
 _SELECTION = hp.resolve_launch_axis_selection(FORTRAN_CPU)
@@ -506,9 +515,11 @@ class RunbookVersionRangeTests(unittest.TestCase):
         `origin/main` red.
 
         The property restored here is narrower than a whole-document scan and wider than the
-        table: any range on a LINE that names a linter's executable must be that linter's. That
-        covers the install line and the host-tool table row, and cannot fire on a `python3` or
-        `cmake` prerequisite, because those lines name no linter.
+        table: any range on a LINE that names a linter's executable must be that linter's. It
+        reads `docs/RUNBOOK.md` (the version-range table) and, since issue #424 PR-4 moved the
+        install line out of the runbook, the `## Installation` section of the linter's own
+        `RULES.md`; it cannot fire on a `python3` or `cmake` prerequisite, because those lines name
+        no linter.
         """
         runbook = self._runbook()
         declared = self._declared_ranges()
@@ -520,11 +531,14 @@ class RunbookVersionRangeTests(unittest.TestCase):
             executable = backend_registry.capability_module(
                 "linter", backend_id, "lint").EXECUTABLE
             # The install line lives in the linter's own document since issue #424 PR-4, which
-            # RUNBOOK §0-1 points to; that document is read for ITS linter only.
+            # RUNBOOK §0-1 points to. Only that document's `## Installation` section is read, and
+            # only for ITS linter: the rest of the document records measurements and past ranges
+            # beside the linter's name, which this check must not refuse.
             rules = REPO_ROOT / "docs" / "backends" / "linter" / backend_id / "RULES.md"
             documents = [("docs/RUNBOOK.md", runbook)]
             if rules.is_file():
-                documents.append((str(rules.relative_to(REPO_ROOT)), rules.read_text()))
+                documents.append((f"{rules.relative_to(REPO_ROOT)} §Installation",
+                                  installation_section(rules.read_text())))
             for name, text in documents:
                 for line in text.splitlines():
                     if executable not in line:
