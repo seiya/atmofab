@@ -1226,6 +1226,11 @@ class DerivedNameLengthTest(unittest.TestCase):
         self.assertIn(str(bundle.IDENTIFIER_MAX), str(ctx.exception))
 
 
+def _flit_for_test(text: str) -> str:
+    from tools.backends.language.fortran import runner as fortran_runner
+    return fortran_runner._flit(text)
+
+
 class LineWidthTest(unittest.TestCase):
     """R1/M3c-β (review round 3): every rendered line must stay within the 100-col lint limit,
     including for long IR-sourced names (metric addresses, case_ids) — the hot lines are wrapped."""
@@ -1316,6 +1321,38 @@ class LineWidthTest(unittest.TestCase):
             with self.assertRaises(RenderError) as cm:
                 render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertIn(f"{lowered}-column limit", str(cm.exception))
+
+    def test_every_limit_read_follows_the_linter_s_declaration_upward(self) -> None:
+        """The row above lowers the limit, which the global backstop alone would catch; this one
+        RAISES it, so each of the renderer's other two reads must follow the declaration on its
+        own: the check-id width bound in `_checks` accepts an id whose escaped assignment is 100
+        columns, and the state-binding import keeps a 102-column `sb_<v> => <v>, &` line on one
+        line rather than wrapping it. A literal 100 restored at either read turns this row
+        red (the backstop does not see it, because the raised limit is above both lines)."""
+        from tools.backends import registry
+
+        lint = registry.capability_module(
+            "linter", registry.linter_for_language("fortran"), "lint")
+        raised = 110
+        check_id = "a" * 54 + "'" * 10  # 25 + 1 + 74 escaped == 100 columns
+        name = "v" * 44  # `    sb_<44> => <44>, &` == 14 + 88 == 102 columns
+        self.assertEqual(25 + 1 + len(_flit_for_test(check_id)), 100)
+        self.assertEqual(len(f"    sb_{name} => {name}, &"), 102)
+        ir = copy.deepcopy(_boundary_ir())
+        ir["io_contract"]["diagnostics_contract"]["checks"] = [{"id": check_id}]
+        schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
+        for v in schema["variables"]:
+            if v["name"] == "max_abs_deviation":
+                v["name"] = name
+        for r in ir["io_contract"]["test_evidence_requirements"]:
+            r["required_raw_variables"] = [
+                name if x == "max_abs_deviation" else x for x in r["required_raw_variables"]]
+        with mock.patch.object(lint, "LINE_LENGTH_LIMIT", raised):
+            txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        self.assertLess(self._maxw(txt), raised)
+        self.assertIn(f"sb_{name} => {name}", txt)
+        self.assertNotIn(f"sb_{name} => &", txt)
+        self.assertIn("case_checks(1)%id = 'aaaa", txt)
 
     def test_a_snapshot_name_rendering_an_exactly_100_column_line_is_refused(self) -> None:
         # The variable-name path had no `_checks`-style strict bound: a scalar name whose
