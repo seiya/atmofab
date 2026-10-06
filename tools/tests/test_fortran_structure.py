@@ -189,6 +189,15 @@ class ProcedureDeclarationsTests(unittest.TestCase):
     def test_the_abbreviated_module_procedure_answers_none(self) -> None:
         self.assertIsNone(self._definitions()["mp"])
 
+    def test_the_grammar_check_covers_the_declaration_node_types(self) -> None:
+        # `_load_parser` refuses a grammar that does not define a `_REQUIRED_NODE_TYPES` member.
+        # A renamed declaration node would leave every pinned dummy "not declared" — total
+        # over-refusal with no operator-facing cause — so the two types `declarations` collects
+        # must be members, and each must be one the installed grammar defines.
+        self.assertLessEqual(set(fs._DECLARATION_TYPES), set(fs._REQUIRED_NODE_TYPES))
+        self.assertEqual(set(fs._DECLARATION_TYPES),
+                         {"variable_declaration", "variable_modification"})
+
 
 class DeepNestingTests(unittest.TestCase):
     def test_a_deeply_nested_body_is_walked_without_recursion(self) -> None:

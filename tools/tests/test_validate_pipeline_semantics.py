@@ -20588,7 +20588,9 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
                 violations = self._gate(source)
                 self.assertTrue(
                     any("'hx__write_metrics_basis' in the pinned form" in v
-                        and "abbreviated `module procedure`" in v for v in violations),
+                        and "abbreviated `module procedure`" in v
+                        and "Write the full header exactly as §5.1 pins it" in v
+                        for v in violations),
                     violations)
 
     def test_a_labelled_do_takes_the_label_preserving_reading_and_still_compares_clean(
