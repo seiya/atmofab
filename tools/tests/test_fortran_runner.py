@@ -1517,6 +1517,57 @@ class HarnessPinTest(unittest.TestCase):
                 header, "type, private :: harness_fortran_cpu__h_named"))
         self.assertIn("harness_fortran_cpu__h_named", str(cm.exception))
 
+    def test_an_abi_identical_procedure_spelling_passes_the_pin(self) -> None:
+        # Issue #430: the pin reads a procedure the way the Generate gate does — by what its
+        # definition declares — so the O1 / O2 spellings the gate now certifies (a `dimension(:)`
+        # attribute, a `kind=` selector) must not stop every dependent node's render here.
+        o1 = "real(dp), intent(in) :: a(:)\n"
+        o2 = "real(dp), intent(in) :: x\n"
+        self.assertIn(o1, self.src)
+        self.assertIn(o2, self.src)
+        assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src.replace(
+            o1, "real(dp), dimension(:), intent(in) :: a\n", 1).replace(
+            o2, "real(kind=dp), intent(in) :: x\n", 1))
+
+    def test_an_attribute_statement_on_a_pinned_dummy_fails_the_pin(self) -> None:
+        # The membership comparison this replaced accepted `optional :: x` beside the pinned
+        # declaration; the renderer then emits a call whose actual the harness may ignore.
+        decl = "    real(dp), intent(in) :: x\n"
+        self.assertIn(decl, self.src)
+        with self.assertRaises(RenderError) as cm:
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, self.src.replace(
+                decl, decl + "    optional :: x\n", 1))
+        self.assertIn("harness_fortran_cpu__emit_real", str(cm.exception))
+
+    def test_a_local_type_shadowing_a_pinned_type_fails_the_pin(self) -> None:
+        # Issue #430 round 1: a published procedure defining its own type under the name a dummy
+        # is pinned to makes that dummy's type the local one. The pin passes the definition's
+        # local types to `surface_drift` as the gate does.
+        header = "subroutine harness_fortran_cpu__write_metrics_basis("
+        self.assertIn(header, self.src)
+        start = self.src.index(header)
+        body = self.src.index("\n", start) + 1
+        shadowed = (self.src[:body] + "    type :: HARNESS_FORTRAN_CPU__H_MB_ENTRY\n"
+                    "      integer :: k\n    end type HARNESS_FORTRAN_CPU__H_MB_ENTRY\n"
+                    + self.src[body:])
+        with self.assertRaises(RenderError) as cm:
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, shadowed)
+        self.assertIn("harness_fortran_cpu__write_metrics_basis", str(cm.exception))
+
+    def test_an_unresolvable_certified_source_is_a_render_error(self) -> None:
+        wedged = self.src.replace(
+            "contains\n",
+            "contains\n  subroutine wedge()\n    real :: endsubroutine\n"
+            "    endsubroutine = 1.0\n  end subroutine wedge\n", 1)
+        self.assertNotEqual(wedged, self.src)
+        with self.assertRaises(RenderError) as cm:
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, wedged)
+        self.assertIn("no longer resolves through the Fortran structure front end",
+                      str(cm.exception))
+        # Where, not only how many: the first error's statement and snippet.
+        self.assertRegex(str(cm.exception), r"the first at statement \d+ of its joined view: '= 1\.0'")
+        self.assertIn("do not edit the renderer pin", str(cm.exception))
+
     def test_attribute_form_with_a_drifted_value_still_fails_the_pin(self) -> None:
         src = self.src.replace("integer, parameter :: case_id_len = 64",
                                "integer, parameter, public :: case_id_len = 32", 1)
@@ -2670,8 +2721,14 @@ class HarnessPinTableTest(unittest.TestCase):
         struct = parse_signatures_from_fortran(iface)
         sigs = [{"symbol": s["name"], "signature": s}
                 for s in [*struct["procedures"], *struct["types"]]]
-        source = ("  integer, parameter :: dp = real64\n"
-                  f"  integer, parameter :: case_id_len = {CASE_ID_LEN}\n" + iface)
+        # A module, not the bare interface text: since issue #430 the pin reads each procedure
+        # from the harness model module's own definition, as the Generate gate does.
+        cut = re.search(r"^(?:subroutine|function) ", iface, re.MULTILINE).start()
+        source = (f"module {DIST_HARNESS}_model\n"
+                  "  use, intrinsic :: iso_fortran_env, only: real64\n"
+                  "  integer, parameter :: dp = real64\n"
+                  f"  integer, parameter :: case_id_len = {CASE_ID_LEN}\n" + iface[:cut]
+                  + "contains\n" + iface[cut:] + f"end module {DIST_HARNESS}_model\n")
         assert_harness_pin(_distributed_ir(), DIST_SID, DIST_HARNESS, sigs, source)
         for dropped in ("__gather_r2", "__init", "__partition", "__reduce_max"):
             with self.subTest(dropped=dropped):

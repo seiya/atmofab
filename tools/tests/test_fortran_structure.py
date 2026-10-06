@@ -126,6 +126,96 @@ class ParseViewShapeTests(unittest.TestCase):
         self.assertIsNone(fs.parse_view(view).procedures[0].contains_at)
 
 
+class ProcedureDeclarationsTests(unittest.TestCase):
+    """`Procedure.declarations` and `module_level_definitions` (issue #430): a definition's OWN
+    declaration statements, which the §5.1 signature pin compares."""
+
+    _SOURCE = textwrap.dedent("""
+        module m
+          implicit none
+        contains
+          subroutine s(a, n)
+            type Local_T
+              integer :: k
+            end type Local_T
+            integer, intent(in) :: a(:)
+            integer n
+            optional :: n
+            value n
+            interface
+              subroutine cb(k)
+                integer :: k
+              end subroutine cb
+            end interface
+            block
+              real :: b_local
+            end block
+          contains
+            subroutine inner(q)
+              integer :: q
+            end subroutine inner
+          end subroutine s
+          function f(x) result(r)
+            type Local_F
+              integer :: k
+            end type Local_F
+            integer, intent(in) :: x
+            integer :: r
+            r = x
+          end function f
+        end module m
+        submodule (m) impl
+        contains
+          module procedure mp
+          end procedure mp
+        end submodule impl
+    """)
+
+    def _definitions(self):
+        from tools.backends.language.fortran import source as fortran_source
+        return fortran_source.module_level_definitions(self._SOURCE.lower(), "m")
+
+    def test_only_the_direct_declaration_children_are_recorded(self) -> None:
+        tree = fs.parse_view(view_of(self._SOURCE))
+        s = next(p for p in tree.procedures if p.name == "s")
+        texts = [(d.kind, tree.view[d.start:d.end].strip()) for d in s.declarations]
+        self.assertEqual(texts, [
+            ("variable_declaration", "integer, intent(in) :: a(:)"),
+            ("variable_declaration", "integer n"),
+            ("variable_modification", "optional :: n"),
+            ("variable_modification", "value n"),
+        ])
+        inner = next(p for p in tree.procedures if p.name == "inner")
+        self.assertEqual([tree.view[d.start:d.end].strip() for d in inner.declarations],
+                         ["integer :: q"])
+
+    def test_module_level_definitions_reads_header_and_own_declarations(self) -> None:
+        definitions = self._definitions()
+        self.assertEqual(set(definitions), {"s", "f", "mp"})
+        # A function's own local types are read as a subroutine's are (round 2).
+        self.assertEqual(definitions["f"].local_types, ("local_f",))
+        self.assertEqual(definitions["s"].header, "subroutine s(a, n)")
+        self.assertEqual(definitions["s"].declarations[0],
+                         ("variable_declaration", "integer, intent(in) :: a(:)"))
+        self.assertEqual(len(definitions["s"].declarations), 4)
+        # The local type's component is a child of the type, not a declaration of `s`.
+        self.assertEqual(definitions["s"].local_types, ("local_t",))
+
+    def test_the_abbreviated_module_procedure_answers_none(self) -> None:
+        self.assertIsNone(self._definitions()["mp"])
+
+    def test_the_grammar_check_covers_the_declaration_node_types(self) -> None:
+        # `_load_parser` refuses a grammar that does not define a `_REQUIRED_NODE_TYPES` member.
+        # A renamed declaration node would leave every pinned dummy "not declared" — total
+        # over-refusal with no operator-facing cause — so the two types `declarations` collects
+        # must be members, and each must be one the installed grammar defines.
+        self.assertLessEqual(set(fs._DECLARATION_TYPES), set(fs._REQUIRED_NODE_TYPES))
+        self.assertLessEqual({"derived_type_definition", "derived_type_statement", "type_name"},
+                             set(fs._REQUIRED_NODE_TYPES))
+        self.assertEqual(set(fs._DECLARATION_TYPES),
+                         {"variable_declaration", "variable_modification"})
+
+
 class DeepNestingTests(unittest.TestCase):
     def test_a_deeply_nested_body_is_walked_without_recursion(self) -> None:
         # The walk was recursive, one Python frame per tree node, so a source with deeply nested

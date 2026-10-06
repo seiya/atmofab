@@ -741,19 +741,20 @@ def module_level_procedure_names(
 
 
 
-def module_level_definition_headers(
+def module_level_definitions(
     lowered: str, unit_name: str
-) -> dict[str, tuple[str, ...] | None]:
-    """The stanza of each procedure ``lowered`` DEFINES at the top level of ``unit_name``, read
-    from the definition the structure reader found — the header the §5.1 comparison must read.
+) -> dict[str, fortran_structure.Definition | None]:
+    """The header and own declaration statements of each procedure ``lowered`` DEFINES at the top
+    level of ``unit_name``, read from the definition the structure reader found — what the §5.1
+    comparison must read.
 
     The reading is this module's (`structure_reading`, which picks the stripped or the
-    label-preserving view); what counts as a definition's header and specification part is the
-    backend's, and `structure.module_level_definition_stanzas` is canonical for it and for why
-    the whole-file stanza splitter's answer is the wrong one. Raises the same two errors as
+    label-preserving view); what counts as a definition's header and declarations is the
+    backend's, and `structure.module_level_definitions` is canonical for it and for why the
+    whole-file stanza splitter's answer is the wrong one. Raises the same two errors as
     `structure_reading`."""
     view, tree, to_view = structure_reading(lowered)
-    return fortran_structure.module_level_definition_stanzas(
+    return fortran_structure.module_level_definitions(
         tree, unit_name, lambda start, stop: view[to_view(start):to_view(stop)])
 
 

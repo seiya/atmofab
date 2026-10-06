@@ -1963,3 +1963,162 @@ class Section51StanzaLayerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DeclaredCharacteristicsTests(unittest.TestCase):
+    """The `Entity` currency the §5.1 signature pin compares a generated source in (issue #430).
+    Each canonicalisation is ONE row in each direction, so dropping a member of the enumeration
+    fails a row of its own."""
+
+    E = fortran_signatures.Entity
+
+    def _one(self, text: str, *, has_type_spec: bool = True):
+        (name, entity), = fortran_signatures.parse_declaration(text, has_type_spec=has_type_spec)
+        return name, entity
+
+    def test_sole_selectors_are_reduced_to_the_positional_form(self) -> None:
+        cts = fortran_signatures.canonical_type_spec
+        for written, canonical in (
+                ("real(kind=dp)", "real(dp)"), ("INTEGER ( KIND = i8 )", "integer(i8)"),
+                ("logical(kind=c_bool)", "logical(c_bool)"), ("complex(kind=dp)", "complex(dp)"),
+                ("character(len=:)", "character(:)"), ("character(len=*)", "character(*)"),
+                ("real(dp)", "real(dp)"), ("type(t)", "type(t)"),
+                ("procedure(iface)", "procedure(iface)"), ("double precision", "doubleprecision")):
+            with self.subTest(written):
+                self.assertEqual(cts(written), canonical)
+
+    def test_a_two_selector_or_a_kind_only_character_is_left_as_written(self) -> None:
+        cts = fortran_signatures.canonical_type_spec
+        self.assertEqual(cts("character(kind=c_char,len=1)"), "character(kind=c_char,len=1)")
+        self.assertEqual(cts("character(kind=k)"), "character(kind=k)")
+        self.assertEqual(cts("character(len=1,kind=c_char)"), "character(len=1,kind=c_char)")
+        self.assertEqual(cts("real(kind=selected_real_kind(15,307))"),
+                         "real(selected_real_kind(15,307))")
+        self.assertNotEqual(cts("character(kind=k)"), cts("character(k)"))
+
+    def test_a_lower_bound_of_one_is_dropped_and_nothing_else(self) -> None:
+        cd = fortran_signatures.canonical_dims
+        self.assertEqual(cd("1:n, 1:, :, 0:5, *, 1:*"), ("n", ":", ":", "0:5", "*", "*"))
+        self.assertEqual(cd("10:20"), ("10:20",))
+
+    def test_a_dimension_attribute_is_the_shape_and_the_entitys_own_spec_wins(self) -> None:
+        self.assertEqual(self._one("type(t), dimension(:), intent(in) :: e"),
+                         self._one("type(t), intent(in) :: e(:)"))
+        _name, entity = self._one("real, dimension(:) :: a(3)")
+        self.assertEqual(entity.dims, ("3",))
+        bare = self._one("dimension :: x(:)", has_type_spec=False)[1]
+        self.assertEqual((bare.dims, bare.attrs), ((":",), frozenset()))
+        self.assertEqual(self._one("dimension x(1:)", has_type_spec=False)[1].dims, (":",))
+
+    def test_attributes_are_a_set_and_each_is_kept(self) -> None:
+        _n, entity = self._one("integer, intent(in out), optional, value, target :: n")
+        self.assertEqual(entity.attrs,
+                         frozenset({"intent(inout)", "optional", "value", "target"}))
+        self.assertEqual(self._one("intent(in) n", has_type_spec=False)[1].attrs,
+                         frozenset({"intent(in)"}))
+
+    def test_initialisers_keep_their_operator(self) -> None:
+        a, p = fortran_signatures.parse_declaration(
+            "integer :: a(2) = [integer :: 1, 2], p => null()", has_type_spec=True)
+        self.assertEqual(a[1].init, "=[integer::1,2]")
+        self.assertEqual(p[1].init, "=>null()")
+        self.assertIsNone(self._one("integer :: k")[1].init)
+
+    def test_a_codimension_and_a_length_suffix_are_kept_as_attributes(self) -> None:
+        self.assertIn("[*]", self._one("real :: x(:)[*]")[1].attrs)
+        self.assertIn("*10", self._one("character :: s*10")[1].attrs)
+
+    def test_a_type_declaration_without_double_colon_is_refused(self) -> None:
+        with self.assertRaises(fortran_signatures.SignatureParseError) as cm:
+            fortran_signatures.parse_declaration("real(dp) x", has_type_spec=True)
+        self.assertIn("write it with `::`", str(cm.exception))
+        for bad in ("integer :: 3x", "integer :: x(", "integer :: x[*", "integer :: x + 1"):
+            with self.subTest(bad), self.assertRaises(fortran_signatures.SignatureParseError):
+                fortran_signatures.parse_declaration(bad, has_type_spec=True)
+
+    def test_merge_unions_attributes_and_records_a_characteristic_given_twice(self) -> None:
+        merged = fortran_signatures.merge_entities([
+            ("variable_declaration", "type(t) :: e(:)"),
+            ("variable_modification", "intent(in) :: e"),
+            ("variable_declaration", "integer :: k"),
+            ("variable_declaration", "real :: k"),
+            ("variable_modification", "dimension :: m(:)"),
+            ("variable_declaration", "integer :: m(3)"),
+            ("variable_declaration", "integer :: q = 1"),
+            ("variable_modification", "parameter :: q"),
+            ("variable_declaration", "real(dp) bad"),
+        ])
+        self.assertEqual(merged.entities["e"],
+                         self.E("type(t)", frozenset({"intent(in)"}), (":",), None))
+        self.assertEqual(merged.twice, {"k": "a type", "m": "a shape"})
+        self.assertNotIn("q", merged.twice)
+        self.assertEqual(merged.unreadable, ("real(dp) bad",))
+
+    def test_surface_drift_compares_the_header_for_equality(self) -> None:
+        pinned = ["subroutine s(n)", "integer, intent(in) :: n"]
+        decls = [("variable_declaration", "integer, intent(in) :: n")]
+        sd = fortran_signatures.surface_drift
+        self.assertEqual(sd(pinned, header="SUBROUTINE S( n )", declarations=decls,
+                            exact=False), [])
+        for header, cue in (("pure subroutine s(n)", "`pure`"),
+                            ("subroutine s(n) bind(c)", "bind(c)"),
+                            ("subroutine s(m)", "subroutine s(m)")):
+            with self.subTest(header):
+                drift = sd(pinned, header=header, declarations=decls, exact=False)
+                self.assertTrue(any(cue in d for d in drift), drift)
+
+    def test_surface_drift_names_each_difference(self) -> None:
+        pinned = ["function f(x) result(s)", "real(dp), intent(in) :: x(:)",
+                  "character(len=:), allocatable :: s"]
+        sd = fortran_signatures.surface_drift
+        good = [("variable_declaration", "real(kind=dp), dimension(1:), intent(in) :: x"),
+                ("variable_declaration", "character(:), allocatable :: s"),
+                ("variable_declaration", "integer :: local")]
+        self.assertEqual(sd(pinned, header="function f(x) result(s)", declarations=good,
+                            exact=False), [])
+        exact = sd(pinned, header="function f(x) result(s)", declarations=good, exact=True)
+        self.assertEqual(len(exact), 1)
+        self.assertIn("`local`", exact[0])
+        for extra, cue in (
+                (("variable_modification", "optional :: x"), "it carries `optional`"),
+                (("variable_modification", "intent(inout) :: x"), "it carries `intent(inout)`"),
+                (("variable_declaration", "real(dp) :: s"), "given a type by two statements")):
+            with self.subTest(extra):
+                drift = sd(pinned, header="function f(x) result(s)",
+                           declarations=[*good, extra], exact=False)
+                self.assertTrue(any(cue in d for d in drift), drift)
+        cases = {
+            "type": ([("variable_declaration", "real, intent(in) :: x(:)")], "its type is `real`"),
+            "lacks": ([("variable_declaration", "real(dp) :: x(:)")], "it lacks `intent(in)`"),
+            "shape": ([("variable_declaration", "real(dp), intent(in) :: x(:,:)")],
+                      "its shape is `(:,:)`"),
+            "scalar": ([("variable_declaration", "real(dp), intent(in) :: x")],
+                       "its shape is scalar"),
+            "init": ([("variable_declaration", "real(dp), intent(in) :: x(:) = 0")],
+                     "its initialiser is `=0`"),
+            "undeclared": ([], "`x` is not declared by a type declaration or attribute statement "
+                           "of the procedure's own specification part (one inside a `block` or a "
+                           "contained procedure is not the procedure's) — declare it exactly as "
+                           "the pinned line does"),
+            "no type": ([("variable_modification", "intent(in) :: x(:)")],
+                        "no type declaration gives it a type"),
+            "::-less": ([("variable_declaration", "real(dp) x(:)")], "write each declaration"),
+        }
+        for label, (decls, cue) in cases.items():
+            with self.subTest(label):
+                drift = sd(pinned, header="function f(x) result(s)",
+                           declarations=[*decls, good[1]], exact=False)
+                self.assertTrue(any(cue in d for d in drift), drift)
+
+    def test_an_unreadable_statement_not_naming_a_pinned_dummy_is_not_a_drift(self) -> None:
+        drift = fortran_signatures.surface_drift(
+            ["subroutine s(n)", "integer, intent(in) :: n"], header="subroutine s(n)",
+            declarations=[("variable_declaration", "integer, intent(in) :: n"),
+                          ("variable_declaration", "real other")], exact=False)
+        self.assertEqual(drift, [])
+
+    def test_source_atoms_reads_each_statement_of_a_semicolon_joined_line(self) -> None:
+        atoms = fortran_signatures.source_atoms(
+            "integer, parameter :: dp = real64; integer :: k\n")
+        self.assertIn("integer,parameter::dp=real64", atoms)
+        self.assertIn("integer::k", atoms)
