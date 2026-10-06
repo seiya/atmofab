@@ -56,4 +56,4 @@ Untrusted documents inlined into the prompt (`tests.md`, the IR, the host-render
 
 #### Additional contract on `repair_strategy=reuse`
 
-A re-submission with `repair_strategy=reuse` is limited to a diff fix against the output of `repair_target_agent_run_id` (the repair / retry section of `docs/ORCHESTRATION.md` is the canonical source): the leaf returns its document and the host writes whatever it carries, as for any substep. `record-launch` requires a non-empty `repair_target_agent_run_id` and `repair_reason` on every `reuse` / `restart` request.
+A re-submission with `repair_strategy=reuse` is limited to a diff fix against the output of `repair_target_agent_run_id` (the repair / retry section of `docs/ORCHESTRATION.md` is the canonical source): the leaf returns its document and the host writes what it accepts, as for any substep. `record-launch` requires a non-empty `repair_target_agent_run_id` and `repair_reason` on every `reuse` / `restart` request.

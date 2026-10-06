@@ -8502,6 +8502,27 @@ shell_tool                       stable             true
                     response_payload=_spawn_response_payload("sess_step_repair_001"),
                 )
 
+    def test_record_launch_requires_repair_reason_for_reuse(self) -> None:
+        """ValueError when repair_reason is "none" with repair_strategy=reuse — the second half of
+        the requirement docs/ORCHESTRATION.md §repair / retry states for a re-submission."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._minimal_preflight_setup(repo_root)
+            with self.assertRaisesRegex(ValueError, "requires non-empty repair_reason"):
+                record_launch(
+                    repo_root=repo_root,
+                    orchestration_id="orch_001",
+                    parent_agent_run_id="orch_run_001",
+                    child_agent_run_id="step_run_repair_001",
+                    request_payload=self._minimal_request_payload(
+                        issue_severity="minor",
+                        repair_strategy="reuse",
+                        repair_target_agent_run_id="step_run_prior_001",
+                        repair_reason="none",
+                    ),
+                    response_payload=_spawn_response_payload("sess_step_repair_001"),
+                )
+
     def test_record_launch_rejects_traversal_in_child_agent_run_id(self) -> None:
         """child_agent_run_id containing path separators must be rejected before path construction."""
         with tempfile.TemporaryDirectory() as tmp:
