@@ -515,25 +515,38 @@ class RunbookVersionRangeTests(unittest.TestCase):
         from tools.backends import registry as backend_registry
 
         checked = 0
+        install_lines = 0
         for backend_id, spec in sorted(declared.items()):
             executable = backend_registry.capability_module(
                 "linter", backend_id, "lint").EXECUTABLE
-            for line in runbook.splitlines():
-                if executable not in line:
-                    continue
-                found = set(self._RANGE_RE.findall(line))
-                if not found:
-                    continue
-                checked += 1
-                self.assertEqual(
-                    found, {spec},
-                    f"docs/RUNBOOK.md states a version range beside {executable!r} that is not "
-                    f"the range {backend_id} declares ({spec}); an operator following this line "
-                    f"installs a build the launch probe refuses.\n  {line.strip()}")
+            # The install line lives in the linter's own document since issue #424 PR-4, which
+            # RUNBOOK §0-1 points to; that document is read for ITS linter only.
+            rules = REPO_ROOT / "docs" / "backends" / "linter" / backend_id / "RULES.md"
+            documents = [("docs/RUNBOOK.md", runbook)]
+            if rules.is_file():
+                documents.append((str(rules.relative_to(REPO_ROOT)), rules.read_text()))
+            for name, text in documents:
+                for line in text.splitlines():
+                    if executable not in line:
+                        continue
+                    found = set(self._RANGE_RE.findall(line))
+                    if not found:
+                        continue
+                    checked += 1
+                    install_lines += "install" in line
+                    self.assertEqual(
+                        found, {spec},
+                        f"{name} states a version range beside {executable!r} that is not "
+                        f"the range {backend_id} declares ({spec}); an operator following this "
+                        f"line installs a build the launch probe refuses.\n  {line.strip()}")
         self.assertGreaterEqual(
             checked, 2,
-            "no line in docs/RUNBOOK.md states a range beside a linter's executable name; this "
-            "check has stopped observing the install line it exists for")
+            "no line states a range beside a linter's executable name; this check has stopped "
+            "observing the lines it exists for")
+        self.assertGreaterEqual(
+            install_lines, 1,
+            "no install line beside a linter's executable name carries a range; this check has "
+            "stopped observing the install line it exists for")
 
     def test_a_range_outside_the_table_s_range_column_is_not_this_check_s_business(self) -> None:
         """The over-refusal probe, driving the REAL extractor over a synthetic document.

@@ -144,6 +144,22 @@ Codes deliberately excluded, with the ground:
 - The ceiling states what was measured. A build at or above it is refused rather than trusted;
   widening the range requires re-running the measurement below and recording the result here.
 
+## Installation
+The host that runs `Generate.gate` for a `fortran` target needs the `fortitude` executable inside
+the supported range (`docs/RUNBOOK.md` §0-1, `missing_required_host_tools` and
+`unsupported_required_host_tool_versions`). It is distributed as `fortitude-lint`:
+
+```
+pipx install 'fortitude-lint>=0.8,<0.10'   # or: pip install 'fortitude-lint>=0.8,<0.10'
+```
+
+The range in that line is the one `lint.py` declares; a build outside it is refused at launch.
+
+Without the launch refusal, an out-of-range build surfaces at the first `Generate.gate` and
+consumes the whole `Generate` retry budget on findings no leaf can act on: the vendor enabled 18
+additional rules by default in 0.9.0, and on this tree every finding they produce lands in the
+host-rendered runner (issue #110; the `S241` row of §Declared set and §Measurement).
+
 ## Measurement (2026-08-27 / 2026-08-28, four builds installed side by side)
 
 Reproduce with `python3 -m pip install --target <dir> fortitude-lint==<version>`; the executable

@@ -154,7 +154,7 @@ def _check_required_cli_tools() -> list[str]:
 # There is no tuple of names here, deliberately. Every name is argv[0] of the command that will
 # actually run it, read out of the table that runs it (`tools/host_prerequisites.py`), so this
 # `neutral core` file names no technology and the probe cannot look for a program the gate never
-# launches. `docs/RUNBOOK.md` §0-1 carries the install lines.
+# launches. `docs/RUNBOOK.md` §0-1 points to the backend documents that carry the install lines.
 
 
 def _host_probe_selection(target_profile: TargetProfile) -> dict[str, str]:

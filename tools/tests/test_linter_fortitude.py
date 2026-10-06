@@ -904,11 +904,12 @@ class ProseCouplingTests(unittest.TestCase):
     def test_the_runbook_states_this_range_wherever_an_operator_reads_it(self) -> None:
         """Both sites, not "the range appears somewhere".
 
-        The document states this one at three sites since issue #120 — the host-tool table, the
-        install line, and the version-range table §0-1 gained — and a presence check is satisfied
-        while one of them drifts. The assertion below is `>= 2` rather than a count, deliberately:
-        a count here is a number that rots every time the document grows, which is the class this
-        branch spent two rounds correcting. What pins the TABLE is
+        The range is stated where an operator reads it: the version-range table of `docs/RUNBOOK.md`
+        §0-1, and — since issue #424 PR-4 moved it out of the runbook — the install line of
+        `docs/backends/linter/fortitude/RULES.md`; a presence check is satisfied while one of them
+        drifts. No count of occurrences is asserted, deliberately: a count here is
+        a number that rots every time the document grows, which is the class this branch spent two
+        rounds correcting. What pins the TABLE is
         `tools/tests/test_host_prerequisites.py`'s set identity over its range column. Measured: editing the first
         occurrence to a different range left an `assertIn` green.
 
@@ -919,9 +920,18 @@ class ProseCouplingTests(unittest.TestCase):
         range changed.
         """
         runbook = (REPO_ROOT / "docs" / "RUNBOOK.md").read_text()
-        self.assertGreaterEqual(runbook.count(lint.SUPPORTED_VERSION_SPEC), 2,
-                                "the range must reach both the tool table and the install line")
+        self.assertIn(lint.SUPPORTED_VERSION_SPEC, runbook,
+                      "the range must reach the runbook's version-range table")
         self.assertIn("unsupported_required_host_tool_versions", runbook)
+        # The install line moved to this linter's own document in issue #424 PR-4, and RUNBOOK
+        # §0-1 points there; it must carry the range on both of its install spellings.
+        rules = (REPO_ROOT / "docs" / "backends" / "linter" / "fortitude" / "RULES.md").read_text()
+        install = [line for line in rules.splitlines() if "install 'fortitude-lint" in line]
+        self.assertTrue(install, "docs/backends/linter/fortitude/RULES.md lost its install line")
+        for line in install:
+            self.assertEqual(line.count(lint.SUPPORTED_VERSION_SPEC),
+                             line.count("install 'fortitude-lint"),
+                             f"an install spelling in RULES.md is not the declared range:\n  {line}")
 
 
 if __name__ == "__main__":

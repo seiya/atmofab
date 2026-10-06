@@ -55,7 +55,7 @@ substep the conductor runs in-process. No row names a `SKILL`.
 - `Compile static`: conductor in-process (deterministic `validate_workspace_root` + `validate_pipeline_semantics --stage compile`, see `docs/workflow/phases/phase_01_compile.md`)
 - `Compile verify`: `tools/prompt_templates/pure_compile_verify.txt` (`_build_pure_compile_verify_context`)
 - `Generate generate`: `tools/prompt_templates/pure_generate_generate.txt` on the `m3c` bundle shape, `pure_generate_generate_harness.txt` on the `harness` shape
-- `Generate gate`: conductor in-process (deterministic lint check `run_linter`, syntax check `run_syntax_check` compiler front-end gate gfortran `-fsyntax-only`, and static check `validate_workspace_root` + `validate_pipeline_semantics --stage post_generate` — the static check runs only when the lint and syntax checks both pass; see `docs/workflow/phases/phase_02_generate.md`)
+- `Generate gate`: conductor in-process (deterministic lint check `run_linter`, syntax check `run_syntax_check` compiler front-end gate — the target language's mandatory syntax-only stage, for `fortran` [GENERATE_RULES.md](backends/language/fortran/GENERATE_RULES.md) §2 — and static check `validate_workspace_root` + `validate_pipeline_semantics --stage post_generate` — the static check runs only when the lint and syntax checks both pass; see `docs/workflow/phases/phase_02_generate.md`)
 - `Generate verify`: `tools/prompt_templates/pure_generate_verify.txt` / `pure_generate_verify_harness.txt`, per bundle shape
 - `Build`: conductor in-process (see `docs/workflow/phases/phase_03_build.md`)
 - `Validate execute`: conductor in-process (see `docs/workflow/phases/phase_04_validate.md`)

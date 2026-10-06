@@ -1,7 +1,7 @@
-# Overall specification: a document-driven framework that generates subroutine groups and a runner for weather/climate computation
+# Overall specification: a document-driven framework that generates procedure groups and a runner for weather/climate computation
 
 ## Final goal
-Using the `Controlled Spec` and `tests` as the canonical source, generate, at operable quality, the subroutine groups (`model`) that implement the computation task defined by each `spec` on hardware such as `CPU` / `GPU`, and the `runner` responsible for input/output, execution, and judgment coordination.
+Using the `Controlled Spec` and `tests` as the canonical source, generate, at operable quality, the procedure groups (`model`) that implement the computation task defined by each `spec` on hardware such as `CPU` / `GPU`, and the `runner` responsible for input/output, execution, and judgment coordination.
 
 ## Scope
 ### In scope
@@ -115,7 +115,7 @@ releases/
 ```
 
 3. Make the definitions of `domain` and `family` match the "`spec` classification vocabulary" in `GLOSSARY.md`.
-4. `spec_id` must be unique within the repository, and requires the form `^[a-z][a-z0-9_]{2,63}$` and a length of **at most 55 characters**. The 55-character bound keeps the identifiers derived from it (`<spec_id>_model` / `<spec_id>_runner` / `<spec_id>_checks`) within the `f2008` 63-character identifier limit. It is checked at **spec-input**, before any phase runs, for the target `spec` and for every member of a `--with-deps` dependency closure alike — a `profile` is out of scope, because nothing is generated from its `spec_id`; an over-length `spec_id` is an error there and is resolved only by a rename (re-authoring the `IR` or the source cannot resolve it). The bound reflects the identifier limit of the only current backend (`fortran`); when a backend with a different limit is added, the bound moves to a language-aware point and does not enter the name grammar above.
+4. `spec_id` must be unique within the repository, and requires the form `^[a-z][a-z0-9_]{2,63}$` and a length of **at most 55 characters**. The 55-character bound keeps the identifiers derived from it (`<spec_id>_model` / `<spec_id>_runner` / `<spec_id>_checks`) within the shortest identifier limit a declared language backend sets (`bundle_facts.IDENTIFIER_MAX`; the `fortran` value and its source are [BUNDLE_BINDING.md](backends/language/fortran/BUNDLE_BINDING.md) §2), less the room its role suffixes take (`tools/spec_input_gates.py` `MAX_SPEC_ID_LEN`). It is checked at **spec-input**, before any phase runs, for the target `spec` and for every member of a `--with-deps` dependency closure alike — a `profile` is out of scope, because nothing is generated from its `spec_id`; an over-length `spec_id` is an error there and is resolved only by a rename (re-authoring the `IR` or the source cannot resolve it). The bound is spelled as a neutral number because the gate runs before any toolchain is resolved, and `tools/tests/test_fortran_runner.py` pins it against the `fortran` backend's limit, the shortest declared today; a backend with a shorter limit moves it, and it does not enter the name grammar above.
 5. `tests.md` allows placing only 1 file per `spec`. A `profile spec` carries NONE: nothing is generated or executed for it, so there is nothing for a test to be about (issue #175).
 6. `component_id` requires the form `^[a-z][a-z0-9_]{2,63}$`, and the recommended form is `<domain>_<family>_<operator>_<dim>d_<scheme>`. A `component spec`'s `component_id` is its `spec_id`, so the 55-character bound of requirement 4 applies to it as well.
 7. `operation_id` requires the form `<component_id>__<action>`.
