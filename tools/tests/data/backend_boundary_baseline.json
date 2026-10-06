@@ -226,7 +226,6 @@
       "fortran-implicit-none": 1,
       "fortran-kind": 1,
       "fortran-module-file": 1,
-      "fortran-standard": 1,
       "fortran-suffix": 30,
       "make-control-file": 97,
       "make-variable": 16
