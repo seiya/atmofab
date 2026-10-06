@@ -3282,7 +3282,8 @@ class RealDriverTests(unittest.TestCase):
                 "compiler": "nvcc", "std": "c++17", "architecture": "sm_90",
                 "project_dir": str(src)})
             self.assertTrue(syntax["ok"] and not syntax["skipped"], syntax.get("stderr"))
-            graph = derive_build_graph(doc, toolchain={"language": "cuda_cpp", "compiler": "nvcc"})
+            graph = derive_build_graph(
+                doc, toolchain={"build_system": "make", "language": "cuda_cpp", "compiler": "nvcc"})
             rules = registry.capability_module("language", "cuda_cpp", "control_file").rules(
                 standard="c++17", parallel_backend="cuda", architecture="sm_90")
             makefile = registry.capability_module("build_system", "make", "control_file") \
