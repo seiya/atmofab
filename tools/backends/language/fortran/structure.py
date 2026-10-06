@@ -166,7 +166,11 @@ class Procedure:
     ``declarations`` are the procedure's OWN declaration statements: the DIRECT children of its
     node of a `_DECLARATION_TYPES` type. A declaration inside a `BLOCK`, an `interface` body or a
     contained procedure is a child of that construct, not of this node, so it is not one — which
-    is what the §5.1 signature pin needs, since none of them declares this procedure's dummies.
+    is what the §5.1 signature pin needs: a `BLOCK`'s or a contained procedure's declarations are
+    another scope's, and an interface body's declare the INTERFACE's dummies. (An interface block
+    can declare a dummy PROCEDURE of this one; that dummy is then not declared by any statement
+    read here, and the pin refuses it, since §5.1 writes a dummy procedure
+    `procedure(<interface>) :: <name>`.)
     Empty for the abbreviated `module procedure` form.
 
     ``local_types`` are the lowercased names of the derived types the procedure DEFINES among
@@ -608,8 +612,9 @@ def module_level_definitions(
     procedure, a prototype in another body, or a DTIO prototype in a `BLOCK` of the definition
     itself, each carrying the pinned header beside a drifted definition). Reading the header and
     the declarations from the definition the structure reader found leaves no second procedure to
-    read them from; reading only the definition's OWN declaration statements leaves no `BLOCK`,
-    interface body or contained procedure to supply a dummy's characteristics (issue #430).
+    read them from; reading only the definition's OWN type declarations and attribute statements
+    leaves no `BLOCK`, interface body or contained procedure to supply a dummy's characteristics
+    (issue #430; `Procedure.declarations` says what an interface block can still declare).
 
     None for an abbreviated separate module subprogram (`module procedure <name>`), which repeats
     no header and may not redeclare its dummies, so there is nothing of it to compare."""

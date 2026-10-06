@@ -411,7 +411,8 @@ def source_atoms(text: str) -> frozenset[str]:
     parameters outside the contract and each component §5.1 block calls the attribute immaterial
     (issue #363), so ``integer, parameter, public :: dp = real64`` and
     ``integer, parameter :: dp = real64`` are the same declaration here. ``stanza_atoms`` keeps the
-    attribute, because a procedure stanza and a type component are compared with it.
+    attribute, because a type component and the IR-vs-§5.1 stanzas are compared with it (a
+    generated procedure is compared by `surface_drift` since issue #430).
 
     The view a caller needs to ask "does this source declare X anywhere", which is how the §5.1
     module ``parameter`` declarations are pinned: they are part of the published ABI but are not
@@ -1612,8 +1613,10 @@ def generated_source_violations(
                     f"`{name}` (`{statement}`) from a module other than the publishing one — "
                     "§5.1 pins the type as this module's own, and an imported binding of its name "
                     f"makes every dummy declared `type({name})` in that scope the imported type. "
-                    f"Define `{name}` in this module itself and drop the name from the `use` "
-                    "(rename an imported entity you still need to a name of its own)")
+                    f"Move the definition of `{name}` into this module — drop the name from the "
+                    "`use` AND delete the definition the `use` imported, if it is in this file (two "
+                    "definitions of a pinned type are refused too); rename an imported entity you "
+                    "still need to a name of its own")
                 break
             violations.append(
                 f"{target}: generated model source imports the §5.1 module parameter "

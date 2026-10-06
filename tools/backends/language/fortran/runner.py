@@ -1636,10 +1636,20 @@ def assert_harness_pin(
         definitions = fortran_source.module_level_definitions(
             (harness_source or "").lower(), f"{harness_spec_id}_model")
     except fortran_source.SourceStructureError as exc:
+        first = exc.errors[0] if exc.errors else None
+        where = (f"; the first at statement {first.line} of its joined view: {first.snippet!r}"
+                 if first is not None else "")
+        # NOT `_PIN_DRIFT_HINT`: nothing says the published surface changed, so editing the pin
+        # is the wrong repair. The source does not parse with the installed front end — a
+        # front-end version other than `structure.MEASURED_PACKAGE_VERSIONS`, or a harness
+        # certified before `Generate.gate` parsed infrastructure sources.
         raise RenderError(
-            f"certified harness model source no longer resolves through the structure front "
-            f"end ({len(exc.errors)} parse error(s)), so its published procedures cannot be "
-            f"compared with the pinned interface: {_PIN_DRIFT_HINT}") from exc
+            f"certified harness model source no longer resolves through the Fortran structure "
+            f"front end ({len(exc.errors)} parse error(s){where}), so its published procedures "
+            "cannot be compared with the pinned interface. Check that the installed "
+            "tree-sitter / tree-sitter-fortran are the versions `requirements.txt` pins; if "
+            "they are, re-certify the harness node (`run_workflow.py --with-deps`) so its "
+            "source passes the current Generate.gate — do not edit the renderer pin") from exc
 
     for symbol in used_symbols:
         exp_stanza = exp_ops.get(symbol) or exp_types.get(symbol)

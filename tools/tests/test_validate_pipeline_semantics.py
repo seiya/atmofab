@@ -20196,12 +20196,16 @@ class DeclaredCharacteristicsGateTests(unittest.TestCase):
     refused shape that did not compile would prove nothing, and an accepted one that did not
     would be a source the syntax stage refuses first:
 
-    - `_HOLES`: each passed with 0 violations under atom MEMBERSHIP over the definition's text —
-      an attribute in a statement of its own, a declaration in a `BLOCK` or an interface body
-      inside the definition, a procedure-local `use` renaming a pinned type — and each publishes
-      an ABI §5.1 does not declare. Each must be refused, naming the dummy (or the type).
-    - `_SAME`: ABI-identical spellings the TEXT comparison refused (O1-O5; O1 and O2 each cost a
-      billed harness attempt). Each must pass.
+    - `holes()`: each publishes an ABI §5.1 does not declare — an attribute in a statement of its
+      own, a declaration in a `BLOCK` or an interface body inside the definition, a `use` binding
+      a pinned type to another module's entity, a local type shadowing a pinned one. Each must be
+      refused, naming the dummy (or the type). Most passed with 0 violations at origin/main
+      37dc0539; three did not (measured in round 3): the same-file `hx_aux` import (1, the
+      splitter's duplicate type), the `::`-less pinned dummy (1) and the other-case local type (2,
+      incidentally, its stanza cut short).
+    - `same()`: ABI-identical spellings, each of which must pass. O1-O5 were refused at
+      origin/main (O1 and O2 each cost a billed harness attempt); the two helper-module identity
+      imports were not, and pin that the type-import refusal leaves them alone.
 
     The two-statement declaration (`type(t) :: e(:)` + `intent(in) :: e`) is newly ACCEPTED here;
     the lint gate's attribute-statement rules refuse it elsewhere in the same substep, so it is
@@ -20714,12 +20718,12 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
                 self.assertIn("`n` — its type is `real(dp)` where §5.1 pins `integer`", named[0])
 
     def test_each_definition_is_split_alone(self) -> None:
-        # The witness for the per-definition split, which no other row observes alone: with a
-        # readable upper-case definition that drifts and a lower-case DTIO decoy in ANOTHER
-        # procedure, a split over every definition's text together reports the source as an
-        # unread header rather than as the drift it is (PR #279 rounds 3-4; origin/main answered
-        # 0 violations). The split keeps the answer right; the refusal itself does not rest on it.
-        # The decoy comes AFTER the definition: the splitter keeps the last stanza of a name.
+        # Named after PR #279's per-definition split (`module_level_definition_stanzas`), which
+        # issue #430 deleted: the header and declarations now come from the tree, so there is no
+        # split. What the row still pins: a readable upper-case definition that drifts, beside a
+        # lower-case DTIO decoy carrying the pinned header in ANOTHER procedure, is reported as
+        # the drift it is (origin/main 1671710a answered 0 violations). The decoy comes AFTER the
+        # definition, the position where a last-wins name-keyed reading would take it.
         drifted = ("  SUBROUTINE HX__WRITE_METRICS_BASIS(ENTRIES, N)\n"
                    "    type(hx__h_named), intent(in) :: entries(:)\n"
                    "    real(dp),          intent(in) :: n\n"
@@ -20739,9 +20743,11 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
 
     def test_a_splitter_error_about_another_name_does_not_unread_the_definition(self) -> None:
         # Two BLOCK-local interfaces of one external procedure, spelled `Ext_a` and `ext_a`: legal,
-        # and the definition's own stanza is correct. The lowercased view makes the splitter report
-        # a duplicate of `ext_a`; refusing on it turned this correct source away (PR #279 round 4:
-        # origin/main 0 violations, a2130c44 refused it).
+        # and the definition is correct. PR #279's lowercased per-definition splitter reported a
+        # duplicate of `ext_a` and refused this source (round 4, a2130c44). That splitter is gone
+        # (issue #430); what the row pins now is that the case-insensitive prototype guard
+        # (`spelled_twice`) is confined to PINNED names — widened to every prototype name, it
+        # refuses this source (round 3 mutant).
         iface = ("    block\n"
                  "      interface\n"
                  "        subroutine {n}(k)\n"

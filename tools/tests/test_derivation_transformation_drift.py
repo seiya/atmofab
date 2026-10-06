@@ -769,7 +769,7 @@ PINNED_RENDER: dict[str, str] = {
     # one) no longer reproduces the control file it was certified with. The tuple gained eleven
     # `codegen_bundle` rows — the order was a value no row digested, and neither were the graph
     # derivation and its callees.
-    "render-8": "5abb0ef8ac676cb94a4e7e87caab75a77290470f4fd49104b26e9474ac157674",
+    "render-8": "b26c7a240962a990363ec0bc2ec3a12e47bfe8d661e9a4f2955b9382e730e666",
     # Re-pinned (issue #430 PR-1), behaviour-preserving for this transformation: the §5.1 gate
     # and `runner.assert_harness_pin` compare a generated procedure by what its definition
     # declares (`signatures.surface_drift`) where they compared atom membership. The renderers

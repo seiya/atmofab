@@ -1562,7 +1562,11 @@ class HarnessPinTest(unittest.TestCase):
         self.assertNotEqual(wedged, self.src)
         with self.assertRaises(RenderError) as cm:
             assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, wedged)
-        self.assertIn("no longer resolves through the structure front end", str(cm.exception))
+        self.assertIn("no longer resolves through the Fortran structure front end",
+                      str(cm.exception))
+        # Where, not only how many: the first error's statement and snippet.
+        self.assertRegex(str(cm.exception), r"the first at statement \d+ of its joined view: '= 1\.0'")
+        self.assertIn("do not edit the renderer pin", str(cm.exception))
 
     def test_attribute_form_with_a_drifted_value_still_fails_the_pin(self) -> None:
         src = self.src.replace("integer, parameter :: case_id_len = 64",
