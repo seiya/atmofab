@@ -799,33 +799,6 @@ def _tail_text(path: Path, *, max_chars: int = 4000) -> str:
     return text[-max_chars:]
 
 
-def _collect_noncanonical_write_violations(repo_root: Path, orchestration_id: str) -> list[dict[str, Any]]:
-    orch_root = repo_root / "workspace" / "orchestrations" / orchestration_id
-    violations_root = orch_root / "violations"
-    if not violations_root.is_dir():
-        return []
-    collected: list[dict[str, Any]] = []
-    for path in sorted(violations_root.glob("*.noncanonical_phase_write_attempt.json")):
-        payload = _read_json_if_exists(path)
-        if not isinstance(payload, dict):
-            continue
-        attempted = payload.get("attempted_paths")
-        attempted_paths = (
-            [str(item).strip() for item in attempted if isinstance(item, str) and str(item).strip()]
-            if isinstance(attempted, list)
-            else []
-        )
-        collected.append(
-            {
-                "violation_ref": str(path.relative_to(repo_root)),
-                "agent_run_id": str(payload.get("agent_run_id") or "").strip(),
-                "reason_code": str(payload.get("reason_code") or "").strip(),
-                "attempted_paths": attempted_paths,
-            }
-        )
-    return collected
-
-
 def _collect_failure_analysis(repo_root: Path, orchestration_id: str) -> dict[str, Any]:
     orch_root = repo_root / "workspace" / "orchestrations" / orchestration_id
     meta_path = orch_root / "orchestration_meta.json"
@@ -894,32 +867,6 @@ def _collect_failure_analysis(repo_root: Path, orchestration_id: str) -> dict[st
         for p in sorted(orch_root.glob("launch_incident.runtime.*.json"))
     ]
 
-    # `unauthorized_write_violations` was the second source here until issue #171 PR-2.
-    # Its writer was the terminal FS-diff, which compared a leaf's actual writes against
-    # the capability's `write_roots`; a pure leaf has no write authority to exceed (the
-    # host writes every artifact), so the diff and the marker it wrote are both gone. The
-    # reader survived one round longer and reported `[]` on every failed run — which reads
-    # as MEASURED CLEAN rather than NOT MEASURED, the same false record PR-2 deleted the
-    # equivalent readers in `validate_pipeline_semantics` and `audit_orchestration` for.
-    noncanonical_write_violations = _collect_noncanonical_write_violations(repo_root, orchestration_id)
-    write_contract_violations = list(noncanonical_write_violations)
-    recommended_retry_decisions: list[dict[str, Any]] = []
-    for violation in write_contract_violations:
-        target_run = str(violation.get("agent_run_id") or "").strip()
-        if not target_run:
-            continue
-        paths = violation.get("attempted_paths")
-        attempted_paths = paths if isinstance(paths, list) else []
-        reason_code = str(violation.get("reason_code") or "").strip() or "noncanonical_phase_write_attempt"
-        recommended_retry_decisions.append(
-            {
-                "issue_severity": "major",
-                "repair_strategy": "restart",
-                "repair_target_agent_run_id": target_run,
-                "repair_reason": reason_code + ": " + ",".join(attempted_paths),
-            }
-        )
-
     return {
         "status": "fail",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -931,8 +878,6 @@ def _collect_failure_analysis(repo_root: Path, orchestration_id: str) -> dict[st
         "reason_detail": meta.get("reason_detail"),
         "failed_agent_run": failed_run,
         "failed_step_results": failed_step_results,
-        "noncanonical_write_violations": noncanonical_write_violations,
-        "recommended_retry_decisions": recommended_retry_decisions,
         "launch_reply_tail": launch_reply_tail,
         "agent_summary_tail": agent_summary_tail,
         "launch_incident_refs": launch_incident_refs,
@@ -1061,7 +1006,6 @@ def _is_valid_failure_analysis(
         "reason_detail",
         "failed_agent_run",
         "failed_step_results",
-        "recommended_retry_decisions",
         "launch_reply_tail",
         "agent_summary_tail",
         # In the degraded dangling-launch path (both terminalize set-status calls

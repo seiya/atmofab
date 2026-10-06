@@ -305,7 +305,6 @@ def _summarize_failure_analysis_doc(doc: dict[str, Any]) -> dict[str, Any]:
     failed_run = failed_run if isinstance(failed_run, dict) else {}
     step_results = doc.get("failed_step_results")
     step_results = step_results if isinstance(step_results, list) else []
-    retries = doc.get("recommended_retry_decisions")
     refs = doc.get("launch_incident_refs")
     return {
         "status": doc.get("status"),
@@ -320,7 +319,6 @@ def _summarize_failure_analysis_doc(doc: dict[str, Any]) -> dict[str, Any]:
             {"path": r.get("path"), "status": r.get("status")}
             for r in step_results if isinstance(r, dict)
         ],
-        "recommended_retry_decision_count": len(retries) if isinstance(retries, list) else 0,
         "launch_incident_refs": [r for r in refs if isinstance(r, str)]
                                 if isinstance(refs, list) else [],
     }
@@ -1388,9 +1386,6 @@ def _render_failure_analysis_doc(doc: dict[str, Any], lines: list[str]) -> None:
         lines.append(f"- failed step results: {len(step_results)}")
         for r in step_results:
             lines.append(f"  - `{r.get('path')}` (status `{r.get('status')}`)")
-    lines.append(
-        f"- recommended retry decisions: {doc.get('recommended_retry_decision_count', 0)}"
-    )
     for ref in doc.get("launch_incident_refs") or []:
         lines.append(f"- launch incident: `{ref}`")
 
