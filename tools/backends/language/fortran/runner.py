@@ -1566,7 +1566,7 @@ def assert_harness_pin(
     from tools.backends.language.fortran import source as fortran_source
     from tools.backends.language.fortran.signatures import (
         parse_interface_stanzas, source_atoms, stanza_atoms, stanza_line_set, stanza_line_list,
-        surface_drift, type_layout_list)
+        surface_drift, type_layout_drift)
 
     pin = _harness_pin(harness_spec_id)
     exp_ops, exp_types, exp_ifaces, exp_errs = parse_interface_stanzas(pin.interface)
@@ -1628,12 +1628,14 @@ def assert_harness_pin(
             "artifact (or a caller that failed to resolve it), NOT interface drift; re-certify "
             "the harness IR (run_workflow.py --with-deps) so its public_api.signatures is present")
 
-    _src_ops, src_types, _src_ifaces, _src_errs = parse_interface_stanzas(harness_source or "")
-    # The procedures are read the way `signatures.generated_source_violations` reads them — from
-    # the definitions the harness model module itself carries, compared by what each DECLARES
-    # (issue #430) — so the renderer and the gate cannot disagree about a certified source.
+    # The procedures and the types are read the way `signatures.generated_source_violations`
+    # reads them — from the definitions the harness model module itself carries, compared by what
+    # each DECLARES (issue #430) — so the renderer and the gate cannot disagree about a certified
+    # source.
     try:
         definitions = fortran_source.module_level_definitions(
+            (harness_source or "").lower(), f"{harness_spec_id}_model")
+        type_reading = fortran_source.module_level_type_definitions(
             (harness_source or "").lower(), f"{harness_spec_id}_model")
     except fortran_source.SourceStructureError as exc:
         first = exc.errors[0] if exc.errors else None
@@ -1678,15 +1680,16 @@ def assert_harness_pin(
                 f"interface: {_PIN_DRIFT_HINT}")
 
         # (2) Generated model source — a procedure is compared by what its definition in the
-        # harness model module declares (`surface_drift`, as the Generate gate does); a type
-        # block is compared exactly, matching `generated_source_violations`.
+        # harness model module declares (`surface_drift`), a type by its one module-level
+        # definition there (`type_layout_drift`), both as the Generate gate does.
         if is_type:
-            src_stanza = src_types.get(symbol)
-            src_ok = (src_stanza is not None
-                      and type_layout_list(src_stanza) == type_layout_list(exp_stanza))
-            if src_stanza is None:
+            type_definition = type_reading.definitions.get(symbol.lower())
+            if type_definition is None:
                 raise RenderError(
                     f"certified harness model source omits {symbol!r}: {_PIN_DRIFT_HINT}")
+            src_ok = not type_layout_drift(
+                exp_stanza, definition=type_definition,
+                count=type_reading.counts.get(symbol.lower(), 0))
         else:
             definition = definitions.get(symbol.lower())
             if definition is None:

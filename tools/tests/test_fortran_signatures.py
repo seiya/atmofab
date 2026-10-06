@@ -2117,6 +2117,48 @@ class DeclaredCharacteristicsTests(unittest.TestCase):
                           ("variable_declaration", "real other")], exact=False)
         self.assertEqual(drift, [])
 
+    def test_type_layout_drift_compares_the_one_definition_in_order(self) -> None:
+        from tools.backends.language.fortran.structure import TypeDefinition
+        pinned = ["type :: t", "real(dp), allocatable :: a(:)", "integer :: n", "end type t"]
+        drift = fortran_signatures.type_layout_drift
+
+        def d(components, extras=(), others=()):
+            return TypeDefinition(header_extras=tuple(extras), components=tuple(components),
+                                  other_children=tuple(others))
+
+        good = ["real(kind=dp), dimension(1:), allocatable :: a", "integer :: n"]
+        self.assertEqual(drift(pinned, definition=d(good), count=1), [])
+        self.assertEqual(drift(pinned, definition=d(good, extras=["public"]), count=1), [])
+        self.assertEqual(drift(pinned, definition=d(["real(dp), allocatable :: a(:)",
+                                                     "integer :: n"]), count=1), [])
+        self.assertEqual(drift(pinned, definition=None, count=0), [])
+        cases = {
+            "twice": (d(good), 2, "defines a derived type of this name 2 times"),
+            "private header": (d(good, extras=["private"]), 1,
+                               "its type statement carries `private`"),
+            "extends": (d(good, extras=["public", "extends(b)"]), 1, "`extends(b)`"),
+            "sequence": (d(good, others=["sequence_statement"]), 1, "`sequence_statement`"),
+            "reorder": (d(good[::-1]), 1, "component 1 is `n` where §5.1 pins"),
+            "missing": (d(good[:1]), 1, "component 2 is missing: §5.1 pins `integer :: n`"),
+            "extra": (d([*good, "integer :: k"]), 1, "component 3, `k`, is one §5.1 does not"),
+            "init": (d([good[0], "integer :: n = 0"]), 1, "its initialiser is `=0`"),
+            "attr": (d([good[0], "integer, pointer :: n"]), 1, "it carries `pointer`"),
+            "lacks": (d(["real(dp) :: a(:)", "integer :: n"]), 1, "it lacks `allocatable`"),
+            "shape": (d(["real(dp), allocatable :: a(:,:)", "integer :: n"]), 1,
+                      "its shape is `(:,:)`"),
+            "kind": (d(["real, allocatable :: a(:)", "integer :: n"]), 1,
+                     "its type is `real` where §5.1 pins `real(dp)`"),
+            "::-less": (d([good[0], "integer n"]), 1, "write each component with `::`"),
+        }
+        for label, (definition, count, cue) in cases.items():
+            with self.subTest(label):
+                out = drift(pinned, definition=definition, count=count)
+                self.assertTrue(any(cue in sentence for sentence in out), out)
+        # A second definition is reported alone: which one a reader gets is not decidable.
+        self.assertEqual(len(drift(pinned, definition=d(good[::-1]), count=2)), 1)
+        # The accepted header attribute is exactly `public`.
+        self.assertEqual(fortran_signatures._ACCEPTED_TYPE_HEADER_EXTRAS, frozenset({"public"}))
+
     def test_source_atoms_reads_each_statement_of_a_semicolon_joined_line(self) -> None:
         atoms = fortran_signatures.source_atoms(
             "integer, parameter :: dp = real64; integer :: k\n")

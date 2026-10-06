@@ -64,10 +64,11 @@ from tools.structured_signatures import validate_symbol as _validate_symbol
 # non-semantic difference — inline comments, ``&`` continuations, case, and whitespace — so a
 # signature authored one way in §5.1 and formatted another way in the generated source still
 # matches (and a genuine argument-name / type / rank / intent drift still fails). The generated
-# source's PROCEDURES are compared in a currency of their own since issue #430 — what each dummy
-# is declared to be (`Entity`, `surface_drift`, below `source_atoms`) — because two spellings of
-# one declaration differ by more than formatting; the atoms here remain the currency for the
-# IR-vs-§5.1 comparisons, the derived types and the module parameters.
+# source's PROCEDURES and DERIVED TYPES are compared in a currency of their own since issue #430 —
+# what each dummy and component is declared to be (`Entity`, `surface_drift`,
+# `type_layout_drift`, below `source_atoms`) — because two spellings of one declaration differ
+# by more than formatting; the atoms here remain the currency for the IR-vs-§5.1 comparisons and
+# the module parameters.
 #
 # This layer used to live in ``tools/validate_pipeline_semantics.py``, and this module imported it
 # back out of the neutral core — a backend reaching into the neutral core for its own subject
@@ -352,35 +353,6 @@ def stanza_line_list(lines: list[str]) -> tuple[str, ...]:
     return stanza_atoms(lines)
 
 
-def type_layout_list(lines: list[str]) -> tuple[str, ...]:
-    """A derived type stanza's ordered atom list (``stanza_line_list``) with a ``public``
-    attribute dropped from its HEADER, so ``type, public :: t`` compares equal to §5.1's bare
-    ``type :: t`` (``_render_type``). Four codex harness sources wrote the attributed form on the
-    §5.1 types; each carries five component-layout drifts under the plain comparison, and the two
-    of them that reached the static gate were refused for those (issue #343; the other two failed
-    the syntax check first).
-
-    Accessibility is NOT compared: a bare ``type :: t`` hidden by a module-level ``private :: t``
-    passes this comparison, and a separate ``public :: t`` is never read. ``public`` alone is
-    dropped so that no attributed header other than the one this fix is for becomes newly
-    accepted — ``private`` and ``abstract`` still differ, as they did. Components are untouched —
-    a component's attributes are part of the layout. Both readers of a GENERATED SOURCE's type
-    layout use it, `generated_source_violations` and `runner.assert_harness_pin`; the
-    IR-vs-§5.1 comparisons keep `stanza_line_list`, because both of their sides are
-    host-rendered bare headers.
-
-    The guard is an intent marker, not a live decision: a type stanza's first atom is always its
-    header, which `_TYPE_HEADER_RE` requires to carry ``::``, and a bare ``type::t`` has no
-    attribute to drop either way."""
-    atoms = list(stanza_line_list(lines))
-    if atoms and atoms[0].startswith("type,") and "::" in atoms[0]:
-        lhs, _sep, rhs = atoms[0].partition("::")
-        attrs = fortran_lines.split_top_level_commas(lhs)
-        kept = [a for a in attrs if a != "public"]
-        atoms[0] = ",".join(kept) + "::" + rhs
-    return tuple(atoms)
-
-
 _ACCESS_SPEC_ATTRIBUTES = frozenset({"public", "private"})
 
 
@@ -411,8 +383,8 @@ def source_atoms(text: str) -> frozenset[str]:
     parameters outside the contract and each component §5.1 block calls the attribute immaterial
     (issue #363), so ``integer, parameter, public :: dp = real64`` and
     ``integer, parameter :: dp = real64`` are the same declaration here. ``stanza_atoms`` keeps the
-    attribute, because a type component and the IR-vs-§5.1 stanzas are compared with it (a
-    generated procedure is compared by `surface_drift` since issue #430).
+    attribute, because the IR-vs-§5.1 stanzas are compared with it (a generated procedure and a
+    generated type are compared by `surface_drift` / `type_layout_drift` since issue #430).
 
     The view a caller needs to ask "does this source declare X anywhere", which is how the §5.1
     module ``parameter`` declarations are pinned: they are part of the published ABI but are not
@@ -757,6 +729,88 @@ def surface_drift(
             out.append(f"it declares `{name}`, which the pinned prototype does not")
     return out
 
+
+
+#: The one header attribute a published type may carry beside its name: §5.1 renders a bare
+#: `type :: t`, and four codex harness sources wrote `type, public :: t`, which publishes the same
+#: type (issue #343). Every other attribute — `private`, `abstract`, `extends(...)`, `bind(c)`, a
+#: type-parameter list — changes what a consumer can do with the type, so it is a difference.
+_ACCEPTED_TYPE_HEADER_EXTRAS = frozenset({"public"})
+
+
+def type_layout_drift(pinned_lines: list[str], *, definition: Any, count: int) -> list[str]:
+    """How a derived type as the publishing module DEFINES it differs from its §5.1 stanza, as
+    sentences (issue #430). Empty when they agree.
+
+    ``pinned_lines`` is the §5.1 stanza (``type :: t``, one declaration per component,
+    ``end type``). ``definition`` is the type's module-level definition in the publishing module
+    (`structure.TypeDefinition`: ``header_extras``, ``components`` and ``other_children``), None
+    when the module defines none; ``count`` is how many definitions of the name the whole file
+    carries, in any scope.
+
+    A second definition of the name anywhere is a difference whatever the first one reads — a
+    reader of the name can be handed that one instead (a published procedure defining its own
+    `t` declares its `type(t)` dummies with it). The header may carry `public` and nothing else;
+    the body may hold component declarations and nothing else (§5.1 pins a plain component
+    layout: `private`, `sequence`, a type-bound `contains` part are each a different type). The
+    components are compared as an ORDERED list of `Entity` — name, type, kind, shape, every
+    attribute and the initialiser, position by position — since the layout is the order."""
+    if count > 1:
+        return [f"the file defines a derived type of this name {count} times — §5.1 pins the "
+                "module's own definition, and a second one (in a helper module, a procedure, a "
+                "`block` or an interface body) is a type a reader of the name can be handed "
+                "instead; keep the one at module level of the publishing module and give any "
+                "other type a name of its own"]
+    if definition is None:
+        return []
+    out: list[str] = []
+    extras = [extra for extra in definition.header_extras
+              if extra not in _ACCEPTED_TYPE_HEADER_EXTRAS]
+    if extras:
+        out.append(f"its type statement carries {', '.join(f'`{e}`' for e in extras)}, which "
+                   f"§5.1 does not declare — write the header as `{pinned_lines[0].strip()}` "
+                   "(`type, public :: <name>` is accepted too)")
+    if definition.other_children:
+        out.append(
+            "its definition holds a statement other than a component declaration "
+            f"({', '.join(f'`{kind}`' for kind in definition.other_children)}) — §5.1 pins a "
+            "plain component layout, so remove it (no `private` / `sequence` statement, no "
+            "type-bound `contains` part)")
+    pinned: list[tuple[str, Entity, str]] = []
+    for line in pinned_lines[1:-1]:
+        try:
+            pinned.extend((name, entity, line.strip())
+                          for name, entity in parse_declaration(line, has_type_spec=True))
+        except SignatureParseError as exc:  # host-rendered; fail closed rather than skip a line
+            out.append(f"the pinned line `{line.strip()}` cannot be read ({exc})")
+            return out
+    declared: list[tuple[str, Entity]] = []
+    for statement in definition.components:
+        try:
+            declared.extend(parse_declaration(statement, has_type_spec=True))
+        except SignatureParseError:
+            out.append(f"the component statement `{statement}` is in a form this comparison does "
+                       "not read — write each component with `::` "
+                       "(`<type>, <attributes> :: <name>`)")
+            return out
+    for index in range(max(len(pinned), len(declared))):
+        if index >= len(declared):
+            out.append(f"component {index + 1} is missing: §5.1 pins `{pinned[index][2]}` there")
+            continue
+        have_name, have = declared[index]
+        if index >= len(pinned):
+            out.append(f"component {index + 1}, `{have_name}`, is one §5.1 does not declare")
+            continue
+        want_name, want, line = pinned[index]
+        if have_name != want_name:
+            out.append(f"component {index + 1} is `{have_name}` where §5.1 pins `{line}` — the "
+                       "layout is compared in order, names included")
+            continue
+        diffs = _entity_differences(want, have)
+        if diffs:
+            out.append(f"component {index + 1} (the pinned line `{line}`): `{have_name}` — "
+                       + "; ".join(diffs))
+    return out
 
 # --- struct vocabulary -------------------------------------------------------------------------
 # The structured form this module renders, and its fail-closed validation, are language-neutral and
@@ -1280,23 +1334,27 @@ def generated_source_violations(
     # - a header read by NAME from the whole-file stanza splitter let a decoy elsewhere in the
     #   file supply the header the definedness answer did not credit (PR #279).
     #
-    # The whole-file splitter is still run, for three things that are not a definition: its
-    # duplicate report (below), the PROTOTYPES (`src_ifaces`: a §5.1 `interfaces` entry, and a
-    # published procedure the source only prototypes), and, until the type half moves to the
-    # tree as well, the derived types.
+    # A §5.1 derived type is compared the same way, against the one definition at module level of
+    # the publishing module (`type_layout_drift`). The splitter read it by NAME AS WRITTEN and
+    # only in the `type ::` header form, so a module-level `type t` or `TYPE :: T` drifted to
+    # another layout, beside a helper's local `type :: t` carrying the pinned components, passed.
+    #
+    # The whole-file splitter is still run, for two things that are not a definition: its
+    # duplicate report (below), and the PROTOTYPES (`src_ifaces`: a §5.1 `interfaces` entry, and
+    # a published procedure the source only prototypes).
     combined = "\n".join(
         model_file.read_text(encoding="utf-8", errors="ignore") for model_file in model_files
     )
-    src_ops, src_types, src_ifaces, src_errors = (
+    src_ops, _src_types, src_ifaces, src_errors = (
         parse_interface_stanzas(combined))
     # HONOUR the parser's errors. `parse_interface_stanzas`' own docstring says a duplicate symbol
     # name is reported here and must be "fail-closed at the caller — a duplicate must never silently
     # overwrite", and this caller once discarded them. The consequence, measured on a real component
     # §5.1 (issue #153 PR-2 round 1): a source publishing a DRIFTED operation plus a private helper
     # carrying the pinned shape under the same name produced ZERO violations, because the stanza
-    # dict is last-wins. A procedure is no longer read from that dict, but the PROTOTYPE map
-    # (`src_ifaces`) and the type map still are, and both are last-wins keyed by name, so the
-    # error still guards what this function reads from them.
+    # dict is last-wins. Neither a procedure nor a type is read from those dicts any more, but the
+    # PROTOTYPE map (`src_ifaces`) still is, and it is last-wins keyed by name, so the error still
+    # guards what this function reads from it.
     if src_errors:
         for err in src_errors:
             violations.append(
@@ -1366,8 +1424,11 @@ def generated_source_violations(
     # this gate cannot resolve to one publisher is refused.
     defined_names: frozenset[str] | None = None
     definitions: dict[str, fortran_structure.Definition | None] | None = None
+    type_reading: fortran_structure.TypeReading | None = None
     unit_absent: str | None = None
-    if op_stanzas and len(model_files) != 1:
+    # A type-only §5.1 must reach the tree reader too: its types are read from it.
+    pinned_surface = bool(op_stanzas or type_stanzas)
+    if pinned_surface and len(model_files) != 1:
         # APPENDED DIRECTLY, not via `_fail_closed_if_pinned`: that helper appends only when the
         # NODE_KEY's prefix is a pinned kind, and this arm fires only for a node_key with no `/`,
         # so routed through it the refusal was silent (PR #279 round 3).
@@ -1377,7 +1438,7 @@ def generated_source_violations(
             "is expected, so which program unit publishes the controlled_spec §5.1 surface "
             "cannot be decided; the definedness check and the signature comparison both need "
             "one resolvable publishing unit, so neither is run for this node")
-    if op_stanzas and len(model_files) == 1:
+    if pinned_surface and len(model_files) == 1:
         model_file = model_files[0]
         try:
             source_text = model_file.read_text(encoding="utf-8", errors="ignore").lower()
@@ -1386,6 +1447,8 @@ def generated_source_violations(
                 unit_absent = model_file.stem
             defined_names = fortran_source.module_level_procedure_names(source_text, model_file.stem)
             definitions = fortran_source.module_level_definitions(source_text, model_file.stem)
+            type_reading = fortran_source.module_level_type_definitions(
+                source_text, model_file.stem)
         # `FortranStructureUnavailableError` is deliberately NOT caught: it is the OPERATOR's
         # failure (an uninstalled package), no edit to this source can clear it, and `main`
         # answers it with a dedicated exit code. Same rule as `source.run_problem_model_gates`.
@@ -1396,9 +1459,10 @@ def generated_source_violations(
                     f"statement {structure_error.line} of its joined view "
                     f"({'missing token' if structure_error.missing else 'parse error'}): "
                     f"{structure_error.snippet!r}. A {ir_kind} node's published operations must be "
-                    "shown to be DEFINED and not merely declared, and each must be compared with "
-                    "controlled_spec §5.1 as its definition declares it; both need the procedure "
-                    "structure, so an unresolvable source is a Generate failure and the signature "
+                    "shown to be DEFINED and not merely declared, and each published operation and "
+                    "type must be compared with controlled_spec §5.1 as its definition declares "
+                    "it; all of that needs the source's structure, so an unresolvable source is a "
+                    "Generate failure and the signature "
                     f"comparison is not run until it resolves — "
                     f"{fortran_structure.STRUCTURE_REFUSAL_HINT}.")
             # The signature comparison is NOT run on a fallback reading. PR #279 kept a
@@ -1461,24 +1525,35 @@ def generated_source_violations(
                 spec_lines, header=proto[0],
                 declarations=_prototype_declarations(proto), exact=False))
 
-    for name in sorted(type_stanzas):
-        spec_lines = type_stanzas[name]
-        src_type = src_types.get(name)
-        if src_type is None and name not in src_ops:
+    # Each §5.1 derived type, against the one definition at module level of the publishing module
+    # (`type_layout_drift`, which is canonical for what is compared). Skipped on the same
+    # conditions as the procedures — no single publisher, or a source the front end could not
+    # resolve — both already refused above.
+    for name in sorted(type_stanzas) if type_reading is not None else ():
+        lname = name.lower()
+        count = type_reading.counts.get(lname, 0)
+        definition = type_reading.definitions.get(lname)
+        if count == 0:
             violations.append(
                 f"{target}: generated model source does not publish controlled_spec §5.1 derived "
                 f"type '{name}' (no derived type of that name/header found — the published "
                 "surface must match the pinned §5.1 signature)")
             continue
-        # A derived type's WHOLE component layout — names, types, and ORDER, with nothing
-        # inserted — is part of the compatibility contract (§5), so the source type block must
-        # equal §5.1's atom list EXACTLY. A name the source defines only as a procedure has no
-        # type stanza, and that is a drift too.
-        if src_type is None or type_layout_list(src_type) != type_layout_list(spec_lines):
+        if definition is None and count == 1:
+            where = (f"declares no program unit named '{unit_absent}'" if unit_absent is not None
+                     else f"defines '{name}' outside the module's own specification part")
             violations.append(
-                f"{target}: derived type '{name}' drifts from controlled_spec §5.1 — its "
-                "published component layout (names/types/order, no extras) does not match the "
-                "pinned definition")
+                f"{target}: generated model source {where}, so controlled_spec §5.1 derived type "
+                f"'{name}' is not published by the module a consumer will `use` — define it at "
+                f"module level of the module '{model_files[0].stem}' (not in a submodule, a "
+                "procedure, a `block` or an interface body)")
+            continue
+        for sentence in type_layout_drift(type_stanzas[name], definition=definition, count=count):
+            violations.append(
+                f"{target}: derived type '{name}' drifts from controlled_spec §5.1 — {sentence} "
+                "(its published component layout — every component's name, type, kind, shape "
+                "and attributes, in order, with nothing inserted — is compared with the one "
+                "definition at module level of the publishing module)")
 
     # The §5.1 PROTOTYPES (issue #266): each `interfaces` entry must appear in the source as a
     # prototype of the same name — inside an `interface` block, never as a definition — declaring

@@ -116,6 +116,11 @@ _REQUIRED_NODE_TYPES = (
     # A derived type a procedure defines in its own specification part (`Procedure.local_types`):
     # a renamed node would make every such shadow of a published type invisible again.
     "derived_type_definition", "derived_type_statement", "type_name",
+    # The parts of a derived type definition the §5.1 type comparison reads (`DerivedType`): the
+    # one header attribute it accepts and the end statement it skips. A renamed `access_specifier`
+    # would make `type, public :: t` an unaccepted header (over-refusal); a renamed
+    # `end_type_statement` would read as a non-component statement (over-refusal too).
+    "access_specifier", "end_type_statement",
 )
 
 
@@ -207,12 +212,42 @@ class ProgramUnit:
 
 
 @dataclass(frozen=True)
+class DerivedType:
+    """One derived type DEFINITION, wherever it stands in the file, as the §5.1 type comparison
+    reads it (issue #430).
+
+    ``name`` is the lowercased `type_name` of its opening statement. ``header_extras`` are the
+    lowercased texts of that statement's other named children — an `access_specifier`
+    (``public``), ``extends(...)``, ``abstract``, ``bind(c)``, a type-parameter list.
+    ``components`` are the definition's DIRECT `variable_declaration` children, in source order;
+    ``other_children`` the node types of every other direct named child except the opener and the
+    `end type` statement (``private_statement``, ``sequence_statement``,
+    ``derived_type_procedures``, a preprocessor conditional, ...).
+
+    The scope is recorded as the walk found it: ``unit`` / ``unit_kind`` are the innermost
+    `module` / `submodule` the definition stands in (None outside one), ``in_procedure`` is True
+    inside any procedure node (a definition, a `BLOCK` in one, or a prototype in an interface
+    body), and ``in_interface`` True inside any `interface` block."""
+
+    name: str
+    start: int
+    header_extras: tuple[str, ...]
+    components: tuple[Declaration, ...]
+    other_children: tuple[str, ...]
+    unit: str | None
+    unit_kind: str | None
+    in_procedure: bool
+    in_interface: bool
+
+
+@dataclass(frozen=True)
 class StructureTree:
     view: str
     procedures: tuple[Procedure, ...]
     interface_spans: tuple[tuple[int, int], ...]
     units: tuple[ProgramUnit, ...]
     errors: tuple[StructureError, ...]
+    types: tuple[DerivedType, ...] = ()
 
 
 def _load_parser():
@@ -326,6 +361,7 @@ def parse_view(view: str) -> StructureTree:
     procedures: list[Procedure] = []
     interface_spans: list[tuple[int, int]] = []
     units: list[ProgramUnit] = []
+    types: list[DerivedType] = []
     errors: list[StructureError] = []
 
     def record_error(node) -> None:
@@ -348,13 +384,18 @@ def parse_view(view: str) -> StructureTree:
     # taking down the whole gate run and reporting a cause that has nothing to do with it. The
     # regex walk this module replaced had no recursion, so this was a surface the swap introduced.
     # Found by review.
+    # Each stack entry carries the scope the walk is in: inside an `interface` block, inside a
+    # procedure node, and the innermost `module` / `submodule` as `(kind, name)`. Only the first
+    # decides what is collected as a procedure; the other two place a derived type definition.
     def walk(root) -> None:
-        stack: list[tuple[object, bool]] = [(root, False)]
+        stack: list[tuple[object, bool, bool, tuple[str, str] | None]] = [
+            (root, False, False, None)]
         while stack:
-            node, inside_interface = stack.pop()
-            visit(node, inside_interface, stack)
+            node, inside_interface, inside_procedure, unit = stack.pop()
+            visit(node, inside_interface, inside_procedure, unit, stack)
 
-    def visit(node, inside_interface: bool, stack: list) -> None:
+    def visit(node, inside_interface: bool, inside_procedure: bool,
+              unit: tuple[str, str] | None, stack: list) -> None:
         if node.type == "ERROR" or node.is_missing:
             record_error(node)
         if node.is_named and node.type == "interface":
@@ -374,19 +415,29 @@ def parse_view(view: str) -> StructureTree:
             )
             inside_interface = True
         if node.is_named and node.type in ("module", "submodule"):
-            unit = _program_unit(encoded, node, to_char)
-            if unit is not None:
-                units.append(unit)
+            program_unit = _program_unit(encoded, node, to_char)
+            # An unnamed unit still opens a scope: a definition inside it is not at module level
+            # of any NAMED unit, so it must not inherit the enclosing one.
+            unit = (node.type, program_unit.name if program_unit is not None else "")
+            if program_unit is not None:
+                units.append(program_unit)
+        if node.is_named and node.type == "derived_type_definition":
+            derived = _derived_type(view, encoded, node, to_char, unit,
+                                    inside_procedure, inside_interface)
+            if derived is not None:
+                types.append(derived)
         kind = _PROCEDURE_KINDS.get(node.type) if node.is_named else None
         if kind and node.children and not inside_interface:
             procedure = _procedure(view, encoded, node, kind, to_char)
             if procedure is not None:
                 procedures.append(procedure)
+        if kind:
+            inside_procedure = True
         # Reversed so the stack pops children left to right: `procedures` is sorted by
         # `body_start` afterwards, but `errors` is reported in the order found and a reader
         # follows it top to bottom.
         for child in reversed(node.children):
-            stack.append((child, inside_interface))
+            stack.append((child, inside_interface, inside_procedure, unit))
 
     walk(tree.root_node)
     procedures.sort(key=lambda item: item.body_start)
@@ -396,6 +447,51 @@ def parse_view(view: str) -> StructureTree:
         interface_spans=tuple(sorted(interface_spans)),
         units=tuple(sorted(units, key=lambda item: item.start)),
         errors=tuple(sorted(errors, key=lambda item: (item.line, item.snippet))),
+        types=tuple(sorted(types, key=lambda item: item.start)),
+    )
+
+
+def _derived_type(view: str, encoded: bytes, node, to_char, unit: tuple[str, str] | None,
+                  in_procedure: bool, in_interface: bool) -> DerivedType | None:
+    """The `DerivedType` at ``node``, or None when its opener reports no `type_name`."""
+    opener = next((child for child in node.children
+                   if child.is_named and child.type == "derived_type_statement"), None)
+    if opener is None:
+        return None
+    name = None
+    extras: list[str] = []
+    for part in opener.children:
+        if not part.is_named:
+            continue
+        if part.type == "type_name" and name is None:
+            name = _text(encoded, part).strip().lower()
+        else:
+            extras.append(_text(encoded, part).strip().lower())
+    if not name:
+        return None
+    components: list[Declaration] = []
+    others: list[str] = []
+    for child in node.children:
+        if not child.is_named or child is opener or child.type == "end_type_statement":
+            continue
+        if child.type == "variable_declaration":
+            components.append(Declaration(
+                kind=child.type,
+                start=_line_start(view, to_char(child.start_byte)),
+                end=_next_line_start(view, max(to_char(child.end_byte) - 1, 0)),
+            ))
+        else:
+            others.append(child.type)
+    return DerivedType(
+        name=name,
+        start=to_char(node.start_byte),
+        header_extras=tuple(extras),
+        components=tuple(components),
+        other_children=tuple(others),
+        unit=unit[1] if unit is not None else None,
+        unit_kind=unit[0] if unit is not None else None,
+        in_procedure=in_procedure,
+        in_interface=in_interface,
     )
 
 
@@ -632,6 +728,61 @@ def module_level_definitions(
             local_types=procedure.local_types,
         )
     return definitions
+
+
+@dataclass(frozen=True)
+class TypeDefinition:
+    """A derived type definition as the §5.1 type comparison reads it: ``header_extras`` and
+    ``other_children`` as `DerivedType` records them, and the text of each component declaration
+    in source order."""
+
+    header_extras: tuple[str, ...]
+    components: tuple[str, ...]
+    other_children: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class TypeReading:
+    """`module_level_type_definitions`' answer. ``definitions`` are the types defined at module
+    level of the publishing module, keyed by lowercased name; ``counts`` is how many
+    `derived_type_definition`s of each name the whole file carries, in any scope."""
+
+    definitions: dict[str, TypeDefinition]
+    counts: dict[str, int]
+
+
+def module_level_type_definitions(
+    tree: StructureTree,
+    unit_name: str,
+    text_between: Callable[[int, int], str],
+) -> TypeReading:
+    """The derived types ``tree`` defines at module level of the MODULE ``unit_name`` — not in a
+    submodule (a consumer's `use` reaches only the module's own specification part), not inside a
+    procedure (a definition, a `BLOCK` in one) and not inside an `interface` block — plus how many
+    times each type name is defined anywhere in the file.
+
+    This is what the §5.1 type comparison reads, and the whole-file stanza splitter is not
+    (issue #430). The splitter keyed a type by its name AS WRITTEN and read only the `type ::`
+    header form, so a module-level `type t` (no `::`) or `TYPE :: T` was invisible to it, and a
+    private helper's local `type :: t` carrying the pinned components stood in for a drifted
+    published one. Reading the definition the module's own specification part carries leaves no
+    other definition to read; counting every definition of the name, any scope, refuses the second
+    one a reader of the name could be handed instead (a local type of the same name in a published
+    procedure makes that procedure's `type(t)` dummies the local type)."""
+    wanted = unit_name.strip().lower()
+    definitions: dict[str, TypeDefinition] = {}
+    counts: dict[str, int] = {}
+    for derived in tree.types:
+        counts[derived.name] = counts.get(derived.name, 0) + 1
+        if (derived.unit_kind == "module" and derived.unit == wanted
+                and not derived.in_procedure and not derived.in_interface):
+            definitions.setdefault(derived.name, TypeDefinition(
+                header_extras=derived.header_extras,
+                components=tuple(text_between(c.start, c.end).strip()
+                                 for c in derived.components),
+                other_children=derived.other_children,
+            ))
+    return TypeReading(definitions, counts)
 
 
 def module_level_procedure_names(

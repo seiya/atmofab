@@ -216,6 +216,103 @@ class ProcedureDeclarationsTests(unittest.TestCase):
                          {"variable_declaration", "variable_modification"})
 
 
+class DerivedTypeTests(unittest.TestCase):
+    """`StructureTree.types` and `module_level_type_definitions` (issue #430 PR-2): every derived
+    type definition in the file with the scope the walk found it in, and the module-level ones of
+    the publishing module, which the §5.1 type comparison reads."""
+
+    _SOURCE = textwrap.dedent("""
+        module m
+          implicit none
+          type T_Mod
+            integer :: a; real :: b
+          end type
+          type, public, extends(t_mod) :: t_ext
+            private
+            sequence
+          contains
+            procedure :: tb
+          end type t_ext
+          interface
+            subroutine ext(k)
+              integer, intent(in) :: k
+              type :: t_iface
+                integer :: z
+              end type t_iface
+            end subroutine ext
+          end interface
+        contains
+          subroutine s()
+            type :: t_proc
+              integer :: k
+            end type t_proc
+            block
+              type :: t_block
+                integer :: k
+              end type t_block
+            end block
+          end subroutine s
+        end module m
+        submodule (m) impl
+          type :: t_sub
+            integer :: k
+          end type t_sub
+        end submodule impl
+        module other
+          type :: t_mod
+            integer :: k
+          end type t_mod
+        end module other
+        program main
+          type :: t_prog
+            integer :: k
+          end type t_prog
+        end program main
+    """)
+
+    def test_every_definition_is_recorded_with_its_scope(self) -> None:
+        tree = fs.parse_view(view_of(self._SOURCE))
+        got = [(t.name, t.unit_kind, t.unit, t.in_procedure, t.in_interface) for t in tree.types]
+        self.assertEqual(got, [
+            ("t_mod", "module", "m", False, False),
+            ("t_ext", "module", "m", False, False),
+            ("t_iface", "module", "m", True, True),
+            ("t_proc", "module", "m", True, False),
+            ("t_block", "module", "m", True, False),
+            ("t_sub", "submodule", "impl", False, False),
+            ("t_mod", "module", "other", False, False),
+            ("t_prog", None, None, False, False),
+        ])
+        ext = next(t for t in tree.types if t.name == "t_ext")
+        self.assertEqual(ext.header_extras, ("public", "extends(t_mod)"))
+        self.assertEqual(ext.other_children,
+                         ("private_statement", "sequence_statement", "derived_type_procedures"))
+        self.assertEqual(ext.components, ())
+
+    def test_module_level_type_definitions_reads_the_publishing_module_alone(self) -> None:
+        from tools.backends.language.fortran import source as fortran_source
+        reading = fortran_source.module_level_type_definitions(self._SOURCE.lower(), "m")
+        self.assertEqual(set(reading.definitions), {"t_mod", "t_ext"})
+        self.assertEqual(reading.definitions["t_mod"].components,
+                         ("integer :: a", "real :: b"))
+        self.assertEqual(reading.definitions["t_mod"].header_extras, ())
+        self.assertEqual(reading.counts, {
+            "t_mod": 2, "t_ext": 1, "t_iface": 1, "t_proc": 1, "t_block": 1, "t_sub": 1,
+            "t_prog": 1})
+        # A submodule is not the module a consumer `use`s, even when its name is asked for.
+        self.assertEqual(
+            set(fortran_source.module_level_type_definitions(self._SOURCE.lower(),
+                                                             "impl").definitions), set())
+        self.assertEqual(
+            set(fortran_source.module_level_type_definitions(self._SOURCE.lower(),
+                                                             "other").definitions), {"t_mod"})
+
+    def test_the_grammar_check_covers_the_type_node_types(self) -> None:
+        self.assertLessEqual(
+            {"derived_type_definition", "derived_type_statement", "type_name",
+             "access_specifier", "end_type_statement"}, set(fs._REQUIRED_NODE_TYPES))
+
+
 class DeepNestingTests(unittest.TestCase):
     def test_a_deeply_nested_body_is_walked_without_recursion(self) -> None:
         # The walk was recursive, one Python frame per tree node, so a source with deeply nested
