@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from tools.backends.language.fortran import lines as fortran_lines
 
@@ -60,11 +60,14 @@ from tools.structured_signatures import validate_symbol as _validate_symbol
 #
 # §5.1 gives the exact published surface as a fenced Fortran interface block. Two deterministic
 # gates consume it: the ``--stage compile`` gate cross-checks its symbol set against §5, and the
-# ``Generate.static`` gate pins the generated model source against each signature's interface
-# lines. Both compare after a normalization that erases every non-semantic difference — inline
-# comments, ``&`` continuations, case, and whitespace — so a signature authored one way in §5.1
-# and formatted another way in the generated source still matches (and a genuine argument-name /
-# type / rank / intent drift still fails).
+# ``Generate.static`` gate pins the generated model source against each signature. Both erase every
+# non-semantic difference — inline comments, ``&`` continuations, case, and whitespace — so a
+# signature authored one way in §5.1 and formatted another way in the generated source still
+# matches (and a genuine argument-name / type / rank / intent drift still fails). The generated
+# source's PROCEDURES are compared in a currency of their own since issue #430 — what each dummy
+# is declared to be (`Entity`, `surface_drift`, below `source_atoms`) — because two spellings of
+# one declaration differ by more than formatting; the atoms here remain the currency for the
+# IR-vs-§5.1 comparisons, the derived types and the module parameters.
 #
 # This layer used to live in ``tools/validate_pipeline_semantics.py``, and this module imported it
 # back out of the neutral core — a backend reaching into the neutral core for its own subject
@@ -417,11 +420,316 @@ def source_atoms(text: str) -> frozenset[str]:
     (`runner.assert_harness_pin`) — so the two cannot disagree about what counts as the
     declaration; stating it once here also keeps a caller from needing the line scanner in its
     own right."""
+    # Each logical line is split into its `;`-separated statements first: `stanza_atoms` reads one
+    # statement per line, and a `;`-joined `integer, parameter :: dp = real64; integer :: k` would
+    # otherwise give one atom whose value reads `real64;integer::k` — a pinned parameter reported
+    # missing from a source that declares it (issue #430 O4/O5). The uniqueness count in
+    # `generated_source_violations` already reads the `;`-split view, so presence and uniqueness
+    # now agree about what a statement is.
     return frozenset(
         _without_access_spec(atom)
         for line in fortran_lines.fortran_logical_line_texts(text)
-        for atom in stanza_atoms([line])
+        for statement in fortran_lines.split_fortran_statements(line)
+        for atom in stanza_atoms([statement])
     )
+
+
+# --- declared characteristics: the §5.1 comparison currency for a generated source --------------
+#
+# A §5.1 procedure pins, for each dummy and the result, the characteristics F2008 12.3.2.2 lists:
+# type, kind, rank and shape, and attributes (`intent`, `allocatable`, `optional`, `value`, ...).
+# A generated source may state them in more than one statement — a type declaration plus an
+# attribute statement (`optional :: n`, `dimension :: x(:)`) — and in more than one spelling of the
+# same characteristic (`real(kind=dp)` / `real(dp)`, a `dimension(:)` attribute / an `x(:)` entity,
+# `(1:n)` / `(n)`). Comparing TEXT got both wrong (issue #430): atom membership accepted an extra
+# attribute given in its own statement, and refused an ABI-identical spelling. `Entity` is what one
+# name is declared to be, merged over every declaration statement of one scope, and it is what
+# the comparison compares.
+
+
+class Entity(NamedTuple):
+    """The declared characteristics of one name, canonicalised (see `parse_declaration`).
+
+    ``type_spec`` is None when only attribute statements name it; ``dims`` is None for a name
+    declared with no array spec; ``init`` keeps its operator (``=…`` / ``=>…``), because a
+    default-initialised component is a different layout."""
+
+    type_spec: str | None
+    attrs: frozenset[str]
+    dims: tuple[str, ...] | None
+    init: str | None
+
+
+class MergedEntities(NamedTuple):
+    """`merge_entities`' answer. ``twice`` maps a name to the characteristic two statements both
+    gave it (a type, a shape or an initialiser); ``unreadable`` holds the statements the parser
+    could not read (``::``-less type declarations among them), as written."""
+
+    entities: dict[str, Entity]
+    twice: dict[str, str]
+    unreadable: tuple[str, ...]
+
+
+_SOLE_KIND_SELECTOR_RE = re.compile(r"(real|integer|logical|complex)\(kind=(.+)\)")
+_SOLE_LEN_SELECTOR_RE = re.compile(r"character\(len=(.+)\)")
+_IDENTIFIER_RE = re.compile(r"[a-z_][a-z0-9_]*")
+
+
+def canonical_type_spec(text: str) -> str:
+    """A type-spec lower-cased with all whitespace removed, and a SOLE keyword selector reduced to
+    its positional form: ``real(kind=dp)`` → ``real(dp)`` (also ``integer`` / ``logical`` /
+    ``complex``), ``character(len=:)`` → ``character(:)``. The positional form is the same type by
+    F2008 4.4.2 / 4.4.3.2. A two-selector form (``character(kind=c_char,len=1)``) is left as
+    written, and so is ``character(kind=k)``: a positional ``character(k)`` is a LENGTH."""
+    spec = fortran_lines.normalize_fortran_line(text)
+    for pattern in (_SOLE_KIND_SELECTOR_RE, _SOLE_LEN_SELECTOR_RE):
+        match = pattern.fullmatch(spec)
+        if match and len(fortran_lines.split_top_level_commas(match.group(match.lastindex))) == 1:
+            prefix = match.group(1) if match.lastindex == 2 else "character"
+            return f"{prefix}({match.group(match.lastindex)})"
+    return spec
+
+
+def canonical_dims(text: str) -> tuple[str, ...]:
+    """An array spec's bounds (the text between its parentheses), one per dimension, with a lower
+    bound of 1 dropped: ``1:n`` → ``n`` and ``1:`` → ``:``. The same shape either way (F2008
+    5.3.8); every other bound is kept as written (normalised)."""
+    out: list[str] = []
+    for bound in fortran_lines.split_top_level_commas(fortran_lines.normalize_fortran_line(text)):
+        if bound == "1:":
+            bound = ":"
+        elif bound.startswith("1:"):
+            bound = bound[2:]
+        out.append(bound)
+    return tuple(out)
+
+
+def _balanced_end(text: str, start: int, opener: str, closer: str) -> int:
+    """Index just past the ``closer`` matching the ``opener`` at ``text[start]``; -1 if none."""
+    depth = 0
+    for index in range(start, len(text)):
+        if text[index] == opener:
+            depth += 1
+        elif text[index] == closer:
+            depth -= 1
+            if depth == 0:
+                return index + 1
+    return -1
+
+
+def _parse_entity(text: str) -> tuple[str, str | None, str | None, str | None]:
+    """``name[(dims)][[codims]][*len][=init|=>init]`` (normalised) → its four parts; raises
+    `SignatureParseError` on anything else."""
+    match = _IDENTIFIER_RE.match(text)
+    if not match:
+        raise SignatureParseError(f"cannot read the declared entity `{text}`")
+    name, rest = match.group(0), text[match.end():]
+    dims = codims = charlen = None
+    if rest.startswith("("):
+        end = _balanced_end(rest, 0, "(", ")")
+        if end < 0:
+            raise SignatureParseError(f"cannot read the declared entity `{text}`")
+        dims, rest = rest[1:end - 1], rest[end:]
+    if rest.startswith("["):
+        end = _balanced_end(rest, 0, "[", "]")
+        if end < 0:
+            raise SignatureParseError(f"cannot read the declared entity `{text}`")
+        codims, rest = rest[:end], rest[end:]
+    if rest.startswith("*"):
+        stop = rest.find("=")
+        charlen, rest = (rest, "") if stop < 0 else (rest[:stop], rest[stop:])
+    init = None
+    if rest.startswith(("=>", "=")):
+        init, rest = rest, ""
+    if rest:
+        raise SignatureParseError(f"cannot read the declared entity `{text}`")
+    extras = "".join(part for part in (codims, charlen) if part)
+    return name, dims, extras or None, init
+
+
+def parse_declaration(text: str, *, has_type_spec: bool) -> list[tuple[str, Entity]]:
+    """One declaration statement → ``(name, Entity)`` per declared name, in order.
+
+    ``has_type_spec`` says which statement it is: a type declaration (``real(dp), intent(in) ::
+    x``), whose first top-level item before ``::`` is the type-spec, or an attribute statement
+    (``optional :: n``, ``dimension :: x(:)``, ``intent(in) x``), all of whose items are
+    attributes. A type declaration without ``::`` is refused (`SignatureParseError`): F2008 allows
+    it only with no attribute and no initialiser, the lint gate refuses the form anyway, and
+    reading it would need a grammar of type-specs this module does not keep. An attribute
+    statement without ``::`` is read as its keyword (with its parenthesised part) then the
+    entity list.
+
+    Canonicalisation, all of it ABI-preserving: whitespace and case (`normalize_fortran_line`),
+    a sole kind / length selector (`canonical_type_spec`), a lower bound of 1 (`canonical_dims`),
+    and a ``dimension(...)`` attribute, which becomes the shape of every entity that carries no
+    array spec of its own (F2008 5.3.8.1: the entity's own spec overrides it). A coarray
+    codimension and a ``*len`` length suffix are kept as an attribute so they compare as a
+    difference rather than vanish."""
+    stripped = text.strip()
+    if "::" in stripped:
+        lhs, _sep, rhs = stripped.partition("::")
+    elif has_type_spec:
+        raise SignatureParseError(
+            f"the declaration `{stripped}` has no `::` — write it with `::`")
+    else:
+        match = re.match(r"\s*([A-Za-z_]\w*)\s*", stripped)
+        if not match:
+            raise SignatureParseError(f"cannot read the attribute statement `{stripped}`")
+        cut = match.end()
+        if stripped[cut:].startswith("("):
+            end = _balanced_end(stripped, cut, "(", ")")
+            if end < 0:
+                raise SignatureParseError(f"cannot read the attribute statement `{stripped}`")
+            cut = end
+        lhs, rhs = stripped[:cut], stripped[cut:]
+    items = [fortran_lines.normalize_fortran_line(item)
+             for item in fortran_lines.split_top_level_commas(lhs)]
+    if not items or not all(items):
+        raise SignatureParseError(f"cannot read the declaration `{stripped}`")
+    type_spec = canonical_type_spec(items[0]) if has_type_spec else None
+    attrs: set[str] = set()
+    attr_dims: tuple[str, ...] | None = None
+    for item in items[1:] if has_type_spec else items:
+        if item.startswith("dimension(") and item.endswith(")"):
+            attr_dims = canonical_dims(item[len("dimension("):-1])
+        elif item != "dimension":  # bare: the shape is each entity's own array spec
+            attrs.add(item)
+    out: list[tuple[str, Entity]] = []
+    for raw in fortran_lines.split_top_level_commas(rhs):
+        entity = fortran_lines.normalize_fortran_line(raw)
+        if not entity:
+            raise SignatureParseError(f"cannot read the declaration `{stripped}`")
+        name, dims, extra, init = _parse_entity(entity)
+        out.append((name, Entity(
+            type_spec=type_spec,
+            attrs=frozenset(attrs | ({extra} if extra else set())),
+            dims=canonical_dims(dims) if dims is not None else attr_dims,
+            init=init,
+        )))
+    if not out:
+        raise SignatureParseError(f"the declaration `{stripped}` declares no entity")
+    return out
+
+
+def merge_entities(declarations: Any) -> MergedEntities:
+    """Merge ``(statement type, text)`` declaration statements of ONE scope into one `Entity` per
+    name. A ``variable_declaration`` is a type declaration and a ``variable_modification`` an
+    attribute statement (`structure`'s node types, which is how a definition's statements come);
+    attributes are unioned, and a type, a shape or an initialiser given by two statements is
+    recorded in ``twice`` (the compiler refuses that too, but a comparison must not pick one)."""
+    entities: dict[str, Entity] = {}
+    twice: dict[str, str] = {}
+    unreadable: list[str] = []
+    for kind, text in declarations:
+        try:
+            parsed = parse_declaration(text, has_type_spec=(kind == "variable_declaration"))
+        except SignatureParseError:
+            unreadable.append(text.strip())
+            continue
+        for name, new in parsed:
+            old = entities.get(name)
+            if old is None:
+                entities[name] = new
+                continue
+            for field, label in (("type_spec", "a type"), ("dims", "a shape"),
+                                 ("init", "an initialiser")):
+                if getattr(old, field) is not None and getattr(new, field) is not None:
+                    twice.setdefault(name, label)
+            entities[name] = Entity(
+                type_spec=old.type_spec if old.type_spec is not None else new.type_spec,
+                attrs=old.attrs | new.attrs,
+                dims=old.dims if old.dims is not None else new.dims,
+                init=old.init if old.init is not None else new.init,
+            )
+    return MergedEntities(entities, twice, tuple(unreadable))
+
+
+_HEADER_PREFIX_RE = re.compile(r"^(.*?)\b(?:subroutine|function)\b", re.IGNORECASE)
+
+
+def _entity_differences(want: Entity, have: Entity) -> list[str]:
+    """What differs between a pinned and a declared `Entity`, as phrases."""
+    diffs: list[str] = []
+    if have.type_spec != want.type_spec:
+        diffs.append(f"its type is `{have.type_spec}` where §5.1 pins `{want.type_spec}`"
+                     if have.type_spec is not None else
+                     f"no type declaration gives it a type (§5.1 pins `{want.type_spec}`)")
+    extra = sorted(have.attrs - want.attrs)
+    missing = sorted(want.attrs - have.attrs)
+    if extra:
+        diffs.append(f"it carries {', '.join(f'`{a}`' for a in extra)}, which §5.1 does not pin")
+    if missing:
+        diffs.append(f"it lacks {', '.join(f'`{a}`' for a in missing)}")
+    if have.dims != want.dims:
+        shape = (lambda dims: "scalar" if dims is None else f"`({','.join(dims)})`")
+        diffs.append(f"its shape is {shape(have.dims)} where §5.1 pins {shape(want.dims)}")
+    if have.init != want.init:
+        diffs.append(f"its initialiser is `{have.init}` where §5.1 pins `{want.init}`"
+                     if have.init is not None else f"it lacks the initialiser `{want.init}`")
+    return diffs
+
+
+def surface_drift(
+    pinned_lines: list[str], *, header: str, declarations: Any, exact: bool,
+) -> list[str]:
+    """How a procedure as the source DECLARES it differs from its §5.1 stanza, as sentences.
+
+    ``pinned_lines`` is the §5.1 stanza (header first, then one declaration per dummy and result);
+    ``header`` and ``declarations`` (``(statement type, text)`` pairs, `merge_entities`) are the
+    source's. The header is compared for EQUALITY after normalisation — a prefix §5.1 does not
+    declare, or a type on a `function` header, is a difference. Every name the stanza declares is
+    compared as an `Entity`; with ``exact`` (a prototype, which has no body) a name the source
+    declares and the stanza does not is a difference too. Empty when they agree."""
+    out: list[str] = []
+    pinned_header = pinned_lines[0].strip() if pinned_lines else ""
+    if (fortran_lines.normalize_fortran_line(header)
+            != fortran_lines.normalize_fortran_line(pinned_header)):
+        prefix_match = _HEADER_PREFIX_RE.match(header.strip())
+        prefix = prefix_match.group(1).strip() if prefix_match else ""
+        sentence = (f"its header reads `{header.strip()}` where the pinned interface line is "
+                    f"`{pinned_header}`")
+        if prefix:
+            sentence += (f" — `{prefix}` before the procedure keyword is a procedure prefix (or "
+                         "a type) that §5.1 does not declare, and the header is compared as "
+                         "published, so it is a difference even when every argument is right")
+        out.append(sentence)
+    want_merged = merge_entities(
+        ("variable_declaration", line) for line in pinned_lines[1:])
+    pinned_line_of: dict[str, str] = {}
+    for line in pinned_lines[1:]:
+        try:
+            for name, _entity in parse_declaration(line, has_type_spec=True):
+                pinned_line_of.setdefault(name, line.strip())
+        except SignatureParseError:
+            continue
+    have_merged = merge_entities(declarations)
+    for statement in have_merged.unreadable:
+        named = [name for name in pinned_line_of
+                 if re.search(rf"(?<![a-z0-9_]){re.escape(name)}(?![a-z0-9_])", statement.lower())]
+        if named:
+            out.append(
+                f"the statement `{statement}` declares {', '.join(f'`{n}`' for n in named)} in a "
+                "form this comparison does not read — write each declaration with `::` "
+                "(`<type>, <attributes> :: <name>`)")
+    for name, want in want_merged.entities.items():
+        line = pinned_line_of.get(name, name)
+        have = have_merged.entities.get(name)
+        if name in have_merged.twice:
+            out.append(f"the pinned interface line `{line}`: `{name}` is given "
+                       f"{have_merged.twice[name]} by two statements")
+        elif have is None:
+            out.append(
+                f"the pinned interface line `{line}`: `{name}` is not declared in the "
+                "procedure's own specification part (a declaration inside a `block`, an "
+                "interface body or a contained procedure does not declare it)")
+        else:
+            diffs = _entity_differences(want, have)
+            if diffs:
+                out.append(f"the pinned interface line `{line}`: `{name}` — " + "; ".join(diffs))
+    if exact:
+        for name in sorted(set(have_merged.entities) - set(want_merged.entities)):
+            out.append(f"it declares `{name}`, which the pinned prototype does not")
+    return out
 
 
 # --- struct vocabulary -------------------------------------------------------------------------
@@ -919,9 +1227,11 @@ def generated_source_violations(
     interface, already rendered to Fortran stanzas (``op_stanzas`` / ``type_stanzas`` /
     ``proto_stanzas``) and already checked against the certified IR by the validator.
 
-    Moved here unchanged from the validator (issue #289, R4-b PR-3): every rule below is a
-    statement about how a Fortran source publishes, defines and binds a procedure, a derived type,
-    a prototype and a module parameter. ``target`` is the path findings are reported against;
+    Moved here from the validator (issue #289, R4-b PR-3): every rule below is a statement about
+    how a Fortran source publishes, defines and binds a procedure, a derived type, a prototype and
+    a module parameter. A published procedure is compared against the publishing module's own
+    definition of it, by what that definition declares (`surface_drift`; issue #430), and only
+    when the source resolves to one publishing unit through the structure front end. ``target`` is the path findings are reported against;
     ``module_parameters`` are §5.1's structured entries (`load_structured_signatures`), rendered
     here. ``procedures`` (§5.1's structured procedures) is ACCEPTED AND NOT READ: every Fortran
     procedure is published one way, so ``op_stanzas`` already says everything."""
@@ -929,34 +1239,38 @@ def generated_source_violations(
     from tools.backends.language.fortran import source as fortran_source
     from tools.backends.language.fortran import structure as fortran_structure
 
-    # Parse the generated source into per-symbol stanzas (a procedure stanza is header + its
-    # declarations + body; a type stanza is its full block) so each pinned signature is checked
-    # WITHIN its own procedure/type. A GLOBAL source line-set would let a drifted declaration in
-    # one procedure be masked by an identical (correct) declaration in another — `intent(in) :: n`
-    # is common — so the scoping is load-bearing, not cosmetic.
+    # WHAT IS COMPARED, AND FROM WHERE (issue #430). A §5.1 procedure is compared against what the
+    # publishing module's own definition of it DECLARES: its header statement, and each dummy's and
+    # the result's characteristics merged over every declaration statement of the definition's own
+    # specification part (`Entity`, `surface_drift`), read through the tree-sitter structure reader
+    # that also answers definedness. Two earlier currencies were each a hole:
+    #
+    # - ATOM MEMBERSHIP over the whole definition text ("every pinned atom appears somewhere in
+    #   it") accepted an extra characteristic given in a statement of its own — `optional :: n`,
+    #   `value :: n`, `dimension :: n(:)` — and a pinned-looking declaration sitting in a `BLOCK` or
+    #   an interface body inside the definition, while refusing ABI-identical spellings
+    #   (`real(kind=dp)`, a `dimension(:)` attribute, `(1:n)`), each of which cost a billed attempt
+    #   on a real harness run;
+    # - a header read by NAME from the whole-file stanza splitter let a decoy elsewhere in the
+    #   file supply the header the definedness answer did not credit (PR #279).
+    #
+    # The whole-file splitter is still run, for three things that are not a definition: its
+    # duplicate report (below), the PROTOTYPES (`src_ifaces`: a §5.1 `interfaces` entry, and a
+    # published procedure the source only prototypes), and, until the type half moves to the
+    # tree as well, the derived types.
     combined = "\n".join(
         model_file.read_text(encoding="utf-8", errors="ignore") for model_file in model_files
     )
-    # A prototype the source declares inside an `interface` block is neither a published
-    # procedure nor a type; the splitter files it separately. It is read for two purposes: a
-    # §5.1 procedure the source only prototypes is reported as undefined (the per-symbol loop),
-    # and each §5.1 `interfaces` prototype is pinned against the source's prototype of that
-    # name (after the loop; issue #266). A prototype that shares a published name with an
-    # unprefixed definition is still a `duplicate signature` error from the splitter; the
-    # prefixed variant that error never covered is closed in the per-symbol loop, which compares
-    # a defined procedure by its own definition's header.
     src_ops, src_types, src_ifaces, src_errors = (
         parse_interface_stanzas(combined))
     # HONOUR the parser's errors. `parse_interface_stanzas`' own docstring says a duplicate symbol
     # name is reported here and must be "fail-closed at the caller — a duplicate must never silently
-    # overwrite", and this caller discarded them while the §5.1 side and the IR side both honour
-    # theirs. The consequence, measured on a real component §5.1 (issue #153 PR-2 round 1): a model
-    # source publishing a DRIFTED 2-argument operation, plus a never-called private helper carrying a
-    # second declaration of the SAME published name with the pinned 5-argument shape, produced ZERO
-    # violations — the stanza dict is last-wins, so the gate compared §5.1 against the decoy. Moving
-    # the decoy earlier in the file restored all 4 violations, which is what identified the
-    # mechanism. That is a `leaf shortcut` of the exact class this gate exists to refuse: a
-    # `Generate.gate` pass while publishing an ABI §5.1 does not declare.
+    # overwrite", and this caller once discarded them. The consequence, measured on a real component
+    # §5.1 (issue #153 PR-2 round 1): a source publishing a DRIFTED operation plus a private helper
+    # carrying the pinned shape under the same name produced ZERO violations, because the stanza
+    # dict is last-wins. A procedure is no longer read from that dict, but the PROTOTYPE map
+    # (`src_ifaces`) and the type map still are, and both are last-wins keyed by name, so the
+    # error still guards what this function reads from them.
     if src_errors:
         for err in src_errors:
             violations.append(
@@ -965,92 +1279,73 @@ def generated_source_violations(
                 "so remove the extra declaration (an `interface` body re-declaring a symbol this "
                 "module defines is one) and re-emit")
         return
-    src_lists: dict[str, tuple[str, ...]] = {}
-    src_proto_lists: dict[str, tuple[str, ...]] = {}  # the prototypes, kept apart (see the loop)
-    spec_proto_lists: dict[str, tuple[str, ...]] = {}  # §5.1's prototypes, same currency
-    for atom_lists, stanzas in ((src_lists, {**src_ops, **src_types}),
-                                (src_proto_lists, src_ifaces),
-                                (spec_proto_lists, proto_stanzas)):
-        for name, lines in stanzas.items():
-            atom_lists[name] = stanza_line_list(lines)
+    # Names the source carries a procedure or prototype header for, anywhere. Read only to choose
+    # WHICH refusal a name not defined by the publishing module gets ("never DEFINES it" when a
+    # header is there, "does not publish" when none is); no comparison reads it.
+    header_names = {name.lower() for name in (*src_ops, *src_ifaces)}
+    src_proto = {name.lower(): lines for name, lines in src_ifaces.items()}
+    # The splitter keys raw text, so `Foo` and `foo` are two prototypes to it and one name to the
+    # language. Keyed case-insensitively here, the second would silently win, so a PINNED name
+    # spelled twice is refused as the duplicate it is. Only a pinned one: two `block`-local
+    # interfaces of one external procedure, `Ext_a` and `ext_a`, are legal and none of this
+    # comparison's business (PR #279 round 4 refused that correct source once already).
+    pinned_lower = {name.lower() for name in (*op_stanzas, *proto_stanzas)}
+    spelled_twice = sorted(
+        lname for lname in pinned_lower
+        if sum(1 for name in src_ifaces if name.lower() == lname) > 1)
+    if spelled_twice:
+        violations.append(
+            f"{target}: generated model source cannot be compared with controlled_spec §5.1 "
+            f"(more than one interface prototype of {', '.join(repr(n) for n in spelled_twice)}, "
+            "spelled in different case) — a published symbol must be declared exactly once in "
+            "the model source, so remove the extra declaration and re-emit")
+        return
 
-    # PUBLISHING A HEADER IS NOT IMPLEMENTING IT, and everything above this line only compares
-    # HEADERS. `parse_interface_stanzas` reads a header wherever it stands, so a model that
-    # declares a §5.1 operation as a PROTOTYPE — the pinned header, verbatim, with no
-    # implementation anywhere — satisfies every comparison below. Measured (issue #153's CARRIED
-    # residue, re-run here before it was fixed): ZERO violations, the syntax stage rc=0, the
-    # node's own build rc=0, and the node links as long as nothing calls the operation. The
-    # failure lands at a CONSUMER's link, one node and one billed phase away from the leaf that
-    # caused it. It is a `leaf shortcut` by the decision criterion: a leaf that takes it is closer
-    # to reporting `Generate` done, having skipped the implementation.
+    def _prototype_declarations(lines: list[str]) -> list[tuple[str, str]]:
+        # A splitter line is a logical line, not a statement: split on `;` as the view does.
+        return [("variable_declaration", statement)
+                for line in lines[1:]
+                for statement in fortran_lines.split_fortran_statements(line)
+                if statement.strip()]
+
+    # PUBLISHING A HEADER IS NOT IMPLEMENTING IT. A model that declares a §5.1 operation as a
+    # PROTOTYPE — the pinned header, verbatim, with no implementation anywhere — satisfied every
+    # header comparison (issue #153's CARRIED residue: ZERO violations, the syntax stage rc=0, the
+    # node's own build rc=0); the failure lands at a CONSUMER's link. So a published operation must
+    # be DEFINED by the publishing module, which the structure reader answers.
     #
-    # WHY THE CARRIED PREMISE DOES NOT APPLY HERE, which is the whole reason this could be fixed
-    # at last. `checks_module_abi_facts`' docstring names three shapes a bare "is it defined"
-    # refusal would fail — a name association, a generic block, an implementation in a separate
-    # unit — and each was run against THIS gate before the check below was added. All three are
-    # refused TODAY, before it, and for an unrelated reason: none of them puts the pinned §5.1
-    # header in the source, so each already fails the `have is None` arm above. So the
-    # over-refusal belongs to the checks-module scanner, whose question ("is this name callable")
-    # those shapes answer yes to; this gate's question is narrower and they never reach it.
-    # `PublishedProcedureDefinednessTests` pins that as a row, so a later widening of the header
-    # comparison cannot quietly inherit the over-refusal.
+    # The three shapes `checks_module_abi_facts`' docstring names as legal-but-undefined-here (a
+    # name association, a generic block, an implementation in a separate unit) never reach that
+    # refusal: none puts the pinned header in the source, so each is "does not publish" first.
+    # `PublishedProcedureDefinednessTests` pins that as a row.
     #
-    # A `component` / `infrastructure` source had no structural reader, by deliberate removal: a
-    # parse refusal "bought nothing and cost a legal form" where no gate read the file (measured,
-    # 0 -> 4 violations). That justification is now spent — this gate reads it, so the refusal
-    # buys the definedness check — and a parse the front end cannot resolve is refused rather than
-    # skipped. Skipping would put the check behind a switch the LEAF holds: one renamed variable
-    # would disable it, which is the silent-gate shape this area exists to remove.
+    # A source the front end cannot resolve is refused rather than skipped: skipping would put
+    # both the definedness check and the signature comparison behind a switch the LEAF holds (one
+    # variable named after a keyword).
     #
-    # THE QUESTION IS SCOPED TO THE PUBLISHING UNIT, and the first version of this check was not.
-    # Asked over the whole file it becomes "is this name defined ANYWHERE", which a decoy answers:
-    # a round-1 reviewer measured a model whose published operation was a prototype in the
-    # published module and an empty stub in a SECOND module in the same file — gate 0 violations,
-    # the syntax stage clean, the node's own build clean, and the consumer still failing at LINK
-    # with an undefined reference. That is this check's own hole, one unit away, reproduced
-    # independently before it was fixed. The duplicate-symbol backstop that should have caught two headers of one name did
-    # not, because the decoy's header carried a prefix (`impure elemental`) or a statement label
-    # that the stanza reader does not model — so narrowing to that spelling would have closed one
-    # decoy and left the family. Scoping removes the family FOR THE DEFINEDNESS ANSWER, and only
-    # there: a decoy in the published unit itself — contained in another procedure, or a prototype
-    # in another procedure's body — still carried the header the comparison below read, until
-    # that comparison took its header from the same definition (`source.module_level_definition_headers`).
+    # THE QUESTION IS SCOPED TO THE PUBLISHING UNIT, named by the source's own basename with its
+    # extension dropped (the convention this repository resolves the model source by). Asked over
+    # the whole file it becomes "is this name defined ANYWHERE", which a decoy in a second module of
+    # the same file answers (round 1 of the definedness fix: 0 violations, consumer link failure).
     #
-    # The unit is named by the source's own basename with its extension dropped, which is the
-    # convention this repository already relies on when it resolves the model source at all.
-    # (An earlier sentence here described the per-file UNION this replaced — "every model file
-    # contributes only the names its own unit defines" — and contradicted the rule two lines
-    # above it once the union was gone. Deleted rather than corrected: one statement of a rule.)
-    #
-    # ONE FILE, NOT A UNION. An earlier version unioned the per-file answers, and a round-2 census
-    # showed what that buys: a second model file whose OWN module carries a same-named stub credits
-    # the prototype in the published file, which is the unit-granularity hole reopened at file
-    # granularity. Its ROUTE was NOT established — `_model_files_in_src_dir` returns more than one
-    # file only when `_spec_id_from_node_key` finds no `/`, and `node_key` is read from the
-    # host-authored `lineage.json`, which no leaf write root covers — so this is defense in depth
-    # rather than a closed exploit, and it is recorded that way. The published surface belongs to
-    # ONE module either way, so a set of files this gate cannot resolve to one publisher is
-    # fail-closed rather than unioned.
+    # ONE FILE, NOT A UNION. A second model file whose own module carries a same-named stub would
+    # credit a prototype in the published file. `_model_files_in_src_dir` returns more than one
+    # file only when `_spec_id_from_node_key` finds no `/` in the host-authored `node_key`, so this
+    # is defense in depth; the published surface belongs to ONE module either way, so a file set
+    # this gate cannot resolve to one publisher is refused.
     defined_names: frozenset[str] | None = None
-    definition_lists: dict[str, tuple[str, ...] | None] = {}
+    definitions: dict[str, fortran_structure.Definition | None] | None = None
     unit_absent: str | None = None
     if op_stanzas and len(model_files) != 1:
-        # APPENDED DIRECTLY, and NOT via `_fail_closed_if_pinned`, and NOT followed by a
-        # `return`. Both were wrong, and a round-3 disclosure reviewer measured the cost:
-        # `_fail_closed_if_pinned` appends only when the NODE_KEY's prefix is a pinned kind,
-        # while `len(model_files) != 1` can only happen when the node_key has no `/` at all —
-        # so in the one configuration this arm can fire, it appended NOTHING and returned,
-        # dropping every §5.1 header comparison with it. Against `origin/main`, which reports
-        # the drift, that is red-then-GREEN: a check this branch silently removed. Past this
-        # point `ir_kind` has already been confirmed to publish an exact surface, so the
-        # refusal needs no further condition; and the header comparison does not need the
-        # definedness answer, so it continues below with `defined_names` left None.
+        # APPENDED DIRECTLY, not via `_fail_closed_if_pinned`: that helper appends only when the
+        # NODE_KEY's prefix is a pinned kind, and this arm fires only for a node_key with no `/`,
+        # so routed through it the refusal was silent (PR #279 round 3).
         violations.append(
             f"{target}: this {ir_kind} node's published surface cannot be pinned to one "
             f"publisher — {len(model_files)} model source files were resolved and exactly one "
             "is expected, so which program unit publishes the controlled_spec §5.1 surface "
-            "cannot be decided; the definedness check is skipped for this node and the "
-            "signature comparison below still applies")
+            "cannot be decided; the definedness check and the signature comparison both need "
+            "one resolvable publishing unit, so neither is run for this node")
     if op_stanzas and len(model_files) == 1:
         model_file = model_files[0]
         try:
@@ -1059,7 +1354,7 @@ def generated_source_violations(
                     fortran_source.structure_reading(source_text)[1], model_file.stem):
                 unit_absent = model_file.stem
             defined_names = fortran_source.module_level_procedure_names(source_text, model_file.stem)
-            definition_lists = fortran_source.module_level_definition_headers(source_text, model_file.stem)
+            definitions = fortran_source.module_level_definitions(source_text, model_file.stem)
         # `FortranStructureUnavailableError` is deliberately NOT caught: it is the OPERATOR's
         # failure (an uninstalled package), no edit to this source can clear it, and `main`
         # answers it with a dedicated exit code. Same rule as `source.run_problem_model_gates`.
@@ -1070,148 +1365,120 @@ def generated_source_violations(
                     f"statement {structure_error.line} of its joined view "
                     f"({'missing token' if structure_error.missing else 'parse error'}): "
                     f"{structure_error.snippet!r}. A {ir_kind} node's published operations must be "
-                    "shown to be DEFINED and not merely declared, which needs the procedure "
-                    f"structure, so an unresolvable source is a Generate failure — "
+                    "shown to be DEFINED and not merely declared, and each must be compared with "
+                    "controlled_spec §5.1 as its definition declares it; both need the procedure "
+                    "structure, so an unresolvable source is a Generate failure and the signature "
+                    f"comparison is not run until it resolves — "
                     f"{fortran_structure.STRUCTURE_REFUSAL_HINT}.")
-            # NO `return`. The header comparison below does not need the parse, and discarding it
-            # would hand a leaf whose source has BOTH an unresolvable identifier and a real
-            # signature drift only the first of the two — two warm retries where one would do.
-            # `defined_names` stays None, so the definedness arm alone is skipped; the violation
-            # above already fails the node, so skipping it opens nothing.
+            # The signature comparison is NOT run on a fallback reading. PR #279 kept a
+            # whole-file-splitter comparison here "so two faults are told in one attempt"; that
+            # comparison is the hole issue #430 closes, and the 5 structure refusals recorded
+            # under `workspace/pipelines` (2026-10-06) were each the only fault reported, so
+            # the second fault it was kept for has no production witness.
 
-    for name in sorted({**op_stanzas, **type_stanzas}):
-        spec_lines = op_stanzas.get(name) or type_stanzas.get(name) or []
-        is_type = name in type_stanzas
-        kind = "derived type" if is_type else "procedure"
-        have = src_lists.get(name)
-        # A procedure the publishing module DEFINES is compared by ITS header, not by whichever
-        # stanza of that name the splitter met (`structure.module_level_definition_stanzas` says
-        # why). A definition whose header the splitter cannot read leaves `have` None, and the
-        # source is told so.
-        if not is_type and name.lower() in definition_lists:
-            have = definition_lists[name.lower()]
-        # A published procedure the source declares only as a PROTOTYPE inside an `interface`
-        # block. The stanza splitter files it under the prototypes, so it is not in `src_lists`;
-        # it is still the header the leaf wrote for this name, so it is compared for drift below
-        # and reported as undefined by the structural arm (an interface-body header is not a
-        # module-level procedure to the structure reader; a round-1 reviewer measured that a
-        # clause repeating that verdict here was unobservable). Setting `have` is the whole of
-        # it. What the prototype-plus-definition PAIR gets, stated by shape because a round-2
-        # reviewer found the previous sentence here claiming a defence that does not exist: an
-        # UNPREFIXED pair is the splitter's `duplicate signature` above, whichever comes first;
-        # a pair in the module's specification part is refused by the compiler ("already
-        # defined") at `Generate.syntax` whatever the prefix; a prototype inside another
-        # procedure's BODY plus a module-level definition carrying a prefix the splitter does
-        # not model (`impure elemental`) is refused by NEITHER — measured 0 violations here and
-        # rc=0 from the syntax check, at origin/main and at this revision — because this arm
-        # compared the prototype's atoms while the structural arm credited the prefixed
-        # definition. That pair, and its contained-decoy spelling, is closed by the arm above: a
-        # name the module DEFINES never falls back to a prototype's header.
-        if (not is_type and have is None and name in src_proto_lists
-                and name.lower() not in definition_lists):
-            have = src_proto_lists[name]
-        if have is None and not is_type and name.lower() in definition_lists:
+    def _drift(name: str, sentences: list[str]) -> None:
+        for sentence in sentences:
             violations.append(
-                f"{target}: generated model source does not publish controlled_spec §5.1 {kind} "
-                f"'{name}' in the pinned form — the module defines '{name}', but "
-                f"{fortran_structure.UNREAD_DEFINITION_HEADER_REMEDY}")
+                f"{target}: procedure '{name}' drifts from controlled_spec §5.1 — {sentence} "
+                "(each dummy and the result are compared by what the definition's own "
+                "specification part declares: type, kind, shape and every attribute; a "
+                "declaration inside a `block`, an interface body or a contained procedure is "
+                "not the definition's)")
+
+    for name in sorted(op_stanzas) if definitions is not None else ():
+        spec_lines = op_stanzas[name]
+        lname = name.lower()
+        if lname in definitions:
+            definition = definitions[lname]
+            if definition is None:
+                violations.append(
+                    f"{target}: generated model source does not publish controlled_spec §5.1 "
+                    f"procedure '{name}' in the pinned form — the module defines '{name}', but "
+                    f"{fortran_structure.UNREAD_DEFINITION_HEADER_REMEDY}")
+                continue
+            _drift(name, surface_drift(
+                spec_lines, header=definition.header,
+                declarations=definition.declarations, exact=False))
             continue
-        if have is None:
+        if lname not in header_names:
             violations.append(
-                f"{target}: generated model source does not publish controlled_spec §5.1 {kind} "
-                f"'{name}' (no {kind} of that name/header found — the published surface must match "
-                "the pinned §5.1 signature)")
+                f"{target}: generated model source does not publish controlled_spec §5.1 "
+                f"procedure '{name}' (no procedure of that name/header found — the published "
+                "surface must match the pinned §5.1 signature)")
             continue
-        if not is_type and defined_names is not None and name.lower() not in defined_names:
-            # NOT `continue`. A first version reported this INSTEAD OF the stanza comparison, on
-            # the reasoning that "the header is present by construction, so every atom matches" —
-            # which is false, and a round-2 reviewer measured it: `have` is keyed on the NAME, not
-            # on the header matching §5.1, so a prototype that ALSO drifts has a non-None `have`
-            # and its drift atoms were suppressed. A source with both faults was told one per
-            # attempt, which is the second warm retry the sibling comment above refuses to pay.
-            #
-            # `unit_absent` is the other half, and it is why the two messages are not one. Scoping
-            # answers the empty set both when the published unit implements nothing and when the
-            # source declares no such unit at all, and the second is a DIFFERENT fault with a
-            # different repair: telling a leaf to "define it in the module's own `contains`" when
-            # the procedure IS defined — in a module under another name — is a remedy whose every
-            # clause is false for the source, and nothing else in this stage names the real fault.
-            # Measured on a correct model whose module name did not match its file's: three such
-            # violations, none of them actionable.
-            if unit_absent is not None:
-                violations.append(
-                    f"{target}: generated model source declares no program unit named "
-                    f"'{unit_absent}', so the surface controlled_spec §5.1 pins has no publisher "
-                    f"here — procedure '{name}' may well be defined, but not by the module a "
-                    f"consumer will `use`. Name the module '{unit_absent}', matching the source "
-                    "file, and define the published procedures inside it")
-            else:
-                violations.append(
-                    f"{target}: generated model source declares controlled_spec §5.1 procedure "
-                    f"'{name}' but never DEFINES it — "
-                    f"{fortran_structure.UNDEFINED_PUBLISHED_PROCEDURE_REMEDY} of '{name}'")
-        if is_type:
-            # A derived type's WHOLE component layout — names, types, and ORDER, with nothing
-            # inserted — is part of the compatibility contract (§5), so the source type block must
-            # equal §5.1's atom list EXACTLY. Ordered-subsequence would accept an inserted extra
-            # component (widening the published layout); set equality would accept a reorder.
-            # `have` is this name's stanza from `src_lists`, where a type wins over a procedure
-            # of the same name; a name the source defines only as a procedure has no type
-            # stanza and keeps its procedure atoms, which never equal a type layout.
-            src_type = src_types.get(name)
-            got = type_layout_list(src_type) if src_type is not None else have
-            if got != type_layout_list(spec_lines):
-                violations.append(
-                    f"{target}: derived type '{name}' drifts from controlled_spec §5.1 — its "
-                    "published component layout (names/types/order, no extras) does not match the "
-                    "pinned definition")
+        # A header of the name exists, but the publishing module does not define it. `unit_absent`
+        # and "never DEFINES it" are two messages because they are two faults with two repairs: a
+        # correct model whose module name does not match its file is not missing a body.
+        if unit_absent is not None:
+            violations.append(
+                f"{target}: generated model source declares no program unit named "
+                f"'{unit_absent}', so the surface controlled_spec §5.1 pins has no publisher "
+                f"here — procedure '{name}' may well be defined, but not by the module a "
+                f"consumer will `use`. Name the module '{unit_absent}', matching the source "
+                "file, and define the published procedures inside it")
             continue
-        # A procedure's dummy-argument declarations may be in any order (Fortran-legal, and the
-        # header line already pins call order), so membership — not order — is checked here.
-        have_set = frozenset(have)
-        for orig in spec_lines:
-            missing_atoms = [a for a in stanza_atoms([orig]) if a not in have_set]
-            if missing_atoms:
-                violations.append(
-                    f"{target}: procedure '{name}' drifts from controlled_spec §5.1 — missing the "
-                    f"pinned interface line `{orig.strip()}` (argument name/type/rank/intent/"
-                    "result drift from the published surface, OR a procedure prefix on the header "
-                    "that §5.1 does not declare — the header is compared as published, so a prefix "
-                    "is a difference even when every argument is right)")
+        violations.append(
+            f"{target}: generated model source declares controlled_spec §5.1 procedure "
+            f"'{name}' but never DEFINES it — "
+            f"{fortran_structure.UNDEFINED_PUBLISHED_PROCEDURE_REMEDY} of '{name}'")
+        # A prototype of the name is still the header the leaf wrote for it, so a drift in it is
+        # told in the same attempt as the missing body rather than in the next one.
+        if lname in src_proto:
+            proto = src_proto[lname]
+            _drift(name, surface_drift(
+                spec_lines, header=proto[0],
+                declarations=_prototype_declarations(proto), exact=False))
+
+    for name in sorted(type_stanzas):
+        spec_lines = type_stanzas[name]
+        src_type = src_types.get(name)
+        if src_type is None and name not in src_ops:
+            violations.append(
+                f"{target}: generated model source does not publish controlled_spec §5.1 derived "
+                f"type '{name}' (no derived type of that name/header found — the published "
+                "surface must match the pinned §5.1 signature)")
+            continue
+        # A derived type's WHOLE component layout — names, types, and ORDER, with nothing
+        # inserted — is part of the compatibility contract (§5), so the source type block must
+        # equal §5.1's atom list EXACTLY. A name the source defines only as a procedure has no
+        # type stanza, and that is a drift too.
+        if src_type is None or type_layout_list(src_type) != type_layout_list(spec_lines):
+            violations.append(
+                f"{target}: derived type '{name}' drifts from controlled_spec §5.1 — its "
+                "published component layout (names/types/order, no extras) does not match the "
+                "pinned definition")
 
     # The §5.1 PROTOTYPES (issue #266): each `interfaces` entry must appear in the source as a
-    # prototype of the same name — inside an `interface` block, never as a definition — with
-    # the same atom SET (a prototype has no body, so the comparison is equality both ways,
-    # unlike a published procedure's membership check: an extra declaration line in a
-    # prototype is a different interface the compiler checks the passed actual against). A
-    # prototype the source declares that §5.1 does not is allowed — a module-private
-    # interface is not published surface. The "never as a definition" half asks the structure
-    # reader, like the definedness arm above, and is skipped on the same conditions (no single
-    # publisher, or a source the front end could not resolve, both already refused above).
-    # The two scope statements a source prototype must carry (host association of the kind
-    # symbol, and the implicit-typing rule the lint gate requires) are not atoms — the
-    # splitter drops them — so they cannot drift the comparison either way.
+    # prototype of the same name — inside an `interface` block, never as a definition — declaring
+    # EXACTLY what the entry declares (`surface_drift` with `exact`: a prototype has no body, so a
+    # name it declares that the entry does not is a different interface the compiler checks the
+    # passed actual against). A prototype the source declares that §5.1 does not is allowed — a
+    # module-private interface is not published surface. The "never as a definition" half asks
+    # the structure reader, like the definedness arm above, and is skipped on the same conditions
+    # (no single publisher, or a source the front end could not resolve, both already refused
+    # above). The two scope statements a source prototype must carry (host association of the
+    # kind symbol, and the implicit-typing rule the lint gate requires) are dropped by the
+    # splitter, so they are not declarations here either.
     proto_remedy = (
         "declare it in an abstract interface block of the model module, as a prototype only "
         "(no body), matching the §5.1 `interfaces` entry argument for argument — every "
         "argument name, type, kind, rank, intent and the result — carrying inside the "
         "prototype the two scope statements authoring rule (6a) of the generate template "
         "requires")
-    for name in sorted(spec_proto_lists):
-        want = frozenset(spec_proto_lists[name])
-        have_proto = src_proto_lists.get(name)
+    for name in sorted(proto_stanzas):
+        have_proto = src_proto.get(name.lower())
         if have_proto is None:
             violations.append(
                 f"{target}: generated model source does not declare the controlled_spec §5.1 "
                 f"prototype '{name}' (no interface block carries a prototype of that name) — "
                 f"{proto_remedy}")
-        elif frozenset(have_proto) != want:
-            missing = sorted(a for a in want if a not in have_proto)
-            extra = sorted(a for a in have_proto if a not in want)
-            violations.append(
-                f"{target}: prototype '{name}' drifts from controlled_spec §5.1's `interfaces` "
-                f"entry — missing {missing}, extra {extra} (compared as normalized "
-                f"declaration atoms; the header line is one of them) — {proto_remedy}")
+        else:
+            for sentence in surface_drift(
+                    proto_stanzas[name], header=have_proto[0],
+                    declarations=_prototype_declarations(have_proto), exact=True):
+                violations.append(
+                    f"{target}: prototype '{name}' drifts from controlled_spec §5.1's "
+                    f"`interfaces` entry — {sentence} — {proto_remedy}")
         if defined_names is not None and name.lower() in defined_names:
             violations.append(
                 f"{target}: generated model source DEFINES '{name}', which controlled_spec §5.1 "
@@ -1270,7 +1537,20 @@ def generated_source_violations(
         str(mp.get("name") or "").strip()
         for mp in module_parameters if isinstance(mp, dict)
     ]
-    for name in [n for n in param_names if n]:
+    # The pinned TYPE names go through the same loop (issue #430 B4): a `use` binding a pinned type
+    # name — `use aux, only: t_named => t`, in the module or local to one published procedure —
+    # makes every dummy declared `type(t_named)` in that scope another type, while the module still
+    # defines the pinned one for the type comparison to find. What is refused for a type is a
+    # binding of its name to ANOTHER entity: a rename (`t_named => other`), or an import from a
+    # module other than the publishing one. Importing the pinned type from the publishing module
+    # under its own name binds the same type, and a helper module in the same file does exactly
+    # that in eight certified harness sources (census, 2026-10-06), so it is not refused. A rename
+    # without `only:` (`use m, a => b`) and a bare `use m` are refused by the lint gate (C121,
+    # measured) in the same substep, which is why this loop reads `only:` lists alone.
+    type_names = sorted(type_stanzas)
+    publishing_units = {model_file.stem.lower() for model_file in model_files}
+    for name in [n for n in param_names if n] + type_names:
+        is_type = name in type_stanzas
         # Read the import statements out of the atom set the gate ALREADY built (`source_atoms`
         # normalizes each entity and strips whitespace), rather than re-scanning the source through
         # the line module — one fewer neutral-core mention of a backend module name, and one fewer
@@ -1284,23 +1564,39 @@ def generated_source_violations(
                 continue
             if "only:" not in atom:
                 continue
-            imported = atom.split("only:", 1)[1]
+            head, imported = atom.split("only:", 1)
             # `a=>b` binds `a`; a bare `b` binds `b`. Either way the pinned name must not appear on
             # the BINDING side of an import.
-            bound = [seg.split("=>")[0].strip() for seg in imported.split(",")]
-            if name.lower() in bound:
+            pairs = [(seg.split("=>")[0].strip(), seg.split("=>")[-1].strip())
+                     for seg in imported.split(",")]
+            bound = [local for local, _used in pairs]
+            if name.lower() not in bound:
+                continue
+            if is_type:
+                # The module the `use` names: the atom is `use[,<nature>::|::]<module>,only:...`.
+                module = re.sub(r"^use(?:,(?:non_)?intrinsic)?(?:::)?", "", head).rstrip(",")
+                renamed = any(local == name.lower() and used != local for local, used in pairs)
+                if module in publishing_units and not renamed:
+                    continue
                 violations.append(
-                    f"{target}: generated model source imports the §5.1 module parameter "
-                    f"`{name}` (`{atom}`) instead of declaring it — the published ABI's kind must "
-                    f"come from this module's own `parameter` declaration of `{name}`, which is "
-                    "what this gate value-pins; an imported binding carries a value the pin "
-                    "cannot see, so declare it in this module and drop the name from the `use`. "
-                    "A helper module that lives in this file is read as part of it: there, "
-                    "write the value under a name of its own (an intrinsic kind such as "
-                    "`real64`, a literal length) rather than importing "
-                    f"`{name}` back from the model module or declaring `{name}` a second time — "
-                    f"a second binding of `{name}` anywhere in this file is refused too")
+                    f"{target}: generated model source imports the §5.1 derived type name "
+                    f"`{name}` (`{atom}`) — the pinned type is defined by this module, and a "
+                    f"`use` binding its name changes every dummy declared `type({name})` in that "
+                    "scope to the imported type; drop the name from the `use` (rename the "
+                    "imported entity to a name of its own if it is needed)")
                 break
+            violations.append(
+                f"{target}: generated model source imports the §5.1 module parameter "
+                f"`{name}` (`{atom}`) instead of declaring it — the published ABI's kind must "
+                f"come from this module's own `parameter` declaration of `{name}`, which is "
+                "what this gate value-pins; an imported binding carries a value the pin "
+                "cannot see, so declare it in this module and drop the name from the `use`. "
+                "A helper module that lives in this file is read as part of it: there, "
+                "write the value under a name of its own (an intrinsic kind such as "
+                "`real64`, a literal length) rather than importing "
+                f"`{name}` back from the model module or declaring `{name}` a second time — "
+                f"a second binding of `{name}` anywhere in this file is refused too")
+            break
 
     # Pair by INDEX over the unfiltered list, not by zipping against a FILTERED name list.
     # `param_lines` maps one-to-one over the same `module_parameters`

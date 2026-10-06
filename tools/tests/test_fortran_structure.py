@@ -126,6 +126,70 @@ class ParseViewShapeTests(unittest.TestCase):
         self.assertIsNone(fs.parse_view(view).procedures[0].contains_at)
 
 
+class ProcedureDeclarationsTests(unittest.TestCase):
+    """`Procedure.declarations` and `module_level_definitions` (issue #430): a definition's OWN
+    declaration statements, which the §5.1 signature pin compares."""
+
+    _SOURCE = textwrap.dedent("""
+        module m
+          implicit none
+        contains
+          subroutine s(a, n)
+            integer, intent(in) :: a(:)
+            integer n
+            optional :: n
+            value n
+            interface
+              subroutine cb(k)
+                integer :: k
+              end subroutine cb
+            end interface
+            block
+              real :: b_local
+            end block
+          contains
+            subroutine inner(q)
+              integer :: q
+            end subroutine inner
+          end subroutine s
+        end module m
+        submodule (m) impl
+        contains
+          module procedure mp
+          end procedure mp
+        end submodule impl
+    """)
+
+    def _definitions(self):
+        from tools.backends.language.fortran import source as fortran_source
+        return fortran_source.module_level_definitions(self._SOURCE.lower(), "m")
+
+    def test_only_the_direct_declaration_children_are_recorded(self) -> None:
+        tree = fs.parse_view(view_of(self._SOURCE))
+        s = next(p for p in tree.procedures if p.name == "s")
+        texts = [(d.kind, tree.view[d.start:d.end].strip()) for d in s.declarations]
+        self.assertEqual(texts, [
+            ("variable_declaration", "integer, intent(in) :: a(:)"),
+            ("variable_declaration", "integer n"),
+            ("variable_modification", "optional :: n"),
+            ("variable_modification", "value n"),
+        ])
+        inner = next(p for p in tree.procedures if p.name == "inner")
+        self.assertEqual([tree.view[d.start:d.end].strip() for d in inner.declarations],
+                         ["integer :: q"])
+
+    def test_module_level_definitions_reads_header_and_own_declarations(self) -> None:
+        definitions = self._definitions()
+        self.assertEqual(set(definitions), {"s", "mp"})
+        self.assertEqual(definitions["s"].header, "subroutine s(a, n)")
+        self.assertEqual(definitions["s"].declarations[0],
+                         ("variable_declaration", "integer, intent(in) :: a(:)"))
+        self.assertEqual(len(definitions["s"].declarations), 4)
+
+    def test_the_abbreviated_module_procedure_answers_none(self) -> None:
+        self.assertIsNone(self._definitions()["mp"])
+
+
 class DeepNestingTests(unittest.TestCase):
     def test_a_deeply_nested_body_is_walked_without_recursion(self) -> None:
         # The walk was recursive, one Python frame per tree node, so a source with deeply nested

@@ -1,4 +1,5 @@
-"""The structural front end the three `problem` model gates read Fortran through.
+"""The structural front end the three `problem` model gates, and the §5.1 signature pin, read
+Fortran through.
 
 Replaces a hand-rolled regex walk over Fortran's keyword structure. That walk was rewritten
 four times and broken sixteen; every break was the same shape — a spelling the language allows
@@ -62,7 +63,6 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from tools.backends import registry as backend_registry
-from tools.backends.language.fortran import signatures as fortran_signatures
 
 #: The versions this front end was MEASURED on, by pip distribution name. Written here, in the
 #: backend that depends on them, because the value is a property of THIS code: the module drives a
@@ -109,6 +109,10 @@ _REQUIRED_NODE_TYPES = (
     # unrepairable warm-retry loop into an operator-facing unavailable error. Two round-2
     # reviewers found the direction stated backwards, independently.
     "module", "submodule", "module_statement", "submodule_statement",
+    # The two declaration statement types a procedure's own specification part is read from by
+    # the §5.1 signature pin (`Procedure.declarations`). A rename leaves every pinned dummy
+    # "not declared", which is total over-refusal; the guard turns it into the unavailable error.
+    "variable_declaration", "variable_modification",
 )
 
 
@@ -130,6 +134,22 @@ class StructureError:
     missing: bool
 
 
+#: The statement types `Procedure.declarations` collects: a type declaration (with or without
+#: `::`, `procedure(iface) :: cb` included) and an attribute statement (`optional :: n`,
+#: `dimension n(:)`, `intent(in) :: x`, `value`, `pointer`, `target`, `allocatable`, ...).
+_DECLARATION_TYPES = ("variable_declaration", "variable_modification")
+
+
+@dataclass(frozen=True)
+class Declaration:
+    """One declaration statement, as offsets into the view: ``start`` is the start of its line and
+    ``end`` the start of the line after it (the view holds one statement per line)."""
+
+    kind: str
+    start: int
+    end: int
+
+
 @dataclass(frozen=True)
 class Procedure:
     """One procedure DEFINITION, with its body located as offsets into the view.
@@ -139,6 +159,12 @@ class Procedure:
     which is what makes ``view[body_start:body_end]`` the body and nothing else. ``contains_at`` is the start of this procedure's own `contains` line
     (None when it has none): declarations before it are this procedure's, procedures after it are
     its own contained ones whose dummies are NOT its.
+
+    ``declarations`` are the procedure's OWN declaration statements: the DIRECT children of its
+    node of a `_DECLARATION_TYPES` type. A declaration inside a `BLOCK`, an `interface` body or a
+    contained procedure is a child of that construct, not of this node, so it is not one — which
+    is what the §5.1 signature pin needs, since none of them declares this procedure's dummies.
+    Empty for the abbreviated `module procedure` form.
     """
 
     kind: str
@@ -149,6 +175,7 @@ class Procedure:
     body_start: int
     body_end: int
     contains_at: int | None
+    declarations: tuple[Declaration, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -411,6 +438,16 @@ def _procedure(view: str, encoded: bytes, node, kind: str, to_char) -> Procedure
                     break
             break
 
+    declarations = tuple(
+        Declaration(
+            kind=child.type,
+            start=_line_start(view, to_char(child.start_byte)),
+            end=_next_line_start(view, max(to_char(child.end_byte) - 1, 0)),
+        )
+        for child in node.children
+        if kind != "module_procedure" and child.is_named and child.type in _DECLARATION_TYPES
+    )
+
     return Procedure(
         kind=kind,
         name=name,
@@ -420,6 +457,7 @@ def _procedure(view: str, encoded: bytes, node, kind: str, to_char) -> Procedure
         body_start=body_start,
         body_end=body_end,
         contains_at=contains_at,
+        declarations=declarations,
     )
 
 
@@ -483,16 +521,15 @@ UNDEFINED_PUBLISHED_PROCEDURE_REMEDY = (
     "the prototype"
 )
 
-#: What a leaf is told when the publishing module DEFINES a §5.1 operation but the definition's
-#: header is not one the §5.1 comparison reads. Here for the same reason as the constant above:
-#: every form it names is this language's.
+#: What a leaf is told when the publishing module DEFINES a §5.1 operation in the one form whose
+#: header and declarations the §5.1 comparison cannot read. Here for the same reason as the
+#: constant above: every form it names is this language's. A prefix, a type before `function` and a
+#: second header inside the body used to be listed here too; each is now a header difference the
+#: comparison reports itself.
 UNREAD_DEFINITION_HEADER_REMEDY = (
-    "its header is not one the §5.1 comparison reads: a prefix other than `pure` / `elemental` / "
-    "`recursive`, a type before `function`, an abbreviated `module procedure` (which repeats no "
-    "header), or a second header of the same name inside the definition's own body (a prototype "
-    "in a nested block). Write the header exactly as §5.1 pins it, in the module's own "
-    "`contains`, with the result declared in the body, and give no other header that name "
-    "inside it"
+    "it is an abbreviated `module procedure`, which repeats no header and declares no dummy, so "
+    "there is nothing to compare with §5.1. Write the full header exactly as §5.1 pins it, with "
+    "each dummy and the result declared in the procedure's own specification part"
 )
 
 #: What a leaf is told when this front end cannot resolve a source. Same reason for living here:
@@ -524,79 +561,49 @@ def publishing_unit_present(tree: StructureTree, unit_name: str) -> bool:
     )
 
 
-def module_level_definition_stanzas(
+@dataclass(frozen=True)
+class Definition:
+    """A module-level procedure definition as the §5.1 signature pin reads it: the text of its
+    header statement and of each of its own declaration statements (`Procedure.declarations`), as
+    ``(statement type, text)`` pairs in source order."""
+
+    header: str
+    declarations: tuple[tuple[str, str], ...]
+
+
+def module_level_definitions(
     tree: StructureTree,
     unit_name: str,
     text_between: Callable[[int, int], str],
-) -> dict[str, tuple[str, ...] | None]:
-    """The stanza of each procedure ``tree`` DEFINES at the top level of ``unit_name`` — its
-    header and specification part, read from the definition itself. ``text_between(start,
-    stop)`` returns the caller's view text between two of ``tree``'s offsets (the caller owns
-    the translation when it parsed a label-preserving twin).
+) -> dict[str, Definition | None]:
+    """What each procedure ``tree`` DEFINES at the top level of ``unit_name`` declares, keyed by
+    lowercased name. ``text_between(start, stop)`` returns the caller's view text between two of
+    ``tree``'s offsets (the caller owns the translation when it parsed a label-preserving twin).
 
-    This is what the §5.1 header comparison must read, and the whole-file stanza splitter is not.
-    The splitter reads a header wherever it stands and keys it by NAME, while the definedness
-    answer is about ONE procedure; a source can satisfy each with a different one. Measured
-    (found by issue #266 PR-1's review): the pinned header written as a procedure CONTAINED in
-    another, or as a prototype in an `interface` block in another procedure's body, beside a
-    module-level definition whose prefix (`impure elemental`) the splitter does not model and
-    whose argument list drifts — 0 violations and `-fsyntax-only` rc=0, with the consumer failing
-    at its own compile.
+    This is what the §5.1 signature pin compares, and the whole-file stanza splitter is not. The
+    splitter reads a header wherever it stands and keys it by NAME, while the definedness answer is
+    about ONE procedure, so a source could satisfy each with a different one (PR #279: a contained
+    procedure, a prototype in another body, or a DTIO prototype in a `BLOCK` of the definition
+    itself, each carrying the pinned header beside a drifted definition). Reading the header and
+    the declarations from the definition the structure reader found leaves no second procedure to
+    read them from; reading only the definition's OWN declaration statements leaves no `BLOCK`,
+    interface body or contained procedure to supply a dummy's characteristics (issue #430).
 
-    EACH DEFINITION IS SPLIT ON ITS OWN, and only the stanza its OWN HEADER opens is taken. A
-    first version split every definition's text together and looked the name up, which is the
-    name-keyed lookup again one level down: a prototype inside another definition's body that the
-    splitter did not see as a prototype — its `interface write(formatted)` opener is not one the
-    splitter recognises — was taken as the published procedure's stanza (PR #279 round 1,
-    0 violations). What refuses a decoy is that the stanza taken must start at the definition's
-    own first line and carry no splitter error for its name. The per-definition split is what
-    keeps the ANSWER right rather than what refuses: split together, every decoy shape measured
-    in PR #279's round 4 was still refused, but as an unread header instead of the drift it is,
-    and a correct source with a same-named stanza elsewhere was refused too. The first-line
-    requirement is the one that holds when the decoy is inside the definition itself: a BLOCK makes
-    a prototype of the procedure legal in its own body (PR #279 round 2, `gfortran -fsyntax-only
-    -std=f2008` rc=0). An earlier version of this paragraph called that requirement unreachable
-    from legal source, on the strength of one probe without the BLOCK. The fragment also stops
-    at the definition's own `contains`, so a contained procedure's declarations are not the
-    definition's.
-
-    A fragment the splitter reports an error on FOR THIS NAME answers None, and that is the third
-    requirement, not a tidy-up. The splitter keeps the LAST stanza of a name, and its duplicate
-    report was being discarded. So a readable definition header spelled in another case, or
-    carrying a label, followed by a decoy with the pinned header inside a BLOCK in the same body,
-    made the decoy's stanza win. The view is lowercased and label-stripped, so the decoy's first
-    line equals the definition's, and the first-line requirement passed (PR #279 round 3,
-    0 violations, rc=0). The whole-file splitter did not report the duplicate either, because it
-    reads the raw text, where `HX__…` and `hx__…` are different keys and `10 subroutine` is not
-    a header. The error must name the procedure: an error about ANOTHER name says nothing about
-    this definition's stanza, and refusing on it turned away a correct source whose body holds two
-    BLOCK-local interfaces of one external procedure spelled `Ext_a` / `ext_a` — accepted on
-    origin/main, refused with a remedy naming none of its causes at PR #279's a2130c44
-    (round 4).
-
-    None is the answer for a definition whose own header the splitter cannot read, and for an
-    abbreviated separate module subprogram (`module procedure <name>`), which repeats no header at
-    all. An earlier version left that form out of the answer so the caller kept the name-keyed
-    lookup for it, which turned out to mean "the correct form is refused (the splitter does not
-    read the `module subroutine` prototype either) and a decoy is accepted" (PR #279 round 1).
-    Returns each stanza as `signatures.stanza_line_list` gives it — the currency the §5.1
-    comparison reads — keyed by lowercased name."""
-    stanzas: dict[str, tuple[str, ...] | None] = {}
+    None for an abbreviated separate module subprogram (`module procedure <name>`), which repeats
+    no header and may not redeclare its dummies, so there is nothing of it to compare."""
+    definitions: dict[str, Definition | None] = {}
     for procedure in module_level_procedures(tree, unit_name):
         name = procedure.name.strip().lower()
         if procedure.kind not in ("subroutine", "function"):
-            stanzas[name] = None
+            definitions[name] = None
             continue
-        stop = procedure.contains_at if procedure.contains_at is not None else procedure.body_end
-        text = (text_between(procedure.header_start, stop).rstrip("\n")
-                + f"\nend {procedure.kind} {procedure.name}")
-        ops, _types, _ifaces, errors = fortran_signatures.parse_interface_stanzas(text)
-        stanza = {key.lower(): lines for key, lines in ops.items()}.get(name)
-        first = text.split("\n", 1)[0].strip()
-        own_error = any(f"'{name}'" in error for error in errors)
-        stanzas[name] = (fortran_signatures.stanza_line_list(stanza)
-                         if stanza and stanza[0] == first and not own_error else None)
-    return stanzas
+        definitions[name] = Definition(
+            header=text_between(procedure.header_start, procedure.body_start).strip(),
+            declarations=tuple(
+                (declaration.kind, text_between(declaration.start, declaration.end).strip())
+                for declaration in procedure.declarations),
+        )
+    return definitions
 
 
 def module_level_procedure_names(

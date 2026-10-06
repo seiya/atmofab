@@ -20187,6 +20187,173 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
             self.assertTrue(any("§5.1" in v for v in violations), violations)
 
 
+class DeclaredCharacteristicsGateTests(unittest.TestCase):
+    """_validate_generated_signatures compares each §5.1 dummy and result by what the publishing
+    definition's OWN specification part declares (issue #430).
+
+    Two directions, one row each, both over sources `gfortran -fsyntax-only -std=f2008
+    -Werror=unused-dummy-argument -Werror=unused-variable` accepts (rc=0, recorded in the PR) — a
+    refused shape that did not compile would prove nothing, and an accepted one that did not
+    would be a source the syntax stage refuses first:
+
+    - `_HOLES`: each passed with 0 violations under atom MEMBERSHIP over the definition's text —
+      an attribute in a statement of its own, a declaration in a `BLOCK` or an interface body
+      inside the definition, a procedure-local `use` renaming a pinned type — and each publishes
+      an ABI §5.1 does not declare. Each must be refused, naming the dummy (or the type).
+    - `_SAME`: ABI-identical spellings the TEXT comparison refused (O1-O5; O1 and O2 each cost a
+      billed harness attempt). Each must pass.
+
+    The two-statement declaration (`type(t) :: e(:)` + `intent(in) :: e`) is newly ACCEPTED here;
+    the lint gate's attribute-statement rules refuse it elsewhere in the same substep, so it is
+    accepted as the same ABI rather than as a style. A `::`-less type declaration of a pinned
+    dummy is refused with the `::` remedy (the lint gate refuses that form too).
+
+    What is SAMPLED, not pinned: the spellings. The canonicalisation's members are pinned one by
+    one in `test_fortran_signatures.py`."""
+
+    _C = InfrastructureGeneratedSignatureGateTests
+    _DEF = (
+        "  subroutine hx__write_metrics_basis(entries, &\n      n)\n"
+        "    type(hx__h_named), intent(in) :: entries(:)\n"
+        "    integer,           intent(in) :: n\n"
+        "  end subroutine hx__write_metrics_basis\n")
+    _BODY = "    print *, size(entries), n\n"
+
+    @classmethod
+    def _live(cls) -> str:
+        # `_GOOD_SOURCE` with every dummy used, so the shapes below are what the syntax stage
+        # (`-Werror=unused-dummy-argument`) would let through.
+        good = cls._C._GOOD_SOURCE
+        assert "    s = 'x'\n" in good and cls._DEF in good
+        return good.replace("    s = 'x'\n", "    s = repeat('x', i)\n", 1).replace(
+            cls._DEF, cls._DEF.replace("  end subroutine", cls._BODY + "  end subroutine"), 1)
+
+    @classmethod
+    def _writer(cls, declarations: str, body: str | None = None) -> str:
+        return cls._live().replace(
+            "    type(hx__h_named), intent(in) :: entries(:)\n"
+            "    integer,           intent(in) :: n\n" + cls._BODY,
+            declarations + (cls._BODY if body is None else body), 1)
+
+    _PINNED = ("    type(hx__h_named), intent(in) :: entries(:)\n"
+               "    integer,           intent(in) :: n\n")
+
+    @classmethod
+    def holes(cls) -> dict[str, tuple[str, str]]:
+        """label -> (source, the name the refusal must name)."""
+        p = cls._PINNED
+        return {
+            "B1 optional statement": (cls._writer(p + "    optional :: n\n"), "`n`"),
+            "B2 value statement": (cls._writer(p + "    value :: n\n"), "`n`"),
+            "B3 dimension statement": (cls._writer(
+                p.replace("integer,           intent(in) :: n\n", "integer, intent(in) :: n\n")
+                + "    dimension :: n(:)\n",
+                "    print *, size(entries), size(n)\n"), "`n`"),
+            "B4 procedure-local use renaming the pinned type": (
+                cls._writer("    use hx_aux, only: hx__h_named => t\n" + p).replace(
+                    "module hx_model\n",
+                    "module hx_aux\n  implicit none\n  type :: t\n    integer :: k\n"
+                    "  end type t\nend module hx_aux\nmodule hx_model\n", 1),
+                "hx__h_named"),
+            "B4 procedure-local import of the pinned name from another module": (
+                cls._writer("    use hx_aux, only: hx__h_named\n" + p).replace(
+                    "module hx_model\n",
+                    "module hx_aux\n  implicit none\n  type :: hx__h_named\n    integer :: k\n"
+                    "  end type hx__h_named\nend module hx_aux\nmodule hx_model\n", 1),
+                "hx__h_named"),
+            "B5 interface body in the specification part": (cls._writer(
+                "    type(hx__h_named), intent(in) :: entries(:)\n"
+                "    integer, intent(inout) :: n\n"
+                "    interface write(formatted)\n"
+                "      impure subroutine hx__wf(dtv, n, iotype, v_list, iostat, iomsg)\n"
+                "        import :: hx__h_named\n"
+                "        class(hx__h_named), intent(in) :: dtv\n"
+                "        integer, intent(in) :: n\n"
+                "        character(*), intent(in) :: iotype\n"
+                "        integer, intent(in) :: v_list(:)\n"
+                "        integer, intent(out) :: iostat\n"
+                "        character(*), intent(inout) :: iomsg\n"
+                "      end subroutine hx__wf\n"
+                "    end interface\n"), "`n`"),
+            "B6 result redeclared in a block": (cls._live().replace(
+                "  function hx__emit_int(i) result(s)\n"
+                "    integer, intent(in) :: i\n"
+                "    character(len=:), allocatable :: s\n"
+                "    s = repeat('x', i)\n",
+                "  function hx__emit_int(i) result(s)\n"
+                "    integer, intent(in) :: i\n"
+                "    character(len=8) :: s\n"
+                "    s = repeat('x', i)\n"
+                "    block\n"
+                "      character(len=:), allocatable :: s\n"
+                "      s = 'y'\n"
+                "      print *, s\n"
+                "    end block\n", 1), "`s`"),
+            "contiguous statement": (cls._writer(p + "    contiguous :: entries\n"), "`entries`"),
+            "target statement": (cls._writer(p + "    target :: entries\n"), "`entries`"),
+            "asynchronous statement": (
+                cls._writer(p + "    asynchronous :: entries\n"), "`entries`"),
+            "::-less declaration of a pinned dummy": (cls._writer(
+                "    type(hx__h_named) entries(:)\n    intent(in) :: entries\n"
+                "    integer,           intent(in) :: n\n"), "write each declaration with `::`"),
+        }
+
+    @classmethod
+    def same(cls) -> dict[str, str]:
+        p = cls._PINNED
+        return {
+            "O1 dimension attribute": cls._writer(p.replace(
+                "    type(hx__h_named), intent(in) :: entries(:)\n",
+                "    type(hx__h_named), dimension(:), intent(in) :: entries\n")),
+            "O2 kind= selector": cls._live().replace(
+                "    real(dp),          intent(in) :: x\n",
+                "    real(kind=dp), intent(in) :: x\n", 1),
+            "O3 lower bound 1": cls._writer(p.replace("entries(:)", "entries(1:)")),
+            "len-less character result": cls._live().replace(
+                "  function hx__emit_int(i) result(s)\n"
+                "    integer, intent(in) :: i\n"
+                "    character(len=:), allocatable :: s\n",
+                "  function hx__emit_int(i) result(s)\n"
+                "    integer, intent(in) :: i\n"
+                "    character(:), allocatable :: s\n", 1),
+            "O4/O5 ;-joined parameter line": cls._live().replace(
+                "  integer, parameter :: dp = real64\n",
+                "  integer, parameter :: dp = real64; integer :: unused_local\n", 1),
+            # A helper module in the same file importing the pinned type from the publishing
+            # module under its own name binds the SAME type; eight certified harness sources do
+            # this (census, 2026-10-06), and refusing it was the first version of the B4 fix.
+            "helper module importing the pinned type from the publisher": cls._live() + (
+                "module hx_helper\n  use hx_model, only: hx__h_named\n  implicit none\n"
+                "contains\n  subroutine hx_h(e)\n    type(hx__h_named), intent(in) :: e\n"
+                "    print *, len(e%name)\n  end subroutine hx_h\nend module hx_helper\n"),
+            "two-statement declaration": cls._writer(
+                "    type(hx__h_named) :: entries(:)\n    intent(in) :: entries\n"
+                "    integer,           intent(in) :: n\n"),
+        }
+
+    def _gate(self, source: str) -> list[str]:
+        inst = self._C("test_faithful_source_passes")
+        with tempfile.TemporaryDirectory() as t:
+            tmp = Path(t)
+            return inst._run(inst._seed(tmp, source=source), tmp)
+
+    def test_the_live_control_passes(self) -> None:
+        self.assertEqual(self._gate(self._live()), [])
+
+    def test_each_hole_is_refused_naming_what_drifted(self) -> None:
+        for label, (source, named) in self.holes().items():
+            with self.subTest(label):
+                self.assertNotEqual(source, self._live())
+                violations = self._gate(source)
+                self.assertTrue(any(named in v for v in violations), violations)
+
+    def test_each_abi_identical_spelling_passes(self) -> None:
+        for label, source in self.same().items():
+            with self.subTest(label):
+                self.assertNotEqual(source, self._live())
+                self.assertEqual(self._gate(source), [])
+
+
 class PublishedProcedureDefinednessTests(unittest.TestCase):
     """_validate_generated_signatures: a §5.1 published procedure must be DEFINED, not merely
     prototyped.
@@ -20331,13 +20498,18 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
             any("hx__write_metrics_basis" in v and "never DEFINES it" in v for v in violations),
             violations)
 
-    # A module-level definition the stanza splitter cannot read (its prefix is not modelled) and
-    # whose argument list drifts from §5.1. Paired with a decoy carrying the pinned header, the
-    # header comparison used to take the decoy's stanza while the definedness arm credited this
-    # definition — two answers about two procedures, 0 violations, `-fsyntax-only` rc=0.
+    # A module-level definition whose prefix the stanza splitter did not model and whose
+    # argument list drifts from §5.1. Paired with a decoy carrying the pinned header, the header
+    # comparison used to take the decoy's stanza while the definedness arm credited this
+    # definition — two answers about two procedures, 0 violations, `-fsyntax-only` rc=0. Since
+    # issue #430 the header is read from the definition the structure reader found, so the prefix
+    # and the dropped dummy are a HEADER difference rather than an unread header.
     _DRIFTED_DEF = ("  impure elemental subroutine hx__write_metrics_basis(n)\n"
                     "    integer, intent(in) :: n\n"
                     "  end subroutine hx__write_metrics_basis\n")
+
+    _HEADER_DRIFT = ("procedure 'hx__write_metrics_basis' drifts from controlled_spec §5.1 — its "
+                     "header reads `impure elemental subroutine hx__write_metrics_basis(n)`")
 
     def _assert_drift_not_hidden_by(self, decoy: str) -> None:
         # Two things: the drifted definition alone is refused (the control), and the decoy does
@@ -20346,10 +20518,7 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
                                    ("with decoy", decoy + self._DRIFTED_DEF)):
             with self.subTest(label):
                 violations = self._gate(self._C._GOOD_SOURCE.replace(self._DEF, replacement))
-                self.assertTrue(
-                    any("does not publish controlled_spec §5.1 procedure "
-                        "'hx__write_metrics_basis' in the pinned form" in v for v in violations),
-                    violations)
+                self.assertTrue(any(self._HEADER_DRIFT in v for v in violations), violations)
 
     def test_a_contained_decoy_does_not_stand_in_for_the_module_level_definition(self) -> None:
         self._assert_drift_not_hidden_by(
@@ -20386,7 +20555,7 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
         self._assert_drift_not_hidden_by(decoy)
         violations = self._gate(self._C._GOOD_SOURCE.replace(
             self._DEF, self._DRIFTED_DEF + decoy))
-        self.assertTrue(any("in the pinned form" in v for v in violations), violations)
+        self.assertTrue(any(self._HEADER_DRIFT in v for v in violations), violations)
 
     def test_an_abbreviated_module_procedure_is_not_compared_through_a_decoy(self) -> None:
         # A submodule's `module procedure <name>` repeats no header, and the splitter does not
@@ -20460,8 +20629,10 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
                    "    end block\n"
                    "  end subroutine hx__write_metrics_basis\n")
         violations = self._gate(self._C._GOOD_SOURCE.replace(self._DEF, drifted))
-        self.assertTrue(any("'hx__write_metrics_basis' in the pinned form" in v
-                            for v in violations), violations)
+        self.assertTrue(any(self._HEADER_DRIFT in v for v in violations), violations)
+        # And the BLOCK's `entries` declaration does not stand in for one the definition lacks:
+        # issue #430 reads only the definition's own specification part.
+        self.assertTrue(any("`entries` is not declared" in v for v in violations), violations)
 
     _BLOCK_DECOY = ("    block\n"
                     "      interface write(formatted)\n"
@@ -20492,10 +20663,11 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
                 violations = self._gate(self._C._GOOD_SOURCE.replace(self._DEF, drifted))
                 named = [v for v in violations if "'hx__write_metrics_basis'" in v]
                 # ONE message for the name: a second, "no procedure of that name/header found",
-                # would contradict the first (round 3 mutant v3).
+                # would contradict the first (round 3 mutant v3). Since issue #430 it is the
+                # drift itself, read from the definition's own `n`, not the decoy's.
                 self.assertEqual(len(named), 1, violations)
-                self.assertIn("in the pinned form", named[0])
-                self.assertIn("a second header of the same name", named[0])
+                self.assertIn("drifts from controlled_spec §5.1", named[0])
+                self.assertIn("`n` — its type is `real(dp)` where §5.1 pins `integer`", named[0])
 
     def test_each_definition_is_split_alone(self) -> None:
         # The witness for the per-definition split, which no other row observes alone: with a
@@ -20660,11 +20832,14 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
             ("a source the parser could not read has not been shown to define nothing",
              violations))
 
-    def test_a_structure_refusal_still_reports_the_header_drift_beside_it(self) -> None:
-        # The `return`-removal, which a round-2 reviewer found UNPINNED — restoring the `return`
-        # left all 860 tests green, and the commit message claiming every MEDIUM got a red row was
-        # false for this one. A source with both an unresolvable identifier and a real §5.1 drift
-        # must be told both, or it spends two warm retries where one would do.
+    def test_a_structure_refusal_skips_the_signature_comparison_and_says_so(self) -> None:
+        # Rewritten by issue #430 from `test_a_structure_refusal_still_reports_the_header_drift_
+        # beside_it`, which pinned PR #279's decision to keep a whole-file-splitter comparison
+        # beside a structure refusal "so two faults are told in one attempt". That comparison is
+        # the hole #430 closes, and the 5 structure refusals under `workspace/pipelines` were each
+        # the only fault reported, so the second fault had no production witness. The first half
+        # is kept: the structure refusal is present. The second half is now that the comparison
+        # is NOT run on another reading, and the refusal says the comparison waits for the parse.
         both = self._C._GOOD_SOURCE.replace(
             "    integer,           intent(in) :: n\n",
             "    integer,           intent(in) :: count\n", 1).replace(
@@ -20679,9 +20854,11 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
         self.assertTrue(
             any("structure front end could not resolve" in v for v in violations), violations)
         self.assertTrue(
+            any("the signature comparison is not run until it resolves" in v
+                for v in violations), violations)
+        self.assertFalse(
             any("drifts from controlled_spec §5.1" in v for v in violations),
-            ("the header comparison does not need the parse, so a parse refusal must not "
-             "discard it", violations))
+            ("no comparison on a reading other than the definition's own", violations))
 
     def test_an_operator_machine_failure_propagates_instead_of_being_caught(self) -> None:
         # The `except` clause names ONE exception type on purpose, and a census found that
@@ -20787,11 +20964,15 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
             self.assertFalse(
                 any("never DEFINES it" in str(v) for v in violations),
                 ("the definedness question has no single publisher to ask", violations))
-            # And the comparison that `origin/main` performs must survive the refusal.
+            # Issue #430: the signature comparison needs the one publishing unit too, so it is
+            # not run on a whole-file reading, and the refusal says so. (Until #430 this half
+            # asserted the opposite — a splitter comparison kept beside the refusal — which is the
+            # reading #430 removes.)
             self.assertTrue(
+                any("neither is run for this node" in str(v) for v in violations), violations)
+            self.assertFalse(
                 any("drifts from controlled_spec §5.1" in str(v) for v in violations),
-                ("a node this gate cannot resolve to one publisher still gets its §5.1 header "
-                 "comparison — dropping it removed a check origin/main had", violations))
+                ("no comparison without one publishing unit", violations))
 
     def test_the_three_carried_shapes_are_refused_by_the_pre_existing_arm(self) -> None:
         # THE PREMISE OF THIS FIX, as a row. `checks_module_abi_facts`' docstring names three
@@ -27671,14 +27852,15 @@ class ProcedureTypedSurfaceGateTests(unittest.TestCase):
                                     "      real(dp), intent(inout) :: dudt(:)\n")
         self.assertNotEqual(drift, self._MODEL)
         v = self._generate(drift)
-        self.assertTrue(any("prototype 'hx_rhs_1d' drifts" in x and "missing" in x
-                            for x in v), v)
+        self.assertTrue(any("prototype 'hx_rhs_1d' drifts" in x and "it lacks `intent(out)`" in x
+                            and "it carries `intent(inout)`" in x for x in v), v)
         with self.subTest(drift="an extra declaration line in the prototype (set equality)"):
             wider = self._MODEL.replace(
                 "      real(dp), intent(out) :: dudt(:)\n",
                 "      real(dp), intent(out) :: dudt(:)\n      real(dp), intent(in) :: t\n")
             v = self._generate(wider)
-            self.assertTrue(any("prototype 'hx_rhs_1d' drifts" in x and "extra" in x
+            self.assertTrue(any("prototype 'hx_rhs_1d' drifts" in x
+                                and "it declares `t`, which the pinned prototype does not" in x
                                 for x in v), v)
 
     def test_a_prototype_defined_as_a_procedure_is_refused(self) -> None:
@@ -27695,8 +27877,8 @@ class ProcedureTypedSurfaceGateTests(unittest.TestCase):
         self.assertTrue(any("DEFINES 'hx_rhs_1d'" in x for x in v), v)
 
     def test_a_published_procedure_referencing_another_prototype_is_refused(self) -> None:
-        # The published dummy names a different interface: the existing atom-membership check
-        # on the procedure catches it (`procedure(hx_rhs_1d)::rhs` is an atom like any other).
+        # The published dummy names a different interface: the procedure comparison catches it
+        # (`procedure(hx_rhs_1d)` is the dummy's type-spec like any other).
         other = self._MODEL.replace("    procedure(hx_rhs_1d) :: rhs\n",
                                     "    procedure(hx_private_cb) :: rhs\n").replace(
             "  end interface\n",

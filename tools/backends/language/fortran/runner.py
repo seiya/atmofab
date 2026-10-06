@@ -1563,9 +1563,10 @@ def assert_harness_pin(
     # The §5.1 stanza layer, from the language backend. It used to be imported out of
     # `validate_pipeline_semantics`, where it sat as five private names — Fortran knowledge in a
     # neutral module, which this module then had to reach back into (docs/BACKEND_BOUNDARY.md).
+    from tools.backends.language.fortran import source as fortran_source
     from tools.backends.language.fortran.signatures import (
         parse_interface_stanzas, source_atoms, stanza_atoms, stanza_line_set, stanza_line_list,
-        type_layout_list)
+        surface_drift, type_layout_list)
 
     pin = _harness_pin(harness_spec_id)
     exp_ops, exp_types, exp_ifaces, exp_errs = parse_interface_stanzas(pin.interface)
@@ -1627,7 +1628,18 @@ def assert_harness_pin(
             "artifact (or a caller that failed to resolve it), NOT interface drift; re-certify "
             "the harness IR (run_workflow.py --with-deps) so its public_api.signatures is present")
 
-    src_ops, src_types, _src_ifaces, _src_errs = parse_interface_stanzas(harness_source or "")
+    _src_ops, src_types, _src_ifaces, _src_errs = parse_interface_stanzas(harness_source or "")
+    # The procedures are read the way `signatures.generated_source_violations` reads them — from
+    # the definitions the harness model module itself carries, compared by what each DECLARES
+    # (issue #430) — so the renderer and the gate cannot disagree about a certified source.
+    try:
+        definitions = fortran_source.module_level_definitions(
+            (harness_source or "").lower(), f"{harness_spec_id}_model")
+    except fortran_source.SourceStructureError as exc:
+        raise RenderError(
+            f"certified harness model source no longer resolves through the structure front "
+            f"end ({len(exc.errors)} parse error(s)), so its published procedures cannot be "
+            f"compared with the pinned interface: {_PIN_DRIFT_HINT}") from exc
 
     for symbol in used_symbols:
         exp_stanza = exp_ops.get(symbol) or exp_types.get(symbol)
@@ -1655,18 +1667,24 @@ def assert_harness_pin(
                 f"certified harness IR signature for {symbol!r} differs from the pinned "
                 f"interface: {_PIN_DRIFT_HINT}")
 
-        # (2) Generated model source — a procedure stanza carries its body, so the pinned
-        # interface atoms must be a SUBSET of the source stanza's atoms (a type block has no
-        # body, so it is compared exactly, matching _validate_generated_signatures).
-        src_stanza = src_ops.get(symbol) or src_types.get(symbol)
-        if src_stanza is None:
-            raise RenderError(
-                f"certified harness model source omits {symbol!r}: {_PIN_DRIFT_HINT}")
+        # (2) Generated model source — a procedure is compared by what its definition in the
+        # harness model module declares (`surface_drift`, as the Generate gate does); a type
+        # block is compared exactly, matching `generated_source_violations`.
         if is_type:
-            src_ok = type_layout_list(src_stanza) == type_layout_list(exp_stanza)
+            src_stanza = src_types.get(symbol)
+            src_ok = (src_stanza is not None
+                      and type_layout_list(src_stanza) == type_layout_list(exp_stanza))
+            if src_stanza is None:
+                raise RenderError(
+                    f"certified harness model source omits {symbol!r}: {_PIN_DRIFT_HINT}")
         else:
-            have = frozenset(stanza_atoms(src_stanza))
-            src_ok = stanza_line_set(exp_stanza).issubset(have)
+            definition = definitions.get(symbol.lower())
+            if definition is None:
+                raise RenderError(
+                    f"certified harness model source omits {symbol!r}: {_PIN_DRIFT_HINT}")
+            src_ok = not surface_drift(
+                exp_stanza, header=definition.header,
+                declarations=definition.declarations, exact=False)
         if not src_ok:
             raise RenderError(
                 f"certified harness model source signature for {symbol!r} differs from the "

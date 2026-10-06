@@ -769,7 +769,18 @@ PINNED_RENDER: dict[str, str] = {
     # one) no longer reproduces the control file it was certified with. The tuple gained eleven
     # `codegen_bundle` rows — the order was a value no row digested, and neither were the graph
     # derivation and its callees.
-    "render-8": "4b4331fc1becda83f619d9785467eacf9ad8de77c26cb4403a460b79be3e27b9",
+    "render-8": "d54ed4c1c306538e92563bb0fc36b56d17fb6891eabce44a770f743f4a7752da",
+    # Re-pinned (issue #430 PR-1), behaviour-preserving for this transformation: the §5.1 gate
+    # and `runner.assert_harness_pin` compare a generated procedure by what its definition
+    # declares (`signatures.surface_drift`) where they compared atom membership. The renderers
+    # are untouched — `render_symbol_to_fortran` / `render_module_parameter_to_fortran` over
+    # every `public_api.signatures[].signature` and `module_parameters` entry of every
+    # `workspace/ir/**/spec.ir.yaml` give byte-identical output at 37dc0539 and here (2197
+    # renders, one sha256 over them) — and the pin decides WHETHER a render happens, never its
+    # bytes. (Measured by diffing `render_tuple()` against origin/main 37dc0539's:
+    # `fortran/signatures.py` and `fortran/runner.py`, no other row.) The digest `render-8`
+    # shipped with at 37dc0539:
+    "render-8@37dc0539": "4b4331fc1becda83f619d9785467eacf9ad8de77c26cb4403a460b79be3e27b9",
     # Re-pinned (issue #424 PR-3), behaviour-preserving: the runner renderer's column limit is
     # the fortran linter's `LINE_LENGTH_LIMIT` read through the registry (`max_rendered_line()`)
     # where it was the literal `MAX_RENDERED_LINE = 100`; the value is unchanged, so every
