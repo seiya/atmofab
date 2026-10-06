@@ -1684,7 +1684,8 @@ def assert_harness_pin(
                     f"certified harness model source omits {symbol!r}: {_PIN_DRIFT_HINT}")
             src_ok = not surface_drift(
                 exp_stanza, header=definition.header,
-                declarations=definition.declarations, exact=False)
+                declarations=definition.declarations, exact=False,
+                local_types=definition.local_types)
         if not src_ok:
             raise RenderError(
                 f"certified harness model source signature for {symbol!r} differs from the "

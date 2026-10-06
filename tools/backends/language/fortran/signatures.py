@@ -669,8 +669,12 @@ def _entity_differences(want: Entity, have: Entity) -> list[str]:
     return diffs
 
 
+_DERIVED_TYPE_SPEC_RE = re.compile(r"(?:type|class)\(([a-z_][a-z0-9_]*)\)")
+
+
 def surface_drift(
     pinned_lines: list[str], *, header: str, declarations: Any, exact: bool,
+    local_types: Any = (),
 ) -> list[str]:
     """How a procedure as the source DECLARES it differs from its §5.1 stanza, as sentences.
 
@@ -679,7 +683,10 @@ def surface_drift(
     source's. The header is compared for EQUALITY after normalisation — a prefix §5.1 does not
     declare, or a type on a `function` header, is a difference. Every name the stanza declares is
     compared as an `Entity`; with ``exact`` (a prototype, which has no body) a name the source
-    declares and the stanza does not is a difference too. Empty when they agree."""
+    declares and the stanza does not is a difference too. ``local_types`` are the derived types
+    the procedure defines in its own specification part: a dummy whose pinned type is
+    `type(t)` / `class(t)` with a local `t` is a difference whatever its declaration reads,
+    because the name then denotes the local type. Empty when they agree."""
     out: list[str] = []
     pinned_header = pinned_lines[0].strip() if pinned_lines else ""
     if (fortran_lines.normalize_fortran_line(header)
@@ -711,9 +718,17 @@ def surface_drift(
                 f"the statement `{statement}` declares {', '.join(f'`{n}`' for n in named)} in a "
                 "form this comparison does not read — write each declaration with `::` "
                 "(`<type>, <attributes> :: <name>`)")
+    shadowing = {local.lower() for local in local_types}
     for name, want in want_merged.entities.items():
         line = pinned_line_of.get(name, name)
         have = have_merged.entities.get(name)
+        derived = _DERIVED_TYPE_SPEC_RE.fullmatch(want.type_spec or "")
+        if derived and derived.group(1) in shadowing:
+            out.append(
+                f"the pinned interface line `{line}`: the procedure defines its own derived type "
+                f"`{derived.group(1)}`, so `{name}`'s type names that local type and not the "
+                "published one — remove the local definition (give a local type a name of its "
+                "own)")
         if name in have_merged.twice:
             out.append(f"the pinned interface line `{line}`: `{name}` is given "
                        f"{have_merged.twice[name]} by two statements")
@@ -1398,7 +1413,8 @@ def generated_source_violations(
                 continue
             _drift(name, surface_drift(
                 spec_lines, header=definition.header,
-                declarations=definition.declarations, exact=False))
+                declarations=definition.declarations, exact=False,
+                local_types=definition.local_types))
             continue
         if lname not in header_names:
             violations.append(

@@ -135,6 +135,9 @@ class ProcedureDeclarationsTests(unittest.TestCase):
           implicit none
         contains
           subroutine s(a, n)
+            type Local_T
+              integer :: k
+            end type Local_T
             integer, intent(in) :: a(:)
             integer n
             optional :: n
@@ -185,6 +188,8 @@ class ProcedureDeclarationsTests(unittest.TestCase):
         self.assertEqual(definitions["s"].declarations[0],
                          ("variable_declaration", "integer, intent(in) :: a(:)"))
         self.assertEqual(len(definitions["s"].declarations), 4)
+        # The local type's component is a child of the type, not a declaration of `s`.
+        self.assertEqual(definitions["s"].local_types, ("local_t",))
 
     def test_the_abbreviated_module_procedure_answers_none(self) -> None:
         self.assertIsNone(self._definitions()["mp"])
@@ -195,6 +200,8 @@ class ProcedureDeclarationsTests(unittest.TestCase):
         # over-refusal with no operator-facing cause — so the two types `declarations` collects
         # must be members, and each must be one the installed grammar defines.
         self.assertLessEqual(set(fs._DECLARATION_TYPES), set(fs._REQUIRED_NODE_TYPES))
+        self.assertLessEqual({"derived_type_definition", "derived_type_statement", "type_name"},
+                             set(fs._REQUIRED_NODE_TYPES))
         self.assertEqual(set(fs._DECLARATION_TYPES),
                          {"variable_declaration", "variable_modification"})
 

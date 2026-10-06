@@ -113,6 +113,9 @@ _REQUIRED_NODE_TYPES = (
     # the §5.1 signature pin (`Procedure.declarations`). A rename leaves every pinned dummy
     # "not declared", which is total over-refusal; the guard turns it into the unavailable error.
     "variable_declaration", "variable_modification",
+    # A derived type a procedure defines in its own specification part (`Procedure.local_types`):
+    # a renamed node would make every such shadow of a published type invisible again.
+    "derived_type_definition", "derived_type_statement", "type_name",
 )
 
 
@@ -165,6 +168,10 @@ class Procedure:
     contained procedure is a child of that construct, not of this node, so it is not one — which
     is what the §5.1 signature pin needs, since none of them declares this procedure's dummies.
     Empty for the abbreviated `module procedure` form.
+
+    ``local_types`` are the lowercased names of the derived types the procedure DEFINES among
+    those same direct children. One named like a type a dummy is declared with shadows it: the
+    dummy's `type(t)` then names the local type, which no caller can pass (issue #430 round 1).
     """
 
     kind: str
@@ -176,6 +183,7 @@ class Procedure:
     body_end: int
     contains_at: int | None
     declarations: tuple[Declaration, ...] = ()
+    local_types: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -448,6 +456,17 @@ def _procedure(view: str, encoded: bytes, node, kind: str, to_char) -> Procedure
         if kind != "module_procedure" and child.is_named and child.type in _DECLARATION_TYPES
     )
 
+    local_types = tuple(
+        _text(encoded, name_node).strip().lower()
+        for child in node.children
+        if kind != "module_procedure" and child.is_named
+        and child.type == "derived_type_definition"
+        for opener in child.children
+        if opener.is_named and opener.type == "derived_type_statement"
+        for name_node in opener.children
+        if name_node.is_named and name_node.type == "type_name"
+    )
+
     return Procedure(
         kind=kind,
         name=name,
@@ -458,6 +477,7 @@ def _procedure(view: str, encoded: bytes, node, kind: str, to_char) -> Procedure
         body_end=body_end,
         contains_at=contains_at,
         declarations=declarations,
+        local_types=local_types,
     )
 
 
@@ -565,10 +585,12 @@ def publishing_unit_present(tree: StructureTree, unit_name: str) -> bool:
 class Definition:
     """A module-level procedure definition as the §5.1 signature pin reads it: the text of its
     header statement and of each of its own declaration statements (`Procedure.declarations`), as
-    ``(statement type, text)`` pairs in source order."""
+    ``(statement type, text)`` pairs in source order, and the derived types it defines itself
+    (`Procedure.local_types`)."""
 
     header: str
     declarations: tuple[tuple[str, str], ...]
+    local_types: tuple[str, ...] = ()
 
 
 def module_level_definitions(
@@ -602,6 +624,7 @@ def module_level_definitions(
             declarations=tuple(
                 (declaration.kind, text_between(declaration.start, declaration.end).strip())
                 for declaration in procedure.declarations),
+            local_types=procedure.local_types,
         )
     return definitions
 

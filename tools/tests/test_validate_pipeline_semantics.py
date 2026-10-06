@@ -20265,6 +20265,16 @@ class DeclaredCharacteristicsGateTests(unittest.TestCase):
             # beside the source (gfortran rc=0 with that module compiled first, as staging does).
             "B4 import of the pinned name from a dependency module": (
                 cls._writer("    use hx_dep_model, only: hx__h_named\n" + p), "hx__h_named"),
+            # Round 1: a type the published procedure defines under a pinned name shadows it, so
+            # `type(hx__h_named)` names the local type (a consumer passing the module's type gets
+            # "Type mismatch"). Spelled in another case the whole-file splitter sees no duplicate,
+            # and without `::` it sees no type at all (0 violations at origin/main too).
+            "local type shadowing the pinned type, other case": (cls._writer(
+                "    type :: HX__H_NAMED\n      integer :: k\n    end type HX__H_NAMED\n" + p,
+                "    print *, entries(1)%k, n\n"), "defines its own derived type `hx__h_named`"),
+            "local type shadowing the pinned type, no ::": (cls._writer(
+                "    type hx__h_named\n      integer :: k\n    end type hx__h_named\n" + p,
+                "    print *, entries(1)%k, n\n"), "defines its own derived type `hx__h_named`"),
             "B5 interface body in the specification part": (cls._writer(
                 "    type(hx__h_named), intent(in) :: entries(:)\n"
                 "    integer, intent(inout) :: n\n"
