@@ -541,7 +541,7 @@ class RunbookVersionRangeTests(unittest.TestCase):
                                   installation_section(rules.read_text())))
             for name, text in documents:
                 for line in text.splitlines():
-                    if executable not in line:
+                    if executable.lower() not in line.lower():
                         continue
                     found = set(self._RANGE_RE.findall(line))
                     if not found:
