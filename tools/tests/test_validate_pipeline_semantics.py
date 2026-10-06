@@ -20421,8 +20421,9 @@ class DerivedTypeLayoutGateTests(unittest.TestCase):
 
     `test_the_component_currency_is_the_entity` runs a §5.1 of its own, carrying the component
     shapes `_FENCE` does not (an array of a derived type, a fixed shape, a scalar integer), so
-    the O1 spelling of a COMPONENT — the shape a certified codex harness wrote on
-    `type(<t>), dimension(:), allocatable :: checks` — and an initialiser are driven. Its three
+    the O1 spelling of a COMPONENT — the shape harness attempt
+    `harness-fortran-cpu_20260925_001/src_20260925_001` wrote on
+    `type(<t>), dimension(:), allocatable :: checks`, and was refused for at the gate — and an initialiser are driven. Its three
     ABI-identical spellings were each refused at origin/main.
 
     What is SAMPLED, not pinned: the spellings. `type_layout_drift`'s branches are pinned one by
@@ -21183,7 +21184,7 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
             with self.assertRaises(unavailable):
                 self.inst._run(execution, tmp)
 
-    def test_a_type_only_node_is_parsed_and_a_node_publishing_nothing_is_not(self) -> None:
+    def test_a_type_only_node_is_parsed_and_an_empty_surface_is_refused_before_the_guard(self) -> None:
         # The parse guard. It was `if op_stanzas:` until issue #430 PR-2, and this row then pinned
         # that a node whose §5.1 publishes only TYPES was not parsed: the types were read by the
         # whole-file splitter. They are read from the tree now (a module-level `type t` or

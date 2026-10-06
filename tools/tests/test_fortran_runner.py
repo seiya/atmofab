@@ -1521,8 +1521,8 @@ class HarnessPinTest(unittest.TestCase):
             self) -> None:
         # Issue #430 PR-2: the pin reads a type the way the Generate gate does — its one
         # module-level definition in the harness model module, components compared as declared —
-        # so the O1 spelling of a component (the shape a certified codex harness wrote on
-        # `checks`), a `::`-less header and an unnamed `end type` must not stop a dependent's
+        # so the O1 spelling of a component (the shape a harness attempt wrote on `checks`, and
+        # was refused for at the gate before issue #430), a `::`-less header and an unnamed `end type` must not stop a dependent's
         # render, while a second definition of a pinned type name, or a drifted component, must.
         checks = "type(harness_fortran_cpu__h_check), allocatable :: checks(:)\n"
         header = "type :: harness_fortran_cpu__h_named\n"
@@ -1540,15 +1540,22 @@ class HarnessPinTest(unittest.TestCase):
                   "  end subroutine harness_fortran_cpu__decoy\n")
         tail = "end module harness_fortran_cpu_model"
         self.assertIn(tail, self.src)
-        for label, source in (
-                ("second definition", self.src.replace(tail, helper + tail, 1)),
-                ("drifted component", self.src.replace(
+        for label, cue, source in (
+                ("second definition", "differs from the pinned interface", self.src.replace(tail, helper + tail, 1)),
+                ("drifted component", "differs from the pinned interface", self.src.replace(
                     checks, "type(harness_fortran_cpu__h_check), pointer :: checks(:)\n", 1)),
-                ("no module-level definition", self.src.replace(
-                    "harness_fortran_cpu__h_mb_entry\n", "harness_fortran_cpu__h_mb_entry_x\n"))):
+                ("not defined at all", "omits 'harness_fortran_cpu__h_mb_entry'", self.src.replace(
+                    "harness_fortran_cpu__h_mb_entry\n", "harness_fortran_cpu__h_mb_entry_x\n")),
+                # Defined once, but only inside a procedure: count 1, no module-level definition.
+                ("defined only outside module level", "omits 'harness_fortran_cpu__h_named'", self.src.replace(
+                    "type :: harness_fortran_cpu__h_named\n", "type :: hx_unused_rename\n", 1
+                ).replace("end type harness_fortran_cpu__h_named\n",
+                          "end type hx_unused_rename\n", 1).replace(
+                    tail, helper.replace("integer :: k", "character(len=:), allocatable :: name\n"
+                                         "      character(len=:), allocatable :: json") + tail, 1))):
             with self.subTest(label), self.assertRaises(RenderError) as cm:
                 assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, source)
-            self.assertIn("harness_fortran_cpu__h_", str(cm.exception))
+            self.assertIn(cue, str(cm.exception))
 
     def test_an_abi_identical_procedure_spelling_passes_the_pin(self) -> None:
         # Issue #430: the pin reads a procedure the way the Generate gate does — by what its

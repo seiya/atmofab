@@ -754,7 +754,8 @@ PINNED_RENDER: dict[str, str] = {
     # review (round 3), before it shipped: the §5.1 pin's drift message names the specifier the
     # definition must carry (`__device__`) instead of "both" — a message only.
     # Re-pinned (issue #343), behaviour-preserving for this transformation: the harness pin
-    # compares a derived type's layout through `signatures.type_layout_list`, which drops a
+    # compared (until issue #430 PR-2 deleted it) a derived type's layout through
+    # `signatures.type_layout_list`, which drops a
     # `public` attribute from the type HEADER, so a certified harness written
     # `type, public :: t` no longer stops a dependent's render. Every harness the pin
     # accepted before renders the same bytes; one it refused had no render to change.
