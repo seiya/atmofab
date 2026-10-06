@@ -79,7 +79,13 @@ python3 -m pytest tools/tests/ -q -p no:randomly
   `tools/tests/test_skip_reasons_are_declared.py`), so what you see depends on the machine. **If a skip appears, find out which condition produced it** —
   that is the reason to look, and it is the same reason whether the count is 0 or 3. An earlier
   version of this line claimed one permanent calibration skip and sent a reader hunting a test that
-  does not exist
+  does not exist.
+  **A nonzero skip count in the summary line is the trigger, and it is easy to read past**: issue
+  #424 PR-2 reported `16 skipped` on every full run for four commits and nobody asked which; one
+  of them was the only CUDA build-through row, red on the branch since its first commit (a caller
+  the change had not updated). Run with `-rs`, and for each host-conditional skip either put the
+  tool on PATH and re-run, or name the skip in the record as unrun. A branch that touches a path a
+  skipped row covers is not verified by a green summary
 
 ## Verification steps that silently do not run, and records that silently do not hold
 
