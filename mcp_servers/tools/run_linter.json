@@ -1,6 +1,6 @@
 {
   "name": "run_linter",
-  "description": "Run static linters for Generate-stage source (fortitude/cppcheck/ruff/mixed). Does not use build_system or compile_project; preset-only, no custom command.",
+  "description": "Run static linters for Generate-stage source (a registered linter preset). Does not use build_system or compile_project; preset-only, no custom command.",
   "arguments": {
     "type": "object",
     "properties": {
@@ -10,7 +10,7 @@
       },
       "preset": {
         "type": "string",
-        "description": "fortitude | cppcheck | ruff | mixed"
+        "description": "A registered linter preset or composite (registry.backend_ids(\"linter\"); registry.linter_for_language picks it)."
       },
       "timeout_sec": {
         "type": "integer",

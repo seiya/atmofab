@@ -170,7 +170,7 @@ def _extract_subroutine_interface(source_text: str, op_name: str) -> dict[str, A
     rendered into the ``<dependency_facts>`` prompt lines, where that is inert.
 
     Robust to the real shapes Generate emits: free-form ``&`` continuations on the header
-    (the generate SKILL forces wrapping at <=100 cols for fortitude S001), ``!`` comments
+    (the Generate contract requires wrapping under the linter's column limit), ``!`` comments
     (incl. full-line comment between continuations), case-insensitivity, leading
     ``pure``/``impure``/``elemental``/``recursive``/``module`` prefixes, several subroutines
     in one file (selects by name, not the first), and a zero-argument one declared

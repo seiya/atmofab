@@ -3836,11 +3836,13 @@ def _validate_generate_lint_command_logs(
         )
         return
 
-    if expected == "mixed":
-        if len(run_entries) != 2:
+    members = backend_registry.composite_linter_members(expected)
+    if members:
+        if len(run_entries) != len(members):
             violations.append(
-                f"{meta_path}: toolchain.language=mixed requires exactly two run_linter entries "
-                f"(found {len(run_entries)})"
+                f"{meta_path}: toolchain.language={impl_language} requires exactly "
+                f"{len(members)} run_linter entries, one per member of composite {expected!r} "
+                f"({', '.join(members)}) (found {len(run_entries)})"
             )
         presets_found: set[str] = set()
         for entry in run_entries:
@@ -3852,10 +3854,10 @@ def _validate_generate_lint_command_logs(
             p = entry.get("preset")
             if isinstance(p, str) and p.strip():
                 presets_found.add(p.strip().lower())
-        if presets_found != {"fortitude", "cppcheck"}:
+        if presets_found != set(members):
             violations.append(
-                f"{meta_path}: toolchain.language=mixed requires run_linter entries with "
-                f"preset fortitude and cppcheck (found {sorted(presets_found)})"
+                f"{meta_path}: toolchain.language={impl_language} requires run_linter entries "
+                f"with preset {' and '.join(members)} (found {sorted(presets_found)})"
             )
     else:
         if len(run_entries) != 1:
@@ -3914,10 +3916,11 @@ def _validate_generate_lint_command_logs(
                 f"{meta_path}: lint evidence run_linter[{idx}].preset {unimplemented}"
             )
             continue
-        if preset_decl_l == "mixed":
+        composite_members = backend_registry.composite_linter_members(preset_decl_l)
+        if composite_members:
             violations.append(
                 f"{meta_path}: lint evidence run_linter[{idx}].preset must not be "
-                "'mixed'; record separate fortitude and cppcheck entries"
+                f"{preset_decl_l!r}; record separate {' and '.join(composite_members)} entries"
             )
             continue
 

@@ -140,9 +140,17 @@ CASE_ID_LEN = runner_ir.CASE_ID_LEN
 MAX_SPEC_ID_LEN = bundle.IDENTIFIER_MAX - len("_runner") - 1
 
 
-# The deterministic Generate.gate lint-checker column limit (fortitude S001). The rendered runner must stay
-# within it because it is host-authored (a leaf cannot edit it to fix an overlong line).
-MAX_RENDERED_LINE = 100
+def max_rendered_line() -> int:
+    """The deterministic Generate.gate lint checker's column limit for this language — the
+    linter's own declaration (`LINE_LENGTH_LIMIT` of the linter `registry.linter_for_language`
+    names), read through the registry rather than restated here (issue #424). The rendered
+    runner must stay strictly under it because it is host-authored (a leaf cannot edit it to fix
+    an overlong line). A backend may import the neutral core; the registry loads the linter
+    package lazily, so this module still imports no other backend at import time."""
+    from tools.backends import registry
+
+    linter = registry.linter_for_language("fortran")
+    return int(registry.capability_module("linter", linter, "lint").LINE_LENGTH_LIMIT)
 
 # The harness symbols this template calls (pinned by assert_harness_pin against
 # the certified harness IR). Emitters are added per-rank on demand.
@@ -189,7 +197,7 @@ def distributed_binding_names(variable: str) -> list[str]:
 # The language-neutral readers live in `tools/runner_ir.py` (issue #289, R4-b PR-6), shared with
 # every other backend that renders a runner, so the refusals of a neutral IR fact are one set for
 # every target. What stays here is what Fortran adds: the snapshot-name rules of its binding, and
-# the check-id bound its 100-column lint limit implies.
+# the check-id bound the linter's column limit implies (`max_rendered_line`).
 
 _dget = runner_ir.dget
 _rank_of_shape = runner_ir.rank_of_shape
@@ -256,21 +264,22 @@ def _checks(ir: dict[str, Any]) -> list[str]:
         if len(sid) > CASE_ID_LEN:
             raise RenderError(
                 f"check id {sid!r} is {len(sid)} chars (>{CASE_ID_LEN}); the per-id "
-                "checks_compute call would breach the 100-column runner lint guard")
+                "checks_compute call would breach the runner's lint column guard")
     # The width-binding rendered line per id is the assignment `    case_checks(<k>)%id = '<lit>'`,
     # whose columns are 25 + digits(k) + len(_flit(id)) — `_flit` DOUBLES embedded apostrophes, so a
-    # raw-<=64 id can still expand past the limit. A line of EXACTLY MAX_RENDERED_LINE slips past
-    # `render_runner`'s `> 100` backstop yet fails the S001 lint (which fires AT 100) on a line the
+    # raw-<=64 id can still expand past the limit. A line of EXACTLY `max_rendered_line()` columns
+    # fails the linter's column rule on some supported builds (it fires AT the limit) on a line the
     # host authors and the Generate leaf cannot repair — an unrepairable fail_closed. Fail closed
     # HERE instead, keeping the widest such line strictly under the limit. (The `checks_compute`
     # continuation `      '<lit>', cstatus)` is 18 + len(_flit(id)) — always narrower than the
     # assignment, so bounding the assignment bounds both.)
+    limit = max_rendered_line()
     for k, sid in enumerate(ids, start=1):
         width = 25 + len(str(k)) + len(_flit(sid))
-        if width >= MAX_RENDERED_LINE:
+        if width >= limit:
             raise RenderError(
                 f"check id {sid!r} renders a {width}-column `case_checks(...)%id` assignment "
-                f"(>= the {MAX_RENDERED_LINE}-column S001 lint limit) after Fortran apostrophe "
+                f"(>= the linter's {limit}-column limit) after Fortran apostrophe "
                 "escaping; the host-authored runner line would fail Generate.gate lint check unrepairably. "
                 "Declare a shorter check id (or one with fewer apostrophes).")
     return ids
@@ -309,7 +318,7 @@ def _flit(value: str) -> str:
     Everything embedded must be **printable ASCII**. A control character (newline/tab)
     cannot appear in a literal at all. A non-ASCII character is worse than it looks: the
     Fortran default character kind counts BYTES, while every length this renderer reasons
-    about — the ``CASE_ID_LEN`` bound, the 100-column lint limit — counts Python code
+    about — the ``CASE_ID_LEN`` bound, the linter's column limit — counts Python code
     points. A 64-code-point case_id that is 68 UTF-8 bytes therefore slips past the bound
     and is silently truncated into the harness's ``character(len=64)`` slot, producing a
     runner that compiles and then ``error stop``s on every run. Reject the whole class
@@ -391,7 +400,7 @@ def ir_content_violations(ir: dict[str, Any], spec_id: str, harness_spec_id: str
     the conductor's ``_write_runner`` passes, and reports whatever ``RenderError`` the render
     raises. No hand-maintained list of preconditions to drift out of sync — every current and
     future content fail-close (reserved-key collision, rank>4, verdict.fields, a control char in
-    an IR name, an over-100-column rendered line, …) is caught here the instant the renderer
+    an IR name, a rendered line over the linter's column limit, …) is caught here the instant the renderer
     rejects it.
 
     It EXCLUDES only ``RenderError``s flagged ``identity=True`` — the node-identity defects a
@@ -502,9 +511,10 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     # never read cannot exist (a round-2 reviewer measured that gap when the read set was the
     # per-case union of `required_raw_variables`).
     bound_vars = list(schema_vars)
+    limit = max_rendered_line()
     for v in bound_vars:
         one_line = f"    {STATE_BINDING_PREFIX}{v} => {v}, &"
-        if len(one_line) < MAX_RENDERED_LINE:
+        if len(one_line) < limit:
             checks_syms.append(f"{STATE_BINDING_PREFIX}{v} => {v}")
         else:  # a long name: continue between the alias and the target
             checks_syms.append(f"{STATE_BINDING_PREFIX}{v} => &\n      {v}")
@@ -676,7 +686,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
         # id is structurally impossible. The width-binding line is the `case_checks(k)%id = '<id>'`
         # assignment (~90-91 cols for a 64-char id, 2-digit index); the wrapped `checks_compute`
         # call keeps its id on the continuation line (~82 cols). `_checks()` bounds the id at
-        # CASE_ID_LEN (64) and a global >100-col backstop fail-closes any pathological escaped id.
+        # CASE_ID_LEN (64) and the global column backstop fail-closes any pathological escaped id.
         a("    call checks_compute(trim(case_ids(ci)), &")
         a(f"      '{clit}', cstatus)")
         a(f"    case_checks({k})%id = '{clit}'")
@@ -688,8 +698,8 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
         a("    mcount = 0")
         for m in metrics:
             mlit = _flit(m)
-            # Wrapped: a dotted metric address makes the single-line form exceed the 100-col
-            # lint limit at ~23 chars, so the address sits on the header and the out-args wrap.
+            # Wrapped: a dotted metric address makes the single-line form exceed the linter's
+            # column limit (100 today) at ~23 chars, so the address sits on the header and the out-args wrap.
             a(f"    call metric_compute(trim(case_ids(ci)), '{mlit}', &")
             a("      mval, mis_na, mreason, mfound)")
             a("    if (mfound) then")
@@ -741,7 +751,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("  ! --- metrics-basis entries: one per (test_id, target case_id) --------------")
     a(f"  allocate(mb_entries({len(mb_rows)}))")
     for k, (tid, tcase, req_vars) in enumerate(mb_rows, start=1):
-        # Wrap the case-id-bearing lines so a long case_id cannot exceed the 100-col lint limit.
+        # Wrap the case-id-bearing lines so a long case_id cannot exceed the linter's column limit.
         a("  tci = find_case_index(case_ids, ncases, &")
         a(f"    '{_flit(tcase)}')")
         a("  if (tci < 1) then")
@@ -868,7 +878,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("")
     a(f"end program {spec_id}_runner")
     # Safety net: the runner is host-rendered (NOT in the leaf's allowed_output_paths), so a
-    # line over the deterministic Generate.gate lint-checker column limit (fortitude S001, 100 cols) would
+    # line over the deterministic Generate.gate lint-checker column limit (`max_rendered_line()`) would
     # be an UNREPAIRABLE wedge (no leaf can edit a host file). The hot lines above are wrapped,
     # but an extreme IR-sourced name (a very long metric address / case_id / variable) could
     # still overflow a line we did not wrap — fail closed HERE (a clean RenderError → transport
@@ -876,15 +886,16 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     # A few `lines` entries embed their own `&` continuations (the multi-line `_xfail_expr`),
     # so measure per PHYSICAL line (split on embedded newlines) — measuring the joined entry
     # would false-fail a valid render whose wrapped physical lines are each within the limit.
-    # `>=`, not `>`: on some supported linter builds S001 fires AT 100 columns (the same reason
-    # `_checks` bounds the check-id assignment strictly under the limit), and a host-authored
-    # line of exactly 100 columns is unrepairable by any leaf.
+    # `>=`, not `>`: on some supported linter builds the column rule fires AT the limit (the
+    # same reason `_checks` bounds the check-id assignment strictly under it), and a host-authored
+    # line of exactly the limit is unrepairable by any leaf.
+    limit = max_rendered_line()
     for entry in lines:
         for ln in entry.split("\n"):
-            if len(ln) >= MAX_RENDERED_LINE:
+            if len(ln) >= limit:
                 raise RenderError(
-                    f"rendered runner line reaches the {MAX_RENDERED_LINE}-column lint limit "
-                    f"({len(ln)} columns; 99 is the widest that lints everywhere): "
+                    f"rendered runner line reaches the linter's {limit}-column limit "
+                    f"({len(ln)} columns; {limit - 1} is the widest that lints everywhere): "
                     f"{ln.strip()[:80]!r}… — an IR-sourced name (case_id / metric address / "
                     "variable) is too long for the lint column limit; shorten it")
     return "\n".join(lines) + "\n"

@@ -51,7 +51,8 @@ def runner_output_document() -> str:
 
 #: The gate rule a certified exemplar most often predates, appended to the neutral exemplar
 #: block's "where the exemplar and a contract disagree, the contract wins"
-#: (`orchestration_runtime._build_exemplar`).
+#: (`orchestration_runtime._build_exemplar`). It cites no document, and it is a member of the
+#: pure prompt contract digest (`tools/tests/test_pure_prompt_contract_drift.py`, issue #424).
 EXEMPLAR_GATE_DRIFT_NOTE = (
     "In particular, the `Generate.gate` lint check fails on EVERY compiler warning, so an "
     "exemplar that leaves an interface-fixed parameter unread, or declares a variable it never "

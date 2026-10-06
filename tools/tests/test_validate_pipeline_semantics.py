@@ -14041,9 +14041,47 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
             _validate_generate_lint_command_logs(
                 repo_root, meta_path, {"verification_status": "pass"}, "mixed", violations)
             self.assertTrue(
-                any("requires exactly two run_linter entries" in v for v in violations),
+                any("requires exactly 2 run_linter entries" in v for v in violations),
                 violations,
             )
+
+    def test_validate_generate_lint_composite_follows_the_registry_declaration(self) -> None:
+        """The composite's members are the registry's `COMPOSITE_LINTERS` (issue #424), not a
+        pair spelled in the validator: a three-member declaration makes the validator expect
+        three sub-runs, refuse the two-member evidence that satisfied the old literal, and name
+        the declared members. Restoring the literal `2` or `{"fortitude", "cppcheck"}` turns
+        this row red."""
+        from tools.backends import registry
+        evidence_runs = [
+            {"preset": "fortitude", "command_id": "a",
+             "command_log_ref": "workspace/x/command_log.jsonl"},
+            {"preset": "cppcheck", "command_id": "b",
+             "command_log_ref": "workspace/x/command_log.jsonl"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            meta_path = self._lint_evidence_fixture(repo_root, {
+                "checked_at": "t", "source_id": "src_x", "preset": "mixed", "ok": True,
+                "run_linter": evidence_runs,
+            })
+            with unittest.mock.patch.dict(registry.COMPOSITE_LINTERS,
+                                 {"mixed": ("fortitude", "cppcheck", "ruff")}):
+                violations: list[str] = []
+                _validate_generate_lint_command_logs(
+                    repo_root, meta_path, {"verification_status": "pass"}, "mixed", violations)
+            self.assertTrue(
+                any("requires exactly 3 run_linter entries" in v
+                    and "(fortitude, cppcheck, ruff)" in v for v in violations), violations)
+            self.assertTrue(
+                any("preset fortitude and cppcheck and ruff (found ['cppcheck', 'fortitude'])"
+                    in v for v in violations), violations)
+            # Under the real declaration the same two entries satisfy both counts.
+            violations = []
+            _validate_generate_lint_command_logs(
+                repo_root, meta_path, {"verification_status": "pass"}, "mixed", violations)
+            self.assertFalse(
+                any("run_linter entries" in v and "requires" in v for v in violations),
+                violations)
 
     def test_validate_generate_lint_certifies_at_static_without_pass(self) -> None:
         # New flow: post_generate runs in generate.gate (its static check) BEFORE verify sets

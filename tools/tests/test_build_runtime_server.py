@@ -2697,6 +2697,24 @@ class RunLinterPresetDispatchTests(unittest.TestCase):
             self.assertEqual(self.mod._LINT_PRESET_COMMANDS[preset], tuple(module.check_argv()),
                              preset)
 
+    def test_the_served_presets_are_the_registry_s_linters(self) -> None:
+        """The inverse of the row above: every linter whose record carries `lint` in
+        `backend_provides` IS a served simple preset, and the served composites are the
+        registry's `COMPOSITE_LINTERS` (issue #424). The row above holds for any SUBSET — a
+        literal tuple missing a linter passes it — which is how the served schema's text came to
+        omit `nvcc` while the table carried it; this row makes the set the registry's."""
+        from tools.backends import registry
+
+        extracted = {bid for bid in registry.backend_ids("linter")
+                     if "lint" in registry.get("linter", bid).backend_provides}
+        self.assertTrue(extracted)
+        self.assertEqual(set(self.mod._SIMPLE_LINT_PRESETS), extracted)
+        self.assertEqual(set(self.mod._LINT_PRESET_COMMANDS), extracted)
+        self.assertEqual(self.mod._LINT_PRESET_COMPOSITES, dict(registry.COMPOSITE_LINTERS))
+        for composite, members in registry.COMPOSITE_LINTERS.items():
+            with self.subTest(composite=composite):
+                self.assertEqual(self.mod.lint_preset_sub_presets(composite), members)
+
     def test_each_arm_of_the_import_time_declaration_check_refuses(self) -> None:
         """All three raises, driven one at a time. Before this the count driven was ZERO.
 

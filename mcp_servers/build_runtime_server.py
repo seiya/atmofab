@@ -1204,13 +1204,15 @@ def _lint_preset_command(preset: str) -> tuple[str, ...]:
     return tuple(registry.capability_module("linter", preset, "lint").check_argv())
 
 
-#: The simple `static lint` presets, in one place. Every one of them now authors its own argv in
-#: its backend package; this tuple is the set of NAMES, which is a different fact and stays here.
-#:
-#: It is not derived from anything in this module on purpose — there is nothing here to derive it
-#: from — and a name in it whose record does not declare the `lint` capability fails at import,
-#: in the dict comprehension below, rather than at the first call.
-_SIMPLE_LINT_PRESETS: tuple[str, ...] = ("fortitude", "cppcheck", "ruff", "nvcc")
+#: The simple `static lint` presets: every linter whose record carries `lint` in
+#: `backend_provides`, read from the registry (issue #424). Each authors its own argv in its
+#: backend package, so the set of NAMES is the registry's too — the literal tuple this replaced
+#: had to be edited beside each new linter record, and the served schema text beside it had
+#: already missed `nvcc`.
+_SIMPLE_LINT_PRESETS: tuple[str, ...] = tuple(
+    bid for bid in _backend_registry().backend_ids("linter")
+    if "lint" in _backend_registry().get("linter", bid).backend_provides
+)
 
 #: The argv each simple preset runs, composed once at import. The KEYS are the set above — the
 #: set every reader below iterates.
@@ -1221,14 +1223,17 @@ _LINT_PRESET_COMMANDS: dict[str, tuple[str, ...]] = {
 #: A preset that runs several linters in order, named by the presets it COMPOSES rather than by
 #: their argv: the previous spelling restated `fortitude`'s and `cppcheck`'s command lines a
 #: second time inside the `mixed` branch, so a flag change reached one invocation and not the
-#: other.
-_LINT_PRESET_COMPOSITES: dict[str, tuple[str, ...]] = {
-    "mixed": ("fortitude", "cppcheck"),
-}
+#: other. Declared once, in the registry (`COMPOSITE_LINTERS`, issue #424), which the
+#: post_generate validator reads too.
+_LINT_PRESET_COMPOSITES: dict[str, tuple[str, ...]] = dict(_backend_registry().COMPOSITE_LINTERS)
 
 
 def _check_lint_preset_declarations() -> None:
     """Fail at import on a preset table these two readers would disagree about.
+
+    Both tables are now the registry's (issue #424), whose own `_check_declarations` refuses the
+    same two shapes for the records; these arms witness that declaration as this module composed
+    it.
 
     A name in both tables would make `lint_preset_sub_presets` and the result-shape branch in
     `tool_run_linter` disagree about whether it is simple, so one preset would return two shapes
@@ -1756,7 +1761,7 @@ TOOLS: dict[str, Tool] = {
     "run_linter": Tool(
         name="run_linter",
         description=(
-            "Run static linters for Generate-stage source (fortitude/cppcheck/ruff/mixed). "
+            "Run static linters for Generate-stage source (a registered linter preset). "
             "Does not use build_system or compile_project; preset-only, no custom command."
         ),
         input_schema={
@@ -1765,7 +1770,11 @@ TOOLS: dict[str, Tool] = {
                 "project_dir": {"type": "string", "description": "Directory the command runs in."},
                 "preset": {
                     "type": "string",
-                    "description": "fortitude | cppcheck | ruff | mixed",
+                    "description": (
+                        "A registered linter preset or composite "
+                        "(registry.backend_ids(\"linter\"); registry.linter_for_language "
+                        "picks it)."
+                    ),
                 },
                 "timeout_sec": {"type": "integer", "minimum": 1},
                 "capture_limit": {"type": "integer", "minimum": 1000},

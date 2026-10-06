@@ -908,6 +908,12 @@ PINNED: dict[str, str] = {
     # Measured by diffing this tuple against origin/main 2e04c2c3's:
     # `pure_generate_verify.txt` moved and no other member.
     "pure-69": "78817eb8d6767bdabb91ac99cfa3b13127bc6df741452a81e59847a8d46ade83",
+    # pure-70 (issue #424 PR-3): the exemplar gate-drift note each language appends to the
+    # exemplar block joins the tuple (`exemplar_gate_drift_note`) — it is leaf-read text authored
+    # in the language backend, so an edit to it used to reach the leaf with the version unmoved —
+    # and the Fortran note drops its pointer to `docs/backends/language/<language>/CHECKS_ABI.md`,
+    # a path a pure leaf cannot read; the gate and the idiom it states are unchanged.
+    "pure-70": "08fc6af40cefadf3d5acc552381ff20e98d0593e70fff01006389728b5c54274",
 }
 
 
@@ -1031,6 +1037,15 @@ def _contract_tuple() -> dict[str, object]:
             language: wc._checks_contract_abi_sections(_checks_abi_document(language))
             for language in _prompt_languages()
         },
+        # The exemplar gate-drift note each language appends to the exemplar block
+        # (`orchestration_runtime._build_exemplar`): text a `generate` leaf reads, authored in the
+        # language backend rather than a template, so it was outside this pin until issue #424 —
+        # an edit to it reached the leaf with the version unmoved.
+        "exemplar_gate_drift_note": {
+            language: _registry.capability_module(
+                "language", language, "prompt_fragments").EXEMPLAR_GATE_DRIFT_NOTE
+            for language in _prompt_languages()
+        },
         # ... and the runner-output binding, inlined after the whole runner-output contract in
         # the `harness` shape's two prompts on the same ground as that document.
         "runner_output_binding_document": {
@@ -1109,6 +1124,7 @@ class PurePromptContractDriftTests(unittest.TestCase):
                 ("checks-ABI binding", checks, "document",
                  lambda: checks.DOCUMENT_PATH.read_text(encoding="utf-8") + "\n- one more\n"),
                 ("runner-output binding", prompts, "runner_output_document", lambda: "changed"),
+                ("exemplar gate-drift note", prompts, "EXEMPLAR_GATE_DRIFT_NOTE", "changed"),
                 ("lint rule set", lint, "lint_rules_document", lambda: "changed"),
                 ("checks-ABI names", runner, "CHECKS_PUBLIC_NAMES", ("case_setup",)),
                 ("check status width", runner, "CHECK_STATUS_WIDTH", 5)):

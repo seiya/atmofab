@@ -10294,7 +10294,8 @@ class Conductor:
         # fail on its own (the linter is not handed it), so the partition of what is JUDGED stays
         # total. A directory-walking linter (`None`) judges every file it walks, so nothing is
         # context for it and the partition is unchanged.
-        # A composite preset (`mixed`) has no package of its own and runs directory walkers.
+        # A composite preset has no package of its own; the one declared today
+        # (`registry.COMPOSITE_LINTERS`) runs directory walkers.
         lint_suffixes = (
             backend_registry.capability_module("linter", preset, "lint").SOURCE_SUFFIXES
             if "lint" in backend_registry.get("linter", preset).backend_provides else None)
@@ -10411,7 +10412,8 @@ class Conductor:
             "agent_run_id": child_arid,
         })
 
-        # Normalize single vs mixed (2 sub-runs) into a uniform run_linter entry list.
+        # Normalize single vs composite (one sub-run per member) into a uniform run_linter entry
+        # list.
         # Before anything is classified as a CONTENT failure, ask the linter's own backend
         # whether the run produced a verdict at all. Declaring the rule set put `--select` in the
         # argv, and the tool validates it before reading a file: a withdrawn or unknown code
@@ -10429,7 +10431,7 @@ class Conductor:
 
         run_entries: list[dict[str, Any]] = []
         excerpts: list[str] = []
-        if preset == "mixed":
+        if backend_registry.composite_linter_members(preset):
             ok = bool(result.get("ok"))
             for sub in result.get("runs") or []:
                 run_entries.append({

@@ -1003,7 +1003,7 @@ class RenderErrorMatrixTest(unittest.TestCase):
         # the runner is host-rendered (unrepairable by a leaf), fail closed at render time.
         # The name must be a test_id, not a case_id: a long case_id now trips the earlier
         # `CASE_ID_LEN` bound instead, so it would never reach the column guard.
-        with self.assertRaisesRegex(RenderError, "reaches the 100-column lint limit"):
+        with self.assertRaisesRegex(RenderError, "reaches the linter's 100-column limit"):
             ir = copy.deepcopy(_boundary_ir())
             _long_name_mut(ir)
             render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
@@ -1295,6 +1295,28 @@ class LineWidthTest(unittest.TestCase):
         txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         self.assertLessEqual(self._maxw(txt), 99)
 
+    def test_the_column_limit_is_the_linter_s_declaration(self) -> None:
+        """The renderer's column limit is the fortran linter's `LINE_LENGTH_LIMIT`, read through
+        the registry (issue #424), not a literal of its own: lowering the declaration makes a
+        render whose widest line fits under 100 refuse, and the message names the new limit.
+        Restoring a literal 100 in the renderer turns this row red."""
+        from tools.backends import registry
+        from tools.backends.language.fortran import runner as fortran_runner
+
+        lint = registry.capability_module(
+            "linter", registry.linter_for_language("fortran"), "lint")
+        self.assertEqual(fortran_runner.max_rendered_line(), lint.LINE_LENGTH_LIMIT)
+        ir = _boundary_ir()
+        txt = render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        widest = self._maxw(txt)
+        self.assertLess(widest, 100)
+        lowered = widest - 5
+        with mock.patch.object(lint, "LINE_LENGTH_LIMIT", lowered):
+            self.assertEqual(fortran_runner.max_rendered_line(), lowered)
+            with self.assertRaises(RenderError) as cm:
+                render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        self.assertIn(f"{lowered}-column limit", str(cm.exception))
+
     def test_a_snapshot_name_rendering_an_exactly_100_column_line_is_refused(self) -> None:
         # The variable-name path had no `_checks`-style strict bound: a scalar name whose
         # `out(k) = harness_fortran_cpu__box('<name>', &` line is EXACTLY 100 columns slipped a
@@ -1311,7 +1333,7 @@ class LineWidthTest(unittest.TestCase):
                 name if x == "max_abs_deviation" else x for x in r["required_raw_variables"]]
         with self.assertRaises(RenderError) as cm:
             render_runner(ir, BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
-        self.assertIn("reaches the 100-column lint limit (100 columns", str(cm.exception))
+        self.assertIn("reaches the linter's 100-column limit (100 columns", str(cm.exception))
         # one char shorter renders, and every line is at most 99 wide
         ir2 = copy.deepcopy(ir)
         for v in ir2["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]["variables"]:

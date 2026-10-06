@@ -2703,6 +2703,32 @@ class CapabilityOwnershipTests(unittest.TestCase):
                 registry._check_declarations()
         self.assertIn("BOTH", str(ctx.exception))
 
+    def test_each_composite_linter_arm_refuses(self) -> None:
+        """`COMPOSITE_LINTERS` (issue #424) is checked at import: a composite with no record, one
+        whose record is an extracted linter (two invocations under one name), one that composes
+        nothing, and one naming a member that is not a `lint`-extracted linter are each refused,
+        and the message names the offender. The live declaration passes (the other direction)."""
+        registry._check_declarations()
+        extracted_composite = registry.Backend(
+            "linter", "mixed", "tools.backends.linter.fortitude",
+            backend_provides=frozenset({"lint"}))
+        cases = (
+            ("composite with no record", {"zz_comp": ("fortitude",)}, None, "zz_comp"),
+            ("composite that is an extracted linter", None, extracted_composite, "mixed"),
+            ("composite composing nothing", {"mixed": ()}, None, "composes no linter"),
+            ("member with no record", {"mixed": ("fortitude", "zz_absent")}, None, "zz_absent"),
+            ("member without a lint package", {"mixed": ("fortitude", "zz_core")},
+             registry.Backend("linter", "zz_core", None, core_provides=frozenset({"lint"})),
+             "zz_core"),
+        )
+        for label, composites, record, expected in cases:
+            with self.subTest(arm=label), \
+                    mock.patch.dict(registry.COMPOSITE_LINTERS, composites or {}), \
+                    (self._patched(record) if record is not None else contextlib.nullcontext()):
+                with self.assertRaises(registry.UnsupportedBackend) as ctx:
+                    registry._check_declarations()
+                self.assertIn(expected, str(ctx.exception))
+
     def test_a_package_capability_needs_a_place_to_be_reached(self) -> None:
         # W1b. A `backend_provides` entry with no `CAPABILITY_MODULE_ATTR` row is a capability
         # that is declared true and unreachable at the same time.

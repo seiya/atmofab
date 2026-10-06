@@ -81,6 +81,13 @@ def registry_attr(capability: str) -> str:
     return registry.CAPABILITY_MODULE_ATTR[capability]
 
 
+def _value_digest_of_column_limit() -> str:
+    from tools.backends import registry
+    linter = registry.linter_for_language("fortran")
+    limit = registry.capability_module("linter", linter, "lint").LINE_LENGTH_LIMIT
+    return hashlib.sha256(f"{linter}:{limit}".encode("utf-8")).hexdigest()
+
+
 def render_tuple() -> dict[str, str]:
     """The host-rendered runner and control file: the language backend's runner renderer, the
     host render module, the IR-shaped and the bundle-derived control-file writers."""
@@ -100,6 +107,11 @@ def render_tuple() -> dict[str, str]:
             _file_digest("tools/backends/language/fortran/signatures.py"),
         "tools/backends/language/fortran/lines.py":
             _file_digest("tools/backends/language/fortran/lines.py"),
+        # The column limit the renderer keeps every line under (wrapping and refusing by it) is
+        # the fortran linter's `LINE_LENGTH_LIMIT` since issue #424, read through the registry,
+        # so the VALUE and which linter answers it are digested here — not the linter's whole
+        # module, whose rule-set edits do not change a rendered byte.
+        "fortran runner column limit": _value_digest_of_column_limit(),
         "Conductor._write_runner": _source_digest(wc.Conductor._write_runner),
         # The control file's text is the build system's renderer composing the language's
         # rules since issue #289 (R4-b PR-3); the two conductor writers below only call them.
@@ -757,7 +769,15 @@ PINNED_RENDER: dict[str, str] = {
     # one) no longer reproduces the control file it was certified with. The tuple gained eleven
     # `codegen_bundle` rows — the order was a value no row digested, and neither were the graph
     # derivation and its callees.
-    "render-8": "ef7898a0ebc1366ded1727455564e10780d0fe8bc9d324f3cc7201102c9ede54",
+    "render-8": "0d9f15a876e861b676dd00c18274d051d53516b5cf032f5303820df644409004",
+    # Re-pinned (issue #424 PR-3), behaviour-preserving: the runner renderer's column limit is
+    # the fortran linter's `LINE_LENGTH_LIMIT` read through the registry (`max_rendered_line()`)
+    # where it was the literal `MAX_RENDERED_LINE = 100`; the value is unchanged, so every
+    # rendered byte is too, and the tuple gained the `fortran runner column limit` row that
+    # digests it. (Measured by diffing `render_tuple()` against origin/main 36a450e3's:
+    # `fortran/runner.py` moved and the new row was added, no other row.) The digest the PR-2
+    # re-pin shipped with at 37b68bb5:
+    "render-8@37b68bb5": "ef7898a0ebc1366ded1727455564e10780d0fe8bc9d324f3cc7201102c9ede54",
     # Re-pinned (issue #424 PR-2), behaviour-preserving: the object-name rule moved from
     # `codegen_bundle._object_name` to the build system's `control_file.object_name` (the row
     # is now the dispatch, `_object_name_rule`), and the control file's basename is read off

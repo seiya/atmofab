@@ -22365,7 +22365,8 @@ class R5ExemplarSelectorTests(unittest.TestCase):
         # leaves its ABI-fixed `name` / `case_id` unreferenced — the exact shape the gate now
         # rejects — so the injected prior art actively demonstrates an illegal pattern. The
         # preamble is the only thing that stops the leaf copying it: it must keep saying the
-        # contract wins, and name the binding that replaces it.
+        # contract wins, and state the idiom that replaces it. It cites no document: a pure leaf
+        # reads nothing from disk, so a path in its prompt is one it cannot follow (issue #424).
         from tools.orchestration_runtime import _build_exemplar
         out = _build_exemplar({
             "step": "generate", "substep": "generate", "pure_language": "fortran",
@@ -22374,7 +22375,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
         })
         self.assertIn("the contract wins", out)
         self.assertIn("associate (unused_<name> => <name>)", out)
-        self.assertIn("CHECKS_ABI.md", out)
+        self.assertNotIn("CHECKS_ABI.md", out)
 
     def test_build_launch_request_attaches_exemplar_only_for_generate_generate(self) -> None:
         import tools.workflow_conductor as wc
