@@ -669,6 +669,9 @@ def _entity_differences(want: Entity, have: Entity) -> list[str]:
     return diffs
 
 
+# A normalised (lower-case, whitespace-free) `use` statement with an `only:` list: the module and
+# the list. A plain and an intrinsic-module import are both imports, with or without `::`.
+_USE_ONLY_RE = re.compile(r"use(?:,(?:non_)?intrinsic)?(?:::)?([a-z_][a-z0-9_]*),only:(.*)")
 _DERIVED_TYPE_SPEC_RE = re.compile(r"(?:type|class)\(([a-z_][a-z0-9_]*)\)")
 
 
@@ -1566,42 +1569,42 @@ def generated_source_violations(
     # measured) in the same substep, which is why this loop reads `only:` lists alone.
     type_names = sorted(type_stanzas)
     publishing_units = {model_file.stem.lower() for model_file in model_files}
+    # Read each `use` statement WHOLE: one normalised statement per `;`-split logical line. The atom
+    # set was read here until issue #430 round 1, and `declaration_atoms` splits any line carrying
+    # `::` on its top-level commas, so `use, non_intrinsic :: m, only: a, t` became three atoms of
+    # which only the first carried `only:` — a pinned name after the first in a `::`-form list was
+    # never examined, and the module read as empty (which refused a same-file helper's identity
+    # import written `use :: <publisher>, only: t`).
+    use_statements = [
+        statement
+        for line in fortran_lines.fortran_logical_line_texts(combined)
+        for statement in (fortran_lines.normalize_fortran_line(part)
+                          for part in fortran_lines.split_fortran_statements(line))
+        if _USE_ONLY_RE.match(statement)
+    ]
     for name in [n for n in param_names if n] + type_names:
         is_type = name in type_stanzas
-        # Read the import statements out of the atom set the gate ALREADY built (`source_atoms`
-        # normalizes each entity and strips whitespace), rather than re-scanning the source through
-        # the line module — one fewer neutral-core mention of a backend module name, and one fewer
-        # place that has to agree about what a logical line is.
-        for atom in sorted(all_src_atoms):
-            # A plain import and an intrinsic-module import are both imports, and the second has NO
-            # space after the keyword — matching the keyword plus a space alone missed every
-            # intrinsic-module import, which is the only form the corpus uses. Atoms carry no
-            # whitespace, so match the keyword then any non-name character.
-            if not re.match(r"use[,:]|use\w", atom):
-                continue
-            if "only:" not in atom:
-                continue
-            head, imported = atom.split("only:", 1)
+        for statement in use_statements:
+            use_match = _USE_ONLY_RE.match(statement)
+            module, imported = use_match.group(1), use_match.group(2)
             # `a=>b` binds `a`; a bare `b` binds `b`. Either way the pinned name must not appear on
             # the BINDING side of an import.
             bound = [seg.split("=>")[0].strip() for seg in imported.split(",")]
             if name.lower() not in bound:
                 continue
             if is_type:
-                # The module the `use` names: the atom is `use[,<nature>::|::]<module>,only:...`.
-                module = re.sub(r"^use(?:,(?:non_)?intrinsic)?(?:::)?", "", head).rstrip(",")
                 if module in publishing_units:
                     continue
                 violations.append(
                     f"{target}: generated model source imports the §5.1 derived type name "
-                    f"`{name}` (`{atom}`) — the pinned type is defined by this module, and a "
+                    f"`{name}` (`{statement}`) — the pinned type is defined by this module, and a "
                     f"`use` binding its name changes every dummy declared `type({name})` in that "
                     "scope to the imported type; drop the name from the `use` (rename the "
                     "imported entity to a name of its own if it is needed)")
                 break
             violations.append(
                 f"{target}: generated model source imports the §5.1 module parameter "
-                f"`{name}` (`{atom}`) instead of declaring it — the published ABI's kind must "
+                f"`{name}` (`{statement}`) instead of declaring it — the published ABI's kind must "
                 f"come from this module's own `parameter` declaration of `{name}`, which is "
                 "what this gate value-pins; an imported binding carries a value the pin "
                 "cannot see, so declare it in this module and drop the name from the `use`. "

@@ -20275,6 +20275,11 @@ class DeclaredCharacteristicsGateTests(unittest.TestCase):
             "local type shadowing the pinned type, no ::": (cls._writer(
                 "    type hx__h_named\n      integer :: k\n    end type hx__h_named\n" + p,
                 "    print *, entries(1)%k, n\n"), "defines its own derived type `hx__h_named`"),
+            # Round 1: the same import with `::` and the pinned name SECOND in the list. The atom
+            # reading split it into three atoms and examined only the first name.
+            "B4 import of the pinned name second in a ::-form list": (
+                cls._writer("    use, non_intrinsic :: hx_dep_model, only: hx_dep__t, hx__h_named\n"
+                            + p), "hx__h_named"),
             "B5 interface body in the specification part": (cls._writer(
                 "    type(hx__h_named), intent(in) :: entries(:)\n"
                 "    integer, intent(inout) :: n\n"
@@ -20338,6 +20343,12 @@ class DeclaredCharacteristicsGateTests(unittest.TestCase):
             # this (census, 2026-10-06), and refusing it was the first version of the B4 fix.
             "helper module importing the pinned type from the publisher": cls._live() + (
                 "module hx_helper\n  use hx_model, only: hx__h_named\n  implicit none\n"
+                "contains\n  subroutine hx_h(e)\n    type(hx__h_named), intent(in) :: e\n"
+                "    print *, len(e%name)\n  end subroutine hx_h\nend module hx_helper\n"),
+            # The same identity import written with `::`: the atom reading took its module as empty
+            # and refused it (round 1).
+            "helper module importing the pinned type from the publisher, ::-form": cls._live() + (
+                "module hx_helper\n  use :: hx_model, only: hx__h_named\n  implicit none\n"
                 "contains\n  subroutine hx_h(e)\n    type(hx__h_named), intent(in) :: e\n"
                 "    print *, len(e%name)\n  end subroutine hx_h\nend module hx_helper\n"),
             "two-statement declaration": cls._writer(
