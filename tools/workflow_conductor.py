@@ -10023,7 +10023,7 @@ class Conductor:
             binary_meta["failure_category"] = self._classify_build_failure_category(
                 build_system, rc, stderr)
             binary_meta["failure_excerpt"] = "\n".join(stderr.splitlines()[-50:])
-            # Point Generate at the offending source(s) (phase_03 retry trigger).
+            # Record the source(s) the compiler named (a record only: no repair reader takes it; TODO.md).
             # The suffixes are the language backend's. No `provides` guard: `syntax_promotions`
             # is in `LANGUAGE_CAPABILITIES_EVERY_NODE`, so the launch gate already refused a
             # language without it before Build could run.
