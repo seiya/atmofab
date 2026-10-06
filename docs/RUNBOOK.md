@@ -137,8 +137,8 @@ Without this arm the failure surfaces at the first `Generate.gate` and consumes 
 that enabled additional rules by default (issue #110;
 [docs/backends/linter/fortitude/RULES.md](backends/linter/fortitude/RULES.md) §Installation). The
 refusal names the installed version and the supported range; the remedy is to install a version
-inside the range, or to re-measure and widen it per the Operations Rules of the linter's
-document in the table above.
+inside the range, or to re-measure and widen it as the linter's document in the table above
+records its measurement (its Operations Rules, where it has that section).
 
 ### Refused at startup — `parallel_toolchain_unusable`
 
