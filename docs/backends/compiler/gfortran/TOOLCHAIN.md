@@ -14,7 +14,7 @@ target whose `toolchain.language` is `fortran` it serves two roles:
 
 | role | where it runs | binding |
 |---|---|---|
-| the mandatory `Generate.gate` syntax-only stage | the host that runs `Generate.gate` | the argv is `tools/backends/compiler/gfortran/syntax.py`; the flags and the staged source set are `docs/backends/language/fortran/GENERATE_RULES.md` §2 |
+| the mandatory `Generate.gate` syntax-only stage | the host that runs `Generate.gate` | the argv is `tools/backends/compiler/gfortran/syntax.py`; the flags and the staged source set are `docs/backends/language/fortran/GENERATE_RULES.md` §2; on `fortran_cpu_mpi` the `mpi` backend's wrapper runs in its place (argv[0], and its `--version` is the one recorded — `docs/backends/parallel/mpi/LAUNCHER.md` §3) |
 | the compiler the build control file pins (`FC`, the `fortran` control file's compiler variable, `tools/backends/language/fortran/control_file.py`) | the site that builds the binary (issue #333) | used when the target profile pins no `toolchain.compiler` and its parallel backend declares no compiler wrapper (`workflow_conductor.build_compiler`); the `mpi` backend's wrapper takes this role on `fortran_cpu_mpi` (`docs/backends/parallel/mpi/LAUNCHER.md` §3) |
 
 A missing `gfortran` used to surface at `Generate.gate`: `run_syntax_check` reports a missing
@@ -29,5 +29,5 @@ Install it with the platform's own package manager, e.g. on Debian/Ubuntu:
 sudo apt-get install gfortran
 ```
 
-No version range is declared for it. The first line of `gfortran --version` is recorded as the
-syntax stage's `compiler_version` (`VERSION_ARGV`).
+No version range is declared for it. Where it runs the syntax stage itself, the first line of
+`gfortran --version` is recorded as the stage's `compiler_version` (`VERSION_ARGV`).
