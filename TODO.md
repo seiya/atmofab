@@ -127,7 +127,7 @@ point rather than growing the item here.
   - That is what makes the remaining work worth doing, and it is a different repair from the one this entry described.
   - Completion criterion: classification tests pin the Python spellings as retryable; verify-side missing-document tests fail closed before launch. Record: https://github.com/seiya/atmofab/issues/142#issuecomment-5560398588 .
 
-- **Remove the dead apply_patch gate cluster and consolidate the mirror gate/validator pairs** (2026-08-10 audit, medium; [issue #433](https://github.com/seiya/atmofab/issues/433)). The dead-cluster half landed in PR-1 of #433 (writer, readers and doc references deleted). What is left is the mirror pair: `_preflight_allows_agent_launch` ↔ `_validate_preflight_payload` keep hand-copied conditions (their comments state the mirror requirement explicitly), and a one-sided edit makes them disagree.
+- **Remove the dead apply_patch gate cluster and consolidate the mirror gate/validator pairs** (2026-08-10 audit, medium; [issue #433](https://github.com/seiya/atmofab/issues/433)). The dead-cluster half landed in PR-1 of #433 (writer, readers and doc references deleted). What is left is the mirror pair: `_preflight_allows_agent_launch` ↔ `_validate_preflight_payload` keep hand-copied conditions (the comment on the shared codex check set and two comments inside the validator state the mirror requirement), and a one-sided edit makes them disagree.
   - Fix direction: derive both from one reason list (PR-2 of #433).
   - Completion criterion: the pair shares one implementation; an agreement test calls both real functions; existing gate/validator tests stay green.
 
