@@ -82,9 +82,9 @@ resolves to, how to install it, and where else it must be found are the backend 
 
 | target | backend documents naming its tools and how to install them |
 |---|---|
-| `fortran_cpu` (`spec/targets/fortran_cpu.yaml`) | [docs/backends/linter/fortitude/RULES.md](backends/linter/fortitude/RULES.md) §Installation; [docs/backends/compiler/gfortran/TOOLCHAIN.md](backends/compiler/gfortran/TOOLCHAIN.md); `make`, from the platform's own package |
+| `fortran_cpu` (`spec/targets/fortran_cpu.yaml`) | [docs/backends/linter/fortitude/RULES.md](backends/linter/fortitude/RULES.md) §Installation; [docs/backends/compiler/gfortran/TOOLCHAIN.md](backends/compiler/gfortran/TOOLCHAIN.md); `make`, from the platform's own package (`sudo apt-get install make` on Debian/Ubuntu) |
 | `fortran_cpu_mpi` (`spec/targets/fortran_cpu_mpi.yaml`) | the `fortran_cpu` row, plus [docs/backends/parallel/mpi/LAUNCHER.md](backends/parallel/mpi/LAUNCHER.md) §3 (the compiler wrapper and the launcher) |
-| `cpp_gpu` (`spec/targets/cpp_gpu.yaml`) | [docs/backends/compiler/nvcc/TOOLCHAIN.md](backends/compiler/nvcc/TOOLCHAIN.md) (one program in the lint, syntax-only and build-compiler roles, and the execution site's build); `make`, from the platform's own package; [docs/backends/parallel/cuda/DEVICE_TRACE.md](backends/parallel/cuda/DEVICE_TRACE.md) §3 (the device trace) |
+| `cpp_gpu` (`spec/targets/cpp_gpu.yaml`) | [docs/backends/compiler/nvcc/TOOLCHAIN.md](backends/compiler/nvcc/TOOLCHAIN.md) (one program in the lint, syntax-only and build-compiler roles, and the execution site's build); `make`, from the platform's own package (`sudo apt-get install make` on Debian/Ubuntu); [docs/backends/parallel/cuda/DEVICE_TRACE.md](backends/parallel/cuda/DEVICE_TRACE.md) §3 (the device trace) |
 
 A compiler wrapper and a launcher must come from one installation whose language binding is built
 for the target's compiler; the startup probe checks the pair and refuses the run
@@ -330,7 +330,7 @@ an isolated `CODEX_HOME`; both went with the leaf hook layer in Z4 (issue #171).
 - A trial that violates the verification of this section stops at the relevant phase, and artificial artifact generation for the purpose of satisfying a downstream phase's start condition is forbidden.
 
 ### 1-2-1. Supplementary static rules of `validate_pipeline_semantics.py` (around Generate)
-- **Object rules of the build control file**: for a `src/` of several module sources, the object-dependency check derived from the module dependencies the target language's backend reads out of them (`source_module_deps`) runs: each object's rule must list the objects and module artifacts its source uses as prerequisites that resolve to a **literal** basename, and a variable reference not defined before the rule resolves to nothing and does not count. The binding — the rule notation, the out-of-source prefix agreement, and examples — is `docs/backends/build_system/make/CONTROL_FILE.md` §1.
+- **Object rules of the build control file**: for a `src/` of several module sources, the object-dependency check derived from the module dependencies the target language's backend reads out of them (`source_module_deps`) runs: each object's rule must list, for every module its source uses, that module's object or its module artifact as a prerequisite that resolve to a **literal** basename, and a variable reference not defined before the rule resolves to nothing and does not count. The binding — the rule notation, the out-of-source prefix agreement, and examples — is `docs/backends/build_system/make/CONTROL_FILE.md` §1.
 - **Scope of the substring check for forbidden output names of the `runner`**: detect it as a **substring** of a forbidden name after lowercasing the full text of the runner source (the file the language backend's `bundle_facts.runner_basename` names). **Comment lines are not excluded.** `verdict.json` / `aggregate_verdict.json` / `summary.json` / `trial_meta.json` must not be contained in a comment or string literal.
 - **Each `pipeline`'s `lineage.json`**: `workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>/lineage.json` is required for each `pipeline` to be checked.
 
