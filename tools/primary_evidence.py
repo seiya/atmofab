@@ -102,8 +102,9 @@ error, so no evaluation escapes the per-predicate record.
 The Compile gate infers RANKS statically (`expr_rank`, issue #440) from the declared
 `shape_expr`s, the state's rank and each case's inputs, so an operand pair of unequal rank, a
 `roll` with the wrong shift count or a non-scalar shift, and an array-valued `expr` are refused
-before any run, with the message evaluation would raise. Extents are not declared numerically,
-so an extent mismatch stays an evaluation error.
+before any run — the first two with the message evaluation would raise, the last naming the
+rank where `_scalar` names the shape. Extents are not declared numerically, so an extent
+mismatch stays an evaluation error.
 
 `verdict_evaluator.evaluate_verdict` labels each test's `basis.corroboration` `agree` /
 `disagree` / `unevaluated`; a `disagree` or an `unevaluated` fails the test, so the judge (never

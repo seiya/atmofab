@@ -1270,6 +1270,27 @@ class SchemaGateTest(unittest.TestCase):
                 self.assertEqual(out, [(f"primary_predicates[0].expr: {name}(): operands of rank "
                                         f"2 and 1 {self._PAIR}")])
 
+    def test_a_malformed_scope_still_ranks_an_own_case_input(self) -> None:
+        """With both scopes given, the scope violation is reported and the rank check falls
+        back to every target case rather than to no case (where an own-case `inputs.` ref has
+        no case to be read in)."""
+        ir = self._with_inputs(b_a2=[1.0] * NX)
+        out = self._v([{**HMIN, "case": "a", "expr": "maxabs(final.h - inputs.initial.a2)"}],
+                      ir=ir)
+        self.assertEqual(out[0], "primary_predicates[0]: exactly one of `per_case: true` or "
+                                 "`case: <case_id>` names the scope")
+        self.assertEqual(out[1:], [
+            (f"primary_predicates[0].expr: in case 'b': operator -: operands of rank 2 and 1 "
+             f"{self._PAIR}")])
+
+    def test_a_time_variable_listed_among_the_variables_has_rank_0(self) -> None:
+        """`_load_capture` reads the time variable as a scalar whatever `variables` says about
+        it, so the rank check does too."""
+        ir = _ir([HMIN], variables=[{"name": "h", "shape_expr": "[nx, ny]"},
+                                    {"name": "t", "shape_expr": "[nx]"}])
+        self.assertEqual(self._v([{**HMIN, "expr": "sum(final.h) * final.t"}], ir=ir), [])
+        self.assertEqual(self._v([{**HMIN, "expr": "final.t"}], ir=ir), [])
+
     def test_a_rank_check_does_not_cascade(self) -> None:
         out = self._v([{**HMIN, "expr": "final.h + zz"}])
         self.assertEqual(len(out), 1, out)

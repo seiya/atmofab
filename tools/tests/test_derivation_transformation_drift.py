@@ -1243,7 +1243,9 @@ PINNED_VERDICT: dict[str, str] = {
     # Measured by diffing `verdict_tuple()` against a480284b: the `tools/primary_evidence.py`
     # row and no other. The shipped digest stays pinned (`test_no_empty_bump_or_silent_revert`).
     "verdict-9@a480284b": "4eaaaabfd095b10841108ef2c82084eac4ac86c6c02293b34c00f47dbc39c001",
-    "verdict-9": "cd7e3bc21827957b164911a649664841bf647e1f2ca5382e648dbd80eb6ea2d9",
+    # Round 1: the module docstring says the array-valued `expr` refusal names the rank where
+    # `_scalar` names the shape (it had claimed the evaluator's wording for all three).
+    "verdict-9": "a65f8799e7da01901495bce8773e882822bee76f96f148dcd7d6438a32f26cab",
 }
 
 
