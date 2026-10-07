@@ -587,6 +587,12 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # `tests.md` states one (the compile gate compares the two); the stale "(Generate never
     # reads tests.md)" comment is shortened away. Not yet shipped, so re-pinned in place.
     "compile-docs-12": "ad5badc4eae5b5cb777669bb5f95fe6f3e7ca549bfe9bf218894389d4c09a734",
+    # compile-docs-13 (issue #440): the `coordinates:` line defines the STATE's shape for a
+    # mixed-rank schema (the shape the highest-rank snapshot variables share, which `axis`
+    # indexes) and says a coordinate pairs only at that rank; the grammar header and the V3
+    # gate list state the static operand-rank check; V3 gains (vi), `count` against the `axis`
+    # token. A leaf reading it authors a different schema for a mixed-rank state.
+    "compile-docs-13": "794b9a6ac42be4fdec79fa304e14f50840ca1cf4411e54da7dcbc3d4f177ffdd",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1226,7 +1232,15 @@ PINNED_VERDICT: dict[str, str] = {
     # `own_verdict` and `comparands_absent` are gone — and the tuple loses the comparand
     # selection, the binding and the `aggregate_verdict.json#cross_target` author, which no
     # certified artifact carries any more (the agreement is evaluated on demand).
-    "verdict-9": "4eaaaabfd095b10841108ef2c82084eac4ac86c6c02293b34c00f47dbc39c001",
+    # Re-pinned by issue #440 (not bumped): the Compile gate ranks every primary predicate
+    # statically (`expr_rank`, `_rank_violation`, `_predicate_rank_violation` added,
+    # `validate_primary_predicate_schema` calls them, docstrings state it). A `--stage
+    # compile`-only edit: `evaluate_primary_predicates`, `_eval_node`, `_call`,
+    # `_shape_compatible` and `_scalar` are byte-identical, so no record's value moves.
+    # Measured by diffing `verdict_tuple()` against a480284b: the `tools/primary_evidence.py`
+    # row and no other. The shipped digest stays pinned (`test_no_empty_bump_or_silent_revert`).
+    "verdict-9@a480284b": "4eaaaabfd095b10841108ef2c82084eac4ac86c6c02293b34c00f47dbc39c001",
+    "verdict-9": "cd7e3bc21827957b164911a649664841bf647e1f2ca5382e648dbd80eb6ea2d9",
 }
 
 

@@ -12079,6 +12079,8 @@ end program shallow_water2d_runner
             (self._primary_predicate(expr="sum(at('c2').final.h)"), "at('c2') is not one of"),
             (self._primary_predicate(op="includes"), "op must be one of"),
             (self._primary_predicate(test_id="t9"), "not a tests.md test_id"),
+            (self._primary_predicate(expr="final.h - initial.h"),
+             "evaluates to an array of rank 2, not a scalar"),
         ]
         for pred, fragment in rows:
             with self.subTest(fragment=fragment), tempfile.TemporaryDirectory() as tmp:
@@ -12097,6 +12099,35 @@ end program shallow_water2d_runner
             self.assertTrue(any("quantity must be present and match" in x for x in v), v)
             self.assertFalse(any("primary_predicates[" in x and "quantity must match" in x
                                  for x in v), v)
+
+    def test_compile_gate_refuses_a_coordinate_paired_below_the_state_rank(self) -> None:
+        """Issue #440 through the real wiring: a stacked `[3,2,2]` capture beside the `[2,2]`
+        ones makes the state's rank 3, so the coordinate (rank 3) times a rank-2 capture is
+        refused at the stage; without the stacked capture the same predicate passes."""
+        coord = {"name": "row_center", "axis": 1, "count": "inputs.grid.ny",
+                 "length": "inputs.grid.ny", "placement": "cell_center"}
+        pred = self._primary_predicate(
+            bind={"f_rows": "inputs.constants.f0 + inputs.constants.df * (row_center - 0.5)"},
+            expr="max(maxabs(final.hu - f_rows * initial.hv), "
+                 "maxabs(final.hv + f_rows * initial.hu))")
+        # (YAML reads a JSON-dumped `1e-05` as a string, so the constants carry a decimal point)
+        inputs = {"grid": {"ny": 2}, "constants": {"f0": 0.25, "df": 0.5}}
+        for stacked, expected in ((True, ("primary_predicates[0].expr: operator *: operands of "
+                                          "rank 3 and 2")), (False, None)):
+            with self.subTest(stacked=stacked), tempfile.TemporaryDirectory() as tmp:
+                io = self._io_contract_with_predicates(
+                    self._preds_with_quantity("mass_drift_rel"))
+                schema = io["raw_requirements"]["required_evidence"][1]["schema"]
+                schema["coordinates"] = [coord]
+                if stacked:
+                    schema["variables"].append({"name": "U", "shape_expr": "[3,2,2]"})
+                io["primary_predicates"] = [pred]
+                v = self._compile_with_io_contract(Path(tmp), io, case_inputs=inputs)
+                if expected is None:
+                    self.assertEqual(v, [])
+                else:
+                    self.assertTrue(any(expected in x for x in v), v)
+                    self.assertTrue(all("spec.ir.yaml:" in x for x in v), v)
 
     def test_compile_gate_pins_primary_target_cases_to_the_tests(self) -> None:
         """Round 1 (security axis): a primary predicate over a SUBSET of its test's cases was
