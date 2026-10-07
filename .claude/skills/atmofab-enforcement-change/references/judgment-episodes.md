@@ -32,7 +32,8 @@ probe means "I tried one", not "I tried".
   unnecessary" are different claims. If it survives, the default is: keep it, and write in the
   docstring that it is not pinned
 - This repo pushes the other way too ("delete dead defenses", e.g.
-  `_validate_apply_patch_gate_coverage`), and that collided head-on here. **How the tug-of-war
+  `_validate_apply_patch_gate_coverage` — a gate deleted in P2-7; the last documents naming
+  it were corrected with issue #433), and that collided head-on here. **How the tug-of-war
   settles**: you may delete only when there is **an execution record of an attempt to reach it
   that failed**. "No caller exists" (dead code) counts as such a record; "the language spec
   makes it impossible" does not

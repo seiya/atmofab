@@ -5792,7 +5792,6 @@ FAIL_CLOSED_REASON_CODES = {
     "child_agent_unavailable_on_execution_platform",
     "required_child_agent_kind_mismatch",
     "phase_body_started_before_launch",
-    "noncanonical_phase_write_attempt",
     "dependency_not_ready",
     "downstream_artifact_not_ready",
     "post_phase_complete_violation",
@@ -5822,8 +5821,6 @@ FAIL_CLOSED_REASON_CODES = {
 }
 
 PARALLEL_NODES_ENV_VAR = "ATMOFAB_ALLOW_PARALLEL_NODES"
-
-PHASE_ARTIFACT_GUARDED_PREFIXES: tuple[str, ...] = ("workspace/ir/", "workspace/pipelines/")
 
 STEP_KEYS_FOR_NODE_STATE: tuple[str, ...] = (
     "compile",
@@ -5933,12 +5930,9 @@ def _ensure_orchestration_audit_dirs(repo_root: Path, orchestration_id: str) -> 
     # written twice — by PR-2 and again by its round-1 correction — so the count is derived
     # here by name: grep `_write_sandbox_enforcement_violation`. Since bwrap is the only
     # confinement left, those four are the last record that it was actually in force.
-    # (`_reject_noncanonical_phase_write` writes to the same directory and has no caller —
-    # dead at `origin/main` as well, owned by the `TODO.md` entry on the dead apply_patch gate
-    # cluster; it is not a live writer.) The directory is deliberately NOT pre-created:
-    # an empty `violations/` is a record that something is expected to write there, and the
-    # completion criterion for this change is that a clean run leaves neither the directory
-    # nor its contents. `_write_json` creates the parent when a violation actually happens.
+    # The directory is deliberately NOT pre-created: an empty `violations/` is a record that
+    # something is expected to write there, and the completion criterion for this change is
+    # that a clean run leaves neither the directory nor its contents. `_write_json` creates the parent when a violation actually happens.
     (root / "sandbox_profiles").mkdir(parents=True, exist_ok=True)
 
 
@@ -6274,39 +6268,6 @@ def _write_sandbox_enforcement_violation(
     return out
 
 
-def _write_noncanonical_phase_write_attempt(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-    actor_role: str,
-    attempted_paths: list[str],
-    node_key: str | None,
-    step: str | None,
-    required_child_agent: str | None,
-    current_phase_state: str | None,
-) -> Path:
-    _ensure_orchestration_audit_dirs(repo_root, orchestration_id)
-    out = (
-        _violations_dir(repo_root, orchestration_id)
-        / f"{agent_run_id}.noncanonical_phase_write_attempt.json"
-    )
-    payload = {
-        "kind": "noncanonical_phase_write_attempt",
-        "agent_run_id": agent_run_id,
-        "actor": actor_role,
-        "attempted_paths": attempted_paths,
-        "node_key": node_key,
-        "step": step,
-        "required_child_agent": required_child_agent,
-        "current_phase_state": current_phase_state,
-        "reason_code": "noncanonical_phase_write_attempt",
-        "detected_at": _utc_now_iso(),
-    }
-    _write_json(out, payload)
-    return out
-
-
 def _required_child_agent_kind(step: str) -> str:
     step_token = step.strip().lower()
     required = STEP_REQUIRED_CHILD_AGENT.get(step_token)
@@ -6362,11 +6323,6 @@ ONE caller since issue #171 PR-2: the record-launch request validator, which rea
     return role
 
 
-def _phase_write_requires_child_running(path: str) -> bool:
-    p = _normalize_rel_posix(path)
-    return any(p.startswith(prefix) for prefix in PHASE_ARTIFACT_GUARDED_PREFIXES)
-
-
 def _execution_platform_launchable(preflight: dict[str, Any], required_child_agent: str) -> bool:
     if required_child_agent == "step":
         return preflight.get("can_launch_step_agents") is True
@@ -6400,67 +6356,6 @@ def _check_session_policy_launchable(
         launchable = bool(preflight.get("session_policy_launchable"))
         scope = "session_policy_launchable"
     return {"launchable": launchable, "blocking_policy_scope": scope}
-
-
-def _resolve_current_phase_state(
-    repo_root: Path, orchestration_id: str, node_key: str, step: str
-) -> str | None:
-    doc = _load_phase_state(repo_root, orchestration_id)
-    if not isinstance(doc, dict):
-        return None
-    ns = doc.get("node_states")
-    if not isinstance(ns, dict):
-        return None
-    node_safe = _node_key_to_safe(node_key)
-    inner = ns.get(node_safe)
-    if not isinstance(inner, dict):
-        return None
-    value = inner.get(step.strip().lower())
-    return value if isinstance(value, str) else None
-
-
-def _reject_noncanonical_phase_write(
-    repo_root: Path,
-    *,
-    orchestration_id: str,
-    agent_run_id: str,
-    actor_role: str,
-    attempted_paths: list[str],
-    node_key: str | None,
-    step: str | None,
-    current_phase_state: str | None,
-) -> None:
-    required: str | None = None
-    if isinstance(step, str) and step.strip():
-        try:
-            required = _required_child_agent_kind(step)
-        except ValueError:
-            required = None
-    _write_noncanonical_phase_write_attempt(
-        repo_root,
-        orchestration_id,
-        agent_run_id=agent_run_id,
-        actor_role=actor_role,
-        attempted_paths=attempted_paths,
-        node_key=node_key,
-        step=step,
-        required_child_agent=required,
-        current_phase_state=current_phase_state,
-    )
-    try:
-        update_orchestration_status(
-            repo_root,
-            orchestration_id,
-            status="fail_closed",
-            reason_code="noncanonical_phase_write_attempt",
-            reason_detail="; ".join(attempted_paths),
-            blocking_policy_scope="apply_patch_writes",
-        )
-    except Exception:
-        pass
-    raise RuntimeError(
-        "apply_patch gate: noncanonical phase write attempt detected before child_running"
-    )
 
 
 def _dependency_ready(
@@ -12585,8 +12480,6 @@ def _validate_step_meta_payload(meta_data: dict[str, Any], *, step_token: str, m
 def _effective_pass_substep_run_ids(
     payload: dict[str, Any],
     *,
-    repo_root: Path,
-    orchestration_id: str,
     run_records: dict[str, dict[str, Any]],
     node_key: str,
     step_token: str,
@@ -12654,8 +12547,6 @@ def _effective_pass_substep_run_ids(
             )
         repair_target = str(item["repair_target_agent_run_id"]).strip()
         new_run_id = str(item["new_agent_run_id"]).strip()
-        repair_strategy = str(item.get("repair_strategy") or "").strip().lower()
-        repair_reason = str(item.get("repair_reason") or "").strip().lower()
         if repair_target not in listed_run_id_set:
             raise ValueError(
                 f"retry_decisions[{idx}].repair_target_agent_run_id must be listed in substep_agent_run_ids: {repair_target}"
@@ -12672,15 +12563,6 @@ def _effective_pass_substep_run_ids(
         if repair_target_status == "pass":
             raise ValueError(
                 f"retry_decisions[{idx}].repair_target_agent_run_id must reference actual non-pass run: {repair_target}"
-            )
-        violation_path = (
-            _violations_dir(repo_root, orchestration_id)
-            / f"{repair_target}.noncanonical_phase_write_attempt.json"
-        )
-        has_noncanonical_violation = violation_path.exists()
-        if (has_noncanonical_violation or "noncanonical_phase_write_attempt" in repair_reason) and repair_strategy != "restart":
-            raise ValueError(
-                f"retry_decisions[{idx}] must use repair_strategy='restart' for noncanonical_phase_write_attempt"
             )
         replaced_run_ids.add(repair_target)
         adopted_run_ids.add(new_run_id)
@@ -12896,8 +12778,6 @@ def _validate_step_result_payload(
     run_records = _load_run_records(_orchestration_root(repo_root, orchestration_id))
     effective_run_ids, _ = _effective_pass_substep_run_ids(
         payload,
-        repo_root=repo_root,
-        orchestration_id=orchestration_id,
         run_records=run_records,
         node_key=node_key,
         step_token=step_token,

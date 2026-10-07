@@ -161,7 +161,9 @@ class RunWorkflowTests(unittest.TestCase):
 
         Asserted as ABSENT rather than deleted silently: it reported `[]` on every failed
         run for one round after the marker stopped being written, and an empty list in a
-        failure report reads as "measured clean", not as "not measured"."""
+        failure report reads as "measured clean", not as "not measured". The twin reader of
+        `*.noncanonical_phase_write_attempt.json` and the `recommended_retry_decisions` it fed
+        went the same way with issue #433: their writer had no caller."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
@@ -179,10 +181,19 @@ class RunWorkflowTests(unittest.TestCase):
                            ensure_ascii=False),
                 encoding="utf-8",
             )
+            (orch_root / "violations" / "run_001.noncanonical_phase_write_attempt.json").write_text(
+                json.dumps({"agent_run_id": "run_001",
+                            "reason_code": "noncanonical_phase_write_attempt",
+                            "attempted_paths": ["workspace/ir/x/ir.json"]},
+                           ensure_ascii=False),
+                encoding="utf-8",
+            )
             analysis = run_workflow._collect_failure_analysis(repo_root, "orch_vio")
             self.assertNotIn("unauthorized_write_violations", analysis)
-            self.assertEqual(analysis.get("recommended_retry_decisions"), [])
+            self.assertNotIn("noncanonical_write_violations", analysis)
+            self.assertNotIn("recommended_retry_decisions", analysis)
             self.assertFalse(hasattr(run_workflow, "_collect_unauthorized_write_violations"))
+            self.assertFalse(hasattr(run_workflow, "_collect_noncanonical_write_violations"))
 
     def test_collect_failure_analysis_excludes_superseded_nonpass_runs(self) -> None:
         """A terminal-nonpass agent_run that a *later* same-(node,step,substep) run
@@ -260,7 +271,6 @@ class RunWorkflowTests(unittest.TestCase):
             "reason_detail": None,
             "failed_agent_run": None,
             "failed_step_results": [],
-            "recommended_retry_decisions": [],
             "launch_reply_tail": "",
             "agent_summary_tail": "",
             "launch_incident_refs": [

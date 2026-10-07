@@ -1831,6 +1831,12 @@ class RevocationNotLandedTerminalTest(unittest.TestCase):
         a terminal the conductor cannot record is a terminal the operator never sees."""
         self.assertIn("revocation_not_landed", ort.FAIL_CLOSED_REASON_CODES)
 
+    def test_the_writerless_noncanonical_code_is_not_in_the_runtime_allowlist(self) -> None:
+        """`noncanonical_phase_write_attempt` was emitted only by `_reject_noncanonical_phase_write`,
+        which had no caller and went with issue #433. An allowlisted code nothing emits reads as a
+        live terminal; putting it back is a visible edit of this row."""
+        self.assertNotIn("noncanonical_phase_write_attempt", ort.FAIL_CLOSED_REASON_CODES)
+
 
 class SeedRepairsFromRevocationsTest(unittest.TestCase):
     """`_seed_repairs_from_revocations` is the whole of what a resume carries forward about a

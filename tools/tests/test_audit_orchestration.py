@@ -1832,8 +1832,7 @@ class InRepoRecordSectionTests(unittest.TestCase):
                           "another kind)", section)
             self.assertIn("kind `unauthorized_write_violation` arid=`arid-7`", section)
             self.assertIn("(not a sandbox enforcement finding)", section)
-            # The header does not claim the writer is gone: `noncanonical_phase_write_attempt`'s
-            # exists uncalled, and the section knows only the kind.
+            # The section knows only the kind; no header claims any writer's state.
             self.assertNotIn("no longer exists", section)
             self.assertNotIn("`unknown`", section)
             self.assertNotIn("sandbox enforcement record(s):", section)
@@ -1902,7 +1901,9 @@ class InRepoRecordSectionTests(unittest.TestCase):
         self.assertEqual(fa["canonical"]["failed_agent_run"],
                          {"agent_run_id": "arid-9", "node_key": "problem/x@0.1.0",
                           "step": "generate", "substep": "gate", "status": "fail"})
-        self.assertEqual(fa["canonical"]["recommended_retry_decision_count"], 1)
+        # A document written before issue #433 may still carry `recommended_retry_decisions`;
+        # its only producer had no writer, so neither the summary nor the report counts it.
+        self.assertNotIn("recommended_retry_decision_count", fa["canonical"])
         self.assertEqual(fa["sidecars"], [])
         self.assertIn("## failure_analysis", md)
         self.assertIn("`failure_analysis.json` (`orchestration_meta.json#status` = "
@@ -1912,7 +1913,7 @@ class InRepoRecordSectionTests(unittest.TestCase):
                       "(status `fail`)", md)
         self.assertIn("- failed step results: 1", md)
         self.assertIn("steps/n/generate/arid-9/step_result.json` (status `fail`)", md)
-        self.assertIn("- recommended retry decisions: 1", md)
+        self.assertNotIn("recommended retry decisions", md)
 
     def test_sidecars_are_summarized_with_their_existing_file_status(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -39,7 +39,6 @@ from tools.llm_config import config_sha256 as lc_config_sha256
 
 from tools.orchestration_runtime import (
     TERMINAL_STATUSES,
-    _effective_pass_substep_run_ids,
     _pre_phase_complete_judge_checks,
     _required_child_agent_kind,
     _build_artifact_hashes,
@@ -1048,47 +1047,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         })
         self.assertTrue(result["codex_lineage_home_missing"])
         self.assertEqual(result["codex_lineage_id"], "lineage-1")
-
-    def test_effective_pass_substep_run_ids_uses_violation_file_without_nameerror(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orchestration_id = "orch_retry"
-            violation_path = (
-                repo_root
-                / "workspace"
-                / "orchestrations"
-                / orchestration_id
-                / "violations"
-                / "sub_old.noncanonical_phase_write_attempt.json"
-            )
-            violation_path.parent.mkdir(parents=True, exist_ok=True)
-            violation_path.write_text("{}", encoding="utf-8")
-            payload = {
-                "substep_agent_run_ids": ["sub_old", "sub_new"],
-                "failed_substeps": [],
-                "retry_decisions": [
-                    {
-                        "issue_severity": "major",
-                        "repair_strategy": "reuse",
-                        "repair_target_agent_run_id": "sub_old",
-                        "new_agent_run_id": "sub_new",
-                        "repair_reason": "repair",
-                    }
-                ],
-            }
-            run_records = {
-                "sub_old": {"agent_role": "substep", "node_key": "problem/shallow_water2d@0.3.0", "step": "compile", "status": "fail"},
-                "sub_new": {"agent_role": "substep", "node_key": "problem/shallow_water2d@0.3.0", "step": "compile", "status": "pass"},
-            }
-            with self.assertRaisesRegex(ValueError, "must use repair_strategy='restart'"):
-                _effective_pass_substep_run_ids(
-                    payload,
-                    repo_root=repo_root,
-                    orchestration_id=orchestration_id,
-                    run_records=run_records,
-                    node_key="problem/shallow_water2d@0.3.0",
-                    step_token="compile",
-                )
 
     def test_parse_feature_list_extracts_boolean_flags(self) -> None:
         raw = """
@@ -8544,6 +8502,27 @@ shell_tool                       stable             true
                     response_payload=_spawn_response_payload("sess_step_repair_001"),
                 )
 
+    def test_record_launch_requires_repair_reason_for_reuse(self) -> None:
+        """ValueError when repair_reason is "none" with repair_strategy=reuse — the second half of
+        the requirement docs/ORCHESTRATION.md §repair / retry states for a re-submission."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._minimal_preflight_setup(repo_root)
+            with self.assertRaisesRegex(ValueError, "requires non-empty repair_reason"):
+                record_launch(
+                    repo_root=repo_root,
+                    orchestration_id="orch_001",
+                    parent_agent_run_id="orch_run_001",
+                    child_agent_run_id="step_run_repair_001",
+                    request_payload=self._minimal_request_payload(
+                        issue_severity="minor",
+                        repair_strategy="reuse",
+                        repair_target_agent_run_id="step_run_prior_001",
+                        repair_reason="none",
+                    ),
+                    response_payload=_spawn_response_payload("sess_step_repair_001"),
+                )
+
     def test_record_launch_rejects_traversal_in_child_agent_run_id(self) -> None:
         """child_agent_run_id containing path separators must be rejected before path construction."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -10488,11 +10467,10 @@ class CompletionVouchAttemptModelTests(unittest.TestCase):
                 "pass")
 
     def test_other_violation_kinds_do_not_block_pass(self) -> None:
-        """Only the violation whose write LANDED blocks. A
-        `noncanonical_phase_write_attempt` is an attempt that was refused, a
-        `sandbox_enforcement_violation` is a launch that did not happen, and a
-        `rule_source_violation` names no write at all — none leaves bytes behind, so none is a
-        reason to refuse certification of the workspace."""
+        """Only the violation whose write LANDED blocks. A `sandbox_enforcement_violation` is a
+        launch that did not happen, a `rule_source_violation` names no write at all, and a kind
+        no writer produces (`unknown_kind`) is not a record of anything — none leaves bytes
+        behind, so none is a reason to refuse certification of the workspace."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             root = repo / "workspace/orchestrations/o1"
@@ -10500,7 +10478,7 @@ class CompletionVouchAttemptModelTests(unittest.TestCase):
             self._record(repo, "live_1", status="pass")
             self._step_result(repo, executor=orch, status="pass", substeps=["live_1"])
             (root / "violations").mkdir(parents=True, exist_ok=True)
-            for name in ("a.noncanonical_phase_write_attempt.json",
+            for name in ("a.unknown_kind.json",
                          "b.rule_source_violation.json",
                          "c.sandbox_enforcement_violation.json",
                          "d.phase_authority_violation.json"):
@@ -10676,7 +10654,7 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
                     meta.update(
                         {
                             "status": prior,
-                            "reason_code": "noncanonical_phase_write_attempt",
+                            "reason_code": "leaf_transport_error",
                             "reason_detail": "prior failure detail",
                             "blocking_policy_scope": "write",
                             "finished_at": "2026-01-01T00:00:00.000000Z",
@@ -10704,7 +10682,7 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
                         self.assertNotIn("detected_at", view)
                         self.assertEqual(
                             view.get("resumed_from_reason_code"),
-                            "noncanonical_phase_write_attempt",
+                            "leaf_transport_error",
                         )
                     # Stale cleanup marker removed so the next terminalization is clean.
                     self.assertFalse(marker.exists())
