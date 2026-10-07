@@ -1790,6 +1790,7 @@ def _validate_raw_evidence(
             _validate_metrics_basis_per_test(repo_root, execution, metrics_basis, violations)
 
     _validate_diagnostics_contract_output(repo_root, execution, violations)
+    _validate_diagnostics_status_vocabulary(execution, violations)
 
     quality_path = execution.node_dir / "quality_check.json"
     if quality_path.exists():
@@ -5057,6 +5058,104 @@ def _validate_diagnostics_contract_output(
                 violations.append(
                     f"{diagnostics_path}:verdict missing io_contract.diagnostics_contract.verdict.fields ({sorted(missing_fields)})"
                 )
+
+
+#: The status a check entry inside a per-case slice of diagnostics.json may carry beyond the
+#: top-level ``CHECK_STATUS_VALUES``: a check that does not apply to a case reports ``na`` there.
+#: This is the runner-OUTPUT vocabulary, not the predicate vocabulary — a ``pass_when``
+#: condition still compares a status to ``pass`` / ``fail`` only (``verdict_evaluator``,
+#: issue #269), and the top-level fold writes ``pass`` / ``fail`` only (issue #437).
+PER_CASE_CHECK_STATUS_EXTRA: tuple[str, ...] = ("na",)
+
+
+def _validate_diagnostics_status_vocabulary(
+    execution: NodeExecution, violations: list[str]
+) -> None:
+    """At post_execute/pre_judge, refuse a diagnostics.json status that is not exactly one of
+    its literals (issue #437): a top-level ``checks.<id>.status`` and every
+    ``verdict.overall`` must be ``pass`` or ``fail``; a check status inside a per-case slice
+    (each value of a ``per_case`` / ``cases`` object, or each element of a ``cases`` list) may
+    also be ``na``. A value carrying the blanks that pad a fixed-width status is refused with
+    a message naming the writer, because no later reader trims it.
+
+    It runs for every node, independently of ``_validate_diagnostics_contract_output``, whose
+    early return for a node without a diagnostics_contract would otherwise switch it off.
+    Presence of each declared id / verdict field is that function's; a missing, unparsable
+    or non-object diagnostics.json is reported by other checks and adds nothing here.
+    """
+    from tools.verdict_evaluator import CHECK_STATUS_VALUES
+
+    top = tuple(CHECK_STATUS_VALUES)
+    per_case = (*top, *PER_CASE_CHECK_STATUS_EXTRA)
+    diagnostics_path = execution.node_dir / "diagnostics.json"
+    if not diagnostics_path.is_file():
+        return
+    try:
+        diagnostics = _read_json(diagnostics_path)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return
+    if not isinstance(diagnostics, dict):
+        return
+
+    def value_violation(where: str, value: object, allowed: tuple[str, ...]) -> None:
+        if isinstance(value, str) and value in allowed:
+            return
+        message = f"{diagnostics_path}:{where} {value!r} is not one of {list(allowed)}"
+        if isinstance(value, str) and value.rstrip(" ") in allowed:
+            stripped = value.rstrip(" ")
+            message += (
+                " — it carries the blanks that pad a status to its fixed width; the "
+                f"diagnostics writer must write the literal {stripped!r}. On a node whose "
+                "runner the host renders, that writer is the target harness's "
+                "__write_diagnostics, a certified dependency: re-certify the harness "
+                "(run_workflow.py on its spec with --rederive generate), then re-run this node."
+            )
+        violations.append(message)
+
+    def judge_checks(where: str, checks: object, allowed: tuple[str, ...]) -> None:
+        if not isinstance(checks, dict):
+            violations.append(f"{diagnostics_path}:{where} must be an object")
+            return
+        for cid, entry in checks.items():
+            at = f"{where}.{cid}"
+            if not isinstance(entry, dict):
+                violations.append(f"{diagnostics_path}:{at} must be an object with a status")
+            elif "status" not in entry:
+                violations.append(f"{diagnostics_path}:{at} has no status")
+            else:
+                value_violation(f"{at}.status", entry["status"], allowed)
+
+    def judge_slice(where: str, slc: object) -> None:
+        if not isinstance(slc, dict):
+            violations.append(f"{diagnostics_path}:{where} must be an object")
+            return
+        if "checks" in slc:
+            judge_checks(f"{where}.checks", slc["checks"], per_case)
+        judge_verdict(where, slc)
+
+    def judge_verdict(where: str, holder: dict) -> None:
+        verdict = holder.get("verdict")
+        if isinstance(verdict, dict) and "overall" in verdict:
+            prefix = f"{where}." if where else ""
+            value_violation(f"{prefix}verdict.overall", verdict["overall"], top)
+
+    if "checks" in diagnostics:
+        judge_checks("checks", diagnostics["checks"], top)
+    judge_verdict("", diagnostics)
+    for key in ("per_case", "cases"):
+        if key not in diagnostics:
+            continue
+        container = diagnostics[key]
+        if isinstance(container, dict):
+            for case_id, slc in container.items():
+                judge_slice(f"{key}.{case_id}", slc)
+        elif isinstance(container, list):
+            for idx, slc in enumerate(container):
+                judge_slice(f"{key}[{idx}]", slc)
+        else:
+            violations.append(
+                f"{diagnostics_path}:{key} must be an object keyed by case_id or a list of case objects"
+            )
 
 
 def _validate_io_contract_schema(

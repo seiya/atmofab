@@ -31,6 +31,7 @@ from tools.validate_pipeline_semantics import (
     _required_raw_evidence,
     _validate_diagnostics_contract,
     _validate_diagnostics_contract_output,
+    _validate_diagnostics_status_vocabulary,
     _target_toolchain_from_pipeline_dir,
     _validate_generate_lint_command_logs,
     _validate_source_meta_json_files,
@@ -17750,6 +17751,201 @@ class DiagnosticsContractTest(unittest.TestCase):
         self.assertEqual([], self._struct({"io_contract": {"inputs": [], "outputs": []}}))
 
 
+class DiagnosticsStatusVocabularyTest(unittest.TestCase):
+    """The post_execute/pre_judge status-vocabulary check of diagnostics.json (issue #437).
+
+    PINNED: every branch of the rule — top-level checks (absent / non-object / non-object
+    entry / no status / non-string / non-member), both `verdict.overall` levels, both
+    container keys with no early exit after the first, the object and list container shapes,
+    a non-object slice or container, the padding suffix only for a value that is a member once
+    its trailing blanks are removed, and silence on a file other checks own. Each violating row
+    has a conforming twin. SAMPLED: the wording beyond the address and the named literal."""
+
+    PATH_TAIL = "diagnostics.json:"
+
+    def _run(self, diagnostics: object, *, raw: str | None = None) -> list[str]:
+        node_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, node_dir, ignore_errors=True)
+        if raw is not None:
+            (node_dir / "diagnostics.json").write_text(raw, encoding="utf-8")
+        elif diagnostics is not None:
+            (node_dir / "diagnostics.json").write_text(json.dumps(diagnostics), encoding="utf-8")
+        execution = NodeExecution(node_key="component/n@0.1.0", node_dir=node_dir,
+                                  exec_dir=node_dir, pipeline_dir=node_dir)
+        violations: list[str] = []
+        _validate_diagnostics_status_vocabulary(execution, violations)
+        return violations
+
+    def _where(self, violations: list[str]) -> list[str]:
+        """The address of each violation: the text between the path and the value."""
+        return [v.split(self.PATH_TAIL, 1)[1].split(" ", 1)[0] for v in violations]
+
+    @staticmethod
+    def _doc(top: object = "pass", case: object = "na", overall: object = "pass",
+             case_overall: object = "pass") -> dict:
+        return {
+            "checks": {"a": {"status": top}},
+            "verdict": {"overall": overall, "failed_checks": []},
+            "per_case": {"c1": {"checks": {"a": {"status": case}},
+                                "verdict": {"overall": case_overall, "failed_checks": []},
+                                "metrics": {}}},
+        }
+
+    def test_literal_statuses_and_overalls_pass(self) -> None:
+        doc = {
+            "checks": {"a": {"status": "pass"}, "b": {"status": "fail"}},
+            "verdict": {"overall": "fail", "failed_checks": ["b"]},
+            "per_case": {
+                "c1": {"checks": {"a": {"status": "pass"}, "b": {"status": "fail"},
+                                  "c": {"status": "na"}},
+                       "verdict": {"overall": "fail", "failed_checks": ["b"]}},
+                "c2": {"checks": {"a": {"status": "na"}}, "verdict": {"overall": "pass"}},
+            },
+        }
+        self.assertEqual(self._run(doc), [])
+
+    def test_padded_per_case_na_is_refused_and_names_the_literal(self) -> None:
+        """The incident shape (orch_20261007T022737Z_8a970a99)."""
+        doc = {
+            "checks": {"left_wrap": {"status": "pass"}, "right_wrap": {"status": "pass"}},
+            "verdict": {"overall": "pass", "failed_checks": []},
+            "per_case": {"l0_invalid_nx1_ng1": {
+                "checks": {"left_wrap": {"status": "na  "}, "right_wrap": {"status": "na  "}},
+                "verdict": {"overall": "pass", "failed_checks": []}}},
+        }
+        violations = self._run(doc)
+        self.assertEqual(self._where(violations), [
+            "per_case.l0_invalid_nx1_ng1.checks.left_wrap.status",
+            "per_case.l0_invalid_nx1_ng1.checks.right_wrap.status",
+        ])
+        for v in violations:
+            self.assertIn("'na  '", v)
+            self.assertIn("must write the literal 'na'", v)
+            self.assertIn("harness", v)
+        twin = json.loads(json.dumps(doc).replace('"na  "', '"na"'))
+        self.assertEqual(self._run(twin), [])
+
+    def test_top_level_na_is_refused(self) -> None:
+        self.assertEqual(self._where(self._run(self._doc(top="na"))), ["checks.a.status"])
+        padded = self._run(self._doc(top="na  "))
+        self.assertEqual(self._where(padded), ["checks.a.status"])
+        # a top-level "na  " is no member even with the blanks removed: no padding remedy
+        self.assertNotIn("fixed width", padded[0])
+        self.assertEqual(self._run(self._doc(case="na")), [])
+
+    def test_unknown_or_case_variant_member_is_refused(self) -> None:
+        for value in ("PASS", "ok", "", " pass"):
+            with self.subTest(value=value):
+                top = self._run(self._doc(top=value))
+                self.assertEqual(self._where(top), ["checks.a.status"])
+                case = self._run(self._doc(case=value))
+                self.assertEqual(self._where(case), ["per_case.c1.checks.a.status"])
+                self.assertNotIn("fixed width", top[0] + case[0])
+        for value, at in (("pass ", "checks.a.status"), ("fail   ", "checks.a.status")):
+            with self.subTest(value=value):
+                got = self._run(self._doc(top=value))
+                self.assertEqual(self._where(got), [at])
+                self.assertIn(f"must write the literal {value.rstrip()!r}", got[0])
+        got = self._run(self._doc(case="fail "))
+        self.assertIn("must write the literal 'fail'", got[0])
+
+    def test_non_string_status_is_refused(self) -> None:
+        for value in (True, 1, None, ["pass"]):
+            with self.subTest(value=value):
+                self.assertEqual(self._where(self._run(self._doc(top=value))),
+                                 ["checks.a.status"])
+                self.assertEqual(self._where(self._run(self._doc(case=value))),
+                                 ["per_case.c1.checks.a.status"])
+
+    def test_entry_without_status_is_refused(self) -> None:
+        for entry in ({}, {"pass": True}):
+            with self.subTest(entry=entry):
+                doc = self._doc()
+                doc["checks"]["a"] = entry
+                self.assertEqual(self._where(self._run(doc)), ["checks.a"])
+                doc = self._doc()
+                doc["per_case"]["c1"]["checks"]["a"] = entry
+                self.assertEqual(self._where(self._run(doc)), ["per_case.c1.checks.a"])
+
+    def test_non_object_entry_is_refused(self) -> None:
+        for entry in ("pass", ["pass"]):
+            with self.subTest(entry=entry):
+                doc = self._doc()
+                doc["checks"]["a"] = entry
+                self.assertEqual(self._where(self._run(doc)), ["checks.a"])
+                doc = self._doc()
+                doc["per_case"]["c1"]["checks"]["a"] = entry
+                self.assertEqual(self._where(self._run(doc)), ["per_case.c1.checks.a"])
+
+    def test_non_object_checks_container_is_refused(self) -> None:
+        doc = self._doc()
+        doc["checks"] = [{"id": "a", "status": "pass"}]
+        self.assertEqual(self._where(self._run(doc)), ["checks"])
+        for checks in ([{"id": "a", "status": "na"}], "pass"):
+            with self.subTest(checks=checks):
+                doc = self._doc()
+                doc["per_case"]["c1"]["checks"] = checks
+                self.assertEqual(self._where(self._run(doc)), ["per_case.c1.checks"])
+        doc = self._doc()
+        del doc["per_case"]["c1"]["checks"]
+        del doc["checks"]
+        self.assertEqual(self._run(doc), [])
+
+    def test_each_case_container_shape_is_read(self) -> None:
+        shapes = {
+            "per_case.c1.checks.a.status":
+                lambda s: {"per_case": {"c1": {"checks": {"a": {"status": s}}}}},
+            "cases.c1.checks.a.status":
+                lambda s: {"cases": {"c1": {"checks": {"a": {"status": s}}}}},
+            "cases[0].checks.a.status":
+                lambda s: {"cases": [{"case_id": "c1", "checks": {"a": {"status": s}}}]},
+        }
+        for where, build in shapes.items():
+            with self.subTest(where=where):
+                self.assertEqual(self._where(self._run(build("na  "))), [where])
+                self.assertEqual(self._run(build("na")), [])
+
+    def test_both_container_keys_are_read(self) -> None:
+        good = {"c1": {"checks": {"a": {"status": "na"}}}}
+        bad = {"c1": {"checks": {"a": {"status": "na  "}}}}
+        self.assertEqual(self._where(self._run({"cases": good, "per_case": bad})),
+                         ["per_case.c1.checks.a.status"])
+        self.assertEqual(self._where(self._run({"per_case": good, "cases": bad})),
+                         ["cases.c1.checks.a.status"])
+        self.assertEqual(self._run({"per_case": good, "cases": good}), [])
+
+    def test_non_object_case_slice_and_container_are_refused(self) -> None:
+        self.assertEqual(self._where(self._run({"per_case": {"c1": "x"}})), ["per_case.c1"])
+        self.assertEqual(self._where(self._run({"cases": ["x"]})), ["cases[0]"])
+        self.assertEqual(self._where(self._run({"per_case": 3})), ["per_case"])
+        self.assertEqual(self._where(self._run({"cases": "x"})), ["cases"])
+        self.assertEqual(self._run({"per_case": {}, "cases": []}), [])
+
+    def test_verdict_overall_vocabulary_at_both_levels(self) -> None:
+        for value in ("na", "PASS", True, "pass "):
+            with self.subTest(value=value):
+                self.assertEqual(self._where(self._run(self._doc(overall=value))),
+                                 ["verdict.overall"])
+                self.assertEqual(self._where(self._run(self._doc(case_overall=value))),
+                                 ["per_case.c1.verdict.overall"])
+        self.assertIn("must write the literal 'pass'",
+                      self._run(self._doc(overall="pass "))[0])
+        doc = self._doc()
+        del doc["verdict"]["overall"]
+        del doc["per_case"]["c1"]["verdict"]
+        self.assertEqual(self._run(doc), [])
+        doc = self._doc()
+        del doc["verdict"]
+        del doc["per_case"]["c1"]["verdict"]["overall"]
+        self.assertEqual(self._run(doc), [])
+
+    def test_absent_or_unparsable_diagnostics_adds_no_vocabulary_violation(self) -> None:
+        self.assertEqual(self._run(None), [])
+        self.assertEqual(self._run(None, raw="[]"), [])
+        self.assertEqual(self._run(None, raw="{"), [])
+        self.assertEqual(self._run(None, raw='"na  "'), [])
+
+
 class DiagnosticsContractOutputTest(unittest.TestCase):
     """Tests for the post_execute/pre_judge diagnostics.json output check."""
 
@@ -27986,6 +28182,53 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
             path, violations = self._post_execute(tmp, "quality_check.json", "[]")  # must not raise
         self.assertIn(f"{path}: must be json object", violations)
 
+
+    # --- post_execute: the status vocabulary of diagnostics.json (issue #437) -----------
+
+    _PADDED_DIAGNOSTICS = json.dumps({
+        "checks": {"wrap": {"status": "pass"}},
+        "verdict": {"overall": "pass", "failed_checks": []},
+        "per_case": {"c1": {"checks": {"wrap": {"status": "na  "}},
+                            "verdict": {"overall": "pass", "failed_checks": []}}},
+    })
+
+    def test_post_execute_refuses_a_padded_per_case_status(self) -> None:
+        """Through `validate()`, on a node whose IR declares NO diagnostics_contract, so the rule
+        is shown not to sit behind `_validate_diagnostics_contract_output`'s early return."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._tree(tmp)
+            ir = json.loads((repo_root / _FIXTURE_IR_REL).read_text(encoding="utf-8"))
+            self.assertNotIn("diagnostics_contract", json.dumps(ir))
+            clean = validate(repo_root=repo_root, workspace_root="workspace")
+            path, violations = self._post_execute(tmp, "diagnostics.json",
+                                                  self._PADDED_DIAGNOSTICS)
+        address = f"{path}:per_case.c1.checks.wrap.status 'na  '"
+        self.assertEqual([v for v in violations if v.startswith(address)], [
+            v for v in violations if "diagnostics.json:" in v and ".status" in v])
+        self.assertEqual(len([v for v in violations if v.startswith(address)]), 1, violations)
+        self.assertFalse([v for v in clean if "is not one of" in v], clean)
+
+    def test_the_cli_answers_1_for_a_padded_status_in_a_real_subprocess(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._tree(tmp)
+            node_dir = self._node_dir(repo_root)
+            pipeline_dir = node_dir.parent.parent.parent
+            cli = [sys.executable, str(Path(vps.__file__).resolve()), "--repo-root",
+                   str(repo_root), "--workspace-root", "workspace", "--stage", "post_execute",
+                   "--pipeline-root", str(pipeline_dir), "--run-id", node_dir.parent.name]
+            here = str(Path(vps.__file__).resolve().parent.parent)
+            results = {}
+            for label, status in (("padded", "na  "), ("literal", "na")):
+                (node_dir / "diagnostics.json").write_text(
+                    self._PADDED_DIAGNOSTICS.replace('"na  "', json.dumps(status)),
+                    encoding="utf-8")
+                results[label] = subprocess.run(cli, cwd=here, capture_output=True, text=True,
+                                                check=False)
+        padded, literal = results["padded"], results["literal"]
+        self.assertEqual(padded.returncode, 1, (padded.stdout, padded.stderr))
+        self.assertIn("per_case.c1.checks.wrap.status 'na  ' is not one of", padded.stdout)
+        self.assertIn("must write the literal 'na'", padded.stdout)
+        self.assertNotIn("is not one of", literal.stdout)
 
 class ProcedureTypedSurfaceGateTests(unittest.TestCase):
     """Issue #266: a §5.1 with an `interfaces` prototype and a `{type: procedure, interface}`
