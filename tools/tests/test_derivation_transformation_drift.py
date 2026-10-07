@@ -814,6 +814,10 @@ PINNED_RENDER: dict[str, str] = {
     # `_write_pure_bundle_artifacts`, `derive_build_graph` moved, `_object_name` became
     # `_object_name_rule`, no other row.) The digest `render-8` shipped with at 2e04c2c3:
     "render-8@2e04c2c3": "8db4b92c9d015a824f61a58ac26f5272411f8c0f00e83e97afb726105c649cb6",
+    # render-9 (issue #437): the rendered cuda_cpp runner drops the trailing blanks of each
+    # status `checks_compute` returns before it fills the harness check record, so a padded
+    # "na  " never reaches the harness writer from a physics node.
+    "render-9": "7d8a56413fd63d105b977996ce8a9db00a347c7caf687d1e6657a44119e956d9",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

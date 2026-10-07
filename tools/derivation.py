@@ -72,7 +72,7 @@ COMPILE_INLINED_DOCUMENTS_VERSION = "compile-docs-12"
 #: code, pinned by `tools/tests/test_derivation_transformation_drift.py` as a digest of the
 #: functions / files that implement it; an edit there fails that test until a maintainer
 #: either re-pins (behaviour-preserving) or bumps the constant (every key of that phase moves).
-RENDER_VERSION = "render-8"      # host-rendered runner + build control file (Generate)
+RENDER_VERSION = "render-9"      # host-rendered runner + build control file (Generate)
 BUILD_VERSION = "build-2"        # build-runtime server `compile_project` + the in-process build
 EXECUTE_VERSION = "execute-8"    # `run_program` / `run_quality_checks` + the in-process execute
 VERDICT_VERSION = "verdict-9"    # `tools/verdict_evaluator.py` + `tools/primary_evidence.py` + the derived-artifact author

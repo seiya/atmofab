@@ -79,9 +79,11 @@ CHECKS_ABI_PARAMS = checks_abi.CHECKS_ABI_PARAMS
 
 #: The width the neutral contract gives a check status (`pass` / `fail` / `na` right-padded to
 #: it). A C++ status is a `std::string`, so nothing is truncated to it; the not-applicable status
-#: is written `"na  "` as the contract states it, and the harness trims the padding before it
-#: writes the status (`trim_status` in the certified model), so `diagnostics.json` is one document
-#: across targets.
+#: is written `"na  "` as the contract states it. The rendered runner drops the trailing blanks
+#: of each status `checks_compute` returns before it hands the record to the harness (issue
+#: #437), so no padding reaches `__write_diagnostics` from a physics node whatever the certified
+#: writer does; the harness spec obliges that writer to drop it too, and the `post_execute` gate
+#: refuses a padded status, so `diagnostics.json` is one document across targets.
 CHECK_STATUS_WIDTH = 4
 
 #: The harness's `case_id_len` — the neutral reader's bound on a declared case id, restated as
@@ -519,6 +521,9 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
         a("    {")
         a("      std::string cstatus;")
         a(f'      ck::checks_compute(cid, "{clit}", cstatus);')
+        a("      while (!cstatus.empty() && cstatus.back() == ' ') {")
+        a("        cstatus.pop_back();")
+        a("      }")
         a("      Check check{};")
         a(f'      check.id = "{clit}";')
         a("      check.status = cstatus;")
