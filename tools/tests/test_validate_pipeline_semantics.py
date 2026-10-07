@@ -17905,6 +17905,18 @@ class DiagnosticsStatusVocabularyTest(unittest.TestCase):
                 self.assertEqual(self._where(self._run(build("na  "))), [where])
                 self.assertEqual(self._run(build("na")), [])
 
+    def test_every_slice_is_read_not_only_the_first(self) -> None:
+        """A padded status in the SECOND slice (the incident's guard case is declared first;
+        15 real files carry an `na` only in a later slice)."""
+        good = {"checks": {"a": {"status": "na"}}}
+        bad = {"checks": {"a": {"status": "na  "}}}
+        self.assertEqual(self._where(self._run({"per_case": {"c1": good, "c2": bad}})),
+                         ["per_case.c2.checks.a.status"])
+        self.assertEqual(self._where(self._run({"cases": [good, bad]})),
+                         ["cases[1].checks.a.status"])
+        self.assertEqual(self._where(self._run({"per_case": {"c1": bad, "c2": bad}})),
+                         ["per_case.c1.checks.a.status", "per_case.c2.checks.a.status"])
+
     def test_both_container_keys_are_read(self) -> None:
         good = {"c1": {"checks": {"a": {"status": "na"}}}}
         bad = {"c1": {"checks": {"a": {"status": "na  "}}}}
@@ -28037,6 +28049,11 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
     NOT cover before issue #180 — `_validate_raw_evidence` called `.get` on it and raised
     `AttributeError`, which `main()` does not catch, so the leaf received a traceback. The row is
     red on `origin/main` and green with the guard.
+
+    The two rows at the end of the class (issue #437) are on a different subject and outside
+    the grid above: they reuse this class's fixture to drive the diagnostics status-vocabulary
+    rule through `validate()` and through the real CLI, so the WIRING of that rule is pinned at
+    the production entry point (its branches are pinned by `DiagnosticsStatusVocabularyTest`).
     """
 
     _IR_DIR = str(Path(_FIXTURE_IR_REL).parent)
@@ -28199,14 +28216,17 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
             repo_root = self._tree(tmp)
             ir = json.loads((repo_root / _FIXTURE_IR_REL).read_text(encoding="utf-8"))
             self.assertNotIn("diagnostics_contract", json.dumps(ir))
-            clean = validate(repo_root=repo_root, workspace_root="workspace")
             path, violations = self._post_execute(tmp, "diagnostics.json",
                                                   self._PADDED_DIAGNOSTICS)
+        with tempfile.TemporaryDirectory() as tmp:
+            _, literal = self._post_execute(
+                tmp, "diagnostics.json", self._PADDED_DIAGNOSTICS.replace('"na  "', '"na"'))
         address = f"{path}:per_case.c1.checks.wrap.status 'na  '"
-        self.assertEqual([v for v in violations if v.startswith(address)], [
-            v for v in violations if "diagnostics.json:" in v and ".status" in v])
+        self.assertEqual([v for v in violations if "is not one of" in v],
+                         [v for v in violations if v.startswith(address)])
         self.assertEqual(len([v for v in violations if v.startswith(address)]), 1, violations)
-        self.assertFalse([v for v in clean if "is not one of" in v], clean)
+        # the conforming twin: the same document with the literal adds none of this rule's
+        self.assertFalse([v for v in literal if "is not one of" in v], literal)
 
     def test_the_cli_answers_1_for_a_padded_status_in_a_real_subprocess(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
