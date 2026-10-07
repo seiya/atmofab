@@ -98,7 +98,7 @@ io_contract:
               shape_expr: "<...>"
           time_variable: "<name>"
           time_shape_expr: "scalar"   # MUST be "scalar": the per-snapshot time index is a scalar loop counter the runner always emits as a scalar; "[1]" (or any non-scalar) is rejected at compile and fails post_execute
-          coordinates:          # OPTIONAL (Z6, issue #255): the grid axes a primary predicate expression may name. The STATE's shape is the shape the highest-rank snapshot variables share, and `axis` indexes it: beside `[ncomp, nx, ny]` the `ny` axis is 2. The host derives each coordinate as an array of that shape carrying `count` positions along `axis` (the same value on every other axis), so it pairs only with variables of that rank — a coordinate meant for a lower-rank variable needs a schema whose highest rank is that variable's (capture components as separate variables, not beside a stacked one); `count` must equal the captured extent on that axis, and `count` / `length` are a number or an `inputs.<dotted>` path that resolves to a number in EVERY case; `placement` is `cell_center` ((i + 1/2) * length / count), the one placement the grammar derives
+          coordinates:          # OPTIONAL (Z6, issue #255): the grid axes a primary predicate expression may name. The STATE's shape is the shape the highest-rank snapshot variables share, and `axis` indexes it: beside `[ncomp, nx, ny]` the `ny` axis is 2. The host derives each coordinate as an array of that shape carrying `count` positions along `axis` (the same value on every other axis), so it pairs only with variables of that rank, never with a lower-rank capture beside them: beside a stacked state write the comparison over the stacked variables, where a coordinate `c` on the component axis (`count` the component count) masks a component (`(c - 0.5) * (2.5 - c)` is 1 on component 1, 0 on components 0 and 2) and `roll(<var>, ±1, 0, 0)` brings the neighbouring component into place; `count` must equal the captured extent on that axis, and `count` / `length` are a number or an `inputs.<dotted>` path that resolves to a number in EVERY case; `placement` is `cell_center` ((i + 1/2) * length / count), the one placement the grammar derives
             - {name: x, axis: 0, count: inputs.grid.nx, length: inputs.grid.L_x, placement: cell_center}
   test_evidence_requirements:
     - test_id: "<test_id>"
@@ -229,8 +229,8 @@ io_contract:
   #               built from one reduces over every cell; a reduction over a field with an extent-1 axis (a
   #               coordinate the host could not expand, because the captured arrays of the state's rank disagree
   #               on shape — or a state with an axis of extent 1) is refused until the field is paired with a state array
-  #   errors      a non-finite intermediate (a division by zero, a literal `1e400` included), an array result, an unpaired operand
-  #               shape, a capture file absent / ragged / non-numeric / non-finite / of the wrong rank, a variable the
+  #   errors      a non-finite intermediate (a division by zero, a literal `1e400` included), an unpaired operand
+  #               extent, a capture file absent / ragged / non-numeric / non-finite / of the wrong rank, a variable the
   #               case's capture does not hold, an `initial.<var>` of a node whose own runner writes no `initial/`
   #               capture (a harness self-test: its predicates read `final.<var>` and `inputs.<path>`) — each is a
   #               STRUCTURAL failure of that predicate at Validate.execute (of a cross-target one: an unevaluable

@@ -1551,12 +1551,36 @@ class CompileContractCouplingTest(unittest.TestCase):
         coord = [ln for ln in lines if ln.lstrip().startswith("coordinates:")]
         self.assertEqual(len(coord), 1, coord)
         self.assertIn("the shape the highest-rank snapshot variables share", coord[0])
-        self.assertIn("it pairs only with variables of that rank", coord[0])
+        self.assertIn("it pairs only with variables of that rank, never with a lower-rank "
+                      "capture beside them", coord[0])
+        import re
+        # the worked axis example is `state_rank`'s indexing: the named token sits at that axis
+        dims, token, axis = re.search(
+            r"beside `\[([^\]]+)\]` the `(\w+)` axis is (\d)", coord[0]).groups()
+        tokens = [d.strip() for d in dims.split(",")]
+        self.assertEqual(tokens.index(token), int(axis))
+        self.assertEqual(pe.state_rank({"variables": [
+            {"name": "U", "shape_expr": f"[{dims}]"}, {"name": "h", "shape_expr": "[nx, ny]"}]}),
+            len(tokens))
+        # the component mask the remedy names is 1 on the component it says and 0 elsewhere
+        # (cell-centre positions of a `count: 3` axis), evaluated by the grammar itself
+        poly, on, off = re.search(r"\(`(\(c - [^`]+)` is 1 on component (\d), 0 on components "
+                                  r"(\d) and \d\)", coord[0]).groups()
+        env = pe.CaseEnv(case_id="a", initial=None, final={}, inputs={},
+                         coordinates={"c": np.array([0.5, 1.5, 2.5])})
+        mask = pe.evaluate(pe.parse_expr(poly), env)
+        self.assertEqual(mask.tolist(), [1.0 if i == int(on) else 0.0 for i in range(3)])
+        self.assertNotEqual(int(on), int(off))
         gate = [ln for ln in lines if ln.startswith("- **`io_contract.primary_predicates`")]
         self.assertEqual(len(gate), 1)
         self.assertIn("every operand pair is at equal rank (a coordinate at the state's rank) "
                       "and `expr` is a scalar, inferred statically", gate[0])
         self.assertIn("(vi) Each `coordinates[]` entry's `count` names the extent", gate[0])
+        # (vi)'s worked `fail` is one: the token at that axis is not the one `count` names
+        dims, axis, token = re.search(r"beside `\[([^\]]+)\]`, `axis: (\d)` with "
+                                      r"`count: inputs\.grid\.(\w+)` is a `fail`",
+                                      gate[0]).groups()
+        self.assertNotEqual([d.strip() for d in dims.split(",")][int(axis)], token)
         header = [ln for ln in lines if "GRAMMAR_VERSION" in ln and "gated" in ln]
         self.assertEqual(len(header), 1)
         nxt = lines[lines.index(header[0]) + 1]

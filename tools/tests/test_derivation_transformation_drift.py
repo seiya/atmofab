@@ -592,7 +592,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # indexes) and says a coordinate pairs only at that rank; the grammar header and the V3
     # gate list state the static operand-rank check; V3 gains (vi), `count` against the `axis`
     # token. A leaf reading it authors a different schema for a mixed-rank state.
-    "compile-docs-13": "794b9a6ac42be4fdec79fa304e14f50840ca1cf4411e54da7dcbc3d4f177ffdd",
+    # Re-pinned in round 1 before shipping: the lower-rank remedy is a component mask over the
+    # stacked variables (a stacked output keeps its stacked capture), and the grammar's errors
+    # line no longer lists an array result or an unequal-rank pair as an evaluation error.
+    "compile-docs-13": "f30196343a4b99efeffeeecc6b2b87af8740f4af83e40f0c7bd08dd052617159",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
