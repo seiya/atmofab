@@ -22053,8 +22053,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # 95710 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump. Round 1
         # (the lower-rank remedy is a component mask over the stacked variables, since a stacked
         # output keeps the stacked capture): bumped 95900->96100; measured 95879 at the commit
-        # that takes this bump.
-        "docs/workflow/phases/phase_01_compile.md": 96100,
+        # that takes this bump. Round 2 (the component coordinate's `count` and `length` are both
+        # the case's component count; (vi) compares values, not keys): bumped 96100->96200;
+        # measured 96035 at the commit that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 96200,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

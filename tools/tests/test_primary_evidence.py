@@ -1291,6 +1291,12 @@ class SchemaGateTest(unittest.TestCase):
         self.assertEqual(self._v([{**HMIN, "expr": "sum(final.h) * final.t"}], ir=ir), [])
         self.assertEqual(self._v([{**HMIN, "expr": "final.t"}], ir=ir), [])
 
+    def test_a_rank_1_expr_is_refused(self) -> None:
+        ir = _ir([HMIN], variables=[{"name": "h", "shape_expr": "[nx, ny]"},
+                                    {"name": "v", "shape_expr": "[nx]"}])
+        self.assertEqual(self._v([{**HMIN, "expr": "final.v"}], ir=ir), [
+            f"primary_predicates[0].expr: evaluates to an array of rank 1, {self._SCALAR}"])
+
     def test_a_rank_check_does_not_cascade(self) -> None:
         out = self._v([{**HMIN, "expr": "final.h + zz"}])
         self.assertEqual(len(out), 1, out)
@@ -1579,24 +1585,41 @@ class CompileContractCouplingTest(unittest.TestCase):
         dims, token, axis = re.search(
             r"beside `\[([^\]]+)\]` the `(\w+)` axis is (\d)", coord[0]).groups()
         tokens = [d.strip() for d in dims.split(",")]
+        self.assertGreater(len(tokens), 2, "the worked example is a stacked (mixed-rank) state")
         self.assertEqual(tokens.index(token), int(axis))
         self.assertEqual(pe.state_rank({"variables": [
             {"name": "U", "shape_expr": f"[{dims}]"}, {"name": "h", "shape_expr": "[nx, ny]"}]}),
             len(tokens))
-        # the component mask the remedy names is 1 on the component it says and 0 elsewhere
-        # (cell-centre positions of a `count: 3` axis), evaluated by the grammar itself
-        poly, on, off = re.search(r"\(`(\(c - [^`]+)` is 1 on component (\d), 0 on components "
-                                  r"(\d) and \d\)", coord[0]).groups()
-        env = pe.CaseEnv(case_id="a", initial=None, final={}, inputs={},
-                         coordinates={"c": np.array([0.5, 1.5, 2.5])})
+        # the lower-rank remedy: the component coordinate's `count` and `length` are both the
+        # case's component count, read from the inputs; the mask it states is then 1 on the
+        # component it names and 0 on the two others, evaluated by the grammar over the host's
+        # own cell-centre positions; `roll` moves along the component axis only
+        self.assertIn("with `count` and `length` both the case's component count (an "
+                      "`inputs.<path>`, so `c` is i + 1/2 in every case)", coord[0])
+        self.assertIn("write the comparison over the stacked variables", coord[0])
+        self.assertIn("`count` must equal the captured extent on that axis", coord[0])
+        self.assertNotIn("separate variables", coord[0])   # round 1: unfollowable for a stacked output
+        poly, on, off1, off2 = re.search(
+            r"on three components `(\(c - [^`]+)` is 1 on component (\d), 0 on components "
+            r"(\d) and (\d)\)", coord[0]).groups()
+        self.assertEqual({int(on), int(off1), int(off2)}, {0, 1, 2})
+        schema = {"variables": [{"name": "U", "shape_expr": "[ncomp, nx]"}], "coordinates": [
+            {"name": "c", "axis": 0, "count": "inputs.ncomp", "length": "inputs.ncomp",
+             "placement": "cell_center"}]}
+        c = pe.coordinate_arrays(schema, {"ncomp": 3}, (3, 2))["c"]
+        env = pe.CaseEnv(case_id="a", initial=None, final={}, inputs={}, coordinates={"c": c})
         mask = pe.evaluate(pe.parse_expr(poly), env)
-        self.assertEqual(mask.tolist(), [1.0 if i == int(on) else 0.0 for i in range(3)])
-        self.assertNotEqual(int(on), int(off))
+        self.assertEqual(mask[:, 0].tolist(), [1.0 if i == int(on) else 0.0 for i in range(3)])
+        shifts = [a.strip() for a in re.search(r"`roll\(<var>, ([^)]*)\)`", coord[0])
+                  .group(1).split(",")]
+        self.assertEqual(len(shifts), len(tokens))   # one shift per axis of the stacked state
+        self.assertEqual((shifts[0], set(shifts[1:])), ("±1", {"0"}))
         gate = [ln for ln in lines if ln.startswith("- **`io_contract.primary_predicates`")]
         self.assertEqual(len(gate), 1)
         self.assertIn("every operand pair is at equal rank (a coordinate at the state's rank) "
                       "and `expr` is a scalar, inferred statically", gate[0])
         self.assertIn("(vi) Each `coordinates[]` entry's `count` names the extent", gate[0])
+        self.assertIn("whatever key holds it", gate[0])
         # (vi)'s worked `fail` is one: the token at that axis is not the one `count` names
         dims, axis, token = re.search(r"beside `\[([^\]]+)\]`, `axis: (\d)` with "
                                       r"`count: inputs\.grid\.(\w+)` is a `fail`",

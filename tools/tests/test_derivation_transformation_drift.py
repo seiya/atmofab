@@ -595,7 +595,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Re-pinned in round 1 before shipping: the lower-rank remedy is a component mask over the
     # stacked variables (a stacked output keeps its stacked capture), and the grammar's errors
     # line no longer lists an array result or an unequal-rank pair as an evaluation error.
-    "compile-docs-13": "f30196343a4b99efeffeeecc6b2b87af8740f4af83e40f0c7bd08dd052617159",
+    # Round 2: the component coordinate's `count` and `length` are both the case's component
+    # count, and V3 (vi) compares the `count` value with the token's extent, whatever its key.
+    "compile-docs-13": "912c9359503007c133f04d6017a27052c89837056dd76df66d497e198f055ad4",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
