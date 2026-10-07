@@ -11213,6 +11213,41 @@ class PreflightOneReasonListTests(unittest.TestCase):
                             self._with_check(codex, name, value, drop=drop),
                             "codex launchable preflight is missing required capabilities: "
                             f"{name}"))
+        # Strictness: every boolean condition is `is True`, never truthiness, and the backend
+        # token is normalized. A producer writes bools and lowercase tokens, so these pin the
+        # comparison rather than a shape a run stores.
+        for tag, base in (("codex", codex), ("claude", claude)):
+            out += [
+                (f"{tag} status PASS", {**base, "status": "PASS"}, "status must be pass"),
+                (f"{tag} sandbox 1", {**base, "sandbox_enforced": 1},
+                 "sandbox_enforced must be true"),
+                (f"{tag} step flag 1", {**base, "can_launch_step_agents": 1},
+                 "can_launch_step_agents must be true"),
+                (f"{tag} substep flag 1", {**base, "can_launch_substep_agents": 1},
+                 "can_launch_substep_agents must be true"),
+                (f"{tag} truthy provider", {**base, "providers": {"p": {"launchable": 1}}},
+                 "probed provider(s) p are not launchable"),
+            ]
+        out += [
+            ("codex backend spelled ' CODEX '", {**codex, "backend": " CODEX "}, None),
+            ("codex backend spelled ' CODEX ', check missing",
+             {**self._with_check(codex, "codex_prompt_stdin", None, drop=True),
+              "backend": " CODEX "},
+             "codex launchable preflight is missing required capabilities: codex_prompt_stdin"),
+            ("claude multi_agent 1", {**claude, "feature_states": {"multi_agent": 1}},
+             "feature_states.multi_agent must be true"),
+            ("codex required check 1", self._with_check(codex, "codex_home_writable", 1),
+             "codex launchable preflight is missing required capabilities: codex_home_writable"),
+            # Duplicate rows: the LAST row for a name decides (`_codex_check_pass_values`).
+            ("claude multi_agent_enabled rows True then None",
+             {**claude, "checks": [{"name": "multi_agent_enabled", "pass": True},
+                                   {"name": "multi_agent_enabled", "pass": None}]},
+             "checks.multi_agent_enabled.pass must be true"),
+            ("claude multi_agent_enabled rows None then True",
+             {**claude, "checks": [{"name": "multi_agent_enabled", "pass": None},
+                                   {"name": "multi_agent_enabled", "pass": True}]},
+             None),
+        ]
         # Non-claiming shapes: both flags false, with a refusal elsewhere. They claim nothing,
         # so the validator accepts them (`main`'s `preflight` subcommand writes this shape).
         out += [
