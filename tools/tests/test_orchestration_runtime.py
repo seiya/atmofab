@@ -11297,6 +11297,18 @@ class PreflightOneReasonListTests(unittest.TestCase):
                     RuntimeError, "^preflight gate failed: .*sandbox_enforced must be true"):
                 _require_preflight_launchable(repo, "orch_pf", enforce_live_probe=False)
 
+    def test_a_failed_live_reprobe_names_its_reason_to_the_operator(self) -> None:
+        import tools.orchestration_runtime as ort
+        unlaunchable = {**_launchable_preflight_dict(), "status": "fail"}
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.object(
+                ort, "probe_execution_platform", autospec=True,
+                return_value=unlaunchable) as probe:
+            with self.assertRaisesRegex(
+                    RuntimeError, "^live preflight gate failed: .*: status must be pass$"):
+                ort._run_live_probe_and_update(
+                    Path(tmp), "orch_pf", _launchable_preflight_dict())
+        probe.assert_called_once()
+
 
 def _launchable_preflight_dict(**extra: object) -> dict[str, object]:
     base: dict[str, object] = {
