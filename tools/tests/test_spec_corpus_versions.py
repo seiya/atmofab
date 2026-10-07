@@ -123,6 +123,53 @@ def harness_perf_values_unfixed(entries: list[dict], root: Path) -> list[str]:
     return out
 
 
+_STATUS_UNPADDED = ("written as the supplied literal without the trailing blanks that pad it to "
+                    "the fixed width")
+_STATUS_NA_CHECK = "{ id = 'status_na', status = 'na  ' }"
+_STATUS_NA_REF = "`checks.status_na.status`"
+_STATUS_NA_PER_CASE = "`per_case_status: { l0_metric_leaf_pass: na }`"
+_METRIC_TEST = re.compile(r"^- `test_id`: `l0_metric_leaf_pass`\n(?:(?!- `test_id`).*\n?)*", re.M)
+
+
+def harness_status_literal_unstated(entries: list[dict], root: Path) -> list[str]:
+    """Every spec publishing `<spec_id>__write_diagnostics(` whose writer item does not state
+    that a per-case check status is written without its padding, whose self-test paragraph
+    (the one opening "The self-test `") does not supply the padded check `status_na`, or whose
+    `tests.md` `l0_metric_leaf_pass` block does not reference `checks.status_na.status`, or
+    whose `tests.md` does not state, once and outside that block, the `per_case_status` the IR
+    declares for `status_na` (which the Compile leaves transcribe).
+
+    The padded `status_na` is what puts a `na` into the harness's own `diagnostics.json`,
+    where the `post_execute` status-vocabulary gate reads it (issue #437); without it a
+    writer that keeps the padding is caught only at a consuming node. This pins the
+    statements' presence and placement, not what they mean."""
+    out: list[str] = []
+    for e in entries:
+        sid = e["spec_id"]
+        cs = (root / e["controlled_spec_path"]).read_text(encoding="utf-8")
+        writer = [ln for ln in cs.split("\n")
+                  if ln.startswith(f"- `{sid}__write_diagnostics(")]
+        if not writer:
+            continue
+        if len(writer) != 1 or _STATUS_UNPADDED not in writer[0]:
+            out.append(f"{sid}: the __write_diagnostics item does not state the unpadded "
+                       "status literal")
+        paras = [p for p in cs.split("\n") if p.startswith(_SELF_TEST_PARAGRAPH)]
+        if len(paras) != 1 or _STATUS_NA_CHECK not in paras[0]:
+            out.append(f"{sid}: the self-test paragraph does not supply the padded check "
+                       "status_na")
+        tp = e.get("tests_path")
+        tests = (root / tp).read_text(encoding="utf-8") if tp else ""
+        block = _METRIC_TEST.search(tests)
+        if not block or _STATUS_NA_REF not in block.group(0):
+            out.append(f"{sid}: tests.md l0_metric_leaf_pass does not reference "
+                       "checks.status_na.status")
+        if tests.count(_STATUS_NA_PER_CASE) != 1 or (block and _STATUS_NA_PER_CASE
+                                                     in block.group(0)):
+            out.append(f"{sid}: tests.md §5 does not state the per_case_status of status_na once")
+    return out
+
+
 class SpecCorpusVersionTest(unittest.TestCase):
     def _entries(self) -> list[dict]:
         doc = yaml.safe_load((REPO / "spec/registry/spec_catalog.yaml").read_text())
@@ -238,6 +285,68 @@ class SpecCorpusVersionTest(unittest.TestCase):
             self.assertIn("does not cite", run(cs, block.replace(_CELLS_UPDATED_CITED, "x")
                                                    + other + _CELLS_UPDATED_CITED + "\n")[0])
             self.assertEqual(run("no perf paragraph\n", "y\n"), [])
+
+
+    def test_every_harness_states_the_status_literal_and_supplies_a_padded_na(self) -> None:
+        entries = self._entries()
+        # the rule reads a __write_diagnostics item in each harness spec (not vacuous)
+        read = [e for e in entries if any(
+            ln.startswith(f"- `{e['spec_id']}__write_diagnostics(") for ln in
+            (REPO / e["controlled_spec_path"]).read_text(encoding="utf-8").split("\n"))]
+        self.assertGreaterEqual(len(read), 3)
+        self.assertEqual(harness_status_literal_unstated(entries, REPO), [])
+
+    def test_the_status_literal_rule_is_driven_both_ways(self) -> None:
+        """Synthetic: the three statements pass; each missing or misplaced one is reported;
+        a spec without a __write_diagnostics item is not read."""
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "s").mkdir()
+            entry = {"spec_id": "s", "controlled_spec_path": "s/controlled_spec.md",
+                     "tests_path": "s/tests.md"}
+            writer = f"- `s__write_diagnostics(results, n)` — each status is {_STATUS_UNPADDED}."
+            para = f"{_SELF_TEST_PARAGRAPH}r` supplies {_STATUS_NA_CHECK} in one case."
+            cs = f"# spec\n{writer}\n{para}\n"
+            block = (f"- `test_id`: `l0_metric_leaf_pass`\n  - `ref`: {_STATUS_NA_REF}, "
+                     "`op`: `eq`\n")
+            other = "- `test_id`: `l0_perf_derived_pass`\n  - `judgment`: residual.\n"
+            tests = other + f"- `status_na` carries {_STATUS_NA_PER_CASE}.\n" + block
+
+            def run(c: str, t: str) -> list[str]:
+                (root / "s/controlled_spec.md").write_text(c)
+                (root / "s/tests.md").write_text(t)
+                return harness_status_literal_unstated([entry], root)
+
+            self.assertEqual(run(cs, tests), [])
+            self.assertIn("unpadded status literal",
+                          run(cs.replace(_STATUS_UNPADDED, "x"), tests)[0])
+            # the statement sits outside the writer item
+            moved = f"# spec\n{writer.replace(_STATUS_UNPADDED, 'x')}\n{_STATUS_UNPADDED}\n{para}\n"
+            self.assertIn("unpadded status literal", run(moved, tests)[0])
+            self.assertIn("padded check status_na",
+                          run(cs.replace(_STATUS_NA_CHECK, "x"), tests)[0])
+            # the padded check supplied outside the self-test paragraph
+            self.assertIn("padded check status_na",
+                          run(cs.replace(_STATUS_NA_CHECK, "x") + _STATUS_NA_CHECK + "\n",
+                              tests)[0])
+            # the unpadded spelling of the check is not the padded one
+            self.assertIn("padded check status_na",
+                          run(cs.replace("'na  '", "'na'"), tests)[0])
+            self.assertIn("does not reference", run(cs, other)[0])
+            # the reference under another test is not the metric test's
+            self.assertIn("does not reference",
+                          run(cs, block.replace(_STATUS_NA_REF, "x") + other.rstrip("\n")
+                              + f" {_STATUS_NA_REF}\n")[0])
+            self.assertIn("per_case_status",
+                          run(cs, tests.replace(_STATUS_NA_PER_CASE, "x"))[0])
+            # stated twice, or only inside the metric test's block, is not the §5 statement
+            self.assertIn("per_case_status",
+                          run(cs, tests + _STATUS_NA_PER_CASE + "\n")[0])
+            self.assertIn("per_case_status",
+                          run(cs, tests.replace(_STATUS_NA_PER_CASE, "x")
+                              + f"  - `judgment`: {_STATUS_NA_PER_CASE}\n")[0])
+            self.assertEqual(run(f"# spec\n{para}\n", "y\n"), [])
 
 
 

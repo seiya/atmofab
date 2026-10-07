@@ -244,6 +244,13 @@ TEST_OUTCOME_VALUES = {"pass", "fail", "xfail", "skipped", "blocked"}
 #: (`docs/TESTS.md` §Cross-target judgment, issue #324). "The cross-target judgment is not
 #: applied" does not contain it.
 CROSS_TARGET_JUDGMENT_PHRASE = "The cross-target judgment is applied"
+#: The statement with which a `tests.md` fixes the status of one check id in named cases
+#: (`docs/TESTS.md` §Fixed per-case status, issue #437): "the `io_contract.diagnostics_contract.checks`
+#: entry of `<id>` carries `per_case_status: { <case_id>: <status>, ... }`". The Compile gate
+#: requires the IR to carry exactly the stated mappings, and no other.
+PER_CASE_STATUS_STATEMENT = re.compile(
+    r"entry of `([^`\s]+)` carries `per_case_status: \{([^`{}]*)\}`"
+)
 # Bundled schema lives next to this validator; used as the canonical fallback
 # when no target repo_root is in scope (tests, ad-hoc invocation) and as the
 # default canonical reference for the validator's pinned rules.
@@ -1790,6 +1797,7 @@ def _validate_raw_evidence(
             _validate_metrics_basis_per_test(repo_root, execution, metrics_basis, violations)
 
     _validate_diagnostics_contract_output(repo_root, execution, violations)
+    _validate_diagnostics_status_vocabulary(execution, violations)
 
     quality_path = execution.node_dir / "quality_check.json"
     if quality_path.exists():
@@ -5044,6 +5052,8 @@ def _validate_diagnostics_contract_output(
                 violations.append(
                     f"{diagnostics_path}:checks missing io_contract.diagnostics_contract ids ({sorted(missing)})"
                 )
+        _validate_diagnostics_per_case_status_output(contract, diagnostics, diagnostics_path,
+                                                     violations)
 
     if verdict_fields:
         verdict = diagnostics.get("verdict")
@@ -5057,6 +5067,144 @@ def _validate_diagnostics_contract_output(
                 violations.append(
                     f"{diagnostics_path}:verdict missing io_contract.diagnostics_contract.verdict.fields ({sorted(missing_fields)})"
                 )
+
+
+def _validate_diagnostics_per_case_status_output(
+    contract: dict[str, Any], diagnostics: dict[str, Any], diagnostics_path: Path,
+    violations: list[str],
+) -> None:
+    """Each ``diagnostics_contract.checks[].per_case_status`` entry the IR declares (issue
+    #437): the case's slice, resolved exactly as the verdict evaluator resolves it
+    (``verdict_evaluator._case_slice``), must carry ``checks.<id>.status`` equal to the
+    declared literal. The IR is Compile's output, so the leaf authoring the runner cannot move
+    the expectation; a malformed declaration is the compile gate's and is skipped here."""
+    from tools.verdict_evaluator import _case_slice
+
+    section = _diagnostics_contract_section(contract)
+    checks = section.get("checks") if section is not None else None
+    for item in checks if isinstance(checks, list) else []:
+        if not isinstance(item, dict):
+            continue
+        cid, expected = item.get("id"), item.get("per_case_status")
+        if not isinstance(cid, str) or not cid.strip() or not isinstance(expected, dict):
+            continue
+        cid = cid.strip()
+        for case_id, status in expected.items():
+            present, slc = _case_slice(diagnostics, case_id)
+            entry = (slc.get("checks") if isinstance(slc, dict) else None) if present else None
+            entry = entry.get(cid) if isinstance(entry, dict) else None
+            actual = entry.get("status", _DIAGNOSTICS_CONTRACT_ABSENT) if isinstance(entry, dict) \
+                else _DIAGNOSTICS_CONTRACT_ABSENT
+            if actual is _DIAGNOSTICS_CONTRACT_ABSENT:
+                violations.append(
+                    f"{diagnostics_path}:case {case_id!r} carries no checks.{cid}.status, which "
+                    f"io_contract.diagnostics_contract.checks[].per_case_status fixes to {status!r}"
+                )
+            elif actual != status:
+                violations.append(
+                    f"{diagnostics_path}:case {case_id!r} checks.{cid}.status {actual!r} is not "
+                    f"the {status!r} io_contract.diagnostics_contract.checks[].per_case_status "
+                    "fixes for that case: the case supplies that status, and the diagnostics "
+                    "writer must write it as that literal"
+                )
+
+
+#: The status a check entry inside a per-case slice of diagnostics.json may carry beyond the
+#: top-level ``CHECK_STATUS_VALUES``: a check that does not apply to a case reports ``na`` there.
+#: This is the runner-OUTPUT vocabulary, not the predicate vocabulary — a ``pass_when``
+#: condition still compares a status to ``pass`` / ``fail`` only (``verdict_evaluator``,
+#: issue #269), and the top-level fold writes ``pass`` / ``fail`` only (issue #437).
+PER_CASE_CHECK_STATUS_EXTRA: tuple[str, ...] = ("na",)
+
+
+def _validate_diagnostics_status_vocabulary(
+    execution: NodeExecution, violations: list[str]
+) -> None:
+    """At post_execute/pre_judge, refuse a diagnostics.json status that is not exactly one of
+    its literals (issue #437): a top-level ``checks.<id>.status`` and every
+    ``verdict.overall`` must be ``pass`` or ``fail``; a check status inside a per-case slice
+    (each value of a ``per_case`` / ``cases`` object, or each element of a ``cases`` list) may
+    also be ``na``. A value carrying the blanks that pad a fixed-width status is refused with
+    a message naming the writer, because no later reader trims it.
+
+    It runs for every node, independently of ``_validate_diagnostics_contract_output``, whose
+    early return for a node without a diagnostics_contract would otherwise switch it off.
+    Presence of each declared id / verdict field is that function's; a missing, unparsable
+    or non-object diagnostics.json is reported by other checks and adds nothing here.
+    """
+    from tools.verdict_evaluator import CHECK_STATUS_VALUES
+
+    top = tuple(CHECK_STATUS_VALUES)
+    per_case = (*top, *PER_CASE_CHECK_STATUS_EXTRA)
+    diagnostics_path = execution.node_dir / "diagnostics.json"
+    if not diagnostics_path.is_file():
+        return
+    try:
+        diagnostics = _read_json(diagnostics_path)
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return
+    if not isinstance(diagnostics, dict):
+        return
+
+    def value_violation(where: str, value: object, allowed: tuple[str, ...]) -> None:
+        if isinstance(value, str) and value in allowed:
+            return
+        message = f"{diagnostics_path}:{where} {value!r} is not one of {list(allowed)}"
+        if isinstance(value, str) and value.rstrip(" ") in allowed:
+            stripped = value.rstrip(" ")
+            message += (
+                " — it carries the blanks that pad a status to its fixed width; the "
+                f"diagnostics writer must write the literal {stripped!r}. On a node whose "
+                "runner the host renders, that writer is the target harness's "
+                "__write_diagnostics, a certified dependency: re-certify the harness "
+                "(run_workflow.py on its spec with --rederive generate), then re-run this node."
+            )
+        violations.append(message)
+
+    def judge_checks(where: str, checks: object, allowed: tuple[str, ...]) -> None:
+        if not isinstance(checks, dict):
+            violations.append(f"{diagnostics_path}:{where} must be an object")
+            return
+        for cid, entry in checks.items():
+            at = f"{where}.{cid}"
+            if not isinstance(entry, dict):
+                violations.append(f"{diagnostics_path}:{at} must be an object with a status")
+            elif "status" not in entry:
+                violations.append(f"{diagnostics_path}:{at} has no status")
+            else:
+                value_violation(f"{at}.status", entry["status"], allowed)
+
+    def judge_slice(where: str, slc: object) -> None:
+        if not isinstance(slc, dict):
+            violations.append(f"{diagnostics_path}:{where} must be an object")
+            return
+        if "checks" in slc:
+            judge_checks(f"{where}.checks", slc["checks"], per_case)
+        judge_verdict(where, slc)
+
+    def judge_verdict(where: str, holder: dict) -> None:
+        verdict = holder.get("verdict")
+        if isinstance(verdict, dict) and "overall" in verdict:
+            prefix = f"{where}." if where else ""
+            value_violation(f"{prefix}verdict.overall", verdict["overall"], top)
+
+    if "checks" in diagnostics:
+        judge_checks("checks", diagnostics["checks"], top)
+    judge_verdict("", diagnostics)
+    for key in ("per_case", "cases"):
+        if key not in diagnostics:
+            continue
+        container = diagnostics[key]
+        if isinstance(container, dict):
+            for case_id, slc in container.items():
+                judge_slice(f"{key}.{case_id}", slc)
+        elif isinstance(container, list):
+            for idx, slc in enumerate(container):
+                judge_slice(f"{key}[{idx}]", slc)
+        else:
+            violations.append(
+                f"{diagnostics_path}:{key} must be an object keyed by case_id or a list of case objects"
+            )
 
 
 def _validate_io_contract_schema(
@@ -8301,11 +8449,131 @@ def _validate_compile_stage_impl(
     _validate_component_dep_operations_membership(repo_root, ir_dir, violations)
     _validate_local_operation_lowering(repo_root, ir_dir, violations)
     _validate_test_predicates(repo_root, ir_dir, violations)
+    _validate_diagnostics_per_case_status(repo_root, ir_dir, violations)
     _validate_case_ids(ir_dir, violations)
     _validate_published_surface(repo_root, ir_dir, violations)
     _validate_harness_render_preconditions(repo_root, ir_dir, violations)
 
     return violations
+
+
+def _validate_diagnostics_per_case_status(
+    repo_root: Path, ir_dir: Path, violations: list[str]
+) -> None:
+    """Compile gate for the OPTIONAL ``io_contract.diagnostics_contract.checks[].per_case_status``
+    (issue #437): a mapping ``{<case_id>: <status>}`` fixing the exact status the runner's
+    diagnostics.json must carry for that check id in that case's slice, which the
+    ``post_execute`` check (`_validate_diagnostics_contract_output`) then compares literally.
+    When present it must be a non-empty object whose every key is a declared
+    ``case.test_case_set`` case_id and whose every value is a per-case status literal
+    (``CHECK_STATUS_VALUES`` plus ``PER_CASE_CHECK_STATUS_EXTRA``).
+
+    Which ids carry one is ``tests.md``'s: each ``PER_CASE_STATUS_STATEMENT`` in the file
+    ``meta.source_refs.tests`` resolves to states one mapping, and the IR must carry exactly
+    the stated mappings — a stated id whose entry lacks it or differs, and an entry carrying
+    one ``tests.md`` does not state, are both refused (round 2: an omitted, misplaced or
+    inverted declaration otherwise passed Compile, and the post_execute comparison then had
+    nothing, or the wrong thing, to compare). An unresolvable ``tests.md`` skips this half;
+    ``_validate_ir_source_refs_tests`` fails Compile on it.
+    """
+    from tools.verdict_evaluator import CHECK_STATUS_VALUES
+
+    derived_path = ir_dir / "spec.ir.yaml"
+    if not derived_path.exists():
+        return  # missing IR already flagged upstream
+    try:
+        ir = _read_yaml(derived_path)
+    except yaml.YAMLError:
+        return  # malformed IR already flagged upstream
+    if not isinstance(ir, dict):
+        return
+    io_contract = ir.get("io_contract")
+    dc = io_contract.get("diagnostics_contract") if isinstance(io_contract, dict) else None
+    checks = dc.get("checks") if isinstance(dc, dict) else None
+    if not isinstance(checks, list):
+        return  # its shape is _validate_diagnostics_contract's
+    case_block = ir.get("case")
+    tcs = case_block.get("test_case_set") if isinstance(case_block, dict) else None
+    case_ids = {
+        c["case_id"].strip()
+        for c in (tcs if isinstance(tcs, list) else [])
+        if isinstance(c, dict) and isinstance(c.get("case_id"), str) and c["case_id"].strip()
+    }
+    allowed = (*CHECK_STATUS_VALUES, *PER_CASE_CHECK_STATUS_EXTRA)
+    tests_path = _tests_path_from_ir_document(repo_root, ir)
+    stated: dict[str, dict[str, str]] | None = None
+    if tests_path is not None and _is_readable_file(tests_path):
+        stated = _parse_per_case_status_statements(tests_path, violations)
+    if stated is not None:
+        declared = {
+            item["id"].strip(): item.get("per_case_status")
+            for item in checks
+            if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"].strip()
+        }
+        for cid, mapping in stated.items():
+            if declared.get(cid) != mapping:
+                violations.append(
+                    f"{derived_path}:io_contract.diagnostics_contract.checks entry {cid!r} must "
+                    f"carry per_case_status {mapping!r}, as {tests_path.name} states "
+                    f"(found {declared.get(cid, '<no such check id>')!r})"
+                )
+        for cid, value in declared.items():
+            if value is not None and cid not in stated:
+                violations.append(
+                    f"{derived_path}:io_contract.diagnostics_contract.checks entry {cid!r} "
+                    f"carries per_case_status, which {tests_path.name} does not state for it "
+                    "(an id carries one only where tests.md states it, docs/TESTS.md)"
+                )
+    for idx, item in enumerate(checks):
+        if not isinstance(item, dict) or "per_case_status" not in item:
+            continue
+        loc = f"{derived_path}:io_contract.diagnostics_contract.checks[{idx}].per_case_status"
+        expected = item["per_case_status"]
+        if not isinstance(expected, dict) or not expected:
+            violations.append(f"{loc} must be a non-empty object {{<case_id>: <status>}} when present")
+            continue
+        for case_id, status in expected.items():
+            if case_id not in case_ids:
+                violations.append(f"{loc} references unknown case_id ({case_id!r})")
+            if not isinstance(status, str) or status not in allowed:
+                violations.append(f"{loc}.{case_id} {status!r} is not one of {list(allowed)}")
+
+
+def _parse_per_case_status_statements(
+    tests_path: Path, violations: list[str]
+) -> dict[str, dict[str, str]]:
+    """Every ``PER_CASE_STATUS_STATEMENT`` in ``tests_path``, as ``{<id>: {<case_id>: <status>}}``.
+    A statement whose braces do not hold ``<case_id>: <status>`` pairs, one stating a status
+    outside the per-case vocabulary (which the IR-side check would refuse, so the two demands
+    could not both be met), or a second statement for one id, is a violation of the
+    ``tests.md`` and contributes nothing."""
+    from tools.verdict_evaluator import CHECK_STATUS_VALUES
+
+    out: dict[str, dict[str, str]] = {}
+    text = tests_path.read_text(encoding="utf-8")
+    for match in PER_CASE_STATUS_STATEMENT.finditer(text):
+        cid, body = match.group(1), match.group(2)
+        mapping: dict[str, str] = {}
+        pairs = [p.strip() for p in body.split(",")]
+        ok = bool(pairs) and all(p.count(":") == 1 for p in pairs)
+        for pair in pairs if ok else []:
+            key, value = (s.strip() for s in pair.split(":"))
+            if not key or not value or key in mapping:
+                ok = False
+                break
+            mapping[key] = value
+        allowed = (*CHECK_STATUS_VALUES, *PER_CASE_CHECK_STATUS_EXTRA)
+        if ok and any(value not in allowed for value in mapping.values()):
+            violations.append(f"{tests_path}:per_case_status statement for {cid!r} states a "
+                              f"status outside {list(allowed)} ({match.group(0)!r})")
+        elif not ok:
+            violations.append(f"{tests_path}:per_case_status statement for {cid!r} is not "
+                              f"`{{ <case_id>: <status>, ... }}` ({match.group(0)!r})")
+        elif cid in out:
+            violations.append(f"{tests_path}:per_case_status is stated twice for {cid!r}")
+        else:
+            out[cid] = mapping
+    return out
 
 
 def _validate_case_ids(ir_dir: Path, violations: list[str]) -> None:

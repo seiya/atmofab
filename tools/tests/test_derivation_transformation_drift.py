@@ -581,6 +581,12 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     "compile-docs-11@1807917d": "d07c8ad3e8c38ef2b4fa5b923459ba4e71bdfe3b605febd2fb50952cadd2fb1b",
     # The digest `compile-docs-11` shipped with at dd5bbcb8 (before issue #396's re-pin above):
     "compile-docs-11@dd5bbcb8": "033e228bb452e4b6a9aad2ad75c1256f8bf11b19acc486dd0268eeb405eb3c29",
+    # compile-docs-12 (issue #437): the schema block gains the OPTIONAL
+    # `diagnostics_contract.checks[].per_case_status` (a status tests.md fixes for an id in a named
+    # case, compared literally at post_execute), and V3 says an id carries it only where its
+    # `tests.md` states one (the compile gate compares the two); the stale "(Generate never
+    # reads tests.md)" comment is shortened away. Not yet shipped, so re-pinned in place.
+    "compile-docs-12": "ad5badc4eae5b5cb777669bb5f95fe6f3e7ca549bfe9bf218894389d4c09a734",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -809,6 +815,10 @@ PINNED_RENDER: dict[str, str] = {
     # `_write_pure_bundle_artifacts`, `derive_build_graph` moved, `_object_name` became
     # `_object_name_rule`, no other row.) The digest `render-8` shipped with at 2e04c2c3:
     "render-8@2e04c2c3": "8db4b92c9d015a824f61a58ac26f5272411f8c0f00e83e97afb726105c649cb6",
+    # render-9 (issue #437): the rendered cuda_cpp runner drops the trailing blanks of each
+    # status `checks_compute` returns before it fills the harness check record, so a padded
+    # "na  " never reaches the harness writer from a physics node.
+    "render-9": "7d8a56413fd63d105b977996ce8a9db00a347c7caf687d1e6657a44119e956d9",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

@@ -31,6 +31,8 @@ from tools.validate_pipeline_semantics import (
     _required_raw_evidence,
     _validate_diagnostics_contract,
     _validate_diagnostics_contract_output,
+    _validate_diagnostics_status_vocabulary,
+    _validate_diagnostics_per_case_status,
     _target_toolchain_from_pipeline_dir,
     _validate_generate_lint_command_logs,
     _validate_source_meta_json_files,
@@ -17750,6 +17752,456 @@ class DiagnosticsContractTest(unittest.TestCase):
         self.assertEqual([], self._struct({"io_contract": {"inputs": [], "outputs": []}}))
 
 
+class DiagnosticsStatusVocabularyTest(unittest.TestCase):
+    """The post_execute/pre_judge status-vocabulary check of diagnostics.json (issue #437).
+
+    PINNED: every branch of the rule — top-level checks (absent / non-object / non-object
+    entry / no status / non-string / non-member), both `verdict.overall` levels, both
+    container keys with no early exit after the first, the object and list container shapes,
+    a non-object slice or container, the padding suffix only for a value that is a member once
+    its trailing blanks are removed, and silence on a file other checks own. Each violating row
+    has a conforming twin. SAMPLED: the wording beyond the address and the named literal."""
+
+    PATH_TAIL = "diagnostics.json:"
+
+    def _run(self, diagnostics: object, *, raw: str | None = None) -> list[str]:
+        node_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, node_dir, ignore_errors=True)
+        if raw is not None:
+            (node_dir / "diagnostics.json").write_text(raw, encoding="utf-8")
+        elif diagnostics is not None:
+            (node_dir / "diagnostics.json").write_text(json.dumps(diagnostics), encoding="utf-8")
+        execution = NodeExecution(node_key="component/n@0.1.0", node_dir=node_dir,
+                                  exec_dir=node_dir, pipeline_dir=node_dir)
+        violations: list[str] = []
+        _validate_diagnostics_status_vocabulary(execution, violations)
+        return violations
+
+    def _where(self, violations: list[str]) -> list[str]:
+        """The address of each violation: the text between the path and the value."""
+        return [v.split(self.PATH_TAIL, 1)[1].split(" ", 1)[0] for v in violations]
+
+    @staticmethod
+    def _doc(top: object = "pass", case: object = "na", overall: object = "pass",
+             case_overall: object = "pass") -> dict:
+        return {
+            "checks": {"a": {"status": top}},
+            "verdict": {"overall": overall, "failed_checks": []},
+            "per_case": {"c1": {"checks": {"a": {"status": case}},
+                                "verdict": {"overall": case_overall, "failed_checks": []},
+                                "metrics": {}}},
+        }
+
+    def test_literal_statuses_and_overalls_pass(self) -> None:
+        doc = {
+            "checks": {"a": {"status": "pass"}, "b": {"status": "fail"}},
+            "verdict": {"overall": "fail", "failed_checks": ["b"]},
+            "per_case": {
+                "c1": {"checks": {"a": {"status": "pass"}, "b": {"status": "fail"},
+                                  "c": {"status": "na"}},
+                       "verdict": {"overall": "fail", "failed_checks": ["b"]}},
+                "c2": {"checks": {"a": {"status": "na"}}, "verdict": {"overall": "pass"}},
+            },
+        }
+        self.assertEqual(self._run(doc), [])
+
+    def test_padded_per_case_na_is_refused_and_names_the_literal(self) -> None:
+        """The incident shape (orch_20261007T022737Z_8a970a99)."""
+        doc = {
+            "checks": {"left_wrap": {"status": "pass"}, "right_wrap": {"status": "pass"}},
+            "verdict": {"overall": "pass", "failed_checks": []},
+            "per_case": {"l0_invalid_nx1_ng1": {
+                "checks": {"left_wrap": {"status": "na  "}, "right_wrap": {"status": "na  "}},
+                "verdict": {"overall": "pass", "failed_checks": []}}},
+        }
+        violations = self._run(doc)
+        self.assertEqual(self._where(violations), [
+            "per_case.l0_invalid_nx1_ng1.checks.left_wrap.status",
+            "per_case.l0_invalid_nx1_ng1.checks.right_wrap.status",
+        ])
+        for v in violations:
+            self.assertIn("'na  '", v)
+            self.assertIn("must write the literal 'na'", v)
+            self.assertIn("harness", v)
+        twin = json.loads(json.dumps(doc).replace('"na  "', '"na"'))
+        self.assertEqual(self._run(twin), [])
+
+    def test_top_level_na_is_refused(self) -> None:
+        self.assertEqual(self._where(self._run(self._doc(top="na"))), ["checks.a.status"])
+        padded = self._run(self._doc(top="na  "))
+        self.assertEqual(self._where(padded), ["checks.a.status"])
+        # a top-level "na  " is no member even with the blanks removed: no padding remedy
+        self.assertNotIn("fixed width", padded[0])
+        self.assertEqual(self._run(self._doc(case="na")), [])
+
+    def test_unknown_or_case_variant_member_is_refused(self) -> None:
+        for value in ("PASS", "ok", "", " pass"):
+            with self.subTest(value=value):
+                top = self._run(self._doc(top=value))
+                self.assertEqual(self._where(top), ["checks.a.status"])
+                case = self._run(self._doc(case=value))
+                self.assertEqual(self._where(case), ["per_case.c1.checks.a.status"])
+                self.assertNotIn("fixed width", top[0] + case[0])
+        for value, at in (("pass ", "checks.a.status"), ("fail   ", "checks.a.status")):
+            with self.subTest(value=value):
+                got = self._run(self._doc(top=value))
+                self.assertEqual(self._where(got), [at])
+                self.assertIn(f"must write the literal {value.rstrip()!r}", got[0])
+        got = self._run(self._doc(case="fail "))
+        self.assertIn("must write the literal 'fail'", got[0])
+
+    def test_non_string_status_is_refused(self) -> None:
+        for value in (True, 1, None, ["pass"]):
+            with self.subTest(value=value):
+                self.assertEqual(self._where(self._run(self._doc(top=value))),
+                                 ["checks.a.status"])
+                self.assertEqual(self._where(self._run(self._doc(case=value))),
+                                 ["per_case.c1.checks.a.status"])
+
+    def test_entry_without_status_is_refused(self) -> None:
+        for entry in ({}, {"pass": True}):
+            with self.subTest(entry=entry):
+                doc = self._doc()
+                doc["checks"]["a"] = entry
+                self.assertEqual(self._where(self._run(doc)), ["checks.a"])
+                doc = self._doc()
+                doc["per_case"]["c1"]["checks"]["a"] = entry
+                self.assertEqual(self._where(self._run(doc)), ["per_case.c1.checks.a"])
+
+    def test_non_object_entry_is_refused(self) -> None:
+        for entry in ("pass", ["pass"]):
+            with self.subTest(entry=entry):
+                doc = self._doc()
+                doc["checks"]["a"] = entry
+                self.assertEqual(self._where(self._run(doc)), ["checks.a"])
+                doc = self._doc()
+                doc["per_case"]["c1"]["checks"]["a"] = entry
+                self.assertEqual(self._where(self._run(doc)), ["per_case.c1.checks.a"])
+
+    def test_non_object_checks_container_is_refused(self) -> None:
+        doc = self._doc()
+        doc["checks"] = [{"id": "a", "status": "pass"}]
+        self.assertEqual(self._where(self._run(doc)), ["checks"])
+        for checks in ([{"id": "a", "status": "na"}], "pass"):
+            with self.subTest(checks=checks):
+                doc = self._doc()
+                doc["per_case"]["c1"]["checks"] = checks
+                self.assertEqual(self._where(self._run(doc)), ["per_case.c1.checks"])
+        doc = self._doc()
+        del doc["per_case"]["c1"]["checks"]
+        del doc["checks"]
+        self.assertEqual(self._run(doc), [])
+
+    def test_each_case_container_shape_is_read(self) -> None:
+        shapes = {
+            "per_case.c1.checks.a.status":
+                lambda s: {"per_case": {"c1": {"checks": {"a": {"status": s}}}}},
+            "cases.c1.checks.a.status":
+                lambda s: {"cases": {"c1": {"checks": {"a": {"status": s}}}}},
+            "cases[0].checks.a.status":
+                lambda s: {"cases": [{"case_id": "c1", "checks": {"a": {"status": s}}}]},
+        }
+        for where, build in shapes.items():
+            with self.subTest(where=where):
+                self.assertEqual(self._where(self._run(build("na  "))), [where])
+                self.assertEqual(self._run(build("na")), [])
+
+    def test_every_slice_is_read_not_only_the_first(self) -> None:
+        """A padded status in the SECOND slice (the incident's guard case is declared first;
+        15 real files carry an `na` only in a later slice)."""
+        good = {"checks": {"a": {"status": "na"}}}
+        bad = {"checks": {"a": {"status": "na  "}}}
+        self.assertEqual(self._where(self._run({"per_case": {"c1": good, "c2": bad}})),
+                         ["per_case.c2.checks.a.status"])
+        self.assertEqual(self._where(self._run({"cases": [good, bad]})),
+                         ["cases[1].checks.a.status"])
+        self.assertEqual(self._where(self._run({"per_case": {"c1": bad, "c2": bad}})),
+                         ["per_case.c1.checks.a.status", "per_case.c2.checks.a.status"])
+
+    def test_both_container_keys_are_read(self) -> None:
+        good = {"c1": {"checks": {"a": {"status": "na"}}}}
+        bad = {"c1": {"checks": {"a": {"status": "na  "}}}}
+        self.assertEqual(self._where(self._run({"cases": good, "per_case": bad})),
+                         ["per_case.c1.checks.a.status"])
+        self.assertEqual(self._where(self._run({"per_case": good, "cases": bad})),
+                         ["cases.c1.checks.a.status"])
+        self.assertEqual(self._run({"per_case": good, "cases": good}), [])
+
+    def test_non_object_case_slice_and_container_are_refused(self) -> None:
+        self.assertEqual(self._where(self._run({"per_case": {"c1": "x"}})), ["per_case.c1"])
+        self.assertEqual(self._where(self._run({"cases": ["x"]})), ["cases[0]"])
+        self.assertEqual(self._where(self._run({"per_case": 3})), ["per_case"])
+        self.assertEqual(self._where(self._run({"cases": "x"})), ["cases"])
+        self.assertEqual(self._run({"per_case": {}, "cases": []}), [])
+
+    def test_verdict_overall_vocabulary_at_both_levels(self) -> None:
+        for value in ("na", "PASS", True, "pass "):
+            with self.subTest(value=value):
+                self.assertEqual(self._where(self._run(self._doc(overall=value))),
+                                 ["verdict.overall"])
+                self.assertEqual(self._where(self._run(self._doc(case_overall=value))),
+                                 ["per_case.c1.verdict.overall"])
+        self.assertIn("must write the literal 'pass'",
+                      self._run(self._doc(overall="pass "))[0])
+        doc = self._doc()
+        del doc["verdict"]["overall"]
+        del doc["per_case"]["c1"]["verdict"]
+        self.assertEqual(self._run(doc), [])
+        doc = self._doc()
+        del doc["verdict"]
+        del doc["per_case"]["c1"]["verdict"]["overall"]
+        self.assertEqual(self._run(doc), [])
+
+    def test_absent_or_unparsable_diagnostics_adds_no_vocabulary_violation(self) -> None:
+        self.assertEqual(self._run(None), [])
+        self.assertEqual(self._run(None, raw="[]"), [])
+        self.assertEqual(self._run(None, raw="{"), [])
+        self.assertEqual(self._run(None, raw='"na  "'), [])
+
+
+class DiagnosticsPerCaseStatusTest(unittest.TestCase):
+    """`diagnostics_contract.checks[].per_case_status` (issue #437): the compile gate on its
+    shape, and the post_execute comparison of the written per-case status with it.
+
+    PINNED: compile — non-object / empty refused, unknown case_id refused, a value outside the
+    per-case vocabulary (padded, upper-case, non-string) refused, an id without the key and a
+    conforming declaration accepted; post_execute — an equal literal accepted, a different
+    literal / a padded one / an absent status / an absent case refused, the slice resolved
+    under `cases` and `per_case` and as a list, and a malformed declaration skipped (the
+    compile gate's). SAMPLED: the message wording beyond the case and id."""
+
+    def _ir_dir(self, checks: list, case_ids: tuple[str, ...] = ("c1", "c2"),
+                tests_md: str | None = None) -> Path:
+        ir_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, ir_dir, ignore_errors=True)
+        doc: dict = {
+            "case": {"test_case_set": [{"case_id": c, "inputs": {}} for c in case_ids]},
+            "io_contract": {"diagnostics_contract": {"checks": checks}},
+        }
+        if tests_md is not None:
+            (ir_dir / "tests.md").write_text(tests_md, encoding="utf-8")
+            doc["meta"] = {"source_refs": {"tests": str(ir_dir / "tests.md")}}
+        _write_json(ir_dir / "spec.ir.yaml", doc)
+        return ir_dir
+
+    def _compile(self, checks: list, tests_md: str | None = None) -> list[str]:
+        violations: list[str] = []
+        _validate_diagnostics_per_case_status(
+            Path("/nonexistent"), self._ir_dir(checks, tests_md=tests_md), violations)
+        return violations
+
+    @staticmethod
+    def _stated(cid: str, body: str) -> str:
+        return ("- The `io_contract.diagnostics_contract.checks` entry of "
+                f"`{cid}` carries `per_case_status: {{ {body} }}`, compared literally.\n")
+
+    def test_compile_requires_exactly_the_statements_of_tests_md(self) -> None:
+        stated = self._stated("b", "c1: na")
+        self.assertEqual(self._compile([{"id": "a"}, {"id": "b", "per_case_status": {"c1": "na"}}],
+                                       stated), [])
+        # omitted, on another id, inverted, extended
+        for checks, why in (
+                ([{"id": "a"}, {"id": "b"}], "omitted"),
+                ([{"id": "a", "per_case_status": {"c1": "na"}}, {"id": "b"}], "misplaced"),
+                ([{"id": "a"}, {"id": "b", "per_case_status": {"c1": "pass"}}], "inverted"),
+                ([{"id": "a"}, {"id": "b", "per_case_status": {"c1": "na", "c2": "na"}}],
+                 "extended")):
+            with self.subTest(why=why):
+                got = self._compile(checks, stated)
+                self.assertTrue([v for v in got
+                                 if "entry 'b' must carry per_case_status {'c1': 'na'}" in v], got)
+        got = self._compile([{"id": "a", "per_case_status": {"c1": "na"}}, {"id": "b"}], stated)
+        self.assertTrue([v for v in got if "entry 'a' carries per_case_status, which" in v], got)
+        # a stated id the IR does not declare at all
+        got = self._compile([{"id": "a"}], stated)
+        self.assertTrue([v for v in got if "found '<no such check id>'" in v], got)
+
+    def test_compile_refuses_an_undeclared_per_case_status_when_tests_md_states_none(self) -> None:
+        """A physics tests.md saying a check is `na` elsewhere states no mapping: the IR may not
+        invent one (round 2: V3's earlier wording asked a Compile leaf to)."""
+        prose = "- Each check is `na` on every other case.\n"
+        self.assertEqual(self._compile([{"id": "a"}], prose), [])
+        got = self._compile([{"id": "a", "per_case_status": {"c1": "na"}}], prose)
+        self.assertEqual(len(got), 1, got)
+        self.assertIn("entry 'a' carries per_case_status, which tests.md does not state", got[0])
+
+    def test_compile_compares_every_stated_id_and_case(self) -> None:
+        """Two ids each stated with two cases; only the SECOND id's SECOND case differs."""
+        stated = self._stated("a", "c1: pass, c2: na") + self._stated("b", "c1: fail, c2: na")
+        good = [{"id": "a", "per_case_status": {"c1": "pass", "c2": "na"}},
+                {"id": "b", "per_case_status": {"c1": "fail", "c2": "na"}}]
+        self.assertEqual(self._compile(good, stated), [])
+        bad = copy.deepcopy(good)
+        bad[1]["per_case_status"]["c2"] = "pass"
+        got = self._compile(bad, stated)
+        self.assertEqual(len(got), 1, got)
+        self.assertIn("entry 'b' must carry", got[0])
+
+    def test_a_malformed_or_doubled_statement_is_refused(self) -> None:
+        for body in ("c1 na", "c1: na: x", ": na", "c1:", "c1: na, c1: na", ""):
+            with self.subTest(body=body):
+                got = self._compile([{"id": "b"}], self._stated("b", body))
+                self.assertTrue([v for v in got if "per_case_status statement for 'b'" in v], got)
+        for body in ("c1: NA", 'c1: "na"', "c1: ok"):
+            with self.subTest(body=body):
+                got = self._compile([{"id": "b"}], self._stated("b", body))
+                self.assertEqual(len(got), 1, got)
+                self.assertIn("states a status outside", got[0])
+        got = self._compile([{"id": "b", "per_case_status": {"c1": "na"}}],
+                            self._stated("b", "c1: na") + self._stated("b", "c1: na"))
+        self.assertTrue([v for v in got if "stated twice for 'b'" in v], got)
+
+    def test_the_harness_statement_parses(self) -> None:
+        """The real harness tests.md statement parses to the mapping its IR must carry."""
+        for sid in ("harness_fortran_cpu", "harness_fortran_cpu_mpi", "harness_cpp_gpu"):
+            with self.subTest(sid=sid):
+                tests_path = (Path(__file__).resolve().parents[2]
+                              / "spec/infrastructure/infra/harness" / sid / "tests.md")
+                violations: list[str] = []
+                self.assertEqual(
+                    vps._parse_per_case_status_statements(tests_path, violations),
+                    {"status_na": {"l0_metric_leaf_pass": "na"}})
+                self.assertEqual(violations, [])
+
+    def test_compile_accepts_a_conforming_declaration_and_an_id_without_one(self) -> None:
+        self.assertEqual(self._compile([{"id": "a"},
+                                        {"id": "b", "per_case_status": {"c1": "na"}},
+                                        {"id": "c", "per_case_status": {"c1": "pass",
+                                                                        "c2": "fail"}}]), [])
+
+    def test_compile_refuses_a_non_object_or_empty_declaration(self) -> None:
+        for bad in ({}, [], "na", ["c1"], None):
+            with self.subTest(bad=bad):
+                got = self._compile([{"id": "a", "per_case_status": bad}])
+                self.assertEqual(len(got), 1, got)
+                self.assertIn("checks[0].per_case_status must be a non-empty object", got[0])
+
+    def test_compile_refuses_an_unknown_case(self) -> None:
+        got = self._compile([{"id": "a", "per_case_status": {"c1": "na", "c9": "na"}}])
+        self.assertEqual(len(got), 1, got)
+        self.assertIn("references unknown case_id ('c9')", got[0])
+
+    def test_compile_reads_every_checks_item_not_only_the_first(self) -> None:
+        got = self._compile([{"id": "a", "per_case_status": {"c1": "na"}},
+                             {"id": "b", "per_case_status": {"c9": "na  "}}])
+        self.assertEqual(len(got), 2, got)
+        self.assertTrue(all("checks[1].per_case_status" in v for v in got), got)
+
+    def test_compile_refuses_a_value_outside_the_per_case_vocabulary(self) -> None:
+        for bad in ("na  ", "NA", "", "ok", True, None, 1):
+            with self.subTest(bad=bad):
+                got = self._compile([{"id": "a", "per_case_status": {"c1": bad}}])
+                self.assertEqual(len(got), 1, got)
+                self.assertIn(f"per_case_status.c1 {bad!r} is not one of", got[0])
+        for good in ("pass", "fail", "na"):
+            with self.subTest(good=good):
+                self.assertEqual(self._compile([{"id": "a", "per_case_status": {"c1": good}}]),
+                                 [])
+
+    def test_compile_stage_runs_the_rule(self) -> None:
+        """Through `validate_compile_stage` on the shared fixture IR, which gains a
+        diagnostics_contract and a tests.md stating `a`'s mapping: a declaration naming an
+        unknown case is refused on both halves, the stated one is accepted."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            _create_minimal_execution_tree(
+                repo_root, dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text="module m\nimplicit none\nend module m\n",
+                runner_text="program r\nimplicit none\nend program r\n",
+                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"])
+            ir_path = repo_root / _FIXTURE_IR_REL
+            ir = json.loads(ir_path.read_text(encoding="utf-8"))
+            tests_md = repo_root / MOCK_TESTS_REF
+            tests_md.parent.mkdir(parents=True, exist_ok=True)
+            tests_md.write_text(self._stated("a", "c1: na"), encoding="utf-8")
+            results = {}
+            for label, case_id in (("bad", "c9"), ("good", "c1")):
+                ir["io_contract"]["diagnostics_contract"] = {
+                    "checks": [{"id": "a", "per_case_status": {case_id: "na"}}]}
+                _write_json(ir_path, ir)
+                results[label] = validate_compile_stage(
+                    repo_root, "workspace", str(Path(_FIXTURE_IR_REL).parent))
+        self.assertTrue([v for v in results["bad"]
+                         if "per_case_status references unknown case_id ('c9')" in v],
+                        results["bad"])
+        self.assertTrue([v for v in results["bad"]
+                         if "entry 'a' must carry per_case_status {'c1': 'na'}" in v],
+                        results["bad"])
+        self.assertFalse([v for v in results["good"] if "per_case_status" in v], results["good"])
+
+    # --- post_execute ----------------------------------------------------------------
+
+    def _post(self, diagnostics: dict, per_case_status: object = None) -> list[str]:
+        checks = [{"id": "a"}, {"id": "b", "per_case_status": (
+            {"c1": "na"} if per_case_status is None else per_case_status)}]
+        return DiagnosticsContractOutputTest._run(
+            self, diagnostics, {"diagnostics_contract": {"checks": checks}})
+
+    @staticmethod
+    def _diag(status: object = "na", key: str = "per_case", case: str = "c1") -> dict:
+        slc = {"checks": {"a": {"status": "pass"}, "b": {"status": status}}}
+        container: object = ([{"case_id": case, **slc}] if key == "cases_list"
+                             else {case: slc})
+        return {"checks": {"a": {"status": "pass"}, "b": {"status": "pass"}},
+                ("cases" if key == "cases_list" else key): container}
+
+    def _mine(self, violations: list[str]) -> list[str]:
+        return [v for v in violations if "per_case_status" in v]
+
+    def test_post_execute_accepts_the_declared_literal(self) -> None:
+        for key in ("per_case", "cases", "cases_list"):
+            with self.subTest(key=key):
+                self.assertEqual(self._post(self._diag(key=key)), [])
+
+    def test_post_execute_refuses_another_value(self) -> None:
+        for actual in ("pass", "fail", "na  ", "NA", True, None):
+            for key in ("per_case", "cases", "cases_list"):
+                with self.subTest(actual=actual, key=key):
+                    got = self._mine(self._post(self._diag(actual, key=key)))
+                    self.assertEqual(len(got), 1, got)
+                    self.assertIn(f"case 'c1' checks.b.status {actual!r} is not the 'na'",
+                                  got[0])
+
+    def test_post_execute_refuses_an_absent_status_or_case(self) -> None:
+        diag = self._diag()
+        del diag["per_case"]["c1"]["checks"]["b"]["status"]
+        got = self._mine(self._post(diag))
+        self.assertEqual(len(got), 1, got)
+        self.assertIn("case 'c1' carries no checks.b.status", got[0])
+        for diag in (self._diag(case="c2"), {"checks": {"a": {"status": "pass"},
+                                                        "b": {"status": "pass"}}}):
+            with self.subTest(diag=diag):
+                got = self._mine(self._post(diag))
+                self.assertEqual(len(got), 1, got)
+                self.assertIn("case 'c1' carries no checks.b.status", got[0])
+        diag = self._diag()
+        diag["per_case"]["c1"]["checks"] = []
+        self.assertIn("carries no checks.b.status", self._mine(self._post(diag))[0])
+
+    def test_post_execute_compares_every_declared_case_and_id(self) -> None:
+        checks = [{"id": "a", "per_case_status": {"c1": "pass", "c2": "na"}},
+                  {"id": "b", "per_case_status": {"c1": "na", "c2": "na"}}]
+        diag = {"checks": {"a": {"status": "pass"}, "b": {"status": "pass"}},
+                "per_case": {"c1": {"checks": {"a": {"status": "pass"}, "b": {"status": "na"}}},
+                             "c2": {"checks": {"a": {"status": "na"}, "b": {"status": "na"}}}}}
+        run = lambda d: self._mine(DiagnosticsContractOutputTest._run(  # noqa: E731
+            self, d, {"diagnostics_contract": {"checks": checks}}))
+        self.assertEqual(run(diag), [])
+        for case, cid in (("c2", "a"), ("c2", "b"), ("c1", "b")):
+            with self.subTest(case=case, cid=cid):
+                bad = copy.deepcopy(diag)
+                bad["per_case"][case]["checks"][cid]["status"] = "fail"
+                got = run(bad)
+                self.assertEqual(len(got), 1, got)
+                self.assertIn(f"case {case!r} checks.{cid}.status 'fail'", got[0])
+
+    def test_post_execute_skips_a_malformed_declaration(self) -> None:
+        for bad in ("na", ["c1"], 3):
+            with self.subTest(bad=bad):
+                self.assertEqual(self._mine(self._post(self._diag("pass"), bad)), [])
+
+
 class DiagnosticsContractOutputTest(unittest.TestCase):
     """Tests for the post_execute/pre_judge diagnostics.json output check."""
 
@@ -27841,6 +28293,11 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
     NOT cover before issue #180 — `_validate_raw_evidence` called `.get` on it and raised
     `AttributeError`, which `main()` does not catch, so the leaf received a traceback. The row is
     red on `origin/main` and green with the guard.
+
+    The two rows at the end of the class (issue #437) are on a different subject and outside
+    the grid above: they reuse this class's fixture to drive the diagnostics status-vocabulary
+    rule through `validate()` and through the real CLI, so the WIRING of that rule is pinned at
+    the production entry point (its branches are pinned by `DiagnosticsStatusVocabularyTest`).
     """
 
     _IR_DIR = str(Path(_FIXTURE_IR_REL).parent)
@@ -27986,6 +28443,56 @@ class WellFormednessSubsumesTheRetiredArtifactSyntaxGateTests(unittest.TestCase)
             path, violations = self._post_execute(tmp, "quality_check.json", "[]")  # must not raise
         self.assertIn(f"{path}: must be json object", violations)
 
+
+    # --- post_execute: the status vocabulary of diagnostics.json (issue #437) -----------
+
+    _PADDED_DIAGNOSTICS = json.dumps({
+        "checks": {"wrap": {"status": "pass"}},
+        "verdict": {"overall": "pass", "failed_checks": []},
+        "per_case": {"c1": {"checks": {"wrap": {"status": "na  "}},
+                            "verdict": {"overall": "pass", "failed_checks": []}}},
+    })
+
+    def test_post_execute_refuses_a_padded_per_case_status(self) -> None:
+        """Through `validate()`, on a node whose IR declares NO diagnostics_contract, so the rule
+        is shown not to sit behind `_validate_diagnostics_contract_output`'s early return."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._tree(tmp)
+            ir = json.loads((repo_root / _FIXTURE_IR_REL).read_text(encoding="utf-8"))
+            self.assertNotIn("diagnostics_contract", json.dumps(ir))
+            path, violations = self._post_execute(tmp, "diagnostics.json",
+                                                  self._PADDED_DIAGNOSTICS)
+        with tempfile.TemporaryDirectory() as tmp:
+            _, literal = self._post_execute(
+                tmp, "diagnostics.json", self._PADDED_DIAGNOSTICS.replace('"na  "', '"na"'))
+        address = f"{path}:per_case.c1.checks.wrap.status 'na  '"
+        self.assertEqual([v for v in violations if "is not one of" in v],
+                         [v for v in violations if v.startswith(address)])
+        self.assertEqual(len([v for v in violations if v.startswith(address)]), 1, violations)
+        # the conforming twin: the same document with the literal adds none of this rule's
+        self.assertFalse([v for v in literal if "is not one of" in v], literal)
+
+    def test_the_cli_answers_1_for_a_padded_status_in_a_real_subprocess(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = self._tree(tmp)
+            node_dir = self._node_dir(repo_root)
+            pipeline_dir = node_dir.parent.parent.parent
+            cli = [sys.executable, str(Path(vps.__file__).resolve()), "--repo-root",
+                   str(repo_root), "--workspace-root", "workspace", "--stage", "post_execute",
+                   "--pipeline-root", str(pipeline_dir), "--run-id", node_dir.parent.name]
+            here = str(Path(vps.__file__).resolve().parent.parent)
+            results = {}
+            for label, status in (("padded", "na  "), ("literal", "na")):
+                (node_dir / "diagnostics.json").write_text(
+                    self._PADDED_DIAGNOSTICS.replace('"na  "', json.dumps(status)),
+                    encoding="utf-8")
+                results[label] = subprocess.run(cli, cwd=here, capture_output=True, text=True,
+                                                check=False)
+        padded, literal = results["padded"], results["literal"]
+        self.assertEqual(padded.returncode, 1, (padded.stdout, padded.stderr))
+        self.assertIn("per_case.c1.checks.wrap.status 'na  ' is not one of", padded.stdout)
+        self.assertIn("must write the literal 'na'", padded.stdout)
+        self.assertNotIn("is not one of", literal.stdout)
 
 class ProcedureTypedSurfaceGateTests(unittest.TestCase):
     """Issue #266: a §5.1 with an `interfaces` prototype and a `{type: procedure, interface}`

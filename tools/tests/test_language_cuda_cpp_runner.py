@@ -98,13 +98,6 @@ def _harness_stub() -> str:
           }
           return out + "\\"";
         }
-        std::string trim(const std::string& s) {
-          std::size_t end = s.size();
-          while (end > 0 && s[end - 1] == ' ') {
-            --end;
-          }
-          return s.substr(0, end);
-        }
         std::string real(dp x) {
           char buf[64];
           std::snprintf(buf, sizeof buf, "%.16e", x);
@@ -184,7 +177,7 @@ def _harness_stub() -> str:
             out += (k > 0 ? ", " : "") + q(r.case_id) + ": {\\"expected_xfail\\": "
                    + (r.expected_xfail ? "true" : "false") + ", \\"checks\\": {";
             for (std::size_t c = 0; c < r.checks.size(); ++c) {
-              out += (c > 0 ? ", " : "") + q(r.checks[c].id) + ": " + q(trim(r.checks[c].status));
+              out += (c > 0 ? ", " : "") + q(r.checks[c].id) + ": " + q(r.checks[c].status);
             }
             out += "}, \\"metrics\\": {";
             for (std::size_t m = 0; m < r.metrics.size(); ++m) {
@@ -342,6 +335,20 @@ class RenderShapeTest(unittest.TestCase):
         self.assertIn('ck::metric_compute(cid, "m.one", mval, mis_na, mreason, mfound);',
                       self.text)
         self.assertIn('result.expected_xfail = cid == "c1_xfail";', self.text)
+
+    def test_each_status_loses_its_trailing_blanks_before_the_harness_sees_it(self) -> None:
+        """Issue #437: between each `checks_compute` call and the record it fills, the rendered
+        runner drops the status's trailing blanks, so a padded "na  " from the checks module
+        never reaches the harness writer. Structural here; the nvcc smoke below observes it."""
+        drop = ("      while (!cstatus.empty() && cstatus.back() == ' ') {\n"
+                "        cstatus.pop_back();\n      }\n")
+        calls = self.text.count("ck::checks_compute(cid, ")
+        self.assertGreaterEqual(calls, 2)
+        self.assertEqual(calls, self.text.count(drop))
+        self.assertEqual(calls, self.text.count(drop + "      Check check{};\n"))
+        for block in self.text.split("ck::checks_compute(cid, ")[1:]:
+            self.assertLess(block.index("cstatus.pop_back();"),
+                            block.index("check.status = cstatus;"))
 
     def test_a_node_without_metrics_calls_no_metric_compute(self) -> None:
         text = _render(_boundary_ir(), BOUNDARY_SID)
@@ -650,6 +657,8 @@ class NvccSmokeTest(unittest.TestCase):
             self.assertEqual([[0.0, 1.0], [2.0, 3.0]], final["a2"])
             self.assertEqual(1.5, initial["s"])
             diagnostics = json.loads((d / "diagnostics.json").read_text())["per_case"]
+            # The checks stub returns "na  " and this harness stub writes the status as given,
+            # so the unpadded "na" here is the RUNNER's doing (issue #437).
             self.assertEqual({"c1": "pass", 'q"?\\x': "na"}, diagnostics["c0"]["checks"])
             self.assertTrue(diagnostics["c1_xfail"]["expected_xfail"])
             self.assertEqual({"m.one": 0.25, "m.two": "na:not_computed"},
