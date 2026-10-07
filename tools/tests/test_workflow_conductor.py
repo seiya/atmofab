@@ -19442,7 +19442,13 @@ class DeterministicLintTest(unittest.TestCase):
             self._seed(repo, refs, language="brainfuck")
             self.assertFalse((repo / "tools" / "build_runtime.py").exists())
             c = self._conductor(repo)
-            with mock.patch.dict(sys.modules):
+            # The re-import binds a NEW module object as the `tools` package's attribute, which
+            # `mock.patch.dict(sys.modules)` does not restore; without the attribute patch every
+            # later `from tools import build_runtime` reads a different object than the modules
+            # that imported it before this row (measured: `test_execution_sites` went red).
+            import tools
+            with mock.patch.dict(sys.modules), \
+                    mock.patch.object(tools, "build_runtime", tools.build_runtime):
                 sys.modules.pop("tools.build_runtime", None)
                 with self.assertRaisesRegex(RuntimeError, "has no static lint preset"):
                     c._gate_lint_check(refs, "child-1")
