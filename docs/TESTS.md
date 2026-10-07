@@ -58,6 +58,13 @@ over every element $i$ of the variable. The denominator is symmetric in the two 
 - The threshold states how far two correct variants may drift apart (a contracted multiply-add, another summation order, a device math library); it is not an accuracy bound.
 - An `infrastructure` harness node does not carry it: each target has its own harness `spec`.
 
+## Fixed per-case status
+A `tests.md` whose §5 fixes the exact status one check id must carry in named cases (issue #437; the harness self-test fixes its `status_na` check to `na` in `l0_metric_leaf_pass`) states it in one sentence of this form, once per id:
+
+> The `io_contract.diagnostics_contract.checks` entry of `<id>` carries `per_case_status: { <case_id>: <status>, ... }`
+
+with each `<status>` one of `pass`, `fail`, `na`. The Compile gate parses every such sentence (`validate_pipeline_semantics.PER_CASE_STATUS_STATEMENT`) and requires the IR's `checks[]` entry of that id to carry exactly that mapping, and no other entry to carry one; the `post_execute` gate then compares each named case's written status with it literally. A sentence saying a check is `na` on other cases, without this form, states no mapping, and its IR carries none.
+
 ## Operations Rules
 - When a `Controlled Spec` change affects the judgment conditions, update `tests.md` in the same change.
 - For `xfail`, define `xfail_condition` and `pass_when` simultaneously.

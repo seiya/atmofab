@@ -17970,19 +17970,93 @@ class DiagnosticsPerCaseStatusTest(unittest.TestCase):
     under `cases` and `per_case` and as a list, and a malformed declaration skipped (the
     compile gate's). SAMPLED: the message wording beyond the case and id."""
 
-    def _ir_dir(self, checks: list, case_ids: tuple[str, ...] = ("c1", "c2")) -> Path:
+    def _ir_dir(self, checks: list, case_ids: tuple[str, ...] = ("c1", "c2"),
+                tests_md: str | None = None) -> Path:
         ir_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, ir_dir, ignore_errors=True)
-        _write_json(ir_dir / "spec.ir.yaml", {
+        doc: dict = {
             "case": {"test_case_set": [{"case_id": c, "inputs": {}} for c in case_ids]},
             "io_contract": {"diagnostics_contract": {"checks": checks}},
-        })
+        }
+        if tests_md is not None:
+            (ir_dir / "tests.md").write_text(tests_md, encoding="utf-8")
+            doc["meta"] = {"source_refs": {"tests": str(ir_dir / "tests.md")}}
+        _write_json(ir_dir / "spec.ir.yaml", doc)
         return ir_dir
 
-    def _compile(self, checks: list) -> list[str]:
+    def _compile(self, checks: list, tests_md: str | None = None) -> list[str]:
         violations: list[str] = []
-        _validate_diagnostics_per_case_status(self._ir_dir(checks), violations)
+        _validate_diagnostics_per_case_status(
+            Path("/nonexistent"), self._ir_dir(checks, tests_md=tests_md), violations)
         return violations
+
+    @staticmethod
+    def _stated(cid: str, body: str) -> str:
+        return ("- The `io_contract.diagnostics_contract.checks` entry of "
+                f"`{cid}` carries `per_case_status: {{ {body} }}`, compared literally.\n")
+
+    def test_compile_requires_exactly_the_statements_of_tests_md(self) -> None:
+        stated = self._stated("b", "c1: na")
+        self.assertEqual(self._compile([{"id": "a"}, {"id": "b", "per_case_status": {"c1": "na"}}],
+                                       stated), [])
+        # omitted, on another id, inverted, extended
+        for checks, why in (
+                ([{"id": "a"}, {"id": "b"}], "omitted"),
+                ([{"id": "a", "per_case_status": {"c1": "na"}}, {"id": "b"}], "misplaced"),
+                ([{"id": "a"}, {"id": "b", "per_case_status": {"c1": "pass"}}], "inverted"),
+                ([{"id": "a"}, {"id": "b", "per_case_status": {"c1": "na", "c2": "na"}}],
+                 "extended")):
+            with self.subTest(why=why):
+                got = self._compile(checks, stated)
+                self.assertTrue([v for v in got
+                                 if "entry 'b' must carry per_case_status {'c1': 'na'}" in v], got)
+        got = self._compile([{"id": "a", "per_case_status": {"c1": "na"}}, {"id": "b"}], stated)
+        self.assertTrue([v for v in got if "entry 'a' carries per_case_status, which" in v], got)
+        # a stated id the IR does not declare at all
+        got = self._compile([{"id": "a"}], stated)
+        self.assertTrue([v for v in got if "found '<no such check id>'" in v], got)
+
+    def test_compile_refuses_an_undeclared_per_case_status_when_tests_md_states_none(self) -> None:
+        """A physics tests.md saying a check is `na` elsewhere states no mapping: the IR may not
+        invent one (round 2: V3's earlier wording asked a Compile leaf to)."""
+        prose = "- Each check is `na` on every other case.\n"
+        self.assertEqual(self._compile([{"id": "a"}], prose), [])
+        got = self._compile([{"id": "a", "per_case_status": {"c1": "na"}}], prose)
+        self.assertEqual(len(got), 1, got)
+        self.assertIn("entry 'a' carries per_case_status, which tests.md does not state", got[0])
+
+    def test_compile_compares_every_stated_id_and_case(self) -> None:
+        """Two ids each stated with two cases; only the SECOND id's SECOND case differs."""
+        stated = self._stated("a", "c1: pass, c2: na") + self._stated("b", "c1: fail, c2: na")
+        good = [{"id": "a", "per_case_status": {"c1": "pass", "c2": "na"}},
+                {"id": "b", "per_case_status": {"c1": "fail", "c2": "na"}}]
+        self.assertEqual(self._compile(good, stated), [])
+        bad = copy.deepcopy(good)
+        bad[1]["per_case_status"]["c2"] = "pass"
+        got = self._compile(bad, stated)
+        self.assertEqual(len(got), 1, got)
+        self.assertIn("entry 'b' must carry", got[0])
+
+    def test_a_malformed_or_doubled_statement_is_refused(self) -> None:
+        for body in ("c1 na", "c1: na: x", ": na", "c1:", "c1: na, c1: na", ""):
+            with self.subTest(body=body):
+                got = self._compile([{"id": "b"}], self._stated("b", body))
+                self.assertTrue([v for v in got if "per_case_status statement for 'b'" in v], got)
+        got = self._compile([{"id": "b", "per_case_status": {"c1": "na"}}],
+                            self._stated("b", "c1: na") + self._stated("b", "c1: na"))
+        self.assertTrue([v for v in got if "stated twice for 'b'" in v], got)
+
+    def test_the_harness_statement_parses(self) -> None:
+        """The real harness tests.md statement parses to the mapping its IR must carry."""
+        for sid in ("harness_fortran_cpu", "harness_fortran_cpu_mpi", "harness_cpp_gpu"):
+            with self.subTest(sid=sid):
+                tests_path = (Path(__file__).resolve().parents[2]
+                              / "spec/infrastructure/infra/harness" / sid / "tests.md")
+                violations: list[str] = []
+                self.assertEqual(
+                    vps._parse_per_case_status_statements(tests_path, violations),
+                    {"status_na": {"l0_metric_leaf_pass": "na"}})
+                self.assertEqual(violations, [])
 
     def test_compile_accepts_a_conforming_declaration_and_an_id_without_one(self) -> None:
         self.assertEqual(self._compile([{"id": "a"},
@@ -18002,6 +18076,12 @@ class DiagnosticsPerCaseStatusTest(unittest.TestCase):
         self.assertEqual(len(got), 1, got)
         self.assertIn("references unknown case_id ('c9')", got[0])
 
+    def test_compile_reads_every_checks_item_not_only_the_first(self) -> None:
+        got = self._compile([{"id": "a", "per_case_status": {"c1": "na"}},
+                             {"id": "b", "per_case_status": {"c9": "na  "}}])
+        self.assertEqual(len(got), 2, got)
+        self.assertTrue(all("checks[1].per_case_status" in v for v in got), got)
+
     def test_compile_refuses_a_value_outside_the_per_case_vocabulary(self) -> None:
         for bad in ("na  ", "NA", "", "ok", True, None, 1):
             with self.subTest(bad=bad):
@@ -18015,7 +18095,8 @@ class DiagnosticsPerCaseStatusTest(unittest.TestCase):
 
     def test_compile_stage_runs_the_rule(self) -> None:
         """Through `validate_compile_stage` on the shared fixture IR, which gains a
-        diagnostics_contract whose declaration names an unknown case."""
+        diagnostics_contract and a tests.md stating `a`'s mapping: a declaration naming an
+        unknown case is refused on both halves, the stated one is accepted."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             _seed_shape_expr_schema_into(repo_root)
@@ -18026,6 +18107,9 @@ class DiagnosticsPerCaseStatusTest(unittest.TestCase):
                 run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"])
             ir_path = repo_root / _FIXTURE_IR_REL
             ir = json.loads(ir_path.read_text(encoding="utf-8"))
+            tests_md = repo_root / MOCK_TESTS_REF
+            tests_md.parent.mkdir(parents=True, exist_ok=True)
+            tests_md.write_text(self._stated("a", "c1: na"), encoding="utf-8")
             results = {}
             for label, case_id in (("bad", "c9"), ("good", "c1")):
                 ir["io_contract"]["diagnostics_contract"] = {
@@ -18035,6 +18119,9 @@ class DiagnosticsPerCaseStatusTest(unittest.TestCase):
                     repo_root, "workspace", str(Path(_FIXTURE_IR_REL).parent))
         self.assertTrue([v for v in results["bad"]
                          if "per_case_status references unknown case_id ('c9')" in v],
+                        results["bad"])
+        self.assertTrue([v for v in results["bad"]
+                         if "entry 'a' must carry per_case_status {'c1': 'na'}" in v],
                         results["bad"])
         self.assertFalse([v for v in results["good"] if "per_case_status" in v], results["good"])
 
@@ -18086,6 +18173,23 @@ class DiagnosticsPerCaseStatusTest(unittest.TestCase):
         diag = self._diag()
         diag["per_case"]["c1"]["checks"] = []
         self.assertIn("carries no checks.b.status", self._mine(self._post(diag))[0])
+
+    def test_post_execute_compares_every_declared_case_and_id(self) -> None:
+        checks = [{"id": "a", "per_case_status": {"c1": "pass", "c2": "na"}},
+                  {"id": "b", "per_case_status": {"c1": "na", "c2": "na"}}]
+        diag = {"checks": {"a": {"status": "pass"}, "b": {"status": "pass"}},
+                "per_case": {"c1": {"checks": {"a": {"status": "pass"}, "b": {"status": "na"}}},
+                             "c2": {"checks": {"a": {"status": "na"}, "b": {"status": "na"}}}}}
+        run = lambda d: self._mine(DiagnosticsContractOutputTest._run(  # noqa: E731
+            self, d, {"diagnostics_contract": {"checks": checks}}))
+        self.assertEqual(run(diag), [])
+        for case, cid in (("c2", "a"), ("c2", "b"), ("c1", "b")):
+            with self.subTest(case=case, cid=cid):
+                bad = copy.deepcopy(diag)
+                bad["per_case"][case]["checks"][cid]["status"] = "fail"
+                got = run(bad)
+                self.assertEqual(len(got), 1, got)
+                self.assertIn(f"case {case!r} checks.{cid}.status 'fail'", got[0])
 
     def test_post_execute_skips_a_malformed_declaration(self) -> None:
         for bad in ("na", ["c1"], 3):

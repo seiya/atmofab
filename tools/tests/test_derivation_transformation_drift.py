@@ -583,9 +583,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     "compile-docs-11@dd5bbcb8": "033e228bb452e4b6a9aad2ad75c1256f8bf11b19acc486dd0268eeb405eb3c29",
     # compile-docs-12 (issue #437): the schema block gains the OPTIONAL
     # `diagnostics_contract.checks[].per_case_status` (a status tests.md fixes for an id in a named
-    # case, compared literally at post_execute), and V3 says when an id carries it; the stale
-    # "(Generate never reads tests.md)" comment is shortened away.
-    "compile-docs-12": "7688db9cd8228f737228f8d687a6f3d0a4c03a7e10dea63a480e7dccabf1bf9b",
+    # case, compared literally at post_execute), and V3 says an id carries it only where its
+    # `tests.md` states one (the compile gate compares the two); the stale "(Generate never
+    # reads tests.md)" comment is shortened away. Not yet shipped, so re-pinned in place.
+    "compile-docs-12": "ad5badc4eae5b5cb777669bb5f95fe6f3e7ca549bfe9bf218894389d4c09a734",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
