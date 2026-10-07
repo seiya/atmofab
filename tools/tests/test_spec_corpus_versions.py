@@ -127,6 +127,7 @@ _STATUS_UNPADDED = ("written as the supplied literal without the trailing blanks
                     "the fixed width")
 _STATUS_NA_CHECK = "{ id = 'status_na', status = 'na  ' }"
 _STATUS_NA_REF = "`checks.status_na.status`"
+_STATUS_NA_PER_CASE = "`per_case_status: { l0_metric_leaf_pass: na }`"
 _METRIC_TEST = re.compile(r"^- `test_id`: `l0_metric_leaf_pass`\n(?:(?!- `test_id`).*\n?)*", re.M)
 
 
@@ -134,7 +135,9 @@ def harness_status_literal_unstated(entries: list[dict], root: Path) -> list[str
     """Every spec publishing `<spec_id>__write_diagnostics(` whose writer item does not state
     that a per-case check status is written without its padding, whose self-test paragraph
     (the one opening "The self-test `") does not supply the padded check `status_na`, or whose
-    `tests.md` `l0_metric_leaf_pass` block does not reference `checks.status_na.status`.
+    `tests.md` `l0_metric_leaf_pass` block does not reference `checks.status_na.status`, or
+    whose `tests.md` does not state, once and outside that block, the `per_case_status` the IR
+    declares for `status_na` (which the Compile leaves transcribe).
 
     The padded `status_na` is what puts a `na` into the harness's own `diagnostics.json`,
     where the `post_execute` status-vocabulary gate reads it (issue #437); without it a
@@ -161,6 +164,9 @@ def harness_status_literal_unstated(entries: list[dict], root: Path) -> list[str
         if not block or _STATUS_NA_REF not in block.group(0):
             out.append(f"{sid}: tests.md l0_metric_leaf_pass does not reference "
                        "checks.status_na.status")
+        if tests.count(_STATUS_NA_PER_CASE) != 1 or (block and _STATUS_NA_PER_CASE
+                                                     in block.group(0)):
+            out.append(f"{sid}: tests.md §5 does not state the per_case_status of status_na once")
     return out
 
 
@@ -305,7 +311,7 @@ class SpecCorpusVersionTest(unittest.TestCase):
             block = (f"- `test_id`: `l0_metric_leaf_pass`\n  - `ref`: {_STATUS_NA_REF}, "
                      "`op`: `eq`\n")
             other = "- `test_id`: `l0_perf_derived_pass`\n  - `judgment`: residual.\n"
-            tests = other + block
+            tests = other + f"- `status_na` carries {_STATUS_NA_PER_CASE}.\n" + block
 
             def run(c: str, t: str) -> list[str]:
                 (root / "s/controlled_spec.md").write_text(c)
@@ -332,6 +338,14 @@ class SpecCorpusVersionTest(unittest.TestCase):
             self.assertIn("does not reference",
                           run(cs, block.replace(_STATUS_NA_REF, "x") + other.rstrip("\n")
                               + f" {_STATUS_NA_REF}\n")[0])
+            self.assertIn("per_case_status",
+                          run(cs, tests.replace(_STATUS_NA_PER_CASE, "x"))[0])
+            # stated twice, or only inside the metric test's block, is not the §5 statement
+            self.assertIn("per_case_status",
+                          run(cs, tests + _STATUS_NA_PER_CASE + "\n")[0])
+            self.assertIn("per_case_status",
+                          run(cs, tests.replace(_STATUS_NA_PER_CASE, "x")
+                              + f"  - `judgment`: {_STATUS_NA_PER_CASE}\n")[0])
             self.assertEqual(run(f"# spec\n{para}\n", "y\n"), [])
 
 

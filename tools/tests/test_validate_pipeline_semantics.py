@@ -32,6 +32,7 @@ from tools.validate_pipeline_semantics import (
     _validate_diagnostics_contract,
     _validate_diagnostics_contract_output,
     _validate_diagnostics_status_vocabulary,
+    _validate_diagnostics_per_case_status,
     _target_toolchain_from_pipeline_dir,
     _validate_generate_lint_command_logs,
     _validate_source_meta_json_files,
@@ -17956,6 +17957,140 @@ class DiagnosticsStatusVocabularyTest(unittest.TestCase):
         self.assertEqual(self._run(None, raw="[]"), [])
         self.assertEqual(self._run(None, raw="{"), [])
         self.assertEqual(self._run(None, raw='"na  "'), [])
+
+
+class DiagnosticsPerCaseStatusTest(unittest.TestCase):
+    """`diagnostics_contract.checks[].per_case_status` (issue #437): the compile gate on its
+    shape, and the post_execute comparison of the written per-case status with it.
+
+    PINNED: compile — non-object / empty refused, unknown case_id refused, a value outside the
+    per-case vocabulary (padded, upper-case, non-string) refused, an id without the key and a
+    conforming declaration accepted; post_execute — an equal literal accepted, a different
+    literal / a padded one / an absent status / an absent case refused, the slice resolved
+    under `cases` and `per_case` and as a list, and a malformed declaration skipped (the
+    compile gate's). SAMPLED: the message wording beyond the case and id."""
+
+    def _ir_dir(self, checks: list, case_ids: tuple[str, ...] = ("c1", "c2")) -> Path:
+        ir_dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, ir_dir, ignore_errors=True)
+        _write_json(ir_dir / "spec.ir.yaml", {
+            "case": {"test_case_set": [{"case_id": c, "inputs": {}} for c in case_ids]},
+            "io_contract": {"diagnostics_contract": {"checks": checks}},
+        })
+        return ir_dir
+
+    def _compile(self, checks: list) -> list[str]:
+        violations: list[str] = []
+        _validate_diagnostics_per_case_status(self._ir_dir(checks), violations)
+        return violations
+
+    def test_compile_accepts_a_conforming_declaration_and_an_id_without_one(self) -> None:
+        self.assertEqual(self._compile([{"id": "a"},
+                                        {"id": "b", "per_case_status": {"c1": "na"}},
+                                        {"id": "c", "per_case_status": {"c1": "pass",
+                                                                        "c2": "fail"}}]), [])
+
+    def test_compile_refuses_a_non_object_or_empty_declaration(self) -> None:
+        for bad in ({}, [], "na", ["c1"], None):
+            with self.subTest(bad=bad):
+                got = self._compile([{"id": "a", "per_case_status": bad}])
+                self.assertEqual(len(got), 1, got)
+                self.assertIn("checks[0].per_case_status must be a non-empty object", got[0])
+
+    def test_compile_refuses_an_unknown_case(self) -> None:
+        got = self._compile([{"id": "a", "per_case_status": {"c1": "na", "c9": "na"}}])
+        self.assertEqual(len(got), 1, got)
+        self.assertIn("references unknown case_id ('c9')", got[0])
+
+    def test_compile_refuses_a_value_outside_the_per_case_vocabulary(self) -> None:
+        for bad in ("na  ", "NA", "", "ok", True, None, 1):
+            with self.subTest(bad=bad):
+                got = self._compile([{"id": "a", "per_case_status": {"c1": bad}}])
+                self.assertEqual(len(got), 1, got)
+                self.assertIn(f"per_case_status.c1 {bad!r} is not one of", got[0])
+        for good in ("pass", "fail", "na"):
+            with self.subTest(good=good):
+                self.assertEqual(self._compile([{"id": "a", "per_case_status": {"c1": good}}]),
+                                 [])
+
+    def test_compile_stage_runs_the_rule(self) -> None:
+        """Through `validate_compile_stage` on the shared fixture IR, which gains a
+        diagnostics_contract whose declaration names an unknown case."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            _create_minimal_execution_tree(
+                repo_root, dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text="module m\nimplicit none\nend module m\n",
+                runner_text="program r\nimplicit none\nend program r\n",
+                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"])
+            ir_path = repo_root / _FIXTURE_IR_REL
+            ir = json.loads(ir_path.read_text(encoding="utf-8"))
+            results = {}
+            for label, case_id in (("bad", "c9"), ("good", "c1")):
+                ir["io_contract"]["diagnostics_contract"] = {
+                    "checks": [{"id": "a", "per_case_status": {case_id: "na"}}]}
+                _write_json(ir_path, ir)
+                results[label] = validate_compile_stage(
+                    repo_root, "workspace", str(Path(_FIXTURE_IR_REL).parent))
+        self.assertTrue([v for v in results["bad"]
+                         if "per_case_status references unknown case_id ('c9')" in v],
+                        results["bad"])
+        self.assertFalse([v for v in results["good"] if "per_case_status" in v], results["good"])
+
+    # --- post_execute ----------------------------------------------------------------
+
+    def _post(self, diagnostics: dict, per_case_status: object = None) -> list[str]:
+        checks = [{"id": "a"}, {"id": "b", "per_case_status": (
+            {"c1": "na"} if per_case_status is None else per_case_status)}]
+        return DiagnosticsContractOutputTest._run(
+            self, diagnostics, {"diagnostics_contract": {"checks": checks}})
+
+    @staticmethod
+    def _diag(status: object = "na", key: str = "per_case", case: str = "c1") -> dict:
+        slc = {"checks": {"a": {"status": "pass"}, "b": {"status": status}}}
+        container: object = ([{"case_id": case, **slc}] if key == "cases_list"
+                             else {case: slc})
+        return {"checks": {"a": {"status": "pass"}, "b": {"status": "pass"}},
+                ("cases" if key == "cases_list" else key): container}
+
+    def _mine(self, violations: list[str]) -> list[str]:
+        return [v for v in violations if "per_case_status" in v]
+
+    def test_post_execute_accepts_the_declared_literal(self) -> None:
+        for key in ("per_case", "cases", "cases_list"):
+            with self.subTest(key=key):
+                self.assertEqual(self._post(self._diag(key=key)), [])
+
+    def test_post_execute_refuses_another_value(self) -> None:
+        for actual in ("pass", "fail", "na  ", "NA", True, None):
+            for key in ("per_case", "cases", "cases_list"):
+                with self.subTest(actual=actual, key=key):
+                    got = self._mine(self._post(self._diag(actual, key=key)))
+                    self.assertEqual(len(got), 1, got)
+                    self.assertIn(f"case 'c1' checks.b.status {actual!r} is not the 'na'",
+                                  got[0])
+
+    def test_post_execute_refuses_an_absent_status_or_case(self) -> None:
+        diag = self._diag()
+        del diag["per_case"]["c1"]["checks"]["b"]["status"]
+        got = self._mine(self._post(diag))
+        self.assertEqual(len(got), 1, got)
+        self.assertIn("case 'c1' carries no checks.b.status", got[0])
+        for diag in (self._diag(case="c2"), {"checks": {"a": {"status": "pass"},
+                                                        "b": {"status": "pass"}}}):
+            with self.subTest(diag=diag):
+                got = self._mine(self._post(diag))
+                self.assertEqual(len(got), 1, got)
+                self.assertIn("case 'c1' carries no checks.b.status", got[0])
+        diag = self._diag()
+        diag["per_case"]["c1"]["checks"] = []
+        self.assertIn("carries no checks.b.status", self._mine(self._post(diag))[0])
+
+    def test_post_execute_skips_a_malformed_declaration(self) -> None:
+        for bad in ("na", ["c1"], 3):
+            with self.subTest(bad=bad):
+                self.assertEqual(self._mine(self._post(self._diag("pass"), bad)), [])
 
 
 class DiagnosticsContractOutputTest(unittest.TestCase):

@@ -581,6 +581,11 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     "compile-docs-11@1807917d": "d07c8ad3e8c38ef2b4fa5b923459ba4e71bdfe3b605febd2fb50952cadd2fb1b",
     # The digest `compile-docs-11` shipped with at dd5bbcb8 (before issue #396's re-pin above):
     "compile-docs-11@dd5bbcb8": "033e228bb452e4b6a9aad2ad75c1256f8bf11b19acc486dd0268eeb405eb3c29",
+    # compile-docs-12 (issue #437): the schema block gains the OPTIONAL
+    # `diagnostics_contract.checks[].per_case_status` (a status tests.md fixes for an id in a named
+    # case, compared literally at post_execute), and V3 says when an id carries it; the stale
+    # "(Generate never reads tests.md)" comment is shortened away.
+    "compile-docs-12": "7688db9cd8228f737228f8d687a6f3d0a4c03a7e10dea63a480e7dccabf1bf9b",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

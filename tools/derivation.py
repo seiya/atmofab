@@ -66,7 +66,7 @@ SELECTION_POLICY_VERSION = 1
 #: offering earlier-version exemplars and refuses `--resume` across it — the reason the prompt
 #: drift test refuses to pin these four); a bump HERE costs exactly one re-derivation of every
 #: node's Compile, and nothing downstream whose IR comes out byte-identical.
-COMPILE_INLINED_DOCUMENTS_VERSION = "compile-docs-11"
+COMPILE_INLINED_DOCUMENTS_VERSION = "compile-docs-12"
 
 #: The versions of the DETERMINISTIC transformations. Each is the identity of the implementing
 #: code, pinned by `tools/tests/test_derivation_transformation_drift.py` as a digest of the
