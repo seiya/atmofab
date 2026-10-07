@@ -240,7 +240,12 @@ when a rule does not obviously apply:
   printed `PATCH DID NOT APPLY` instead of counting them green), and a not-applied patch is a
   failed run, not a finding — **report it as its own category and count it out of the denominator**.
   "Applied" is not enough on its own; a semantically identical rewrite patches cleanly and proves
-  nothing. **And do not PATCH a mutant list between rounds — write it out**, and **read the RUN's
+  nothing. **Neither is "red": a mutant that breaks the IMPORT is a failed run, not a kill** — a
+  search string that starts mid-line deletes a statement and leaves its indentation, the module
+  raises `IndentationError`, every test fails and the harness scores it killed (issue #433 PR-2
+  banked one in a published 28/28). Make the harness label a syntax / import error as its own
+  outcome, and read the failing test's NAME for any kill you cannot attribute
+  (`references/mutation-testing.md`). **And do not PATCH a mutant list between rounds — write it out**, and **read the RUN's
   own output, not only the artifact it produces** (PR #104: three silent misses, two of them
   reporting plausible totals for a sweep that measured nothing new). **The script is
   not universal either: one hunk can bundle a pinned and an unpinned change, so follow up at line
