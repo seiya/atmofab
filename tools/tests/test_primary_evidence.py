@@ -1245,6 +1245,15 @@ class SchemaGateTest(unittest.TestCase):
         # under at('<case>') the input is read in THAT case alone, in every case's evaluation
         self.assertEqual(self._v([{**HMIN, "expr": "maxabs(final.h - at('a').inputs.initial.a2)"}],
                                  ir=ir), [])
+        # beside an own-case input (ranked per case), an at('a') input is still read in 'a'
+        both = {**HMIN, "expr": "maxabs(final.h - at('a').inputs.initial.a2) + inputs.grid.nx"}
+        self.assertEqual(self._v([both], ir=ir), [])
+        # every case refuses, each differently: the first refusing case is named
+        ir3 = self._with_inputs(b_a2=[1.0] * NX)
+        ir3["case"]["test_case_set"][0]["inputs"]["initial"]["a2"] = [[[1.0]] * NY] * NX
+        self.assertEqual(self._v([ok], ir=ir3), [
+            (f"primary_predicates[0].expr: in case 'a': operator -: operands of rank 2 and 3 "
+             f"{self._PAIR}")])
         # a `case:` scope is evaluated in its one case: the other target's rank is not read
         self.assertEqual(self._v([{**SYM, "expr": "maxabs(final.h - inputs.initial.a2)"}],
                                  ir=ir), [])
