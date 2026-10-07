@@ -3,8 +3,8 @@
 Run these from the atmofab checkout root. **Do not write an assertion into a commit or TODO.md
 that you have not measured.**
 
-These are an operator's own dev-session commands. `AGENTS.md` §MCP execution rules — run
-`compile` / `run` / checks through the MCP server, avoid direct shell execution — governs what a
+These are an operator's own dev-session commands. `AGENTS.md` §Build-runtime execution rules —
+the conductor runs `compile` / `run` / checks through the build-runtime library — governs what a
 WORKFLOW does; it is not a rule against running `pytest`, `ruff`, or a compiler probe by hand
 while developing this repository.
 
@@ -437,21 +437,21 @@ this line named `workflow-generate-generate` (+6) and `workflow-generate-verify`
 tightest, and today they are the roomiest at +125 and +230. It also named 4 of 9 while 6 were at
 or under 50, because it listed what someone had looked at rather than what the snippet printed.
 
-## End to end through a real server process
+## End to end by driving the build-runtime library
 
-Confirm through `mcp_call.py` rather than `import`, so the JSON-RPC layer and the handling of the
-environment are included.
+The conductor calls `tools/build_runtime.py` in-process, so drive the same entry points by
+import from the checkout root (the MCP layer and its `mcp_call.py` client were deleted in issue
+#444; there is no server process to go through).
 
 ```bash
 # `compiler` / `std` (run_syntax_check) and `preset` (run_linter) are required since issue #289
-python3 mcp_servers/mcp_call.py --tool run_syntax_check \
-  --args-json '{"project_dir": "<abs>", "compiler": "gfortran", "std": "f2008"}'
-python3 mcp_servers/mcp_call.py --tool run_linter \
-  --args-json '{"project_dir": "<abs>", "preset": "fortitude"}'
+python3 -c 'import json; from tools.build_runtime import tool_run_syntax_check as f; print(json.dumps(f({"project_dir": "<abs>", "compiler": "gfortran", "std": "f2008"}), indent=1))'
+python3 -c 'import json; from tools.build_runtime import tool_run_linter as f; print(json.dumps(f({"project_dir": "<abs>", "preset": "fortitude"}), indent=1))'
 ```
 
-The server reads no workflow environment variable (issue #171 PR-2 retired the orchestrated
-mode), so the same call answers the same way with or without `ATMOFAB_WORKFLOW_MODE`.
+A refusal is a `ValueError` raised by the entry point. The library reads no workflow environment
+variable (issue #171 PR-2 retired the orchestrated mode), so the same call answers the same way
+with or without `ATMOFAB_WORKFLOW_MODE`.
 
 ## What an LLM CLI actually does (unbilled capture harness)
 

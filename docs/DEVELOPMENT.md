@@ -22,7 +22,7 @@ A fresh clone needs the host tools and the operator's own CLI state. Every file 
 | step | requirement | canonical source |
 |---|---|---|
 | 1 | Host CLI tools, Python packages, and the target `spec`'s toolchain and `static lint` tool | `docs/RUNBOOK.md` §0-1 |
-| 2 | Claude backend: server registration and the leaf's tool grant | `docs/RUNBOOK.md` §0-2 |
+| 2 | Claude backend: the CLI checks preflight probes | `docs/RUNBOOK.md` §0-2 |
 | 3 | Codex backend: the CLI feature flag, the credential, the writable state home | `docs/RUNBOOK.md` §0-3 |
 | 4 | The leaf-`LLM` configuration file, created by copying a sample | `docs/RUNBOOK.md` §1-3, `README.md` §"Running a workflow" |
 | 5 | The sandbox runtime | `docs/BWRAP_ENABLEMENT.md` |
@@ -64,12 +64,11 @@ environment the suite runs in, because those are IMPORTED rather than executed. 
 Steps 1, 2, 3 and 5 all read machine-local state, and each is checked before the first billed leaf — though not all by the same mechanism. Step 1 fail-fasts when `tools/run_workflow.py` starts, before an orchestration exists — with one reason code per family (`missing_required_cli_tools` / `missing_required_python_modules` / `missing_required_host_tools`); steps 2, 3 and 5 are `preflight.json` checks. One requirement is outside both and is called out where it lives: the Codex credential is checked when the first leaf is prepared, not at any gate (`docs/RUNBOOK.md` §0-3).
 
 ## Configuration layers
-ONE session reads configuration from this checkout: the operator's own interactive one, which loads the DEV layer. A workflow leaf loads nothing. Two sessions used to, and the layers were kept disjoint down to the hook entrypoint (issue #102); Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) removed the second one — a `pure-function leaf` launches under `--safe-mode` with no tools, which refuses every settings layer and leaves no tool call for a hook to judge, so the LEAF rows (`leaf_config/`, `tools/hooks/cli.py`) are deleted rather than disjoint. `.mcp.json` is NOT deleted — it stops being a LEAF file and stays as the operator session's server definition, which is the row it has below. `docs/HOOKS.md` is canonical for what the DEV layer does.
+ONE session reads configuration from this checkout: the operator's own interactive one, which loads the DEV layer. A workflow leaf loads nothing. Two sessions used to, and the layers were kept disjoint down to the hook entrypoint (issue #102); Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) removed the second one — a `pure-function leaf` launches under `--safe-mode` with no tools, which refuses every settings layer and leaves no tool call for a hook to judge, so the LEAF rows (`leaf_config/`, `tools/hooks/cli.py`) are deleted rather than disjoint. `.mcp.json`, the operator session's server definition for the build-runtime MCP server, was deleted with the MCP protocol layer in [issue #444](https://github.com/seiya/atmofab/issues/444): the conductor calls the build-runtime library (`docs/BUILD_RUNTIME.md`) in-process. `docs/HOOKS.md` is canonical for what the DEV layer does.
 
 | file | layer | read by | tracked |
 |---|---|---|---|
 | `.codex/hooks.json` | DEV | an operator's own interactive codex session, as the project hook layer | yes |
-| `.mcp.json` | DEV | an operator's own interactive session, as the `build-runtime` server definition (a workflow leaf calls no MCP tool; the conductor's deterministic substeps call the server in-process) | yes |
 | `.claude/settings.json` | DEV | an operator's own interactive session | yes |
 | `.claude/settings.local.json` | DEV | the same session, per operator | no |
 | `.claude/skills/` | DEV | the same session | yes |

@@ -51,7 +51,7 @@ Sequenced (the pure-leaf migration and what it makes dead):
 - On-disk clutter (51 `workspace_2026*` snapshots, 11 GB; `transcript_data/`; probe files): every path is ignored by an explicit `.gitignore` rule, no tracked file reads them, and the decision not to adopt a `workspace*` retention rule is already recorded. Local housekeeping; no repository change.
 - Removing the `claude_cli` provider after the pure migration: its `--safe-mode` pure path is the only subscription-billed route; `anthropic_api` requires an API key and has never run.
 - Merging `build_launch_request` (conductor) and `record_launch` (runtime): one builder and one validating recorder, the producer/validator separation the premises call for.
-- Deleting `mcp_servers/mcp_call.py`: the enforcement-change procedure requires proving a gate refusal through the real JSON-RPC layer.
+- Deleting `mcp_servers/mcp_call.py`: the enforcement-change procedure requires proving a gate refusal through the real JSON-RPC layer. Reversed by [issue #444](https://github.com/seiya/atmofab/issues/444): the JSON-RPC layer the reason rested on is deleted.
 - Merging the twelve live `*_meta.json` kinds into one per phase: would collapse almost no validator code and would cross the leaf/host authorship line the single-file write roots enforce.
 - Deleting the two dev skills under `.claude/skills/` and their scripts: `docs/DEVELOPMENT.md` §Record placement names them as the home of what the review loop taught; only their tests move (#183).
 - A retroactive sweep of comment prose (33% of lines in the eleven main modules): most is rationale needed to change the code safely; a rewrite of that size is itself the second defended class.

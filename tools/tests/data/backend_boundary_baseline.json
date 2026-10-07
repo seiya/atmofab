@@ -16,16 +16,21 @@
     },
     "README.md": {
       "compiler-driver": 3,
-      "fortran": 6,
-      "linter-cppcheck": 1,
-      "linter-fortitude": 1,
-      "linter-ruff": 1
+      "fortran": 5
     },
     "docs/AGENT_SKILLS.md": {
       "fortran": 2
     },
     "docs/BACKEND_BOUNDARY.md": {
       "fortran": 6
+    },
+    "docs/BUILD_RUNTIME.md": {
+      "compiler-driver": 5,
+      "fortran": 6,
+      "linter-cppcheck": 4,
+      "linter-fortitude": 5,
+      "linter-ruff": 2,
+      "make-control-file": 3
     },
     "docs/BWRAP_ENABLEMENT.md": {
       "fortran": 1
@@ -68,7 +73,7 @@
       "fortran-suffix": 2,
       "make-control-file": 5
     },
-    "docs/workflow/MCP_COMMAND_LOG_PLACEMENT.md": {
+    "docs/workflow/COMMAND_LOG_PLACEMENT.md": {
       "make-control-file": 1
     },
     "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": {
@@ -86,29 +91,6 @@
       "fortran-subroutine": 1,
       "make-control-file": 1,
       "parallel-directive": 1
-    },
-    "mcp_servers/README.md": {
-      "compiler-driver": 5,
-      "fortran": 6,
-      "linter-cppcheck": 4,
-      "linter-fortitude": 5,
-      "linter-ruff": 2,
-      "make-control-file": 3
-    },
-    "mcp_servers/build_runtime_server.py": {
-      "compiler-driver": 3,
-      "fortran": 1,
-      "fortran-module-file": 1,
-      "linter-cppcheck": 2,
-      "linter-fortitude": 1,
-      "linter-ruff": 1,
-      "make-control-file": 16
-    },
-    "mcp_servers/tools/run_linter.json": {
-      "make-control-file": 1
-    },
-    "mcp_servers/tools/run_syntax_check.json": {
-      "make-control-file": 1
     },
     "requirements-dev.txt": {
       "linter-fortitude": 1,
@@ -130,6 +112,15 @@
       "linter-cppcheck": 3,
       "linter-fortitude": 4,
       "linter-ruff": 2
+    },
+    "tools/build_runtime.py": {
+      "compiler-driver": 3,
+      "fortran": 1,
+      "fortran-module-file": 1,
+      "linter-cppcheck": 2,
+      "linter-fortitude": 1,
+      "linter-ruff": 1,
+      "make-control-file": 13
     },
     "tools/codegen_bundle.py": {
       "compiler-driver": 2,

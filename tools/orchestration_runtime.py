@@ -2429,7 +2429,9 @@ def toolchain_version_argv(target: TargetProfile) -> tuple[str, ...]:
 
 
 def _probe_compiler_version(target: TargetProfile) -> Any:
-    return _build_runtime_server_module()._syntax_compiler_version(toolchain_version_argv(target))
+    from tools import build_runtime
+
+    return build_runtime._syntax_compiler_version(toolchain_version_argv(target))
 
 
 def _probe_parallel_runtime(target: TargetProfile) -> Any:
@@ -2552,25 +2554,6 @@ def _target_toolchain_identity(target: TargetProfile, *, probe: bool = True) -> 
         if "parallel_runtime" in probed:
             identity["parallel_runtime"] = probed["parallel_runtime"]
     return identity
-
-
-def _build_runtime_server_module() -> Any:
-    """The build-runtime server module (it is standalone-runnable and lives outside `tools/`).
-
-    The conductor's in-process gate bodies call this function before each of their
-    `from build_runtime_server import ...` statements (issue #422), so the directory they
-    import from is derived from this file's location in the checkout and never built from a
-    `repo_root`: a run's `--repo-root` is where its data lives, and a seeded repository holds
-    no `mcp_servers/`. (A module already in `sys.modules`, or a `build_runtime_server.py` on a
-    `sys.path` entry ahead of this one, still answers first — the ordinary import rules.)
-    `tools/host_prerequisites.py` resolves it from the code location the same way. The module
-    is looked up in `sys.modules` on every call, so a caller that patches or replaces it sees
-    the current object; do not bind the result at import time."""
-    mcp_dir = str(Path(__file__).resolve().parent.parent / "mcp_servers")
-    if mcp_dir not in sys.path:
-        sys.path.insert(0, mcp_dir)
-    import build_runtime_server
-    return build_runtime_server
 
 
 def _certified_output_hash(repo_root: Path, meta_path: Path, *, what: str) -> str:
@@ -7163,13 +7146,13 @@ def _allowed_output_paths_for_launch(
         if step_token == "build":
             # Cross-phase exception: in-source Make builds for Fortran/C
             # family run compile_project with project_dir=<gen>/src/, so the
-            # MCP audit log lands under the generate tree. Strict bind to
+            # command log lands under the generate tree. Strict bind to
             # request.source_id (record_launch verifies pass-state).
             if generate_prefix and path.startswith(generate_prefix):
                 if not source_id:
                     return False
                 expected_cross_phase_build = (
-                    f"{generate_prefix}{source_id}/src/{_MCP_AUDIT_LOG_BASENAME}"
+                    f"{generate_prefix}{source_id}/src/{_COMMAND_LOG_BASENAME}"
                 )
                 return path == expected_cross_phase_build
             if build_prefix and path.startswith(build_prefix):
@@ -7188,7 +7171,7 @@ def _allowed_output_paths_for_launch(
                     return False
                 if "/bin/" in path or path.endswith("/binary_meta.json"):
                     return True
-                # MCP `compile_project` writes a side-effect command log to
+                # `compile_project` writes a side-effect command log to
                 # `<project_dir>/command_log.jsonl`. Per
                 # `docs/workflow/phases/phase_03_build.md`, the in-phase
                 # canonical placement (out-of-source CMake/Meson builds) is
@@ -7206,7 +7189,7 @@ def _allowed_output_paths_for_launch(
             # mandates `run_quality_checks` against
             # `project_dir=source/<source_id>/src/` for
             # `toolchain.build_system=make` + Fortran/C-family pipelines. The
-            # MCP server's default command_log_path resolves to
+            # build-runtime library's default command_log_path resolves to
             # `<project_dir>/command_log.jsonl`, so the audit log lands in
             # the source tree. This is the only legitimate write the
             # Validate.execute substep makes outside runs/. Strictly bind the
@@ -7217,7 +7200,7 @@ def _allowed_output_paths_for_launch(
                 if not source_id:
                     return False
                 expected_cross_phase = (
-                    f"{generate_prefix}{source_id}/src/{_MCP_AUDIT_LOG_BASENAME}"
+                    f"{generate_prefix}{source_id}/src/{_COMMAND_LOG_BASENAME}"
                 )
                 return path == expected_cross_phase
             if not path.startswith(validate_prefix):
@@ -7252,7 +7235,7 @@ def _allowed_output_paths_for_launch(
                 "stdout.log",
                 "stderr.log",
                 "metrics_basis.json",
-                # MCP `run_program` / `run_quality_checks` side-effect log
+                # `run_program` / `run_quality_checks` side-effect log
                 # (phase_04_validate.md).
                 "command_log.jsonl",
                 # R2: execute authors verdict.json deterministically (per-test predicate
@@ -7390,7 +7373,7 @@ def _allowed_output_paths_for_launch(
             return True
         return False
 
-    # Defensive auto-inject: MCP build/validate tooling writes a side-effect
+    # Defensive auto-inject: the build-runtime library writes a side-effect
     # command log to `<project_dir>/command_log.jsonl` (run_linter for
     # generate per skills/workflow-generate-generate, compile_project per
     # docs/workflow/phases/phase_03_build.md, run_program /
@@ -7402,7 +7385,7 @@ def _allowed_output_paths_for_launch(
     # Single-namespace enforcement for generate/build/validate steps:
     # require listed paths under `<pipeline_ref>/<phase>/` to use exactly one
     # `<source_id>` / `<binary_id>` / `<run_id>`. Otherwise the step could
-    # authorize MCP-owned audit logs and outputs across sibling runs in the
+    # authorize build-runtime-owned command logs and outputs across sibling runs in the
     # same pipeline, breaking provenance isolation.
     if step_token == "generate" and generate_prefix:
         gen_ids: set[str] = set()
@@ -7460,7 +7443,7 @@ def _allowed_output_paths_for_launch(
                 f"not match request run_id={request_run_id!r}"
             )
     # Inject only the canonical placements derived from listed paths — see
-    # `_canonical_mcp_audit_log_paths` for the strict per-phase shapes.
+    # `_canonical_command_log_paths` for the strict per-phase shapes.
     # `_resolved_build_system` is an internal request_payload field
     # populated by record_launch (resolved from the target profile of the request's
     # pipeline) so the helper can gate cross-phase canonical placement on `build_system=make`.
@@ -7473,7 +7456,7 @@ def _allowed_output_paths_for_launch(
         if isinstance(_bs_raw, str) and _bs_raw.strip()
         else ""
     )
-    canonical_logs = _canonical_mcp_audit_log_paths(
+    canonical_logs = _canonical_command_log_paths(
         step_token=step_token,
         pipeline_ref=pipeline_ref,
         node_safe=node_safe,
@@ -7497,7 +7480,7 @@ def _allowed_output_paths_for_launch(
 
     for idx, path in enumerate(allowed):
         if path in canonical_logs_set:
-            # Canonical MCP-owned audit logs are pre-validated against
+            # Canonical build-runtime-owned command logs are pre-validated against
             # canonical phase placements (including legitimate cross-phase
             # placements like Execute's run_quality_checks log under
             # generate/<gen>/src/).
@@ -7522,12 +7505,12 @@ def _allowed_output_paths_for_launch(
     return deduped
 
 
-# Integrity-protected audit logs written exclusively by MCP tools as evidence
+# Integrity-protected audit logs written exclusively by the build-runtime library as evidence
 # of tool execution. `validate_pipeline_semantics.py` reads these files and
 # trusts their JSONL records (e.g. `tool_name`, `ok`, `command`) as the source
-# of truth that an MCP tool actually ran. Direct `Edit` / `Write` access by
+# of truth that a build-runtime entry point actually ran. Direct `Edit` / `Write` access by
 # child agents would let them forge successful runs, so canonical placements
-# (computed by `_canonical_mcp_audit_log_paths()`) are excluded from
+# (computed by `_canonical_command_log_paths()`) are excluded from
 # `allowed_file_tool_paths` (and so are never file-tool-writable by a child).
 #
 # Protection is scoped to canonical placements only — a non-canonical file
@@ -7535,10 +7518,10 @@ def _allowed_output_paths_for_launch(
 # nested subdirectory) is treated as a normal file. This avoids both
 # (a) over-trusting any manifest entry whose basename happens to match
 # (b) over-blocking legitimate project files with this name.
-_MCP_AUDIT_LOG_BASENAME: str = "command_log.jsonl"
+_COMMAND_LOG_BASENAME: str = "command_log.jsonl"
 
 
-def _canonical_mcp_audit_log_paths(
+def _canonical_command_log_paths(
     *,
     step_token: str,
     pipeline_ref: str,
@@ -7548,7 +7531,7 @@ def _canonical_mcp_audit_log_paths(
     build_system: str = "",
     substep_token: str = "",
 ) -> list[str]:
-    """Derive canonical MCP audit log paths from the listed allowed_output_paths.
+    """Derive canonical command log paths from the listed allowed_output_paths.
 
     Canonical placements (per docs/workflow/phases/phase_*.md and
     docs/workflow/phases/phase_04_validate.md):
@@ -7558,7 +7541,7 @@ def _canonical_mcp_audit_log_paths(
       - validate.execute (cross-phase quality_check): `<pipeline_ref>/source/<source_id>/src/command_log.jsonl`
         — `run_quality_checks` runs with `project_dir=source/<source_id>/src/`
         for `toolchain.build_system=make` + Fortran/C-family pipelines per
-        `docs/workflow/phases/phase_04_validate.md`, so the MCP server's
+        `docs/workflow/phases/phase_04_validate.md`, so the build-runtime library's
         default `command_log_path` (resolved as
         `project_dir/command_log.jsonl`) lands in the source tree even
         though the substep is `validate.execute`.
@@ -7580,7 +7563,7 @@ def _canonical_mcp_audit_log_paths(
             parts = [p for p in tail.split("/") if p]
             # Canonical: <source_id>/src/...
             if len(parts) >= 2 and parts[1] == "src":
-                canonical.add(f"{prefix}{parts[0]}/src/{_MCP_AUDIT_LOG_BASENAME}")
+                canonical.add(f"{prefix}{parts[0]}/src/{_COMMAND_LOG_BASENAME}")
     elif step_token == "build":
         prefix = f"{pipeline_ref}/binary/"
         for tok in listed_paths:
@@ -7592,11 +7575,11 @@ def _canonical_mcp_audit_log_paths(
             # project_dir=<binary_id>/): <binary_id>/command_log.jsonl
             # alongside binary_meta.json.
             if parts:
-                canonical.add(f"{prefix}{parts[0]}/{_MCP_AUDIT_LOG_BASENAME}")
+                canonical.add(f"{prefix}{parts[0]}/{_COMMAND_LOG_BASENAME}")
         # Cross-phase placement is reserved for in-source Make builds
         # (Fortran/C-family per docs/workflow/phases/phase_03_build.md): compile_project runs
         # with `project_dir=<pipeline>/source/<source_id>/src/` (where the
-        # Makefile lives), so the MCP server's default command_log_path
+        # Makefile lives), so the build-runtime library's default command_log_path
         # resolves under the source tree. Gate on a build system that builds IN SOURCE
         # (`_builds_in_source`; `make` is the one today) —
         # CMake/Meson/Ninja and other out-of-source toolchains do not
@@ -7606,11 +7589,11 @@ def _canonical_mcp_audit_log_paths(
         if source_id and _builds_in_source(build_system):
             gen_prefix = f"{pipeline_ref}/source/"
             canonical.add(
-                f"{gen_prefix}{source_id}/src/{_MCP_AUDIT_LOG_BASENAME}"
+                f"{gen_prefix}{source_id}/src/{_COMMAND_LOG_BASENAME}"
             )
     elif step_token == "validate" and substep_token == "execute" and node_safe:
-        # Only the Validate.execute substep emits MCP command logs (run_program
-        # / run_quality_checks). Validate.judge runs without MCP, so no
+        # Only the Validate.execute substep emits command logs (run_program
+        # / run_quality_checks). Validate.judge runs no build-runtime entry point, so no
         # auto-injection — adding command_log.jsonl would later fail
         # phase contract validation since judge does not list it as an allowed
         # output filename.
@@ -7623,7 +7606,7 @@ def _canonical_mcp_audit_log_paths(
             # Canonical (in-phase): <run_id>/<node_safe>/command_log.jsonl
             if len(parts) >= 2 and parts[1] == node_safe:
                 canonical.add(
-                    f"{prefix}{parts[0]}/{node_safe}/{_MCP_AUDIT_LOG_BASENAME}"
+                    f"{prefix}{parts[0]}/{node_safe}/{_COMMAND_LOG_BASENAME}"
                 )
         # Cross-phase quality_check log placement: derive ONLY from the
         # explicit `source_id` field AND only when the toolchain is
@@ -7631,12 +7614,12 @@ def _canonical_mcp_audit_log_paths(
         # docs/workflow/phases/phase_04_validate.md). For non-Make runs
         # (run_program against a CMake/Meson out-of-source binary), the log
         # belongs in-phase and cross-phase authorization must not be
-        # granted — otherwise a child could steer MCP logging into the
+        # granted — otherwise a child could steer command logging into the
         # source tree and contaminate verified provenance files.
         if source_id and _builds_in_source(build_system):
             gen_prefix = f"{pipeline_ref}/source/"
             canonical.add(
-                f"{gen_prefix}{source_id}/src/{_MCP_AUDIT_LOG_BASENAME}"
+                f"{gen_prefix}{source_id}/src/{_COMMAND_LOG_BASENAME}"
             )
     return sorted(canonical)
 
@@ -7659,7 +7642,7 @@ def _builds_in_source(build_system: str | None) -> bool:
     return module.BUILDS_IN_SOURCE is True
 
 
-def _canonical_mcp_audit_log_paths_for_request(
+def _canonical_command_log_paths_for_request(
     request_payload: dict[str, Any],
     allowed_output_paths: Sequence[str],
     *,
@@ -7685,7 +7668,7 @@ def _canonical_mcp_audit_log_paths_for_request(
         except TargetProfileError:
             build_system = ""
     substep_token = str(request_payload.get("substep") or "").strip().lower()
-    return _canonical_mcp_audit_log_paths(
+    return _canonical_command_log_paths(
         step_token=step_token,
         pipeline_ref=pipeline_ref,
         node_safe=node_safe,
@@ -7778,8 +7761,8 @@ LEAF_ENV_ALLOWLIST: dict[str, str] = {
         "hook modules import THIS checkout rather than an installed copy."
     ),
     "PYTHONDONTWRITEBYTECODE": (
-        "a grandchild python writing __pycache__ under tools/ trips the terminal "
-        "unauthorized-write validation (issue #5)."
+        "keeps a grandchild python from writing __pycache__ under tools/ (issue #5; the "
+        "unauthorized-write validation that first refused it went in issue #171 PR-2)."
     ),
 }
 
@@ -7793,9 +7776,9 @@ LEAF_ENV_PATH_DEFAULT = "/usr/bin:/bin"
 # `AWS_*`, `LD_*`) are outside the prefix BY CONSTRUCTION, which is what makes the
 # prefix safe to pass. An enumeration instead would be a list that grows by one every
 # time a variable is added and fails closed on the day someone forgets. That
-# is the same allowlist-polarity argument `mcp_servers/README.md` makes for the MCP gate's
-# caller-supplied `env` (the bullet beginning "The caller-supplied `env` is an allowlist
-# under an orchestration"), reached for the same reason: a denylist over environment names
+# is the same allowlist-polarity argument the build-runtime library's orchestrated `env`
+# allowlist rested on until it was retired with the capability gate (issue #171), reached
+# for the same reason: a denylist over environment names
 # does not terminate. The dangerous direction (`ANTHROPIC_*`, stranger `CLAUDE_CODE_*`,
 # `AWS_*`, `LD_*`) is outside the prefix by construction, so the prefix does not weaken
 # the closure.
@@ -8679,7 +8662,7 @@ def render_bwrap_command(
             # only profile builder left and hardcodes `write_roots: []`, so no pin reaches here.
             # Same standing as `runtime_rw_file_paths` below. Net: the atomic-write mechanism works,
             # while the narrowing's guarantee (a verify/judge leaf cannot mutate a same-dir
-            # certified artifact) is preserved. runtime_rw_file_paths (e.g. a cross-phase MCP
+            # certified artifact) is preserved. runtime_rw_file_paths (e.g. a cross-phase
             # log) are rw-bound later and override any sibling ro-bind here.
             parent = abs_path.parent
             cmd.extend(["--bind", str(parent), str(parent)])
@@ -8716,12 +8699,12 @@ def render_bwrap_command(
         if abs_path.is_dir():
             abs_token = str(abs_path)
             cmd.extend(["--bind", abs_token, abs_token])
-    # Authorized cross-phase MCP audit logs bound writable as individual files. Emitted
+    # Authorized cross-phase command logs bound writable as individual files. Emitted
     # AFTER the read-root ro-binds so a log inside a read input (e.g. a Make build's
     # source/<id>/src/command_log.jsonl) becomes writable while the rest of that read
     # input stays read-only (bwrap later-overrides-earlier). Nothing populates this list
-    # either since issue #171 PR-2: the cross-phase log is written by the MCP server from the
-    # conductor's own process, not from inside a sandbox.
+    # either since issue #171 PR-2: the cross-phase log is written by the build-runtime library in
+    # the conductor's own process, not from inside a sandbox.
     for rel in profile.get("runtime_rw_file_paths", []):
         if not isinstance(rel, str) or not rel.strip():
             continue
@@ -8783,8 +8766,8 @@ def render_bwrap_command(
     # DISK (`spawn_leaf` -> `_sandbox_profile_for`), which that guarantee never touched —
     # including one persisted before the environment became declared, whose `env` predates
     # the ids entirely. Under `--clearenv` such a profile delivers a leaf with no
-    # `ATMOFAB_ORCHESTRATION_ID`, and its build-runtime MCP server then reads "not under a
-    # run" and stops requiring a capability token.
+    # `ATMOFAB_ORCHESTRATION_ID`, and its build-runtime MCP server (deleted in issue #444)
+    # then read "not under a run" and stopped requiring a capability token.
     # FILLED from the profile's OWN recorded ids, not refused: refusing here would reject
     # exactly those older profiles, i.e. break `--resume` of a run started before this
     # branch — the fourth over-refusal on a change whose failures have all been in that
@@ -8842,7 +8825,7 @@ def _is_host_pycache_redirect_write(rel_path: str) -> bool:
     (``workspace/.pycache/``; see _HOST_PYCACHE_REDIRECT_PREFIX and run_workflow.py).
 
     The workflow conductor runs in-process in run_workflow.py, whose sys.pycache_prefix is
-    redirected here, so its lazy imports (build_runtime_server / tools.hooks.lint_evidence,
+    redirected here, so its lazy imports (tools.build_runtime / tools.hooks.lint_evidence,
     imported during compile.static / generate.gate) write *.pyc under this tree. That is a
     trusted HOST write that lands in the child-window FS-diff and must be exempted from the
     unauthorized-write check.
@@ -10989,7 +10972,7 @@ def resume_orchestration(
     Raise a RuntimeError when the orchestration does not exist.
     """
     # `init` refuses an id that is not a plain path token; a resume must refuse it too,
-    # or a workspace created before that rule restarts and then fails at its first MCP
+    # or a workspace created before that rule restarts and then fails at its first build-runtime
     # call, several phases in, on the id it was resumed with.
     if not _is_safe_path_id(str(orchestration_id)):
         raise RuntimeError(
@@ -13979,8 +13962,8 @@ def _all_strict_boolean_probe_checks_pass(checks: list[dict[str, Any]]) -> bool:
 # The two claude MCP remediation strings — the enablement one and the tool-permission one — stood
 # here until Z4 (issue #171). They were the `detail` a failing `_probe_claude_mcp_registry` handed the
 # operator, and that probe is deleted: a pure leaf calls no MCP tool, so there is no leaf-session
-# enablement to certify. `mcp_servers/README.md` carries what an operator still has to do for their
-# OWN session.
+# enablement to certify. The MCP server itself was deleted in issue #444; the conductor calls the
+# build-runtime library in-process (`tools/build_runtime.py`).
 
 
 def _probe_claude_backend(
@@ -14094,31 +14077,6 @@ _BACKEND_PROBERS: dict[
 }
 
 
-_CLAUDE_MCP_BUILD_RUNTIME_SERVER_RELPATH = "mcp_servers/build_runtime_server.py"
-_CLAUDE_MCP_BUILD_RUNTIME_NAME_TOKENS = ("build-runtime", "build_runtime")
-# The canonical source for enablement is the project settings committed to the repo. `~/.claude.json`
-# (per-user / per-machine trust history) is intentionally not referenced — because it would cause the
-# preflight result to vary per machine (reproducibility first).
-_CLAUDE_PROJECT_SETTINGS_RELPATH = ".claude/settings.json"
-_CLAUDE_PROJECT_LOCAL_SETTINGS_RELPATH = ".claude/settings.local.json"
-_MCP_JSON_RELPATH = ".mcp.json"
-# The canonical form of the permission rule string. Because Claude Code's permission rule does not
-# interpret a wildcard in the MCP tool name part (`mcp__build-runtime__*`), a server-level grant covering all tools is the proper approach.
-# The canonical (hyphen) token for displaying the remediation message.
-_CLAUDE_MCP_SERVER_PERMISSION_TOKEN = "mcp__build-runtime"
-# The individual tool names required for the granted decision. detect_build_system is advisory (not
-# included in the granted decision) — only the 5 tools that Generate/Build/Validate require are gated.
-_CLAUDE_MCP_REQUIRED_TOOL_NAMES = (
-    "run_linter",
-    "run_syntax_check",
-    "compile_project",
-    "run_program",
-    "run_quality_checks",
-)
-# The canonical (hyphen) token for displaying the remediation message.
-_CLAUDE_MCP_REQUIRED_TOOL_PERMISSION_TOKENS = tuple(
-    f"mcp__build-runtime__{name}" for name in _CLAUDE_MCP_REQUIRED_TOOL_NAMES
-)
 def _probe_http_provider(
     provider_row: Mapping[str, Any],
     *,
@@ -14448,7 +14406,7 @@ def init_orchestration(
 ) -> dict[str, Any]:
     # The id becomes a directory name and is later interpolated into every gate's path,
     # where anything but a plain token is refused. Refuse it here so an operator learns
-    # at `init` rather than losing the run at its first MCP call.
+    # at `init` rather than losing the run at its first build-runtime call.
     if not _is_safe_path_id(str(orchestration_id)):
         raise RuntimeError(
             "init-orchestration: orchestration_id must be a plain [A-Za-z0-9_-] token "
@@ -15244,7 +15202,7 @@ def record_launch(
                     "must run against the binary produced by the source "
                     "it claims provenance for."
                 )
-        canonical_audit_logs = _canonical_mcp_audit_log_paths_for_request(
+        canonical_audit_logs = _canonical_command_log_paths_for_request(
             request_payload, allowed_output_paths, repo_root=repo_root
         )
         # Validate cross-phase canonical placements:
@@ -15285,7 +15243,7 @@ def record_launch(
                         f"{_step_token_xpv} launch references unknown "
                         f"cross-phase source_id={_gen_id_xpv!r}: "
                         f"source_meta.json not found at {_gen_meta!s}. "
-                        "Cross-phase MCP audit log authorization requires the "
+                        "Cross-phase command log authorization requires the "
                         "referenced generation to have actually run."
                     )
                 # Verify the generation reached pass state BEFORE granting
@@ -15312,7 +15270,7 @@ def record_launch(
                         f"{_step_token_xpv} launch references cross-phase "
                         f"source_id={_gen_id_xpv!r} with "
                         f"verification_status={_gen_status!r} (expected "
-                        "'pass'). Cannot grant MCP-owned write authority to "
+                        "'pass'). Cannot grant build-runtime-owned write authority to "
                         "a failed/stale generation tree; this would "
                         "contaminate provenance files trusted by later "
                         "validators."
@@ -17788,7 +17746,7 @@ def main(argv: list[str] | None = None) -> int:
         "verification_status=pass), and source_build_id (the binary_id whose binary execute uses; "
         "record_launch reads <pipeline>/build/<source_build_id>/binary_meta.json and verifies "
         "source_source_id == request.source_id to prevent mixed-build forge). "
-        "Cross-phase MCP audit log auto-inject (`<gen>/src/command_log.jsonl`) only fires when "
+        "Cross-phase command log auto-inject (`<gen>/src/command_log.jsonl`) only fires when "
         "the target profile of the request's pipeline_ref records `toolchain.build_system: make` (in-source builds). "
         "Generate substep extra-required: source_id matches the listed paths' single <gen_id>. "
         "Build step listed paths must use a single <binary_id>; cross-phase Make builds also accept "

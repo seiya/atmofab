@@ -1,6 +1,6 @@
 ---
 name: atmofab-enforcement-change
-description: Use when changing this repository's enforcement machinery — the deterministic gates, the validators, the build-runtime server's argument validation, the pure-leaf launch refusals and the read-only sandbox profile, the DEV hook layer — and whenever you are about to classify a review finding as 「残余」「到達不能」「対象外」 (residual / unreachable / out of scope). Required reading for fixing a fail-open, adding to an allowlist or denylist, touching the gate functions in `mcp_servers/build_runtime_server.py` / `tools/orchestration_runtime.py`, `tools/hooks/` (the DEV layer; the leaf hook layer, the capability gate and write_root derivation went in Z4, issue #171, and the episodes about them stay in `references/`), or the gates in `validate_pipeline_semantics.py`, for fixing an audit finding, and for triaging a subagent's or Codex's review findings.
+description: Use when changing this repository's enforcement machinery — the deterministic gates, the validators, the build-runtime library's argument validation, the pure-leaf launch refusals and the read-only sandbox profile, the DEV hook layer — and whenever you are about to classify a review finding as 「残余」「到達不能」「対象外」 (residual / unreachable / out of scope). Required reading for fixing a fail-open, adding to an allowlist or denylist, touching the gate functions in `tools/build_runtime.py` / `tools/orchestration_runtime.py`, `tools/hooks/` (the DEV layer; the leaf hook layer, the capability gate and write_root derivation went in Z4, issue #171, and the episodes about them stay in `references/`), or the gates in `validate_pipeline_semantics.py`, for fixing an audit finding, and for triaging a subagent's or Codex's review findings.
 ---
 
 # Changing atmofab's enforcement machinery
@@ -15,7 +15,7 @@ Fixing enforcement machinery in this repository carries a high probability that 
 itself introduces the next defect**. In PR #51 (two high audit findings), 17 subagent review
 rounds plus 3 Codex passes surfaced 15 defects that the fixes had introduced. What follows is
 a procedure against those recurring shapes; it does not restate the rules themselves (the
-canonical sources are `mcp_servers/README.md` / `docs/HOOKS.md` / `docs/AGENT_SKILLS.md` / `docs/ORCHESTRATION.md` §pure-function leaf —
+canonical sources are `docs/BUILD_RUNTIME.md` / `docs/HOOKS.md` / `docs/AGENT_SKILLS.md` / `docs/ORCHESTRATION.md` §pure-function leaf —
 copying them here would add one more twin document, which is itself the defect class this
 skill exists to kill).
 
@@ -792,7 +792,7 @@ Its own tests live beside it and `pytest tools/tests` does not collect them:
 ### 6. Verify and record
 
 Run the procedures in `references/verification.md` (suite baseline, ruff diff against
-origin/main, doc size ceilings, end-to-end through a real server process, the prose grep) and
+origin/main, doc size ceilings, end-to-end by driving the build-runtime library by import, the prose grep) and
 write the measured values into the commit message or the pull request. **Do not write an assertion you have not
 measured.**
 

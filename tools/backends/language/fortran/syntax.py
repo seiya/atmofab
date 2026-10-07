@@ -4,7 +4,7 @@
 The `syntax_promotions` capability: which files are sources, the order they are handed to the
 compiler in, and which warning classes the stage promotes to errors. The compiler adapter
 (`tools/backends/compiler/<id>/syntax.py`) builds the command line out of these; both moved
-here from `mcp_servers/build_runtime_server.py`.
+here from `tools/build_runtime.py`.
 
 Stdlib only.
 """

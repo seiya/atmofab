@@ -174,7 +174,7 @@ SUBSTEPS: dict[str, tuple[str | None, ...]] = {
     # several classes gets ONE warm repair turn carrying all findings, not one repair turn +
     # one attempt per class:
     #   - lint   (Conductor._gate_lint_check):   runs run_linter. Always runs.
-    #   - syntax (Conductor._gate_syntax_check): runs the MCP run_syntax_check compiler
+    #   - syntax (Conductor._gate_syntax_check): runs the build-runtime run_syntax_check compiler
     #     front-end gate (the language's mandatory syntax-only stage, plus optional
     #     target-compiler stages from ATMOFAB_SYNTAX_COMPILERS) over the staged node +
     #     dependency-closure sources, so the whole class of syntax / standard-conformance
@@ -224,7 +224,7 @@ SUBSTEP_AWARE_PHASES: frozenset[str] = frozenset({"compile", "generate", "valida
 
 # Output basenames excluded from a producer substep's "all deliverables written"
 # check: audit/process logs whose presence/placement is not a deliverable contract
-# (the MCP command log placement in particular varies by build system). The set is defined
+# (the build-runtime command log placement in particular varies by build system). The set is defined
 # in the runtime (`AUDIT_LOG_BASENAMES`) because the certification stamp excludes the same
 # basenames from the hashes it records; one definition, two readers.
 from tools.orchestration_runtime import AUDIT_LOG_BASENAMES as _OPTIONAL_OUTPUT_BASENAMES
@@ -234,12 +234,11 @@ from tools.orchestration_runtime import AUDIT_LOG_BASENAMES as _OPTIONAL_OUTPUT_
 from tools.orchestration_runtime import (
     FAIL_CLOSED_REASON_CODES,
     DerivationInputsUnresolvable,
-    _build_runtime_server_module,
     phase_derivation,
 )
 
 # Deterministic in-process build/run capture limit. The canonical per-step
-# stdout/stderr log files must be FULL (untrimmed); the MCP `_run_command` trims its
+# stdout/stderr log files must be FULL (untrimmed); `build_runtime._run_command` trims its
 # returned stdout/stderr to this byte budget, so we pass a large value to avoid losing
 # detail (e.g. a big compiler error dump). The runner writes its data to JSON files,
 # not stdout, so program stdout/stderr are normally tiny regardless.
@@ -1960,15 +1959,14 @@ def build_launch_request(
 LEAF_MAX_OUTPUT_TOKENS = 128000
 
 # A claude leaf is launched with `--tools ""` (`pure_leaf.pure_leaf_flags`): no tool at all.
-# The `--tools <allowlist>` of issue #71, and the `--mcp-config .mcp.json` that gave an agentic
-# leaf a build-runtime server set, both went with the agentic leaf in Z4 (issue #171). What
+# The `--tools <allowlist>` of issue #71 went with the agentic leaf in Z4 (issue #171). What
 # remains that reads the argv is `_launch_setting_surface`, which records the tool VALUES.
 #
 # PLACEMENT RULE for the variadic flags on this argv (`--tools <tools...>`): a variadic flag
 # keeps consuming tokens until one starts with `-`, so its value must be followed by an OPTION
-# token. MEASURED (CLI 2.1.234), because the obvious guess is wrong in the safe direction:
-# `claude --mcp-config <file> -p` does NOT swallow the `-p` — it is a `-` token, so it
-# terminates the list and is parsed as `--print`. A SHORT option therefore terminates a
+# token. MEASURED (CLI 2.1.234, on another variadic flag), because the obvious guess is wrong
+# in the safe direction: a `-p` after a variadic value is NOT swallowed — it is a `-` token, so
+# it terminates the list and is parsed as `--print`. A SHORT option therefore terminates a
 # variadic just as a long one does, and a trailing `-p` is safe even directly after a variadic
 # value. What is genuinely unsafe is a bare word: a positional prompt restored after `--tools`
 # would be eaten by the list, which is one more reason the prompt rides stdin.
@@ -1979,18 +1977,16 @@ def _variadic_values(argv: list[str], flag: str) -> list[str]:
     argv order. Each occurrence takes the tokens after it up to the next OPTION token (one
     starting with `-`) or the end of the list.
 
-    `-`, not `--`, because that is what the CLI does — measured on 2.1.234:
-    `claude --mcp-config <file> -p` parses the `-p` as `--print` rather than as a second
-    config path, and `claude --mcp-config <a> <b> -p` reports `<b>` as a missing config
-    file, so the list is genuinely multi-valued and genuinely terminated by any `-` token.
-    A `--`-only rule would silently over-read past a short option.
+    `-`, not `--`, because that is what the CLI does — measured on 2.1.234: a `-p` after a
+    variadic value is parsed as `--print` rather than as another value, and a second bare
+    word after the first is read as a value, so the list is genuinely multi-valued and
+    genuinely terminated by any `-` token. A `--`-only rule would silently over-read past a
+    short option.
 
-    ALL occurrences, because `--mcp-config` ACCUMULATES rather than overriding — measured:
-    `claude --mcp-config <ok> --mcp-config <missing>` fails on the second file, so both are
-    loaded. An `argv.index()` read sees only the first, and a leaf whose configured
-    `command:` prefix already carries one would then be recorded without the repository's
-    own `.mcp.json` — omitting the mandatory server set from the record AND from the
-    fail-closed read that is supposed to guarantee it."""
+    ALL occurrences, because a variadic flag given twice ACCUMULATES rather than overriding
+    (measured on the same CLI). An `argv.index()` read sees only the first, so a leaf whose
+    configured `command:` prefix already carries the flag would be recorded with half its
+    values."""
     out: list[str] = []
     for i, token in enumerate(argv):
         if token != flag:
@@ -9510,7 +9506,7 @@ class Conductor:
     # -- deterministic (non-LLM) substep execution ----------------------------
     # Build and Validate.execute are contractually non-LLM (deterministic compile /
     # run), so the conductor ALWAYS runs their body IN-PROCESS (no `claude -p` leaf) by
-    # calling the build-runtime MCP tool handlers directly. Validate.judge stays an LLM
+    # calling the build-runtime library's entry points directly (`tools/build_runtime.py`). Validate.judge stays an LLM
     # leaf (its independent semantic check is essential).
 
     @staticmethod
@@ -9595,7 +9591,7 @@ class Conductor:
         """Run a non-LLM substep body in-process and return a ProcResult shaped like a
         leaf's (returncode 0 == clean conductor run; a content failure such as a
         compile error is still rc 0 and routed via binary_meta.failure_category).
-        A nonzero rc means a conductor-side/MCP failure -> transport fail_closed."""
+        A nonzero rc means a conductor-side/build-runtime failure -> transport fail_closed."""
         try:
             if phase == "build":
                 out = self._build_inproc(refs, child_arid)
@@ -9763,8 +9759,7 @@ class Conductor:
         `bin/`, and the job's output names the local paths it stands for.
         `binary_meta.json#environment` records where it was built, and `Validate.execute`
         refuses to run a binary at a site other than that one (`_execute_inproc`)."""
-        _build_runtime_server_module()
-        from build_runtime_server import (
+        from tools.build_runtime import (
             COMPILE_PROJECT_TIMEOUT_SEC,
             build_command,
             default_build_jobs,
@@ -9834,11 +9829,6 @@ class Conductor:
         if site is None or site.is_local:
             result = tool_compile_project({
                 "project_dir": str(src_dir),
-                # `repo_root` is accepted and unused by the server since issue #171 PR-2 (it
-                # anchored the retired capability gate's evidence); passed because the served
-                # schema still declares it and it is the one place the call records which
-                # checkout it belongs to.
-                "repo_root": str(self.repo_root),
                 "language": language,
                 "build_system": build_system,
                 "extra_args": build_args(str(obj_dir), str(bin_dir)),
@@ -9856,13 +9846,13 @@ class Conductor:
             # The same argv at a remote site: the node's whole `src/` (minus the audit logs,
             # which the build appends to and nothing reads there) and the staged dependency
             # sources shipped to a fresh job directory, one command, the binary collected. The
-            # command's `command_log.jsonl` entry is written here by the server's own writer at
+            # command's `command_log.jsonl` entry is written here by the library's own writer at
             # the placement the local path uses, with the LOCAL argv as `command`. A transport
             # failure raises `RemoteExecutionError` — `deterministic_build_error`, transport
             # fail_closed, `--resume` retries it — as does the site lacking the build compiler
             # (checked before the command runs, `required_programs`), which make would
             # otherwise report as a failure of the source.
-            from build_runtime_server import _validate_build_argv_overrides
+            from tools.build_runtime import _validate_build_argv_overrides
 
             from tools.remote_execution import (
                 CommandSpec,
@@ -10275,8 +10265,7 @@ class Conductor:
         log the record of the gate proper.
         """
         import shutil
-        _build_runtime_server_module()
-        from build_runtime_server import tool_run_linter
+        from tools.build_runtime import tool_run_linter
 
         src_dir = self.repo_root / refs.source_dir() / "src"
         host_names = self._host_rendered_src_names(refs)
@@ -10322,7 +10311,6 @@ class Conductor:
             out = tool_run_linter({
                 "preset": preset,
                 "project_dir": str(target),
-                "repo_root": str(self.repo_root),
                 "capture_limit": _FULL_CAPTURE_LIMIT,
                 "orchestration_id": self.orchestration_id,
                 "agent_run_id": child_arid,
@@ -10381,8 +10369,7 @@ class Conductor:
         failure (status="fail") the gate routes to generate.generate via a warm-resume reopen; a
         genuine tool/infra error raises and surfaces as a transport fail_closed. The evidence is
         written even on a content fail (ok=false), which the post_generate certifier depends on."""
-        _build_runtime_server_module()
-        from build_runtime_server import tool_run_linter
+        from tools.build_runtime import tool_run_linter
         # Same language->linter answer the post_generate validator certifies against (the
         # registry's), so the preset the conductor RUNS cannot drift from the one it EXPECTS.
         from tools.hooks.lint_evidence import write_lint_evidence
@@ -10405,7 +10392,6 @@ class Conductor:
         result = tool_run_linter({
             "preset": preset,
             "project_dir": str(src_dir),
-            "repo_root": str(self.repo_root),
             "command_log_path": str(src_dir / "command_log.jsonl"),
             "capture_limit": _FULL_CAPTURE_LIMIT,
             "orchestration_id": self.orchestration_id,
@@ -10533,8 +10519,7 @@ class Conductor:
         the certified dependency-closure model sources (`_stage_dependency_sources`).
         Module files are compiler-/version-specific, so stages never share a dir and
         never touch Build's object directory."""
-        _build_runtime_server_module()
-        from build_runtime_server import (
+        from tools.build_runtime import (
             SyntaxSourceNameError,
             syntax_adapter,
             tool_run_syntax_check,
@@ -10682,7 +10667,6 @@ class Conductor:
                         "architecture": architecture,
                         "parallel_backend": tc["backend"],
                         "project_dir": str(sub_dir),
-                        "repo_root": str(self.repo_root),
                         "command_log_path": command_log_path,
                         "capture_limit": _FULL_CAPTURE_LIMIT,
                         "orchestration_id": self.orchestration_id,
@@ -10697,7 +10681,6 @@ class Conductor:
                         "architecture": architecture,
                         "parallel_backend": tc["backend"],
                         "project_dir": str(stage_dir),
-                        "repo_root": str(self.repo_root),
                         "command_log_path": str(src_dir / "command_log.jsonl"),
                         "capture_limit": _FULL_CAPTURE_LIMIT,
                         "orchestration_id": self.orchestration_id,
@@ -11400,8 +11383,7 @@ class Conductor:
         agent-owned metadata (snapshot_schema/quality_check/trial_meta/stdout/stderr),
         then run the post_execute gate. The runner's evidence bytes are never authored
         by an LLM (preserving Validate.judge's non-fabrication independence)."""
-        _build_runtime_server_module()
-        from build_runtime_server import (
+        from tools.build_runtime import (
             QUALITY_CHECKS_TIMEOUT_SEC,
             RUN_PROGRAM_TIMEOUT_SEC,
             quality_check_command,
@@ -11515,7 +11497,7 @@ class Conductor:
                 f"nothing at Build) — make it answer there, then rebuild: run this node as the "
                 f"target with --rederive build,validate")
 
-        # Attribution only: the server records both ids in `command_log.jsonl` and
+        # Attribution only: the library records both ids in `command_log.jsonl` and
         # decides nothing from them (the capability gate went with issue #171).
         attribution = {"orchestration_id": self.orchestration_id, "agent_run_id": child_arid}
 
@@ -11557,7 +11539,6 @@ class Conductor:
                 "env": dict(launch.env),
                 "command_log_path": str(cmd_log),
                 "capture_limit": _FULL_CAPTURE_LIMIT,
-                "repo_root": str(self.repo_root),
                 **attribution,
             })
             # 1b. The device trace's summary (issue #307), in the run's cwd, after a run that
@@ -11568,7 +11549,6 @@ class Conductor:
                 "env": {},
                 "command_log_path": str(cmd_log),
                 "capture_limit": _FULL_CAPTURE_LIMIT,
-                "repo_root": str(self.repo_root),
                 **attribution,
             }) if launch.trace is not None and res_run.get("ok") else None
             # 2. run_quality_checks (the build system's preset re-run; output to a SEPARATE
@@ -11579,7 +11559,6 @@ class Conductor:
                 "env": qc_env,
                 "command_log_path": str(qc_cmd_log),
                 "capture_limit": _FULL_CAPTURE_LIMIT,
-                "repo_root": str(self.repo_root),
                 **attribution,
             }) if res_run.get("ok") and (res_trace is None or res_trace.get("ok")) else None
             platform_record = local_platform_record(launch.platform_probe,
@@ -11589,7 +11568,7 @@ class Conductor:
             # The same two commands at a remote site (`tools/remote_execution.py`): one job,
             # the binary, the IR and the build control file shipped to a fresh job directory,
             # the evidence copied back, and each command's `command_log.jsonl` entry written
-            # here by the server's own writer, at the placement the local path uses. A transport
+            # here by the library's own writer, at the placement the local path uses. A transport
             # failure raises `RemoteExecutionError`, which `_run_deterministic_substep` turns
             # into `deterministic_validate_error`: not the kernel's failure, and no leaf's.
             from tools.remote_execution import (

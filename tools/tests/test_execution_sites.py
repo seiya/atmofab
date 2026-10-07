@@ -295,15 +295,15 @@ class RefusalTests(unittest.TestCase):
             cfg = _Repo(tmp).load(base + f"    scheduler_directives: {json.dumps(directives)}\n")
         self.assertEqual(cfg.sites["box"].scheduler_directives, tuple(directives))
 
-    def test_the_shell_active_set_is_the_servers_own(self) -> None:
-        """Read from the server, not copied: a character the server starts refusing is refused
-        here too."""
-        chars = es._shell_active_chars()  # puts the server on sys.path
-        import build_runtime_server
+    def test_the_shell_active_set_is_the_librarys_own(self) -> None:
+        """Read from the build-runtime library, not copied: a character the library starts
+        refusing is refused here too."""
+        chars = es._shell_active_chars()
+        from tools import build_runtime
 
-        self.assertEqual(chars, frozenset(build_runtime_server._SHELL_ACTIVE_CHARS))
-        with mock.patch.object(build_runtime_server, "_SHELL_ACTIVE_CHARS",
-                               set(build_runtime_server._SHELL_ACTIVE_CHARS) | {"%"}):
+        self.assertEqual(chars, frozenset(build_runtime._SHELL_ACTIVE_CHARS))
+        with mock.patch.object(build_runtime, "_SHELL_ACTIVE_CHARS",
+                               set(build_runtime._SHELL_ACTIVE_CHARS) | {"%"}):
             exc = self._refuse(_BASE.replace("host: box", "host: 'b%x'"))
         self.assertEqual(exc.rule, "sites_config_shell_active_value")
 

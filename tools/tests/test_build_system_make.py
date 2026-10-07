@@ -4,7 +4,7 @@ What the neutral core reads off `tools/backends/build_system/make/execute.py` an
 `control_file.object_name`, pinned by value: these moved unchanged out of the conductor, the
 server, the validator and `codegen_bundle`, and a value that changes here changes what a Build
 runs, what a quality check re-runs and which record the gate accepts. The readers' wiring is
-pinned where the readers are (`test_workflow_conductor.py`, `test_build_runtime_server.py`,
+pinned where the readers are (`test_workflow_conductor.py`, `test_build_runtime.py`,
 `test_validate_pipeline_semantics.py`, `test_codegen_bundle.py`).
 """
 

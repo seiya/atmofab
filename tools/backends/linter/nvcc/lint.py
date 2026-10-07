@@ -17,7 +17,7 @@ verdict; that is a stated limit, not a closed one.
 THE INVOCATION TAKES FILES, NOT A DIRECTORY: the driver compiles the translation units it is
 given and walks nothing, so this module declares `SOURCE_SUFFIXES` and the build-runtime server
 passes every file of those suffixes under the lint target, recursively, by name
-(`mcp_servers/build_runtime_server.py` `tool_run_linter`). `-Xcompiler -fsyntax-only -c` makes it
+(`tools/build_runtime.py` `tool_run_linter`). `-Xcompiler -fsyntax-only -c` makes it
 leave no artifact beside a source (measured: none in the source directory or a subdirectory).
 
 WHAT A SOURCE CANNOT DO. An in-source suppression — `#pragma nv_diag_suppress`, `#pragma GCC

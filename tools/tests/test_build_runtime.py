@@ -1,9 +1,4 @@
-"""Tests for mcp_servers/build_runtime_server.py.
-
-Bytecode-cache handling: the build-runtime MCP server runs inside a read-only bwrap
-sandbox. It must never attempt to write Python bytecode (the previous code
-unconditionally created `workspace/.pycache`, which EROFSed before any build ran on a
-clean workspace).
+"""Tests for tools/build_runtime.py, the build-runtime library the conductor calls in-process.
 
 run_syntax_check: the Generate.syntax compiler front-end gate — adapter argv shape,
 module/use topological source ordering, missing-compiler skip, custom-command
@@ -11,14 +6,13 @@ rejection, and (when gfortran is installed) a real -fsyntax-only smoke covering 
 error classes the retired post_generate text heuristics used to mimic.
 """
 
+import importlib
 import importlib.util
-import io
 import json
 import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import textwrap
 import typing
@@ -26,68 +20,46 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-_SERVER_PATH = (
-    Path(__file__).resolve().parent.parent.parent / "mcp_servers" / "build_runtime_server.py"
-)
+_MODULE_PATH = Path(__file__).resolve().parent.parent / "build_runtime.py"
 
 
-def _load_server_module():
-    spec = importlib.util.spec_from_file_location("build_runtime_server", _SERVER_PATH)
+def _load_module():
+    """`tools.build_runtime`, the object the conductor's `from tools.build_runtime import`
+    statements read, so a `mock.patch.object` on it is what a conductor call sees."""
+    return importlib.import_module("tools.build_runtime")
+
+
+def _fresh_module():
+    """A FRESH execution of `tools/build_runtime.py`, for a row that asks what the module's
+    import-time tables are derived from. Registered under a private name, never as
+    `tools.build_runtime`, so the shared module every other row reads is left untouched."""
+    spec = importlib.util.spec_from_file_location("_build_runtime_fresh", _MODULE_PATH)
     assert spec is not None and spec.loader is not None
     mod = importlib.util.module_from_spec(spec)
-    # Register before exec so module-level @dataclass can resolve its __module__.
-    sys.modules["build_runtime_server"] = mod
     spec.loader.exec_module(mod)
     return mod
 
 
 def _gfortran_syntax():
-    """The gfortran `syntax_check` module, reached the way the server reaches it."""
+    """The gfortran `syntax_check` module, reached the way the library reaches it."""
     from tools.backends import registry
     return registry.capability_module("compiler", "gfortran", "syntax_check")
 
 
 def _fortran_syntax():
-    """The Fortran `syntax_promotions` module, reached the way the server reaches it."""
+    """The Fortran `syntax_promotions` module, reached the way the library reaches it."""
     from tools.backends import registry
     return registry.capability_module("language", "fortran", "syntax_promotions")
-
-
-class DisableBytecodeWritesTests(unittest.TestCase):
-    def test_disable_sets_interpreter_flag_and_env(self) -> None:
-        mod = _load_server_module()
-        orig_flag = sys.dont_write_bytecode
-        orig_env = os.environ.get("PYTHONDONTWRITEBYTECODE")
-        try:
-            sys.dont_write_bytecode = False
-            os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
-            mod._disable_bytecode_writes()
-            # The interpreter flag must flip (a runtime env var alone is too late) so
-            # importlib does not write .pyc; the env var is exported for subprocesses.
-            self.assertTrue(sys.dont_write_bytecode)
-            self.assertEqual(os.environ.get("PYTHONDONTWRITEBYTECODE"), "1")
-        finally:
-            sys.dont_write_bytecode = orig_flag
-            if orig_env is None:
-                os.environ.pop("PYTHONDONTWRITEBYTECODE", None)
-            else:
-                os.environ["PYTHONDONTWRITEBYTECODE"] = orig_env
-
-    def test_runtime_loader_does_not_mkdir_pycache(self) -> None:
-        # Regression: the server must not create workspace/.pycache (read-only under the
-        # bwrap sandbox -> EROFS before any build runs).
-        src = _SERVER_PATH.read_text(encoding="utf-8")
-        self.assertNotIn("pycache_root.mkdir", src)
 
 
 _HAVE_GFORTRAN = shutil.which("gfortran") is not None
 
 
 class _StandaloneServerEnvMixin:
-    """Pin the server's own environment to standalone for tests that call a gated
+    """Pin the library's own environment to standalone for tests that call a gated
     handler without `orchestration_id`.
 
-    Those calls are refused when the server runs under the workflow
+    Those calls are refused when the library runs under the workflow
     (`ATMOFAB_WORKFLOW_MODE` / `ATMOFAB_ORCHESTRATION_ID` in its environment), so without
     this the verdict would depend on the shell that started the suite — and commands in
     this repository are routinely prefixed with those variables."""
@@ -107,7 +79,7 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.mod = _load_server_module()
+        cls.mod = _load_module()
 
     def _src_dir(self, files: dict[str, str]) -> Path:
         d = Path(tempfile.mkdtemp())
@@ -373,7 +345,7 @@ class RunSyntaxCheckGfortranSmokeTests(_StandaloneServerEnvMixin, unittest.TestC
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.mod = _load_server_module()
+        cls.mod = _load_module()
 
     def _check(self, files: dict[str, str]) -> dict:
         d = Path(tempfile.mkdtemp())
@@ -543,7 +515,7 @@ class EnvOverrideDenylistTests(unittest.TestCase):
     ONE mode since issue #171. There was a second — an allowlist of the six make variables
     `Validate.execute` declares, applied when the call carried an `orchestration_id` — which
     existed because the caller might be a LEAF, and which no longer bounds anybody: no leaf
-    reaches this server. So this denylist is now the whole rule, and it is deliberately
+    reaches this library. So this denylist is now the whole rule, and it is deliberately
     INCOMPLETE (see `test_the_denylist_is_not_claimed_to_be_complete`): every program these
     tools run reads its own configuration from the environment, and the list catches a
     mistake rather than confining a caller."""
@@ -574,7 +546,7 @@ class EnvOverrideDenylistTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.mod = _load_server_module()
+        cls.mod = _load_module()
 
     def setUp(self) -> None:
         patcher = mock.patch.dict(os.environ, {}, clear=False)
@@ -641,7 +613,7 @@ class EnvOverrideDenylistTests(unittest.TestCase):
 
     def test_compile_project_defaults_are_the_module_values_a_remote_build_is_handed(self) -> None:
         """Issue #333: a build at a remote site is handed `COMPILE_PROJECT_TIMEOUT_SEC` and
-        `default_build_jobs()` because no server runs there, so the server must build with
+        `default_build_jobs()` because `tool_compile_project` does not run there, so the library must build with
         those same values. Driven under non-default values, so a literal copy of today's
         defaults in `tool_compile_project` is red."""
         with mock.patch.object(self.mod, "COMPILE_PROJECT_TIMEOUT_SEC", 123), \
@@ -767,12 +739,12 @@ class EnvOverrideDenylistTests(unittest.TestCase):
         self.assertEqual(run_command.call_args.kwargs["env"], payload)
 
     def test_server_injected_env_is_not_subject_to_the_denylist(self) -> None:
-        # The check sits where the caller's argument is read, so the server's own
+        # The check sits where the caller's argument is read, so the library's own
         # addition still happens: PYTHONPATH for the pytest preset.
         with self._spy_run_command() as run_command:
             self.mod.tool_run_quality_checks(
                 {"project_dir": str(self.project_dir), "preset": "pytest"})
-        # project_dir goes first; anything after it is this server's own inherited
+        # project_dir goes first; anything after it is this library's own inherited
         # PYTHONPATH, which varies with how the suite was started.
         self.assertEqual(
             run_command.call_args.kwargs["env"]["PYTHONPATH"].split(os.pathsep)[0],
@@ -801,7 +773,7 @@ class BuildArgvOverrideTests(unittest.TestCase):
     It replaced an ALLOWLIST that ran only under an orchestration — six variable names,
     plus a containment rule on the four whose value is a path, plus an outright refusal of
     `target`. That arm bounded a LEAF's grant, and since Z4 (issue #171) no leaf reaches
-    this server at all, so PR-2 of that issue retired it. What is left applies to every
+    this library at all, so PR-2 of that issue retired it. What is left applies to every
     call, which the old standalone arm did not: an element must ASSIGN (so make switches
     such as `--eval=$(shell ...)` are refused by construction rather than by name), and its
     value may not carry a character the make recipe's shell acts on.
@@ -812,7 +784,7 @@ class BuildArgvOverrideTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.mod = _load_server_module()
+        cls.mod = _load_module()
 
     def _check(self, extra_args: list[str]) -> None:
         self.mod._validate_build_argv_overrides(None, extra_args, "compile_project")
@@ -931,7 +903,7 @@ class BuildArgvOverrideTests(unittest.TestCase):
 
         `build_command` serves eleven build systems and the rule was applied to all of
         them, so `cargo build --release` and `mvn -DskipTests` were refused as "not a make
-        variable assignment". Nothing runs through a shell here — this server never passes
+        variable assignment". Nothing runs through a shell here — this library never passes
         `shell=True` — so a switch is not dangerous for a build tool that does not read one
         as an extra makefile. `origin/main`'s standalone arm had no `extra_args` check at
         all, so this was a capability PR-2 narrowed without saying so."""
@@ -1071,7 +1043,7 @@ class BuildArgvOverrideTests(unittest.TestCase):
         # Across the build systems `build_command` serves, not just make: a gradle task
         # path, an npm script name and a meson typed target all carry `:`, and a make
         # pattern goal carries `%`. A first version of this rule spelled an allowlist of
-        # name characters and refused all four — an allowlist over a grammar this server
+        # name characters and refused all four — an allowlist over a grammar this library
         # does not own answers a question it cannot know.
         for target in ("all", "clean", "sw2d_runner", "build/libcore.a", "lib.so.1",
                        "x86_64-target", "c++filt", ":app:assembleDebug", "build:prod",
@@ -1093,7 +1065,7 @@ class BuildArgvOverrideWiringTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.mod = _load_server_module()
+        cls.mod = _load_module()
 
     def setUp(self) -> None:
         self.project_dir = Path(tempfile.mkdtemp())
@@ -1137,116 +1109,6 @@ class BuildArgvOverrideWiringTests(unittest.TestCase):
         self.assertNotIn("  sw2d_runner  ", argv)
 
 
-class RetiredArgumentTests(unittest.TestCase):
-    """`capability_token` is refused, not ignored.
-
-    It named a secret in `capabilities/<agent_run_id>.json` that the orchestration gate
-    compared against the launch record. A caller still sending one is written against a
-    contract this server no longer implements, so serving the call would be serving it as
-    if the check had passed."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.mod = _load_server_module()
-
-    def setUp(self) -> None:
-        self.project_dir = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
-
-    def _args(self, tool: str) -> dict:
-        args: dict = {"project_dir": str(self.project_dir),
-                      "capability_token": "cap_secret"}
-        if tool == "run_program":
-            args["command"] = ["true"]
-        if tool == "compile_project":
-            args["build_system"] = "make"
-        return args
-
-    def test_every_tool_refuses_it(self) -> None:
-        # `detect_build_system` included: it is the one tool the retirement made MORE
-        # available (it used to be refused outright under the workflow), so a row that
-        # skipped it would leave the only re-opened surface unchecked.
-        for tool in ("compile_project", "run_program", "run_quality_checks",
-                     "run_linter", "run_syntax_check", "detect_build_system"):
-            with self.subTest(tool=tool):
-                with mock.patch.object(self.mod, "_run_command") as run_command:
-                    with self.assertRaises(ValueError) as ctx:
-                        getattr(self.mod, f"tool_{tool}")(self._args(tool))
-                self.assertIn("capability_token", str(ctx.exception))
-                self.assertIn("#171", str(ctx.exception))
-                run_command.assert_not_called()
-
-    def test_run_program_refuses_each_retired_target_argument(self) -> None:
-        """Issue #289: the four arguments `run_program` derived an OpenMP environment from.
-
-        One row per argument, so a member dropped from the set is a red row naming it rather
-        than a set that silently shrank; each refusal must happen BEFORE anything runs, and
-        must name the argument and where the environment comes from now."""
-        for key, value in (("target_class", "cpu"), ("target.class", "cpu"),
-                           ("target", {"class": "cpu"}), ("threads_per_rank", 4)):
-            with self.subTest(argument=key):
-                args = {"project_dir": str(self.project_dir), "command": ["true"], key: value}
-                with mock.patch.object(self.mod, "_run_command") as run_command:
-                    with self.assertRaises(ValueError) as ctx:
-                        self.mod.tool_run_program(args)
-                run_command.assert_not_called()
-                self.assertIn(key, str(ctx.exception))
-                self.assertIn("#289", str(ctx.exception))
-                self.assertIn("pass it as env", str(ctx.exception))
-                # Only the retirement the call hit is answered (round 3).
-                self.assertNotIn("#171", str(ctx.exception))
-        # A retired token alone gets its own remedy, not the launch-env one; both together get
-        # both.
-        with self.assertRaises(ValueError) as ctx:
-            self.mod.tool_run_program({"project_dir": str(self.project_dir),
-                                       "command": ["true"], "capability_token": "x"})
-        self.assertIn("orchestration_id / agent_run_id", str(ctx.exception))
-        self.assertNotIn("pass it as env", str(ctx.exception))
-        with self.assertRaises(ValueError) as ctx:
-            self.mod.tool_run_program({"project_dir": str(self.project_dir),
-                                       "command": ["true"], "capability_token": "x",
-                                       "threads_per_rank": 1})
-        self.assertIn("orchestration_id / agent_run_id", str(ctx.exception))
-        self.assertIn("pass it as env", str(ctx.exception))
-
-    def test_the_served_schema_does_not_advertise_a_retired_argument(self) -> None:
-        # A schema that lists an argument the handler refuses tells every MCP client to send
-        # it. Pinned against the refusal set itself, so the two cannot drift apart.
-        tool = self.mod.TOOLS["run_program"]
-        retired = set(self.mod._RETIRED_ARGUMENTS_BY_TOOL["run_program"])
-        self.assertEqual(retired, {"target_class", "target.class", "target", "threads_per_rank"})
-        self.assertEqual(set(tool.input_schema["properties"]) & retired, set())
-        self.assertNotIn("threads_per_rank is specified", tool.description)
-        # Each name as a WORD: `target` is a substring of `target_class` (round 3).
-        for name in retired:
-            self.assertRegex(tool.description, rf"(?<![\w.]){re.escape(name)}(?![\w.])",
-                             f"the description omits refused {name}")
-        self.assertIn("env", tool.input_schema["properties"])
-
-    def test_the_retired_target_arguments_are_refused_on_run_program_alone(self) -> None:
-        # The over-refusal side: `target` is `compile_project`'s build goal, and the retirement
-        # is scoped to the one tool that read the old meaning.
-        with mock.patch.object(
-                self.mod, "_run_command",
-                return_value={"ok": True, "return_code": 0}) as run_command:
-            self.mod.tool_compile_project({
-                "project_dir": str(self.project_dir), "build_system": "make",
-                "target": "all"})
-        run_command.assert_called_once()
-        self.assertIn("all", run_command.call_args.kwargs["command"])
-
-    def test_the_attribution_arguments_are_not_refused(self) -> None:
-        # The negative control: the two ids that REPLACED the token must be served.
-        with mock.patch.object(
-                self.mod, "_run_command",
-                return_value={"ok": True, "return_code": 0}) as run_command:
-            self.mod.tool_run_linter({
-                "project_dir": str(self.project_dir), "preset": "ruff",
-                "orchestration_id": "orch_x", "agent_run_id": "arid_x"})
-        self.assertEqual(run_command.call_args.kwargs["attribution"],
-                         {"orchestration_id": "orch_x", "agent_run_id": "arid_x"})
-
-
 class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
     """`sources` is appended to the compiler front-end argv, so it is argv, not data.
 
@@ -1258,7 +1120,7 @@ class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.mod = _load_server_module()
+        cls.mod = _load_module()
 
     def setUp(self) -> None:
         super().setUp()
@@ -1390,399 +1252,10 @@ class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
         self.assertTrue(result["skipped"])
 
 
-class _ReadBudgetExceeded(RuntimeError):
-    """Raised by `_BoundedReads` when a reader will not stop reading an ended stream."""
-
-
-class _BoundedReads:
-    """A `BytesIO` that refuses to be read indefinitely.
-
-    An exhausted `BytesIO` returns `b""` for ever, so a loop that does not treat that as the end
-    never terminates. This makes the loop's own termination OBSERVABLE: exceeding the budget is a
-    fast exception rather than a hung suite.
-    """
-
-    def __init__(self, data: bytes, budget: int = 200) -> None:
-        self._buf = io.BytesIO(data)
-        self._left = budget
-
-    def _spend(self) -> None:
-        if self._left <= 0:
-            raise _ReadBudgetExceeded(
-                "the reader did not stop at the end of the stream")
-        self._left -= 1
-
-    def readline(self) -> bytes:
-        self._spend()
-        return self._buf.readline()
-
-    def read(self, size: int = -1) -> bytes:
-        self._spend()
-        return self._buf.read(size)
-
-
-class RpcFramingTests(unittest.TestCase):
-    """`_read_message` / `_write_message` / `main` — the stdio transport, driven end to end.
-
-    Nothing read these three before this class (measured at 9f2e16d: `grep -c` over
-    `tools/tests/*.py` finds 0 references to each of `_handle_request`, `_read_message` and
-    `_write_message`), although every `compile` and `run` this repository performs traverses them.
-
-    The tests below split into two kinds and the docstrings say which:
-
-      * CONTRACT — a property the transport is required to have. Both framings are implemented, so
-        both are contract: a client may send `Content-Length` headers (which `mcp_call.py` does) or
-        one JSON object per line (which the MCP stdio transport does).
-      * RECORD — what the code does today at a boundary nobody has decided about. A record test
-        is not an argument that the behaviour is right. Where the current answer looks wrong to me
-        I have said so in the docstring and left the behaviour alone; changing it is a decision for
-        the operator, and the entry it would be recorded under is `TODO.md`.
-    """
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.mod = _load_server_module()
-
-    def _drive(self, stdin_bytes: bytes) -> tuple[int | None, list[dict], Exception | None]:
-        """Run `main()` against `stdin_bytes`, returning (exit code, responses, escaped error).
-
-        Drives the REAL entry point rather than poking `_read_message`: the framing, the dispatch
-        and the loop's own termination are one behaviour, and two of the three recorded boundaries
-        below are properties of `main`, not of the reader.
-
-        The stdin is BOUNDED, and that is not a convenience. `main` is a `while True` whose only
-        exit is the `return 0` it takes when the reader answers None; a change that made it
-        `continue` there spins forever on a stream that has ended. Measured the hard way — that
-        exact mutant hung this file's own sweep until an outer `timeout` killed it, and the kill
-        skipped the `finally` that restores the mutated source, so the next run would have
-        measured a mutated baseline. An exhausted `BytesIO` returns `b""` for ever, so the bound
-        has to come from the fixture: after `_READ_BUDGET` reads the stream raises, `main` cannot
-        catch it (nothing there catches anything), and the spin becomes a fast, legible failure.
-        """
-        out = io.StringIO()
-        stream = _BoundedReads(stdin_bytes)
-        with mock.patch.object(sys, "stdin", mock.Mock(buffer=stream)), \
-                mock.patch.object(sys, "stdout", out):
-            try:
-                code: int | None = self.mod.main()
-                escaped: Exception | None = None
-            except Exception as exc:  # noqa: BLE001 - the escape is the subject of three rows
-                code, escaped = None, exc
-        responses = [json.loads(line) for line in out.getvalue().splitlines() if line.strip()]
-        return code, responses, escaped
-
-    def test_main_returns_at_end_of_input_rather_than_spinning(self) -> None:
-        """CONTRACT, and the one the bound above exists for.
-
-        `main`'s only exit is the `return 0` it takes when `_read_message` answers None. Nothing
-        else in the loop can end it, so this is the whole of the server's termination behaviour,
-        and it was observed by nothing. The witness is the read budget: a `main` that kept looping
-        on an ended stream would exhaust it and surface as `_ReadBudgetExceeded` instead of
-        hanging the suite.
-        """
-        code, responses, escaped = self._drive(
-            self._line({"jsonrpc": "2.0", "id": 1, "method": "ping"}))
-        self.assertIsNone(escaped)
-        self.assertEqual(code, 0)
-        self.assertEqual(len(responses), 1)
-
-    def test_the_read_budget_itself_fires(self) -> None:
-        """The self-test for the bound. Without it, a budget set too high (or a fixture that
-        silently stopped counting) would turn the row above into a test that can only pass — the
-        spin it is about would come back as a hang, which reads as an unrelated infrastructure
-        problem rather than as this defect."""
-        stream = _BoundedReads(b"", budget=3)
-        for _ in range(3):
-            self.assertEqual(stream.readline(), b"")
-        with self.assertRaises(_ReadBudgetExceeded):
-            stream.readline()
-
-    @staticmethod
-    def _framed(payload: dict) -> bytes:
-        body = json.dumps(payload).encode("utf-8")
-        return f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body
-
-    @staticmethod
-    def _line(payload: dict) -> bytes:
-        return json.dumps(payload).encode("utf-8") + b"\n"
-
-    # ---- CONTRACT ----------------------------------------------------------------
-
-    def test_both_framings_are_read(self) -> None:
-        """CONTRACT. Both are implemented, so both are the contract — and they have separate
-        callers: `mcp_servers/mcp_call.py` writes `Content-Length` headers, while the MCP stdio
-        transport is newline-delimited JSON. A change that kept only one would break a real
-        client, and nothing observed either."""
-        for label, encode in (("content-length", self._framed), ("newline", self._line)):
-            with self.subTest(framing=label):
-                code, responses, escaped = self._drive(encode({"jsonrpc": "2.0", "id": 1,
-                                                               "method": "ping"}))
-                self.assertIsNone(escaped)
-                self.assertEqual(code, 0)
-                self.assertEqual([r["id"] for r in responses], [1])
-                self.assertEqual(responses[0]["result"], {})
-
-    def test_a_header_block_may_carry_more_than_content_length(self) -> None:
-        """CONTRACT. The reader skips to the blank line, so a client sending `Content-Type` (which
-        the MCP specification permits) is served rather than mis-framed."""
-        body = json.dumps({"jsonrpc": "2.0", "id": 7, "method": "ping"}).encode("utf-8")
-        stdin = (f"Content-Length: {len(body)}\r\n".encode("ascii")
-                 + b"Content-Type: application/vscode-jsonrpc; charset=utf-8\r\n\r\n" + body)
-        code, responses, escaped = self._drive(stdin)
-        self.assertIsNone(escaped)
-        self.assertEqual(code, 0)
-        self.assertEqual([r["id"] for r in responses], [7])
-
-    def test_blank_lines_between_messages_are_skipped(self) -> None:
-        """CONTRACT. A writer that terminates a framed body with a newline leaves one behind, and
-        the loop must not read it as a message."""
-        code, responses, escaped = self._drive(
-            b"\r\n" + self._framed({"jsonrpc": "2.0", "id": 1, "method": "ping"})
-            + b"\n\n" + self._line({"jsonrpc": "2.0", "id": 2, "method": "ping"}))
-        self.assertIsNone(escaped)
-        self.assertEqual(code, 0)
-        self.assertEqual([r["id"] for r in responses], [1, 2])
-
-    def test_a_notification_produces_no_response_and_does_not_end_the_loop(self) -> None:
-        """CONTRACT. `_handle_request` returns None for a notification and `main` must write
-        nothing for it — a JSON-RPC notification has no reply — while still serving what follows.
-        Writing `null` would be a protocol violation a client sees; stopping would be worse."""
-        code, responses, escaped = self._drive(
-            self._line({"jsonrpc": "2.0", "method": "notifications/initialized", "params": {}})
-            + self._line({"jsonrpc": "2.0", "id": 5, "method": "ping"}))
-        self.assertIsNone(escaped)
-        self.assertEqual(code, 0)
-        self.assertEqual([r["id"] for r in responses], [5])
-
-    def test_write_message_emits_one_line_of_json_without_escaping_non_ascii(self) -> None:
-        """CONTRACT. One line per message is the framing; `ensure_ascii=False` is what keeps a
-        diagnostic containing non-ASCII readable instead of `\\uXXXX`-escaped. A compiler on a
-        non-English locale, and any path with a non-ASCII component, reach this."""
-        out = io.StringIO()
-        with mock.patch.object(sys, "stdout", out):
-            self.mod._write_message({"id": 1, "result": {"text": "コンパイル失敗 — naïve"}})
-        raw = out.getvalue()
-        self.assertTrue(raw.endswith("\n"))
-        self.assertEqual(raw.count("\n"), 1, "a message must be exactly one line")
-        self.assertIn("コンパイル失敗 — naïve", raw)
-        self.assertNotIn("\\u", raw)
-        self.assertEqual(json.loads(raw)["result"]["text"], "コンパイル失敗 — naïve")
-
-    # ---- RECORD ------------------------------------------------------------------
-
-    def test_record_eof_while_reading_a_header_ends_the_loop_with_zero(self) -> None:
-        """RECORD, and this one is also the contract: a closed stdin is how a client disconnects,
-        and exiting 0 is what stops the server being reported as crashed."""
-        for label, stdin in (("empty", b""), ("mid-header", b"Content-Length: 41\r\n")):
-            with self.subTest(case=label):
-                code, responses, escaped = self._drive(stdin)
-                self.assertIsNone(escaped)
-                self.assertEqual(code, 0)
-                self.assertEqual(responses, [])
-
-    def test_record_an_empty_body_after_a_header_ends_the_loop_with_zero(self) -> None:
-        """RECORD. `Content-Length: N` followed by nothing reads as EOF, not as a framing error.
-
-        A truncated stream and a clean disconnect become the same event, so a client killed
-        mid-write is indistinguishable from one that closed politely. Recorded, not defended: I
-        have not changed it, and whether a partial frame should be reported is the operator's
-        decision.
-        """
-        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode("utf-8")
-        code, responses, escaped = self._drive(
-            f"Content-Length: {len(body)}\r\n\r\n".encode("ascii"))
-        self.assertIsNone(escaped)
-        self.assertEqual(code, 0)
-        self.assertEqual(responses, [])
-
-    def test_record_a_partially_truncated_body_escapes_as_a_json_error(self) -> None:
-        """RECORD. A body that is short but not empty reaches `json.loads` and its
-        `JSONDecodeError` is not caught by `main`, so the process dies with a traceback.
-
-        The contrast with the row above is the point: zero bytes is a clean exit, one byte is an
-        uncaught exception. Recorded rather than fixed.
-        """
-        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "ping"}).encode("utf-8")
-        code, responses, escaped = self._drive(
-            f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body[:5])
-        self.assertIsNone(code)
-        self.assertIsInstance(escaped, json.JSONDecodeError)
-        self.assertEqual(responses, [])
-
-    def test_record_a_non_numeric_content_length_escapes_as_a_value_error(self) -> None:
-        """RECORD. `int(...)` on the header value is unguarded. Same class as the row above."""
-        code, responses, escaped = self._drive(b"Content-Length: abc\r\n\r\n{}")
-        self.assertIsNone(code)
-        self.assertIsInstance(escaped, ValueError)
-        self.assertNotIsInstance(escaped, json.JSONDecodeError)
-        self.assertEqual(responses, [], "nothing may be answered before the escape")
-
-    def test_record_a_json_value_that_is_not_an_object_is_skipped_silently(self) -> None:
-        """RECORD. `main` drops a non-dict message and reads the next one, with no reply and no
-        diagnostic. A client that sends a JSON-RPC batch (an ARRAY, which the specification
-        allows) therefore gets silence rather than an error — and silence is the answer a caller
-        cannot distinguish from a slow server. Recorded; not changed here.
-        """
-        code, responses, escaped = self._drive(
-            self._line([{"jsonrpc": "2.0", "id": 1, "method": "ping"}])
-            + self._line({"jsonrpc": "2.0", "id": 2, "method": "ping"}))
-        self.assertIsNone(escaped)
-        self.assertEqual(code, 0)
-        self.assertEqual([r["id"] for r in responses], [2])
-
-
-class RequestDispatchTests(unittest.TestCase):
-    """`_handle_request` — and the one thing it does that decides whether a gate MEANS anything.
-
-    `tools/call` catches every exception a handler raises and returns it as a SUCCESSFUL JSON-RPC
-    response carrying `isError: True`. That is the only channel by which a capability-gate refusal
-    reaches a client: the gate raises `ValueError`, and these twenty lines decide whether the
-    client is told "refused" or "fine". A change here that dropped `isError` would make every
-    refusal in this server look like a pass, with no other test in the repository noticing.
-
-    Written under `.claude/skills/atmofab-enforcement-change`: this is the exit of the enforcement
-    machinery, not an ordinary handler.
-    """
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.mod = _load_server_module()
-
-    def test_initialize_echoes_the_client_protocol_version(self) -> None:
-        response = self.mod._handle_request({
-            "jsonrpc": "2.0", "id": 1, "method": "initialize",
-            "params": {"protocolVersion": "2999-01-01", "capabilities": {}}})
-        self.assertEqual(response["result"]["protocolVersion"], "2999-01-01")
-        self.assertEqual(response["result"]["serverInfo"]["name"], self.mod.SERVER_NAME)
-        self.assertEqual(response["result"]["serverInfo"]["version"], self.mod.SERVER_VERSION)
-
-    def test_initialize_without_a_protocol_version_answers_the_default(self) -> None:
-        """The default is a CONSTANT of the module, read here rather than transcribed — a
-        transcribed value would turn a deliberate protocol bump into a test failure that says
-        nothing about what broke."""
-        response = self.mod._handle_request({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
-        self.assertEqual(response["result"]["protocolVersion"],
-                         self.mod.DEFAULT_PROTOCOL_VERSION)
-
-    def test_tools_list_serves_every_registered_tool(self) -> None:
-        """Set identity against `TOOLS`, not a transcribed list: a tool added to the module and
-        not served is a tool no client can call, and a name written here would have to be edited
-        for every legitimate addition."""
-        response = self.mod._handle_request({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-        served = {tool["name"] for tool in response["result"]["tools"]}
-        self.assertEqual(served, set(self.mod.TOOLS))
-        for tool in response["result"]["tools"]:
-            self.assertIn("inputSchema", tool)
-            self.assertTrue(tool.get("description"))
-
-    def test_a_notification_gets_no_response(self) -> None:
-        self.assertIsNone(self.mod._handle_request(
-            {"jsonrpc": "2.0", "method": "notifications/initialized"}))
-
-    def test_an_unknown_method_with_an_id_is_a_method_not_found_error(self) -> None:
-        response = self.mod._handle_request(
-            {"jsonrpc": "2.0", "id": 3, "method": "no/such/method"})
-        self.assertEqual(response["error"]["code"], -32601)
-        self.assertNotIn("result", response)
-
-    def test_an_unknown_method_without_an_id_gets_no_response(self) -> None:
-        """A message with no id is a notification whatever its method, and answering one is a
-        protocol violation. The branch is separate from the one above and is reached only by an
-        unknown method, so it needs its own probe."""
-        self.assertIsNone(self.mod._handle_request({"jsonrpc": "2.0", "method": "no/such/method"}))
-
-    def test_an_unknown_TOOL_is_a_jsonrpc_error_not_an_isError_result(self) -> None:
-        """The two error channels are different, and a client distinguishes them. An unknown tool
-        is a JSON-RPC `error` (-32602); a handler that RAN and failed is a successful response
-        carrying `isError`. Collapsing them would make "this server cannot do that" and "that
-        call was refused" the same answer."""
-        response = self.mod._handle_request({
-            "jsonrpc": "2.0", "id": 4, "method": "tools/call",
-            "params": {"name": "no_such_tool", "arguments": {}}})
-        self.assertEqual(response["error"]["code"], -32602)
-        self.assertIn("no_such_tool", response["error"]["message"])
-        self.assertNotIn("result", response)
-
-    def test_a_successful_call_carries_isError_false_and_the_handler_return_value(self) -> None:
-        """Driven through a REAL registered tool with a stub handler, so the wrapping is what is
-        observed rather than a reimplementation of it."""
-        marker = {"ok": True, "value": "コンパイル済み"}
-        with mock.patch.dict(self.mod.TOOLS, {}, clear=False):
-            tool = self.mod.TOOLS["detect_build_system"]
-            patched = type(tool)(name=tool.name, description=tool.description,
-                                 input_schema=tool.input_schema, handler=lambda args: marker)
-            self.mod.TOOLS["detect_build_system"] = patched
-            response = self.mod._handle_request({
-                "jsonrpc": "2.0", "id": 5, "method": "tools/call",
-                "params": {"name": "detect_build_system", "arguments": {}}})
-        self.assertIs(response["result"]["isError"], False)
-        self.assertEqual(response["result"]["structuredContent"], marker)
-        self.assertEqual(json.loads(response["result"]["content"][0]["text"]), marker)
-
-    def test_a_handler_exception_becomes_isError_true_with_its_message(self) -> None:
-        """The row this class exists for, in its general form."""
-        def explode(_args):
-            raise ValueError("the gate said no")
-
-        with mock.patch.dict(self.mod.TOOLS, {}, clear=False):
-            tool = self.mod.TOOLS["detect_build_system"]
-            self.mod.TOOLS["detect_build_system"] = type(tool)(
-                name=tool.name, description=tool.description,
-                input_schema=tool.input_schema, handler=explode)
-            response = self.mod._handle_request({
-                "jsonrpc": "2.0", "id": 6, "method": "tools/call",
-                "params": {"name": "detect_build_system", "arguments": {}}})
-        self.assertIs(response["result"]["isError"], True)
-        self.assertEqual(response["result"]["structuredContent"]["error"], "the gate said no")
-        self.assertIn("the gate said no", response["result"]["content"][0]["text"])
-
-    def test_a_REAL_argument_refusal_reaches_the_client_as_isError(self) -> None:
-        """The same row driven by a real refusal rather than a stub, because a stub cannot show
-        that the refusal actually TRAVELS this path.
-
-        The refusal used to be the capability gate's (a workflow-mode server called without
-        `orchestration_id`); that gate was retired in issue #171, and the argument refusal that
-        replaced it — `capability_token`, which this server no longer implements — is raised from
-        the same place in the same way. What this asserts is unchanged: the client can tell a
-        refusal from a pass. `isError` is True, the reason is carried, and the response is NOT a
-        successful result with data in it.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            response = self.mod._handle_request({
-                "jsonrpc": "2.0", "id": 7, "method": "tools/call",
-                "params": {"name": "run_syntax_check",
-                           "arguments": {"project_dir": tmp,
-                                         "capability_token": "cap_secret"}}})
-        result = response["result"]
-        self.assertIs(result["isError"], True, "an argument refusal must not look like a pass")
-        detail = result["structuredContent"]["error"]
-        self.assertIn("capability_token", detail)
-        self.assertNotIn("ok", result["structuredContent"],
-                         "a refusal must not carry a handler's success keys")
-
-    def test_the_refusal_and_the_success_differ_in_the_field_a_client_reads(self) -> None:
-        """The negative control for the row above. Two calls, one refused and one served, compared
-        on `isError` — because an assertion that a refusal has `isError: True` says nothing unless
-        a success has `isError: False` on the same path. Mutating the constant makes both rows
-        red, which is the property; without this one, `isError: True -> True` everywhere would
-        pass."""
-        with tempfile.TemporaryDirectory() as tmp:
-            refused = self.mod._handle_request({
-                "jsonrpc": "2.0", "id": 8, "method": "tools/call",
-                "params": {"name": "run_syntax_check",
-                           "arguments": {"project_dir": tmp,
-                                         "capability_token": "cap_secret"}}})
-            served = self.mod._handle_request({
-                "jsonrpc": "2.0", "id": 9, "method": "tools/call",
-                "params": {"name": "detect_build_system", "arguments": {"project_dir": tmp}}})
-        self.assertIs(refused["result"]["isError"], True)
-        self.assertIs(served["result"]["isError"], False)
-
-
 class BuildCommandTests(unittest.TestCase):
     """`_recommended_build_system` and `build_command` — the SUCCESS paths.
 
-    The refusal side of this server is covered thickly; these two were referenced once each from
+    The refusal side of this library is covered thickly; these two were referenced once each from
     the whole test corpus (measured at 9f2e16d). An earlier version of this sentence added "and
     never on a path that produces an argv", which round 1 falsified:
     `test_host_prerequisites.py:102` does take `build_command(build_system, None, 1, [])[0]`.
@@ -1794,7 +1267,7 @@ class BuildCommandTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.mod = _load_server_module()
+        cls.mod = _load_module()
 
     def _dir_with(self, *names: str) -> str:
         holder = tempfile.TemporaryDirectory()
@@ -2089,296 +1562,36 @@ class BuildCommandTests(unittest.TestCase):
         self.assertEqual(self.mod.build_command("npm", None, 1, []), ["npm", "run", "build"])
 
 
-class McpCallClientTests(unittest.TestCase):
-    """`mcp_servers/mcp_call.py` — the client this repository's own procedures drive.
+class ArgumentContractTests(unittest.TestCase):
+    """What each entry point accepts and refuses at its argument boundary.
 
-    Referenced by `docs/RUNBOOK.md`, by `.claude/skills/atmofab-enforcement-change`'s verification
-    reference, by the review-loop skill and by `TODO.md` (on three lines at 9f2e16d, four
-    occurrences at HEAD — this branch's own edit added one; two earlier versions of this sentence
-    said "twice" and "three times", and a bare count here is ambiguous between lines and
-    occurrences, which is why it now says which), all of which use it as the vehicle for END-TO-END verification of the
-    capability gate — and it had no test at all (measured at
-    9f2e16d: zero references in `tools/tests/`). The skills treat it as the instrument that proves
-    a refusal is real, so an instrument that silently stopped reporting refusals would take the
-    evidence with it.
+    The rows here were spread over classes about the MCP layer deleted in issue #444 —
+    `RetiredArgumentTests`, `SchemaMinimumsAreEnforcedTests`,
+    `ServedSchemaDescribesWhatIsEnforcedTests`, `ToolSchemaDocumentParityTests` — and each
+    observes the library rather than the protocol, so each was kept (classified per row by
+    what its body calls). The served schema they used to derive their tables from is gone,
+    so the tables are spelled here."""
 
-    Driven as a real SUBPROCESS, not by importing `_mcp_call`, because the exit code is half the
-    contract — the skills read it.
-
-    NOT PINNED, measured rather than assumed: deleting `_mcp_call`'s `finally: proc.kill();
-    proc.wait()` survives every row here. What that costs is a leaked server process per call, not
-    a wrong answer — the client still returns the right verdict — and observing it from a
-    subprocess test means listing processes, which is racy. Said here rather than left for a
-    reader to count as covered.
-
-    This paragraph used to say the module spawns the server by a RELATIVE path and "only works
-    with the repository root as the working directory", asserted below. Round 2 caught that: the
-    commit that removed that behaviour left the sentence describing it, in the very change written
-    to stop this instrument from lying, and the row 70 lines down now asserts the OPPOSITE. The
-    client resolves the server from its own `__file__`; `_call` still passes `cwd=REPO_ROOT`
-    because that is what the documented invocations use, not because it is required.
-    """
-
-    REPO_ROOT = _SERVER_PATH.parent.parent
-
-    def _call(self, tool: str, args: dict, *, workflow: bool) -> subprocess.CompletedProcess:
-        env = {k: v for k, v in os.environ.items() if not k.startswith("ATMOFAB_")}
-        env["PYTHONDONTWRITEBYTECODE"] = "1"
-        if workflow:
-            env["ATMOFAB_WORKFLOW_MODE"] = "1"
-        return subprocess.run(
-            [sys.executable, "mcp_servers/mcp_call.py", "--tool", tool,
-             "--args-json", json.dumps(args)],
-            cwd=self.REPO_ROOT, env=env, capture_output=True, text=True,
-            # Bounded well under the time a served call takes (~1s measured), because the client
-            # BLOCKS rather than fails when the server's framing breaks: `_read_message` waits on
-            # `readline()`, and a `_write_message` that stops emitting a newline leaves it waiting
-            # for a line that never ends. Measured — that mutation turned this class into a hang
-            # long enough to time the whole mutation sweep out. A generous timeout here buys
-            # nothing and hides that.
-            timeout=30,
-            check=False)  # the return code IS the subject of these rows
-
-    def test_an_argument_refusal_comes_back_as_a_nonzero_exit_and_a_message(self) -> None:
-        """The end-to-end the skills actually run, and the property they rely on.
-
-        A call carrying the retired `capability_token` is refused by
-        `_refuse_retired_arguments`. That refusal travels as a ValueError -> an `isError`
-        result -> a `RuntimeError` in the client -> a non-zero exit. Every link is somebody's
-        twenty lines, and until this row nothing drove the chain. (The refusal it used to drive
-        was the capability gate's, retired in issue #171; the chain under test is the same.)
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            done = self._call("run_syntax_check",
-                              {"project_dir": tmp, "capability_token": "cap_secret"},
-                              workflow=False)
-        self.assertNotEqual(done.returncode, 0,
-                            "a refused call exited 0; a script reading the exit code would "
-                            "record the refusal as satisfied")
-        self.assertIn("capability_token", done.stderr)
-        self.assertEqual(done.stdout.strip(), "",
-                         "a refused call printed a result document on stdout")
-
-    def test_a_served_call_comes_back_as_exit_zero_and_json_on_stdout(self) -> None:
-        """The negative control. Without it the row above is satisfied by a client that fails on
-        every call — which is exactly what a broken client looks like, and is indistinguishable
-        from a working gate."""
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "Makefile").write_text("all:\n\t@true\n", encoding="utf-8")
-            done = self._call("detect_build_system",
-                              {"project_dir": tmp, "language": "fortran"}, workflow=False)
-            self.assertEqual(done.returncode, 0, done.stderr)
-            payload = json.loads(done.stdout)
-            # DERIVED, not transcribed. The first version of this row asserted a key
-            # (`build_system`) the tool does not emit — it emits `recommended_build_system`, and
-            # the difference is invisible until you run it. Comparing against
-            # `_recommended_build_system`'s own answer for the same directory ties the client's
-            # output to the function this file also tests directly, so a rename breaks one place.
-            expected = _load_server_module()._recommended_build_system(tmp, "fortran")
-            self.assertEqual(payload["recommended_build_system"], expected["build_system"])
-            self.assertEqual(payload["reason"], expected["reason"])
-            self.assertEqual(payload["project_dir"], tmp)
-
-    def test_an_unknown_tool_is_reported_rather_than_returning_an_empty_result(self) -> None:
-        """The other error channel — a JSON-RPC `error`, not an `isError` result — reaches the
-        caller too. A client that dropped it would return `{}` with exit 0, which reads as a tool
-        that ran and found nothing."""
-        done = self._call("no_such_tool", {}, workflow=False)
-        self.assertNotEqual(done.returncode, 0)
-        self.assertIn("no_such_tool", done.stderr)
-
-    def test_the_client_works_from_any_working_directory(self) -> None:
-        """It did not, and the first version of this row PINNED that as the specification.
-
-        `mcp_call.py` spawned the server by the relative path
-        `mcp_servers/build_runtime_server.py`, so every documented use silently required the
-        checkout root as `cwd` — and the failure named the wrong layer: the spawn failed, the
-        server's `stderr` was captured and never read, and the caller saw `unexpected EOF while
-        reading MCP message header`. (My first version of this row asserted only a non-zero exit
-        and its docstring said the failure "names a missing file". Driven for real, no
-        missing-file message appears anywhere. Round 1 found both halves.)
-
-        Why that was worth fixing rather than recording: this client is the instrument
-        `docs/RUNBOOK.md` and `.claude/skills/atmofab-enforcement-change` hand an operator to PROVE
-        a capability-gate refusal. With the old behaviour, "the gate refused the call" and "the
-        client never started" were the same non-zero exit — so a verification could be recorded as
-        passed by someone standing in the wrong directory, which is a false record in the audit
-        trail. The test that pinned it would then have turned the fix into a regression.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "Makefile").write_text("all:\n\t@true\n", encoding="utf-8")
-            env = {k: v for k, v in os.environ.items() if not k.startswith("ATMOFAB_")}
-            done = subprocess.run(
-                [sys.executable, str(self.REPO_ROOT / "mcp_servers" / "mcp_call.py"),
-                 "--tool", "detect_build_system",
-                 "--args-json", json.dumps({"project_dir": tmp})],
-                cwd=tmp, env=env, capture_output=True, text=True, timeout=30, check=False)
-            self.assertEqual(done.returncode, 0, done.stderr)
-            expected = _load_server_module()._recommended_build_system(tmp, "")
-            self.assertEqual(json.loads(done.stdout)["recommended_build_system"],
-                             expected["build_system"])
-
-    def test_a_failure_to_START_the_server_is_not_reported_as_a_framing_error(self) -> None:
-        """The other half, and the one with the route.
-
-        A caller cannot act on `unexpected EOF while reading MCP message header` when the real
-        cause is that the server never ran. Worse, for the operator running a gate verification it
-        is indistinguishable from the refusal they are trying to observe. The client now reads what
-        the server said before it stopped talking and puts it in the error.
-
-        Driven by pointing the client at a server that cannot start, rather than by reading the
-        code: the property is what reaches the caller's stderr.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            broken = Path(tmp) / "mcp_call.py"
-            source = (self.REPO_ROOT / "mcp_servers" / "mcp_call.py").read_text(encoding="utf-8")
-            server = Path(tmp) / "build_runtime_server.py"
-            server.write_text("import sys\nsys.stderr.write('BOOM: cannot start\\n')\n"
-                              "raise SystemExit(3)\n", encoding="utf-8")
-            broken.write_text(source, encoding="utf-8")
-            env = {k: v for k, v in os.environ.items() if not k.startswith("ATMOFAB_")}
-            done = subprocess.run(
-                [sys.executable, str(broken), "--tool", "detect_build_system",
-                 "--args-json", json.dumps({"project_dir": tmp})],
-                cwd=self.REPO_ROOT, env=env, capture_output=True, text=True, timeout=30,
-                check=False)
-        self.assertNotEqual(done.returncode, 0)
-        # On the DIAGNOSTIC, not on the stream. `done.stderr` also carries anything the CHILD
-        # inherited a terminal for, so `assertIn("BOOM", done.stderr)` is satisfied by a client
-        # that captured nothing and reported "(nothing on stderr)" — measured in round 2:
-        # removing `stderr=subprocess.PIPE` from the spawn left this row green while the client's
-        # own message said, verbatim, that the server produced nothing.
-        self.assertIn("produced: BOOM: cannot start", done.stderr,
-                      "the server's own diagnostic never reached the caller's ERROR, so a server "
-                      "that cannot start is still reported as a framing error")
-        self.assertNotIn("(nothing on stderr)", done.stderr)
-        self.assertIn("build_runtime_server.py", done.stderr,
-                      "the error does not say which server it failed to talk to")
-
-    def test_a_server_that_stays_alive_and_talks_nonsense_does_not_hang_the_client(self) -> None:
-        """The ordering inside the failure path, which nothing observed.
-
-        `_server_stderr` reads to EOF. On a failure where the server is STILL RUNNING — a
-        non-JSON line on its stdout reaches `json.loads` while the process keeps waiting on a
-        stdin pipe this client still holds open — reading before killing it blocks for ever, and
-        the client has no timeout of its own. Round 2 measured both the reordering and the
-        deletion of the cleanup surviving the whole file.
-
-        WHAT THE WITNESS ACTUALLY IS, corrected after round 3 measured it: the `timeout` on the
-        subprocess call, not the `assertLess` that used to sit below. Under the reordering, the
-        client never returns and the row died as a `subprocess.TimeoutExpired` ERROR — the elapsed
-        assertion was never reached, and replacing it with `pass` left the row green. So the
-        timeout is caught here and turned into a `fail()` that says what happened, which is what
-        the previous docstring claimed and did not have.
-
-        WHAT IT DOES NOT COVER, also measured: a server that reads stdin and writes NOTHING hangs
-        this client for ever — `_read_message` blocks in `readline()`, no exception is raised, and
-        `mcp_call.py` has no timeout of its own. That is unchanged from `origin/main` and is
-        recorded in `TODO.md`; this row is about the failure path, not about every hang.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "build_runtime_server.py").write_text(
-                "import sys\n"
-                "sys.stderr.write('BOOM: alive but wrong\\n')\n"
-                "sys.stderr.flush()\n"
-                "sys.stdout.write('not json at all\\n')\n"
-                "sys.stdout.flush()\n"
-                "sys.stdin.read()\n",  # stays alive on the stdin pipe the client holds open
-                encoding="utf-8")
-            client = Path(tmp) / "mcp_call.py"
-            client.write_text(
-                (self.REPO_ROOT / "mcp_servers" / "mcp_call.py").read_text(encoding="utf-8"),
-                encoding="utf-8")
-            env = {k: v for k, v in os.environ.items() if not k.startswith("ATMOFAB_")}
-            try:
-                done = subprocess.run(
-                    [sys.executable, str(client), "--tool", "detect_build_system",
-                     "--args-json", json.dumps({"project_dir": tmp})],
-                    cwd=self.REPO_ROOT, env=env, capture_output=True, text=True, timeout=20,
-                    check=False)
-            except subprocess.TimeoutExpired:
-                self.fail(
-                    "the client did not return for a server that is still alive: reading the "
-                    "server's stderr before killing it blocks until EOF, and this client has no "
-                    "timeout of its own, so the documented gate-verification command never "
-                    "returns")
-        self.assertNotEqual(done.returncode, 0)
-        self.assertIn("produced: BOOM: alive but wrong", done.stderr,
-                      "the diagnostic must still be reported when the server is alive")
-
-    def test_a_malformed_frame_from_the_server_still_carries_the_diagnostic(self) -> None:
-        """The framing failure that is NOT a JSON error, and it was uncovered.
-
-        `_read_message` does `int(header_value)`, which raises a BARE `ValueError` on a
-        non-numeric `Content-Length` — `json.JSONDecodeError` is a `ValueError`, but not the other
-        way round, so a clause catching only the JSON one lets this escape without the server's
-        stderr attached. Measured in round 2: narrowing the clause back survived the whole file,
-        i.e. nothing drove this branch through the client. `mcp_servers/build_runtime_server.py`'s
-        own tests record the same header as reachable, so this is not an invented shape.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            (Path(tmp) / "build_runtime_server.py").write_text(
-                "import sys\n"
-                "sys.stderr.write('BOOM: bad framing\\n')\n"
-                "sys.stderr.flush()\n"
-                "sys.stdout.write('Content-Length: not-a-number\\r\\n\\r\\n{}')\n"
-                "sys.stdout.flush()\n",
-                encoding="utf-8")
-            client = Path(tmp) / "mcp_call.py"
-            client.write_text(
-                (self.REPO_ROOT / "mcp_servers" / "mcp_call.py").read_text(encoding="utf-8"),
-                encoding="utf-8")
-            env = {k: v for k, v in os.environ.items() if not k.startswith("ATMOFAB_")}
-            done = subprocess.run(
-                [sys.executable, str(client), "--tool", "detect_build_system",
-                 "--args-json", json.dumps({"project_dir": tmp})],
-                cwd=self.REPO_ROOT, env=env, capture_output=True, text=True, timeout=20,
-                check=False)
-        self.assertNotEqual(done.returncode, 0)
-        self.assertIn("produced: BOOM: bad framing", done.stderr,
-                      "a non-numeric Content-Length escaped without the server's diagnostic")
-
-    def test_the_documents_that_teach_this_client_still_name_it(self) -> None:
-        """The reason this class is worth its runtime: the client is an INSTRUMENT of the review
-        procedure, not a product feature. If the documents stop pointing at it the tests here go
-        on passing while nothing uses it — so the coupling is asserted in the direction that
-        matters, from the documents to the file."""
-        sources = {
-            "docs/RUNBOOK.md": "mcp_call.py",
-            ".claude/skills/atmofab-enforcement-change/references/verification.md": "mcp_call.py",
-            "TODO.md": "mcp_call.py",
-            # The review-loop skill names the module without its extension, which is why the
-            # needle differs — asserting `mcp_call.py` there would have been a row that could
-            # only fail. Round 1 pointed out that the class docstring names four documents and
-            # this loop checked two of them.
-            ".claude/skills/atmofab-review-loop/SKILL.md": "mcp_call",
-        }
-        for rel, needle in sorted(sources.items()):
-            path = self.REPO_ROOT / rel
-            with self.subTest(document=rel):
-                self.assertTrue(path.is_file(), f"{rel} is gone; this coupling has no subject")
-                self.assertIn(needle, path.read_text(encoding="utf-8"))
-
-
-class SchemaMinimumsAreEnforcedTests(unittest.TestCase):
-    """An MCP argument schema is advisory; `_bounded_int` is what makes it a rule.
-
-    The served schema declares `"minimum": 1` on `jobs` and `timeout_sec` and 1000 on
-    `capture_limit`, and a client is free to ignore it — `make -j-5` then waits forever
-    and `timeout_sec=0` kills the build instantly, neither with an error naming the
-    cause. `_bounded_int` is the only thing refusing them.
-
-    It lost its witness in PR-2: the check lived in `OrchestratedEnvAllowlistTests`,
-    which was deleted whole with the capability gate, and it has nothing to do with that
-    gate. Deleting the `if value < minimum` raise left the full suite green.
-
-    The minimums are read OUT OF THE SERVED SCHEMA rather than restated here, so the two
-    cannot drift apart in the direction this test exists to catch: a schema that declares
-    a bound the code does not hold."""
+    #: The integer bounds `_bounded_int` holds each entry point to: (tool, argument, minimum).
+    #: Spelled from the call sites (`_bounded_int(..., <minimum>, "<argument>")`); the MCP
+    #: schema the rows used to read them from declared the same eleven.
+    BOUNDED = (
+        ("compile_project", "jobs", 1),
+        ("compile_project", "timeout_sec", 1),
+        ("compile_project", "capture_limit", 1000),
+        ("run_program", "timeout_sec", 1),
+        ("run_program", "capture_limit", 1000),
+        ("run_quality_checks", "timeout_sec", 1),
+        ("run_quality_checks", "capture_limit", 1000),
+        ("run_linter", "timeout_sec", 1),
+        ("run_linter", "capture_limit", 1000),
+        ("run_syntax_check", "timeout_sec", 1),
+        ("run_syntax_check", "capture_limit", 1000),
+    )
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.mod = _load_server_module()
+        cls.mod = _load_module()
 
     def setUp(self) -> None:
         self.project_dir = Path(tempfile.mkdtemp())
@@ -2396,19 +1609,11 @@ class SchemaMinimumsAreEnforcedTests(unittest.TestCase):
             args.update(compiler="gfortran", std="f2008")
         return args
 
-    def _bounded_properties(self) -> list[tuple[str, str, int]]:
-        out = []
-        for name, tool in self.mod.TOOLS.items():
-            for prop, schema in tool.input_schema.get("properties", {}).items():
-                if schema.get("type") == "integer" and "minimum" in schema:
-                    out.append((name, prop, int(schema["minimum"])))
-        return out
-
-    def test_every_declared_minimum_is_refused_below_its_bound(self) -> None:
-        bounded = self._bounded_properties()
-        self.assertTrue(bounded, "no integer minimum in any served schema; "
-                                 "this coupling has lost its subject")
-        for tool, prop, minimum in bounded:
+    def test_every_minimum_is_refused_below_its_bound(self) -> None:
+        """`_bounded_int` is the only thing refusing these: `make -j-5` waits forever and
+        `timeout_sec=0` kills the build instantly, neither with an error naming the cause.
+        Deleting the `if value < minimum` raise once left the full suite green."""
+        for tool, prop, minimum in self.BOUNDED:
             with self.subTest(tool=tool, argument=prop):
                 args = self._args(tool)
                 args[prop] = minimum - 1
@@ -2423,9 +1628,8 @@ class SchemaMinimumsAreEnforcedTests(unittest.TestCase):
                 run_command.assert_not_called()
 
     def test_the_bound_itself_is_accepted(self) -> None:
-        # Off-by-one in the other direction: a rule that refused the declared minimum
-        # would make the schema a lie the same way.
-        for tool, prop, minimum in self._bounded_properties():
+        # Off-by-one in the other direction.
+        for tool, prop, minimum in self.BOUNDED:
             with self.subTest(tool=tool, argument=prop):
                 args = self._args(tool)
                 args[prop] = minimum
@@ -2436,148 +1640,10 @@ class SchemaMinimumsAreEnforcedTests(unittest.TestCase):
                 ):
                     getattr(self.mod, f"tool_{tool}")(args)
 
-
-class ServedSchemaDescribesWhatIsEnforcedTests(unittest.TestCase):
-    """`compile_project`'s served descriptions, driven against the rules they describe.
-
-    `mcp_servers/tools/*.json` exists for only two tools, so `ToolSchemaDocumentParityTests`
-    compares a document to the served schema for those two and `compile_project`'s
-    descriptions are coupled to NOTHING. That is how they went on advertising the retired
-    allowlist to every client through PR-2 — "Refused under an orchestration", "only
-    assignments to OBJDIR, BINDIR, RUNDIR, BIN, SPEC, CASES are accepted" — and it is how the
-    `extra_args` text drifted again one commit after it was corrected, still saying every
-    element must be a make assignment after that rule was scoped to make.
-
-    Coupled by DRIVING: each row runs the real validator, asserts it refuses (so the row
-    cannot pass by describing a rule that is gone), and then asserts the served description
-    names the rule. The code is the authority; the description is checked against it."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.mod = _load_server_module()
-
-    def _description(self, tool: str, argument: str) -> str:
-        return self.mod.TOOLS[tool].input_schema["properties"][argument]["description"]
-
-    def test_every_argv_refusal_is_described_where_the_caller_reads_it(self) -> None:
-        rows = (
-            ("target", {"target": "--eval=$(shell id)"}, "not open with -"),
-            ("target", {"target": "a b"}, "whitespace"),
-            # Added by 6d77f2f9, one commit after this class was written, and not added
-            # HERE by it — which is how the class built to stop description drift failed
-            # to cover the next rule. Deleting either clause from the served description
-            # left the whole suite green.
-            ("target", {"target": "SHELL=./evil"}, "redirection of what is executed"),
-            ("target", {"target": "OBJDIR=/repo/obj"}, "not be a variable assignment"),
-            ("extra_args", {"extra_args": ["--release"]}, "ASSIGN a make variable"),
-            ("extra_args", {"extra_args": ["SHELL=/tmp/x"]}, "redirection of what is executed"),
-            ("extra_args", {"extra_args": ["X=a; id"]}, "character a shell acts on"),
-        )
-        for argument, payload, phrase in rows:
-            with self.subTest(argument=argument, payload=payload):
-                # (1) the rule is REALLY enforced — otherwise the description below would be
-                # describing something that no longer happens, which is the whole defect.
-                with self.assertRaises(ValueError):
-                    self.mod._validate_build_argv_overrides(
-                        payload.get("target"), payload.get("extra_args", []),
-                        "compile_project", build_system="make")
-                # (2) and the client is told.
-                self.assertIn(phrase, self._description("compile_project", argument))
-
-    def test_no_served_description_names_a_retired_mechanism(self) -> None:
-        # Derived from what the server REFUSES as retired, plus the phrase the two deleted
-        # modes were spelled with. A description naming one of these is describing a contract
-        # this server no longer implements.
-        retired = tuple(self.mod._RETIRED_ARGUMENTS) + (
-            "under an orchestration", "Under an orchestration", "allowlist")
-        scanned = 0
-        for name, tool in self.mod.TOOLS.items():
-            for argument, spec in tool.input_schema.get("properties", {}).items():
-                description = spec.get("description")
-                # A property with no description states nothing and so names nothing
-                # retired; skipped rather than compared against the empty string, which
-                # would make the row read as covering 58 properties when it covers the
-                # ones that actually say something. The rule a missing description COULD
-                # silence — a description that must state an enforced rule — is owned by
-                # the row above, which asserts the phrase is present.
-                if not description:
-                    continue
-                scanned += 1
-                for token in retired:
-                    with self.subTest(tool=name, argument=argument, token=token):
-                        self.assertNotIn(token, description)
-        self.assertGreater(scanned, 0, "no served property carries a description; this "
-                                       "row compared nothing")
-
-    def test_every_declared_minimum_is_covered_by_the_row_that_drives_them(self) -> None:
-        # The other half of "the schema is advisory": a declared minimum the code does not
-        # hold is the same defect in the other direction. `SchemaMinimumsAreEnforcedTests`
-        # derives its subject from the schema and drives each; this row pins that the two
-        # derivations see the SAME set, so a new bounded argument cannot be added to the
-        # schema and skipped there by a derivation that quietly narrowed.
-        declared = {
-            (name, argument)
-            for name, tool in self.mod.TOOLS.items()
-            for argument, spec in tool.input_schema.get("properties", {}).items()
-            if spec.get("type") == "integer" and "minimum" in spec
-        }
-        self.assertTrue(declared, "no integer minimum in any served schema")
-        driven = {
-            (tool, argument)
-            for tool, argument, _minimum
-            in SchemaMinimumsAreEnforcedTests._bounded_properties(self)
-        }
-        self.assertEqual(declared, driven)
-
-
-class ToolSchemaDocumentParityTests(unittest.TestCase):
-    """`mcp_servers/tools/*.json` must say what the served schema says.
-
-    The server does not load them — `TOOLS` in the module is what a client is served —
-    but the harness reads them at startup and so do people, and until this test they
-    were free to go on describing a call shape the server refuses (they carried no
-    orchestration properties at all and an unrestricted `env`). Only the two tools that
-    have a document are covered; the other four are served-schema-only by choice."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.mod = _load_server_module()
-
-    def test_documents_match_the_served_schema(self) -> None:
-        doc_dir = _SERVER_PATH.parent / "tools"
-        served = {
-            name: tool.input_schema["properties"] for name, tool in self.mod.TOOLS.items()
-        }
-        documents = sorted(doc_dir.glob("*.json"))
-        self.assertTrue(documents, "no tool schema documents found")
-        for path in documents:
-            with self.subTest(document=path.name):
-                doc = json.loads(path.read_text(encoding="utf-8"))
-                name = doc["name"]
-                self.assertIn(name, served, f"{path.name} documents an unserved tool")
-                for key, spec in doc["arguments"]["properties"].items():
-                    self.assertIn(key, served[name],
-                                  f"{path.name} documents an argument the tool does not take")
-                    if "description" in spec or "description" in served[name][key]:
-                        self.assertEqual(
-                            spec.get("description"), served[name][key].get("description"),
-                            f"{path.name}:{key} description differs from the served schema")
-                # Both directions: a property added to the served schema must appear in
-                # the document too, or the document quietly describes a smaller tool.
-                self.assertEqual(
-                    set(doc["arguments"]["properties"]), set(served[name]),
-                    f"{path.name} and the served schema declare different arguments")
-                # ... and the same REQUIRED set (issue #289: `run_syntax_check` gained two).
-                self.assertEqual(
-                    set(doc["arguments"].get("required", [])),
-                    set(self.mod.TOOLS[name].input_schema.get("required", [])),
-                    f"{path.name} and the served schema require different arguments")
-
-    def test_the_served_required_set_is_what_the_handler_refuses_without(self) -> None:
-        """Driven, for the two tools whose required set issue #289 widened: dropping any
-        argument the served schema says is required is a refusal naming it, and a call with
-        all of them reaches the tool. A schema that under-declares (a client omitting the
-        argument would be refused with no warning) or over-declares is red."""
+    def test_the_required_set_is_what_the_entry_point_refuses_without(self) -> None:
+        """Driven, for the two entry points whose required set issue #289 widened: dropping
+        any required argument is a refusal naming it, and a call with all of them reaches the
+        tool. The only row observing `run_linter`'s refusal of a missing `preset`."""
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         (d / "a.f90").write_text("program p\nend program p\n", encoding="utf-8")
@@ -2586,21 +1652,59 @@ class ToolSchemaDocumentParityTests(unittest.TestCase):
             "run_linter": {"project_dir": str(d), "preset": "fortitude"},
         }
         for tool, args in full.items():
-            required = set(self.mod.TOOLS[tool].input_schema["required"])
             with self.subTest(tool=tool):
-                self.assertEqual(required, set(args), "the probe must carry exactly the "
-                                 "required set, or the rows below observe something else")
                 handler = getattr(self.mod, f"tool_{tool}")
                 with mock.patch.object(self.mod, "_run_command",
                                        return_value={"ok": True, "return_code": 0,
                                                      "stdout": "", "stderr": ""}), \
                         mock.patch.object(self.mod.shutil, "which", return_value="/bin/true"):
                     handler(dict(args))
-                    for name in sorted(required - {"project_dir"}):
+                    for name in sorted(set(args) - {"project_dir"}):
                         partial = {k: v for k, v in args.items() if k != name}
                         with self.assertRaises(ValueError) as ctx:
                             handler(partial)
                         self.assertIn(name, str(ctx.exception))
+
+    def test_each_argv_shape_is_refused(self) -> None:
+        """The seven argv payloads `compile_project`'s served descriptions were driven against
+        before issue #444 deleted those descriptions. The description half went with them; the
+        refusal half is kept, one sub-row per payload."""
+        rows = (
+            {"target": "--eval=$(shell id)"},
+            {"target": "a b"},
+            {"target": "SHELL=./evil"},
+            {"target": "OBJDIR=/repo/obj"},
+            {"extra_args": ["--release"]},
+            {"extra_args": ["SHELL=/tmp/x"]},
+            {"extra_args": ["X=a; id"]},
+        )
+        for payload in rows:
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                self.mod._validate_build_argv_overrides(
+                    payload.get("target"), payload.get("extra_args", []),
+                    "compile_project", build_system="make")
+
+    def test_compile_project_passes_its_target_to_the_build_tool(self) -> None:
+        # `target` is `compile_project`'s build goal; `run_program` once read an argument of
+        # the same name with another meaning (retired in issue #289).
+        with mock.patch.object(
+                self.mod, "_run_command",
+                return_value={"ok": True, "return_code": 0}) as run_command:
+            self.mod.tool_compile_project({
+                "project_dir": str(self.project_dir), "build_system": "make",
+                "target": "all"})
+        run_command.assert_called_once()
+        self.assertIn("all", run_command.call_args.kwargs["command"])
+
+    def test_the_attribution_arguments_are_recorded(self) -> None:
+        with mock.patch.object(
+                self.mod, "_run_command",
+                return_value={"ok": True, "return_code": 0}) as run_command:
+            self.mod.tool_run_linter({
+                "project_dir": str(self.project_dir), "preset": "ruff",
+                "orchestration_id": "orch_x", "agent_run_id": "arid_x"})
+        self.assertEqual(run_command.call_args.kwargs["attribution"],
+                         {"orchestration_id": "orch_x", "agent_run_id": "arid_x"})
 
 
 class RunLinterPresetDispatchTests(unittest.TestCase):
@@ -2614,7 +1718,7 @@ class RunLinterPresetDispatchTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
-        self.mod = _load_server_module()
+        self.mod = _load_module()
         self.calls: list[list[str]] = []
 
         def fake_run_command(*, command, **kwargs):
@@ -2715,19 +1819,19 @@ class RunLinterPresetDispatchTests(unittest.TestCase):
             with self.subTest(composite=composite):
                 self.assertEqual(self.mod.lint_preset_sub_presets(composite), members)
         # ... and it is DERIVED, not merely equal today: a fifth linter record and a second
-        # composite declared in the registry are served by a freshly loaded server with no
-        # server edit. A literal tuple or dict equal to today's registry passes the rows above
+        # composite declared in the registry are served by a freshly loaded module with no
+        # library edit. A literal tuple or dict equal to today's registry passes the rows above
         # and fails here.
         fifth = registry.Backend("linter", "zz_lint", "tools.backends.linter.ruff",
                                  backend_provides=frozenset({"lint"}))
         with mock.patch.dict(registry._BACKENDS, {("linter", "zz_lint"): fifth}), \
                 mock.patch.dict(registry.COMPOSITE_LINTERS, {"zz_comp": ("zz_lint", "ruff")}):
-            fresh = _load_server_module()
+            fresh = _fresh_module()
             self.assertIn("zz_lint", fresh._SIMPLE_LINT_PRESETS)
             self.assertEqual(fresh._LINT_PRESET_COMMANDS["zz_lint"],
                              fresh._LINT_PRESET_COMMANDS["ruff"])
             self.assertEqual(fresh.lint_preset_sub_presets("zz_comp"), ("zz_lint", "ruff"))
-        restored = _load_server_module()
+        restored = _fresh_module()
         self.assertNotIn("zz_lint", restored._SIMPLE_LINT_PRESETS)
 
     def test_each_arm_of_the_import_time_declaration_check_refuses(self) -> None:
@@ -2788,7 +1892,7 @@ class FileTakingLinterTests(unittest.TestCase):
     switch (`_lint_command_over`)."""
 
     def setUp(self) -> None:
-        self.mod = _load_server_module()
+        self.mod = _load_module()
         self.calls: list[list[str]] = []
 
         def fake_run_command(*, command, **kwargs):
@@ -2844,15 +1948,14 @@ class FileTakingLinterTests(unittest.TestCase):
         self.assertEqual([list(self.mod._LINT_PRESET_COMMANDS["fortitude"])], self.calls)
 
 
-
 class BuildExecuteBackendTests(unittest.TestCase):
-    """The `make` rows are the make backend's `build_execute` since issue #424 PR-2: the server
+    """The `make` rows are the make backend's `build_execute` since issue #424 PR-2: the library
     asks the package, so a value there is what a build and a quality check run, and a second
     extracted build system needs no row here."""
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.mod = _load_server_module()
+        cls.mod = _load_module()
 
     def _execute(self):
         return self.mod._backend_registry().capability_module(
@@ -2868,7 +1971,7 @@ class BuildExecuteBackendTests(unittest.TestCase):
         # The table answers a build system no backend carries `build_execute` for.
         self.assertEqual(self.mod.build_command("ninja", None, 2, []), ["ninja", "-j2"])
 
-    def test_a_build_system_extracted_later_needs_no_server_row(self) -> None:
+    def test_a_build_system_extracted_later_needs_no_library_row(self) -> None:
         registry = self.mod._backend_registry()
         alias = registry.Backend("build_system", "zz_make_alias",
                                  "tools.backends.build_system.make",

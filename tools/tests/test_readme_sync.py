@@ -1,20 +1,19 @@
-"""Anti-drift guard for the three mechanically-derivable tables in `README.md`.
+"""Anti-drift guard for the two mechanically-derivable tables in `README.md`.
 
 The README restates facts that live in code and in the registry: which substeps each phase
-runs and which of them are `LLM` leaves, which tools the MCP build/runtime server serves, and
-which `spec` this tree holds. Prose copies of machine-owned facts are what this repository
+runs and which of them are `LLM` leaves, and which `spec` this tree holds. Prose copies of machine-owned facts are what this repository
 keeps paying for (`TODO.md`'s documentation-drift item, whose own completion criterion asks for
 a doc-sync test rather than another proofread), so each table here is compared against the
 source that OWNS it, never against a second literal:
 
 * the substep sequences against `workflow_conductor.SUBSTEPS`,
 * the `LLM`-leaf column against `llm_config.LLM_LEAF_SUBSTEPS`,
-* the MCP tool list against `build_runtime_server.TOOLS`,
 * the `spec` table against `spec/registry/spec_catalog.yaml` AND against the
   `controlled_spec.md` files on disk (the registry and the tree can disagree; the README is
   wrong if it matches only one).
 
-Only these three tables are pinned. The prose is deliberately not, and the CLI option table is
+Only these two tables are pinned. (A third, the MCP tool table, went with the MCP layer in
+issue #444.) The prose is deliberately not, and the CLI option table is
 not either: `docs/CLI_REFERENCE.md` makes `tools/run_workflow.py --help` canonical for that
 surface, and the README says so rather than claiming to be a second source.
 """
@@ -32,12 +31,9 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 README = REPO_ROOT / "README.md"
 
 sys.path.insert(0, str(REPO_ROOT / "tools"))
-sys.path.insert(0, str(REPO_ROOT / "mcp_servers"))
 
 import llm_config  # noqa: E402
 import workflow_conductor  # noqa: E402
-
-import build_runtime_server  # noqa: E402
 
 
 def _read_readme() -> str:
@@ -134,16 +130,6 @@ class ReadmeSubstepTableTest(unittest.TestCase):
             [pair for pair in llm_config.LLM_LEAF_SUBSTEPS if pair[0] == "build"], [],
         )
         self.assertIn("none", self._rows()["Build"][1].lower())
-
-
-class ReadmeMcpToolTableTest(unittest.TestCase):
-    def test_tool_list_matches_the_served_registry(self) -> None:
-        rows = _table_rows(_read_readme(), "## MCP tools")
-        declared = [_codes(row[0])[0] for row in rows]
-        self.assertEqual(
-            sorted(declared), sorted(build_runtime_server.TOOLS),
-            "README's MCP tool table disagrees with build_runtime_server.TOOLS",
-        )
 
 
 class ReadmeSpecTableTest(unittest.TestCase):

@@ -8,7 +8,7 @@
 
 - **The rule set is the flag list** `-std=c++17 -Xcompiler=-Wall,-Wextra,-Werror --Werror all-warnings`,
   run as `-Xcompiler -fsyntax-only -rdc=true -c` over each `.cu` under the lint target, handed to the
-  driver by name (`SOURCE_SUFFIXES`; `mcp_servers/build_runtime_server.py` `_lint_command_over`).
+  driver by name (`SOURCE_SUFFIXES`; `tools/build_runtime.py` `_lint_command_over`).
   `-rdc=true` (relocatable device code) is the build's own mode
   (`docs/backends/language/cuda_cpp/BUNDLE_BINDING.md` §4): without it a kernel's call to a
   `__host__ __device__` operation another file defines is a `ptxas fatal : Unresolved extern

@@ -959,13 +959,14 @@ class RemedyTests(unittest.TestCase):
     sites must be COUPLED. This is that coupling, and it is written over the code rather than over
     the documents because the code is where the sites were.
 
-    Bounded to what the runtime SHIPS: `tools/` and `mcp_servers/`, excluding `tools/tests/`. A
+    Bounded to what the runtime SHIPS: `tools/`, excluding `tools/tests/` (`mcp_servers/` was a
+    second root until issue #444 moved its module into `tools/`). A
     test may quote a by-name install — several here quote the exact line the branch deleted, in
     order to describe it — and refusing that would make the rule unstatable.
     """
 
     #: Directories whose modules can print a remedy to an operator or a leaf.
-    _REMEDY_ROOTS = ("tools", "mcp_servers")
+    _REMEDY_ROOTS = ("tools",)
 
     #: `tools/tests/` quotes by-name installs deliberately, to describe the rule. Nothing else is
     #: excluded — an earlier draft of this row also skipped `tools/backends/`, which excluded the

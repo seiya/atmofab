@@ -8,10 +8,8 @@ canonical source for where the knowledge of a concrete technology is allowed to 
 rule that keeps it out of everything else.
 
 ## Scope
-- All Python under `tools/` and `mcp_servers/`.
+- All Python under `tools/`, the build-runtime library `tools/build_runtime.py` among it.
 - The leaf prompt templates under `tools/prompt_templates/`.
-- The MCP tool declarations under `mcp_servers/` (`*.md`, `*.json`): the `compiler`- and
-  `linter`-axis argv is spelled there.
 - Every document and script under `skills/`.
 - Every document under `docs/`, recursively.
 - `README.md`, `AGENTS.md`, `CLAUDE.md`.
@@ -24,7 +22,7 @@ rule that keeps it out of everything else.
   `build_system`'s package, so they are in scope for the same reason. Every file under it, not
   only `*.yml`: a `- run:` step is one line away from calling a shell script beside it. Nothing
   matches this today; it is here so the first workflow file lands inside the measured set.
-- `.gitignore`, `.mcp.json`, `pytest.ini` and `LICENSE` — the rest of the tracked files at the
+- `.gitignore`, `pytest.ini` and `LICENSE` — the rest of the tracked files at the
   repository root. They are in scope because the ROOT is: `.gitignore` already names a `linter`'s
   cache directory, and a root file is where a declaration lands when nobody has decided where it
   belongs. `TODO.md` is the one tracked root file left out, and
@@ -60,7 +58,7 @@ Out of scope, each for a stated reason:
 - **backend**: the code that knows one value of one axis — the Fortran `language` backend, the
   `make` `build_system` backend. A backend is identified by `<axis>/<backend_id>`.
 - **neutral core**: every module, template, skill, and document in scope that is not a backend.
-  The conductor, the runtime, the deterministic gates, the MCP server, and the phase contracts are
+  The conductor, the runtime, the deterministic gates, the build-runtime library, and the phase contracts are
   all neutral core.
 
 ## Design Policy
@@ -128,7 +126,7 @@ Out of scope, each for a stated reason:
 ## Placement rules
 | Artifact | Neutral location | Backend location |
 | --- | --- | --- |
-| Python module | `tools/`, `mcp_servers/` | `tools/backends/<axis>/<backend_id>/` |
+| Python module | `tools/` | `tools/backends/<axis>/<backend_id>/` |
 | Leaf prompt template | `tools/prompt_templates/` | `tools/prompt_templates/backends/<axis>/<backend_id>/` |
 | `SKILL.md` | `skills/<skill>/SKILL.md` | `skills/<skill>/backends/<axis>/<backend_id>.md`, referenced from the neutral `SKILL.md` |
 | Document | `docs/` | `docs/backends/<axis>/<backend_id>/` |
@@ -242,11 +240,11 @@ together with the bundle's `target_lowering_plan.parallelization`.
   - The `static lint` step reaches a registered linter's argv through `capability_module` only
     where that record declares `lint` in `backend_provides`. Every linter that HAS an argv does
     (issues #111 and #120), so no linter invocation is spelled in
-    `mcp_servers/build_runtime_server.py` any more. The preset NAMES are the registry's too since
-    issue #424: the server serves every linter record carrying `lint` in `backend_provides`, and
+    `tools/build_runtime.py` any more. The preset NAMES are the registry's too since
+    issue #424: the library serves every linter record carrying `lint` in `backend_provides`, and
     the composites in `registry.COMPOSITE_LINTERS`, so registering another linter widens the
-    server and the evidence gate together, with no server edit. A linter's backend also says whether it walks the lint directory or is
-    handed its files by name (`SOURCE_SUFFIXES`, issue #289, R4-b PR-4), so the server lists no
+    library and the evidence gate together, with no library edit. A linter's backend also says whether it walks the lint directory or is
+    handed its files by name (`SOURCE_SUFFIXES`, issue #289, R4-b PR-4), so the library lists no
     suffix of its own either. The criterion that forced each move is worth stating: the argv carries the
     RULE SET the gate applies, or the compiler-family arguments it applies it under, and both are
     knowledge this document forbids the neutral core.
@@ -292,7 +290,7 @@ together with the bundle's `target_lowering_plan.parallelization`.
   sampled half only — the direct-import allowlist lives in its own file and is edited by hand, so
   a migration cannot absorb a new bypass.
 - **Changing a rule stated here** requires washing every document that cites it. The citations are
-  found with `grep -rn "BACKEND_BOUNDARY" docs skills tools mcp_servers *.md` from the repository
+  found with `grep -rn "BACKEND_BOUNDARY" docs skills tools *.md` from the repository
   root — the root `*.md` is load-bearing, since `TODO.md` carries the migration ledger and its
   measured figures, and `README.md` indexes this document.
 

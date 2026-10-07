@@ -408,7 +408,7 @@ class EndToEndTests(unittest.TestCase):
 
     def test_the_entry_has_the_local_servers_shape_plus_site(self) -> None:
         """The local server's entry keys, read by running the server once, plus `site`."""
-        server = rx._server()
+        server = rx.build_runtime
         with tempfile.TemporaryDirectory() as tmp:
             local = server.tool_run_program({
                 "project_dir": tmp, "command": ["true"], "env": {"KNOB": "1"},
@@ -422,7 +422,7 @@ class EndToEndTests(unittest.TestCase):
                          set(local) - {"command_log_ref"})
 
     def test_every_entry_goes_through_the_servers_writer(self) -> None:
-        server = rx._server()
+        server = rx.build_runtime
         with mock.patch.object(server, "_append_command_log", autospec=True,
                                side_effect=server._append_command_log) as spy:
             self.h.run(self.h.request())
@@ -504,7 +504,7 @@ class EndToEndTests(unittest.TestCase):
             timeout_sec=60, command_log_path=self.h.local / "logs" / "run.jsonl",
             capture_limit=1000)
         (run,) = self.h.run(self.h.request(cmd)).results
-        self.assertEqual(run["stdout"], rx._server()._trim("x" * 5000 + "\n", 1000))
+        self.assertEqual(run["stdout"], rx.build_runtime._trim("x" * 5000 + "\n", 1000))
         self.assertLess(len(run["stdout"]), 1100)
 
     def test_argv_and_env_survive_quoting(self) -> None:
@@ -1642,7 +1642,7 @@ class BuildShapeTests(unittest.TestCase):
         shapes that rule distinguishes: a versioned line after a name line, no versioned line,
         the answer on stderr only, a non-zero exit (read anyway), leading blank lines, and no
         answer at all."""
-        server = rx._server()
+        server = rx.build_runtime
         cases = {
             # Digits before the versioned line, undotted, as a real driver's copyright line
             # carries them: a rule reading "a digit" instead of "a dotted version" picks it.

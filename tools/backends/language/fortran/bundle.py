@@ -59,7 +59,7 @@ DEFAULT_COMPILER = "gfortran"
 MANDATORY_SYNTAX_COMPILER = DEFAULT_COMPILER
 
 #: A language whose sources are compiled, so its build needs a tool that tracks dependencies
-#: between them (`mcp_servers/build_runtime_server.py` refuses a one-off build tool for such a
+#: between them (`tools/build_runtime.py` refuses a one-off build tool for such a
 #: language). The policy is neutral; WHICH languages it applies to is this fact.
 COMPILED = True
 

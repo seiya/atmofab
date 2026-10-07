@@ -64,8 +64,8 @@ optimization boundary.
 
 - **agent capability token** — the per-`agent_run` secret at
   `workspace/orchestrations/<orchestration_id>/capabilities/<agent_run_id>.json` that
-  authorized MCP calls. **Deleted in PR-2 of [issue #171](https://github.com/seiya/atmofab/issues/171)**,
-  with the gate that checked it: no leaf reaches the build-runtime server. The
+  authorized build-runtime calls. **Deleted in PR-2 of [issue #171](https://github.com/seiya/atmofab/issues/171)**,
+  with the gate that checked it: no leaf reaches the build-runtime library. The
   disambiguation is kept because the word still appears in records written before the cut.
 - **harness capability** (this document) — a declared feature of a target harness ABI
   (`sync_single_case@1`, `state_registration@1`, …). It is a code-generation contract

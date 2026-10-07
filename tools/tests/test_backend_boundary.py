@@ -130,14 +130,12 @@ REGISTRY_MODULES = frozenset({"tools.backends", "tools.backends.registry"})
 # which made a move into any new `docs/<subdir>/` indistinguishable from a migration into a
 # backend: both lowered the debt figure and both stayed green. Review demonstrated it by moving
 # `CHECKS_MODULE_CONTRACT.md` (76 occurrences) into a fresh `docs/reference/` and regenerating.
-# The declaration files under `mcp_servers/tools/` and the two root documents are here for the
-# same reason: they are where `compiler`- and `linter`-axis argv is actually spelled.
+# The two root documents are here for the same reason: they are where `compiler`- and
+# `linter`-axis argv is actually spelled. (The declaration files under `mcp_servers/tools/` and
+# the `mcp_servers/` globs went with the MCP layer in issue #444; its module moved into `tools/`.)
 _SCANNED_GLOBS = (
     ("tools", "**/*.py"),
     ("tools/prompt_templates", "**/*.txt"),
-    ("mcp_servers", "**/*.py"),
-    ("mcp_servers", "**/*.md"),
-    ("mcp_servers", "**/*.json"),
     ("docs", "**/*.md"),
     ("docs", "**/*.yaml"),
     ("skills", "**/*.md"),
@@ -150,7 +148,7 @@ _SCANNED_GLOBS = (
     # §Scope bullet went in the same change, which is what the row below checks: every glob
     # here maps 1:1 to a §Scope bullet, in both directions.
     # The dependency declaration and the CI workflow (issue #161). Same reason as the two root
-    # documents above and as `mcp_servers/`'s declaration files: these are where `linter`-,
+    # documents above: these are where `linter`-,
     # `compiler`- and `language`-axis names are spelled, and an install line is exactly the kind
     # of statement that is backend knowledge (the runbook's own moved to `docs/backends/` in
     # issue #424 PR-4). Added because the
@@ -174,7 +172,6 @@ _SCANNED_GLOBS = (
     # `RootFileCoverageTests` below: every tracked root file must be scanned or be in
     # `_UNSCANNED_ROOT_FILES` with a reason, so a new one is refused until someone reads it.
     (".", ".gitignore"),
-    (".", ".mcp.json"),
     (".", "pytest.ini"),
     (".", "LICENSE"),
     # Every file under `.github`, not only `*.yml`. A workflow's `- run:` step is one line away
@@ -1427,7 +1424,6 @@ class ScannedSetTests(unittest.TestCase):
                 "skills/some-skill/scripts/emit.py",
                 "skills/some-skill/SKILL.md",
                 "skills/some-skill/backends/language/fortran.md",
-                "mcp_servers/tools/run_syntax_check.json",
                 "tools/prompt_templates/leaf.txt",
                 "README.md",
                 "AGENTS.md",
@@ -1441,7 +1437,7 @@ class ScannedSetTests(unittest.TestCase):
         self.assertEqual(
             {"docs/reference/moved_contract.md", "docs/a/b/c/deep.md", "docs/examples/pinned.yaml",
              "skills/some-skill/scripts/emit.py", "skills/some-skill/SKILL.md",
-             "mcp_servers/tools/run_syntax_check.json", "tools/prompt_templates/leaf.txt",
+             "tools/prompt_templates/leaf.txt",
              "README.md", "AGENTS.md", "CLAUDE.md"},
             found)
 
@@ -2246,7 +2242,7 @@ class RegistryConsistencyTests(unittest.TestCase):
         # `provides` / `capability_module` for it when it writes a bundle's files, and when it
         # names the files it authors (`_host_rendered_src_names`).
         # `lint` joined them when the first linter's argv moved into its package (issue #111):
-        # `mcp_servers/build_runtime_server.py`'s `_lint_preset_command` asks `capability_module`
+        # `tools/build_runtime.py`'s `_lint_preset_command` asks `capability_module`
         # for it. Note the asymmetry the instrument's own comment below records — the conductor's
         # `{"lint": ...}` dict key is NOT what makes it dispatched, and never was.
         #

@@ -19,18 +19,6 @@
       "**/*.txt"
     ],
     [
-      "mcp_servers",
-      "**/*.py"
-    ],
-    [
-      "mcp_servers",
-      "**/*.md"
-    ],
-    [
-      "mcp_servers",
-      "**/*.json"
-    ],
-    [
       "docs",
       "**/*.md"
     ],
@@ -65,10 +53,6 @@
     [
       ".",
       ".gitignore"
-    ],
-    [
-      ".",
-      ".mcp.json"
     ],
     [
       ".",

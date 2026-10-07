@@ -481,8 +481,8 @@ when a rule does not obviously apply:
 
 3. **Run the verification set** and record the measurements. The commands are in
    `.claude/skills/atmofab-enforcement-change/references/verification.md` (suite baseline, ruff
-   diff against origin/main, doc size ceilings; its `mcp_call` end-to-end section is for
-   enforcement machinery). **Run it again after every later commit of the loop, a comment-only
+   diff against origin/main, doc size ceilings; its end-to-end section, which drives the
+   build-runtime library by import, is for enforcement machinery). **Run it again after every later commit of the loop, a comment-only
    one included**: a file that a derivation transformation tuple hashes
    (`tools/tests/test_derivation_transformation_drift.py` — `tools/verdict_evaluator.py`,
    `tools/primary_evidence.py`, the compile-inlined documents, the conductor methods it names)

@@ -776,9 +776,9 @@ class PruneWorkflowHomesTests(unittest.TestCase):
                  # the permission-grant spelling — which lives in JSON and which a
                  # `.py`-only search could never have seen. Found by planting a grant and
                  # watching the census pass.
-                 "--", "tools/*.py", "tools/**/*.py", "mcp_servers/*.py",
+                 "--", "tools/*.py", "tools/**/*.py",
                  "skills/**/*.py", "leaf_config/**/*.py",
-                 "leaf_config/**/*.json", ".claude/*.json", ".mcp.json"],
+                 "leaf_config/**/*.json", ".claude/*.json"],
                 capture_output=True, text=True, check=False)
             # THE RETURN CODE IS THE WHOLE TEST. `git grep` exits 0 with matches, 1 with
             # none, and anything else means the SEARCH failed — 128 outside a git

@@ -38,7 +38,7 @@ MAX_SPEC_ID_LEN = 55
 # (`orchestration_runtime._is_safe_path_token`): `[A-Za-z0-9._-]`, no `..`, narrowed further
 # because a case id also reaches the runner's argv.
 # The first character additionally may not be `-`: a case id reaches the runner's argv through
-# the build-runtime MCP server, which refuses a leading `-` there, so accepting one here would
+# the build-runtime library, which refuses a leading `-` there, so accepting one here would
 # pass Compile and Build and then fail Validate.execute on an id no gate had objected to.
 #
 # Public because three modules ask this one question — the conductor's argv builder, the

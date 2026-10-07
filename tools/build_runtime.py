@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
-"""Minimal MCP server for build/run/quality operations.
+"""The build-runtime library: compile / run / quality check / lint / syntax check.
 
-This server intentionally has no THIRD-PARTY dependencies so that it can be used
-in constrained environments. It does read two modules of this checkout:
-`tools/orchestration_runtime.py` (by file location) and `tools/backends/registry.py`
-(by dotted import, because the registry resolves a backend package by module path).
-Both are stdlib-only.
+The conductor imports this module and calls its five `tool_*` entry points in-process
+(`docs/BUILD_RUNTIME.md` is canonical for them and for the validation they apply). It was
+an MCP server until issue #444; no leaf has called it since Z4 (issue #171), so the
+protocol layer was deleted and the functions stayed.
+
+It has no THIRD-PARTY dependencies. It reads one module of this checkout,
+`tools/backends/registry.py` (by dotted import, because the registry resolves a backend
+package by module path), which is stdlib-only.
 """
 
 from __future__ import annotations
@@ -19,33 +22,10 @@ import subprocess
 import sys
 import time
 import uuid
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Callable
-
-JSONRPC_VERSION = "2.0"
-SERVER_NAME = "build-runtime-server"
-
-
-def _disable_bytecode_writes() -> None:
-    """Stop this interpreter (and the build/gate subprocesses it spawns) from writing
-    `.pyc` files.
-
-    The MCP server runs inside a read-only bwrap sandbox where neither
-    `workspace/.pycache` nor the in-repo source `__pycache__` is writable. Importing the
-    large orchestration runtime would otherwise attempt a bytecode write that EROFSes
-    before any build runs (the previous code unconditionally `mkdir`-ed
-    `workspace/.pycache`, which succeeded only when that dir happened to pre-exist from a
-    non-sandboxed run). A runtime `PYTHONDONTWRITEBYTECODE` env var alone is too late to
-    flip `sys.dont_write_bytecode` for the already-started interpreter, so set it
-    directly; also export the env var so subprocesses inherit it. Disabling the cache is
-    negligible here — the server is short-lived and re-imported per leaf launch — and it
-    also avoids ever polluting the repo source tree with `.pyc`.
-    """
-    sys.dont_write_bytecode = True
-    os.environ["PYTHONDONTWRITEBYTECODE"] = "1"
+from typing import Any
 
 
 @lru_cache(maxsize=1)
@@ -64,7 +44,6 @@ def _backend_registry() -> Any:
     introduces no cycle (`tools/host_prerequisites.py`
     imports THIS module; this module imports the registry; the registry imports nothing).
     """
-    _disable_bytecode_writes()
     try:
         from tools.backends import registry
     except ModuleNotFoundError:
@@ -76,62 +55,8 @@ def _backend_registry() -> Any:
     return registry
 
 
-def _refuse_retired_arguments(args: dict[str, Any], tool_name: str) -> None:
-    """Refuse an argument this server used to read and no longer does.
-
-    `capability_token` named a secret in `capabilities/<agent_run_id>.json`, which the
-    orchestration gate compared against the launch record before serving a call. The gate
-    existed because the caller might be a LEAF holding a grant it should not be able to
-    widen; since Z4 (issue #171) no leaf reaches this server at all — a pure leaf launches
-    with `--tools ""` and `--strict-mcp-config` and carries no MCP configuration — so the
-    only caller under a run is the conductor, in the host process, and what it owes the
-    server is attribution rather than authority.
-
-    Refused rather than ignored: a caller still sending one is running against a contract
-    this server no longer implements, and reading it as a no-op would serve the call as if
-    the check had passed.
-
-    `run_program` retired four more (issue #289, R4-b PR-1): `target_class`, `target.class`,
-    `target` and `threads_per_rank`. From them the server derived an OpenMP environment for a
-    `cpu` class and ran every other class with none, so a `gpu` target reached a CPU run
-    without a word. The launch environment is now composed by the host from the target profile
-    (`tools/host_execution.py`) and arrives as `env`; a caller still sending the old arguments
-    would otherwise run with no thread variables at all while believing it had set them. They
-    are refused on `run_program` alone — `target` is `compile_project`'s build goal.
-    """
-    # One remedy per retirement the call actually hit, so each refused argument is answered
-    # with ITS replacement: a `capability_token` alone on `run_program` was once told to pass
-    # an `env` (round 3).
-    by_tool = _RETIRED_ARGUMENTS_BY_TOOL.get(tool_name, ())
-    offending = sorted(key for key in _RETIRED_ARGUMENTS + by_tool if key in args)
-    if offending:
-        remedies = []
-        if any(key in args for key in _RETIRED_ARGUMENTS):
-            remedies.append(_CAPABILITY_TOKEN_REMEDY)
-        if any(key in args for key in by_tool):
-            remedies.append(_RETIRED_ARGUMENT_REMEDY[tool_name])
-        raise ValueError(
-            f"{tool_name} no longer accepts " + ", ".join(offending) + ": "
-            + "; ".join(remedies)
-        )
-
-
-_RETIRED_ARGUMENTS = ("capability_token",)
-_CAPABILITY_TOKEN_REMEDY = (
-    "the orchestration capability gate was retired in issue #171; pass "
-    "orchestration_id / agent_run_id for attribution instead")
-_RETIRED_ARGUMENTS_BY_TOOL: dict[str, tuple[str, ...]] = {
-    "run_program": ("target_class", "target.class", "target", "threads_per_rank"),
-}
-_RETIRED_ARGUMENT_REMEDY: dict[str, str] = {
-    "run_program": (
-        "the launch environment is the caller's to compose (issue #289: the workflow builds it "
-        "from the target profile in tools/host_execution.py); pass it as env"),
-}
-
-
 def _bounded_int(raw: Any, default: int, minimum: int, name: str) -> int:
-    """An integer argument, held to the minimum its served schema declares."""
+    """An integer argument, held to `minimum`; below it is refused rather than clamped."""
     if raw is None:
         return default
     value = int(raw)
@@ -232,9 +157,8 @@ def _validate_env_overrides(env: Any, tool_name: str) -> None:
     the workflow declares, switched on by an `orchestration_id` argument or by the
     workflow environment variables, and this denylist for everything else. The allowlist
     existed because the caller might be a LEAF whose grant it had to bound; no leaf
-    reaches this server any more (`--tools ""`, `--strict-mcp-config`, no MCP
-    configuration at all), so the only caller under a run is the conductor in the host
-    process, and the allowlist bounded nobody. What survives is the denylist, which
+    reaches this library (a pure leaf holds no tool), so the only caller under a run is
+    the conductor in the host process, and the allowlist bounded nobody. What survives is the denylist, which
     catches a mistake rather than confining a caller — and it now applies to the
     conductor's calls too, which it did not before.
 
@@ -249,12 +173,12 @@ def _validate_env_overrides(env: Any, tool_name: str) -> None:
     build control file's compiler comes from. That is a real gap and it is recorded rather
     than closed, because closing it means an allowlist, an allowlist bounds a caller's GRANT,
     and there is no longer a caller whose grant needs bounding: no leaf reaches this
-    server, and the conductor passes a fixed six-key dict it composes itself. A denylist
+    library, and the conductor passes a fixed six-key dict it composes itself. A denylist
     over names does not terminate, which is why this one covers only the names that
     redirect what is EXECUTED rather than what a build control file reads.
 
-    Call this on the raw `env` argument, before the server composes its own addition
-    (`PYTHONPATH` for the pytest preset) — that is the server's own decision and is not
+    Call this on the raw `env` argument, before this module composes its own addition
+    (`PYTHONPATH` for the pytest preset) — that is this module's own decision and is not
     caller-controlled. A parallel runtime's thread variables used to be a second such
     addition on `run_program`; since issue #289 they are the caller's and arrive here, and
     none of them is an execution-redirecting name.
@@ -292,16 +216,16 @@ _MAKE_ASSIGNMENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # is the same surface `extra_args` is: anything that opens with `-` is a SWITCH the build
 # tool reads before the certified control file, and a metacharacter is a command rather
 # than a name. The orchestrated arm refused a target outright until Z4 (issue #171) because
-# the caller might be a leaf; no leaf reaches this server, but the rule that kept
+# the caller might be a leaf; no leaf reaches this library, but the rule that kept
 # `--eval=$(shell ...)` off the command line was doing a second job — catching a defect in
 # a caller this repository writes — and that job is not retired, so it applies to every
 # caller now.
 #
 # Stated as what is REFUSED rather than as an allowlist of name characters. A first attempt
-# spelled the allowlist and refused real goals across the build systems this server serves:
+# spelled the allowlist and refused real goals across the build systems this module runs:
 # `:app:assembleDebug` (gradle), `build:prod` (an npm script), `lib.so:shared_library`
 # (meson), `%.o` (a make pattern goal). None of those is dangerous, and an allowlist over a
-# grammar this server does not own answers a question it cannot know.
+# grammar this module does not own answers a question it cannot know.
 _TARGET_REFUSED_CHARS = _SHELL_ACTIVE_CHARS | set(" ")
 
 
@@ -325,8 +249,8 @@ def _build_syntax_source_re(suffixes: tuple[str, ...]) -> re.Pattern[str]:
 #: tool after `--`, and `ninja` reads `-f` as its build file and `-t` as a subtool. It is
 #: that outside the workflow the caller is the OPERATOR, who chose the argv and owns the
 #: machine — defending them against their own switches is out of scope
-#: (`AGENTS.md` §Development premises), and refusing them makes the tool unusable for the
-#: build systems its own schema advertises. The two rules that are NOT about argv shape —
+#: (`AGENTS.md` §Development premises), and refusing them makes the library unusable for the
+#: build systems it supports (`DEPENDENCY_AWARE_BUILD_SYSTEMS`). The two rules that are NOT about argv shape —
 #: no execution-redirecting assignment, no character a shell acts on — apply to every
 #: build system and to `target` as well, because those catch a composition defect rather
 #: than bound a caller.
@@ -439,7 +363,7 @@ def _validate_build_argv_overrides(
     ONE mode since Z4 (issue #171), like `_validate_env_overrides` above and for the same
     reason. The orchestrated arm held THREE further things: an allowlist of six variable
     NAMES, a containment rule on the four whose value is a path, and an outright refusal
-    of any `target`. The first two bounded a leaf's grant and no leaf reaches this server,
+    of any `target`. The first two bounded a leaf's grant and no leaf reaches this library,
     so they are retired. The third is not retired but GENERALIZED: refusing every target
     was a grant bound, while refusing a SWITCH spelled as a target catches the second
     defended class — a defect in a caller this repository writes — and so applies to every
@@ -548,8 +472,6 @@ def _validate_syntax_sources(sources: list[str], project_dir: str, tool_name: st
         raise SyntaxSourceNameError(message)
 
 
-SERVER_VERSION = "0.1.0"
-DEFAULT_PROTOCOL_VERSION = "2024-11-05"
 DEFAULT_COMMAND_LOG_FILE = "command_log.jsonl"
 
 def _is_compiled_language(language: str) -> bool:
@@ -572,90 +494,6 @@ DEPENDENCY_AWARE_BUILD_SYSTEMS = {
     "pnpm",
     "poetry",
 }
-
-_ENV_PROPERTY_SCHEMA: dict[str, Any] = {
-    "type": "object",
-    "additionalProperties": {"type": "string"},
-    "description": (
-        "Environment overrides for the command. Keys that redirect execution (LD_*, "
-        "DYLD_*, PATH, PYTHONPATH, BASH_ENV, ENV, IFS, COMPILER_PATH, "
-        "GCC_EXEC_PREFIX, LIBRARY_PATH, MAKEFLAGS, GNUMAKEFLAGS, MAKEFILES, "
-        ".SHELLFLAGS, MAKESHELL, SHELL, MAKE) are refused, and so is any VALUE carrying a character a shell "
-        "acts on -- make imports an environment name as a make variable and the "
-        "recipe interpolates it unquoted."
-    ),
-}
-
-# Attribution, not authority. `capability_token` used to sit here beside them and name a
-# secret the orchestration gate checked; the gate was retired in issue #171 and the
-# argument is now refused outright (`_refuse_retired_arguments`), so a caller written
-# against the old contract fails instead of being served as if it had passed.
-_ATTRIBUTION_PROPERTIES: dict[str, Any] = {
-    "orchestration_id": {
-        "type": "string",
-        "description": (
-            "Optional. The orchestration this call belongs to. Recorded in the "
-            "command log entry so a command can be traced back to the run that issued "
-            "it; it decides nothing about what this server will execute."
-        ),
-    },
-    "agent_run_id": {
-        "type": "string",
-        "description": (
-            "Optional. The agent run this call belongs to, recorded in the command log "
-            "entry beside orchestration_id."
-        ),
-    },
-    "repo_root": {
-        "type": "string",
-        "description": (
-            "Repository root. Optional and unused by this server since issue #171; "
-            "accepted so an existing caller keeps working."
-        ),
-    },
-}
-
-
-@dataclass(frozen=True)
-class Tool:
-    name: str
-    description: str
-    input_schema: dict[str, Any]
-    handler: Callable[[dict[str, Any]], dict[str, Any]]
-
-
-def _write_message(payload: dict[str, Any]) -> None:
-    # The MCP stdio transport frames messages as newline-delimited JSON.
-    sys.stdout.write(json.dumps(payload, ensure_ascii=False))
-    sys.stdout.write("\n")
-    sys.stdout.flush()
-
-
-def _read_message() -> dict[str, Any] | None:
-    stream = sys.stdin.buffer
-    while True:
-        first_line = stream.readline()
-        if not first_line:
-            return None
-        if not first_line.strip():
-            continue
-
-        if first_line.lower().startswith(b"content-length:"):
-            length = int(first_line.split(b":", 1)[1].strip())
-            # Skip remaining headers.
-            while True:
-                header_line = stream.readline()
-                if not header_line:
-                    return None
-                if header_line in (b"\r\n", b"\n"):
-                    break
-            body = stream.read(length)
-            if not body:
-                return None
-            return json.loads(body.decode("utf-8"))
-
-        # Fallback for newline-delimited JSON.
-        return json.loads(first_line.decode("utf-8"))
 
 
 def _trim(text: str, limit: int) -> str:
@@ -703,12 +541,11 @@ def _append_command_log(log_path: Path, entry: dict[str, Any]) -> None:
 def _attribution(args: dict[str, Any]) -> dict[str, str]:
     """The run this call belongs to, as the command log records it.
 
-    Both fields are optional and neither decides anything: the server runs the same
-    command with them, without them, and with any value in them. They are here so a line
+    Both fields are optional and neither decides anything: the same command runs
+    with them, without them, and with any value in them. They are here so a line
     in `command_log.jsonl` can be traced back to the orchestration and agent run that
-    issued it — which is what the retired capability gate produced as a SIDE EFFECT of
-    checking a token, and the only part of it anything downstream reads
-    (`docs/workflow/MCP_COMMAND_LOG_PLACEMENT.md`).
+    issued it — the only part of the retired capability gate (issue #171) anything
+    downstream reads (`docs/workflow/COMMAND_LOG_PLACEMENT.md`).
     """
     out: dict[str, str] = {}
     for key in ("orchestration_id", "agent_run_id"):
@@ -866,7 +703,7 @@ def _recommended_build_system(project_dir: str, language: str) -> dict[str, str]
 
 
 #: The bound `compile_project` applies when its caller names none. Module-level for a build at a
-#: remote site (issue #333), where no server applies it: the remote executor
+#: remote site (issue #333), where `tool_compile_project` does not apply it: the remote executor
 #: (`tools/remote_execution.py`) runs a command with the timeout its caller passes, as
 #: `RUN_PROGRAM_TIMEOUT_SEC` is passed for a run.
 COMPILE_PROJECT_TIMEOUT_SEC = 1800
@@ -902,8 +739,8 @@ def build_command(
     extra_args: list[str],
 ) -> list[str]:
     """The argv `compile_project` runs for `build_system`. Public so that a build at a remote
-    site (issue #333), which no server runs, can be handed the argv this table gives, and run
-    what a build here would. Raises `ValueError` for a build system the server does not run.
+    site (issue #333), which `tool_compile_project` does not run, can be handed the argv this table gives, and run
+    what a build here would. Raises `ValueError` for a build system this module does not run.
 
     A build system whose registry record carries `build_execute` in its package answers from
     that package (`build_argv`, issue #424 PR-2), so a second extracted build system needs no
@@ -963,33 +800,11 @@ def build_system_executable(build_system: str) -> str:
     return build_command(build_system, None, 1, [])[0]
 
 
-def tool_detect_build_system(args: dict[str, Any]) -> dict[str, Any]:
-    project_dir = str(args.get("project_dir", "."))
-    # Advisory and capability-free: it runs nothing, and it reports which of eleven
-    # marker files exist in the directory it is pointed at. It used to be REFUSED when
-    # the workflow environment variables were set, because a leaf could reach it and the
-    # read was outside the boundary the read manifest drew. No leaf reaches this server
-    # since Z4 (issue #171), and the conductor does not call this tool at all — the build
-    # system comes from the IR's toolchain — so the refusal guarded nothing and the
-    # server is a general tool for its operator again.
-    _refuse_retired_arguments(args, "detect_build_system")
-    language = str(args.get("language", "")).strip().lower()
-    recommended = _recommended_build_system(project_dir, language)
-    return {
-        "project_dir": str(Path(project_dir).resolve()),
-        "language": language or None,
-        "recommended_build_system": recommended["build_system"],
-        "reason": recommended["reason"],
-    }
-
-
 def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     project_dir = str(args.get("project_dir", "."))
-    _refuse_retired_arguments(args, "compile_project")
     language = str(args.get("language", "")).strip().lower()
     target = args.get("target")
-    # The served schema declares these minimums; an MCP argument schema is advisory, so
-    # enforce them here. `make -j-5` waits forever, which spends the caller's whole
+    # Each bound has a minimum, enforced here. `make -j-5` waits forever, which spends the caller's whole
     # timeout on nothing.
     jobs = _bounded_int(args.get("jobs"), default_build_jobs(), 1, "jobs")
     timeout_sec = _bounded_int(args.get("timeout_sec"), COMPILE_PROJECT_TIMEOUT_SEC, 1,
@@ -1046,7 +861,7 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
 
 
 #: The bound `run_program` applies when its caller names none. The remote executor
-#: (`tools/remote_execution.py`) has no server to apply it, so the conductor passes it there.
+#: (`tools/remote_execution.py`) does not apply it, so the conductor passes it there.
 RUN_PROGRAM_TIMEOUT_SEC = 3600
 #: The same for `run_quality_checks`.
 QUALITY_CHECKS_TIMEOUT_SEC = 1800
@@ -1072,7 +887,7 @@ def _quality_check_preset_commands() -> dict[str, tuple[str, ...]]:
                                            "build_execute").QUALITY_CHECK_COMMANDS)
                for value in registry.backend_ids("build_system")
                if "build_execute" in registry.get("build_system", value).backend_provides]
-    sources.append(("the server's unowned table", _UNOWNED_QUALITY_CHECK_PRESET_COMMANDS))
+    sources.append(("this module's unowned table", _UNOWNED_QUALITY_CHECK_PRESET_COMMANDS))
     for source, table in sources:
         for preset, argv in table.items():
             if preset in commands:
@@ -1090,9 +905,9 @@ _QUALITY_CHECK_PRESET_COMMANDS: dict[str, tuple[str, ...]] = _quality_check_pres
 
 
 def quality_check_command(preset: str) -> list[str]:
-    """The argv `run_quality_checks` runs for `preset`: the one table both the server and the
+    """The argv `run_quality_checks` runs for `preset`: the one table both `tool_run_quality_checks` and the
     remote executor's caller read, so a quality check at a site runs what one here would. Raises
-    `ValueError` for a preset the server does not run."""
+    `ValueError` for a preset this module does not run."""
     if preset not in _QUALITY_CHECK_PRESET_COMMANDS:
         supported = ", ".join(sorted(_QUALITY_CHECK_PRESET_COMMANDS))
         raise ValueError(f"unsupported preset: {preset}. supported={supported}")
@@ -1101,7 +916,6 @@ def quality_check_command(preset: str) -> list[str]:
 
 def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
     project_dir = str(args.get("project_dir", "."))
-    _refuse_retired_arguments(args, "run_program")
     timeout_sec = _bounded_int(args.get("timeout_sec"), RUN_PROGRAM_TIMEOUT_SEC, 1, "timeout_sec")
     capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
     command_log_path = args.get("command_log_path")
@@ -1136,7 +950,6 @@ def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
 
 def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
     project_dir = str(args.get("project_dir", "."))
-    _refuse_retired_arguments(args, "run_quality_checks")
     timeout_sec = _bounded_int(args.get("timeout_sec"), QUALITY_CHECKS_TIMEOUT_SEC, 1, "timeout_sec")
     capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
     command_log_path = args.get("command_log_path")
@@ -1164,7 +977,7 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
             run_env = {}
         project_path = str(Path(project_dir).resolve())
         # The caller cannot contribute PYTHONPATH (_validate_env_overrides), so the
-        # only inherited value is this server's own.
+        # only inherited value is this module's own.
         existing = os.environ.get("PYTHONPATH", "")
         if existing:
             run_env["PYTHONPATH"] = f"{project_path}{os.pathsep}{existing}"
@@ -1207,8 +1020,8 @@ def _lint_preset_command(preset: str) -> tuple[str, ...]:
 #: The simple `static lint` presets: every linter whose record carries `lint` in
 #: `backend_provides`, read from the registry (issue #424). Each authors its own argv in its
 #: backend package, so the set of NAMES is the registry's too — the literal tuple this replaced
-#: had to be edited beside each new linter record, and the served schema text beside it had
-#: already missed `nvcc`.
+#: had to be edited beside each new linter record, and the MCP schema text beside it (deleted in
+#: issue #444) had already missed `nvcc`.
 _SIMPLE_LINT_PRESETS: tuple[str, ...] = tuple(
     bid for bid in _backend_registry().backend_ids("linter")
     if "lint" in _backend_registry().get("linter", bid).backend_provides
@@ -1337,7 +1150,6 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
     This is not compile_project and does not route through build_system.
     """
     project_dir = str(args.get("project_dir", "."))
-    _refuse_retired_arguments(args, "run_linter")
     timeout_sec = _bounded_int(args.get("timeout_sec"), 1800, 1, "timeout_sec")
     capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
     command_log_path = args.get("command_log_path")
@@ -1517,7 +1329,6 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     that runs is decided HERE, from the registry, never from a caller-supplied program name.
     """
     project_dir = str(args.get("project_dir", "."))
-    _refuse_retired_arguments(args, "run_syntax_check")
     timeout_sec = _bounded_int(args.get("timeout_sec"), 1800, 1, "timeout_sec")
     capture_limit = _bounded_int(args.get("capture_limit"), 120000, 1000, "capture_limit")
     command_log_path = args.get("command_log_path")
@@ -1627,351 +1438,3 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
         "openmp": openmp,
         "skipped": False,
     }
-
-
-TOOLS: dict[str, Tool] = {
-    "detect_build_system": Tool(
-        name="detect_build_system",
-        description="Detect and recommend a dependency-aware build system in a project directory.",
-        input_schema={
-            "type": "object",
-            "properties": {
-                "project_dir": {"type": "string", "default": "."},
-                "language": {"type": "string"},
-            },
-        },
-        handler=tool_detect_build_system,
-    ),
-    "compile_project": Tool(
-        name="compile_project",
-        description=(
-            "Compile using a dependency-aware standard build tool. "
-            "For a compiled language, make/cmake/meson/ninja are allowed, and make is default."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "project_dir": {"type": "string", "description": "Directory the command runs in."},
-                "language": {"type": "string"},
-                "build_system": {"type": "string"},
-                "target": {
-                    "type": "string",
-                    "description": (
-                        "Build goal. Must not open with - (that is a switch), must "
-                        "carry no whitespace or character the shell acts on, must not "
-                        "name a redirection of what is executed (SHELL, MAKE, "
-                        "MAKEFILES, MAKEFLAGS, LD_*, PATH, ...), and under "
-                        "build_system=make must not be a variable assignment at all -- "
-                        "make reads a positional NAME=value as an assignment, never as "
-                        "a goal. Refused for every caller."
-                    ),
-                },
-                "jobs": {"type": "integer", "minimum": 1},
-                "extra_args": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Extra build-tool arguments. Under build_system=make each "
-                        "element must ASSIGN a make variable (NAME=value), because make "
-                        "reads anything else as a switch it applies before the control "
-                        "file; other build systems take their own switches. For every "
-                        "build system: no element may use make's shell assignment "
-                        "(NAME!=command), which EXECUTES its value whatever the name is; "
-                        "an assignment must not name something make reads as a "
-                        "redirection of what is executed -- the same set the env half "
-                        "refuses (SHELL, .SHELLFLAGS, MAKE, MAKEFILES, MAKEFLAGS, LD_*, "
-                        "PATH, ...); and no element may carry "
-                        "a character a shell acts on, because make interpolates a value "
-                        "into the recipe unquoted. Applies to every caller."
-                    ),
-                },
-                "timeout_sec": {"type": "integer", "minimum": 1},
-                "capture_limit": {"type": "integer", "minimum": 1000},
-                "command_log_path": {
-                    "type": "string",
-                    "description": (
-                        "JSONL path for command logs. Relative paths are resolved "
-                        "from project_dir."
-                    ),
-                },
-                "env": _ENV_PROPERTY_SCHEMA,
-                **_ATTRIBUTION_PROPERTIES,
-            },
-            "required": ["project_dir"],
-        },
-        handler=tool_compile_project,
-    ),
-    "run_program": Tool(
-        name="run_program",
-        description=(
-            "Run a program without shell expansion and capture stdout/stderr. "
-            "The launch environment (e.g. a parallel runtime's thread count) is the "
-            "caller's, passed as env; target_class / target.class / target / "
-            "threads_per_rank are refused."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "project_dir": {"type": "string", "description": "Directory the command runs in."},
-                "command": {"type": "array", "items": {"type": "string"}},
-                "timeout_sec": {"type": "integer", "minimum": 1},
-                "capture_limit": {"type": "integer", "minimum": 1000},
-                "command_log_path": {
-                    "type": "string",
-                    "description": (
-                        "JSONL path for command logs. Relative paths are resolved "
-                        "from project_dir."
-                    ),
-                },
-                "env": _ENV_PROPERTY_SCHEMA,
-                **_ATTRIBUTION_PROPERTIES,
-            },
-            "required": ["project_dir", "command"],
-        },
-        handler=tool_run_program,
-    ),
-    "run_quality_checks": Tool(
-        name="run_quality_checks",
-        description=(
-            "Run quality checks through standard workflows. "
-            "Supports presets (make_test/make_check/ctest/pytest); make_test/make_check are "
-            "served by the make build-system backend."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "project_dir": {"type": "string", "description": "Directory the command runs in."},
-                "preset": {"type": "string", "default": "make_test"},
-                "timeout_sec": {"type": "integer", "minimum": 1},
-                "capture_limit": {"type": "integer", "minimum": 1000},
-                "command_log_path": {
-                    "type": "string",
-                    "description": (
-                        "JSONL path for command logs. Relative paths are resolved "
-                        "from project_dir."
-                    ),
-                },
-                "env": _ENV_PROPERTY_SCHEMA,
-                **_ATTRIBUTION_PROPERTIES,
-            },
-            "required": ["project_dir"],
-        },
-        handler=tool_run_quality_checks,
-    ),
-    "run_linter": Tool(
-        name="run_linter",
-        description=(
-            "Run static linters for Generate-stage source (a registered linter preset). "
-            "Does not use build_system or compile_project; preset-only, no custom command."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "project_dir": {"type": "string", "description": "Directory the command runs in."},
-                "preset": {
-                    "type": "string",
-                    "description": (
-                        "A registered linter preset or composite "
-                        "(registry.backend_ids(\"linter\"); registry.linter_for_language "
-                        "picks it)."
-                    ),
-                },
-                "timeout_sec": {"type": "integer", "minimum": 1},
-                "capture_limit": {"type": "integer", "minimum": 1000},
-                "command_log_path": {
-                    "type": "string",
-                    "description": (
-                        "JSONL path for command logs. Relative paths are resolved "
-                        "from project_dir."
-                    ),
-                },
-                "env": _ENV_PROPERTY_SCHEMA,
-                **_ATTRIBUTION_PROPERTIES,
-            },
-            "required": ["project_dir", "preset"],
-        },
-        handler=tool_run_linter,
-    ),
-    "run_syntax_check": Tool(
-        name="run_syntax_check",
-        description=(
-            "Run a compiler front-end in syntax-only mode over staged sources "
-            "(Generate-stage gate). Registered compiler adapters only (the `compiler` axis "
-            "values whose record declares `syntax_check` in tools/backends/registry.py); "
-            "no custom command, no build artifacts, does not route through build_system."
-        ),
-        input_schema={
-            "type": "object",
-            "properties": {
-                "project_dir": {"type": "string", "description": "Directory the command runs in."},
-                "compiler": {
-                    "type": "string",
-                    "description": (
-                        "Registered compiler adapter id; its language decides which files "
-                        "are sources and which warning classes are promoted to errors."
-                    ),
-                },
-                "std": {
-                    "type": "string",
-                    "description": "Language standard from the target profile's toolchain.standard.",
-                },
-                "openmp": {
-                    "type": "boolean",
-                    "default": False,
-                    "description": "Enable the adapter's OpenMP flag (the target profile's parallel.backend=openmp).",
-                },
-                "architecture": {
-                    "type": "string",
-                    "description": (
-                        "The target profile's hardware.architecture. An adapter whose "
-                        "compiler takes a device architecture passes it; one that has none "
-                        "accepts it and does not read it."
-                    ),
-                },
-                "parallel_backend": {
-                    "type": "string",
-                    "description": (
-                        "The target profile's parallel.backend. When its record declares "
-                        "compiler_wrapper for this compiler, the stage runs through the wrapper."
-                    ),
-                },
-                "sources": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": (
-                        "Source file names in compile order — plain names in project_dir, "
-                        "no paths and no compiler options. Omit to let the tool order the "
-                        "project_dir sources the way the adapter's language orders them."
-                    ),
-                },
-                "timeout_sec": {"type": "integer", "minimum": 1},
-                "capture_limit": {"type": "integer", "minimum": 1000},
-                "command_log_path": {
-                    "type": "string",
-                    "description": (
-                        "JSONL path for command logs. Relative paths are resolved "
-                        "from project_dir."
-                    ),
-                },
-                "env": _ENV_PROPERTY_SCHEMA,
-                **_ATTRIBUTION_PROPERTIES,
-            },
-            "required": ["project_dir", "compiler", "std"],
-        },
-        handler=tool_run_syntax_check,
-    ),
-}
-
-
-def _tool_descriptor(tool: Tool) -> dict[str, Any]:
-    return {
-        "name": tool.name,
-        "description": tool.description,
-        "inputSchema": tool.input_schema,
-    }
-
-
-def _error_response(message_id: Any, code: int, message: str) -> dict[str, Any]:
-    return {
-        "jsonrpc": JSONRPC_VERSION,
-        "id": message_id,
-        "error": {
-            "code": code,
-            "message": message,
-        },
-    }
-
-
-def _success_response(message_id: Any, result: dict[str, Any]) -> dict[str, Any]:
-    return {
-        "jsonrpc": JSONRPC_VERSION,
-        "id": message_id,
-        "result": result,
-    }
-
-
-def _handle_request(message: dict[str, Any]) -> dict[str, Any] | None:
-    method = message.get("method")
-    message_id = message.get("id")
-    params = message.get("params", {}) or {}
-
-    if method == "initialize":
-        protocol_version = params.get("protocolVersion", DEFAULT_PROTOCOL_VERSION)
-        return _success_response(
-            message_id,
-            {
-                "protocolVersion": protocol_version,
-                "capabilities": {
-                    "tools": {},
-                },
-                "serverInfo": {
-                    "name": SERVER_NAME,
-                    "version": SERVER_VERSION,
-                },
-            },
-        )
-
-    if method == "notifications/initialized":
-        return None
-
-    if method == "ping":
-        return _success_response(message_id, {})
-
-    if method == "tools/list":
-        return _success_response(
-            message_id,
-            {
-                "tools": [_tool_descriptor(tool) for tool in TOOLS.values()],
-            },
-        )
-
-    if method == "tools/call":
-        tool_name = params.get("name")
-        arguments = params.get("arguments", {}) or {}
-        if tool_name not in TOOLS:
-            return _error_response(message_id, -32602, f"unknown tool: {tool_name}")
-        tool = TOOLS[tool_name]
-        try:
-            data = tool.handler(arguments)
-            text = json.dumps(data, ensure_ascii=False, indent=2)
-            return _success_response(
-                message_id,
-                {
-                    "content": [{"type": "text", "text": text}],
-                    "structuredContent": data,
-                    "isError": False,
-                },
-            )
-        except Exception as exc:  # noqa: BLE001
-            error_data = {
-                "error": str(exc),
-            }
-            text = json.dumps(error_data, ensure_ascii=False, indent=2)
-            return _success_response(
-                message_id,
-                {
-                    "content": [{"type": "text", "text": text}],
-                    "structuredContent": error_data,
-                    "isError": True,
-                },
-            )
-
-    if message_id is None:
-        return None
-    return _error_response(message_id, -32601, f"method not found: {method}")
-
-
-def main() -> int:
-    while True:
-        message = _read_message()
-        if message is None:
-            return 0
-        if not isinstance(message, dict):
-            continue
-        response = _handle_request(message)
-        if response is not None:
-            _write_message(response)
-
-
-if __name__ == "__main__":
-    sys.exit(main())

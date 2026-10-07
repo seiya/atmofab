@@ -34,7 +34,7 @@ import tools.llm_config as lc
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
-from tools.tests.test_build_runtime_server import _load_server_module
+from tools.tests.test_build_runtime import _load_module
 from tools.tests.test_orchestration_runtime import (
     _launch_request_body,
     _mark_dependencies_ready,
@@ -1306,7 +1306,7 @@ class InprocBodiesCallTheServerWithoutATokenTests(unittest.TestCase):
 
 
 class ServerHasOneValidationModeTests(unittest.TestCase):
-    """`mcp_servers/build_runtime_server.py` validates a call one way.
+    """`tools/build_runtime.py` validates a call one way.
 
     It had two. The orchestrated mode was an ALLOWLIST — only the make variables the
     workflow declares, no `target`, `repo_root` pinned to the server's own checkout —
@@ -1314,8 +1314,8 @@ class ServerHasOneValidationModeTests(unittest.TestCase):
     existed because the caller might be a leaf holding a grant it should not be able to
     widen. The standalone mode was a DENYLIST, for the operator's own session.
 
-    No leaf reaches this server after Z4: a pure leaf launches with `--tools ""` and
-    `--strict-mcp-config` and has no MCP configuration at all. The only caller under a run
+    No leaf reaches this library after Z4 (it was an MCP server until issue #444): a pure
+    leaf launches with `--tools ""` and holds no tool at all. The only caller under a run
     is the conductor, in the host process. So the allowlist defends nothing, and what is
     left is the denylist — applied to EVERY call, which is a widening of the standalone
     mode, not a narrowing of the orchestrated one.
@@ -1332,7 +1332,7 @@ class ServerHasOneValidationModeTests(unittest.TestCase):
     )
 
     def setUp(self) -> None:
-        self.server = _load_server_module()
+        self.server = _load_module()
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
         self.project = Path(self._tmp.name)
@@ -1368,10 +1368,9 @@ class ServerHasOneValidationModeTests(unittest.TestCase):
         """The two variables `tools/run_workflow.py` sets reached this server through the
         leaf's declared environment and switched the mode. They are still set — the
         conductor puts them on the leaf environment and `AGENTS.md` documents them — and
-        this server no longer reads them: an unattributed call is served, and `repo_root`
-        is no longer required to be the server's own checkout."""
+        this library does not read them: an unattributed call is served."""
         env = {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "orch_x"}
-        result = self._call({"repo_root": str(self.project)}, env)
+        result = self._call({}, env)
         self.assertIsInstance(result, dict)
         self.assertIn("return_code", result)  # make ran (and failed: no Makefile)
 

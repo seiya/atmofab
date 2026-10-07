@@ -6,7 +6,7 @@ DECLARED rule set, instead of a function of whichever linter build the host happ
 is the second application of that rule (issue #120); the first was `fortitude` (issues #110 /
 #111), and the ground is the same one `docs/BACKEND_BOUNDARY.md` §Design Policy states: a lint
 rule id is knowledge the neutral core may not hold, so an argv that DECLARES a rule set cannot be
-a row of a table in `mcp_servers/`.
+a row of a table in `tools/build_runtime.py`.
 
 Before it, the gate ran `ruff check .` and inherited that build's compiled-in default set. That
 set is not stable: MEASURED on four builds installed side by side (2026-09-01), it is 59 rules on
@@ -145,7 +145,7 @@ decides the verdict, and because this enumeration has already been wrong once:
   by any flag above.
 
 What this module deliberately does NOT do: decide the verdict, read findings, or know about the
-gate. It states the invocation; `mcp_servers/build_runtime_server.py` runs it and
+gate. It states the invocation; `tools/build_runtime.py` runs it and
 `tools/workflow_conductor.py`'s `_gate_lint_check` reads the result.
 
 REACHABILITY, stated so the closures are not oversold. No run builds for a `python` target today
@@ -172,7 +172,7 @@ LANGUAGES: tuple[str, ...] = ("python",)
 
 #: `None`: this linter walks the directory it is pointed at (`check_argv(target)`), rather than
 #: being handed files by name — the `lint` capability contract's switch
-#: (`mcp_servers/build_runtime_server.py` `_lint_command_over`).
+#: (`tools/build_runtime.py` `_lint_command_over`).
 SOURCE_SUFFIXES: tuple[str, ...] | None = None
 
 #: The rule set the `Generate.gate` lint check applies, and the only place it is written.

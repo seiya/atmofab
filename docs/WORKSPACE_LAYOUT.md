@@ -122,7 +122,7 @@ workspace/
                 │   └── <binary_id>/
                 │       ├── bin/
                 │       ├── binary_meta.json           (pins source_source_id)
-                │       └── command_log.jsonl      (the MCP audit of compile_project)
+                │       └── command_log.jsonl      (the build-runtime audit of compile_project)
                 ├── runs/
                 │   └── <run_id>/                      (Validate phase output: execute + judge)
                 │       └── <node_key_safe>/
@@ -241,7 +241,7 @@ under a read-only sandbox in which this root is not bound writable.
 
 What uses the root is the CONDUCTOR's own deterministic substeps, in its own process: the
 out-of-source build directory `Build` writes objects to, and the run and quality-check output
-trees `Validate.execute` points the runner at (`docs/workflow/MCP_COMMAND_LOG_PLACEMENT.md`
+trees `Validate.execute` points the runner at (`docs/workflow/COMMAND_LOG_PLACEMENT.md`
 names the overrides that route them there). At a remote execution site (issue #293) it also holds
 `site/`: `stage/`, the files shipped to the job, and `collected/`, the job directory copied back,
 whose run and quality-check trees are then moved to where the local path writes them — and, for
