@@ -1707,6 +1707,35 @@ class ArgumentContractTests(unittest.TestCase):
                          {"orchestration_id": "orch_x", "agent_run_id": "arid_x"})
 
 
+class EntryPointTableTests(unittest.TestCase):
+    """`docs/BUILD_RUNTIME.md`'s entry-point table names exactly the module's `tool_*` functions.
+
+    The README's MCP tool table was pinned to the served `TOOLS` registry until issue #444
+    deleted both; this is that observation re-homed on what replaced them. Set identity in both
+    directions, against the module's own names rather than a second literal."""
+
+    DOC = Path(__file__).resolve().parents[2] / "docs" / "BUILD_RUNTIME.md"
+
+    def _table_entry_points(self) -> set[str]:
+        lines = self.DOC.read_text(encoding="utf-8").splitlines()
+        start = lines.index("## Entry points")
+        names: set[str] = set()
+        for line in lines[start + 1:]:
+            if line.startswith("## "):
+                break
+            m = re.match(r"^\| `(tool_[a-z_]+)` \|", line)
+            if m:
+                names.add(m.group(1))
+        return names
+
+    def test_the_table_is_the_modules_entry_point_set(self) -> None:
+        mod = _load_module()
+        defined = {name for name in vars(mod)
+                   if name.startswith("tool_") and callable(getattr(mod, name))}
+        self.assertEqual(len(defined), 5, defined)
+        self.assertEqual(self._table_entry_points(), defined)
+
+
 class RunLinterPresetDispatchTests(unittest.TestCase):
     """The preset -> argv table `tool_run_linter` runs and the launch-time host probe reads.
 

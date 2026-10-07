@@ -561,11 +561,12 @@ class WiringTests(unittest.TestCase):
         self.assertEqual(server.lint_preset_executables("fortitude"), (lint.EXECUTABLE,))
 
     def test_the_server_starts_from_a_foreign_working_directory(self) -> None:
-        """The witness for the dotted-import bootstrap the server gained for this.
+        """The library composes this row at import, and imports from a working directory that is
+        not the checkout once the checkout root is on `sys.path`.
 
-        The composition happens at import, so a `sys.path` that does not contain the checkout
-        root would break every launch of the server — including the one a leaf spawns, whose cwd
-        is not this repository.
+        Until issue #444 this witnessed a `sys.path` bootstrap inside the then MCP server, which
+        a leaf spawned from another cwd; the library is imported as `tools.build_runtime` now and
+        the bootstrap is gone, so what is left is the foreign-cwd import itself.
         """
         completed = subprocess.run(
             [sys.executable, "-c",

@@ -19,7 +19,6 @@ import re
 import shlex
 import shutil
 import subprocess
-import sys
 import time
 import uuid
 from datetime import datetime, timezone
@@ -33,24 +32,16 @@ def _backend_registry() -> Any:
     """Load `tools/backends/registry.py`, the one door to a backend package.
 
     A DOTTED import: the registry resolves a backend by importing its dotted module path, so
-    `tools` has to be importable as a package here rather than merely readable as a file.
-    (This module used to carry a second, file-location loader for
-    `tools/orchestration_runtime.py`, whose one consumer was the orchestration capability
-    gate — retired in issue #171.) `tools/` is a namespace package, so the
-    checkout root on `sys.path` is all that takes; the bootstrap mirrors
-    `tools/validate_pipeline_semantics.py`'s.
+    `tools` has to be importable as a package. This module is itself imported as
+    `tools.build_runtime` (issue #444), so it always is. (Until then it was loaded by file
+    location from `mcp_servers/`, and a `sys.path` bootstrap here put the checkout root on
+    the path; with the module inside `tools/` nothing reaches that branch, and it went.)
 
     The registry is stdlib-only and imports no sibling at module level, so it is cheap and
     introduces no cycle (`tools/host_prerequisites.py`
     imports THIS module; this module imports the registry; the registry imports nothing).
     """
-    try:
-        from tools.backends import registry
-    except ModuleNotFoundError:
-        root = str(Path(__file__).resolve().parent.parent)
-        if root not in sys.path:
-            sys.path.insert(0, root)
-        from tools.backends import registry
+    from tools.backends import registry
 
     return registry
 
