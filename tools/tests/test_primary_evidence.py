@@ -1595,7 +1595,8 @@ class CompileContractCouplingTest(unittest.TestCase):
         # component it names and 0 on the two others, evaluated by the grammar over the host's
         # own cell-centre positions; `roll` moves along the component axis only
         self.assertIn("with `count` and `length` both the case's component count (an "
-                      "`inputs.<path>`, so `c` is i + 1/2 in every case)", coord[0])
+                      "`inputs.<path>`, so `count` is every case's extent and `c` is i + 1/2)",
+                      coord[0])
         self.assertIn("write the comparison over the stacked variables", coord[0])
         self.assertIn("`count` must equal the captured extent on that axis", coord[0])
         self.assertNotIn("separate variables", coord[0])   # round 1: unfollowable for a stacked output

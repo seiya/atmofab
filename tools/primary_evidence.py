@@ -103,7 +103,9 @@ The Compile gate infers RANKS statically (`expr_rank`, issue #440) from the decl
 `shape_expr`s, the state's rank and each case's inputs, so an operand pair of unequal rank, a
 `roll` with the wrong shift count or a non-scalar shift, and an array-valued `expr` are refused
 before any run — the first two with the message evaluation would raise, the last naming the
-rank where `_scalar` names the shape. Extents are not declared numerically, so an extent
+rank where `_scalar` names the shape; the gate prefixes the location, names the case when the
+refusal is not the same in every case, and adds the coordinate's rank to an operand-pair
+refusal of a predicate that names a coordinate. Extents are not declared numerically, so an extent
 mismatch stays an evaluation error.
 
 `verdict_evaluator.evaluate_verdict` labels each test's `basis.corroboration` `agree` /

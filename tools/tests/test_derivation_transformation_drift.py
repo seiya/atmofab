@@ -597,7 +597,8 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # line no longer lists an array result or an unequal-rank pair as an evaluation error.
     # Round 2: the component coordinate's `count` and `length` are both the case's component
     # count, and V3 (vi) compares the `count` value with the token's extent, whatever its key.
-    "compile-docs-13": "912c9359503007c133f04d6017a27052c89837056dd76df66d497e198f055ad4",
+    # Round 3: the parenthetical says `count` is every case's extent (why an `inputs.<path>`).
+    "compile-docs-13": "6dc0a6af22e9a4bce122425315e233ead04b835a1e7cb431f1e02218c99aaa70",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1247,7 +1248,8 @@ PINNED_VERDICT: dict[str, str] = {
     "verdict-9@a480284b": "4eaaaabfd095b10841108ef2c82084eac4ac86c6c02293b34c00f47dbc39c001",
     # Round 1: the module docstring says the array-valued `expr` refusal names the rank where
     # `_scalar` names the shape (it had claimed the evaluator's wording for all three).
-    "verdict-9": "a65f8799e7da01901495bce8773e882822bee76f96f148dcd7d6438a32f26cab",
+    # Round 3: the docstring names what the gate adds to those messages.
+    "verdict-9": "bfb50946de87f542065ddf7f7f0e866b1d6dbb67c7e4f7f9cacc8e31b01a9b0b",
 }
 
 
