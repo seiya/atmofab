@@ -57,7 +57,10 @@ Names, and where each resolves:
 - ``<coordinate name>`` — a `schema.coordinates[]` axis, as a float64 array of the STATE's
   shape carrying the axis's `count` cell-centre positions along `axis` (the same value on
   every other axis), so a field built from it — an analytic reference — has the state's
-  shape and reduces (`norm2`, `sum`, `mean`) over the same cells. The state's shape is the
+  shape and reduces (`norm2`, `sum`, `mean`) over the same cells. The state's rank is the
+  highest rank among the schema variables, and `axis` indexes it; a coordinate therefore
+  pairs only with a variable of that rank (issue #440: beside a stacked `[ncomp, nx, ny]`
+  state a rank-2 `[nx, ny]` capture never pairs with one). The state's shape is the
   one shape every captured array of the state's rank has; when those disagree the
   coordinate keeps extent 1 on the other axes, and a reduction over such a field is refused
   until it is paired with a state array.
@@ -96,6 +99,15 @@ records on that predicate as a STRUCTURAL failure (the evidence could not be jud
 converts every arithmetic exception Python or numpy can raise on admitted operands into that
 error, so no evaluation escapes the per-predicate record.
 
+The Compile gate infers RANKS statically (`expr_rank`, issue #440) from the declared
+`shape_expr`s, the state's rank and each case's inputs, so an operand pair of unequal rank, a
+`roll` with the wrong shift count or a non-scalar shift, and an array-valued `expr` are refused
+before any run — the first two with the message evaluation would raise, the last naming the
+rank where `_scalar` names the shape; the gate prefixes the location, names the case when the
+refusal is not the same in every case, and adds the coordinate's rank to an operand-pair
+refusal of a predicate that names a coordinate. Extents are not declared numerically, so an extent
+mismatch stays an evaluation error.
+
 `verdict_evaluator.evaluate_verdict` labels each test's `basis.corroboration` `agree` /
 `disagree` / `unevaluated`; a `disagree` or an `unevaluated` fails the test, so the judge (never
 spawned on a failing verdict) never sees either — the `[execute fail: verdict]` report the
@@ -118,7 +130,7 @@ import ast
 import json
 import math
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any, NamedTuple
 
@@ -1199,7 +1211,171 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
     return out
 
 
+# ----------------------------------------------------------------------------- static rank
+
+#: How `expr_rank` ranks each function's result — one entry per key of `FUNCTIONS` (set
+#: identity pinned by `StaticRankTest`), so a function added without a rule fails a row.
+#: ``reduce``: a scalar; ``reduce_or_pairwise``: a scalar with one argument, the pairwise rank
+#: of the arguments with more; ``elementwise``: the argument's rank; ``pairwise``: the two
+#: arguments' pairwise rank; ``roll``: the array's rank, with one scalar shift per axis.
+_RANK_RULES: dict[str, str] = {
+    "sum": "reduce", "mean": "reduce", "norm2": "reduce", "maxabs": "reduce",
+    "min": "reduce_or_pairwise", "max": "reduce_or_pairwise",
+    "abs": "elementwise", "sqrt": "elementwise", "exp": "elementwise", "log": "elementwise",
+    "log2": "elementwise", "sin": "elementwise", "cos": "elementwise",
+    "ceil": "elementwise", "floor": "elementwise",
+    "atan2": "pairwise", "roll": "roll",
+}
+
+
+class RankEnv(NamedTuple):
+    """What `expr_rank` knows of a predicate's operands before any run: each capture's rank
+    (from its `shape_expr`; the time variable 0, as `_load_capture` reads it), the coordinate
+    names and the one rank they all have (`state_rank`), and the rank of an input in a case
+    (``input_rank(case_id, dotted path)``)."""
+    captures: dict[str, int]
+    coordinates: frozenset[str]
+    coordinate_rank: int
+    input_rank: Callable[[str, str], int]
+    case: str | None = None   # the case `inputs.<path>` is read in; None when no ref needs one
+
+
+def _pair_rank(ra: int, rb: int, what: str) -> int:
+    """The rank half of `_shape_compatible`: a scalar pairs with anything; two arrays pair
+    only at equal rank. The message is `_shape_compatible`'s, byte for byte."""
+    if ra == 0 or rb == 0:
+        return max(ra, rb)
+    if ra != rb:
+        raise PrimaryEvidenceError(
+            f"{what}: operands of rank {ra} and {rb} (an operand must be a scalar or "
+            "of equal rank; right-aligned broadcasting is not admitted)")
+    return ra
+
+
+def expr_rank(node: ast.AST, env: RankEnv, binds: dict[str, int]) -> int:
+    """The rank `_eval_node` would return for ``node``, inferred from declarations alone, or
+    `PrimaryEvidenceError` with the message evaluation would raise for an operand pair of
+    unequal rank, a `roll` with the wrong shift count or a non-scalar shift. Extents are not
+    inferred: an extent mismatch stays an evaluation error. ``node`` must have passed
+    `parse_expr` and name resolution (the gate ranks nothing it refused)."""
+    if isinstance(node, ast.Expression):
+        return expr_rank(node.body, env, binds)
+    if isinstance(node, ast.Constant):
+        return 0
+    if isinstance(node, ast.BinOp):
+        return _pair_rank(expr_rank(node.left, env, binds), expr_rank(node.right, env, binds),
+                          f"operator {_BINOPS[type(node.op)]}")
+    if isinstance(node, ast.UnaryOp):
+        return expr_rank(node.operand, env, binds)
+    if isinstance(node, ast.Name):
+        if node.id in binds:
+            return binds[node.id]
+        if node.id in env.coordinates:
+            return env.coordinate_rank
+        return 0   # a constant
+    if isinstance(node, ast.Attribute):
+        root, attrs = _attr_chain(node)
+        if isinstance(root, ast.Name) and root.id in CAPTURE_POINTS:
+            return env.captures[attrs[0]]
+        if isinstance(root, ast.Name) and root.id == _COMPARAND:
+            return env.captures[attrs[1]]
+        if isinstance(root, ast.Name) and root.id == _INPUTS_ROOT:
+            assert env.case is not None
+            return env.input_rank(env.case, ".".join(attrs))
+        assert _is_at_call(root) and isinstance(root, ast.Call)
+        case_id = str(root.args[0].value)  # type: ignore[attr-defined]
+        if len(attrs) == 2 and attrs[0] in CAPTURE_POINTS:
+            return env.captures[attrs[1]]
+        if attrs[0] == _INPUTS_ROOT:
+            return env.input_rank(case_id, ".".join(attrs[1:]))
+        return env.coordinate_rank
+    assert isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    name = node.func.id
+    ranks = [expr_rank(a, env, binds) for a in node.args]
+    rule = _RANK_RULES[name]
+    if rule == "reduce" or (rule == "reduce_or_pairwise" and len(ranks) == 1):
+        return 0
+    if rule == "reduce_or_pairwise":
+        acc = ranks[0]
+        for r in ranks[1:]:
+            acc = _pair_rank(acc, r, f"{name}()")
+        return acc
+    if rule == "elementwise":
+        return ranks[0]
+    if rule == "pairwise":
+        return _pair_rank(ranks[0], ranks[1], f"{name}()")
+    # roll
+    if len(ranks) - 1 != ranks[0]:
+        raise PrimaryEvidenceError(
+            f"roll(): {len(ranks) - 1} shift(s) for an array of rank {ranks[0]}")
+    if any(r != 0 for r in ranks[1:]):
+        raise PrimaryEvidenceError("roll(): a shift must be a scalar")
+    return ranks[0]
+
+
+def _rank_violation(parsed: list[tuple[str, str | None, ast.Expression]],
+                    env: RankEnv) -> tuple[str, str] | None:
+    """``(location, message)`` of the first rank refusal over one predicate's parsed binds
+    (in order — every bind is evaluated at run time, used or not) and `expr`, or None. An
+    `expr` of rank above 0 is refused with the scalar rule of `_scalar`."""
+    binds: dict[str, int] = {}
+    for eloc, bind_name, tree in parsed:
+        try:
+            rank = expr_rank(tree, env, binds)
+        except PrimaryEvidenceError as exc:
+            return (eloc, str(exc))
+        if bind_name is not None:
+            binds[bind_name] = rank
+        elif rank != 0:
+            return (eloc, (f"evaluates to an array of rank {rank}, not a scalar (reduce it "
+                           "with sum/min/max/mean/norm2/maxabs)"))
+    return None
+
+
 # ---------------------------------------------------------------------------------- schema
+
+def _predicate_rank_violation(pred: dict[str, Any], loc: str,
+                              parsed: list[tuple[str, str | None, ast.Expression]],
+                              targets: list[str], schema: dict[str, Any],
+                              variables: dict[str, list[str]], coord_names: set[str],
+                              cases: dict[str, dict[str, Any]]) -> str | None:
+    """The gate's rank violation for one predicate whose names all resolved, or None. A
+    predicate that reads `inputs.<path>` of its own case is ranked once per case it is
+    evaluated in (an input's rank may differ between cases); the case is named only when the
+    refusal is not the same in every one."""
+    tv = schema.get("time_variable")
+    captures = {n: len(d) for n, d in variables.items()}
+    if isinstance(tv, str) and tv.strip():
+        captures[tv.strip()] = 0
+
+    def input_rank(cid: str, dotted: str) -> int:
+        case = cases.get(cid)
+        return int(np.ndim(resolve_input_value(
+            case.get("inputs") if isinstance(case, dict) else None, dotted)))
+
+    refs = [r for _, _, tree in parsed for r in expr_names(tree)]
+    coord_rank = state_rank(schema)
+    base = RankEnv(captures=captures, coordinates=frozenset(coord_names),
+                   coordinate_rank=coord_rank, input_rank=input_rank)
+    contexts: list[str | None] = [None]
+    if any(r.kind == "inputs" and r.case is None for r in refs):
+        try:
+            contexts = list(_predicate_scope({**pred, "target_cases": targets}, loc)[1])
+        except PrimaryEvidenceError:
+            contexts = list(targets)
+    found = [(cid, _rank_violation(parsed, base._replace(case=cid))) for cid in contexts]
+    failed = [(cid, f) for cid, f in found if f is not None]
+    if not failed:
+        return None
+    cid, (eloc, text) = failed[0]
+    if "operands of rank" in text and any(
+            r.kind == "name" and r.name in coord_names for r in refs):
+        text += (f"; a coordinate has the state's rank {coord_rank}, the highest rank among "
+                 "the snapshot variables")
+    if cid is None or len(failed) == len(found) and len({f for _, f in failed}) == 1:
+        return f"{eloc}: {text}"
+    return f"{eloc}: in case {cid!r}: {text}"
+
 
 def validate_primary_predicate_schema(
     predicates: Any,
@@ -1225,7 +1401,13 @@ def validate_primary_predicate_schema(
     resolved against every declared case, since every case is captured. With
     ``test_target_cases`` (test_id -> the `test_predicates` entry's target_cases), a
     predicate's `target_cases` must equal its test's as a set: a corroborant over a subset
-    of the test's cases would certify the test on its easiest case alone."""
+    of the test's cases would certify the test on its easiest case alone.
+
+    A predicate whose names all resolve is then ranked (`expr_rank`, issue #440): every bind
+    in order and `expr`, refusing an operand pair of unequal rank (a coordinate has the
+    state's rank), a `roll` shift count other than the array's rank or a non-scalar shift, and
+    an `expr` that is not a scalar. A name or bind violation on the predicate suppresses its
+    rank check, so one defect is reported once."""
     v: list[str] = []
     if predicates is None:
         return v
@@ -1318,6 +1500,7 @@ def validate_primary_predicate_schema(
 
         # Names: the binds first, in order, then `expr`; each expression may reference the
         # binds written before it and nothing written after.
+        mark = len(v)   # a name violation below suppresses the rank check: no cascades
         bind = pred.get("bind")
         bind_names: list[str] = []
         exprs: list[tuple[str, str | None, Any]] = []   # (location, bind name | None, text)
@@ -1338,6 +1521,7 @@ def validate_primary_predicate_schema(
         seen_binds: set[str] = set()
         bind_refs: dict[str, list[NameRef]] = {}
         expr_refs: list[NameRef] = []
+        parsed: list[tuple[str, str | None, ast.Expression]] = []
         parsed_all = True
         for eloc, bind_name, text in exprs:
             try:
@@ -1349,6 +1533,7 @@ def validate_primary_predicate_schema(
                     seen_binds.add(bind_name)
                 continue
             refs = expr_names(tree)
+            parsed.append((eloc, bind_name, tree))
             if bind_name is None:
                 expr_refs = refs
             else:
@@ -1383,6 +1568,11 @@ def validate_primary_predicate_schema(
                              "constant")
             if bind_name is not None:
                 seen_binds.add(bind_name)
+        if parsed_all and len(v) == mark:
+            rank_v = _predicate_rank_violation(pred, loc, parsed, targets, schema, variables,
+                                               coord_names, cases)
+            if rank_v is not None:
+                v.append(rank_v)
         if parsed_all and not predicate_reads_state(expr_refs, bind_refs, set(variables)):
             v.append(f"{loc}: reads no captured state variable (initial.<var> / final.<var>) in "
                      "expr or a bind expr reaches: a corroborant values the state the kernel "

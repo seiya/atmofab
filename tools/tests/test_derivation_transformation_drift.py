@@ -587,6 +587,18 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # `tests.md` states one (the compile gate compares the two); the stale "(Generate never
     # reads tests.md)" comment is shortened away. Not yet shipped, so re-pinned in place.
     "compile-docs-12": "ad5badc4eae5b5cb777669bb5f95fe6f3e7ca549bfe9bf218894389d4c09a734",
+    # compile-docs-13 (issue #440): the `coordinates:` line defines the STATE's shape for a
+    # mixed-rank schema (the shape the highest-rank snapshot variables share, which `axis`
+    # indexes) and says a coordinate pairs only at that rank; the grammar header and the V3
+    # gate list state the static operand-rank check; V3 gains (vi), `count` against the `axis`
+    # token. A leaf reading it authors a different schema for a mixed-rank state.
+    # Re-pinned in round 1 before shipping: the lower-rank remedy is a component mask over the
+    # stacked variables (a stacked output keeps its stacked capture), and the grammar's errors
+    # line no longer lists an array result or an unequal-rank pair as an evaluation error.
+    # Round 2: the component coordinate's `count` and `length` are both the case's component
+    # count, and V3 (vi) compares the `count` value with the token's extent, whatever its key.
+    # Round 3: the parenthetical says `count` is every case's extent (why an `inputs.<path>`).
+    "compile-docs-13": "6dc0a6af22e9a4bce122425315e233ead04b835a1e7cb431f1e02218c99aaa70",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1226,7 +1238,18 @@ PINNED_VERDICT: dict[str, str] = {
     # `own_verdict` and `comparands_absent` are gone — and the tuple loses the comparand
     # selection, the binding and the `aggregate_verdict.json#cross_target` author, which no
     # certified artifact carries any more (the agreement is evaluated on demand).
-    "verdict-9": "4eaaaabfd095b10841108ef2c82084eac4ac86c6c02293b34c00f47dbc39c001",
+    # Re-pinned by issue #440 (not bumped): the Compile gate ranks every primary predicate
+    # statically (`expr_rank`, `_rank_violation`, `_predicate_rank_violation` added,
+    # `validate_primary_predicate_schema` calls them, docstrings state it). A `--stage
+    # compile`-only edit: `evaluate_primary_predicates`, `_eval_node`, `_call`,
+    # `_shape_compatible` and `_scalar` are byte-identical, so no record's value moves.
+    # Measured by diffing `verdict_tuple()` against a480284b: the `tools/primary_evidence.py`
+    # row and no other. The shipped digest stays pinned (`test_no_empty_bump_or_silent_revert`).
+    "verdict-9@a480284b": "4eaaaabfd095b10841108ef2c82084eac4ac86c6c02293b34c00f47dbc39c001",
+    # Round 1: the module docstring says the array-valued `expr` refusal names the rank where
+    # `_scalar` names the shape (it had claimed the evaluator's wording for all three).
+    # Round 3: the docstring names what the gate adds to those messages.
+    "verdict-9": "bfb50946de87f542065ddf7f7f0e866b1d6dbb67c7e4f7f9cacc8e31b01a9b0b",
 }
 
 

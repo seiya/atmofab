@@ -22047,7 +22047,16 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Issue #437 (`checks[].per_case_status` in the schema block and V3; the stale
         # "(Generate never reads tests.md)" comment shortened to pay for it): measured 94998
         # with `wc -c` in /home/seiya/atmofab at d36bd436, no bump.
-        "docs/workflow/phases/phase_01_compile.md": 95000,
+        # Bumped 95000->95900 (issue #440): the `coordinates:` line defines the STATE's shape
+        # for a mixed-rank schema, the grammar header and the V3 gate list state the static
+        # operand-rank check, and V3 gains (vi) (`count` against the `axis` token). Measured
+        # 95710 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump. Round 1
+        # (the lower-rank remedy is a component mask over the stacked variables, since a stacked
+        # output keeps the stacked capture): bumped 95900->96100; measured 95879 at the commit
+        # that takes this bump. Round 2 (the component coordinate's `count` and `length` are both
+        # the case's component count; (vi) compares values, not keys): bumped 96100->96200;
+        # measured 96035 at the commit that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 96200,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

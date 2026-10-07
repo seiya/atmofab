@@ -10,6 +10,10 @@ What is PINNED here and what is SAMPLED (`atmofab-enforcement-change` §4):
   non-finite, absent file, absent variable, non-integer `roll`, array result, unequal-rank
   operands, non-finite intermediate, forward bind, `at` outside targets, non-numeric input)
   has its own probe, and each is a STRUCTURAL record rather than a raise.
+* The Compile gate's static rank check (issue #440): `_RANK_RULES` is pinned by set identity
+  against `FUNCTIONS`, and its agreement with evaluation by parity — over one row per function
+  and per name form, the inferred rank is `np.ndim` of the evaluated value, and each refusal
+  is the evaluator's own message (`StaticRankTest`). Extents are not inferred.
 * `evaluate_verdict` with `primary=` is pinned in both directions: the two fixtures the plan
   names — (a) a diagnostics that passes every secondary condition while the captured state
   fails the corroborant, and (c) one decoy case among two — fail the test with
@@ -54,9 +58,9 @@ def _case(cid: str, **initial: float) -> dict:
 
 
 def _ir(primary: list[dict] | None, *, coordinates: list[dict] | None = None,
-        cases: list[dict] | None = None) -> dict:
-    schema = {"variables": [{"name": "h", "shape_expr": "[nx, ny]"},
-                            {"name": "s", "shape_expr": "scalar"}],
+        cases: list[dict] | None = None, variables: list[dict] | None = None) -> dict:
+    schema = {"variables": variables if variables is not None else [
+                  {"name": "h", "shape_expr": "[nx, ny]"}, {"name": "s", "shape_expr": "scalar"}],
               "time_variable": "t", "time_shape_expr": "scalar"}
     if coordinates is not None:
         schema["coordinates"] = coordinates
@@ -79,6 +83,22 @@ def _ir(primary: list[dict] | None, *, coordinates: list[dict] | None = None,
         io_contract["primary_predicates"] = primary
     return {"case": {"test_case_set": cases if cases is not None else [_case("a"), _case("b")]},
             "io_contract": io_contract}
+
+
+#: The issue #440 schema: a stacked rank-3 state beside rank-2 component captures.
+MIXED_VARIABLES = (
+    [{"name": n, "shape_expr": "[ncomp, nx, ny]"} for n in ("U", "S")]
+    + [{"name": n, "shape_expr": "[nx, ny]"} for n in ("hu", "hv", "S_h", "S_hu", "S_hv")])
+
+
+def _mixed_ir(primary: list[dict] | None, coordinates: list[dict] | None,
+              variables: list[dict] | None = None) -> dict:
+    cases = [_case("a"), _case("b")]
+    for c in cases:
+        c["inputs"]["ncomp"] = 3
+        c["inputs"]["constants"] = {"f0": 1.0e-4, "df": 1.0e-5}
+    return _ir(primary, coordinates=coordinates, cases=cases,
+               variables=list(MIXED_VARIABLES) if variables is None else variables)
 
 
 def _diag_all_pass() -> dict:
@@ -1029,6 +1049,9 @@ class SchemaGateTest(unittest.TestCase):
             ([{**HMIN, "expr": "at('a').inputs.flag"}], "in case 'a': inputs.flag"),
             ([{**HMIN, "expr": "sum(at('zz').x)"}], "at('zz') is not one of"),
             ([{**HMIN, "target_cases": ["a"]}], "must equal the target_cases of test 't_mass'"),
+            ([{**HMIN, "expr": "final.h"}], "evaluates to an array of rank 2, not a scalar"),
+            ([{**HMIN, "expr": "norm2(roll(final.h, 1))"}],
+             "roll(): 1 shift(s) for an array of rank 2"),
         ]
         for preds, fragment in rows:
             with self.subTest(fragment=fragment):
@@ -1122,6 +1145,239 @@ class SchemaGateTest(unittest.TestCase):
 
     def test_time_variable_is_a_capture_name(self) -> None:
         self.assertEqual(self._v([{**HMIN, "expr": "final.t - initial.t + final.s"}]), [])
+
+    # ---- the static rank check (issue #440)
+
+    _PAIR = ("(an operand must be a scalar or of equal rank; right-aligned broadcasting is not "
+             "admitted)")
+    _COORD = "; a coordinate has the state's rank 3, the highest rank among the snapshot variables"
+    _SCALAR = "not a scalar (reduce it with sum/min/max/mean/norm2/maxabs)"
+    _YC: ClassVar[list[dict]] = [{"name": "yc", "axis": 2, "count": "inputs.grid.ny",
+                                  "length": "inputs.grid.L_y", "placement": "cell_center"}]
+
+    def test_a_coordinate_pairs_only_with_variables_of_the_state_rank(self) -> None:
+        ok = {**HMIN, "expr": "maxabs(final.U - yc)"}
+        self.assertEqual(self._v([ok], ir=_mixed_ir([ok], self._YC)), [])
+        bad = {**HMIN, "expr": "maxabs(final.hv - yc)"}
+        self.assertEqual(self._v([bad], ir=_mixed_ir([bad], self._YC)), [
+            (f"primary_predicates[0].expr: operator -: operands of rank 2 and 3 {self._PAIR}"
+             f"{self._COORD}")])
+        # under at('<case>') a coordinate has the same rank
+        bad_at = {**HMIN, "expr": "maxabs(final.hv - at('b').yc)"}
+        self.assertEqual(self._v([bad_at], ir=_mixed_ir([bad_at], self._YC)), [
+            (f"primary_predicates[0].expr: operator -: operands of rank 2 and 3 {self._PAIR}"
+             f"{self._COORD}")])
+        # a refusal that names no coordinate carries no coordinate suffix
+        plain = {**HMIN, "expr": "maxabs(final.hv - final.U)"}
+        self.assertEqual(self._v([plain], ir=_mixed_ir([plain], self._YC)), [
+            f"primary_predicates[0].expr: operator -: operands of rank 2 and 3 {self._PAIR}"])
+
+    def test_the_issue_440_predicate_is_refused_at_compile(self) -> None:
+        """The coriolis 0.1.1 IR's coordinate, bind and expr verbatim: the bind is rank 3 (the
+        coordinate's), and `expr` pairs it with rank-2 `initial.hv`. Without the stacked
+        rank-3 captures the state's rank is 2 and the same predicate is accepted."""
+        coords = [{"name": "row_center", "axis": 1, "count": "inputs.grid.ny",
+                   "length": "inputs.grid.ny", "placement": "cell_center"}]
+        pred = {**HMIN, "bind": {
+            "f_rows": "inputs.constants.f0 + inputs.constants.df * (row_center - 0.5)"},
+            "expr": "max(maxabs(final.S_h), maxabs(final.S_hu - f_rows * initial.hv), "
+                    "maxabs(final.S_hv + f_rows * initial.hu))", "value": 1e-12}
+        out = self._v([pred], ir=_mixed_ir([pred], coords))
+        self.assertEqual(out, [(f"primary_predicates[0].expr: operator *: operands of rank 3 and 2 "
+                                f"{self._PAIR}{self._COORD}")])
+        rank2 = [e for e in MIXED_VARIABLES if e["name"] not in ("U", "S")]
+        self.assertEqual(self._v([pred], ir=_mixed_ir([pred], coords, rank2)), [])
+
+    def test_an_array_valued_expr_is_refused(self) -> None:
+        for expr, rank in (("final.h", 2), ("final.h - initial.h", 2),
+                           ("min(initial.h, final.h)", 2), ("abs(final.h)", 2),
+                           ("-final.h", 2), ("roll(final.h, 1, 0)", 2)):
+            with self.subTest(expr=expr):
+                self.assertEqual(self._v([{**HMIN, "expr": expr}]), [
+                    (f"primary_predicates[0].expr: evaluates to an array of rank {rank}, "
+                     f"{self._SCALAR}")])
+
+    def test_a_bind_of_array_rank_reduced_in_expr_is_accepted(self) -> None:
+        self.assertEqual(self._v([{**HMIN, "bind": {"d": "final.h - initial.h"},
+                                   "expr": "maxabs(d)"}]), [])
+        self.assertEqual(self._v([{**HMIN, "bind": {"d": "final.h - initial.h", "q": "d * d"},
+                                   "expr": "sum(q) + final.s"}]), [])
+        # a bind's rank flows into what reads it
+        out = self._v([{**HMIN, "bind": {"d": "final.h - initial.h"}, "expr": "d"}])
+        self.assertEqual(out, [(f"primary_predicates[0].expr: evaluates to an array of rank 2, "
+                                f"{self._SCALAR}")])
+        # an unused bind is still ranked: every bind is evaluated at run time
+        out = self._v([{**HMIN, "bind": {"bad": "final.h + inputs.initial.a1"},
+                        "expr": "min(final.h)"}], ir=self._with_inputs())
+        self.assertEqual(out, [(f"primary_predicates[0].bind.bad: operator +: operands of rank 2 "
+                                f"and 1 {self._PAIR}")])
+
+    def test_roll_shift_count_is_checked_at_compile(self) -> None:
+        self.assertEqual(self._v([{**HMIN, "expr": "maxabs(roll(final.h, 1))"}]), [
+            "primary_predicates[0].expr: roll(): 1 shift(s) for an array of rank 2"])
+        self.assertEqual(self._v([{**HMIN, "expr": "maxabs(roll(final.h, final.h, 0))"}]), [
+            "primary_predicates[0].expr: roll(): a shift must be a scalar"])
+        self.assertEqual(self._v([{**HMIN, "expr": "roll(final.s, 1)"}]), [
+            "primary_predicates[0].expr: roll(): 1 shift(s) for an array of rank 0"])
+        self.assertEqual(self._v([SYM]), [])
+
+    @staticmethod
+    def _with_inputs(b_a2: object = None) -> dict:
+        ir = _ir([HMIN])
+        for case in ir["case"]["test_case_set"]:
+            case["inputs"]["initial"]["a2"] = [[1.0] * NY for _ in range(NX)]
+            case["inputs"]["initial"]["a1"] = [1.0] * NX
+        if b_a2 is not None:
+            ir["case"]["test_case_set"][1]["inputs"]["initial"]["a2"] = b_a2
+        return ir
+
+    def test_an_input_list_pairs_by_its_rank_in_each_case(self) -> None:
+        ok = {**HMIN, "expr": "maxabs(final.h - inputs.initial.a2)"}
+        self.assertEqual(self._v([ok], ir=self._with_inputs()), [])
+        bad = {**HMIN, "expr": "maxabs(final.h - inputs.initial.a1)"}
+        self.assertEqual(self._v([bad], ir=self._with_inputs()), [
+            f"primary_predicates[0].expr: operator -: operands of rank 2 and 1 {self._PAIR}"])
+        # the rank differs between cases: the refusing case is named
+        ir = self._with_inputs(b_a2=[1.0] * NX)
+        self.assertEqual(self._v([ok], ir=ir), [
+            (f"primary_predicates[0].expr: in case 'b': operator -: operands of rank 2 and 1 "
+             f"{self._PAIR}")])
+        # under at('<case>') the input is read in THAT case alone, in every case's evaluation
+        self.assertEqual(self._v([{**HMIN, "expr": "maxabs(final.h - at('a').inputs.initial.a2)"}],
+                                 ir=ir), [])
+        # beside an own-case input (ranked per case), an at('a') input is still read in 'a'
+        both = {**HMIN, "expr": "maxabs(final.h - at('a').inputs.initial.a2) + inputs.grid.nx"}
+        self.assertEqual(self._v([both], ir=ir), [])
+        # every case refuses, each differently: the first refusing case is named
+        ir3 = self._with_inputs(b_a2=[1.0] * NX)
+        ir3["case"]["test_case_set"][0]["inputs"]["initial"]["a2"] = [[[1.0]] * NY] * NX
+        self.assertEqual(self._v([ok], ir=ir3), [
+            (f"primary_predicates[0].expr: in case 'a': operator -: operands of rank 2 and 3 "
+             f"{self._PAIR}")])
+        # a `case:` scope is evaluated in its one case: the other target's rank is not read
+        self.assertEqual(self._v([{**SYM, "expr": "maxabs(final.h - inputs.initial.a2)"}],
+                                 ir=ir), [])
+
+    def test_elementwise_min_max_and_atan2_pair_by_rank(self) -> None:
+        ir = self._with_inputs()
+        self.assertEqual(self._v([{**HMIN, "expr": "maxabs(max(final.h, 0))"}], ir=ir), [])
+        self.assertEqual(self._v([{**HMIN, "expr": "maxabs(min(final.h, inputs.initial.a2, 1))"}],
+                                 ir=ir), [])
+        for name in ("max", "min", "atan2"):
+            with self.subTest(name=name):
+                out = self._v([{**HMIN, "expr": f"maxabs({name}(final.h, inputs.initial.a1))"}],
+                              ir=ir)
+                self.assertEqual(out, [(f"primary_predicates[0].expr: {name}(): operands of rank "
+                                        f"2 and 1 {self._PAIR}")])
+
+    def test_a_malformed_scope_still_ranks_an_own_case_input(self) -> None:
+        """With both scopes given, the scope violation is reported and the rank check falls
+        back to every target case rather than to no case (where an own-case `inputs.` ref has
+        no case to be read in)."""
+        ir = self._with_inputs(b_a2=[1.0] * NX)
+        out = self._v([{**HMIN, "case": "a", "expr": "maxabs(final.h - inputs.initial.a2)"}],
+                      ir=ir)
+        self.assertEqual(out[0], "primary_predicates[0]: exactly one of `per_case: true` or "
+                                 "`case: <case_id>` names the scope")
+        self.assertEqual(out[1:], [
+            (f"primary_predicates[0].expr: in case 'b': operator -: operands of rank 2 and 1 "
+             f"{self._PAIR}")])
+
+    def test_a_time_variable_listed_among_the_variables_has_rank_0(self) -> None:
+        """`_load_capture` reads the time variable as a scalar whatever `variables` says about
+        it, so the rank check does too."""
+        ir = _ir([HMIN], variables=[{"name": "h", "shape_expr": "[nx, ny]"},
+                                    {"name": "t", "shape_expr": "[nx]"}])
+        self.assertEqual(self._v([{**HMIN, "expr": "sum(final.h) * final.t"}], ir=ir), [])
+        self.assertEqual(self._v([{**HMIN, "expr": "final.t"}], ir=ir), [])
+
+    def test_a_rank_1_expr_is_refused(self) -> None:
+        ir = _ir([HMIN], variables=[{"name": "h", "shape_expr": "[nx, ny]"},
+                                    {"name": "v", "shape_expr": "[nx]"}])
+        self.assertEqual(self._v([{**HMIN, "expr": "final.v"}], ir=ir), [
+            f"primary_predicates[0].expr: evaluates to an array of rank 1, {self._SCALAR}"])
+
+    def test_a_rank_check_does_not_cascade(self) -> None:
+        out = self._v([{**HMIN, "expr": "final.h + zz"}])
+        self.assertEqual(len(out), 1, out)
+        self.assertIn("name 'zz' is not a coordinate", out[0])
+        coords = [{"name": "x", "axis": 0, "count": NX, "length": 1.0, "placement": "cell_center"}]
+        ir = _ir([HMIN], coordinates=coords)
+        out = self._v([{**HMIN, "bind": {"x": "1"}, "expr": "final.h"}], ir=ir)
+        self.assertEqual(len(out), 1, out)
+        self.assertIn("shadows a grammar name", out[0])
+        out = self._v([{**HMIN, "bind": {"A": "final.h["}, "expr": "final.h"}])
+        self.assertEqual(len(out), 1, out)
+        self.assertIn("does not parse", out[0])
+        # a violation outside the names (here the value) does not suppress the rank check
+        out = self._v([{**HMIN, "value": None, "expr": "final.h"}])
+        self.assertEqual(len(out), 2, out)
+        self.assertIn("not a scalar", out[1])
+
+
+class StaticRankTest(unittest.TestCase):
+    """`expr_rank` is the Compile-time mirror of `_eval_node` / `_call` / `_shape_compatible`
+    over RANKS: its table is pinned by set identity against `FUNCTIONS`, and its answers by
+    parity with evaluation — the rank it infers is `np.ndim` of the value, and a refusal it
+    raises is the evaluator's own message."""
+
+    def _envs(self) -> tuple[pe.RankEnv, pe.CaseEnv]:
+        h = np.arange(1.0, 1.0 + NX * NY).reshape(NX, NY) / (NX * NY)
+        v = np.linspace(0.1, 0.9, NX)
+        cap = {"h": h, "v": v, "s": 0.5, "t": 0.2}
+        inputs = {"k": 2.0, "a1": v.tolist(), "a2": h.tolist()}
+        env = pe.CaseEnv(case_id="a", initial=dict(cap), final=dict(cap), inputs=inputs,
+                         coordinates={"x": h * 0 + 0.25})
+        ranks = {"h": 2, "v": 1, "s": 0, "t": 0}
+        renv = pe.RankEnv(captures=ranks, coordinates=frozenset({"x"}), coordinate_rank=2,
+                          input_rank=lambda cid, p: int(np.ndim(
+                              pe.resolve_input_value(env.inputs, p))), case="a")
+        return renv, env
+
+    def test_every_function_has_a_rank_rule(self) -> None:
+        self.assertEqual(set(pe._RANK_RULES), set(pe.FUNCTIONS))
+        self.assertEqual(set(pe._RANK_RULES.values()),
+                         {"reduce", "reduce_or_pairwise", "elementwise", "pairwise", "roll"})
+
+    ROWS = (
+        "sum(final.h)", "mean(final.h)", "min(final.h)", "max(final.h)", "abs(final.h)",
+        "sqrt(final.h)", "exp(final.h)", "log(final.h)", "log2(final.h)", "sin(final.h)",
+        "cos(final.h)", "norm2(final.h)", "maxabs(final.h)", "roll(final.h, 1, 0)",
+        "roll(final.v, 1)", "ceil(final.h)", "floor(final.h)", "atan2(final.h, final.h)",
+        "min(final.h, 0.5)", "max(0.5, final.h, initial.h)", "atan2(final.s, final.v)",
+        "abs(final.s)", "sum(final.s)", "min(final.s, final.t)",
+        "1.5", "pi", "-final.h", "final.h + 1", "2 * final.v", "final.s ** 2", "final.h / final.h",
+        "x", "x * final.h", "at('a').x", "final.t", "initial.h - final.h",
+        "inputs.k", "inputs.a1", "inputs.a2 - final.h", "at('a').inputs.a1",
+        "at('a').final.v", "comparand.final.h", "comparand.initial.s",
+    )
+
+    def test_static_rank_is_the_evaluated_rank(self) -> None:
+        renv, env = self._envs()
+        called: set[str] = set()
+        for expr in self.ROWS:
+            with self.subTest(expr=expr):
+                tree = pe.parse_expr(expr)
+                called |= {n.func.id for n in ast.walk(tree) if isinstance(n, ast.Call)}
+                value = pe.evaluate(tree, env, at_envs={"a": env}, comparand_env=env)
+                self.assertEqual(pe.expr_rank(tree, renv, {}), np.ndim(value))
+        self.assertEqual(set(pe.FUNCTIONS) - called, set())
+        # a bind's rank is what reads it
+        self.assertEqual(pe.expr_rank(pe.parse_expr("d + 1"), renv, {"d": 1}), 1)
+
+    def test_static_refusals_are_the_evaluator_refusals(self) -> None:
+        renv, env = self._envs()
+        for expr in ("final.h + final.v", "final.v - x", "inputs.a1 * final.h",
+                     "roll(final.h, 1)", "roll(final.h, final.h, 0)", "roll(final.s, 1)",
+                     "max(final.h, final.v)", "min(final.h, 0, final.v)",
+                     "atan2(final.h, final.v)", "sum(final.h + final.v)"):
+            with self.subTest(expr=expr):
+                tree = pe.parse_expr(expr)
+                with self.assertRaises(pe.PrimaryEvidenceError) as runtime:
+                    pe.evaluate(tree, env, at_envs={"a": env})
+                with self.assertRaises(pe.PrimaryEvidenceError) as static:
+                    pe.expr_rank(tree, renv, {})
+                self.assertEqual(str(static.exception), str(runtime.exception))
 
 
 # ------------------------------------------------------------------------- doc coupling
@@ -1313,6 +1569,67 @@ class CompileContractCouplingTest(unittest.TestCase):
         names = text[text.index("  #   names       "):text.index("  #   functions   ")]
         spelled = " / ".join(f"{pe._COMPARAND}.{p}.<var>" for p in pe.CAPTURE_POINTS)
         self.assertIn(spelled, names)
+
+    def test_the_state_rank_rule_is_stated(self):
+        """Issue #440: the schema block's `coordinates:` line defines the state's shape the
+        coordinate takes (`state_rank`: the highest rank), and the V3 gate list names the
+        static rank check (`expr_rank`); each read on its own line."""
+        lines = self._DOC.read_text(encoding="utf-8").splitlines()
+        coord = [ln for ln in lines if ln.lstrip().startswith("coordinates:")]
+        self.assertEqual(len(coord), 1, coord)
+        self.assertIn("the shape the highest-rank snapshot variables share", coord[0])
+        self.assertIn("it pairs only with variables of that rank, never with a lower-rank "
+                      "capture beside them", coord[0])
+        import re
+        # the worked axis example is `state_rank`'s indexing: the named token sits at that axis
+        dims, token, axis = re.search(
+            r"beside `\[([^\]]+)\]` the `(\w+)` axis is (\d)", coord[0]).groups()
+        tokens = [d.strip() for d in dims.split(",")]
+        self.assertGreater(len(tokens), 2, "the worked example is a stacked (mixed-rank) state")
+        self.assertEqual(tokens.index(token), int(axis))
+        self.assertEqual(pe.state_rank({"variables": [
+            {"name": "U", "shape_expr": f"[{dims}]"}, {"name": "h", "shape_expr": "[nx, ny]"}]}),
+            len(tokens))
+        # the lower-rank remedy: the component coordinate's `count` and `length` are both the
+        # case's component count, read from the inputs; the mask it states is then 1 on the
+        # component it names and 0 on the two others, evaluated by the grammar over the host's
+        # own cell-centre positions; `roll` moves along the component axis only
+        self.assertIn("with `count` and `length` both the case's component count (an "
+                      "`inputs.<path>`, so `count` is every case's extent and `c` is i + 1/2)",
+                      coord[0])
+        self.assertIn("write the comparison over the stacked variables", coord[0])
+        self.assertIn("`count` must equal the captured extent on that axis", coord[0])
+        self.assertNotIn("separate variables", coord[0])   # round 1: unfollowable for a stacked output
+        poly, on, off1, off2 = re.search(
+            r"on three components `(\(c - [^`]+)` is 1 on component (\d), 0 on components "
+            r"(\d) and (\d)\)", coord[0]).groups()
+        self.assertEqual({int(on), int(off1), int(off2)}, {0, 1, 2})
+        schema = {"variables": [{"name": "U", "shape_expr": "[ncomp, nx]"}], "coordinates": [
+            {"name": "c", "axis": 0, "count": "inputs.ncomp", "length": "inputs.ncomp",
+             "placement": "cell_center"}]}
+        c = pe.coordinate_arrays(schema, {"ncomp": 3}, (3, 2))["c"]
+        env = pe.CaseEnv(case_id="a", initial=None, final={}, inputs={}, coordinates={"c": c})
+        mask = pe.evaluate(pe.parse_expr(poly), env)
+        self.assertEqual(mask[:, 0].tolist(), [1.0 if i == int(on) else 0.0 for i in range(3)])
+        shifts = [a.strip() for a in re.search(r"`roll\(<var>, ([^)]*)\)`", coord[0])
+                  .group(1).split(",")]
+        self.assertEqual(len(shifts), len(tokens))   # one shift per axis of the stacked state
+        self.assertEqual((shifts[0], set(shifts[1:])), ("±1", {"0"}))
+        gate = [ln for ln in lines if ln.startswith("- **`io_contract.primary_predicates`")]
+        self.assertEqual(len(gate), 1)
+        self.assertIn("every operand pair is at equal rank (a coordinate at the state's rank) "
+                      "and `expr` is a scalar, inferred statically", gate[0])
+        self.assertIn("(vi) Each `coordinates[]` entry's `count` names the extent", gate[0])
+        self.assertIn("whatever key holds it", gate[0])
+        # (vi)'s worked `fail` is one: the token at that axis is not the one `count` names
+        dims, axis, token = re.search(r"beside `\[([^\]]+)\]`, `axis: (\d)` with "
+                                      r"`count: inputs\.grid\.(\w+)` is a `fail`",
+                                      gate[0]).groups()
+        self.assertNotEqual([d.strip() for d in dims.split(",")][int(axis)], token)
+        header = [ln for ln in lines if "GRAMMAR_VERSION" in ln and "gated" in ln]
+        self.assertEqual(len(header), 1)
+        nxt = lines[lines.index(header[0]) + 1]
+        self.assertIn("by parse, name resolution and operand ranks;", nxt)
 
     def test_the_worked_cross_target_translation_is_a_cross_target_predicate(self):
         """The worked translation the leaf copies parses, reads the comparand AND this run's
