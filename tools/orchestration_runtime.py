@@ -9022,10 +9022,8 @@ def _preflight_path(repo_root: Path, orchestration_id: str) -> Path:
     return _orchestration_root(repo_root, orchestration_id) / "preflight.json"
 
 
-# The codex probe checks a launchable `preflight.json` must carry as `pass: true`. ONE
-# source for both the read-time gate (`_preflight_allows_agent_launch`) and the document
-# validator (`_validate_preflight_payload`): two hand-kept copies of a gate's necessary
-# conditions drift, and a name dropped from one copy silently widens that gate.
+# The codex probe checks a launchable `preflight.json` must carry as `pass: true`, read by
+# `_preflight_launch_refusals` — ONE source for the gate, the validator and this set.
 # The three hook checks — `hooks_enabled`, `codex_project_hooks_validated`,
 # `codex_project_hook_trust_bypass` — went with the leaf's hook layer in Z4 (issue #171).
 CODEX_REQUIRED_LAUNCH_CHECKS = frozenset({
@@ -9071,50 +9069,46 @@ def _codex_check_pass_values(checks: Sequence[Any]) -> dict[str, Any]:
     }
 
 
-def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
+def _preflight_launch_refusals(payload: dict[str, Any]) -> list[str]:
+    """Every reason this preflight document does not allow a launch, in a fixed order; an empty
+    list means launchable. The ONE statement of the launch conditions: the read-time gate
+    (`_preflight_allows_agent_launch`) is "this list is empty", and the document validator
+    (`_validate_preflight_payload`) refuses a document that claims launchability while it is
+    not — so the two cannot disagree on any document."""
+    reasons: list[str] = []
     feature_states = payload.get("feature_states")
     if not isinstance(feature_states, dict):
-        return False
-    backend_token = str(payload.get("backend", "")).strip().lower()
+        reasons.append("feature_states must be a mapping")
+        feature_states = {}
     checks = payload.get("checks")
     if not isinstance(checks, list):
-        return False
-    multi_agent_check_pass: bool | None = None
-    codex_home_writable_check_pass: bool | None = None
-    for item in checks:
-        if not isinstance(item, dict):
-            continue
-        check_name = item.get("name")
-        pass_value = item.get("pass")
-        if check_name == "multi_agent_enabled" and isinstance(pass_value, bool):
-            multi_agent_check_pass = pass_value
-        if check_name == "codex_home_writable" and isinstance(pass_value, bool):
-            codex_home_writable_check_pass = pass_value
-
-    launchable = (
-        payload.get("status") == "pass"
-        and payload.get("can_launch_step_agents") is True
-        and payload.get("can_launch_substep_agents") is True
-        and payload.get("sandbox_enforced") is True
-    )
-    if backend_token == "codex":
-        available = _codex_check_pass_values(checks)
-        launchable = (
-            launchable
-            and codex_home_writable_check_pass is True
-            and all(available.get(name) is True for name in CODEX_REQUIRED_LAUNCH_CHECKS)
-        )
+        reasons.append("checks must be a list of capability probe results")
+        checks = []
+    check_values = _codex_check_pass_values(checks)
+    if payload.get("status") != "pass":
+        reasons.append("status must be pass")
+    for flag in ("can_launch_step_agents", "can_launch_substep_agents"):
+        if payload.get(flag) is not True:
+            reasons.append(f"{flag} must be true")
+    if payload.get("sandbox_enforced") is not True:
+        reasons.append("sandbox_enforced must be true")
+    if str(payload.get("backend", "")).strip().lower() == "codex":
+        missing = sorted(
+            name for name in CODEX_REQUIRED_LAUNCH_CHECKS if check_values.get(name) is not True)
+        if missing:
+            reasons.append(
+                "codex launchable preflight is missing required capabilities: "
+                + ", ".join(missing))
     else:
         # `multi_agent` is advisory ONLY for codex (see CODEX_ADVISORY_ONLY_CHECKS).
         # Every other backend still launches its step/substep agents through the
         # platform's own multi-agent capability, so a launchable document must keep
         # asserting it — dropping the assertion here would silently relax the claude
         # gate as well.
-        launchable = (
-            launchable
-            and feature_states.get("multi_agent") is True
-            and multi_agent_check_pass is True
-        )
+        if feature_states.get("multi_agent") is not True:
+            reasons.append("feature_states.multi_agent must be true")
+        if check_values.get("multi_agent_enabled") is not True:
+            reasons.append("checks.multi_agent_enabled.pass must be true")
     # With a `providers` map (issue #28), the top-level verdict above describes `defaults`
     # only. A run whose config also names a provider that did NOT probe launchable would reach
     # that provider's first substep and fail there, phases in — so require every probed
@@ -9122,128 +9116,31 @@ def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
     # preflight and is unchanged.
     providers = payload.get("providers")
     if isinstance(providers, dict) and providers:
-        launchable = launchable and all(
-            isinstance(entry, dict) and entry.get("launchable") is True
-            for entry in providers.values()
-        )
-    return launchable
+        unlaunchable = sorted(
+            str(token) for token, entry in providers.items()
+            if not (isinstance(entry, dict) and entry.get("launchable") is True))
+        if unlaunchable:
+            reasons.append(
+                f"probed provider(s) {', '.join(unlaunchable)} are not launchable")
+    return reasons
+
+
+def _preflight_allows_agent_launch(payload: dict[str, Any]) -> bool:
+    """True when `_preflight_launch_refusals` finds nothing."""
+    return not _preflight_launch_refusals(payload)
 
 
 def _validate_preflight_payload(payload: dict[str, Any]) -> None:
-    # Validator and gate must reject the same documents. `_preflight_allows_agent_launch` ANDs
-    # in "every probed provider is launchable" (issue #28), so accepting a `status=pass`
-    # document with an unlaunchable provider would persist a preflight every later
-    # record-launch refuses, with a gate message that names no provider.
-    providers = payload.get("providers")
-    if isinstance(providers, dict) and providers and (
-            payload.get("can_launch_step_agents") is True
-            or payload.get("can_launch_substep_agents") is True):
-        unlaunchable = sorted(
-            token for token, entry in providers.items()
-            if not (isinstance(entry, dict) and entry.get("launchable") is True))
-        if unlaunchable:
-            raise ValueError(
-                "preflight cannot report can_launch_*_agents=true while probed provider(s) "
-                f"{', '.join(unlaunchable)} are not launchable"
-            )
-
-    if (
-        payload.get("can_launch_step_agents") is True
-        or payload.get("can_launch_substep_agents") is True
-    ) and payload.get("status") != "pass":
-        raise ValueError(
-            "preflight status must be pass when can_launch_step_agents/can_launch_substep_agents is true"
-        )
-
-    feature_states = payload.get("feature_states")
-    backend_token = str(payload.get("backend", "")).strip().lower()
-    # `multi_agent` gates every backend EXCEPT codex, whose conductor spawns independent
-    # `codex exec` processes rather than Codex subagents (CODEX_ADVISORY_ONLY_CHECKS).
-    multi_agent_required = backend_token != "codex"
-    if isinstance(feature_states, dict):
-        multi_agent = feature_states.get("multi_agent")
-        if multi_agent_required and isinstance(multi_agent, bool) and not multi_agent:
-            if payload.get("can_launch_step_agents") is True or payload.get(
-                "can_launch_substep_agents"
-            ) is True:
-                raise ValueError(
-                    "feature_states.multi_agent=false is incompatible with launchable preflight"
-                )
-
-    checks = payload.get("checks")
-    multi_agent_check_pass: bool | None = None
-    if isinstance(checks, list):
-        codex_home_writable_check_pass: bool | None = None
-        for item in checks:
-            if not isinstance(item, dict):
-                continue
-            check_name = item.get("name")
-            pass_value = item.get("pass")
-            if check_name == "multi_agent_enabled" and isinstance(pass_value, bool):
-                multi_agent_check_pass = pass_value
-            if check_name == "codex_home_writable" and isinstance(pass_value, bool):
-                codex_home_writable_check_pass = pass_value
-        if multi_agent_required and multi_agent_check_pass is False:
-            if payload.get("can_launch_step_agents") is True or payload.get(
-                "can_launch_substep_agents"
-            ) is True:
-                raise ValueError(
-                    "checks.multi_agent_enabled.pass=false is incompatible with launchable preflight"
-                )
-        if (
-            backend_token == "codex"
-            and codex_home_writable_check_pass is not True
-            and (
-                payload.get("can_launch_step_agents") is True
-                or payload.get("can_launch_substep_agents") is True
-            )
-        ):
-            raise ValueError(
-                "checks.codex_home_writable.pass=true is required for codex launchable preflight"
-            )
-    elif (
-        payload.get("status") == "pass"
-        and payload.get("can_launch_step_agents") is True
-        and payload.get("can_launch_substep_agents") is True
-    ):
-        raise ValueError(
-            "checks must be a list of capability probe results when preflight is launchable"
-        )
-
-    if (
-        payload.get("status") == "pass"
-        and payload.get("can_launch_step_agents") is True
-        and payload.get("can_launch_substep_agents") is True
-    ):
-        if multi_agent_required and (
-            not isinstance(feature_states, dict)
-            or feature_states.get("multi_agent") is not True
-        ):
-            raise ValueError(
-                "feature_states.multi_agent=true is required when preflight is launchable"
-            )
-        # Mirror the gate exactly. `_preflight_allows_agent_launch` requires the CHECK to
-        # be present and true, not merely not-false, so accepting a document whose
-        # `multi_agent_enabled` row is absent or null would persist a `status=pass`
-        # preflight that every later record-launch refuses — with a gate message that
-        # names no missing check. Validator and gate must reject the same documents.
-        if multi_agent_required and multi_agent_check_pass is not True:
-            raise ValueError(
-                "checks.multi_agent_enabled.pass=true is required when preflight is launchable"
-            )
-        if payload.get("sandbox_enforced") is not True:
-            raise ValueError("sandbox_enforced=true is required when preflight is launchable")
-        if backend_token == "codex":
-            check_values = _codex_check_pass_values(checks or [])
-            missing = sorted(
-                name for name in CODEX_REQUIRED_LAUNCH_CHECKS
-                if check_values.get(name) is not True
-            )
-            if missing:
-                raise ValueError(
-                    "codex launchable preflight is missing required capabilities: "
-                    + ", ".join(missing)
-                )
+    """Refuse a document that claims launchability (either `can_launch_*` flag true) while
+    `_preflight_launch_refusals` is not empty. A document with both flags false claims nothing
+    and is accepted — `main`'s `preflight` subcommand writes exactly that after a failed probe."""
+    claims = (payload.get("can_launch_step_agents") is True
+              or payload.get("can_launch_substep_agents") is True)
+    if not claims:
+        return
+    reasons = _preflight_launch_refusals(payload)
+    if reasons:
+        raise ValueError("preflight claims launchability but " + "; ".join(reasons))
 
 
 def _live_preflight_mode() -> str:
@@ -9425,9 +9322,11 @@ def _run_live_probe_and_update(
     if isinstance(cached_providers, dict) and cached_providers:
         fresh_providers = _reprobe_recorded_providers(cached_providers, repo_root)
         live_probe["providers"] = fresh_providers
-    if not _preflight_allows_agent_launch(live_probe):
+    refusals = _preflight_launch_refusals(live_probe)
+    if refusals:
         raise RuntimeError(
-            "live preflight gate failed: execution platform required launch capabilities are unavailable"
+            "live preflight gate failed: execution platform required launch capabilities are "
+            "unavailable: " + "; ".join(refusals)
         )
     probed_at = live_probe.get("checked_at") or _utc_now_iso()
     _update_preflight_probed_at(repo_root, orchestration_id, probed_at,
@@ -9446,9 +9345,11 @@ def _require_preflight_launchable(
     payload = _read_json(path)
     if not isinstance(payload, dict):
         raise RuntimeError(f"preflight must be object: {path}")
-    if not _preflight_allows_agent_launch(payload):
+    refusals = _preflight_launch_refusals(payload)
+    if refusals:
         raise RuntimeError(
-            "preflight gate failed: launchable preflight with required capabilities is required"
+            "preflight gate failed: launchable preflight with required capabilities is required: "
+            + "; ".join(refusals)
         )
 
     if not enforce_live_probe:
