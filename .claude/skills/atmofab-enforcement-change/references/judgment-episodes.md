@@ -442,6 +442,47 @@ extending the clause to dependencies knows it re-runs every member of today's cl
 **The rule** (SKILL.md, rule 1-d): a premise about what a driver does for every member is a
 premise about the member it skips; name that member and run the driver on it.
 
+## Rule 1-d: a deterministic catch that rested on a value the caught leaf supplies (issue #437 / PR #438, 2026-10-07)
+
+Issue #437: a harness `__write_diagnostics` that kept the fixed-width padding of a check status
+wrote `"na  "`, and the LLM judge certified 13 or more consumer runs carrying it before failing
+one, at a consumer, where the repair could not reach the writer. The plan made the harness fail
+INSIDE ITS OWN Validate: the self-test case `l0_metric_leaf_pass` supplies a check
+`{ id = 'status_na', status = 'na  ' }`, and a new post_execute rule refuses any written status
+that is not an exact literal. Every piece was executed before and during implementation — the
+rule over all 315 real `diagnostics.json` files (509 refusals, all padded), the real incident run,
+23 of 23 hand mutants killed.
+
+**What no run touched.** The plan's argument ("a writer that keeps the padding fails the run
+there") held only while the self-test kept SUPPLYING the padded value, and the self-test is
+authored by the same Generate leaf whose writer is being caught. Round 1's two reviewers,
+independently: on the warm Generate the refusal itself triggers, supplying `status_na` as `'pass'`
+is as short an edit as fixing the writer and clears every host check (vocabulary, the top-level
+`checks.status_na.status eq pass` condition, presence) — the harness certifies with a padding
+writer and every consumer fails post_execute with an operator-only remedy, the wrong-node routing
+the issue set out to remove. And on cpp_gpu the type system opened a second door: `h_check.status`
+is a `std::string` there, so an unpadded `"na"` supply also passes, where Fortran's
+`character(len=4)` re-pads `'na'` to `'na  '` and keeps the catch honest.
+
+**Why 1-d as written did not fire.** Its bullets ask to execute the premise and to name the
+producing layer. Both were done — for the OUTPUT (what the writer produces, what the rule
+accepts). The premise also had an INPUT, the sentinel, and its producer was the very leaf under
+test; nothing asked who authors what the gate's subject is fed. It is surface 11's question
+("does a field the leaf authors decide which gate applies") one step earlier: here the leaf
+authors not the switch but the stimulus, and a stimulus the leaf may choose is a switch.
+
+**Fix** (two operator decisions, then one more round): the expectation moved where the leaf
+cannot write — an IR field `diagnostics_contract.checks[].per_case_status`, stated in `tests.md`
+in a fixed sentence and held set-exact by the compile gate (round 2 found the first version
+checked the field only when present, so an omitted or misplaced declaration passed), compared
+literally at post_execute — and the cuda_cpp host-rendered runner now trims each status itself, so
+the `std::string` door leads nowhere a physics node can reach.
+
+**The rule** (SKILL.md, rule 1-d): when a deterministic catch relies on a fixture, sentinel or
+self-test input, name who authors that input; if it is the leaf being caught, the expectation must
+live where that leaf cannot write (the IR, host-rendered code, the host), and each target's type
+system is a separate execution (a fixed-width type re-pads, a dynamic string does not).
+
 ## Section 4: a whole-function mock hid a missing argument (issue #284 PR-2 / PR #286, 2026-09-24)
 
 PR-2 made `_closure_node_validated_in_own_pipeline(repo_root, token)` take a third argument,

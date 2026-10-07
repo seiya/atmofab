@@ -164,6 +164,17 @@ to **one unbilled observation**).
   validator. Five remedy texts shipped pointing the operator at a command that skips the thing
   they were told it re-certifies. **Rule: name the member the driver SKIPS, and run the driver
   on it** (`references/judgment-episodes.md` §Rule 1-d, issue #238)
+- **A catch that rests on an INPUT the caught leaf supplies is the leaf's to switch off.**
+  Executing the premise for the OUTPUT (the writer, the rule that refuses it) leaves the other
+  half: the fixture, sentinel or self-test value that makes the defect show. Issue #437 planned a
+  harness self-test that supplies a padded status so a padding writer fails post_execute; the
+  same Generate leaf authors that self-test, and on the warm retry the refusal itself triggers,
+  supplying `'pass'` instead cleared every host check (both round-1 reviewers, independently).
+  **Rule: name who authors each input the catch depends on; if it is the leaf being caught, put
+  the expectation where that leaf cannot write — the IR, host-rendered code, the host — and run
+  each target's type system separately** (a fixed-width string re-pads an unpadded supply, a
+  dynamic one does not). Surface 11 asks this of a gate's switch; this is the same question asked
+  of its stimulus (`references/judgment-episodes.md` §Rule 1-d, issue #437)
 - When a premise collapses, **keep the measurements**. The plan dies; the measured facts stay
 
 **1-e. "Out of scope because the leaf gains nothing" is a classification rule 1 does not govern.**
