@@ -300,6 +300,29 @@ exit code.
 - Put it in the reviewer launch prompt as well: PR #76's two reviewers built harnesses that abort
   on patch failure and caught two real application failures
 
+## A syntax-error "kill" published as a pin (issue #433 PR-2, 2026-10-07)
+
+The handwritten clause sweep over `_preflight_launch_refusals` substituted
+`'if payload.get("status") != "pass":\n        reasons.append(...)\n'` with `''`. The search
+string began at `if`, not at the line's start, so the deletion left the line's four leading spaces
+in front of the next statement and `tools/orchestration_runtime.py` no longer imported
+(`IndentationError: unexpected indent`). `pytest -x` exited non-zero, the harness scored the
+mutant `killed`, and it went into a PR comment as one of "28 mutants, 28 killed". Two tells were
+on screen and were not acted on: the pytest summary line for that mutant was EMPTY (a collection
+failure prints no `N failed, M passed`), and the label said "order swap" for a mutation that
+swapped nothing. The author reproduced the mutant red by hand — with a CORRECTLY indented deletion,
+so the hand check measured a different mutant than the one the script had scored. A round-2
+blank-slate reviewer found it by re-running the published script and reading the traceback.
+
+- The correctly indented deletion is a real kill (1 test failing with `-x`; 8 failing without it,
+  as the reviewer ran it), so nothing was unpinned — the defect was in the record.
+- **Rule**: a harness classifies an import / syntax error as its own outcome (the fixed script
+  checks for `IndentationError` / `SyntaxError` in the output and prefixes "not a kill"); a kill
+  whose summary line is not of the form `N failed` is not banked until its output is read; and a
+  hand reproduction must apply the SAME patch the harness applied, not a corrected one.
+- `scripts/mutation_check.py` is not exposed to this shape: it reverts whole diff hunks, which
+  keep their indentation. The trap is specific to string-substitution harnesses.
+
 ## A hand-built fixture can test a shape that does not exist (Z2 M-E)
 
 Hunk-level mutation cannot see this either, because nothing is broken — the mechanism runs
