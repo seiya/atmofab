@@ -6619,7 +6619,7 @@ shell_tool                       stable             true
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
             _mark_dependencies_ready(repo_root)
-            with self.assertRaisesRegex(ValueError, "checks.codex_home_writable.pass=true"):
+            with self.assertRaisesRegex(ValueError, "missing required capabilities: .*codex_home_writable"):
                 write_preflight(
                     repo_root=repo_root,
                     orchestration_id="orch_001",
@@ -11130,6 +11130,172 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
 
 def _iso_utc_z(dt: datetime) -> str:
     return dt.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+class PreflightOneReasonListTests(unittest.TestCase):
+    """The preflight gate and the preflight validator are ONE reason list (issue #433 PR-2):
+    `_preflight_allows_agent_launch` is "`_preflight_launch_refusals` is empty", and
+    `_validate_preflight_payload` refuses exactly a document that claims launchability (either
+    `can_launch_*` flag true) while the list is not empty. Every row calls the real functions;
+    none reconstructs the condition list."""
+
+    @staticmethod
+    def _claude_launchable() -> dict[str, object]:
+        return {
+            "status": "pass", "backend": "claude", "sandbox_runtime": "bwrap",
+            "sandbox_enforced": True, "can_launch_step_agents": True,
+            "can_launch_substep_agents": True, "feature_states": {"multi_agent": True},
+            "checks": [{"name": "multi_agent_enabled", "pass": True}],
+        }
+
+    @staticmethod
+    def _with_check(payload: dict[str, object], name: str, value: object,
+                    *, drop: bool = False) -> dict[str, object]:
+        rows = [dict(r) for r in payload["checks"] if r.get("name") != name]  # type: ignore[union-attr]
+        if not drop:
+            rows.append({"name": name, "pass": value})
+        return {**payload, "checks": rows}
+
+    def _perturbations(self) -> list[tuple[str, dict[str, object], str | None]]:
+        """(label, payload, a reason text the list must carry — None for a launchable one)."""
+        from tools.orchestration_runtime import CODEX_REQUIRED_LAUNCH_CHECKS
+        codex = _launchable_preflight_dict()
+        claude = self._claude_launchable()
+        out: list[tuple[str, dict[str, object], str | None]] = [
+            ("codex launchable", codex, None),
+            ("claude launchable", claude, None),
+        ]
+        for tag, base in (("codex", codex), ("claude", claude)):
+            out += [
+                (f"{tag} status fail", {**base, "status": "fail"}, "status must be pass"),
+                (f"{tag} sandbox false", {**base, "sandbox_enforced": False},
+                 "sandbox_enforced must be true"),
+                (f"{tag} sandbox absent",
+                 {k: v for k, v in base.items() if k != "sandbox_enforced"},
+                 "sandbox_enforced must be true"),
+                (f"{tag} feature_states absent",
+                 {k: v for k, v in base.items() if k != "feature_states"},
+                 "feature_states must be a mapping"),
+                (f"{tag} feature_states list", {**base, "feature_states": ["multi_agent"]},
+                 "feature_states must be a mapping"),
+                (f"{tag} checks absent", {k: v for k, v in base.items() if k != "checks"},
+                 "checks must be a list of capability probe results"),
+                (f"{tag} checks dict", {**base, "checks": {"multi_agent_enabled": True}},
+                 "checks must be a list of capability probe results"),
+                (f"{tag} unlaunchable provider",
+                 {**base, "providers": {"openai_compatible": {"launchable": False}}},
+                 "probed provider(s) openai_compatible are not launchable"),
+                (f"{tag} malformed provider entry",
+                 {**base, "providers": {"codex_cli": {"launchable": True}, "x": "launchable"}},
+                 "probed provider(s) x are not launchable"),
+            ]
+            for flag in ("can_launch_step_agents", "can_launch_substep_agents"):
+                out += [
+                    (f"{tag} {flag} false", {**base, flag: False}, f"{flag} must be true"),
+                    (f"{tag} {flag} absent", {k: v for k, v in base.items() if k != flag},
+                     f"{flag} must be true"),
+                ]
+        out += [
+            ("claude feature_states empty", {**claude, "feature_states": {}},
+             "feature_states.multi_agent must be true"),
+            ("claude multi_agent false", {**claude, "feature_states": {"multi_agent": False}},
+             "feature_states.multi_agent must be true"),
+            ("claude checks empty", {**claude, "checks": []},
+             "checks.multi_agent_enabled.pass must be true"),
+        ]
+        for value, drop in ((None, True), (False, False), (None, False), (1, False)):
+            out.append((f"claude multi_agent_enabled {'absent' if drop else repr(value)}",
+                        self._with_check(claude, "multi_agent_enabled", value, drop=drop),
+                        "checks.multi_agent_enabled.pass must be true"))
+        for name in sorted(CODEX_REQUIRED_LAUNCH_CHECKS):
+            for value, drop in ((None, True), (False, False), (None, False)):
+                out.append((f"codex {name} {'absent' if drop else repr(value)}",
+                            self._with_check(codex, name, value, drop=drop),
+                            "codex launchable preflight is missing required capabilities: "
+                            f"{name}"))
+        # Non-claiming shapes: both flags false, with a refusal elsewhere. They claim nothing,
+        # so the validator accepts them (`main`'s `preflight` subcommand writes this shape).
+        out += [
+            ("codex non-claiming, status fail",
+             {**codex, "status": "fail", "can_launch_step_agents": False,
+              "can_launch_substep_agents": False}, "status must be pass"),
+            ("claude non-claiming, no checks",
+             {k: v for k, v in {**claude, "can_launch_step_agents": False,
+                                "can_launch_substep_agents": False}.items() if k != "checks"},
+             "checks must be a list of capability probe results"),
+        ]
+        return out
+
+    def test_the_validator_refuses_exactly_a_claiming_document_the_gate_refuses(self) -> None:
+        from tools.orchestration_runtime import (
+            _preflight_allows_agent_launch, _preflight_launch_refusals,
+            _validate_preflight_payload,
+        )
+        perturbations = self._perturbations()
+        # The family must straddle both sides of each decision, or the equivalence is vacuous.
+        self.assertTrue(any(r is None for _, _, r in perturbations))
+        self.assertTrue(any(r is not None for _, _, r in perturbations))
+        non_claiming = [p for _, p, _ in perturbations
+                        if p.get("can_launch_step_agents") is not True
+                        and p.get("can_launch_substep_agents") is not True]
+        self.assertTrue(non_claiming)
+        for label, payload, _ in perturbations:
+            with self.subTest(label):
+                gate = _preflight_allows_agent_launch(payload)
+                self.assertEqual(gate, not _preflight_launch_refusals(payload))
+                claims = (payload.get("can_launch_step_agents") is True
+                          or payload.get("can_launch_substep_agents") is True)
+                try:
+                    _validate_preflight_payload(payload)
+                    raised = False
+                except ValueError:
+                    raised = True
+                self.assertEqual(raised, claims and not gate)
+
+    def test_each_condition_names_its_own_reason(self) -> None:
+        from tools.orchestration_runtime import _preflight_launch_refusals
+        for label, payload, reason in self._perturbations():
+            with self.subTest(label):
+                reasons = _preflight_launch_refusals(payload)
+                if reason is None:
+                    self.assertEqual(reasons, [])
+                else:
+                    self.assertIn(reason, reasons)
+
+    def test_the_two_holes_the_mirror_left_are_closed(self) -> None:
+        """Before issue #433 PR-2 the validator ACCEPTED both of these and the gate refused
+        them, so `write_preflight` persisted a document every later record-launch refused."""
+        from tools.orchestration_runtime import _validate_preflight_payload
+        codex = _launchable_preflight_dict()
+        with self.assertRaisesRegex(ValueError, "feature_states must be a mapping"):
+            _validate_preflight_payload(
+                {k: v for k, v in codex.items() if k != "feature_states"})
+        with self.assertRaisesRegex(ValueError, "can_launch_substep_agents must be true"):
+            _validate_preflight_payload({**codex, "can_launch_substep_agents": False})
+        with self.assertRaisesRegex(ValueError, "can_launch_step_agents must be true"):
+            _validate_preflight_payload({**codex, "can_launch_step_agents": False})
+
+    def test_reasons_keep_the_gate_order_and_hide_none(self) -> None:
+        from tools.orchestration_runtime import _preflight_launch_refusals
+        payload = {**_launchable_preflight_dict(), "status": "fail", "sandbox_enforced": False,
+                   "providers": {"openai_compatible": {"launchable": False}}}
+        self.assertEqual(_preflight_launch_refusals(payload), [
+            "status must be pass",
+            "sandbox_enforced must be true",
+            "probed provider(s) openai_compatible are not launchable",
+        ])
+
+    def test_a_stored_unlaunchable_preflight_names_its_reason_to_the_operator(self) -> None:
+        from tools.orchestration_runtime import _preflight_path, _require_preflight_launchable
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            path = _preflight_path(repo, "orch_pf")
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps({**_launchable_preflight_dict(),
+                                        "sandbox_enforced": False}), encoding="utf-8")
+            with self.assertRaisesRegex(
+                    RuntimeError, "^preflight gate failed: .*sandbox_enforced must be true"):
+                _require_preflight_launchable(repo, "orch_pf", enforce_live_probe=False)
 
 
 def _launchable_preflight_dict(**extra: object) -> dict[str, object]:
