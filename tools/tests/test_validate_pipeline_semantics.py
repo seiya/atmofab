@@ -18042,6 +18042,11 @@ class DiagnosticsPerCaseStatusTest(unittest.TestCase):
             with self.subTest(body=body):
                 got = self._compile([{"id": "b"}], self._stated("b", body))
                 self.assertTrue([v for v in got if "per_case_status statement for 'b'" in v], got)
+        for body in ("c1: NA", 'c1: "na"', "c1: ok"):
+            with self.subTest(body=body):
+                got = self._compile([{"id": "b"}], self._stated("b", body))
+                self.assertEqual(len(got), 1, got)
+                self.assertIn("states a status outside", got[0])
         got = self._compile([{"id": "b", "per_case_status": {"c1": "na"}}],
                             self._stated("b", "c1: na") + self._stated("b", "c1: na"))
         self.assertTrue([v for v in got if "stated twice for 'b'" in v], got)

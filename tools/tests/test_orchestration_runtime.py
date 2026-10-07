@@ -22044,6 +22044,9 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # answers to instead of "neither more nor less"): measured 94689, no bump.
         # Round 2 (a cross-target judgment is no check-id source): measured 94899, no bump.
         # Round 3 (the `major` example names the Diagnostics contract too): 94943, no bump.
+        # Issue #437 (`checks[].per_case_status` in the schema block and V3; the stale
+        # "(Generate never reads tests.md)" comment shortened to pay for it): measured 94998
+        # with `wc -c` in /home/seiya/atmofab at d36bd436, no bump.
         "docs/workflow/phases/phase_01_compile.md": 95000,
     }
 

@@ -8543,8 +8543,12 @@ def _parse_per_case_status_statements(
     tests_path: Path, violations: list[str]
 ) -> dict[str, dict[str, str]]:
     """Every ``PER_CASE_STATUS_STATEMENT`` in ``tests_path``, as ``{<id>: {<case_id>: <status>}}``.
-    A statement whose braces do not hold ``<case_id>: <status>`` pairs, or a second statement
-    for one id, is a violation of the ``tests.md`` and contributes nothing."""
+    A statement whose braces do not hold ``<case_id>: <status>`` pairs, one stating a status
+    outside the per-case vocabulary (which the IR-side check would refuse, so the two demands
+    could not both be met), or a second statement for one id, is a violation of the
+    ``tests.md`` and contributes nothing."""
+    from tools.verdict_evaluator import CHECK_STATUS_VALUES
+
     out: dict[str, dict[str, str]] = {}
     text = tests_path.read_text(encoding="utf-8")
     for match in PER_CASE_STATUS_STATEMENT.finditer(text):
@@ -8558,7 +8562,11 @@ def _parse_per_case_status_statements(
                 ok = False
                 break
             mapping[key] = value
-        if not ok:
+        allowed = (*CHECK_STATUS_VALUES, *PER_CASE_CHECK_STATUS_EXTRA)
+        if ok and any(value not in allowed for value in mapping.values()):
+            violations.append(f"{tests_path}:per_case_status statement for {cid!r} states a "
+                              f"status outside {list(allowed)} ({match.group(0)!r})")
+        elif not ok:
             violations.append(f"{tests_path}:per_case_status statement for {cid!r} is not "
                               f"`{{ <case_id>: <status>, ... }}` ({match.group(0)!r})")
         elif cid in out:
