@@ -12506,7 +12506,7 @@ class Conductor:
           `validate_execute_<category>` (category in VALIDATE_EXECUTE_FAILURE_ROUTING)
                              -> runs/<run_id>/trial_meta.json#failure_excerpt
           `judge_semantic_review_fail`
-                             -> runs/<run_id>/semantic_review.json#findings[], one line per
+                             -> runs/<run_id>/semantic_review.json#findings[], one entry per
                                 finding (folded here by `judge_repair_text`, issue #455)
         Read at the conduct reopen point where `refs` still names the FAILED artifact (rotation
         to the fresh id happens later, inside run_phase -> _ensure_fresh_producer_id). Returns

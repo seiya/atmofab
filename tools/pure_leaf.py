@@ -623,9 +623,9 @@ def judge_repair_text(review: Any) -> str | None:
     judge's findings as `last_fail_reason` and the re-derived producer gets them as
     `repair_findings`. One entry per finding in the review's order, each on a new line,
     `[<attribution>/<confidence>] <description> (evidence: <ref>, <ref>)`, the description
-    stripped (a newline inside it is kept) and nothing capped or deduplicated. The input is a file read back from disk, so
-    anything that is not a `fail` review with at least one object finding gives `None` (the
-    repair then falls back to the full prompt) rather than raising."""
+    stripped (a newline inside it is kept) and nothing capped or deduplicated. The input is a
+    file read back from disk, so anything that is not a `fail` review with at least one object
+    finding gives `None` (the repair then falls back to the full prompt) rather than raising."""
     if not isinstance(review, dict) or review.get("decision") != "fail":
         return None
     findings = review.get("findings")
@@ -743,8 +743,8 @@ def semantic_review_document_violations(
 
     # The one joint invariant: the decision and the findings must agree. A `fail` with no
     # finding gives the operator and the diagnostician nothing to act on and the repair no
-    # findings to carry (`judge_repair_text`); a `pass` with findings is a review that reports a defect and waves it
-    # through, which is the shape this whole substep exists to refuse.
+    # findings to carry (`judge_repair_text`); a `pass` with findings is a review that reports
+    # a defect and waves it through, which is the shape this whole substep exists to refuse.
     if doc["decision"] == "pass":
         if doc["findings"]:
             violations.append("decision 'pass' requires an empty findings array")

@@ -607,7 +607,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # lines keep their instruction (the producer authors the IR from the finding text and
     # returns `last_fail_reason: null`; the reviewer judges on the merits). A bump would
     # re-derive every node's Compile for an IR authored to the same rules.
-    "compile-docs-13": "864336f3aa207601d3fa9f5664f99784fdaff59e77ff0798a8c14fc108fcf3eb",
+    "compile-docs-13": "5d4c5f299a75f456cc1ffd55ca987096f225ab7360fd5c19f7fa068da979b1f6",
     # ...and the digest `compile-docs-13` SHIPPED with (origin/main b9a2a615), kept so a later
     # version returning to those bytes collides (`test_no_empty_bump_or_silent_revert`).
     "compile-docs-13@b9a2a615": "6dc0a6af22e9a4bce122425315e233ead04b835a1e7cb431f1e02218c99aaa70",

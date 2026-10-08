@@ -1552,15 +1552,18 @@ class PureRenderTests(unittest.TestCase):
         # `fail` or, in `prod`, a `Generate.verify` `major` naming `ir_inconsistency`, each by
         # the reason it escalates under (`verify_severity_major`). READ: it states what the
         # conductor does with a value the rubric already chose; it assigns nothing. Round 1
-        # re-worded its "(an LLM `structural_violation` ...)" parenthetical. READ: same.
+        # re-worded its "(an LLM `structural_violation` ...)" parenthetical; round 2 added the
+        # deterministic `Validate.execute` reopens and the manual revocation's findings. READ:
+        # same, nothing assigned.
         ("docs/RUNBOOK.md: - Cross-phase `Compile` re-derivation of an already-`certifi"
-         " #31a8d262854d"),
+         " #ec696a4421a8"),
         # Issue #455: phase_02's on-failure bullet states the route of an `ir_inconsistency`
         # finding — `dev_verify_major` in `dev`, `verify_severity_major` and a directive in
         # `prod` — where it used to say "the orchestration agent decides". It points at
-        # §Severity of a finding for the value. READ: it routes, and assigns nothing.
+        # §Severity of a finding for the value. READ: it routes, and assigns nothing. Round 2
+        # said which re-run gets the findings. READ: same.
         ("docs/workflow/phases/phase_02_generate.md: - When `Generate.verify` judges that "
-         "\"the IR itself has an e #4dc9b38685f3"),
+         "\"the IR itself has an e #755b3fd0cb0b"),
         # The two verifier `SKILL`s' routing lines stood here until Z4 (issue #171). Both files
         # are deleted with the agentic leaf: a pure leaf reads no `SKILL`, so the lines are not
         # on a leaf-read surface any more and there is nothing left to allowlist.
