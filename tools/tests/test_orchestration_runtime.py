@@ -1339,8 +1339,13 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     "claude", "claude", _runner(refusal, code))
                 by_name = {c["name"]: c for c in checks}
                 self.assertFalse(by_name["claude_prompt_stdin"]["pass"])
-                # And that failure must block the launch, not sit there as advisory.
+                # And that failure must block the launch, not sit there as advisory —
+                # through the probe-time gate itself, not just the helper it calls.
                 self.assertFalse(_all_strict_boolean_probe_checks_pass(checks))
+                result = probe_execution_platform(
+                    backend="claude", runner=_runner(refusal, code))
+                self.assertIs(result["can_launch_step_agents"], False)
+                self.assertEqual(result["status"], "fail")
 
     def test_probe_codex_backend_rejects_fresh_exec_missing_model_flag(self) -> None:
         from tools.orchestration_runtime import _probe_codex_backend
@@ -14850,7 +14855,6 @@ class RecordTimeoutTests(unittest.TestCase):
                 "status": "pass", "backend": "claude", "sandbox_runtime": "bwrap",
                 "sandbox_enforced": True, "can_launch_step_agents": True,
                 "can_launch_substep_agents": True,
-                "backend": "claude",
                 "checks": [
                     *claude_launch_checks(),
                     {"name": "sandbox_bwrap_available", "pass": True},

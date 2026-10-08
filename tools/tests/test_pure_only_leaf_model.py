@@ -943,7 +943,6 @@ def _seed_launchable(repo_root: Path, orchestration_id: str) -> None:
             "status": "pass", "backend": "claude", "sandbox_runtime": "bwrap",
             "sandbox_enforced": True, "can_launch_step_agents": True,
             "can_launch_substep_agents": True,
-            "backend": "claude",
             "checks": [
                 *claude_launch_checks(),
                 {"name": "sandbox_bwrap_available", "pass": True},
