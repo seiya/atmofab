@@ -4617,14 +4617,17 @@ def _fsync_directory(path: Path) -> None:
 def _codex_registration_transaction_targets(
     transaction_dir: Path,
     agent_run_id: str,
-) -> tuple[Path, Path, Path]:
+) -> tuple[Path, Path]:
+    """The launch response and the session index, committed together. A third target, the
+    `agents/<arid>/dialogs/child.response.json` mirror, went with the mirror in issue #447
+    (D3); a journal a pre-upgrade crash left with three entries is refused as invalid rather
+    than replayed onto two targets."""
     if _AGENT_RUN_ID_RE.fullmatch(agent_run_id) is None:
         raise RuntimeError(
             f"invalid agent_run_id in Codex registration transaction: {agent_run_id!r}"
         )
     return (
         transaction_dir / "launches" / f"{agent_run_id}.response.json",
-        transaction_dir / "agents" / agent_run_id / "dialogs" / "child.response.json",
         transaction_dir / "session_run_index.json",
     )
 
@@ -4706,8 +4709,8 @@ def _recover_json_transactions_unlocked(transaction_dir: Path) -> None:
             not isinstance(agent_run_id, str)
             or not isinstance(old_exists, list)
             or not isinstance(old_sha256, list)
-            or len(old_exists) != 3
-            or len(old_sha256) != 3
+            or len(old_exists) != 2
+            or len(old_sha256) != 2
             or any(type(value) is not bool for value in old_exists)
             or any(
                 (exists and (
@@ -4724,7 +4727,7 @@ def _recover_json_transactions_unlocked(transaction_dir: Path) -> None:
         targets = _codex_registration_transaction_targets(
             transaction_dir, agent_run_id
         )
-        for idx in reversed(range(3)):
+        for idx in reversed(range(len(targets))):
             target = targets[idx]
             old_path = tx_dir / f"{idx}.old"
             if not old_exists[idx]:
@@ -4826,11 +4829,8 @@ def _write_json_transaction(
             if isinstance(raw_lineage, str) and raw_lineage.strip()
             else None
         )
-        transaction_updates = {
-            expected_targets[0]: response,
-            expected_targets[1]: response,
-        }
-        session_index = _read_session_run_index_from_path(expected_targets[2])
+        transaction_updates = {expected_targets[0]: response}
+        session_index = _read_session_run_index_from_path(expected_targets[1])
         _upsert_session_run_index_entry(
             session_index,
             agent_run_id=agent_run_id,
@@ -4840,7 +4840,7 @@ def _write_json_transaction(
             status=status,
             codex_lineage_id=lineage,
         )
-        transaction_updates[expected_targets[2]] = session_index
+        transaction_updates[expected_targets[1]] = session_index
         targets = list(expected_targets)
         tx_root.mkdir(parents=True, exist_ok=True)
         if tx_root.is_symlink():
@@ -9128,16 +9128,6 @@ def _launch_refs(orchestration_id: str, agent_run_id: str) -> tuple[str, str]:
 
 def _launch_dialog_refs(orchestration_id: str, agent_run_id: str) -> tuple[str, str]:
     prefix = f"workspace/orchestrations/{orchestration_id}/launches/{agent_run_id}"
-    return f"{prefix}.prompt.txt", f"{prefix}.reply.txt"
-
-
-def _child_launch_refs(orchestration_id: str, agent_run_id: str) -> tuple[str, str]:
-    prefix = f"workspace/orchestrations/{orchestration_id}/agents/{agent_run_id}/dialogs/child"
-    return f"{prefix}.request.json", f"{prefix}.response.json"
-
-
-def _child_dialog_refs(orchestration_id: str, agent_run_id: str) -> tuple[str, str]:
-    prefix = f"workspace/orchestrations/{orchestration_id}/agents/{agent_run_id}/dialogs/child"
     return f"{prefix}.prompt.txt", f"{prefix}.reply.txt"
 
 
@@ -14585,23 +14575,17 @@ def record_launch(
 
     request_ref, response_ref = _launch_refs(orchestration_id, child_agent_run_id)
     prompt_ref, reply_ref = _launch_dialog_refs(orchestration_id, child_agent_run_id)
-    child_request_ref, child_response_ref = _child_launch_refs(orchestration_id, child_agent_run_id)
-    child_prompt_ref, child_reply_ref = _child_dialog_refs(orchestration_id, child_agent_run_id)
+    # The `agents/<arid>/dialogs/child.{request,response,prompt,reply}` mirrors of the four
+    # `launches/` files, and the `child_launch_*_ref` fields naming them, went in issue #447
+    # (D3): nothing read them, and `child.reply.txt` was not even a mirror — `record_reply_text`
+    # rewrites only the `launches/` copy. `launches/` is the one launch record.
     request_payload.setdefault("launch_prompt_ref", prompt_ref)
-    request_payload.setdefault("child_launch_request_ref", child_request_ref)
-    request_payload.setdefault("child_launch_prompt_ref", child_prompt_ref)
     response_payload.setdefault("launch_reply_ref", reply_ref)
-    response_payload.setdefault("child_launch_response_ref", child_response_ref)
-    response_payload.setdefault("child_launch_reply_ref", child_reply_ref)
 
     request_path = launches_root / f"{child_agent_run_id}.request.json"
     response_path = launches_root / f"{child_agent_run_id}.response.json"
     prompt_path = launches_root / f"{child_agent_run_id}.prompt.txt"
     reply_path = launches_root / f"{child_agent_run_id}.reply.txt"
-    child_request_path = child_dialog_root / "child.request.json"
-    child_response_path = child_dialog_root / "child.response.json"
-    child_prompt_path = child_dialog_root / "child.prompt.txt"
-    child_reply_path = child_dialog_root / "child.reply.txt"
 
     graph_path = root / "agent_graph.json"
     graph = _load_graph(graph_path)
@@ -14621,10 +14605,6 @@ def record_launch(
         "launch_response_ref": response_ref,
         "launch_prompt_ref": prompt_ref,
         "launch_reply_ref": reply_ref,
-        "child_launch_request_ref": child_request_ref,
-        "child_launch_response_ref": child_response_ref,
-        "child_launch_prompt_ref": child_prompt_ref,
-        "child_launch_reply_ref": child_reply_ref,
         # The exact prompt text record-launch rendered and wrote to
         # launches/<child_arid>.prompt.txt. Returned so the orchestration agent
         # can pass it verbatim to the child leaf WITHOUT reading the template
@@ -14961,10 +14941,6 @@ def record_launch(
     _write_json(response_path, response_payload)
     _write_text(prompt_path, prompt_text)
     _write_text(reply_path, reply_text)
-    _write_json(child_request_path, request_payload)
-    _write_json(child_response_path, response_payload)
-    _write_text(child_prompt_path, prompt_text)
-    _write_text(child_reply_path, reply_text)
     if isinstance(nk, str) and nk.strip() and isinstance(st, str) and st.strip():
         step_tok = st.strip().lower()
         _transition_node_step_phase_state(

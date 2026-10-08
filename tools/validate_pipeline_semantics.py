@@ -7941,28 +7941,9 @@ def _validate_orchestration_hierarchy(
                                         violations.append(
                                             f"{response_path}: launch_reply must not be generic launched-only text"
                                         )
-
-                                    child_response_path = (
-                                        workspace_path.parent
-                                        / expected_agent_prefix
-                                        / "child.response.json"
-                                    )
-                                    if not child_response_path.exists():
-                                        violations.append(
-                                            f"{child_response_path}: missing"
-                                        )
-                                    else:
-                                        try:
-                                            child_response_payload = _read_json(child_response_path)
-                                        except json.JSONDecodeError:
-                                            violations.append(
-                                                f"{child_response_path}: launch response must be valid json object"
-                                            )
-                                        else:
-                                            if child_response_payload != response_payload:
-                                                violations.append(
-                                                    f"{child_response_path}: must equal launches response payload"
-                                                )
+                                    # The `agents/<arid>/dialogs/child.response.json`
+                                    # mirror this block required to equal the response went
+                                    # in issue #447 (D3): the launches response IS the record.
 
                     context_id = item.get("context_id")
                     if isinstance(context_id, str) and _is_sequential_agent_token(context_id):

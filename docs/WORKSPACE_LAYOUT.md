@@ -42,11 +42,7 @@ workspace/
 │       │
 │       ├── agents/
 │       │   └── <agent_run_id>/                     all dialog for one child agent
-│       │       ├── dialogs/
-│       │       │   ├── child.request.json          (mirror of launches/<arid>.request.json)
-│       │       │   ├── child.response.json         (mirror)
-│       │       │   ├── child.prompt.txt            (mirror; 1-to-1 with the leaf launch prompt input)
-│       │       │   ├── child.reply.txt             (mirror)
+│       │       ├── dialogs/                        (the launch itself is recorded once, under launches/; the child.{request,response,prompt,reply} copies went in issue #447)
 │       │       │   ├── agent.result.json           (written by record-agent-run on pass)
 │       │       │   └── agent.summary.txt           (same as above)
 │       │       └── launch_instant.probe.json       (its MTIME is the attempt's freshness bound)

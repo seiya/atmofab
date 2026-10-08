@@ -294,7 +294,7 @@ This document defines the orchestration contract — the **conductor** (`tools/w
 3. Before starting each phase, confirm the phase type, and finalize the launch target as a `substep agent` for `Compile` / `Generate` / `Validate` and a `step agent` for `Build`.
 4. The conductor saves `launches/<agent_run_id>.request.json`, `launches/<agent_run_id>.response.json`, `launches/<agent_run_id>.prompt.txt`, and `launches/<agent_run_id>.reply.txt` per launch request of a `step agent` or `substep agent`.
    Before each of those two calls it also saves the payload it passes, as `launches/<agent_run_id>.request.input.json` (`record-launch`) and `launches/<agent_run_id>.agent_run.input.json` (`finalize-child`). A payload travels as a file because a single argv element is capped at 128 KiB. Both are kept permanently as the evidence of what was sent, including when the call they feed fails. The full inventory is `docs/WORKSPACE_LAYOUT.md`.
-5. The `response.json` and `child.response.json` saved by `record-launch` are a complete save of the leaf launch response, and must not drop the child-`agent` identifier.
+5. The `response.json` saved by `record-launch` is a complete save of the leaf launch response, and must not drop the child-`agent` identifier.
 6. On completion of each `step agent` and each `substep agent`, save `agents/<agent_run_id>/dialogs/agent.result.json` and `agents/<agent_run_id>/dialogs/agent.summary.txt`.
 7. `agent.summary.txt` includes at least the final `status` and the failure cause or main-artifact reference.
 8. `launches/<agent_run_id>.prompt.txt` is the body that concretizes the corresponding template in `tools/prompt_templates/`.
@@ -351,7 +351,6 @@ This document defines the orchestration contract — the **conductor** (`tools/w
 - Each `step` or each `substep` has an independent `agent_run_id`.
 - The `context_id` of `step` and `substep` do not duplicate, and `context_isolated=true` is recorded for all.
 - The `agent_runs.jsonl` of `step` and `substep` records `agent_session_id` and the various references, and the referenced entities exist.
-- `launches/<agent_run_id>.response.json` and `agents/<agent_run_id>/dialogs/child.response.json` hold the same content of the leaf launch response.
 - `agent_runs.jsonl.agent_session_id` matches the child-`agent` identifier of the corresponding `launch response`.
 - `preflight.json` exists and satisfies `can_launch_step_agents=true` and `can_launch_substep_agents=true`.
 - `sandbox_runtime=bwrap` and `sandbox_enforced=true` are recorded in the preflight.

@@ -129,10 +129,6 @@ workspace/
       agents/
         <agent_run_id>/
           dialogs/
-            child.request.json
-            child.response.json
-            child.prompt.txt
-            child.reply.txt
             agent.result.json
             agent.summary.txt
       violations/

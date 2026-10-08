@@ -970,17 +970,6 @@ def _create_minimal_orchestration_tree(
             "finished_at": "2026-03-01T00:01:10Z",
         }
         _write_json(step_agent_dir / "agent.result.json", step_payload)
-        _write_json(
-            step_agent_dir / "child.response.json",
-            {
-                "agent_run_id": step_ids[step],
-                **_spawn_response_payload(
-                    f"sess_step_{step}",
-                    f"accepted: sess_step_{step}",
-                ),
-                "launch_reply_ref": step_reply_ref,
-            },
-        )
         (step_agent_dir / "agent.summary.txt").write_text(
             f"agent_run_id: {step_ids[step]}\nstatus: pass\noutput_refs:\n- workspace/pipelines/{node_safe}/pipeline_step_{step}\n",
             encoding="utf-8",
@@ -1060,17 +1049,6 @@ def _create_minimal_orchestration_tree(
                 "finished_at": "2026-03-01T00:00:50Z",
             }
             _write_json(substep_agent_dir / "agent.result.json", substep_payload)
-            _write_json(
-                substep_agent_dir / "child.response.json",
-                {
-                    "agent_run_id": substep_id,
-                    **_spawn_response_payload(
-                        f"sess_substep_{step}_{idx}",
-                        f"accepted: sess_substep_{step}_{idx}",
-                    ),
-                    "launch_reply_ref": substep_reply_ref,
-                },
-            )
             (substep_agent_dir / "agent.summary.txt").write_text(
                 f"agent_run_id: {substep_id}\nstatus: pass\noutput_refs:\n- workspace/ir/{node_safe}/plan_{step}_{idx}\n",
                 encoding="utf-8",
@@ -9718,18 +9696,6 @@ end program shallow_water2d_runner
             payload.pop("agent_session_id", None)
             _write_json(response_path, payload)
 
-            child_response_path = (
-                repo_root
-                / "workspace"
-                / "orchestrations"
-                / "orch_test_001"
-                / "agents"
-                / "step_run_build_001"
-                / "dialogs"
-                / "child.response.json"
-            )
-            _write_json(child_response_path, payload)
-
             violations = validate(
                 repo_root=repo_root,
                 workspace_root="workspace",
@@ -9880,10 +9846,6 @@ end program shallow_water2d_runner
             response_payload["agent_session_id"] = "session_1_1"
             response_payload["launch_reply"] = "problem/shallow_water2d@0.3.0 build step launched."
             _write_json(response_path, response_payload)
-            _write_json(
-                orch_root / "agents" / "step_run_build_001" / "dialogs" / "child.response.json",
-                response_payload,
-            )
 
             runs_path = orch_root / "agent_runs.jsonl"
             items = [
@@ -27305,10 +27267,6 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         resp.pop("sandbox_profile_ref", None)
         body = json.dumps(resp, ensure_ascii=False)
         resp_path.write_text(body, encoding="utf-8")
-        # `record_launch` writes BOTH copies and the sweep compares them; mutating only one
-        # leaves a `must equal launches response payload` violation the filter would hide.
-        (orch_root / "agents" / self._ARID / "dialogs"
-         / "child.response.json").write_text(body, encoding="utf-8")
         # `record_agent_run` stamps the row from the same response.
         self._patch_row(repo_root, agent_backend=backend)
         if not keep_profile:

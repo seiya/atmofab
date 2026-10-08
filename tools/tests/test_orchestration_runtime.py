@@ -2316,42 +2316,10 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             self.assertTrue((orch_root / "launches" / "substep_run_plan_generate_001.request.json").exists())
             self.assertTrue((orch_root / "launches" / "substep_run_plan_generate_001.prompt.txt").exists())
             self.assertTrue((orch_root / "launches" / "substep_run_plan_generate_001.reply.txt").exists())
-            self.assertTrue(
-                (
-                    orch_root
-                    / "agents"
-                    / "substep_run_plan_generate_001"
-                    / "dialogs"
-                    / "child.request.json"
-                ).exists()
-            )
-            self.assertTrue(
-                (
-                    orch_root
-                    / "agents"
-                    / "substep_run_plan_generate_001"
-                    / "dialogs"
-                    / "child.response.json"
-                ).exists()
-            )
-            self.assertTrue(
-                (
-                    orch_root
-                    / "agents"
-                    / "substep_run_plan_generate_001"
-                    / "dialogs"
-                    / "child.prompt.txt"
-                ).exists()
-            )
-            self.assertTrue(
-                (
-                    orch_root
-                    / "agents"
-                    / "substep_run_plan_generate_001"
-                    / "dialogs"
-                    / "child.reply.txt"
-                ).exists()
-            )
+            # The `dialogs/child.*` mirrors of the four `launches/` files went in issue #447
+            # (D3); `dialogs/` keeps the agent's own result and summary.
+            dialogs = orch_root / "agents" / "substep_run_plan_generate_001" / "dialogs"
+            self.assertEqual(sorted(p.name for p in dialogs.glob("child.*")), [])
             self.assertTrue(
                 (
                     orch_root
@@ -2399,45 +2367,16 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 ).read_text(encoding="utf-8")
             )
             self.assertEqual(
-                request_payload["child_launch_request_ref"],
-                "workspace/orchestrations/orch_001/agents/substep_run_plan_generate_001/dialogs/child.request.json",
+                request_payload["launch_prompt_ref"],
+                "workspace/orchestrations/orch_001/launches/substep_run_plan_generate_001.prompt.txt",
             )
             self.assertEqual(
-                request_payload["child_launch_prompt_ref"],
-                "workspace/orchestrations/orch_001/agents/substep_run_plan_generate_001/dialogs/child.prompt.txt",
+                response_payload["launch_reply_ref"],
+                "workspace/orchestrations/orch_001/launches/substep_run_plan_generate_001.reply.txt",
             )
-            self.assertEqual(
-                response_payload["child_launch_response_ref"],
-                "workspace/orchestrations/orch_001/agents/substep_run_plan_generate_001/dialogs/child.response.json",
-            )
-            self.assertEqual(
-                response_payload["child_launch_reply_ref"],
-                "workspace/orchestrations/orch_001/agents/substep_run_plan_generate_001/dialogs/child.reply.txt",
-            )
-            self.assertEqual(
-                (orch_root / "launches" / "substep_run_plan_generate_001.prompt.txt").read_text(
-                    encoding="utf-8"
-                ),
-                (
-                    orch_root
-                    / "agents"
-                    / "substep_run_plan_generate_001"
-                    / "dialogs"
-                    / "child.prompt.txt"
-                ).read_text(encoding="utf-8"),
-            )
-            self.assertEqual(
-                (orch_root / "launches" / "substep_run_plan_generate_001.reply.txt").read_text(
-                    encoding="utf-8"
-                ),
-                (
-                    orch_root
-                    / "agents"
-                    / "substep_run_plan_generate_001"
-                    / "dialogs"
-                    / "child.reply.txt"
-                ).read_text(encoding="utf-8"),
-            )
+            # No ref names a `dialogs/child.*` mirror any more (issue #447, D3).
+            self.assertEqual([k for k in (*request_payload, *response_payload)
+                              if k.startswith("child_launch_")], [])
             result_payload = json.loads(
                 (
                     orch_root
@@ -16669,7 +16608,8 @@ class LaunchSettingSurfacePersistenceTests(unittest.TestCase):
     the REAL `record_launch` handler — the two facts it pins are properties of the runtime,
     not of the conductor, and neither is visible from a conductor-side test:
 
-    (1) the runtime persists keys it does not know, into both copies of the response;
+    (1) the runtime persists keys it does not know, into the launches response (the one copy
+        since the `dialogs/child.response.json` mirror went in issue #447, D3);
     (2) `_TERSE_RESULT_FIELDS["record-launch"]` projects them AWAY, because the conductor
         consumes neither — they are a record, not an instruction, and adding them to the
         terse set would grow every launch's stdout for nothing.
@@ -16684,17 +16624,17 @@ class LaunchSettingSurfacePersistenceTests(unittest.TestCase):
         "claude_tools": [""],
     }
 
-    def test_the_setting_surface_is_persisted_in_both_response_copies(self) -> None:
+    def test_the_setting_surface_is_persisted_in_the_launch_response(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root, response_extra=dict(self.SURFACE))
             orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
-            for path in (orch_root / "launches" / f"{arid}.response.json",
-                         orch_root / "agents" / arid / "dialogs" / "child.response.json"):
-                doc = json.loads(path.read_text(encoding="utf-8"))
-                self.assertEqual(doc["claude_setting_sources"], "user", msg=str(path))
-                self.assertEqual(doc["claude_tools"], self.SURFACE["claude_tools"],
-                                 msg=str(path))
+            path = orch_root / "launches" / f"{arid}.response.json"
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(doc["claude_setting_sources"], "user")
+            self.assertEqual(doc["claude_tools"], self.SURFACE["claude_tools"])
+            self.assertFalse((orch_root / "agents" / arid / "dialogs" / "child.response.json")
+                             .exists())
 
 
 class SetStatusIdempotencyTests(unittest.TestCase):
