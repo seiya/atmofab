@@ -216,3 +216,19 @@ node's self-test).
   line-anchored `!$omp` presence floor counted it; issue #25 promotes the class so it cannot.
   Write `'a message that is &` / `      &continued'`; the same wrap with the resume `&`
   omitted is a compile failure.
+- **No derived type that contains itself through allocatable components.** A component
+  `type(t), allocatable :: children(:)`, or a scalar `type(t), allocatable :: child`, inside
+  `type :: t` is conforming f2008 that the `Generate.gate` syntax check, the lint check and
+  Build all accept, and the GNU Fortran release the `fortran` targets build with mishandles
+  it: copying or appending a node whose own children are populated (an array constructor
+  and `allocate` + `move_alloc` alike) frees the same memory twice, and the program aborts
+  (`double free detected`), faults (SIGSEGV) or hangs. The ban covers a cycle through another
+  type as well (`node` holds `holder`, `holder` holds an allocatable `node`): on that form the
+  compiler itself never finishes, allocating memory without bound. No gate reads for either
+  form; the direct one surfaces at `Validate.execute`, where the run restarts `Generate`
+  without the cause. Represent a tree — a parsed document, a nested structure — as a flat
+  array of nodes indexed by integers, each node holding the indices of its children rather
+  than the children, or consume the input without building a tree. A type that no chain of
+  components leads back to (a deferred-length character, a `real(dp)` array, an integer
+  index array, a component of another non-recursive type) is unaffected, and so is a
+  `pointer` component of the type's own type.

@@ -914,6 +914,18 @@ PINNED: dict[str, str] = {
     # and the Fortran note drops its pointer to `docs/backends/language/<language>/CHECKS_ABI.md`,
     # a path a pure leaf cannot read; the gate and the idiom it states are unchanged.
     "pure-70": "08fc6af40cefadf3d5acc552381ff20e98d0593e70fff01006389728b5c54274",
+    # pure-71 (issue #442): the Fortran binding's §5 gains a last bullet — no derived type that
+    # contains itself through allocatable components, directly (array or scalar) or through
+    # another type; the GNU Fortran release the `fortran` targets build with double-frees the
+    # direct form when a populated node is copied or appended and never finishes compiling the
+    # indirect one, and no gate reads for either. Represent a tree as a flat array of nodes holding integer
+    # child indices. The harness producer is the only leaf that receives §5. Re-pinned in place
+    # during the review loop (not shipped). Measured by diffing
+    # this tuple against origin/main 8a6bc0e1's: the `fortran`
+    # `checks_contract_gate_guards_section` moved and no other member. Witness:
+    # orch_20261007T141634Z_85026fe2 (codex, `harness_fortran_cpu_mpi`, `fortran_cpu_mpi`,
+    # `validate.execute` rc=134 on every rank, in the self-test's JSON parser).
+    "pure-71": "7cc1230e5f4a290e5d9b938d15408abac499d5f7dc932144a9fdff943cfc89d8",
 }
 
 
