@@ -15204,9 +15204,11 @@ def record_timeout(
         payload=payload,
     )
     # Adv-37: only after the durable terminal record committed do we touch
-    # forced-bypass markers. record_agent_run terminal already unlinks the
-    # active_child and per-arid markers on a terminal status; this pass is the
-    # backstop for a row that branch did not reach.
+    # forced-bypass markers. The row written above is always a step / substep
+    # row with status `timeout`, so record_agent_run's terminal branch has
+    # already unlinked both markers and this pass changes nothing today: it
+    # duplicates that branch, and no test pins it. (Until issue #447 (D2) it
+    # also removed the child-return ack, which only it did.)
     for stale_marker in forced_marker_to_remove:
         try:
             stale_marker.unlink(missing_ok=True)
