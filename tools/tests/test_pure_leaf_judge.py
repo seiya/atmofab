@@ -508,9 +508,7 @@ class PureJudgeLoopTests(_Fixture):
         c = self.conductor(_envelope("not a json document at all"))
         c.spawn_leaf = lambda *a, **k: wc.ProcResult(1, "", "boom")  # type: ignore[assignment]
         c.run_substep(self.refs, "validate", "judge")
-        replies = [cap["--reply-text"] for s, cap in c.calls
-                   if s == "record-child-return" and "--reply-text" in cap]
-        replies += [cap.get("--reply-text", "") for s, cap in c.calls if s == "finalize-child"]
+        replies = [cap.get("--reply-text", "") for s, cap in c.calls if s == "finalize-child"]
         self.assertTrue(any("semantic review: none" in (r or "") for r in replies),
                         f"replies were {replies}")
         self.assertFalse(any("verify verdict" in (r or "") for r in replies))

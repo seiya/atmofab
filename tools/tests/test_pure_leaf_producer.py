@@ -304,9 +304,6 @@ class _PureFakeConductor(wc.Conductor):
         self._spawn += 1
         return wc.ProcResult(0, env, "")
 
-    def read_parent_return_token(self, child_arid):  # type: ignore[override]
-        return "rtok"
-
     def _claude_session_resumable(self, arid, **kw):  # type: ignore[override]
         return True
 
@@ -1262,12 +1259,12 @@ class PureProducerSubstepTests(unittest.TestCase):
         observed: dict[str, bool] = {}
 
         class _C(_PureFakeConductor):
-            def finalize_child(self, child_arid, return_token, reply_text, agent_run_json):  # type: ignore[override]
+            def finalize_child(self, child_arid, reply_text, agent_run_json):  # type: ignore[override]
                 base = self.repo_root / refs.source_dir()
                 observed["bundle_exists_at_finalize"] = (base / "codegen_bundle.json").exists()
                 observed["model_exists_at_finalize"] = (
                     base / "src" / f"{_SPEC_ID}_model.f90").exists()
-                return super().finalize_child(child_arid, return_token, reply_text, agent_run_json)
+                return super().finalize_child(child_arid, reply_text, agent_run_json)
 
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
@@ -1396,9 +1393,9 @@ class PureProducerSubstepTests(unittest.TestCase):
         finalized: dict[str, bool] = {}
 
         class _C(_PureFakeConductor):
-            def finalize_child(self, child_arid, return_token, reply_text, agent_run_json):  # type: ignore[override]
+            def finalize_child(self, child_arid, reply_text, agent_run_json):  # type: ignore[override]
                 finalized["did"] = True
-                return super().finalize_child(child_arid, return_token, reply_text, agent_run_json)
+                return super().finalize_child(child_arid, reply_text, agent_run_json)
 
             def _write_pure_bundle_artifacts(self, refs, doc, graph):  # type: ignore[override]
                 raise OSError(28, "No space left on device")

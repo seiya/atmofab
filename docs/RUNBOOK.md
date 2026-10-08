@@ -882,7 +882,7 @@ Invoking `record-agent-run` twice with the **same `agent_run_id`** raises `Value
 
 1. Number a new `agent_run_id` with `python3 tools/new_agent_run_id.py`. (The project allow list stopped pre-approving this command and `python3 tools/orchestration_runtime.py …` in issue #444 — the grants served the retired orchestration agent — so an interactive session asks once for each.)
 2. Newly reserve `ir_id` / `pipeline_id` with `python3 tools/orchestration_runtime.py reserve-phase-root --repo-root . --orchestration-id <oid> --node-key <node_key> --step <compile|generate> --reserved-id <new_id> --reserved-by-agent-run-id <new_arid>`, adding `--target <target_id>` for `--step generate` (a pipeline is reserved for one target; it is refused for `compile`) (when the old `agent_run_id` already reserved, confirm with the operator whether the reservation can be reused).
-3. Re-run the legitimate sequence `record-launch` → leaf launch → `finalize-child` (the single call that performs `record-child-return` → `deactivate-child` → `record-reply` → `record-agent-run`) with the new `agent_run_id`. Under conductor orchestration this sequence is normally re-driven by `--resume` (§3-1); the manual subcommand path below remains available for edge recovery.
+3. Re-run the legitimate sequence `record-launch` → leaf launch → `finalize-child` (the single call that performs `deactivate-child` → `record-reply` → `record-agent-run`) with the new `agent_run_id`. Under conductor orchestration this sequence is normally re-driven by `--resume` (§3-1); the manual subcommand path below remains available for edge recovery.
 4. To terminate the orchestration itself, call `set-status --status fail_closed --reason-code <code> --reason-detail <detail>`. Because `set-status` automatically terminates the orchestration row of `agent_runs.jsonl` in-place, do not update it manually.
 
 The detailed CLI conventions use [docs/CLI_REFERENCE.md#record-agent-run](CLI_REFERENCE.md#record-agent-run) as the canonical source.
@@ -895,27 +895,12 @@ When a child leaf is cut off midway by an API stream idle timeout, the orchestra
 
 **Premise**: before calling `record-timeout`, always run the following in order.
 
-1. `record-child-return --agent-run-id <arid> --return-token <token>`: record the evidence that the orchestration agent actually observed the leaf return.
-2. `deactivate-child --child-run-id <arid>`: release the active marker after confirming the ack and re-verifying the token match.
-3. `record-timeout --agent-run-id <arid> --reason ...`: record the terminal entry.
+1. `deactivate-child --child-run-id <arid>`: once you have confirmed the leaf process is gone, release the active marker.
+2. `record-timeout --agent-run-id <arid> --reason ...`: record the terminal entry.
+
+(A `record-child-return` step with a per-launch `--return-token` used to come first; [issue #447](https://github.com/seiya/atmofab/issues/447) (D2) retired it, and the subcommand no longer exists.)
 
 ```bash
-# pass the return-token via the two-step method (steps 6a/6b inline below).
-# step 6a: print the token with a single cat (the project allow list no longer pre-approves
-#          it since issue #444, so the session asks once). Do not use the
-#          $(cat ...) command-substitution form because the Bash tool's static analysis
-#          rejects it with `Contains shell syntax ... cannot be statically analyzed`.
-#          Do not use the VAR=$(cat ...) 2-step shell-var form either, as it breaks
-#          the allowlist match.
-cat workspace/orchestrations/<orchestration_id>/launches/<child_agent_run_id>.parent_return_token
-
-# step 6b: embed the token printed above as a literal string.
-python3 tools/orchestration_runtime.py record-child-return \
-  --repo-root . \
-  --orchestration-id <orchestration_id> \
-  --agent-run-id <child_agent_run_id> \
-  --return-token "<literal token>"
-
 python3 tools/orchestration_runtime.py deactivate-child \
   --repo-root . \
   --orchestration-id <orchestration_id> \
@@ -932,11 +917,11 @@ After the calls, the orchestration agent subsequently calls `set-status --status
 
 ### Escape hatch for a wedged child
 
-Only when `record-child-return` cannot be written because the leaf process is in an abnormal state where it can observe no return at all, the marker check can be bypassed with `record-timeout --force-reason "<operator override content>"`. Prioritize the normal flow, and use it as a last resort.
+Only when `deactivate-child` cannot be reached because the leaf process is in an abnormal state where no return can be observed at all, the marker check can be bypassed with `record-timeout --force-reason "<operator override content>"`. Prioritize the normal flow, and use it as a last resort.
 
 ## Incomplete launch recovery (dangling active_child window) {#launch-incomplete-recovery}
 
-Distinct from the substep-timeout case above (where the conductor is still alive and finalizes the child itself): here the **conductor process itself dies** while a leaf launch is mid-flight. `record-launch` opened the active_child window — the backend-neutral per-arid marker `active_children/<arid>.txt` is written for **all** backends (Claude additionally writes the sequential pointer `active_child_agent_run_id.txt`) — but the leaf was interrupted before returning, so there is no `child_returns/<arid>.txt` and no terminal `agent_runs.jsonl` row for `<arid>`.
+Distinct from the substep-timeout case above (where the conductor is still alive and finalizes the child itself): here the **conductor process itself dies** while a leaf launch is mid-flight. `record-launch` opened the active_child window — the backend-neutral per-arid marker `active_children/<arid>.txt` is written for **all** backends (Claude additionally writes the sequential pointer `active_child_agent_run_id.txt`) — but the leaf was interrupted before returning, so there is no terminal `agent_runs.jsonl` row for `<arid>`.
 
 Whether the orchestration is left non-terminal (`running`) depends on how the driver died. `SIGTERM` / `Ctrl-C` are handled and terminalize the run as `cancel` / `driver_interrupted` (§3-1 "Interruption of the driver"), so those cases normally arrive here already terminal — best-effort, though: the terminalization is skipped when the signal lands before `init` commits the orchestration, and a failed `set-status` is swallowed so the interrupt still propagates, either of which also leaves `running`. An unexpected driver exception is handled too, and terminalizes as `fail` / `driver_exception` under the same best-effort guards (§3-1). `SIGKILL`, an OOM kill, or the loss of the host shell cannot be handled and do leave `running` — that is the case this section covers.
 
@@ -970,7 +955,7 @@ Recovery is the normal `python3 tools/run_workflow.py --resume --orchestration-i
 As part of the resume reset (`resume_orchestration`), `--resume` reconciles the artifacts the dead host left behind for the abandoned launch:
 
 1. **Stale active_child markers** (`active_child_agent_run_id.txt` / `active_children/<arid>.txt`, with no `deactivate-child` having run) are cleared (logged as `resume_cleared_stale_active_child`) — without this the resumed agent's `record-launch` would be rejected by the Claude-backend sequential-child check while the stale pointer persists.
-2. **Orphan `agent_graph.json` edges** — `record_launch` writes the parent→child edge before the marker, so the abandoned child has a graph edge but never a terminal `agent_runs.jsonl` row. Such edges are pruned (logged as `resume_pruned_orphan_graph_edges`) — without this the resumed run's eventual `set-status pass` is rejected by `_validate_orchestration_completion_for_pass` with `agent_graph edge child_agent_run_id missing from agent_runs.jsonl`. Pruning is scoped to genuine abandonment on both sides. An edge is removed only when its child (a) **was** genuinely launched — proven by a durable `launches/<arid>.request.json` (the same `is_owner_via_launch` signal) — **and** (b) has **no** evidence of reaching/returning from a run: it is in none of `agent_runs.jsonl`, any `step_result.json` reference, `agent_runs_invalid.jsonl`, or a `child_returns/<arid>.txt` ack. So an arbitrarily-corrupted edge whose child was never launched (no request artifact) is **kept** and still rejected by validation; and a child that completed (step_result-referenced) but lost its run row, one diverted to `agent_runs_invalid.jsonl` (sandbox / session-id failure), or one that already returned (`child_returns` ack) all keep their edge too. Only a launch interrupted **before** the leaf returned — launched, but no ack and no run/invalid record — is pruned, which is exactly the dangling-launch case. The launch artifacts (`launches/<arid>.*`, the incident snapshot) are kept for forensics; only the spurious edge is removed.
+2. **Orphan `agent_graph.json` edges** — `record_launch` writes the parent→child edge before the marker, so the abandoned child has a graph edge but never a terminal `agent_runs.jsonl` row. Such edges are pruned (logged as `resume_pruned_orphan_graph_edges`) — without this the resumed run's eventual `set-status pass` is rejected by `_validate_orchestration_completion_for_pass` with `agent_graph edge child_agent_run_id missing from agent_runs.jsonl`. Pruning is scoped to genuine abandonment on both sides. An edge is removed only when its child (a) **was** genuinely launched — proven by a durable `launches/<arid>.request.json` (the same `is_owner_via_launch` signal) — **and** (b) has **no** evidence of reaching/returning from a run: it is in none of `agent_runs.jsonl`, any `step_result.json` reference, or `agent_runs_invalid.jsonl`. So an arbitrarily-corrupted edge whose child was never launched (no request artifact) is **kept** and still rejected by validation; and a child that completed (step_result-referenced) but lost its run row, or one diverted to `agent_runs_invalid.jsonl` (sandbox / session-id failure), keeps its edge too. A launch with no run/invalid record is pruned, which is the dangling-launch case. That includes a leaf that returned but whose finalization the host did not reach: no reply or run row was recorded for it, so the resumed run re-launches its substep under a fresh `agent_run_id` exactly as for an abandoned launch. (A `child_returns/<arid>.txt` ack used to keep such an edge; [issue #447](https://github.com/seiya/atmofab/issues/447) (D2) retired it, and one a past orchestration left behind is not read.) The launch artifacts (`launches/<arid>.*`, the incident snapshot) are kept for forensics; only the spurious edge is removed.
 
 3. **Stale `child_running` phase state** — `record_launch` sets the node/step to `child_running`, which the completion vouch and the `--stage pre_judge` audit read as "a child is running here". The abandoned launch leaves it there even after the marker is cleared, so any such node/step is reset to `not_started` (logged as `resume_reset_stale_child_running`) to drop the dead child's lingering phase authority; the re-launch transitions it back to `child_running` for the real new child.
 

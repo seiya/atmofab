@@ -1013,10 +1013,6 @@ class NoOrchestrationDirRecordsALeafWriteAuthorityTests(unittest.TestCase):
         # A Claude launch holds the active-child marker until the child returns; the
         # conductor clears it with `finalize-child`. Both shapes are needed here, so the
         # first is deactivated the way a real run does before the second is recorded.
-        token = ort._parent_return_token_path(
-            repo_root, oid, pure_arid).read_text(encoding="utf-8").strip()
-        ort.record_child_return(repo_root=repo_root, orchestration_id=oid,
-                                agent_run_id=pure_arid, return_token=token)
         ort.deactivate_child_agent(repo_root=repo_root, orchestration_id=oid,
                                    child_run_id=pure_arid)
         det_arid = "substep_run_det_001"

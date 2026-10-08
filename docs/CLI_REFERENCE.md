@@ -2,7 +2,7 @@
 
 ## Position of this document
 
-The **canonical CLI reference for the frequent subcommands (Tier-A)** of `tools/orchestration_runtime.py`. It covers those whose payload schema is complex, that have per-phase required-argument switching, and that cannot be determined from the `--help` output alone: `record-launch` / `record-agent-run` / `finalize-child` / `record-child-return` / `deactivate-child` / `record-reply` / `set-status` / `write-step-result` / `workflow-launch-check` / `reserve-phase-root` / `mark-dependency-readiness` (11 total).
+The **canonical CLI reference for the frequent subcommands (Tier-A)** of `tools/orchestration_runtime.py`. It covers those whose payload schema is complex, that have per-phase required-argument switching, and that cannot be determined from the `--help` output alone: `record-launch` / `record-agent-run` / `finalize-child` / `deactivate-child` / `record-reply` / `set-status` / `write-step-result` / `workflow-launch-check` / `reserve-phase-root` / `mark-dependency-readiness` (11 total).
 
 For the rare subcommands (Tier-B: `init` / `preflight` / `preflight-status` / `record-timeout` / `check-phase-certified` / `revoke-artifact` / `reset-phase`), only an overview is in [docs/CLI_REFERENCE_RARE.md](CLI_REFERENCE_RARE.md), and the canonical source for details is `python3 tools/orchestration_runtime.py <sub> --help`.
 
@@ -35,20 +35,19 @@ Related canonical sources:
 - The form of `ir_id` / `pipeline_id` is `<slug>_<YYYYMMDD>_<seq3>` (slug being hyphen-separated lowercase alphanumeric). E.g. `flux-rsn-p0_20260425_001`. An underscore in the slug is invalid.
 - ISO 8601 timestamps are canonically UTC (`Z` suffix).
 - For JSON arguments (`--*-json`), be careful with shell quoting. A single argv element is also capped at MAX_ARG_STRLEN (128 KiB on Linux), and a large payload makes `execve` fail with `E2BIG` before the process starts. So for a large or unbounded payload use the file/stdin variant: `--request-json-file` (record-launch), `--agent-run-json-file` and `--reply-from-stdin` (finalize-child), `--reply-from-stdin` (record-reply).
-- **Terse stdout by default.** The high-frequency bookkeeping subcommands (`record-launch` / `record-agent-run` / `finalize-child` / `record-child-return` / `deactivate-child` / `record-reply` / `write-step-result`) print **only the result fields the orchestration agent consumes downstream** to stdout, not the full payload. This keeps the orchestration's resident context small (its cache-read cost scales with context size × turn count). The full payload is always persisted to the canonical artifact files regardless (`launches/<arid>.*`, `agent_runs.jsonl`, `steps/.../step_result.json`, etc.); pass `--verbose` to also emit the full JSON to stdout for debugging/audit. Soft-failure signals (`violations` / `error[s]` / `warning[s]`) are retained in terse output when present, and hard failures still exit non-zero via stderr.
+- **Terse stdout by default.** The high-frequency bookkeeping subcommands (`record-launch` / `record-agent-run` / `finalize-child` / `deactivate-child` / `record-reply` / `write-step-result`) print **only the result fields the orchestration agent consumes downstream** to stdout, not the full payload. This keeps the orchestration's resident context small (its cache-read cost scales with context size × turn count). The full payload is always persisted to the canonical artifact files regardless (`launches/<arid>.*`, `agent_runs.jsonl`, `steps/.../step_result.json`, etc.); pass `--verbose` to also emit the full JSON to stdout for debugging/audit. Soft-failure signals (`violations` / `error[s]` / `warning[s]`) are retained in terse output when present, and hard failures still exit non-zero via stderr.
   - `record-launch` terse fields: `sandbox_profile_ref`, `launch_prompt_ref`, and **`launch_prompt_text`** (the exact rendered prompt the conductor passes verbatim to the leaf subprocess). The remaining `launch_*_ref` paths are deterministic from `<orchestration_id>`+`<arid>` and are dropped from terse stdout. It carried four more — `capability_token`, `capability_ref`, `read_access_manifest_ref`, `allowed_output_manifest_ref` — until PR-2 of [issue #171](https://github.com/seiya/atmofab/issues/171); no leaf holds write authority for those documents to describe, and none of them is written any more. The four `child_launch_*_ref` paths, naming `agents/<arid>/dialogs/child.*` copies of the `launches/` files, went with those copies in [issue #447](https://github.com/seiya/atmofab/issues/447).
 
 ---
 
 ## Tier-A frequent subcommand list
 
-The 12 subcommands whose details are covered in this file.
+The 10 subcommands whose details are covered in this file.
 
 | subcommand | purpose | section |
 |---|---|---|
 | `record-launch` | child-agent launch evidence + the read-only sandbox profile | [record-launch](#record-launch) |
-| `finalize-child` | one-call child finalization (record-child-return → deactivate-child → record-reply → record-agent-run) | [finalize-child](#finalize-child) |
-| `record-child-return` | Adv-20: record the leaf return ack | [record-child-return](#record-child-return) |
+| `finalize-child` | one-call child finalization (deactivate-child → record-reply → record-agent-run) | [finalize-child](#finalize-child) |
 | `deactivate-child` | release the active_children marker | [deactivate-child](#deactivate-child) |
 | `record-reply` | overwrite launches/<arid>.reply.txt with the leaf response | [record-reply](#record-reply) |
 | `record-agent-run` | append 1 line to agent_runs.jsonl + save agent.result.json/agent.summary.txt | [record-agent-run](#record-agent-run) |
@@ -134,23 +133,9 @@ Call it **before launching the leaf**: it runs the live preflight and builds the
 
 ---
 
-## record-child-return
-
-Adv-20: record the evidence (`child_returns/<arid>.txt`) that the orchestration agent observed the `Agent` tool return. A premise of `deactivate-child`.
-
-| arg | required | description |
-|---|---|---|
-| `--repo-root` | yes | |
-| `--orchestration-id` | yes | |
-| `--agent-run-id` | yes | the child agent's UUID |
-| `--return-token` | yes | Adv-30: the value of `workspace/orchestrations/<orch>/launches/<arid>.parent_return_token`. The conductor reads it from that file itself; an operator running the recovery by hand reads it the same way (`docs/RUNBOOK.md` §substep-timeout-recovery). |
-| `--reply-excerpt` | no | an optional short text (truncated to 200 chars). For audit |
-
----
-
 ## deactivate-child
 
-Switch the active context back to the orchestration agent. Without the ack of `record-child-return`, it is rejected with a `ValueError`.
+Switch the active context back to the orchestration agent by clearing the child's active-child markers. A Claude sequential pointer naming a different child is refused with a `ValueError`; with no marker present the call is an idempotent no-op. (It also required a `record-child-return` ack until [issue #447](https://github.com/seiya/atmofab/issues/447) (D2) retired that subcommand.)
 
 | arg | required | description |
 |---|---|---|
@@ -215,17 +200,15 @@ Append 1 line to `agent_runs.jsonl`. For a step/substep role, also save `agent.r
 
 ## finalize-child
 
-**One-call child finalization.** Performs, in one process and in the mandated order, `record-child-return` → `deactivate-child` → `record-reply` → `record-agent-run`, reusing each function so every guard is preserved (Adv-30 return-token verification, the Adv-20 ack-file precondition for `deactivate-child`, the active_child ordering, and the child-reply budget guard). It collapses the 4 finalize Bash round-trips into one, which is the canonical finalize path for the Claude Code backend — fewer round-trips keep the orchestration transcript (and its per-turn cache-read cost) small. The 4 individual subcommands remain available for edge recovery.
+**One-call child finalization.** Performs, in one process and in the mandated order, `deactivate-child` → `record-reply` → `record-agent-run`, reusing each function so every guard is preserved (the active_child ordering and the child-reply budget guard). It is the conductor's one finalize path; the individual subcommands remain available for edge recovery. Its `--return-token` and `--reply-excerpt` arguments, and the `record-child-return` step they fed, were retired in [issue #447](https://github.com/seiya/atmofab/issues/447) (D2).
 
 | arg | required | description |
 |---|---|---|
 | `--repo-root` | yes | |
 | `--orchestration-id` | yes | |
 | `--agent-run-id` | yes | the child agent's UUID; must equal the `agent_run_id` of the agent-run payload, whichever form supplied it |
-| `--return-token` | yes | the Adv-30 parent-bound token from `launches/<arid>.parent_return_token` (same as `record-child-return`) |
 | `--reply-text` | one required | the child's verbatim final message (budget-checked; see below). Only safe for a small reply — a single argv element is capped at 128 KiB |
 | `--reply-from-stdin` | one required | flag. read the reply from stdin. **The conductor always uses this form, unconditionally, regardless of reply size** |
-| `--reply-excerpt` | optional | short audit metadata; defaults to the first non-empty line of the reply |
 | `--agent-run-json` | one required | the `record-agent-run` payload inline (same schema as [record-agent-run](#record-agent-run)). Only safe for a small payload — a single argv element is capped at 128 KiB |
 | `--agent-run-json-file` | one required | path to a file holding the same payload. **The conductor always uses this form, unconditionally, regardless of payload size**; it writes `workspace/orchestrations/<oid>/launches/<agent_run_id>.agent_run.input.json` and keeps it as evidence |
 

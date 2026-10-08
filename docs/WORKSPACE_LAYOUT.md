@@ -37,8 +37,7 @@ workspace/
 │       │   ├── <agent_run_id>.response.json       (the launch response written by record-launch)
 │       │   ├── <agent_run_id>.prompt.txt          (the child agent prompt body. 1-to-1 with the leaf launch prompt input; no leaf can read it -- a pure leaf holds no tool. The read manifest that used to forbid it went with issue #171 PR-2)
 │       │   ├── <agent_run_id>.reply.txt           (overwritten by record-reply with the leaf response)
-│       │   ├── <agent_run_id>.http_response.txt  (an HTTP leaf's raw provider response body, written by the conductor before it is parsed; absent for a CLI leaf. `.txt`, not `.json`: the body it most needs to keep is a non-JSON error page, and every `workspace/**/*.json` is parsed by validate_workspace_root)
-│       │   └── <agent_run_id>.parent_return_token (issued by record-launch, consumed by record-child-return)
+│       │   └── <agent_run_id>.http_response.txt  (an HTTP leaf's raw provider response body, written by the conductor before it is parsed; absent for a CLI leaf. `.txt`, not `.json`: the body it most needs to keep is a non-JSON error page, and every `workspace/**/*.json` is parsed by validate_workspace_root. A `<agent_run_id>.parent_return_token` a past orchestration left here is the retired child-return token, issue #447 (D2))
 │       │
 │       ├── agents/
 │       │   └── <agent_run_id>/                     all dialog for one child agent
@@ -64,9 +63,6 @@ workspace/
 │       │
 │       ├── reservations/
 │       │   └── <node_key_safe>/<step>/<reserved_id>.json (reserve-phase-root)
-│       │
-│       ├── child_returns/
-│       │   └── <agent_run_id>.txt                 (record-child-return ack; consumed by deactivate-child)
 │       │
 │       ├── active_children/
 │       │   └── <agent_run_id>                     (marker at record-launch; deleted by deactivate-child)
@@ -158,10 +154,8 @@ workspace/
 |---|---|---|---|---|
 | `launches/<arid>.prompt.txt` | `record-launch` | runtime | **unreadable by any leaf** (it holds no tool; the `read_manifest_read_guard` that forbade it went with issue #171 PR-2) | the canonical artifact 1-to-1 with the leaf launch prompt input (for audit / replay) |
 | `launches/<arid>.reply.txt` | `record-launch` (provisional) → `record-reply` (overwrite) | runtime | runtime / validator / parent orchestration agent | the leaf final response |
-| `launches/<arid>.parent_return_token` | `record-launch` | runtime | parent agent (for record-child-return) | prevents forgery by an arbitrary caller |
 | `launches/<arid>.request.input.json` | before `record-launch` | conductor | operator (audit) | the payload passed as `--request-json-file` (a single argv element is capped at 128 KiB). Kept, never cleaned up: if `record-launch` itself fails there is no sibling `.request.json`, and that lone file is the only record of what was sent |
 | `launches/<arid>.agent_run.input.json` | before `finalize-child` | conductor | operator (audit) | the payload passed as `--agent-run-json-file`; the reply text goes over stdin and is persisted by the runtime as `.reply.txt` |
-| `child_returns/<arid>.txt` | `record-child-return` | runtime | runtime (consumed by `deactivate-child`) | with Adv-30 token verification |
 | `agents/<arid>/launch_instant.probe.json` | `Conductor._launch_instant`, one per ATTEMPT (each retry allocates a fresh `<arid>`, so a dead attempt keeps its own) | conductor | operator (audit) | its **mtime** is the freshness bound `determine_substep_status` judges that attempt's deliverables against — a stamp of the clock that stamps THEM, not a `time.time()` reading (issue #113). The `launched_at_wall_clock` field inside is a second reading, for a human, and can differ from the mtime by up to one timer tick |
 | `agents/<arid>/dialogs/agent.result.json` | `record-agent-run` (on pass) | runtime | runtime / validator / parent orchestration agent | the child agent's structured result, including the per-leaf `usage` (below) |
 | `agents/<arid>/dialogs/agent.summary.txt` | same as above | runtime | same as above | single-line forbidden, must include the basis |

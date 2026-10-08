@@ -3567,7 +3567,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
     def test_resume_tombstones_orphan_launch_artifacts(self) -> None:
         """Resume writes launches/<arid>.pruned.json for the abandoned launch so a
         later inspection can distinguish the residual orphan artifacts (no terminal
-        agent_runs row, no child_returns ack) from a real protocol violation."""
+        agent_runs row) from a real protocol violation."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             oid = "orch_resume_tombstone"
@@ -3616,11 +3616,13 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             self.assertEqual(len(tombstoned), 1)
             self.assertIn(dangling, tombstoned[0].get("tombstoned_agent_run_ids"))
 
-    def test_resume_does_not_tombstone_returned_or_invalid_children(self) -> None:
-        """A cleared active-child marker is NOT a sufficient orphan signal: a child
-        that returned (child_returns ack) or attempted terminalization
-        (agent_runs_invalid entry) must NOT be tombstoned as an expected orphan — only
-        the genuinely-abandoned launch is."""
+    def test_resume_ignores_leftover_ack_but_does_not_tombstone_invalid_children(self) -> None:
+        """A cleared active-child marker is NOT a sufficient orphan signal: a child that
+        attempted terminalization (agent_runs_invalid entry) must NOT be tombstoned as an
+        expected orphan. A `child_returns/<arid>.txt` ack a past orchestration left is no
+        longer evidence of anything (issue #447 D2 retired the return handshake), so a
+        child whose only trace beyond its launch is such an ack is tombstoned exactly like
+        the genuinely-abandoned launch."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             oid = "orch_resume_tombstone_protected"
@@ -3631,14 +3633,14 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             (root / "active_children").mkdir(exist_ok=True)
 
             dangling = "genuine-orphan-arid"
-            returned = "returned-but-no-row-arid"
+            leftover_ack = "leftover-ack-no-row-arid"
             invalid = "invalid-run-arid"
-            for arid in (dangling, returned, invalid):
+            for arid in (dangling, leftover_ack, invalid):
                 (root / "launches" / f"{arid}.request.json").write_text("{}", encoding="utf-8")
                 # All three left a stale active_children marker (host died mid-flight).
                 (root / "active_children" / f"{arid}.txt").write_text(arid, encoding="utf-8")
-            # `returned` has a child_returns ack; `invalid` has an invalid-run entry.
-            (root / "child_returns" / f"{returned}.txt").write_text("ack", encoding="utf-8")
+            # `leftover_ack` has a stale child_returns ack; `invalid` has an invalid-run entry.
+            (root / "child_returns" / f"{leftover_ack}.txt").write_text("ack", encoding="utf-8")
             (root / "agent_runs_invalid.jsonl").write_text(
                 json.dumps({"agent_run_id": invalid, "agent_role": "substep"}) + "\n",
                 encoding="utf-8",
@@ -3654,7 +3656,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             resume_orchestration(repo_root, oid)
 
             self.assertTrue((root / "launches" / f"{dangling}.pruned.json").is_file())
-            self.assertFalse((root / "launches" / f"{returned}.pruned.json").is_file())
+            self.assertTrue((root / "launches" / f"{leftover_ack}.pruned.json").is_file())
             self.assertFalse((root / "launches" / f"{invalid}.pruned.json").is_file())
             log_events = [
                 json.loads(line)
@@ -3664,7 +3666,10 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             tombstoned = next(
                 e for e in log_events if e.get("event") == "resume_tombstoned_orphan_launches"
             )
-            self.assertEqual(tombstoned.get("tombstoned_agent_run_ids"), [dangling])
+            self.assertEqual(
+                sorted(tombstoned.get("tombstoned_agent_run_ids")),
+                sorted([dangling, leftover_ack]),
+            )
 
     def test_resume_tombstones_orphan_from_durable_artifact_after_lists_cleared(self) -> None:
         """An interrupted resume retry re-enters terminal_reset with the active-child
@@ -3694,10 +3699,10 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             self.assertTrue((root / "launches" / f"{dangling}.pruned.json").is_file())
 
     def test_resume_does_not_tombstone_deactivated_unfinalized_child(self) -> None:
-        """A child that returned + deactivated (durable agents/<arid>/deactivate_snapshot.json)
-        but died before record-agent-run has its child_returns ack consumed, so it is no
-        longer ack-protected — but it is NOT an abandoned launch and must not be
-        tombstoned as an expected orphan. A genuine orphan alongside it still is."""
+        """A child that returned + deactivated (a durable agents/<arid>/deactivate_snapshot.json
+        a past orchestration left) but died before record-agent-run has no terminal row —
+        but it is NOT an abandoned launch and must not be tombstoned as an expected orphan.
+        A genuine orphan alongside it still is."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             oid = "orch_resume_tombstone_deactivated"
@@ -3709,7 +3714,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             orphan = "genuine-orphan-arid"
             for arid in (deactivated, orphan):
                 (root / "launches" / f"{arid}.request.json").write_text("{}", encoding="utf-8")
-            # The deactivated child left a durable snapshot (ack already consumed).
+            # The deactivated child left a durable snapshot.
             (root / "agents" / deactivated).mkdir(parents=True, exist_ok=True)
             (root / "agents" / deactivated / "deactivate_snapshot.json").write_text(
                 json.dumps({"kind": "deactivate_snapshot", "agent_run_id": deactivated}),
@@ -3727,6 +3732,81 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
 
             self.assertFalse((root / "launches" / f"{deactivated}.pruned.json").is_file())
             self.assertTrue((root / "launches" / f"{orphan}.pruned.json").is_file())
+
+    def test_resume_treats_a_leftover_ack_child_as_an_abandoned_launch(self) -> None:
+        """Issue #447 D2: with the return handshake retired, a terminal-reset resume
+        decides a child's fate from its terminal row alone (plus the step_result /
+        invalid-run / deactivate-snapshot evidence other rows pin). Three launched
+        children, each with a graph edge and a stale active marker:
+
+          (a) a terminal `agent_runs.jsonl` row — edge kept, not tombstoned;
+          (b) launch + active marker only (abandoned) — edge pruned, tombstoned;
+          (c) as (b) plus a `child_returns/<arid>.txt` a past orchestration left —
+              the ack is ignored, so the child is pruned and tombstoned like (b).
+        """
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            oid = "orch_resume_leftover_ack"
+            init_orchestration(repo_root=repo_root, orchestration_id=oid)
+            root = repo_root / "workspace" / "orchestrations" / oid
+            orch_arid = json.loads(
+                (root / "orchestration_meta.json").read_text(encoding="utf-8")
+            )["orchestration_agent_run_id"]
+            finished = "finished-child-arid"
+            abandoned = "abandoned-child-arid"
+            leftover_ack = "leftover-ack-child-arid"
+            (root / "launches").mkdir(exist_ok=True)
+            (root / "active_children").mkdir(exist_ok=True)
+            for arid in (finished, abandoned, leftover_ack):
+                (root / "launches" / f"{arid}.request.json").write_text("{}", encoding="utf-8")
+                (root / "active_children" / f"{arid}.txt").write_text(arid, encoding="utf-8")
+            with (root / "agent_runs.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps({"agent_run_id": finished, "agent_role": "substep",
+                                    "status": "pass",
+                                    "finished_at": "2026-06-16T12:40:00Z"}) + "\n")
+            (root / "child_returns").mkdir(exist_ok=True)
+            (root / "child_returns" / f"{leftover_ack}.txt").write_text(
+                json.dumps({"agent_run_id": leftover_ack, "return_token": "old"}),
+                encoding="utf-8",
+            )
+            (root / "agent_graph.json").write_text(
+                json.dumps({"edges": [
+                    {"parent_agent_run_id": orch_arid, "child_agent_run_id": arid,
+                     "relation_type": "launch"}
+                    for arid in (finished, abandoned, leftover_ack)
+                ]}),
+                encoding="utf-8",
+            )
+
+            update_orchestration_status(
+                repo_root=repo_root, orchestration_id=oid, status="fail",
+                reason_code="launch_incomplete_active_child", reason_detail="x",
+            )
+            resume_orchestration(repo_root, oid)
+
+            edges = json.loads((root / "agent_graph.json").read_text(encoding="utf-8"))["edges"]
+            children = [e["child_agent_run_id"] for e in edges]
+            self.assertIn(finished, children)
+            self.assertNotIn(abandoned, children)
+            self.assertNotIn(leftover_ack, children)
+            self.assertFalse((root / "launches" / f"{finished}.pruned.json").is_file())
+            self.assertTrue((root / "launches" / f"{abandoned}.pruned.json").is_file())
+            self.assertTrue((root / "launches" / f"{leftover_ack}.pruned.json").is_file())
+            log_events = [
+                json.loads(line)
+                for line in (root / "phase_state_log.jsonl").read_text().splitlines()
+                if line.strip()
+            ]
+            pruned = next(
+                e for e in log_events if e.get("event") == "resume_pruned_orphan_graph_edges"
+            )
+            self.assertEqual(sorted(pruned.get("pruned_child_agent_run_ids")),
+                             sorted([abandoned, leftover_ack]))
+            tombstoned = next(
+                e for e in log_events if e.get("event") == "resume_tombstoned_orphan_launches"
+            )
+            self.assertEqual(sorted(tombstoned.get("tombstoned_agent_run_ids")),
+                             sorted([abandoned, leftover_ack]))
 
     def test_latest_launch_incident_ref_ranks_by_detected_at_not_filename(self) -> None:
         """The incident filename suffix is a random uuid fragment, so newest must be
@@ -3889,37 +3969,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             edges = json.loads((root / "agent_graph.json").read_text(encoding="utf-8"))["edges"]
             children = [e["child_agent_run_id"] for e in edges]
             self.assertIn(invalid_child, children, "invalid-run child edge must be kept")
-
-    def test_resume_keeps_orphan_edge_for_returned_child(self) -> None:
-        """A child with a child_returns/<arid>.txt ack already RETURNED from the Agent
-        tool; a missing agent_runs row is then incomplete finalization / corruption,
-        not an abandoned launch. Its edge must be KEPT (Codex P2). The genuine dangling
-        case has no ack, so it stays prunable."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            oid = "orch_resume_returned_child"
-            init_orchestration(repo_root=repo_root, orchestration_id=oid)
-            root = repo_root / "workspace" / "orchestrations" / oid
-            orch_arid = json.loads(
-                (root / "orchestration_meta.json").read_text(encoding="utf-8")
-            )["orchestration_agent_run_id"]
-            returned = "child-returned-no-row"
-            (root / "child_returns").mkdir(exist_ok=True)
-            (root / "child_returns" / f"{returned}.txt").write_text("ack", encoding="utf-8")
-            (root / "agent_graph.json").write_text(
-                json.dumps(
-                    {"edges": [{"parent_agent_run_id": orch_arid,
-                                "child_agent_run_id": returned, "relation_type": "launch"}]}
-                ),
-                encoding="utf-8",
-            )
-            update_orchestration_status(
-                repo_root=repo_root, orchestration_id=oid, status="fail",
-                reason_code="launch_incomplete_active_child", reason_detail="x",
-            )
-            resume_orchestration(repo_root, oid)
-            edges = json.loads((root / "agent_graph.json").read_text(encoding="utf-8"))["edges"]
-            self.assertIn(returned, [e["child_agent_run_id"] for e in edges])
 
     def test_resume_resets_stale_child_running_node_step(self) -> None:
         """An abandoned launch leaves the node/step at `child_running`, which the phase
@@ -14701,9 +14750,9 @@ class ExtractSubroutineInterfaceTests(unittest.TestCase):
 class ClaudeSequentialLaunchTests(unittest.TestCase):
     """One child at a time on the claude backend, refused at the SECOND launch.
 
-    `active_children/<arid>.txt` guards the other three sides of the lifecycle —
-    `record-child-return`, `deactivate-child`, `record-timeout` all refuse while a child
-    is live — and `active_child_agent_run_id.txt` is the launch side. It is the only
+    `active_children/<arid>.txt` guards the finalize side of the lifecycle —
+    `record-timeout` refuses while a child is live — and `active_child_agent_run_id.txt`
+    is the launch side. It is the only
     thing that stops a conductor bug from running two claude leaves against one
     orchestration, where both write the same phase root and the second's record silently
     describes the first's files.
@@ -15161,22 +15210,9 @@ class RecordTimeoutTests(unittest.TestCase):
         self.assertNotIn("ANTHROPIC_BASE_URL", "\x00".join(profile["rendered_command"]))
 
     def _deactivate(self, repo_root: Path, arid: str) -> None:
-        """Helper: record child return ack (Adv-20/Adv-30) and clear the
-        active marker so Adv-14 guard accepts the subsequent record-timeout
-        call. Reads the per-arid parent_return_token issued by record-launch."""
-        from tools.orchestration_runtime import (
-            record_child_return, deactivate_child_agent,
-            _parent_return_token_path,
-        )
-        token = _parent_return_token_path(
-            repo_root, "orch_to_001", arid
-        ).read_text(encoding="utf-8").strip()
-        record_child_return(
-            repo_root=repo_root,
-            orchestration_id="orch_to_001",
-            agent_run_id=arid,
-            return_token=token,
-        )
+        """Helper: clear the active marker so the Adv-14 guard accepts the
+        subsequent record-timeout call."""
+        from tools.orchestration_runtime import deactivate_child_agent
         deactivate_child_agent(
             repo_root=repo_root,
             orchestration_id="orch_to_001",
@@ -15184,13 +15220,10 @@ class RecordTimeoutTests(unittest.TestCase):
         )
 
     def test_finalize_child_runs_full_sequence_in_one_call(self) -> None:
-        from tools.orchestration_runtime import finalize_child, _parent_return_token_path
+        from tools.orchestration_runtime import finalize_child, _active_child_marker_path
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root)
-            token = _parent_return_token_path(
-                repo_root, "orch_to_001", arid
-            ).read_text(encoding="utf-8").strip()
             reply = (
                 "status: fail\noutput_refs:\n- (none)\n"
                 "rationale: generate fail-stopped (test fixture)"
@@ -15199,7 +15232,6 @@ class RecordTimeoutTests(unittest.TestCase):
                 repo_root=repo_root,
                 orchestration_id="orch_to_001",
                 agent_run_id=arid,
-                return_token=token,
                 reply_text=reply,
                 agent_run_payload={
                     "agent_run_id": arid,
@@ -15229,9 +15261,9 @@ class RecordTimeoutTests(unittest.TestCase):
                 repo_root / "workspace/orchestrations/orch_to_001/launches" / f"{arid}.reply.txt"
             )
             self.assertEqual(reply_path.read_text(encoding="utf-8").rstrip("\n"), reply)
-            # deactivate-child ran: the parent_return_token sidecar is consumed.
+            # deactivate-child ran: the per-arid active-child marker is consumed.
             self.assertFalse(
-                _parent_return_token_path(repo_root, "orch_to_001", arid).exists()
+                _active_child_marker_path(repo_root, "orch_to_001", arid).exists()
             )
 
     def test_finalize_child_records_the_callers_usage_and_never_backfills(self) -> None:
@@ -15243,18 +15275,14 @@ class RecordTimeoutTests(unittest.TestCase):
         # transcript, which the workflow does not read and which is machine-local and ephemeral
         # besides — so it could only ever write "unavailable" (issue #47). A payload with no
         # usage now records no usage, rather than a marker describing a lookup that never ran.
-        from tools.orchestration_runtime import finalize_child, _parent_return_token_path
+        from tools.orchestration_runtime import finalize_child, _active_child_marker_path
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root)
-            token = _parent_return_token_path(
-                repo_root, "orch_to_001", arid
-            ).read_text(encoding="utf-8").strip()
             finalize_child(
                 repo_root=repo_root,
                 orchestration_id="orch_to_001",
                 agent_run_id=arid,
-                return_token=token,
                 reply_text="status: fail\noutput_refs:\n- (none)\nrationale: t",
                 agent_run_payload={
                     "agent_run_id": arid,
@@ -15287,18 +15315,14 @@ class RecordTimeoutTests(unittest.TestCase):
     def test_finalize_child_does_not_invent_usage_when_the_caller_supplied_none(self) -> None:
         """The retired backfill's replacement is NOTHING, deliberately: an absent usage is
         absent, not a marker describing a ~/.claude lookup that policy never lets run."""
-        from tools.orchestration_runtime import finalize_child, _parent_return_token_path
+        from tools.orchestration_runtime import finalize_child, _active_child_marker_path
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root)
-            token = _parent_return_token_path(
-                repo_root, "orch_to_001", arid
-            ).read_text(encoding="utf-8").strip()
             finalize_child(
                 repo_root=repo_root,
                 orchestration_id="orch_to_001",
                 agent_run_id=arid,
-                return_token=token,
                 reply_text="status: fail\noutput_refs:\n- (none)\nrationale: t",
                 agent_run_payload={
                     "agent_run_id": arid,
@@ -15328,29 +15352,24 @@ class RecordTimeoutTests(unittest.TestCase):
                     repo_root=Path(tmp),
                     orchestration_id="o1",
                     agent_run_id="a",
-                    return_token="t",
                     reply_text="status: pass",
                     agent_run_payload={"agent_run_id": "DIFFERENT"},
                 )
 
     def test_finalize_child_hard_budget_fails_before_consuming_state(self) -> None:
         from tools.orchestration_runtime import (
-            finalize_child, _parent_return_token_path, REPLY_BUDGET_CHARS,
+            finalize_child, _active_child_marker_path, REPLY_BUDGET_CHARS,
         )
         from unittest.mock import patch as _patch
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root)
-            token = _parent_return_token_path(
-                repo_root, "orch_to_001", arid
-            ).read_text(encoding="utf-8").strip()
             with _patch.dict(os.environ, {"ATMOFAB_ENFORCE_REPLY_BUDGET": "1"}):
                 with self.assertRaises(ValueError):
                     finalize_child(
                         repo_root=repo_root,
                         orchestration_id="orch_to_001",
                         agent_run_id=arid,
-                        return_token=token,
                         reply_text="x" * (REPLY_BUDGET_CHARS + 10),
                         agent_run_payload={
                             "agent_run_id": arid, "agent_role": "substep",
@@ -15363,9 +15382,9 @@ class RecordTimeoutTests(unittest.TestCase):
                             "result_summary": "x",
                         },
                     )
-            # State must NOT be consumed: the parent_return_token sidecar still exists,
+            # State must NOT be consumed: the per-arid active-child marker still exists,
             # and no terminal agent_runs.jsonl entry was written for the run.
-            self.assertTrue(_parent_return_token_path(repo_root, "orch_to_001", arid).exists())
+            self.assertTrue(_active_child_marker_path(repo_root, "orch_to_001", arid).exists())
             runs_path = repo_root / "workspace/orchestrations/orch_to_001/agent_runs.jsonl"
             entries = [json.loads(l) for l in runs_path.read_text().splitlines() if l.strip()]
             self.assertFalse(
@@ -15382,22 +15401,18 @@ class RecordTimeoutTests(unittest.TestCase):
         # appended newline pushes the persisted size to budget+1, so the precheck must
         # reject it BEFORE consuming state (it counts the persisted form, not the raw arg).
         from tools.orchestration_runtime import (
-            finalize_child, _parent_return_token_path, REPLY_BUDGET_CHARS,
+            finalize_child, _active_child_marker_path, REPLY_BUDGET_CHARS,
         )
         from unittest.mock import patch as _patch
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root)
-            token = _parent_return_token_path(
-                repo_root, "orch_to_001", arid
-            ).read_text(encoding="utf-8").strip()
             with _patch.dict(os.environ, {"ATMOFAB_ENFORCE_REPLY_BUDGET": "1"}):
                 with self.assertRaises(ValueError):
                     finalize_child(
                         repo_root=repo_root,
                         orchestration_id="orch_to_001",
                         agent_run_id=arid,
-                        return_token=token,
                         reply_text="z" * REPLY_BUDGET_CHARS,  # exactly the budget, no newline
                         agent_run_payload={
                             "agent_run_id": arid, "agent_role": "substep",
@@ -15410,7 +15425,7 @@ class RecordTimeoutTests(unittest.TestCase):
                             "result_summary": "z",
                         },
                     )
-            self.assertTrue(_parent_return_token_path(repo_root, "orch_to_001", arid).exists())
+            self.assertTrue(_active_child_marker_path(repo_root, "orch_to_001", arid).exists())
 
     def test_record_timeout_appends_terminal_entry_and_cleans_tmp(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -16375,23 +16390,26 @@ class RecordTimeoutTests(unittest.TestCase):
                     reason="should be blocked",
                 )
 
+    def test_record_launch_writes_no_parent_return_token(self) -> None:
+        """Issue #447 D2 retired the child-return handshake: record-launch no longer
+        issues a per-arid `launches/<arid>.parent_return_token`, and nothing else in the
+        orchestration root carries that suffix. The active-child marker it still writes
+        is the control that the launch itself ran."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            arid = self._setup_substep_launch(repo_root)
+            from tools.orchestration_runtime import _active_child_marker_path
+            self.assertTrue(_active_child_marker_path(repo_root, "orch_to_001", arid).is_file())
+            orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
+            self.assertEqual(list(orch_root.rglob("*.parent_return_token")), [])
+
     def test_deactivate_child_idempotent_when_no_markers(self) -> None:
         """Adv-18: a second deactivate-child after both markers gone returns
         already_inactive=True without raising."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root)
-            from tools.orchestration_runtime import (
-                deactivate_child_agent, record_child_return,
-                _parent_return_token_path,
-            )
-            token = _parent_return_token_path(
-                repo_root, "orch_to_001", arid
-            ).read_text(encoding="utf-8").strip()
-            record_child_return(
-                repo_root=repo_root, orchestration_id="orch_to_001",
-                agent_run_id=arid, return_token=token,
-            )
+            from tools.orchestration_runtime import deactivate_child_agent
             r1 = deactivate_child_agent(
                 repo_root=repo_root, orchestration_id="orch_to_001", child_run_id=arid,
             )
@@ -16400,124 +16418,6 @@ class RecordTimeoutTests(unittest.TestCase):
                 repo_root=repo_root, orchestration_id="orch_to_001", child_run_id=arid,
             )
             self.assertTrue(r2.get("already_inactive"))
-
-    def test_deactivate_child_refuses_without_record_child_return(self) -> None:
-        """Adv-20: deactivate-child must require an explicit record-child-return
-        ack first. Without it, a misrouted deactivate-child cannot remove the
-        per-arid active marker that protects record-timeout."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            from tools.orchestration_runtime import (
-                deactivate_child_agent, _active_child_marker_path,
-            )
-            with self.assertRaisesRegex(ValueError, "child_returns/.* is missing"):
-                deactivate_child_agent(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    child_run_id=arid,
-                )
-            # Marker survives the failed call.
-            self.assertTrue(_active_child_marker_path(repo_root, "orch_to_001", arid).is_file())
-
-    def test_record_child_return_refuses_for_unlaunched_arid(self) -> None:
-        """Adv-20: record-child-return must prove the arid was actually
-        launched (active_children marker exists). Otherwise a misrouted call
-        could pre-issue an ack for an arbitrary arid and unlock a future
-        deactivate-child for it."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._setup_substep_launch(repo_root)
-            from tools.orchestration_runtime import record_child_return
-            with self.assertRaisesRegex(ValueError, "no active_children/.* marker"):
-                record_child_return(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    agent_run_id="never-launched-arid",
-                    return_token="any-token",
-                )
-
-    def test_record_child_return_refuses_with_wrong_token(self) -> None:
-        """Adv-30: a caller that does not know the per-arid parent return
-        token (stored at launches/<arid>.parent_return_token) must NOT be
-        able to forge an ack."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            from tools.orchestration_runtime import record_child_return
-            with self.assertRaisesRegex(ValueError, "return_token does not match"):
-                record_child_return(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    agent_run_id=arid,
-                    return_token="forged-token-attacker-guessed",
-                )
-
-    def test_deactivate_child_rejects_tampered_ack_file(self) -> None:
-        """Adv-30: even if the ack file exists, deactivate-child must verify
-        the embedded token matches the parent_return_token. A tampered ack
-        (without the secret token) cannot pass."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            from tools.orchestration_runtime import (
-                _child_return_marker_path, deactivate_child_agent,
-            )
-            # Manually fabricate an ack file with NO valid token.
-            ack = _child_return_marker_path(repo_root, "orch_to_001", arid)
-            ack.parent.mkdir(parents=True, exist_ok=True)
-            ack.write_text(
-                json.dumps({"agent_run_id": arid, "return_token": "fake"}),
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(ValueError, "valid parent return token"):
-                deactivate_child_agent(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    child_run_id=arid,
-                )
-
-    def test_deactivate_child_refuses_when_parent_return_token_missing(self) -> None:
-        """Adv-30 token-missing invariant: if the ack file exists but
-        launches/<arid>.parent_return_token is absent, deactivate-child must
-        refuse to clear liveness markers. record_child_return requires both
-        files together, so the token's absence indicates corruption or
-        tampering — silently bypassing token verification would let an
-        attacker forge an ack by deleting the token first."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            arid = self._setup_substep_launch(repo_root)
-            from tools.orchestration_runtime import (
-                _child_return_marker_path, _parent_return_token_path,
-                deactivate_child_agent, record_child_return,
-            )
-            # Legitimate record_child_return path first (uses real token).
-            token_path = _parent_return_token_path(
-                repo_root, "orch_to_001", arid
-            )
-            real_token = token_path.read_text(encoding="utf-8").strip()
-            record_child_return(
-                repo_root=repo_root,
-                orchestration_id="orch_to_001",
-                agent_run_id=arid,
-                return_token=real_token,
-            )
-            ack = _child_return_marker_path(repo_root, "orch_to_001", arid)
-            self.assertTrue(ack.is_file())
-            # Now simulate corruption: delete the parent_return_token sidecar
-            # while the ack still contains a (formerly valid) token.
-            token_path.unlink()
-            self.assertFalse(token_path.is_file())
-            with self.assertRaisesRegex(
-                ValueError, "parent_return_token is missing"
-            ):
-                deactivate_child_agent(
-                    repo_root=repo_root,
-                    orchestration_id="orch_to_001",
-                    child_run_id=arid,
-                )
-            # Markers must remain so an operator can investigate / re-issue.
-            self.assertTrue(ack.is_file())
 
     def test_forced_record_timeout_preserves_markers_when_record_agent_run_fails(self) -> None:
         """Adv-37: in the forced bypass path, markers must NOT be cleared
@@ -16562,7 +16462,7 @@ class RecordTimeoutTests(unittest.TestCase):
 
     def test_record_timeout_force_reason_bypasses_marker_for_wedged_child(self) -> None:
         """Adv-26: when a child wedges before parent observes any return,
-        record-child-return is unreachable and the normal flow deadlocks. The
+        deactivate-child is never reached and the normal flow deadlocks. The
         --force-reason escape clears the markers and finalizes the run, with
         forced=True + forced_reason recorded in the payload for audit."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -16601,24 +16501,12 @@ class RecordTimeoutTests(unittest.TestCase):
             self.assertFalse(_active_child_agent_run_id_path(repo_root, "orch_to_001").is_file())
 
     def test_record_timeout_succeeds_after_deactivate_child(self) -> None:
-        """Adv-14 happy path: record-child-return + deactivate-child clears
-        the marker; then record-timeout proceeds and finalizes the run."""
+        """Adv-14 happy path: deactivate-child clears the marker; then
+        record-timeout proceeds and finalizes the run."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root)
-            from tools.orchestration_runtime import (
-                deactivate_child_agent, record_child_return,
-                _parent_return_token_path,
-            )
-            token = _parent_return_token_path(
-                repo_root, "orch_to_001", arid
-            ).read_text(encoding="utf-8").strip()
-            record_child_return(
-                repo_root=repo_root,
-                orchestration_id="orch_to_001",
-                agent_run_id=arid,
-                return_token=token,
-            )
+            from tools.orchestration_runtime import deactivate_child_agent
             deactivate_child_agent(
                 repo_root=repo_root,
                 orchestration_id="orch_to_001",
@@ -23850,7 +23738,6 @@ class JsonPayloadFileArgTests(unittest.TestCase):
             "--repo-root", ".",
             "--orchestration-id", "orch_001",
             "--agent-run-id", "child-1",
-            "--return-token", "tok",
             *payload_args,
         ]
 
@@ -23946,6 +23833,20 @@ class JsonPayloadFileArgTests(unittest.TestCase):
                                 "--agent-run-json", "{}", "--agent-run-json-file", path),
             "not allowed with argument")
         self._expect_argparse_error(self._finalize_argv("--reply-text", "x"), "is required")
+
+    def test_the_retired_return_handshake_is_not_accepted_by_the_parser(self) -> None:
+        """Issue #447 D2: the `record-child-return` subcommand and `finalize-child
+        --return-token` are gone. A caller still passing either is refused by argparse
+        (exit 2) rather than silently accepted."""
+        self._expect_argparse_error(
+            ["record-child-return", "--repo-root", ".", "--orchestration-id", "orch_001",
+             "--agent-run-id", "child-1", "--return-token", "tok"],
+            "invalid choice")
+        self._expect_argparse_error(
+            self._finalize_argv("--reply-text", "done", "--agent-run-json",
+                                json.dumps({"agent_run_id": "child-1"}),
+                                "--return-token", "tok"),
+            "unrecognized arguments: --return-token")
 
     def test_missing_payload_file_is_an_argparse_error_not_a_traceback(self) -> None:
         """A bare OSError from the type callable escapes argparse as a traceback."""

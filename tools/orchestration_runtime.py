@@ -9,7 +9,6 @@ import hashlib
 import json
 import os
 import re
-import secrets
 import shlex
 import shutil
 import stat
@@ -5021,9 +5020,7 @@ def _prune_orphan_agent_graph_edges(
           - an `agent_runs_invalid.jsonl` row — a child diverted there by terminal-payload
             validation (sandbox / session-id / output-manifest). It has no
             `agent_runs.jsonl` row, but its edge must be kept so validation surfaces the
-            invalid terminal attempt;
-          - a `child_returns/<child>.txt` ack — the child leaf already returned, so a
-            missing run row is lost finalization, not abandonment.
+            invalid terminal attempt.
 
     The remaining set — launched but with no record of returning/attempting to
     terminalize — is exactly the abandoned dangling launch. Both criteria derive from
@@ -5074,8 +5071,7 @@ def _protected_child_arids(repo_root: Path, orchestration_id: str) -> set[str]:
 
     Any child appearing here is NOT an abandoned launch: it has a terminal
     `agent_runs.jsonl` row, is vouched for by a `step_result.json`, has an
-    `agent_runs_invalid.jsonl` entry (terminal-payload validation diverted it), or
-    left a `child_returns/<arid>.txt` ack (the child leaf already returned). Used to
+    `agent_runs_invalid.jsonl` entry (terminal-payload validation diverted it). Used to
     keep `_prune_orphan_agent_graph_edges` from pruning such edges AND to keep the
     resume orphan-tombstone set from mislabeling these as expected orphans.
     """
@@ -5116,14 +5112,13 @@ def _protected_child_arids(repo_root: Path, orchestration_id: str) -> set[str]:
                     protected.add(rid.strip())
         except OSError:
             pass
-    # A child_returns/<arid>.txt ack means the child leaf already RETURNED for that
-    # child (record-child-return ran). A missing run row is then incomplete
-    # finalization / corruption, not an abandoned launch.
-    returns_dir = _child_returns_dir(repo_root, orchestration_id)
-    if returns_dir.is_dir():
-        for ack in returns_dir.glob("*.txt"):
-            if ack.stem:
-                protected.add(ack.stem)
+    # A `child_returns/<arid>.txt` ack used to protect a child here too: it was written
+    # when the host observed the leaf return and consumed by deactivate-child, so it
+    # covered a host death between the two. Issue #447 (D2) retired the handshake. A child
+    # in that window has no recorded reply and no run row, so resume re-runs its substep
+    # under a fresh arid exactly as it does for an abandoned launch, and its edge is
+    # pruned like one. A `child_returns/` directory a past orchestration left behind is
+    # no longer read.
     return protected
 
 
@@ -5174,8 +5169,7 @@ def _write_orphan_launch_tombstones(
 
     A dangling launch (host died mid-Agent-call) leaves orphan launch artifacts
     (`launches/<arid>.{prompt,request,response,reply}`, `sandbox_profiles/<arid>.json`) with NO
-    terminal `agent_runs.jsonl` row and NO
-    `child_returns/<arid>.txt` ack. (The set used to include `capabilities/<arid>.json` and
+    terminal `agent_runs.jsonl` row. (The set used to include `capabilities/<arid>.json` and
     `output_manifests/<arid>.json`, neither of which is written since issue #171 PR-2; the
     tombstone key is
     derived solely from `launches/<arid>.request.json`, so a pure orphan is tombstoned the same
@@ -5198,11 +5192,10 @@ def _write_orphan_launch_tombstones(
     found and tombstoned. The passed `orphan_arids` are folded in as a supplementary
     hint. The set is then filtered to GENUINE orphans: launched
     (`launches/<arid>.request.json` exists) AND not in `_protected_child_arids` (no
-    terminal row / step_result vouch / invalid-run entry / child_returns ack) AND with
-    no `agents/<arid>/deactivate_snapshot.json`. The deactivate-snapshot exclusion is
-    separate from `_protected_child_arids` on purpose: `deactivate-child` CONSUMES the
-    `child_returns/<arid>.txt` ack (so a child that returned + deactivated but died
-    before `record-agent-run` is no longer ack-protected), yet the durable snapshot
+    terminal row / step_result vouch / invalid-run entry) AND with
+    no `agents/<arid>/deactivate_snapshot.json`. `deactivate-child` has not written that
+    snapshot since issue #171 PR-2; the exclusion reads one a past orchestration left. It is
+    separate from `_protected_child_arids` on purpose: the snapshot
     proves the child leaf returned — that is a lost-finalization / corruption case,
     not an abandoned launch, so it must not be tombstoned as an "expected orphan". It
     is excluded HERE rather than in `_protected_child_arids` because
@@ -5213,8 +5206,8 @@ def _write_orphan_launch_tombstones(
     launches_dir = root / "launches"
     launches_dir.mkdir(parents=True, exist_ok=True)
     protected = _protected_child_arids(repo_root, orchestration_id)
-    # Children that returned + deactivated (child leaf returned) — proven by the
-    # durable deactivate snapshot even after the ack was consumed. Not orphans.
+    # Children that returned + deactivated (child leaf returned) — proven by a
+    # durable deactivate snapshot a past orchestration left. Not orphans.
     deactivated: set[str] = {
         p.parent.name for p in (root / "agents").glob("*/deactivate_snapshot.json")
     }
@@ -5244,7 +5237,7 @@ def _write_orphan_launch_tombstones(
                 "reason": "resume_pruned_orphan",
                 "note": (
                     "Abandoned launch (active_child window left open, no terminal "
-                    "agent_runs row and no child_returns ack); pruned during "
+                    "agent_runs row); pruned during "
                     "checkpoint resume. Residual launches/ and sandbox_profiles/ "
                     "artifacts for this arid are expected orphans, not a violation."
                 ),
@@ -5431,123 +5424,6 @@ def _write_cleanup_committed_marker(
             "committed_at": _utc_now_iso(),
         }, ensure_ascii=False) + "\n",
     )
-
-
-def _parent_return_token_path(
-    repo_root: Path, orchestration_id: str, agent_run_id: str
-) -> Path:
-    """Adv-30: per-arid parent-bound return token stored alongside launch
-    artifacts. Generated at record-launch time and required at
-    record-child-return time as proof that the caller is the same parent
-    that initiated the launch (defense against accidental misrouted ack
-    calls from buggy automation that doesn't know the per-arid token)."""
-    return _orchestration_root(repo_root, orchestration_id) / "launches" / f"{agent_run_id}.parent_return_token"
-
-
-def _read_parent_return_token(
-    repo_root: Path, orchestration_id: str, agent_run_id: str
-) -> str | None:
-    p = _parent_return_token_path(repo_root, orchestration_id, agent_run_id)
-    if not p.is_file():
-        return None
-    try:
-        token = p.read_text(encoding="utf-8").strip()
-    except OSError:
-        return None
-    return token if token else None
-
-
-def _child_returns_dir(repo_root: Path, orchestration_id: str) -> Path:
-    """Per-arid child-return acknowledgment directory (Adv-20).
-
-    The orchestration agent calls `record-child-return --agent-run-id <arid>`
-    AFTER it has observed the child leaf actually returning. The resulting
-    `child_returns/<arid>.txt` file is a separate proof, distinct from the
-    launch-time `active_children/<arid>.txt` marker, that the orch agent has
-    witnessed the child leaf return for THIS specific arid. deactivate-child
-    refuses to clear the active_children marker without this ack — without
-    it a misrouted deactivate-child call would erase the only liveness guard
-    for a still-running Codex child.
-    """
-    return _orchestration_root(repo_root, orchestration_id) / "child_returns"
-
-
-def _child_return_marker_path(repo_root: Path, orchestration_id: str, agent_run_id: str) -> Path:
-    return _child_returns_dir(repo_root, orchestration_id) / f"{agent_run_id}.txt"
-
-
-def record_child_return(
-    repo_root: Path,
-    orchestration_id: str,
-    *,
-    agent_run_id: str,
-    return_token: str,
-    reply_excerpt: str | None = None,
-) -> dict[str, Any]:
-    """Adv-20/Adv-30: record that the orchestration agent has observed the
-    child leaf returning for this child run.
-
-    The `return_token` MUST match the per-arid token written by record-launch
-    to launches/<arid>.parent_return_token. This binds the ack to "the
-    process that holds parent-readable launch state" — accidental misrouted
-    calls from buggy automation that doesn't know the token will be rejected.
-
-    The token is also embedded in the resulting ack file so deactivate-child
-    can re-verify at unlink time.
-    """
-    if not isinstance(agent_run_id, str) or not agent_run_id.strip():
-        raise ValueError("record-child-return requires non-empty --agent-run-id")
-    arid = agent_run_id.strip()
-    # Path-traversal guard: arid must be a flat token, not a path component.
-    if "/" in arid or ".." in arid or arid in {".", ""}:
-        raise ValueError(f"record-child-return: invalid agent_run_id {arid!r}")
-    if not isinstance(return_token, str) or not return_token.strip():
-        raise ValueError(
-            "record-child-return requires --return-token <token>. The token "
-            "is generated by record-launch and stored in "
-            f"workspace/orchestrations/{orchestration_id}/launches/{arid}.parent_return_token."
-        )
-    return_token = return_token.strip()
-    # Require that the launch actually happened (active_children marker for
-    # this arid must exist). Prevents recording an ack for a never-launched
-    # arid, which would later let an unrelated deactivate-child slip through.
-    if not _active_child_marker_path(repo_root, orchestration_id, arid).is_file():
-        raise ValueError(
-            f"record-child-return: no active_children/{arid}.txt marker — "
-            f"either the run was never launched, was already deactivated, or "
-            f"already terminated. record-child-return must run BEFORE "
-            f"deactivate-child."
-        )
-    expected_token = _read_parent_return_token(repo_root, orchestration_id, arid)
-    if expected_token is None:
-        raise ValueError(
-            f"record-child-return: missing parent return token at "
-            f"launches/{arid}.parent_return_token. The launch may pre-date "
-            f"the Adv-30 token mechanism — re-launch via record-launch."
-        )
-    # secrets.compare_digest avoids timing leaks even though this is local I/O.
-    if not secrets.compare_digest(return_token, expected_token):
-        raise ValueError(
-            f"record-child-return: return_token does not match the parent "
-            f"token recorded at record-launch time for {arid!r}. The token "
-            f"is per-arid; verify --return-token is the value from "
-            f"launches/{arid}.parent_return_token, not a value from another arid."
-        )
-    returns_dir = _child_returns_dir(repo_root, orchestration_id)
-    returns_dir.mkdir(parents=True, exist_ok=True)
-    marker = _child_return_marker_path(repo_root, orchestration_id, arid)
-    payload = {
-        "agent_run_id": arid,
-        "recorded_at": _utc_now_iso(),
-        "return_token": return_token,
-    }
-    if isinstance(reply_excerpt, str) and reply_excerpt.strip():
-        payload["reply_excerpt"] = reply_excerpt.strip()[:200]
-    # M1: atomic write so a concurrent deactivate_child_agent reader never
-    # observes a partial JSON body (which would falsely trip the Adv-30
-    # "tampered with" raise path).
-    _atomic_write_text(marker, json.dumps(payload, ensure_ascii=False) + "\n")
-    return payload
 
 
 def _session_run_index_path(repo_root: Path, orchestration_id: str) -> Path:
@@ -14963,28 +14839,11 @@ def record_launch(
             event="child_launched",
             agent_run_id=child_agent_run_id,
         )
-    # NEW-M1: write parent_return_token FIRST so it is durably present
-    # before the active_children marker (Adv-16) appears. record_child_return
-    # checks the marker before the token: if a crash interrupts launch
-    # writing, this ordering guarantees we never observe "marker exists but
-    # token missing" — the recoverable invariant is "token may exist
-    # without marker (launch incomplete)" rather than "marker exists
-    # without token (permanent record_child_return failure)".
-    # Adv-30: per-arid parent-bound token; record-child-return requires it
-    # to construct a valid ack. Stored in launches/<arid>.parent_return_token
-    # (parent-only via read manifests). Atomic write (M1/Adv-27) so
-    # concurrent readers never observe partial content.
-    parent_return_token = secrets.token_hex(32)
-    _atomic_write_text(
-        _parent_return_token_path(repo_root, orchestration_id, child_agent_run_id),
-        parent_return_token,
-    )
-
     # L-NEW-2: route active-child marker writes through _atomic_write_text
     # for consistency with Adv-27. The marker file is queried only for
-    # existence (not contents) by record_child_return, but a concurrent
-    # reader observing a partial write would still log a confusing
-    # half-empty file; atomic writes eliminate that observability gap.
+    # existence (not contents), but a concurrent reader observing a partial
+    # write would still log a confusing half-empty file; atomic writes
+    # eliminate that observability gap.
     if backend_token == "claude":
         _atomic_write_text(
             _active_child_agent_run_id_path(repo_root, orchestration_id),
@@ -14992,9 +14851,8 @@ def record_launch(
         )
     # Adv-16: backend-neutral per-arid active-child marker. Codex lack
     # the single-active-child constraint that the Claude marker enforces, but
-    # they still need a "the child leaf actually returned" handshake before
-    # record-timeout may finalize a run. Marker is created here for ALL
-    # backends (LAST per NEW-M1 ordering above) and removed by
+    # record-timeout still refuses to finalize a run whose child is marked
+    # active. Marker is created here for ALL backends and removed by
     # deactivate-child / record-agent-run terminal.
     marker_dir = _active_children_dir(repo_root, orchestration_id)
     marker_dir.mkdir(parents=True, exist_ok=True)
@@ -15116,9 +14974,9 @@ def record_timeout(
 ) -> dict[str, Any]:
     """Canonical recovery for substep/step API stream idle timeout.
 
-    Normal path: orchestration agent observes child leaf returning, calls
-    record-child-return → deactivate-child → record-timeout. The Adv-14/16/20
-    guards refuse to finalize while liveness markers are still present.
+    Normal path: the caller observes the child leaf returning, calls
+    deactivate-child → record-timeout. The Adv-14/16 guards refuse to finalize
+    while liveness markers are still present.
 
     Adv-26 escape hatch: pass `force_reason` (or --force-reason on CLI) to
     bypass the active-children/legacy-marker guards for genuinely wedged
@@ -15128,8 +14986,7 @@ def record_timeout(
     trail (timeout_reason) and recorded as `forced=True` in the run payload.
 
     Without --force-reason, a wedged child is a permanent dead end because
-    record-child-return → deactivate-child → record-timeout cannot make
-    progress. With it, operators retain a controlled finalization path.
+    deactivate-child → record-timeout cannot make progress. With it, operators retain a controlled finalization path.
     """
     if not isinstance(agent_run_id, str) or not agent_run_id.strip():
         raise ValueError("record-timeout requires non-empty --agent-run-id")
@@ -15270,13 +15127,6 @@ def record_timeout(
                         f"use --force-reason '<text>' to bypass."
                     )
                 forced_marker_to_remove.append(active_path)
-    if forced:
-        # Adv-37: defer this too. The ack is part of the liveness story;
-        # removing it before terminal commit would also lose retry safety.
-        forced_marker_to_remove.append(
-            _child_return_marker_path(repo_root, orchestration_id, arid)
-        )
-
     started_at = resp_doc.get("started_at")
     if not isinstance(started_at, str) or not started_at.strip():
         started_at = _utc_now_iso()
@@ -15357,11 +15207,9 @@ def record_timeout(
         payload=payload,
     )
     # Adv-37: only after the durable terminal record committed do we touch
-    # forced-bypass markers. record_agent_run terminal already unlinks
-    # active_child / per-arid / parent_return_token markers, so the only
-    # remaining cleanup here is the child_return ack (if any) — which
-    # deactivate_child would normally have removed but the forced path
-    # bypassed.
+    # forced-bypass markers. record_agent_run terminal already unlinks the
+    # active_child and per-arid markers on a terminal status; this pass is the
+    # backstop for a row that branch did not reach.
     for stale_marker in forced_marker_to_remove:
         try:
             stale_marker.unlink(missing_ok=True)
@@ -15723,11 +15571,6 @@ def record_agent_run(
             _active_child_marker_path(
                 repo_root, orchestration_id, agent_run_id
             ).unlink(missing_ok=True)
-            # Adv-30: clear the parent return token sidecar; the run is done
-            # and the token must not be reusable.
-            _parent_return_token_path(
-                repo_root, orchestration_id, agent_run_id
-            ).unlink(missing_ok=True)
 
     # Adv-35/36: terminal record is now durable in agent_runs.jsonl. Run the
     # destructive tmp cleanup, then write the cleanup_committed marker ONLY
@@ -15765,11 +15608,8 @@ def deactivate_child_agent(
     **M3 design note**: This function is intentionally asymmetric vs the
     orchestration agent's own arid. The orch agent has no `record-launch`
     handshake (no per-arid `launches/<arid>.request.json`), so it has no
-    `record-child-return` ack to validate against and is finalized via
-    `update_orchestration_status` directly. The Adv-30 parent-bound token
-    and Adv-20 ack file therefore protect ONLY child runs (where the
-    "child leaf returned" signal is the actual security boundary). The
-    orch's own scratch is cleaned at terminal `set-status` time and is
+    active-child marker to clear and is finalized via
+    `update_orchestration_status` directly. The orch's own scratch is cleaned at terminal `set-status` time and is
     guarded by the `is_owner_via_orchestration` proof in
     `_cleanup_agent_tmp_root` (orchestration_meta.json identity).
     """
@@ -15800,56 +15640,6 @@ def deactivate_child_agent(
             "deactivated_at": _utc_now_iso(),
             "already_inactive": True,
         }
-    # Adv-20: require explicit "child leaf returned" ack. The orchestration
-    # agent must call record-child-return before deactivate-child. Without
-    # this gate, a misrouted deactivate-child for a still-running Codex
-    # child clears its only liveness guard (active_children marker) and lets
-    # record-timeout finalize and wipe its scratch.
-    return_ack = _child_return_marker_path(repo_root, orchestration_id, child_run_id)
-    if not return_ack.is_file():
-        raise ValueError(
-            f"deactivate-child: child_returns/{child_run_id}.txt is missing — "
-            f"call `record-child-return --agent-run-id {child_run_id}` AFTER "
-            f"observing the child leaf actually return, BEFORE deactivate-child."
-        )
-    # Adv-30: re-verify the parent-bound token at unlink time. Even if the
-    # ack file was created legitimately, an attacker who later edits the file
-    # cannot set a token they don't know.
-    expected_parent_token = _read_parent_return_token(
-        repo_root, orchestration_id, child_run_id
-    )
-    # Token-missing bug fix: `record_child_return` requires the
-    # parent_return_token to exist before writing the ack file. If we now
-    # see the ack present but the token absent, the invariant has been
-    # violated (manual tampering, partial cleanup race, or a code-path
-    # bug). Silently skipping verification would let any caller forge an
-    # ack by deleting the token file first — defeating the Adv-30 binding.
-    # Refuse to clear liveness markers and surface the inconsistency.
-    if expected_parent_token is None:
-        raise ValueError(
-            f"deactivate-child: child_returns/{child_run_id}.txt exists but "
-            f"launches/{child_run_id}.parent_return_token is missing. "
-            f"record-child-return requires both files together, so the "
-            f"absence of the parent token indicates corruption or external "
-            f"tampering of the launch artifacts. Refusing to clear liveness "
-            f"markers — investigate (re-launch may be required)."
-        )
-    try:
-        ack_doc = json.loads(return_ack.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        ack_doc = None
-    ack_token = (
-        ack_doc.get("return_token") if isinstance(ack_doc, dict) else None
-    )
-    if not isinstance(ack_token, str) or not secrets.compare_digest(
-        ack_token, expected_parent_token
-    ):
-        raise ValueError(
-            f"deactivate-child: child_returns/{child_run_id}.txt does not "
-            f"contain a valid parent return token. The ack appears to have "
-            f"been tampered with or constructed without the per-arid token "
-            f"from launches/{child_run_id}.parent_return_token."
-        )
     # A CHILD-AUTHORED PATH SNAPSHOT used to be captured here, freezing the FS-diff against
     # the write baseline before any later host write could contaminate it. It fed the terminal
     # write audit, which issue #171 PR-2 retired along with the baseline: the diff measured the
@@ -15857,10 +15647,6 @@ def deactivate_child_agent(
     # Validation passed and at least one marker exists — atomic unlink phase.
     per_arid_marker.unlink(missing_ok=True)
     active_path.unlink(missing_ok=True)
-    # Consume the ack: it must be re-issued for any future relaunch of the
-    # same arid (defensive — no current code path reuses arids, but this
-    # keeps the invariant that ack proves a one-time return event).
-    return_ack.unlink(missing_ok=True)
     return {
         "deactivated_child_run_id": child_run_id,
         "orchestration_id": orchestration_id,
@@ -15894,25 +15680,18 @@ def finalize_child(
     orchestration_id: str,
     *,
     agent_run_id: str,
-    return_token: str,
     reply_text: str,
     agent_run_payload: dict[str, Any],
-    reply_excerpt: str | None = None,
 ) -> dict[str, Any]:
-    """One-call child finalization: collapse the 4 finalize CLI round-trips into one.
+    """One-call child finalization: collapse the finalize CLI round-trips into one.
 
     Performs, in the mandated order and in a single process,
-    `record_child_return` -> `deactivate_child_agent` -> `record_reply_text` ->
-    `record_agent_run`, reusing those functions unchanged so every guard is preserved
-    (Adv-30 return-token verification, the Adv-20 ack-file precondition for deactivate,
-    the active_child ordering, and the reply budget guard which reads the reply written
-    by step 3). Cutting the per-child finalize from 4 Bash round-trips to 1 removes the
-    bulk of the per-child command+output that otherwise stays resident in the
-    orchestration transcript (a driver of the quadratic cache_read cost).
+    `deactivate_child_agent` -> `record_reply_text` -> `record_agent_run`, reusing those
+    functions unchanged so every guard is preserved (the active_child ordering, and the
+    reply budget guard which reads the reply written by step 2).
 
     `agent_run_payload` is the `record-agent-run` payload; its `agent_run_id` must match
-    the `--agent-run-id` argument (a mismatch is a caller error). The reply excerpt
-    defaults to the first non-empty line of `reply_text` when not supplied.
+    the `--agent-run-id` argument (a mismatch is a caller error).
     """
     arid = agent_run_id.strip() if isinstance(agent_run_id, str) else ""
     if not arid:
@@ -15934,14 +15713,10 @@ def finalize_child(
             f"--agent-run-id ({arid!r}). When the payload came from --agent-run-json-file, "
             f"the offending file is launches/{arid}.agent_run.input.json"
         )
-    if reply_excerpt is None:
-        first_line = next((ln.strip() for ln in reply_text.splitlines() if ln.strip()), "")
-        reply_excerpt = first_line or None
-
     # Hard reply-budget gate runs BEFORE any state-consuming side effect. Without this,
     # record_agent_run's hard check (ATMOFAB_ENFORCE_REPLY_BUDGET=1) would fire only after
-    # record-child-return + deactivate-child have already consumed the ack / active marker /
-    # parent_return_token, leaving the run un-retriable via finalize-child. The soft path
+    # deactivate-child has already consumed the active marker, leaving the run un-retriable
+    # via finalize-child. The soft path
     # (telemetry) is still handled by record_agent_run below, which reads the written reply.
     # Measure the EXACT persisted form: record_reply_text -> _write_text appends a trailing
     # newline when absent, so an exact-boundary reply (== budget, no newline) becomes
@@ -15968,13 +15743,6 @@ def finalize_child(
             f"status line, output_refs, and a few lines of rationale; full detail belongs in the artifacts."
         )
 
-    child_return = record_child_return(
-        repo_root,
-        orchestration_id,
-        agent_run_id=arid,
-        return_token=return_token,
-        reply_excerpt=reply_excerpt,
-    )
     deactivation = deactivate_child_agent(
         repo_root,
         orchestration_id,
@@ -16006,7 +15774,6 @@ def finalize_child(
         "agent_run_id": arid,
         "status": run_record.get("status"),
         "deactivated_child_run_id": deactivation.get("deactivated_child_run_id", arid),
-        "child_return_recorded_at": child_return.get("recorded_at"),
         "reply_ref": reply.get("reply_ref"),
         "finalized_at": _utc_now_iso(),
     }
@@ -17102,7 +16869,7 @@ _TERSE_RESULT_FIELDS: dict[str, tuple[str, ...]] = {
     # record_agent_run returns the run record; it carries started_at/finished_at,
     # not a `recorded_at` field.
     "record-agent-run": ("agent_run_id", "status", "started_at", "finished_at"),
-    # finalize-child composes record-child-return/deactivate/record-reply/record-agent-run;
+    # finalize-child composes deactivate/record-reply/record-agent-run;
     # the orchestration only needs the terminal status + the deactivation confirmation.
     "finalize-child": (
         "agent_run_id",
@@ -17111,7 +16878,6 @@ _TERSE_RESULT_FIELDS: dict[str, tuple[str, ...]] = {
         "reply_ref",
         "finalized_at",
     ),
-    "record-child-return": ("agent_run_id", "recorded_at", "return_token"),
     "deactivate-child": (
         "deactivated_child_run_id",
         "orchestration_id",
@@ -17388,21 +17154,17 @@ def main(argv: list[str] | None = None) -> int:
     finalize_parser = subparsers.add_parser(
         "finalize-child",
         description=(
-            "One-call child finalization: record-child-return -> deactivate-child -> "
-            "record-reply -> record-agent-run, in that order, reusing each guard. Collapses "
-            "the 4 finalize Bash round-trips into one to keep the orchestration transcript "
-            "small. --agent-run-json is the record-agent-run payload (its agent_run_id must "
-            "equal --agent-run-id); --reply-text is the child's verbatim final message "
-            "(budget-checked); --return-token is the Adv-30 parent-bound token."
+            "One-call child finalization: deactivate-child -> record-reply -> "
+            "record-agent-run, in that order, reusing each guard. --agent-run-json is the "
+            "record-agent-run payload (its agent_run_id must equal --agent-run-id); "
+            "--reply-text is the child's verbatim final message (budget-checked)."
         ),
     )
     finalize_parser.add_argument("--repo-root", required=True)
     finalize_parser.add_argument("--orchestration-id", required=True)
     finalize_parser.add_argument("--agent-run-id", required=True)
-    finalize_parser.add_argument("--return-token", required=True)
     finalize_parser.add_argument("--reply-text")
     finalize_parser.add_argument("--reply-from-stdin", action="store_true")
-    finalize_parser.add_argument("--reply-excerpt", default=None)
     finalize_agent_run_group = finalize_parser.add_mutually_exclusive_group(required=True)
     finalize_agent_run_group.add_argument("--agent-run-json", type=_json_arg)
     finalize_agent_run_group.add_argument(
@@ -17438,36 +17200,6 @@ def main(argv: list[str] | None = None) -> int:
     record_reply_parser.add_argument("--reply-text")
     record_reply_parser.add_argument("--reply-from-stdin", action="store_true")
 
-    record_child_return_parser = subparsers.add_parser(
-        "record-child-return",
-        description=(
-            "Adv-20: record that the orchestration agent has observed the "
-            "child leaf returning for this child. Required precondition for "
-            "deactivate-child (and hence for record-timeout). Writes "
-            "workspace/orchestrations/<orch>/child_returns/<arid>.txt as the "
-            "ack signal; deactivate-child consumes the file when it succeeds."
-        ),
-    )
-    record_child_return_parser.add_argument("--repo-root", required=True)
-    record_child_return_parser.add_argument("--orchestration-id", required=True)
-    record_child_return_parser.add_argument("--agent-run-id", required=True)
-    record_child_return_parser.add_argument(
-        "--return-token", required=True,
-        help=(
-            "Adv-30: per-arid parent-bound token from "
-            "workspace/orchestrations/<orch>/launches/<arid>.parent_return_token "
-            "(generated at record-launch). Pass via "
-            "`$(cat <that file>)`. record-child-return verifies the token "
-            "before issuing the ack and embeds it in the ack file so "
-            "deactivate-child can re-verify."
-        ),
-    )
-    record_child_return_parser.add_argument(
-        "--reply-excerpt", default=None,
-        help="Optional short metadata (e.g. first line of the Agent reply); "
-             "stored alongside the ack timestamp for audit. Truncated to 200 chars.",
-    )
-
     record_timeout_parser = subparsers.add_parser(
         "record-timeout",
         description=(
@@ -17494,8 +17226,8 @@ def main(argv: list[str] | None = None) -> int:
             "(e.g. child leaf process killed before parent observed return). "
             "Required text becomes part of timeout_reason and the run payload "
             "carries forced=True + forced_reason for audit. Use sparingly — the "
-            "normal record-child-return → deactivate-child → record-timeout flow "
-            "is preferred whenever possible."
+            "normal deactivate-child → record-timeout flow is preferred whenever "
+            "possible."
         ),
     )
 
@@ -17737,7 +17469,6 @@ def main(argv: list[str] | None = None) -> int:
         finalize_parser,
         deactivate_child_parser,
         record_reply_parser,
-        record_child_return_parser,
     ):
         _terse_parser.add_argument(
             "--verbose",
@@ -17907,10 +17638,8 @@ def main(argv: list[str] | None = None) -> int:
                 repo_root=repo_root,
                 orchestration_id=args.orchestration_id,
                 agent_run_id=args.agent_run_id,
-                return_token=args.return_token,
                 reply_text=reply_text,
                 agent_run_payload=agent_run_payload,
-                reply_excerpt=args.reply_excerpt,
             )
         except (ValueError, RuntimeError) as exc:
             print(str(exc), file=sys.stderr)
@@ -17970,18 +17699,6 @@ def main(argv: list[str] | None = None) -> int:
                 agent_run_id=args.agent_run_id,
                 reason=args.reason,
                 force_reason=args.force_reason,
-            )
-        except (ValueError, RuntimeError) as exc:
-            print(str(exc), file=sys.stderr)
-            return 1
-    elif args.command == "record-child-return":
-        try:
-            result = record_child_return(
-                repo_root=repo_root,
-                orchestration_id=args.orchestration_id,
-                agent_run_id=args.agent_run_id,
-                return_token=args.return_token,
-                reply_excerpt=args.reply_excerpt,
             )
         except (ValueError, RuntimeError) as exc:
             print(str(exc), file=sys.stderr)

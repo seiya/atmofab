@@ -8,7 +8,6 @@ opened the active_child window but *before* the child returned, the orchestratio
 is left mid-launch:
 
 - ``active_child_agent_run_id.txt`` / ``active_children/<arid>.txt`` are set,
-- ``child_returns/<arid>.txt`` is absent,
 - no terminal ``agent_runs.jsonl`` row exists for ``<arid>``.
 
 The conductor is a plain Python process with no host/parent session, but each
@@ -140,8 +139,7 @@ def detect_dangling_active_child(
     choose the primary among several dangling children (Claude is sequential, so it
     is the one). codex has no such pointer but still leaves the per-arid
     marker, so keying off it covers every backend. Path conventions mirror
-    ``tools/orchestration_runtime.py`` (``_active_children_dir`` /
-    ``_child_returns_dir``); paths are rebuilt as strings to avoid importing the
+    ``tools/orchestration_runtime.py`` (``_active_children_dir``); paths are rebuilt as strings to avoid importing the
     heavy runtime module.
     """
     root = _orch_root(repo_root, orchestration_id)
@@ -187,9 +185,9 @@ def detect_dangling_active_child(
             attempted_arids.add(rid)
 
     def _is_dangling(arid: str) -> bool:
-        # A child-return ack closes the window even before the terminal run lands.
-        if (root / "child_returns" / f"{arid}.txt").is_file():
-            return False
+        # The terminal run row (or an invalid terminal attempt) is what closes the window. A
+        # `child_returns/<arid>.txt` ack used to close it too; issue #447 (D2) retired it, and
+        # one a past orchestration left is not read.
         return arid not in terminal_arids and arid not in attempted_arids
 
     dangling = [a for a in candidate_arids if _is_dangling(a)]

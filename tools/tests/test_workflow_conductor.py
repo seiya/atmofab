@@ -1280,9 +1280,6 @@ class _FakeConductor(wc.Conductor):
                                       self.post_judge_meta_fn(self._detn))
         return wc.ProcResult(0, "", "")
 
-    def read_parent_return_token(self, child_arid):  # type: ignore[override]
-        return "rtok"
-
     def read_case_ids(self, refs):  # type: ignore[override]
         return ()
 
@@ -1307,7 +1304,7 @@ class _FakeConductor(wc.Conductor):
     #
     # So the LOOP is what is faked, not the process. `_fake_pure_leaf_substep` performs the
     # same bookkeeping sequence the real pure loops do — record-launch, spawn, persist,
-    # record-child-return, status, finalize-child, and the REAL `_pure_transient_retry` — so
+    # status, finalize-child, and the REAL `_pure_transient_retry` — so
     # every phase-level assertion in this file (call order, vouched arids, retry counts,
     # routing) still observes the sequence it was written against. What it does not do is
     # assemble a context or validate a returned document; those are `test_pure_leaf_*.py`.
@@ -1362,10 +1359,6 @@ class _FakeConductor(wc.Conductor):
                 timeout_context={"node_key": refs.node_key, "step": phase,
                                  "substep": substep or "", "agent_run_id": child_arid})
             self._persist_leaf_output(child_arid, proc)
-            # NO `record-child-return`: `finalize_child` runs the whole sequence for a leaf,
-            # and only the DETERMINISTIC arm plays the child-return itself (there is no leaf
-            # to send one). The real pure loops call it nowhere, and neither does this.
-            token = self.read_parent_return_token(child_arid)
             status, output_refs = self.determine_substep_status(
                 refs, phase, substep, request["allowed_output_paths"],
                 min_mtime=launched_at)
@@ -1384,7 +1377,7 @@ class _FakeConductor(wc.Conductor):
             usage_row = wc._leaf_usage_row(
                 proc, entry, deterministic=self._is_deterministic_substep(phase, substep))
             self.finalize_child(
-                child_arid, token, reply,
+                child_arid, reply,
                 self._agent_run_json(refs, phase, substep, child_arid, status,
                                      output_refs, result_summary, entry=entry,
                                      agent_model_override=proc.model, usage=usage_row,
@@ -2782,29 +2775,28 @@ class ConductHappyPathTest(unittest.TestCase):
         # certification reads before the loop starts.
         #
         # Then, per phase: check-phase-certified, workflow-launch-check, then per substep
-        # (record-launch, [record-child-return if deterministic], finalize-child),
-        # then write-step-result. Build and Validate.execute are deterministic (the
-        # conductor issues their record-child-return); compile/generate/judge are leaves.
+        # (record-launch, finalize-child), then write-step-result. A deterministic substep
+        # records the same pair as a leaf; compile/generate/judge are leaves.
         expected = (
             ["check-phase-certified", "check-phase-certified"]
             + ["check-phase-certified", "workflow-launch-check",
              "record-launch", "finalize-child",  # compile.generate (leaf)
-             "record-launch", "record-child-return", "finalize-child",  # compile.static (deterministic)
+             "record-launch", "finalize-child",  # compile.static (deterministic)
              "record-launch", "finalize-child",  # compile.verify (leaf)
              "write-step-result"]  # compile (2 leaf + 1 deterministic substep)
             + ["check-phase-certified", "workflow-launch-check",
                "record-launch", "finalize-child",  # generate.generate (leaf)
-               "record-launch", "record-child-return", "finalize-child",  # generate.gate (deterministic)
+               "record-launch", "finalize-child",  # generate.gate (deterministic)
                "record-launch", "finalize-child",  # generate.verify (leaf)
                "write-step-result"]  # generate (2 leaf + 1 deterministic substep)
             + ["check-phase-certified", "workflow-launch-check",
-               "record-launch", "record-child-return", "finalize-child",
+               "record-launch", "finalize-child",
                "write-step-result"]  # build (1 deterministic step)
             + ["check-phase-certified", "workflow-launch-check",
-               "record-launch", "record-child-return", "finalize-child",  # pre_judge (deterministic)
-               "record-launch", "record-child-return", "finalize-child",  # execute (deterministic)
+               "record-launch", "finalize-child",  # pre_judge (deterministic)
+               "record-launch", "finalize-child",  # execute (deterministic)
                "record-launch", "finalize-child",  # judge (leaf)
-               "record-launch", "record-child-return", "finalize-child",  # post_judge (deterministic)
+               "record-launch", "finalize-child",  # post_judge (deterministic)
                "write-step-result"]  # validate (3 deterministic + 1 leaf substep)
             # Compile and Generate are asked once more, unrecorded, before `set-status pass`:
             # is the IR this chain stands on still the standing one (issue #374,
@@ -16470,9 +16462,10 @@ class DeterministicBuildTest(unittest.TestCase):
         self.assertTrue(str(captured["child_arid"]).strip())
         self.assertEqual(captured["prefix"], "deterministic")
         subs = [s for s, _ in c.calls]
-        # SAME bookkeeping as a leaf run, but the conductor issues the child-return.
+        # SAME bookkeeping as a leaf run: the retired child-return handshake (issue #447,
+        # D2) is not issued.
         self.assertIn("record-launch", subs)
-        self.assertIn("record-child-return", subs)
+        self.assertNotIn("record-child-return", subs)
         self.assertIn("finalize-child", subs)
 
     def test_build_infra_failure_nonzero_returncode_fails_substep(self) -> None:
@@ -23355,10 +23348,12 @@ class LaunchPayloadFileTransportTests(unittest.TestCase):
             c = self._conductor(repo_root)
             agent_run = {"agent_run_id": "child-1", "status": "pass", "notes": self.BIG}
 
-            c.finalize_child("child-1", "tok", self.BIG, agent_run)
+            c.finalize_child("child-1", self.BIG, agent_run)
 
             argv, stdin = c.seen[-1]                                   # type: ignore[attr-defined]
             self._assert_no_huge_argv(argv)
+            # The retired child-return token (issue #447, D2) is not on the argv.
+            self.assertNotIn("--return-token", argv)
             self.assertNotIn("--reply-text", argv)
             self.assertIn("--reply-from-stdin", argv)
             self.assertEqual(stdin, self.BIG)
@@ -23381,7 +23376,7 @@ class LaunchPayloadFileTransportTests(unittest.TestCase):
             c = self._conductor(repo_root)
             payload = {"agent_run_id": "child-1", "agent_model": "m\ud800odel"}
 
-            c.finalize_child("child-1", "tok", "done", payload)
+            c.finalize_child("child-1", "done", payload)
 
             argv, _ = c.seen[-1]                                   # type: ignore[attr-defined]
             rel = argv[argv.index("--agent-run-json-file") + 1]

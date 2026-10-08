@@ -76,14 +76,19 @@ class DetectDanglingTests(unittest.TestCase):
             (root / "active_child_agent_run_id.txt").write_text("", encoding="utf-8")
             self.assertIsNone(diag.detect_dangling_active_child(repo, ORCH_ID))
 
-    def test_child_return_ack_closes_window(self) -> None:
+    def test_a_leftover_child_return_ack_does_not_close_window(self) -> None:
+        """Issue #447 (D2) retired the child-return ack: only the terminal run row (the row
+        below) closes the window. An ack a past orchestration left behind is not read, so the
+        launch it names is still reported dangling."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             root = _orch_root(repo)
             _open_dangling_window(root)
             (root / "child_returns").mkdir(exist_ok=True)
             (root / "child_returns" / f"{CHILD_ARID}.txt").write_text("ack", encoding="utf-8")
-            self.assertIsNone(diag.detect_dangling_active_child(repo, ORCH_ID))
+            result = diag.detect_dangling_active_child(repo, ORCH_ID)
+            self.assertIsNotNone(result)
+            self.assertEqual(result["agent_run_id"], CHILD_ARID)
 
     def test_terminal_agent_run_closes_window(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -948,7 +953,11 @@ class CollectorsDoNotSwallowTests(unittest.TestCase):
         type back would refuse correct code. That over-refusal was real and measured; the
         chain walk is what removes it.
         """
-        for prim in ("read_text", "is_dir", "is_file", "glob"):
+        # `is_file` left this tuple with the child-return ack (issue #447, D2): that check was
+        # the path's only `is_file` call, so injecting there reached nothing and the
+        # `assertRaises` below went red. A primitive the path does not call cannot be asked
+        # this question; one it starts calling belongs back here.
+        for prim in ("read_text", "is_dir", "glob"):
             with self.subTest(primitive=prim), tempfile.TemporaryDirectory() as tmp:
                     repo = Path(tmp)
                     _open_dangling_window(_orch_root(repo))
