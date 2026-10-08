@@ -216,3 +216,17 @@ node's self-test).
   line-anchored `!$omp` presence floor counted it; issue #25 promotes the class so it cannot.
   Write `'a message that is &` / `      &continued'`; the same wrap with the resume `&`
   omitted is a compile failure.
+- **No derived type with an allocatable component of its own type.** A component
+  `type(t), allocatable :: children(:)`, or a scalar `type(t), allocatable :: child`, inside
+  `type :: t` is conforming f2008 that the `Generate.gate` syntax check, the lint check and
+  Build all accept, and the GNU Fortran release the `fortran` targets build with corrupts the
+  heap on intrinsic assignment of a populated value of that type: the program aborts inside
+  `free()` (`double free detected`, SIGABRT, on an array component; SIGSEGV on a scalar
+  one). An append through an array constructor and one through `allocate` + `move_alloc`
+  fault the same way. No gate reads for it, so the fault surfaces at `Validate.execute`,
+  where the self-test aborts and the run restarts `Generate` cold, without the cause.
+  Represent a tree — a parsed document, a nested structure — as a flat array of nodes
+  indexed by integers, each node holding the indices of its children rather than the
+  children, or consume the input without building a tree. A type whose allocatable
+  components are of OTHER types (a deferred-length character, a `real(dp)` array, an
+  integer index array) is unaffected.
