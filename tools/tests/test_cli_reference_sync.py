@@ -31,7 +31,6 @@ from tools.orchestration_runtime import main as orchestration_runtime_main
 
 TIER_A_SUBCOMMANDS: frozenset[str] = frozenset({
     "record-launch",
-    "record-child-return",
     "deactivate-child",
     "record-reply",
     "record-agent-run",

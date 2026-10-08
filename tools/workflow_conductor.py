@@ -5188,11 +5188,6 @@ class Conductor:
                           usage=usage, model=model, resume_mode=resume_mode,
                           raw_stdout=raw_stdout)
 
-    def read_parent_return_token(self, child_arid: str) -> str:
-        path = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
-                / "launches" / f"{child_arid}.parent_return_token")
-        return path.read_text(encoding="utf-8").strip()
-
     # -- bookkeeping subcommand wrappers --------------------------------------
 
     def _oid_args(self) -> list[str]:
@@ -5332,7 +5327,7 @@ class Conductor:
             surface["claude_tools"] = _variadic_values(argv, "--tools")
         return surface
 
-    def finalize_child(self, child_arid: str, return_token: str, reply_text: str,
+    def finalize_child(self, child_arid: str, reply_text: str,
                        agent_run_json: dict[str, Any]) -> dict[str, Any]:
         # The reply goes over stdin rather than argv. Every current call site composes it
         # host-side within the ~2000-char reply budget, so it is small today — but it is
@@ -5344,7 +5339,6 @@ class Conductor:
         return self.runtime([
             "finalize-child", *self._oid_args(),
             "--agent-run-id", child_arid,
-            "--return-token", return_token,
             "--reply-from-stdin",
             "--agent-run-json-file", agent_run_ref,
         ], input=reply_text)
@@ -7326,7 +7320,6 @@ class Conductor:
         """One recorded pure launch and everything read back off it."""
 
         proc: Any
-        token: str | None
         #: `pure_leaf.ResultEnvelope`, named `Any` because that module is imported lazily.
         envelope: Any
         model: str | None
@@ -7391,7 +7384,6 @@ class Conductor:
             timeout_context={"node_key": node_key, "step": phase,
                              "substep": substep or "", "agent_run_id": child_arid})
         self._persist_leaf_output(child_arid, proc)
-        token = self.read_parent_return_token(child_arid)
 
         envelope = (parse_result_envelope(proc.stdout)
                     if entry.provider == "claude_cli" else
@@ -7426,7 +7418,7 @@ class Conductor:
             proc, entry,
             envelope=envelope if entry.provider == "claude_cli" else None,
             resumed=resumed)
-        return self._PureTurn(proc, token, envelope, model, model_provenance, usage,
+        return self._PureTurn(proc, envelope, model, model_provenance, usage,
                               launched_monotonic)
 
     def _run_pure_generate_substep(self, refs: NodeRefs, phase: str, substep: str | None,
@@ -7721,7 +7713,7 @@ class Conductor:
                 cold_repair_target = resume_session_id
                 resume_session_id = None
                 continue
-            proc, token, envelope = turn.proc, turn.token, turn.envelope
+            proc, envelope = turn.proc, turn.envelope
             model, usage = turn.model, turn.usage
             launched_monotonic = turn.launched_monotonic
             attempt_record: dict[str, Any] = {
@@ -7867,7 +7859,7 @@ class Conductor:
             # carries an EMPTY output_refs (the host has written nothing yet). ONLY AFTER this may
             # the host write the bundle artifacts.
             self.finalize_child(
-                child_arid, token, reply,
+                child_arid, reply,
                 self._agent_run_json(refs, phase, substep, child_arid, status,
                                      [], result_summary, entry=entry,
                                      agent_model_override=model,
@@ -8535,7 +8527,7 @@ class Conductor:
                 cold_repair_target = resume_session_id
                 resume_session_id = None
                 continue
-            proc, token, envelope = turn.proc, turn.token, turn.envelope
+            proc, envelope = turn.proc, turn.envelope
             model, usage = turn.model, turn.usage
             launched_monotonic = turn.launched_monotonic
             attempt_record: dict[str, Any] = {
@@ -8612,7 +8604,7 @@ class Conductor:
                 # Finalize FIRST (close the child FS-diff window); the pure row carries EMPTY
                 # output_refs. ONLY AFTER this may the host author source_meta.json / verdict_meta.
                 self.finalize_child(
-                    child_arid, token, reply,
+                    child_arid, reply,
                     self._agent_run_json(refs, phase, substep, child_arid, verify_status,
                                          [], result_summary, entry=entry,
                                          agent_model_override=model,
@@ -8682,7 +8674,7 @@ class Conductor:
                      f"category: {category or 'none'}")
             result_summary = f"{spec.summary_prefix}_fail: {category}"
             self.finalize_child(
-                child_arid, token, reply,
+                child_arid, reply,
                 self._agent_run_json(refs, phase, substep, child_arid, "fail",
                                      [], result_summary, entry=entry,
                                      agent_model_override=model,
@@ -11930,7 +11922,7 @@ class Conductor:
           retry/warm-resume/exemplar decision it needed, went with it.
         * A DETERMINISTIC substep (Build, Compile.static, Generate.gate, Validate.pre_judge /
           execute / post_judge) runs in-process below. It still takes an agent_run_id, a
-          recorded launch and a child-return, so the integrity validators read it as an
+          recorded launch and a finalize-child, so the integrity validators read it as an
           ordinary substep agent run; what it does not take is a leaf, a sandbox, or a retry —
           none of the transient-death, usage-limit or warm-resume paths the old loop carried
           could ever fire for it, so the loop is gone too.
@@ -11997,17 +11989,11 @@ class Conductor:
         # Capture the launch instant so a producer substep only passes on outputs (re)written
         # during this window, not stale files from a prior attempt.
         launched_at = self._launch_instant(child_arid)
-        # Non-LLM step: run the body in-process and play the child-return ourselves (no leaf).
-        # record_launch above + record-child-return here + finalize_child below keep the
-        # executor a normal step/substep agent_run_id, so the integrity validators pass
-        # unchanged.
+        # Non-LLM step: run the body in-process and finalize the child ourselves (no leaf).
+        # record_launch above + finalize_child below keep the executor a normal
+        # step/substep agent_run_id, so the integrity validators pass unchanged.
         proc = self._run_deterministic_substep(refs, phase, substep, child_arid, request)
         self._persist_leaf_output(child_arid, proc, prefix="deterministic")
-        token = self.read_parent_return_token(child_arid)
-        self.runtime([
-            "record-child-return", *self._oid_args(),
-            "--agent-run-id", child_arid, "--return-token", token,
-        ])
         status, output_refs = self.determine_substep_status(
             refs, phase, substep, request["allowed_output_paths"], min_mtime=launched_at)
         # A nonzero exit fails the substep even if the expected artifacts happen to exist
@@ -12030,7 +12016,7 @@ class Conductor:
         # `not_measured` rather than inventing one.
         usage_row = _leaf_usage_row(proc, entry, deterministic=True)
         self.finalize_child(
-            child_arid, token, reply,
+            child_arid, reply,
             self._agent_run_json(refs, phase, substep, child_arid, status,
                                  output_refs, result_summary, entry=entry,
                                  agent_model_override=proc.model,
@@ -13641,7 +13627,7 @@ class Conductor:
         # not the one an unusable directive calls for.
         try:
             self.finalize_child(
-                child_arid, turn.token,
+                child_arid,
                 f"status: {status}\nleaf rc={proc.returncode}",
                 self._agent_run_json(refs, phase, DIAGNOSE_SUBSTEP, child_arid, status,
                                      [], result_summary, entry=entry,

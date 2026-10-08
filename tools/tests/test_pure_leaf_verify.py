@@ -1155,10 +1155,10 @@ class PureVerifySubstepTests(unittest.TestCase):
         observed: dict[str, bool] = {}
 
         class _C(_PureFakeConductor):
-            def finalize_child(self, child_arid, return_token, reply_text, agent_run_json):  # type: ignore[override]
+            def finalize_child(self, child_arid, reply_text, agent_run_json):  # type: ignore[override]
                 base = self.repo_root / refs.source_dir()
                 observed["meta_exists_at_finalize"] = (base / "source_meta.json").exists()
-                return super().finalize_child(child_arid, return_token, reply_text, agent_run_json)
+                return super().finalize_child(child_arid, reply_text, agent_run_json)
 
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
@@ -1177,9 +1177,9 @@ class PureVerifySubstepTests(unittest.TestCase):
         finalized: dict[str, bool] = {}
 
         class _C(_PureFakeConductor):
-            def finalize_child(self, child_arid, return_token, reply_text, agent_run_json):  # type: ignore[override]
+            def finalize_child(self, child_arid, reply_text, agent_run_json):  # type: ignore[override]
                 finalized["did"] = True
-                return super().finalize_child(child_arid, return_token, reply_text, agent_run_json)
+                return super().finalize_child(child_arid, reply_text, agent_run_json)
 
             def _write_verify_source_meta(self, refs, verdict, *, attempts):  # type: ignore[override]
                 raise OSError(28, "No space left on device")
