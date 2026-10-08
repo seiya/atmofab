@@ -988,11 +988,11 @@ def _is_valid_failure_analysis(
         "failed_step_results",
         "launch_reply_tail",
         "agent_summary_tail",
-        # The degraded dangling-launch path (both terminalize set-status calls failed)
-        # carries none of these: the dangling child has no terminal agent_runs row and
-        # meta has no reason_code/detail. Such an analysis is not valid. The incident
-        # snapshot that once stood in as its evidence has not been written since
-        # d2728d6a, and issue #464 deleted its reader.
+        # `launch_incident_refs` used to be one more: it stood in as the only evidence
+        # of the degraded dangling-launch path (both terminalize set-status calls
+        # failed), which d2728d6a deleted together with the snapshot it referenced.
+        # Issue #464 deleted the field; an analysis carrying none of the fields above
+        # is not valid.
     )
     has_evidence = any(
         obj.get(f) not in (None, "", []) for f in evidence_fields

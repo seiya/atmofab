@@ -259,11 +259,11 @@ class RunWorkflowTests(unittest.TestCase):
             analysis = run_workflow._collect_failure_analysis(repo_root, "orch_allok")
             self.assertIsNone(analysis.get("failed_agent_run"))
 
-    def test_is_valid_failure_analysis_rejects_the_degraded_dangling_launch_shape(self) -> None:
-        """The degraded dangling-launch path (no reason_code/detail, no failed_agent_run,
-        no tails) carries no evidence, so its analysis is invalid. A
-        `launch_incident_refs` key a past run left counts for nothing: issue #464
-        deleted it from the evidence fields."""
+    def test_is_valid_failure_analysis_rejects_an_analysis_with_no_evidence(self) -> None:
+        """An analysis with no reason_code/detail, no failed_agent_run and no tails —
+        the shape the degraded dangling-launch path wrote until d2728d6a deleted it —
+        carries no evidence, so it is invalid. A `launch_incident_refs` key a past run
+        left counts for nothing: issue #464 deleted it from the evidence fields."""
         obj = {
             "orchestration_id": "orch_x",
             "status": "fail",

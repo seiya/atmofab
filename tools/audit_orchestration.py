@@ -953,9 +953,9 @@ def _render_incident_body(incident: dict[str, Any], lines: list[str]) -> None:
         lines.append("Child subagent transcript (decisive evidence):")
         lines.append("")
         # The live incident is always matched via `session_id` and carries the projects
-        # root the hit came from, which is what the `under` suffix shows: an agentic
-        # leaf's private home, or the operator's `~/.claude` — which a PURE leaf uses on
-        # a current run (it is prepared no private home) as well as any pre-#63 run.
+        # root the hit came from, which is what the `under` suffix shows. Since Z4
+        # (issue #171) `claude_leaf_projects_roots` returns the operator's
+        # `~/.claude/projects` alone, so that is the only root it can name.
         # No fallback for a missing key: `None` here is the visible signal that the live
         # producer (`orchestration_diagnostics.build_launch_incident`) has regressed.
         matched_root = ct.get("matched_projects_root")
@@ -978,8 +978,7 @@ def _render_incident_body(incident: dict[str, Any], lines: list[str]) -> None:
     else:
         lines.append(
             f"Child subagent transcript not available: {ct.get('reason', 'unknown')} "
-            "(leaf transcripts are machine-local: the orchestration's private "
-            "home, else ~/.claude)."
+            "(leaf transcripts are machine-local, under ~/.claude/projects)."
         )
     lines.append("")
 

@@ -5028,8 +5028,8 @@ def _prune_orphan_agent_graph_edges(
     markers the resume reset clears just before this runs.
 
     Only meaningful from the terminal-reset path (a terminal status proves no child
-    run is still pending a row). Launch artifacts (launches/<arid>.*, the incident
-    snapshot) are kept for forensics — only the spurious graph edge is removed.
+    run is still pending a row). Launch artifacts (launches/<arid>.*) are kept for
+    forensics — only the spurious graph edge is removed.
     Returns the pruned child arids.
     """
     root = _orchestration_root(repo_root, orchestration_id)
