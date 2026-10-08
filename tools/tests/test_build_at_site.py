@@ -257,8 +257,10 @@ class BuildAtARemoteSiteTests(unittest.TestCase):
         meta = n.meta()
         self.assertEqual(meta["verification_status"], "fail")
         self.assertIsNotNone(meta["failure_category"])
-        self.assertEqual(meta["failure_source_refs"],
-                         [f"{n.conductor._rel(n.src)}/kernel.f90"])
+        # The excerpt the Generate repair receives names the node's local source, not the job
+        # directory's copy (issue #464: it is the repair's diagnosis now).
+        self.assertIn(f"{n.src}/kernel.f90", meta["failure_excerpt"])
+        self.assertNotIn(n.job, meta["failure_excerpt"])
         # The diagnostics name the node's local source, not the job directory's copy — on both
         # streams.
         log = (n.repo / n.refs.binary_dir() / "compile.stderr.log").read_text()

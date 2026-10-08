@@ -9491,33 +9491,6 @@ class Conductor:
         return Conductor._control_file_module(build_system).classify_build_failure(
             return_code, stderr)
 
-    @staticmethod
-    def _extract_failure_source_refs(stderr: str, src_ref: str,
-                                     suffixes: Sequence[str]) -> list[str]:
-        """Source paths the compiler/linker named in its error output, rebased under
-        the canonical `<src_ref>`, recorded as `binary_meta.json#failure_source_refs`.
-        Best-effort: empty when nothing parseable. A record only: no repair reader takes it
-        today (`_read_repair_findings` has no Build clause; see TODO.md).
-
-        `suffixes` are the node's LANGUAGE's — its `syntax_promotions.STAGED_SUFFIXES`, the
-        set the build compiles, headers included (issue #424). A path-like token counts only
-        when it ENDS in one of them — no word character and no further `.suffix` follows (a
-        sentence-final period still ends it) — so a longer suffix is never cut down to a
-        shorter one the build does not compile. Only the basename is kept and re-rooted under
-        `src_ref`, so a file the compiler named from elsewhere — a staged dependency source in
-        the object directory, a host-rendered file — is recorded under `src/` too. An empty
-        tuple is refused — a language that declares no staged suffix cannot attribute, and
-        answering `[]` for it would read as "nothing parseable" (fail-open)."""
-        if not suffixes:
-            raise ValueError("failure-source attribution needs the language's staged "
-                             "suffixes; got none")
-        pattern = (r"([\w./-]+(?:" + "|".join(re.escape(s) for s in suffixes)
-                   + r"))(?!\w|\.\w)")
-        names: set[str] = set()
-        for m in re.finditer(pattern, stderr or "", re.IGNORECASE):
-            names.add(Path(m.group(1)).name)
-        return sorted(f"{src_ref}/{n}" for n in names)
-
     def _run_deterministic_substep(self, refs: NodeRefs, phase: str, substep: str | None,
                                    child_arid: str, request: dict[str, Any]) -> ProcResult:
         """Run a non-LLM substep body in-process and return a ProcResult shaped like a
@@ -9820,7 +9793,7 @@ class Conductor:
             (result,) = job.results
             # What the job's output names by its job-directory path is written back to the
             # local path it stands for — the compiler's diagnostics, which the failure's
-            # `failure_source_refs` are read from against the local `src/`, among it.
+            # `failure_excerpt` quotes to the Generate repair, among it.
             local_of = sorted(((f"{jdir}/src", str(src_dir)), (f"{jdir}/bin", str(bin_dir)),
                                (f"{jdir}/build", str(obj_dir))),
                               key=lambda pair: len(pair[0]), reverse=True)
@@ -9934,7 +9907,6 @@ class Conductor:
                                  "resolved": "match" if ok else "unresolved",
                                  "closure_bindings": closure_bindings},
             "failure_category": None,
-            "failure_source_refs": [],
             "failure_excerpt": None,
         }
         if binary_missing:
@@ -9944,20 +9916,10 @@ class Conductor:
             binary_meta["last_fail_reason"] = "binary_not_built_at_bindir"
             binary_meta["failure_excerpt"] = (
                 f"compile reported success but no binary at bin/{exe} (imposed BIN); {rule}")
-            binary_meta["failure_source_refs"] = [
-                f"{self._rel(src_dir)}/{control_file.CONTROL_FILE_BASENAME}"]
         elif not ok:
             binary_meta["failure_category"] = self._classify_build_failure_category(
                 build_system, rc, stderr)
             binary_meta["failure_excerpt"] = "\n".join(stderr.splitlines()[-50:])
-            # Record the source(s) the compiler named (a record only: no repair reader takes it; TODO.md).
-            # The suffixes are the language backend's. No `provides` guard: `syntax_promotions`
-            # is in `LANGUAGE_CAPABILITIES_EVERY_NODE`, so the launch gate already refused a
-            # language without it before Build could run.
-            binary_meta["failure_source_refs"] = self._extract_failure_source_refs(
-                stderr, self._rel(src_dir),
-                tuple(backend_registry.capability_module(
-                    "language", language, "syntax_promotions").STAGED_SUFFIXES))
 
         meta_path = self.repo_root / refs.binary_dir() / "binary_meta.json"
         meta_path.parent.mkdir(parents=True, exist_ok=True)
@@ -9979,8 +9941,8 @@ class Conductor:
             # over `src/`, which read source through the regex/logical-line helpers and never
             # through the structure front end, and it does not reach the stale-IR emit site at
             # all — so neither rc 3 nor rc 4 can arrive. Every non-zero code here is a
-            # control-file violation the leaf repairs by re-authoring, which is what the warm
-            # route below assumes.
+            # control-file violation the leaf repairs by re-authoring: Generate, cold
+            # (`BUILD_FAILURE_ROUTING` routes `validate_post_build_violation` to `restart`).
             if gate.returncode != 0:
                 binary_meta.update({
                     "verification_status": "fail", "status": "fail",
@@ -12475,8 +12437,9 @@ class Conductor:
         # The failing gate's findings excerpt, threaded to the (warm) repair leaf so it can fix
         # the exact reported lines instead of re-discovering them. Only carried for the reasons
         # _read_repair_findings recognizes (the deterministic gates, a verify reviewer's folded
-        # reason + findings, a structural validate.execute failure) — the same selection after an
-        # escalation, keyed on the host reason that escalated; empty otherwise.
+        # reason + findings, a structural validate.execute failure, a routed Build failure) —
+        # the same selection after an escalation, keyed on the host reason that escalated;
+        # empty otherwise.
         if findings and findings.strip():
             payload["repair_findings"] = findings.strip()
         return payload
@@ -12492,6 +12455,8 @@ class Conductor:
                                 (compile -> ir/ir_meta.json, generate -> source/source_meta.json)
           `validate_execute_<category>` (category in VALIDATE_EXECUTE_FAILURE_ROUTING)
                              -> runs/<run_id>/trial_meta.json#failure_excerpt
+          `build_<category>` (category in BUILD_FAILURE_ROUTING)
+                             -> binaries/<binary_id>/binary_meta.json#failure_excerpt
           `judge_semantic_review_fail`
                              -> runs/<run_id>/semantic_review.json#findings[], one entry per
                                 finding (folded here by `judge_repair_text`, issue #455)
@@ -12542,6 +12507,15 @@ class Conductor:
             # reasons do not match this clause at all, which is what keeps the IR-rooted
             # variant out.
             meta_path = self.repo_root / refs.run_node_dir() / "trial_meta.json"
+        elif r.startswith("build_") and r[len("build_"):] in BUILD_FAILURE_ROUTING:
+            # A Build failure (`classify_build_failure`): the compiler's / linker's / make's
+            # tail, or the post_build gate's, as `_build_inproc` recorded it. Matched on the
+            # category suffix so the two escalate reasons (`build_fail_no_category`,
+            # `build_unknown_category:*`) do not pick up an excerpt. Read at the reopen point,
+            # where `refs.binary_id` is still the FAILED binary (it rotates at the next
+            # `run_phase(build)` entry). Bare, with no category prefix: the excerpt has one
+            # source and its lines carry their own meaning (issue #464).
+            meta_path = self.repo_root / refs.binary_dir() / "binary_meta.json"
         else:
             return None
         try:
