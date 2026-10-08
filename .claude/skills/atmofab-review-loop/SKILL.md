@@ -140,7 +140,19 @@ when a rule does not obviously apply:
 - **Pass `--continue-on-collection-errors` when a hunk comes back INCONCLUSIVE, and drop `-x`
   when you do** — a mutant can kill pytest during collection and a `FAILED`-line scorer reads
   that as green (PR #68: 3 mutants hid 41-47 real failures). Put both facts in the reviewer's
-  instructions too
+  instructions too. **It is PYTEST's flag: it goes inside `--test-cmd`**; given to the script it
+  is an argparse error, exit 2, and a background run reports only "failed" (issue #444 lost a
+  20-minute sweep slot to it)
+- **The script's baseline is the suite's one SERIAL run — read a red one as a finding about the
+  suite before blaming the harness.** Day-to-day runs use `-n`, which spreads rows over workers
+  and hides an order dependence; the baseline does not. Issue #444's round-0 baseline went red
+  on a row that was green under `-n`: a new test dropped `tools.build_runtime` from
+  `sys.modules` inside `mock.patch.dict(sys.modules)` and re-imported it, which binds the NEW
+  module as the parent package's attribute — `patch.dict` restores the dict, not the attribute —
+  so a later `from tools import build_runtime` read a different object than the modules that
+  had imported it earlier. **A test that pops a submodule must also patch the parent package's
+  attribute** (`mock.patch.object(tools, "build_runtime", <the module, imported first>)`).
+  Episode: `references/mutation-testing.md` §"A serial baseline found an order dependence"
 - **Run the baseline for handwritten sweeps too, and read it before you trust `-x`** — the script
   refuses a red baseline (exit 2); a sweep you write yourself will not. Two causes, same false
   green: a stale worktree (PR #67), a sweep KILLED mid-run — a timeout or a Ctrl-C skips the

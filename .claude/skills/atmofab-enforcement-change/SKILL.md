@@ -114,6 +114,17 @@ a fail-open that way, on the strength of **one** compiler probe).
   as `pure-50@3c117410` does. The tell for both: the fix commit's diff changes a value or adds a
   file, and every check stays green — only running the defect at both revisions shows it.
   Episode: `references/judgment-episodes.md` §Rule 1-b (issue #316 PR-2)
+- **Moving an IMPORT moves WHEN the imported module runs, and that time is something other code
+  relies on.** Issue #444 replaced three `sys.path` loaders called inside functions with
+  module-level `from tools import build_runtime`. `tools/run_workflow.py` imports one of those
+  modules at startup, before it redirects `sys.pycache_prefix`, and the library composes its
+  backend tables at import — so every startup paid for them and compiled 17 more `.pyc` into
+  the source tree, falsifying three statements that called the import lazy. Nothing failed;
+  round 2's blank-slate reviewer found it by comparing `sys.modules` at both revisions. **Rule:
+  before turning a function-level import into a module-level one, list the entry points that
+  import the importer at startup and run `python3 -c "import <entry>, sys; print('<module>' in
+  sys.modules)"` at both revisions.** Episode: `references/judgment-episodes.md` §Rule 1-b
+  (issue #444)
 
 **1-c. Severity is a classification too. Do not decide it from one reproduction.** Rule 1 says
 decide "does it happen" by execution; it says **nothing about how far it happens**. The procedure
