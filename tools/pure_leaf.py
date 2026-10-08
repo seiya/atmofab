@@ -43,11 +43,10 @@ PURE_PROMPT_CONTRACT_VERSION = "pure-70"
 # default Claude Code system prompt injects per-machine DYNAMIC sections (cwd, environment,
 # memory paths, git status); `--exclude-dynamic-system-prompt-sections` only relocates them
 # into the first user message (still host-varying). A fixed `--system-prompt` takes them out
-# of the system prompt, but it does not take them out of the request: measured on CLI 2.1.294
-# (issue #446; issue #454), the request's `messages` still carry an environment block (cwd,
-# platform, OS version, today's date, the model name), and the `system` field holds a
-# version-bearing CLI header and the CLI's own one-line preamble ahead of this string. So the
+# of the system prompt, but not out of the request: the CLI still adds text of its own, so the
 # model's total input is NOT a byte-stable function of the host-assembled `-p` body alone.
+# `docs/ORCHESTRATION.md` §pure-function leaf ("What the model receives, per transport") is
+# canonical for what the CLI adds and what that costs (issue #454).
 # Deliberately minimal: the full persona, output contract, and inlined context live in the `-p`
 # body (rendered in M-B); this string is the host's part of the system channel and states the
 # pure-function shape. A change here is a prompt-contract change
@@ -159,12 +158,13 @@ def pure_leaf_flags() -> list[str]:
                             plugins, MCP servers, custom commands/agents, and crucially the
                             configured HOOKS (the `UserPromptSubmit`
                             hook would otherwise fire on the `-p` prompt and inject context
-                            or run side effects). This is what makes the context CLOSED (A2):
-                            without it, `claude -p` loads `CLAUDE.md` and runs the configured
-                            hooks, so the "pure function" would still receive ambient
-                            instructions. It disables customizations, not settings (that
-                            is `--restricted`'s half). Auth works normally — so subscription
-                            billing is preserved
+                            or run side effects). This closes the customization half of
+                            the context (A2): without it, `claude -p` loads `CLAUDE.md` and
+                            runs the configured hooks. The text the CLI itself adds is not a
+                            customization and stays (`docs/ORCHESTRATION.md` §pure-function
+                            leaf, "What the model receives, per transport"). It disables
+                            customizations, not settings (that is `--restricted`'s half).
+                            Auth works normally — so subscription billing is preserved
                             (this is why `--safe-mode`, not `--bare`, which forces API-key auth
                             and would break subscription billing).
     - `--system-prompt <PURE_SYSTEM_PROMPT>` replaces the default system prompt, which
@@ -172,11 +172,9 @@ def pure_leaf_flags() -> list[str]:
                             paths, git status). `--safe-mode` does not remove those (they are
                             the base prompt, not a customization); replacing the system prompt
                             omits them from the system prompt. It does NOT make the input a
-                            function of the `-p` body alone: measured on CLI 2.1.294 (issue
-                            #446; issue #454), the request's `messages` still carry an
-                            environment block — cwd, platform, OS version, today's date and
-                            the model name — and the `system` field carries CLI text ahead
-                            of this string (see `PURE_SYSTEM_PROMPT`).
+                            function of the `-p` body alone: the CLI still adds text of its
+                            own (`docs/ORCHESTRATION.md` §pure-function leaf, "What the
+                            model receives, per transport"; issue #454).
     - `--tools ""`         no file/shell/gate/write tool is available to the model
                             (`--safe-mode` disables customizations, not the built-in tools).
     - `--strict-mcp-config` defense-in-depth: no ambient MCP server even if a future
