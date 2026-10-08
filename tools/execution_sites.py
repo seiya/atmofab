@@ -18,8 +18,8 @@ class in its `executes`. The local site's default is `LOCAL_DEFAULT_EXECUTES`.
 The loader follows `tools/llm_config.py`: a closed document shape, a repeated key refused, and
 every refusal NAMED (`SitesConfigError.rule`, one of `SITES_CONFIG_RULES`), because this is a
 file an operator writes by hand. Values that reach a remote shell — `host`, `workdir` — are
-refused at load when they carry a character the build-runtime server refuses in a value for the
-same reason (`_SHELL_ACTIVE_CHARS`), read from the server rather than copied. A
+refused at load when they carry a character the build-runtime library refuses in a value for the
+same reason (`_SHELL_ACTIVE_CHARS`), read from the library rather than copied. A
 `scheduler_directives` word reaches the remote shell only as one `shlex.quote`d argv word of the
 prefix the scheduler's backend spells (`remote_execution._run_job`), so it is refused only for a
 character that is not printable ASCII: a real directive's `|`, `[` or `'` is the scheduler's
@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import os
 import re
-import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -139,14 +138,16 @@ _NoDuplicateKeyLoader.add_constructor(
 
 
 def _shell_active_chars() -> frozenset[str]:
-    """The build-runtime server's set of characters a shell acts on, reached the way
-    `tools/host_prerequisites.py` reaches that module, so the two refusals cannot drift."""
-    mcp_dir = str(Path(__file__).resolve().parents[1] / "mcp_servers")
-    if mcp_dir not in sys.path:
-        sys.path.insert(0, mcp_dir)
-    import build_runtime_server
+    """The build-runtime library's set of characters a shell acts on, read from the library so
+    the two refusals cannot drift.
 
-    return frozenset(build_runtime_server._SHELL_ACTIVE_CHARS)
+    Imported here rather than at module level: `tools/run_workflow.py` imports this module at
+    startup, before it redirects `sys.pycache_prefix`, and the library composes its backend
+    tables at import — a module-level import made every startup pay for them and compiled their
+    bytecode into the source tree (found in review of issue #444)."""
+    from tools import build_runtime
+
+    return frozenset(build_runtime._SHELL_ACTIVE_CHARS)
 
 
 @dataclass(frozen=True)
@@ -192,7 +193,7 @@ def _string(value: Any, where: str) -> str:
 
 
 def _remote_safe(value: str, where: str, *, spaces: bool, quoted: bool = False) -> str:
-    """Refuse a value a remote shell would act on or misread: a character in the server's
+    """Refuse a value a remote shell would act on or misread: a character in the library's
     shell-active set unless the value reaches the shell `quoted` (a directive word), anything
     that is not printable ASCII (a NUL ends an argv element, a non-breaking space reads as a
     space to a person and not to a shell), and a plain space where `spaces` is False (it is

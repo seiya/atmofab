@@ -16,26 +16,26 @@ Two independent halves, neither of which contributes to any verdict:
   is). See the DECIDED note in ``TODO.md``.
 
 WHY THE `--flang` HALF SHELLS OUT DIRECTLY, since `AGENTS.md` requires compile / run / quality
-checks to go through the build-runtime MCP server and a reviewer has raised this once. Three
+checks to go through the build-runtime library and a reviewer has raised this once. Three
 reasons, each checked rather than argued:
 
-* **The MCP tool cannot produce what the oracle compares.** `run_syntax_check` returns a
+* **The library cannot produce what the oracle compares.** `run_syntax_check` returns a
   pass/fail verdict plus diagnostics; this harness needs flang's CANONICAL UNPARSE
   (`-fc1 -fdebug-unparse-no-sema`), which is a transformed copy of the source and is not in that
   tool's payload at all. The `compiler` records that declare `syntax_check` in
   `tools/backends/registry.py` are the adapters that tool can run, and the Fortran one is
   gfortran with a fixed `-fsyntax-only -std=<std>` argv — so there is no flang path to route
   through and no way to ask for that mode.
-* **Adding one would contradict a recorded decision.** Making flang an MCP capability makes it a
+* **Adding one would contradict a recorded decision.** Making flang a build-runtime capability makes it a
   capability of a RUN, and `TODO.md`'s DECIDED note keeps it out of the gate precisely so no
   verdict depends on which machine ran it. This harness never contributes to a verdict.
 * **The rule's own scope.** `AGENTS.md` bans one-off BUILDS that call a compiler directly, and
   says in the same breath that the syntax front-end gate is outside that ban because it builds
   nothing. This produces no object file and no build artifact either; it reads one file and
-  prints text. It also runs outside any orchestration, so it holds none of the
-  `orchestration_id` / `agent_run_id` / `capability_token` the workflow-mode MCP tools require.
+  prints text. It also runs outside any orchestration, so it has no `orchestration_id` /
+  `agent_run_id` for the library's command log to attribute it to.
 
-If that reasoning stops holding — if the gate ever needs flang, or the MCP server grows an
+If that reasoning stops holding — if the gate ever needs flang, or the library grows an
 unparse mode — this half moves behind it.
 
 THIS IS NOT A SUITE TEST, and it does not skip. Both halves check their prerequisites up front and

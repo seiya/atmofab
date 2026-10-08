@@ -112,7 +112,7 @@ while that is true, which is the point: the day a `c` backend is registered, the
 the change a reviewer looks at, not this file.
 
 What this module deliberately does NOT do: decide the verdict, read findings, or know about the
-gate. It states the invocation; `mcp_servers/build_runtime_server.py` runs it and
+gate. It states the invocation; `tools/build_runtime.py` runs it and
 `tools/workflow_conductor.py`'s `_gate_lint_check` reads the result.
 """
 
@@ -132,7 +132,7 @@ LANGUAGES: tuple[str, ...] = ("c", "cpp")
 
 #: `None`: this linter walks the directory it is pointed at (`check_argv(target)`), rather than
 #: being handed files by name — the `lint` capability contract's switch
-#: (`mcp_servers/build_runtime_server.py` `_lint_command_over`).
+#: (`tools/build_runtime.py` `_lint_command_over`).
 SOURCE_SUFFIXES: tuple[str, ...] | None = None
 
 #: The severities the gate asks for, and the only place they are written. `error` is not listed

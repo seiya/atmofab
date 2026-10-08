@@ -447,9 +447,7 @@ class WiringTests(unittest.TestCase):
         self.assertEqual(registry.get("linter", "cppcheck").core_provides, frozenset())
 
     def test_the_server_runs_the_argv_this_module_declares(self) -> None:
-        if str(REPO_ROOT / "mcp_servers") not in sys.path:
-            sys.path.insert(0, str(REPO_ROOT / "mcp_servers"))
-        import build_runtime_server as server
+        from tools import build_runtime as server
 
         self.assertEqual(server._LINT_PRESET_COMMANDS["cppcheck"], lint.check_argv())
         self.assertEqual(server.lint_preset_executables("cppcheck"), (lint.EXECUTABLE,))
@@ -457,9 +455,7 @@ class WiringTests(unittest.TestCase):
     def test_the_composite_preset_runs_this_argv_too(self) -> None:
         """`mixed` composes `fortitude` and `cppcheck`, and it is the reason `mixed` keeps `lint`
         in `core_provides`: it has no invocation of its own to move."""
-        if str(REPO_ROOT / "mcp_servers") not in sys.path:
-            sys.path.insert(0, str(REPO_ROOT / "mcp_servers"))
-        import build_runtime_server as server
+        from tools import build_runtime as server
 
         from tools.backends import registry
 

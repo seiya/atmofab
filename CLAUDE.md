@@ -13,7 +13,7 @@ The shared / cross-backend conventions are imported from `AGENTS.md` above. This
 The development-facing counterpart of `AGENTS.md` is `docs/DEVELOPMENT.md`: fresh-machine setup, the configuration layers, where a development record belongs, and the `.claude/` boundary decision. It is backend-independent, so the Claude-specific notes below cite it rather than repeat it.
 
 Claude-specific operator / maintenance references (not needed by a running sub-agent):
-- Claude backend preflight requirements (build-runtime MCP registration + permission): [docs/RUNBOOK.md](docs/RUNBOOK.md) §0-2.
+- Claude backend preflight requirements: [docs/RUNBOOK.md](docs/RUNBOOK.md) §0-2. No server registration or tool permission is required since the MCP layer was deleted in [issue #444](https://github.com/seiya/atmofab/issues/444).
 - Hook implementation, the matcher rule, and the dev-layer / leaf-layer split: [docs/HOOKS.md](docs/HOOKS.md).
 - How a review loop over your own change is run — rounds, exclusion lists, when Codex enters, how convergence is judged: the `atmofab-review-loop` skill in `.claude/skills/`.
 - The traps specific to changing enforcement machinery, and the rules for classifying a review finding as residual or out of scope: the `atmofab-enforcement-change` skill in `.claude/skills/`.

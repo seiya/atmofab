@@ -33,8 +33,8 @@ them: the harness's scratch paths must not be paths the suite makes assertions a
 this script cannot know which those are — so when the baseline is red, suspect the harness
 before the suite.
 
-    python3 mutation_check.py --range HEAD~1..HEAD --paths mcp_servers tools \\
-        --test-cmd "python3 -m pytest tools/tests/test_build_runtime_server.py -q -x"
+    python3 mutation_check.py --range HEAD~1..HEAD --paths tools \\
+        --test-cmd "python3 -m pytest tools/tests/test_build_runtime.py -q -x"
 
 One test run per hunk is the whole cost, so the hunks are spread over `--jobs`
 worktrees that run at the same time (default: min(cores - 2, 4)). Two more things cut the

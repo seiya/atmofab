@@ -15,7 +15,7 @@ Two properties are the point:
 - **No tool name is written here.** Every executable is argv[0] of the command that will
   actually run it, read out of the table that runs it — `lint_preset_executables` /
   `build_system_executable` / `syntax_compiler_executable` in
-  `mcp_servers/build_runtime_server.py`. A probe that spelled its own name could look for a
+  `tools/build_runtime.py`. A probe that spelled its own name could look for a
   program the gate never launches. This one cannot, and it adds no technology knowledge to a
   `neutral core` file (`AGENTS.md` §Backend boundary rules, `docs/BACKEND_BOUNDARY.md`).
 - **Every axis value is asked of the registry first.** `tools/backends/registry.py` answers
@@ -50,12 +50,11 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import sys
 import tempfile
 from pathlib import Path
 from typing import NamedTuple
 
-_REPO_ROOT = Path(__file__).resolve().parent.parent
+from tools import build_runtime
 
 
 class HostExecutable(NamedTuple):
@@ -78,23 +77,6 @@ class HostToolVersion(NamedTuple):
     executable: str
     version: str | None
     reason: str
-
-
-def _build_runtime_server():
-    """The MCP server module, reached the way the conductor's in-process gate bodies reach it.
-
-    It pulls in no third-party package and imports in milliseconds, so paying for it on the
-    launch path costs nothing measurable; the alternative — a second copy of the argv tables — is
-    the drift this module exists to prevent. (It is no longer stdlib-ONLY: a `linter` row whose
-    argv has moved into its backend package is composed by reaching
-    `tools/backends/registry.py`. Both modules it reads are themselves stdlib-only.)
-    """
-    mcp_dir = str(_REPO_ROOT / "mcp_servers")
-    if mcp_dir not in sys.path:
-        sys.path.insert(0, mcp_dir)
-    import build_runtime_server
-
-    return build_runtime_server
 
 
 def _require_implemented(axis: str, backend_id: str) -> None:
@@ -165,7 +147,6 @@ def required_host_executables(
     selection: dict[str, str],
 ) -> tuple[HostExecutable, ...]:
     """Every program the resolved selection needs on the host, in probe order, without repeats."""
-    server = _build_runtime_server()
 
     found: list[HostExecutable] = []
     seen: set[str] = set()
@@ -181,18 +162,18 @@ def required_host_executables(
     # A composite preset (one that runs several linters in order) is attributed to the SUB-preset
     # that needs each program, not to the composite: the sub-preset is the registered `linter`
     # member, so it is what the registry can be asked about and what an operator installs.
-    for sub_preset in server.lint_preset_sub_presets(selection["linter"]):
+    for sub_preset in build_runtime.lint_preset_sub_presets(selection["linter"]):
         _require_implemented("linter", sub_preset)
-        for executable in server.lint_preset_executables(sub_preset):
+        for executable in build_runtime.lint_preset_executables(sub_preset):
             add("linter", sub_preset, executable)
 
     build_system = selection["build_system"]
     _require_implemented("build_system", build_system)
-    add("build_system", build_system, server.build_system_executable(build_system))
+    add("build_system", build_system, build_runtime.build_system_executable(build_system))
 
     compiler = selection["compiler"]
     _require_implemented("compiler", compiler)
-    add("compiler", compiler, server.syntax_compiler_executable(compiler))
+    add("compiler", compiler, build_runtime.syntax_compiler_executable(compiler))
 
     # The program that stands in for the compiler at build and at the syntax stage (issue #316).
     parallel = selection.get("parallel")
@@ -370,12 +351,11 @@ def required_site_executables(selection: dict[str, str], *, scheduler: str,
     from tools.execution_sites import DIRECT_SCHEDULER
     from tools.remote_execution import REMOTE_EXECUTABLES, scheduler_executables
 
-    server = _build_runtime_server()
     build_system = selection["build_system"]
     _require_implemented("build_system", build_system)
     runs_on_login = scheduler == DIRECT_SCHEDULER
     found: list[str] = []
-    for executable in (*REMOTE_EXECUTABLES, server.build_system_executable(build_system),
+    for executable in (*REMOTE_EXECUTABLES, build_runtime.build_system_executable(build_system),
                        *((selection["build_compiler"],) if runs_on_login else ()),
                        *(execution_executables(selection)
                          if runs_on_login and reaches_validate else ()),
@@ -388,7 +368,7 @@ def required_site_executables(selection: dict[str, str], *, scheduler: str,
 def _tool_version_text(version_argv: tuple[str, ...]) -> str | None:
     """What the program prints for its own version, whole, or `None` when it cannot be read.
 
-    Copied in shape from `_syntax_compiler_version` in `mcp_servers/build_runtime_server.py`,
+    Copied in shape from `_syntax_compiler_version` in `tools/build_runtime.py`,
     including the failure polarity: a program that cannot be started, times out, or prints
     nothing yields `None`, and the CALLER decides what an unreadable version means. Here the
     caller is a launch gate, and the backend's own clause refuses it.

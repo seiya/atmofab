@@ -18,10 +18,8 @@ from unittest import mock
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-if str(REPO_ROOT / "mcp_servers") not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT / "mcp_servers"))
 
-import build_runtime_server as server  # noqa: E402
+from tools import build_runtime as server  # noqa: E402
 from tools import host_prerequisites as hp  # noqa: E402
 from tools import workflow_conductor as conductor  # noqa: E402
 from tools.backends import registry as backend_registry  # noqa: E402

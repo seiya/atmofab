@@ -2,7 +2,7 @@
 """The one place that maps a target-stack axis VALUE to the code that knows that technology.
 
 The rule this serves is `docs/BACKEND_BOUNDARY.md`: the neutral core (the conductor, the
-runtime, the deterministic gates, the MCP server, the prompt templates) may name an axis value
+runtime, the deterministic gates, the build-runtime library, the prompt templates) may name an axis value
 — `fortran`, `make`, `gfortran` — but may not contain the knowledge that value implies. That
 knowledge lives in `tools/backends/<axis>/<backend_id>/` and is reached through this module.
 
@@ -483,7 +483,7 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         # only place the accepted presets are written. Listing only `fortitude` here would
         # narrow the live gate.
         # Every linter that HAS an invocation now authors it in its own package, and
-        # `mcp_servers/build_runtime_server.py` composes each row through `capability_module`.
+        # `tools/build_runtime.py` composes each row through `capability_module`.
         # What forced each move is the argv itself: a lint rule id, and a compiler-family
         # argument, are the examples `docs/BACKEND_BOUNDARY.md` §Design Policy gives of knowledge
         # the neutral core may not hold (issue #111 for the first of them, issue #120 for the

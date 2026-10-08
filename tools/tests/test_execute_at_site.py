@@ -33,7 +33,7 @@ from tools.host_execution import LOCAL_SITE, launch_shape
 from tools.tests.llm_samples import sample_config_with as _cfg
 from tools.tests.target_fixtures import TARGET_ID, profile_with
 from tools.tests.test_remote_execution import _SCP_SHIM, _SSH_SHIM
-from tools.tests.test_workflow_conductor import _server, _TargetedConductor
+from tools.tests.test_workflow_conductor import _build_runtime, _TargetedConductor
 
 #: The shipped runner: writes the evidence the execute body reads into its working directory,
 #: records its argv and cwd, and exits with `$RUNNER_RC`.
@@ -237,7 +237,7 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
         self.assertEqual(run_log[0]["site"]["remote_cwd"], f"{job}/run")
         self.assertEqual(qc_log[0]["site"]["remote_cwd"], f"{job}/src")
         # The server's own bounds, passed because no server applies them at a site.
-        server = _server()
+        server = _build_runtime()
         self.assertEqual(run_log[0]["timeout_sec"], server.RUN_PROGRAM_TIMEOUT_SEC)
         self.assertEqual(qc_log[0]["timeout_sec"], server.QUALITY_CHECKS_TIMEOUT_SEC)
         self.assertEqual(run_log[0]["capture_limit"], wc._FULL_CAPTURE_LIMIT)
@@ -521,7 +521,7 @@ class ExecuteAtTheLocalSiteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             n = _Node(tmp, site=Site(LOCAL_SITE, ("cpu",)))
             n.built_at("box")
-            with mock.patch.object(_server(), "tool_run_program",
+            with mock.patch.object(_build_runtime(), "tool_run_program",
                                    side_effect=AssertionError("nothing runs")):
                 result = n.substep()
             self.assertEqual(result.returncode, 1, result)

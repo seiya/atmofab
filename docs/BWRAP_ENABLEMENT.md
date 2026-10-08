@@ -11,7 +11,7 @@ profile builder, the leaf-launch path, or the build toolchain.
 - **Why a live run is required:** `record-launch` builds a per-arid bwrap profile and
   records `sandbox_enforced: true`, and `spawn_leaf` wraps every leaf in
   `render_bwrap_command`. A unit test confirms the wrapping, but only a full `claude -p`
-  run exercises real auth, the MCP `build-runtime` spawn, hooks firing, the
+  run exercises real auth, the in-process build-runtime calls, hooks firing, the
   `--session-id` transcript, and the **compile/build toolchain writing objects, module artifacts and the executable**
   from the conductor's own process while the leaves run confined.
 
@@ -21,8 +21,8 @@ profile builder, the leaf-launch path, or the build toolchain.
    (`bwrap --version` works as the invoking user). WSL2 / some container hosts disable
    user namespaces — if so, this host is unsupported (the conductor fails closed there,
    which is the correct behavior, not a regression). bwrap is Linux-userns-only.
-2. Claude backend preflight already passes (MCP `build-runtime` registered + tool
-   permission granted): see `docs/RUNBOOK.md` §0-2. Run the normal preflight first.
+2. Claude backend preflight already passes: see `docs/RUNBOOK.md` §0-2. Run the normal
+   preflight first.
 3. **Run this standalone.** It is a billed, autonomous `--run-conductor` orchestration; do
    not run it concurrently with other manual workflow activity or it will pollute the
    workspace-global baseline (the truth is `meta=pass` + `aggregate_verdict`; a polluted
@@ -59,7 +59,7 @@ The run must reach `orchestration_meta.json` `status=pass` with a real
 |---|---|
 | Leaves actually ran sandboxed | each `agents/<arid>/dialogs/child.response.json` of a CHILD-PROCESS leaf has `sandbox_enforced: true` **and** a `sandbox_command` starting with `bwrap`; the leaf produced a real reply (not an immediate launch error). A leaf answered over HTTPS from the conductor's own process instead carries `leaf_transport: "http"`, `sandbox_enforced: false` and no `sandbox_command` — it runs no model-directed tool, so there is nothing to confine (see `docs/ORCHESTRATION.md` "Leaf LLM configuration") |
 | Real auth + `--session-id` transcript worked | `<projects-root>/<slug>/<session_id>.jsonl` exists (`<projects-root>` is `~/.claude/projects` for every session, a workflow leaf's included: a pure leaf is prepared no private home. Issue #63 had put an agentic leaf's under `orchestration_meta.json#claude_workflow_home` + `/projects`, which Z4 — issue #171 — deleted with that leaf) and has assistant turns for each leaf (auth/config-home bind is functional). **Operator context only**: that path is the backend CLI's credential/session home, which the Bash read guard rejects fail-closed whenever `ATMOFAB_WORKFLOW_MODE=1` (policy `forbid_backend_credential_direct_read`; canonical: `docs/HOOKS.md` §"Layer boundary"). Check it from an operator terminal outside a workflow run |
-| MCP `build-runtime` invoked | the deterministic conductor substeps (`generate.gate` / `build` / `validate.execute`, run in-process — not LLM leaves) recorded `run_linter` / `run_syntax_check` / `compile_project` / `run_program` evidence (`command_log.jsonl` present, `ok:true`) |
+| build-runtime library invoked | the deterministic conductor substeps (`generate.gate` / `build` / `validate.execute`, run in-process — not LLM leaves) recorded `run_linter` / `run_syntax_check` / `compile_project` / `run_program` evidence (`command_log.jsonl` present, `ok:true`) |
 | The checkout hidden from the leaf | a leaf's sandbox sees only its own `workspace/tmp/<arid>` and its own `sandboxes/<arid>/tmp`: no other orchestration's records, no `dialogs/`, no sibling pipeline — and no `tools/`, `docs/`, `spec/` or `.git/` either, since [issue #227](https://github.com/seiya/atmofab/issues/227) replaced the per-tree overlays of Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) with an empty tmpfs at `repo_root`. Pinned under real `bwrap` by `test_bwrap_simulation.BwrapReadonlyProfileTests::test_readonly_profile_hides_workspace_from_the_leaf` and `::test_readonly_profile_hides_the_checkout_and_keeps_own_tmp_writable`; on a live run, every `sandbox_command` carries `--tmpfs <repo_root>` and no `--ro-bind` whose source is under the checkout (the leaf FLAGS — `--skip-git-repo-check` among them — are in no artifact: `sandbox_command` renders the executable alone; the flag is pinned by `test_codex_pure_launch_reaches_the_api_from_the_empty_cwd` instead) |
 | **Build output landed where the phase declares it** | the **Build phase passed** — `compile_project` wrote the objects and module artifacts to the per-run object dir and the exe to `binary/<binary_id>/bin/` with no EROFS. `Build` is a DETERMINISTIC substep in the conductor's own process, so no sandbox is involved in that write; what this row is still for is that the output-directory overrides resolve to the right places. It read `no unauthorized_write_violation` until [issue #171](https://github.com/seiya/atmofab/issues/171) PR-2 deleted the terminal write audit that produced that marker. |
 
@@ -135,7 +135,7 @@ makes no tool call, so there is no hook to run, no flag to pass, and no hook sou
   conductor's own process and is confined by nothing, so this is the build toolchain
   writing somewhere that does not exist or is not writable rather than a sandbox refusal.
   Identify the path from the error and check the out-of-source output-directory overrides
-  `Build` passes to `compile_project` (`docs/workflow/MCP_COMMAND_LOG_PLACEMENT.md` names
+  `Build` passes to `compile_project` (`docs/workflow/COMMAND_LOG_PLACEMENT.md` names
   them). (A leaf CANNOT produce this error: it writes no file at all.
   Until [issue #171](https://github.com/seiya/atmofab/issues/171) the same symptom reached
   a leaf's `write_roots`, and the fix was to widen the bwrap write scope.)

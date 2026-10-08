@@ -2,7 +2,7 @@
 
 What the in-process Build / Validate.execute bodies (`tools/workflow_conductor.py`
 `_build_inproc` / `_execute_inproc`), the build-runtime server's `compile_project` /
-`run_quality_checks` (`mcp_servers/build_runtime_server.py`) and the post_execute
+`run_quality_checks` (`tools/build_runtime.py`) and the post_execute
 quality-check gate (`tools/validate_pipeline_semantics.py`) need to know about driving `make`:
 the argv a build runs, the variables it is handed, the quality-check preset it re-runs the
 binary through, and what a build that reported success without a binary means. The values moved

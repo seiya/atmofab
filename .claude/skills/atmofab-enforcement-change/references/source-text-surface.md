@@ -6,8 +6,8 @@ keyword). This checklist is target-language knowledge, so it also carries its ow
 read the second paragraph before quoting any figure from it.
 
 **When the gate reads the source text rather than the meaning of an input (validators and
-parsers), the surface is a different one.** The exec/env/argv surface (`SKILL.md` §1) is the MCP
-capability gate's and barely applies to the Fortran-reading gates in
+parsers), the surface is a different one.** The exec/env/argv surface (`SKILL.md` §1) is the build-runtime
+library's argument validation and barely applies to the Fortran-reading gates in
 `validate_pipeline_semantics.py`. What you inventory there is **the spelling variation the
 language permits**:
 

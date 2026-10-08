@@ -29,7 +29,8 @@ from pathlib import Path
 from unittest import mock
 from unittest.mock import patch
 
-from mcp_servers.build_runtime_server import tool_compile_project
+from tools.build_runtime import tool_compile_project
+from tools import build_runtime
 from tools import derivation as tools_derivation
 from tools import orchestration_runtime as ort
 from tools.tests.orchestration_fixtures import (
@@ -560,53 +561,6 @@ _CLAUDE_EMPTY_PROMPT_REFUSAL = (
     "Error: Input must be provided either through stdin or as a prompt argument "
     "when using --print"
 )
-
-
-def _answer_claude_roster_probe(args, kwargs, *, roster=None):
-    """The CLI double for `_probe_claude_leaf_tool_roster`'s launch.
-
-    A REAL POST to the probe's own capture server, read off the env the probe built, so
-    the server, its request parsing and the classification all run for real; only the CLI
-    is faked. Returning a canned check result instead would leave every one of those
-    unexercised — the shape that let a broken server look green.
-
-    `roster` defaults to the passing case: the declared allowlist PLUS one tool from the
-    server the fixture's `.mcp.json` declares, because a declared server that contributes
-    nothing to the roster is a finding of its own. The tools carry only `name`, which is
-    the one field the server reads.
-    """
-    import urllib.error
-    import urllib.request
-    from tools.orchestration_runtime import CLAUDE_LEAF_TOOLS
-
-    names = ([*CLAUDE_LEAF_TOOLS, "mcp__build-runtime__run_linter"]
-             if roster is None else list(roster))
-    base_url = kwargs["env"]["ANTHROPIC_BASE_URL"]
-    body = json.dumps({
-        "model": "claude-opus-5",
-        "tools": [{"name": name} for name in names],
-        "messages": [{"role": "user", "content": "."}],
-    }).encode("utf-8")
-    request = urllib.request.Request(
-        f"{base_url}/v1/messages?beta=true", data=body,
-        headers={"Content-Type": "application/json"})
-    try:
-        urllib.request.urlopen(request, timeout=10).read()
-    except urllib.error.HTTPError as exc:
-        # The 400 IS the contract: the stand-in refuses a request carrying tools so no
-        # model turn happens. The CLI reports it and exits 1, which is what is returned.
-        exc.read()
-    return _FakeCompletedProcess(
-        1, stdout=json.dumps({"is_error": True, "subtype": "success",
-                              "api_error_status": 400,
-                              "result": "API Error: 400 atmofab preflight roster capture"}))
-
-
-def _is_claude_roster_probe(args) -> bool:
-    """The roster probe's launch, told apart from every other CLI double call by the flag
-    that decides the tool set. Matching on the whole argv would make every double a second
-    copy of `claude_leaf_roster_probe_argv`."""
-    return "--tools" in list(args)
 
 
 # Subsets of the real `codex exec --help` / `codex exec resume --help`: every flag the
@@ -1195,136 +1149,13 @@ shell_tool                       stable             true
         self.assertFalse(result["can_launch_substep_agents"])
         self.assertNotEqual(result["feature_states"].get("multi_agent"), True)
 
-    def _claude_runner_with_mcp(
-        self,
-        mcp_stdout: str = "",
-        mcp_returncode: int = 0,
-        *,
-        raise_on_mcp_list: Exception | None = None,
-    ) -> Callable[..., subprocess.CompletedProcess[str]]:
-        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
-            if args[0] == "claude" and args[1:] == ["--version"]:
-                return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
-            if args[0] == "claude" and args[1:] == ["features", "list"]:
-                return _FakeCompletedProcess(1, stderr="unknown command\n")
-            if args[0] == "claude" and args[1:] == ["-p"]:
-                # The zero-token stdin-support probe: the CLI's own refusal names its
-                # input channels. See `_probe_claude_backend`.
-                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
-            if args[0] == "claude" and args[1:] == ["--help"]:
-                return _FakeCompletedProcess(
-                    0, stdout="Usage: claude [options] [command] [prompt]\n"
-                )
-            if args[0] == "claude" and args[1:] == ["mcp", "list"]:
-                if raise_on_mcp_list is not None:
-                    raise raise_on_mcp_list
-                return _FakeCompletedProcess(mcp_returncode, stdout=mcp_stdout)
-            if _is_claude_roster_probe(args):
-                return _answer_claude_roster_probe(args, kwargs)
-            raise AssertionError(args)
-
-        return runner
-
-    @staticmethod
-    def _write_project_settings(
-        repo_root: Path,
-        *,
-        write_settings: bool = True,
-        enabled_mcpjson_servers: list[str] | None = None,
-        disabled_mcpjson_servers: list[str] | None = None,
-        enable_all_project_mcp_servers: bool | None = None,
-        mcp_servers: dict[str, Any] | None = None,
-        local_disabled_mcpjson_servers: list[str] | None = None,
-        allow_permissions: list[str] | None = None,
-        deny_permissions: list[str] | None = None,
-        default_mode: str | None = None,
-        local_allow_permissions: list[str] | None = None,
-        local_deny_permissions: list[str] | None = None,
-        local_default_mode: str | None = None,
-    ) -> None:
-        """Write out the project settings committed to the repo, to temp repo_root.
-
-        The canonical source for enablement is `<repo>/.claude/settings.json` (flat key).
-        `.mcp.json` is for confirming `enableAllProjectMcpServers` expansion, and `settings.local.json` is
-        for confirming the detection of a personal opt-out (disabledMcpjsonServers).
-        """
-        claude_dir = repo_root / ".claude"
-        claude_dir.mkdir(parents=True, exist_ok=True)
-        if write_settings:
-            data: dict[str, Any] = {}
-            if enabled_mcpjson_servers is not None:
-                data["enabledMcpjsonServers"] = enabled_mcpjson_servers
-            if disabled_mcpjson_servers is not None:
-                data["disabledMcpjsonServers"] = disabled_mcpjson_servers
-            if enable_all_project_mcp_servers is not None:
-                data["enableAllProjectMcpServers"] = enable_all_project_mcp_servers
-            perms: dict[str, Any] = {}
-            if allow_permissions is not None:
-                perms["allow"] = allow_permissions
-            if deny_permissions is not None:
-                perms["deny"] = deny_permissions
-            if default_mode is not None:
-                perms["defaultMode"] = default_mode
-            # PERMISSIONS used to be written into the LEAF configuration, which was the
-            # layer the claude MCP-permission preflight probe read. That probe and that
-            # configuration went with the agentic leaf (Z4, issue #171), so the keys are
-            # collected and written here, where the enablement keys already live, and no
-            # caller reads them back. They are kept rather than dropped from the signature
-            # because the callers that pass them are about `.claude/settings.json` as an
-            # OPERATOR-side document, which this fixture still writes.
-            if perms:
-                data["permissions"] = perms
-            (claude_dir / "settings.json").write_text(
-                json.dumps(data), encoding="utf-8"
-            )
-        if mcp_servers is not None:
-            (repo_root / ".mcp.json").write_text(
-                json.dumps({"mcpServers": mcp_servers}), encoding="utf-8"
-            )
-        elif not (repo_root / ".mcp.json").exists():
-            # A leaf is launched with `--strict-mcp-config --mcp-config .mcp.json`, so
-            # since issue #71 preflight FAILS CLOSED when that file is unreadable — the
-            # roster check cannot classify an `mcp__…` tool without knowing which servers
-            # this repository declares. A repo fixture with no such file is therefore not
-            # a repo any leaf could launch from. Seeded with the server the committed file
-            # declares, and only when the caller did not spell out its own: this affects no
-            # ENABLEMENT decision, which reads `.claude/settings.json`, except under
-            # `enableAllProjectMcpServers`, whose one test passes `mcp_servers` explicitly.
-            (repo_root / ".mcp.json").write_text(
-                json.dumps({"mcpServers": {"build-runtime": {
-                    "command": "python3",
-                    "args": ["./mcp_servers/build_runtime_server.py"]}}}),
-                encoding="utf-8")
-        if (
-            local_disabled_mcpjson_servers is not None
-            or local_allow_permissions is not None
-            or local_deny_permissions is not None
-            or local_default_mode is not None
-        ):
-            local_data: dict[str, Any] = {}
-            if local_disabled_mcpjson_servers is not None:
-                local_data["disabledMcpjsonServers"] = local_disabled_mcpjson_servers
-            local_perms: dict[str, Any] = {}
-            if local_allow_permissions is not None:
-                local_perms["allow"] = local_allow_permissions
-            if local_deny_permissions is not None:
-                local_perms["deny"] = local_deny_permissions
-            if local_default_mode is not None:
-                local_perms["defaultMode"] = local_default_mode
-            if local_perms:
-                local_data["permissions"] = local_perms
-            (claude_dir / "settings.local.json").write_text(
-                json.dumps(local_data),
-                encoding="utf-8",
-            )
-
     # `test_the_permission_remedy_points_at_the_layer_the_gate_reads` stood here until Z4
     # (issue #171). It pinned that `_CLAUDE_MCP_PERMISSION_REMEDIATION` — the only guidance an
     # operator got when `claude_mcp_build_runtime_permission_granted` failed — named the settings
     # layer the GATE actually reads, so the instruction converged instead of sending the operator
     # to a file nothing loads. Both the check and the remediation string are deleted: a pure leaf
     # calls no MCP tool, so there is no leaf-session grant to certify and no refusal to remedy.
-    # What an operator still has to do for their OWN session is `mcp_servers/README.md`'s.
+    # The MCP server itself was deleted in issue #444.
 
     def test_probe_execution_platform_uses_explicit_agent_command(self) -> None:
         seen = {"command": ""}
@@ -1830,7 +1661,7 @@ shell_tool                       stable             true
             "allowed_output_paths": [
                 f"{src}/src/x_model.f90",
                 f"{src}/src/x_runner.f90",
-                # MCP-owned, integrity-protected — must NOT be offered as a leaf deliverable.
+                # build-runtime-owned, integrity-protected — must NOT be offered as a leaf deliverable.
                 f"{src}/src/command_log.jsonl",
                 f"{src}/source_meta.json",
             ],
@@ -3291,13 +3122,13 @@ shell_tool                       stable             true
 
     def test_build_launch_accepts_cross_phase_log_for_make_build(self) -> None:
         """In-source Make builds (Fortran/C family) run compile_project with
-        project_dir=<gen>/src/, so the MCP audit log lands in the generate
+        project_dir=<gen>/src/, so the command log lands in the generate
         tree. The build launch must auto-inject the cross-phase canonical
         placement when source_id is provided.
         """
         from tools.orchestration_runtime import (
             _allowed_output_paths_for_launch,
-            _canonical_mcp_audit_log_paths_for_request,
+            _canonical_command_log_paths_for_request,
         )
 
         src_id = "src_make_build_001"
@@ -3329,7 +3160,7 @@ shell_tool                       stable             true
         # Both placements (in-phase and cross-phase) auto-injected.
         self.assertIn(in_phase_log, out)
         self.assertIn(cross_log, out)
-        canonical = set(_canonical_mcp_audit_log_paths_for_request(req, out))
+        canonical = set(_canonical_command_log_paths_for_request(req, out))
         self.assertIn(in_phase_log, canonical)
         self.assertIn(cross_log, canonical)
         # Without the record-launch stamp, the build system is the TARGET's, read off the
@@ -3339,10 +3170,10 @@ shell_tool                       stable             true
         bare = {k: v for k, v in req.items() if k != "_resolved_build_system"}
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            self.assertNotIn(cross_log, set(_canonical_mcp_audit_log_paths_for_request(
+            self.assertNotIn(cross_log, set(_canonical_command_log_paths_for_request(
                 bare, out, repo_root=repo)))
             install_target_profile(repo)
-            self.assertIn(cross_log, set(_canonical_mcp_audit_log_paths_for_request(
+            self.assertIn(cross_log, set(_canonical_command_log_paths_for_request(
                 bare, out, repo_root=repo)))
 
     def test_build_launch_skips_cross_phase_log_for_non_make_toolchain(self) -> None:
@@ -4451,7 +4282,7 @@ shell_tool                       stable             true
                 request_payload=req,
             )
 
-    def test_build_phase_auto_injects_and_accepts_mcp_command_log(self) -> None:
+    def test_build_phase_auto_injects_and_accepts_command_log(self) -> None:
         """Build step must auto-inject <binary_id>/command_log.jsonl (compile_project log)."""
         from tools.orchestration_runtime import _allowed_output_paths_for_launch
 
@@ -4494,7 +4325,7 @@ shell_tool                       stable             true
                 request_payload=req,
             )
 
-    def test_execute_phase_auto_injects_and_accepts_mcp_command_log(self) -> None:
+    def test_execute_phase_auto_injects_and_accepts_command_log(self) -> None:
         """Execute step must auto-inject <run_id>/<node_safe>/command_log.jsonl."""
         from tools.orchestration_runtime import _allowed_output_paths_for_launch
 
@@ -5296,7 +5127,7 @@ shell_tool                       stable             true
         If an execute launch lists `<pipeline_ref>/source/<other>/src/...`
         in allowed_output_paths (a generation different from the request's
         `source_id`), the launch must be rejected. Otherwise an older or
-        sibling generation's audit log could gain MCP-owned write authority.
+        sibling generation's audit log could gain build-runtime-owned write authority.
         """
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -5581,7 +5412,7 @@ shell_tool                       stable             true
         """Defense against authorizing writes into a failed generation's tree.
 
         Even when source_meta.json exists for the referenced source_id,
-        record_launch must reject the cross-phase MCP audit log authorization
+        record_launch must reject the cross-phase command log authorization
         if verification_status is not 'pass'. Otherwise an Execute run could
         mutate provenance files inside a failed/stale generation before the
         run is later rejected by post_execute, contaminating cross-phase
@@ -11915,7 +11746,7 @@ class PreflightLiveProbeTtlTests(unittest.TestCase):
                     self.assertEqual(probe_mock.call_count, 1)
 
     def test_require_preflight_launchable_passes_repo_root_to_live_probe(self) -> None:
-        """Pass repo_root to the live probe too (enable the Claude MCP gate in live preflight as well)."""
+        """Pass repo_root to the live probe too (the Claude MCP gate this enabled went with Z4; the argument is still threaded)."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             init_orchestration(repo_root=repo, orchestration_id="o1")
@@ -12824,7 +12655,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
     def test_init_and_resume_refuse_an_id_that_is_not_a_path_token(self) -> None:
         """The id becomes a directory name and every gate's path base, so both entry
         points refuse it. Resume as well as init: a workspace created under an older
-        grammar would otherwise restart and fail at its first MCP call instead."""
+        grammar would otherwise restart and fail at its first build-runtime call instead."""
         from tools.orchestration_runtime import resume_orchestration
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -12843,7 +12674,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
     def test_omitted_build_system_standalone_still_marker_detects(self) -> None:
         """The asymmetry is deliberate: outside an orchestration there is no toolchain
         declaration to agree with, so marker detection stays the answer."""
-        import mcp_servers.build_runtime_server as brs
+        from tools import build_runtime as brs
         with tempfile.TemporaryDirectory() as tmp:
             project_dir = Path(tmp)
             (project_dir / "CMakeLists.txt").write_text("project(x)\n", encoding="utf-8")
@@ -17014,8 +16845,9 @@ class LaunchSettingSurfacePersistenceTests(unittest.TestCase):
     """Issue #63 step 1: the configuration surface a leaf was launched with must SURVIVE
     into the launch record, and must not be pushed into the conductor's stdout.
 
-    The conductor composes `claude_setting_sources` / `mcp_config` (see
-    `Conductor._launch_setting_surface`); the runtime has no schema for either. This drives
+    The conductor composes `claude_tools` (see `Conductor._launch_setting_surface`; until Z4
+    it also composed `claude_setting_sources` and an `mcp_config` list); the runtime has no
+    schema for any of them. This drives
     the REAL `record_launch` handler — the two facts it pins are properties of the runtime,
     not of the conductor, and neither is visible from a conductor-side test:
 
@@ -17031,7 +16863,7 @@ class LaunchSettingSurfacePersistenceTests(unittest.TestCase):
 
     SURFACE = {
         "claude_setting_sources": "user",
-        "mcp_config": [{"ref": ".mcp.json", "sha256": "a" * 64}],
+        "claude_tools": [""],
     }
 
     def test_the_setting_surface_is_persisted_in_both_response_copies(self) -> None:
@@ -17043,7 +16875,7 @@ class LaunchSettingSurfacePersistenceTests(unittest.TestCase):
                          orch_root / "agents" / arid / "dialogs" / "child.response.json"):
                 doc = json.loads(path.read_text(encoding="utf-8"))
                 self.assertEqual(doc["claude_setting_sources"], "user", msg=str(path))
-                self.assertEqual(doc["mcp_config"], self.SURFACE["mcp_config"],
+                self.assertEqual(doc["claude_tools"], self.SURFACE["claude_tools"],
                                  msg=str(path))
 
 
@@ -21563,7 +21395,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
     same. Now no leaf reads anything: `Conductor._build_pure_*_context` reads the file and
     inlines it, which is why a document that reaches no `pure_context` value is unguarded
     here however large — WORKFLOW_CORE.md, phase_02/03/04, PERFORMANCE_DIAGNOSTICS.md and
-    MCP_COMMAND_LOG_PLACEMENT.md are all in that position, as they were before."""
+    COMMAND_LOG_PLACEMENT.md are all in that position, as they were before."""
 
     REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -23345,7 +23177,7 @@ class HostPycacheRedirectExemptionTest(unittest.TestCase):
         saved = sys.pycache_prefix
         try:
             sys.pycache_prefix = str(prefix_abs)
-            for src in ("mcp_servers/build_runtime_server.py",
+            for src in ("tools/build_runtime.py",
                         "tools/hooks/lint_evidence.py"):
                 pyc_abs = Path(importlib.util.cache_from_source(str(repo / src)))
                 # Sanity: the real path is under the redirect prefix and carries no __pycache__ seg.
@@ -23364,7 +23196,7 @@ class HostPycacheRedirectExemptionTest(unittest.TestCase):
         # An in-place __pycache__ write in the repo SOURCE tree is NOT exempt — an explicit
         # agent py_compile writes here and must still surface as an unauthorized write.
         self.assertFalse(_is_host_pycache_redirect_write(
-            "mcp_servers/__pycache__/build_runtime_server.cpython-313.pyc"))
+            "tools/__pycache__/build_runtime.cpython-313.pyc"))
         self.assertFalse(_is_host_pycache_redirect_write(
             "tools/hooks/__pycache__/lint_evidence.cpython-313.pyc"))
         # A genuine artifact under an orchestration root is unaffected.
@@ -23531,7 +23363,7 @@ class HostPycacheRedirectExemptionTest(unittest.TestCase):
             "module-level orchestration_runtime import writes its .pyc into the repo source "
             "tree before main() installs the sys.pycache_prefix redirect")
         # Ordering pin: the assignment must precede the in-process conductor import/dispatch,
-        # else the redirect is inactive when build_runtime_server / lint_evidence first compile.
+        # else the redirect is inactive when tools.build_runtime / lint_evidence first compile.
         # main() is not unit-callable, so pin source POSITION instead. Anchor to line-start
         # (^\s*) so the comment mentions of the same string do not false-match.
         conductor_m = re.search(
@@ -24985,7 +24817,7 @@ class DerivationInputsTests(unittest.TestCase):
             pinned = second_target(profile_with(toolchain={"compiler": "no_such_fc_x"}))
             refs = self._seed(repo, also_for=(pinned,))
             from tools.backends import registry as backend_registry
-            server = ort._build_runtime_server_module()
+            server = build_runtime
             tc = self._inputs(repo, refs, "build")["toolchain"]
             self.assertEqual(tc["compiler"], backend_registry.capability_module(
                 "language", FORTRAN_CPU.toolchain["language"], "bundle_facts").DEFAULT_COMPILER)
@@ -25034,7 +24866,7 @@ class DerivationInputsTests(unittest.TestCase):
         ids = []
         # The version probe is cached per argv for the process: a row that ran the real wrapper
         # earlier would answer this one.
-        cached = ort._build_runtime_server_module()._syntax_compiler_version
+        cached = build_runtime._syntax_compiler_version
         cached.cache_clear()
         self.addCleanup(cached.cache_clear)
         with tempfile.TemporaryDirectory() as tmp:
@@ -25079,7 +24911,7 @@ class DerivationInputsTests(unittest.TestCase):
         from tools.tests.target_fixtures import profile_with
         wrapper = registry.capability_module("parallel", "mpi", "compiler_wrapper")
         mpi = profile_with(parallel={"backend": "mpi"})
-        cached = ort._build_runtime_server_module()._syntax_compiler_version
+        cached = build_runtime._syntax_compiler_version
         ids = []
         for answer in ("one", "two"):
             cached.cache_clear()
@@ -25583,7 +25415,7 @@ class CrossPhaseLogPlacementTests(unittest.TestCase):
     PIPE = "workspace/pipelines/n/t/p"
 
     def _paths(self, build_system: str, step: str = "build", substep: str = "") -> list[str]:
-        return ort._canonical_mcp_audit_log_paths(
+        return ort._canonical_command_log_paths(
             step_token=step, pipeline_ref=self.PIPE, node_safe="n", listed_paths=[],
             source_id="src_1", build_system=build_system, substep_token=substep)
 
@@ -28945,7 +28777,7 @@ class ResolveComparandsTests(unittest.TestCase):
     def _probe_answers(answer: str | None) -> Any:
         """This host's compiler-version probe answering `answer` for every target — `None` is
         what a launching shell without the other target's compiler on PATH answers."""
-        server = ort._build_runtime_server_module()
+        server = build_runtime
         server._syntax_compiler_version.cache_clear()
         return mock.patch.object(server, "_syntax_compiler_version",
                                  side_effect=lambda argv: answer)
@@ -28962,7 +28794,7 @@ class ResolveComparandsTests(unittest.TestCase):
     def test_the_comparand_resolver_runs_no_probe(self) -> None:
         with self._probe_answers("v1"):
             self._seed_b()
-        server = ort._build_runtime_server_module()
+        server = build_runtime
         with mock.patch.object(server, "_syntax_compiler_version",
                                side_effect=AssertionError("probed a compiler")), \
                 mock.patch("tools.host_execution.probe_first_line",

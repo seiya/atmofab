@@ -501,7 +501,7 @@ REQUIRED_WORKFLOW_STEPS = ("compile", "generate", "build", "validate")
 SUBSTEP_WORKFLOW_STEPS = frozenset({"compile", "generate", "validate"})
 AGENT_TERMINAL_STATUSES = {"pass", "fail", "blocked", "timeout", "cancel"}
 
-# Generate-stage static lint (MCP run_linter); see docs/workflow/WORKFLOW_CORE.md and docs/workflow/phases/phase_02_generate.md
+# Generate-stage static lint (build-runtime run_linter); see docs/workflow/WORKFLOW_CORE.md and docs/workflow/phases/phase_02_generate.md
 
 # NOTE: there is deliberately no lint-preset SET here. Which presets are accepted is asked of
 # `backend_registry.unimplemented_reason` per value rather than held as a copy — the copy was a
@@ -1258,10 +1258,10 @@ def _validate_ir_meta_json(ir_dir: Path, violations: list[str]) -> None:
         violations.append(f"{meta_path}:{clause}")
 
 
-_MCP_AUDIT_LOG_BASENAME: str = "command_log.jsonl"
+_COMMAND_LOG_BASENAME: str = "command_log.jsonl"
 
 
-def _canonical_mcp_log_refs_for_lint(meta_path: Path, repo_root: Path) -> set[str]:
+def _canonical_command_log_refs_for_lint(meta_path: Path, repo_root: Path) -> set[str]:
     """Canonical command_log_ref placements for `source_meta.json` lint validation.
 
     Only one canonical placement: sibling under `<gen_dir>/src/`. A child agent
@@ -1269,7 +1269,7 @@ def _canonical_mcp_log_refs_for_lint(meta_path: Path, repo_root: Path) -> set[st
     `lint evidence run_linter[].command_log_ref` at it should be rejected.
     """
     parent = meta_path.parent
-    canonical = parent / "src" / _MCP_AUDIT_LOG_BASENAME
+    canonical = parent / "src" / _COMMAND_LOG_BASENAME
     try:
         rel = canonical.resolve().relative_to(repo_root.resolve()).as_posix()
     except ValueError:
@@ -1376,10 +1376,10 @@ def _validate_trial_meta(repo_root: Path, execution: NodeExecution, violations: 
 
     # source_command_ref entries record run_program/run_threads/etc. command
     # invocations; their log files use project-defined filenames (e.g.
-    # `run_commands.jsonl`) and do NOT use the canonical MCP audit log basename.
+    # `run_commands.jsonl`) and do NOT use the canonical command log basename.
     # The validator only checks command_id presence (no tool_name/ok inspection),
     # so the forge surface here is limited to "a record exists with this id" —
-    # not meaningful evidence of successful MCP tool execution. Canonical
+    # not meaningful evidence of successful build-runtime execution. Canonical
     # placement is enforced separately for the conductor lint evidence where the
     # validator inspects tool_name/ok and the forge becomes high-impact.
     for entry in _iter_command_ref_entries(source_command_ref):
@@ -1437,7 +1437,7 @@ def _validate_trial_meta(repo_root: Path, execution: NodeExecution, violations: 
                 f"{command_id} must declare tool_name field in "
                 f"{sorted(recognized_tool_names)!r} (got "
                 f"{declared_tool_name_raw!r}). Each entry must commit to a "
-                f"specific MCP tool role so downstream role-specific checks "
+                f"specific build-runtime tool role so downstream role-specific checks "
                 f"cannot be silently skipped."
             )
             continue
@@ -1448,7 +1448,7 @@ def _validate_trial_meta(repo_root: Path, execution: NodeExecution, violations: 
             violations.append(
                 f"{trial_meta_path}:source_command_ref command_id {command_id} log "
                 f"record must declare tool_name in {sorted(recognized_tool_names)!r} "
-                f"(got {record_tool_name!r}). Records without a recognized MCP "
+                f"(got {record_tool_name!r}). Records without a recognized build-runtime "
                 f"tool_name cannot serve as tool-execution evidence."
             )
             continue
@@ -1457,7 +1457,7 @@ def _validate_trial_meta(repo_root: Path, execution: NodeExecution, violations: 
                 f"{trial_meta_path}:source_command_ref entry tool_name="
                 f"{declared_tool_name!r} (command_id={command_id}) does not "
                 f"match log record tool_name={record_tool_name!r}. The "
-                f"declared role must match the resolved MCP record."
+                f"declared role must match the resolved build-runtime record."
             )
 
     # Execute trial_meta MUST contain at least one run_program entry — this is
@@ -3709,7 +3709,7 @@ def _infer_run_linter_preset_from_command(command: list[Any]) -> str | None:
     return _lint_preset_by_executable().get(Path(head).name)
 
 
-def _verify_mcp_command_log_record(
+def _verify_command_log_record(
     repo_root: Path,
     meta_path: Path,
     label: str,
@@ -3718,7 +3718,7 @@ def _verify_mcp_command_log_record(
     expected_tool: str,
     violations: list[str],
 ) -> list[Any] | None:
-    """Shared forgery-detection for a host-authored evidence entry that cites an MCP
+    """Shared forgery-detection for a host-authored evidence entry that cites a build-runtime
     ``command_log.jsonl`` record (used by both the lint and syntax certifications). The log
     ref must be the canonical placement, the record must exist, be ``expected_tool``, have
     ``ok=true``, and carry a non-empty ``command`` argv. Returns the logged ``command`` list
@@ -3727,11 +3727,11 @@ def _verify_mcp_command_log_record(
     prefixes each message (e.g. ``lint evidence run_linter[0]`` /
     ``syntax evidence stages[0]``). Callers validate ``command_id`` / ``log_ref`` presence
     before calling."""
-    canonical_refs = _canonical_mcp_log_refs_for_lint(meta_path, repo_root)
+    canonical_refs = _canonical_command_log_refs_for_lint(meta_path, repo_root)
     log_ref_norm = log_ref.rstrip("/")
     if canonical_refs and log_ref_norm not in canonical_refs:
         violations.append(
-            f"{meta_path}: {label}.command_log_ref must be the canonical MCP audit log "
+            f"{meta_path}: {label}.command_log_ref must be the canonical command log "
             f"placement (expected one of {sorted(canonical_refs)!r}, got {log_ref_norm!r}). "
             "Non-canonical placements are rejected to prevent forged tool-execution evidence."
         )
@@ -3932,7 +3932,7 @@ def _validate_generate_lint_command_logs(
             )
             continue
 
-        command = _verify_mcp_command_log_record(
+        command = _verify_command_log_record(
             repo_root, meta_path, f"lint evidence run_linter[{idx}]",
             command_id.strip(), log_ref.strip(), "run_linter", violations)
         if command is None:
@@ -3957,7 +3957,7 @@ def _validate_generate_syntax_command_logs(
     (`<pipeline_root>/syntax_evidence/<source_id>.json`).
 
     The syntax gate is the deterministic `generate.gate` substep run in-process by the
-    conductor (Conductor._gate_syntax_check -> MCP run_syntax_check). Mirrors
+    conductor (Conductor._gate_syntax_check -> build-runtime run_syntax_check). Mirrors
     `_validate_generate_lint_command_logs`: the certificate cannot be forged by the leaf
     (the pipeline root is read-only inside the sandbox). Required for every language: the
     language backend names the MANDATORY stage (`bundle_facts.MANDATORY_SYNTAX_COMPILER`),
@@ -4029,7 +4029,7 @@ def _validate_generate_syntax_command_logs(
         "language", language, "bundle_facts").MANDATORY_SYNTAX_COMPILER)
 
     # The pipeline's target decides whether a stage ran through the parallel backend's compiler
-    # wrapper (issue #316; `build_runtime_server.syntax_compiler_wrapper` makes the same
+    # wrapper (issue #316; `build_runtime.syntax_compiler_wrapper` makes the same
     # decision when it runs the stage). A pipeline whose target does not resolve is refused by
     # `_validate_pipeline_targets_resolve`; here it admits no wrapper, so a wrapped record is
     # refused as a mismatch rather than accepted on its word.
@@ -4095,7 +4095,7 @@ def _validate_generate_syntax_command_logs(
             continue
 
         # Same canonical placement as the lint records: <gen_dir>/src/command_log.jsonl.
-        command = _verify_mcp_command_log_record(
+        command = _verify_command_log_record(
             repo_root, meta_path, f"syntax evidence stages[{idx}]",
             command_id.strip(), log_ref.strip(), "run_syntax_check", violations)
         if command is None:
@@ -6279,7 +6279,7 @@ def _canonical_log_ref_for_run_program(
 
     Sibling of trial_meta inside the execute node directory.
     """
-    canonical = trial_meta_path.parent / _MCP_AUDIT_LOG_BASENAME
+    canonical = trial_meta_path.parent / _COMMAND_LOG_BASENAME
     try:
         return canonical.resolve().relative_to(repo_root.resolve()).as_posix()
     except ValueError:
@@ -6301,7 +6301,7 @@ def _canonical_log_ref_for_run_quality_checks(
     gen_id = source_source_id.strip()
     if not gen_id:
         return None
-    canonical = pipeline_dir / "source" / gen_id / "src" / _MCP_AUDIT_LOG_BASENAME
+    canonical = pipeline_dir / "source" / gen_id / "src" / _COMMAND_LOG_BASENAME
     try:
         return canonical.resolve().relative_to(repo_root.resolve()).as_posix()
     except ValueError:
@@ -6401,14 +6401,14 @@ def _validate_run_program_inputs(
         if matched.get("tool_name") != "run_program":
             continue
 
-        # Reject failed MCP runs as evidence: a run_program record with
+        # Reject failed build-runtime runs as evidence: a run_program record with
         # ok!=true means the program execution itself did not succeed, and
         # cannot serve as proof that the workload ran. Mirrors the
         # `run_linter` validator policy.
         if matched.get("ok") is not True:
             violations.append(
                 f"{trial_meta_path}:run_program command_id={command_id} "
-                f"ok must be true (got {matched.get('ok')!r}). Failed MCP "
+                f"ok must be true (got {matched.get('ok')!r}). Failed build-runtime "
                 f"runs cannot serve as tool-execution evidence."
             )
             continue
@@ -6424,7 +6424,7 @@ def _validate_run_program_inputs(
         ):
             violations.append(
                 f"{trial_meta_path}:run_program command_id={command_id} "
-                f"command_log_ref must be the canonical MCP audit log placement "
+                f"command_log_ref must be the canonical command log placement "
                 f"({canonical_run_program_ref!r}, got {log_ref_norm!r}). "
                 "Non-canonical placements are rejected to prevent forged "
                 "tool-execution evidence."
@@ -6703,13 +6703,13 @@ def _validate_quality_check_commands(
         if matched.get("tool_name") != "run_quality_checks":
             continue
 
-        # Reject failed MCP runs as evidence: ok!=true means the
+        # Reject failed build-runtime runs as evidence: ok!=true means the
         # quality_check itself failed, so the record cannot prove a
         # successful quality check.
         if matched.get("ok") is not True:
             violations.append(
                 f"{trial_meta_path}:run_quality_checks command_id={command_id} "
-                f"ok must be true (got {matched.get('ok')!r}). Failed MCP "
+                f"ok must be true (got {matched.get('ok')!r}). Failed build-runtime "
                 f"runs cannot serve as tool-execution evidence."
             )
             continue
@@ -6733,7 +6733,7 @@ def _validate_quality_check_commands(
         if log_ref_norm != canonical_qc_ref:
             violations.append(
                 f"{trial_meta_path}:run_quality_checks command_id={command_id} "
-                f"command_log_ref must be the canonical MCP audit log placement "
+                f"command_log_ref must be the canonical command log placement "
                 f"for source_source_id={source_source_id!r} "
                 f"(expected {canonical_qc_ref!r}, got {log_ref_norm!r}). "
                 "Non-canonical or cross-generation placements are rejected to "

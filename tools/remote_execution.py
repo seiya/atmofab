@@ -2,11 +2,12 @@
 """The remote executor: runs `Build`'s and `Validate.execute`'s commands at an execution site
 reached over ssh (issues #293, #333).
 
-The local path runs each command through the build-runtime server in this process
-(`tool_run_program`, `tool_run_quality_checks`), and the server writes one `command_log.jsonl`
-entry per command. A remote site has no server: the host stages the files a job needs, renders
+The local path runs each command through the build-runtime library (`tools/build_runtime.py`)
+in this process (`tool_run_program`, `tool_run_quality_checks`), and the library writes one
+`command_log.jsonl` entry per command. No Python of this checkout runs at a remote site: the host
+stages the files a job needs, renders
 ONE POSIX `sh` job script that runs the commands in order, runs it with one ssh call, copies the
-job directory back with scp, and then writes the same log entries itself — through the server's
+job directory back with scp, and then writes the same log entries itself — through the library's
 own `_append_command_log`, so the log keeps one writer and one shape (`docs/ORCHESTRATION.md`
 §Execution sites). An entry's `command` names each shipped file by its LOCAL source, because the
 post-execute gate binds the binary — the argument after the recorded launch prefix — to the
@@ -24,7 +25,7 @@ Three more values serve a command that is a BUILD (issue #333): the argv to reco
 paths (`CommandSpec.record_argv`), for an argv naming job directories no shipped file stands
 for; the programs a command runs beyond its argv[0] (`JobRequest.required_programs`, checked
 before any command, as an argv[0] is); and an argv whose answer is the toolchain's version
-(`JobRequest.toolchain_probe`), reduced at the site to one line by the rule the server reads
+(`JobRequest.toolchain_probe`), reduced at the site to one line by the rule the library reads
 this host's version by and returned as `JobResult.toolchain_version`.
 
 Every way the evidence could be incomplete or not this job's is a refusal
@@ -68,7 +69,7 @@ Every way the evidence could be incomplete or not this job's is a refusal
 126 and 127 are refused because at a site they are the codes of a program that did not START:
 `timeout` exits them when it cannot execute the program, a shell when the program's interpreter
 is missing, the dynamic loader when a shared library the program links is missing at the site
-(a non-interactive ssh login loads no module environment unless the site's `setup` does). The local server raises for the
+(a non-interactive ssh login loads no module environment unless the site's `setup` does). The local library raises for the
 first two and never meets the third, because the host that runs it is the host that built the
 program. None of them is the kernel's result, and a Generate repair could not fix one. The cost
 is a program that exits 126 or 127 on its own, which the local path records as its result; the
@@ -83,8 +84,8 @@ another node of a batch site, or a site changed since the build — is the case 
 A refusal is a host-side failure, not the kernel's: the conductor lets it propagate, and
 `_run_deterministic_substep` turns it into `deterministic_validate_error` (transport
 fail_closed). A command that RAN and exited non-zero is not a refusal; it is reported in its
-result as the local server reports it — with one difference in the value: a command killed by a
-signal N is recorded as `128 + N`, the shell's spelling, where the local server records `-N`
+result as the local library reports it — with one difference in the value: a command killed by a
+signal N is recorded as `128 + N`, the shell's spelling, where the local library records `-N`
 (and when the signal dumped core, `timeout` adds a line saying so to the command's stderr). Nothing on the Validate path reads
 the number beyond `ok`. No log entry is written until every status and every output file has
 been read (a missing output file is lost evidence, refused), so a refused job leaves no evidence
@@ -126,7 +127,6 @@ import re
 import shlex
 import shutil
 import subprocess
-import sys
 import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -134,6 +134,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from tools import build_runtime
 from tools.backends import registry
 from tools.execution_sites import DIRECT_SCHEDULER, Site
 
@@ -191,34 +192,23 @@ class RemoteExecutionError(RuntimeError):
     stage and the remote path; a transport failure is a host-side failure, not the kernel's."""
 
 
-def _server():
-    """The build-runtime server module, reached the way `tools/execution_sites.py` reaches it,
-    for the log writer and the validation this executor must share with the local path."""
-    mcp_dir = str(Path(__file__).resolve().parents[1] / "mcp_servers")
-    if mcp_dir not in sys.path:
-        sys.path.insert(0, mcp_dir)
-    import build_runtime_server
-
-    return build_runtime_server
-
-
 @dataclass(frozen=True)
 class CommandSpec:
-    """One command of a job, as the local path would hand it to the server.
+    """One command of a job, as the local path would hand it to the library.
 
     `tag` names the command's control files; `tool_name` is the tool its log entry is recorded
     under (the validator requires the names the local path records). `argv` and `cwd` are
     REMOTE paths, and `cwd` lies under the job directory. `record_cwd` is the LOCAL directory the
-    command stands for — the `project_dir` the local path would have handed the server — and it
+    command stands for — the `project_dir` the local path would have handed the library — and it
     is what the entry records as `cwd`: the post-execute gate requires a quality check's `cwd`
     to be the node's own `source/<source_id>/src`, holding its build control file. The remote
     `cwd` is the entry's `site.remote_cwd`. `env` is an override set, checked with
-    the server's own `_validate_env_overrides` before anything is contacted. `timeout_sec` has
-    no default: the local server's are 3600 for `run_program`, 1800 for `run_quality_checks`
+    the library's own `_validate_env_overrides` before anything is contacted. `timeout_sec` has
+    no default: the local library's are 3600 for `run_program`, 1800 for `run_quality_checks`
     and 1800 for `compile_project`, and the same bound is kept only by passing them.
 
     `record_argv`, when given, is what the entry records as `command`: the argv the local
-    server would have run, in LOCAL paths (issue #333). Without it the entry's `command` is
+    library would have run, in LOCAL paths (issue #333). Without it the entry's `command` is
     `argv` with each shipped file's remote path written back to its local source, which is
     enough for a command whose only job paths are shipped files; a build's argv also names
     directories the job creates (its output directories under the job directory), for which
@@ -243,7 +233,7 @@ class JobRequest:
     file copied there (the mode is kept, so an executable stays one); `dirs` are the directories,
     relative to the job directory, created before the first command. `platform_probe` is an argv
     whose first output line identifies the site's device, when the hardware class has one;
-    `attribution` is recorded in each log entry exactly as the server records it: its
+    `attribution` is recorded in each log entry exactly as the library records it: its
     `orchestration_id` and `agent_run_id`, and nothing else. `machine`, when given, is the
     `uname -m` of the machine that built the shipped binary, which the machine running the job
     must answer before anything runs: the binary is built at the site that runs it (issue #333),
@@ -276,7 +266,7 @@ class JobRequest:
 
 @dataclass(frozen=True)
 class JobResult:
-    """`results[i]` is `commands[i]`'s result in the local server's shape, or None when an
+    """`results[i]` is `commands[i]`'s result in the local library's shape, or None when an
     earlier command failed and it did not run. `platform` is `{machine, node, cpu_model, gpu}`;
     `platform` carries no `site` key — the caller adds the site id where it records one.
     `site_record` is `{site, host, scheduler, job_id, remote_dir, queue_wait_ms}`. `collected` is
@@ -381,7 +371,6 @@ def _validate(request: JobRequest) -> None:
         if not all(isinstance(a, str) for a in request.toolchain_probe):
             raise ValueError("toolchain_probe must be an argv of strings")
         _program(request.toolchain_probe[0], "toolchain probe program")
-    server = _server()
     for c in request.commands:
         if not _TAG.fullmatch(c.tag):
             raise ValueError(f"command tag {c.tag!r} is not a lowercase token")
@@ -401,7 +390,7 @@ def _validate(request: JobRequest) -> None:
                              f"local path")
         if c.cwd != request.job_dir:
             _relative(c.cwd[len(request.job_dir) + 1:], f"command {c.tag!r} cwd")
-        server._validate_env_overrides(dict(c.env), c.tool_name)
+        build_runtime._validate_env_overrides(dict(c.env), c.tool_name)
         for key in c.env:
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(key)):
                 raise ValueError(f"command {c.tag!r} env name {key!r} is not a variable name")
@@ -457,21 +446,21 @@ def render_job_script(request: JobRequest) -> str:
     program in `REMOTE_EXECUTABLES` is missing, or one of
     `request.required_programs` cannot be found or, named by a path, is not executable, and
     before a command whose program cannot be found or is not executable, by the same rule: the
-    local server raises for a program it cannot start rather than reporting an exit status, so
+    local library raises for a program it cannot start rather than reporting an exit status, so
     these are the host's failures here too. Each such exit names what failed on stderr. Every
     value is quoted with `shlex.quote`.
 
     With a `request.toolchain_probe`, one more fact line (`toolchain`) is printed before the
     first command: the probe's stdout, or its stderr when its stdout is empty, reduced to the
     first line carrying a dotted version number, else the first non-blank line — the rule of
-    the server's `_syntax_compiler_version`, which reads this host's compiler version for the
+    the library's `_syntax_compiler_version`, which reads this host's compiler version for the
     build key, so the two versions a build records are read alike. Like that function it reads
     the answer whatever the probe's exit status, and answers nothing for a probe that could not
     start or did not finish (`timeout`'s 124, 126, 127 and 137, read from the run whose answer is
     used); the value is stripped by the reader. Two differences remain: a probe program that
-    exits one of those four codes ITSELF answers nothing here, where the server reads its text
+    exits one of those four codes ITSELF answers nothing here, where the library reads its text
     (the script cannot tell it from `timeout`'s own), and the probe's bound is
-    `PROBE_TIMEOUT_SEC`, where the server's is 30 seconds."""
+    `PROBE_TIMEOUT_SEC`, where the library's is 30 seconds."""
     q = shlex.quote
     j = request.job_dir
     ctl = f"{j}/{CONTROL_DIR}"
@@ -526,7 +515,7 @@ def render_job_script(request: JobRequest) -> str:
         probe = f"timeout -k 5 {PROBE_TIMEOUT_SEC} {shlex.join(request.toolchain_probe)} < /dev/null"
         lines += [
             # A `.` after the answer, removed again, so that an answer of blank lines is not
-            # emptied by the substitution and is read as the server reads it: an answer.
+            # emptied by the substitution and is read as the library reads it: an answer.
             f"tv=$({probe} 2>/dev/null; trc=$?; printf .; exit $trc); trc=$?; tv=${{tv%.}}",
             f'[ -n "$tv" ] || {{ tv=$({probe} 2>&1 >/dev/null); trc=$?; }}',
             'case "$trc" in 124|126|127|137) tv= ;; esac',
@@ -963,12 +952,11 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
     _ssh(host, f"rm -rf {q(remote)} && {{ rmdir {q(parent)} 2>/dev/null || true; }}",
          stage="remove the collected job directory", timeout=TRANSPORT_GRACE_SEC, remote=remote)
 
-    # 7. The log entries, one per command that ran, in the local server's shape plus `site`.
+    # 7. The log entries, one per command that ran, in the local library's shape plus `site`.
     #    `command` names each shipped file by its LOCAL source, so the entry says which of this
     #    host's artifacts ran — `_validate_run_program_inputs` binds the binary, the argument
     #    after the recorded launch prefix, to the node's own build `bin/` — and `site.remote_command` is the argv as the site executed it; `cwd`
     #    is the command's `record_cwd` for the same reason, and `site.remote_cwd` the site's.
-    server = _server()
     local_of = {f"{remote}/{rel}": str(src) for rel, src in request.ship.items()}
     results: list[dict[str, Any] | None] = []
     for c, status in zip(request.commands, statuses):
@@ -986,8 +974,8 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
             "command": argv,
             "executed_command": shlex.join(argv),
             "cwd": c.record_cwd,
-            "stdout": server._trim(outputs[c.tag][0], c.capture_limit),
-            "stderr": server._trim(outputs[c.tag][1], c.capture_limit),
+            "stdout": build_runtime._trim(outputs[c.tag][0], c.capture_limit),
+            "stderr": build_runtime._trim(outputs[c.tag][1], c.capture_limit),
         }
         if timed_out:
             result["error"] = f"timeout: exceeded {c.timeout_sec} sec"
@@ -1009,12 +997,12 @@ def _run_job(request: JobRequest, *, remote: str, stage_dir: Path,
             **({"error": result["error"]} if timed_out else {}),
             "site": {"site": site.site_id, "host": host, "scheduler": site.scheduler,
                      "job_id": job_id, "remote_cwd": c.cwd, "remote_command": list(c.argv)},
-            **server._attribution(dict(request.attribution)),
+            **build_runtime._attribution(dict(request.attribution)),
         }
-        server._append_command_log(c.command_log_path, entry)
+        build_runtime._append_command_log(c.command_log_path, entry)
         result["command_id"] = command_id
         result["command_log_path"] = str(c.command_log_path)
-        log_ref = server._path_to_ref(c.command_log_path)
+        log_ref = build_runtime._path_to_ref(c.command_log_path)
         if log_ref is not None:
             result["command_log_ref"] = log_ref
         results.append(result)

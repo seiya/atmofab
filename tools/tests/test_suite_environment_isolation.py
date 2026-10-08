@@ -54,8 +54,8 @@ _CITATION_SOURCES = (
     # are in `test_operator_private_root.py`, which cites no test by name.
 )
 
-# The regression issue #84 opens with: under the workflow the MCP server refuses a
-# caller-named `repo_root`, and this test asserts the OUTSIDE-a-run branch. An operator
+# The regression issue #84 opens with: under the workflow the MCP server (deleted in issue
+# #444) refused a caller-named `repo_root`, and a test asserted the OUTSIDE-a-run branch. An operator
 # with `ATMOFAB_ORCHESTRATION_ID` exported got a failure belonging to no change.
 # The end-to-end witness: ONE poison name and ONE test that reads it from the ambient
 # environment, so the guarded run and the unguarded control differ. The subject was
@@ -74,7 +74,7 @@ _SUBJECT_CLASS = "CodexOrchestrationRuntimeTests"
 _SUBJECT_TEST = "test_probe_codex_cli_accepts_multi_agent_as_advisory"
 
 def _environment_names_read_by(repo_root: Path) -> set[str]:
-    """Every upper-case environment name READ in non-test `tools/` and `mcp_servers/`.
+    """Every upper-case environment name READ in non-test `tools/`.
 
     By AST, not by regex: `os.environ["X"]`, `os.environ.get("X")` and `os.getenv("X")` all
     count, and a name that only appears in a comment, a docstring or an assignment does
@@ -94,7 +94,7 @@ def _environment_names_read_by(repo_root: Path) -> set[str]:
                    if d not in (".git", "__pycache__", "tests")
                    and not d.startswith("workspace")]
         rel = Path(root).relative_to(repo_root)
-        if not rel.parts or rel.parts[0] not in ("tools", "mcp_servers"):
+        if not rel.parts or rel.parts[0] != "tools":
             continue
         for name in files:
             if not name.endswith(".py"):
@@ -388,13 +388,11 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         # BREADTH. The walk's scope is an input to the answer, and nothing else pins it:
         # measured, pruning `tools/hooks` and `tools/backends`, or narrowing the file
         # filter to one module, left the previous version of this test green. These four
-        # names live in four different files under both scanned roots, so a scope that
+        # names live in four different files under the scanned root, so a scope that
         # stops covering one of them fails here instead of quietly shrinking the question.
-        # `PYTHONPATH` is the anchor for the `mcp_servers` root because it is read ONLY
-        # there (measured: of the 27 names, only it and PYTHONDONTWRITEBYTECODE are). The
-        # first version anchored that root on `ATMOFAB_ORCHESTRATION_ID`, which is also read
-        # under `tools/`, so dropping the whole `mcp_servers` root survived — the exact
-        # silent shrinkage this block exists to stop.
+        # `PYTHONPATH` anchored the second scanned root, `mcp_servers/`, because it was read
+        # ONLY there; issue #444 moved that module to `tools/build_runtime.py`, where it is
+        # still the one file reading the name, so it now anchors that file.
         # The `tools/hooks` anchor was `("ATMOFAB_HOOK_REPO_ROOT", "tools/hooks/cli.py")` until
         # Z4 (issue #171) deleted the leaf hook entrypoint with the agentic leaf, then
         # `tools/hooks/common.py` until PR-2 of the same issue moved what survived of it to
@@ -403,7 +401,7 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         # It no longer anchors the `tools/hooks` subtree specifically; what is left under
         # `tools/hooks/` reads no environment name of its own, so there is none to anchor on.
         for name, where in (("ATMOFAB_WORKFLOW_HOMES_ROOT", "tools/operator_private_root.py"),
-                            ("PYTHONPATH", "mcp_servers/build_runtime_server.py"),
+                            ("PYTHONPATH", "tools/build_runtime.py"),
                             ("ATMOFAB_ORCH_LIVENESS_TTL_SECONDS", "tools/validate_workspace_root.py"),
                             ("ATMOFAB_START_CLAIM_ROOT", "tools/run_workflow.py")):
             # NOT PINNED BY ANYTHING ITSELF: removing these four assertions survives a

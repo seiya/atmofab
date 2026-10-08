@@ -466,7 +466,7 @@ def _create_minimal_execution_tree(
     raw_dir = node_dir / "raw"
     snapshots_dir = raw_dir / "state_snapshots"
     src_dir = pipeline_dir / "source" / "src_20260415_001" / "src"
-    # Canonical placement for in-phase MCP audit log: sibling of trial_meta.
+    # Canonical placement for in-phase command log: sibling of trial_meta.
     log_path = node_dir / "command_log.jsonl"
 
     _write_json(
@@ -12935,7 +12935,7 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
             )
 
     def test_validate_post_generate_stage_rejects_noncanonical_lint_command_log_ref(self) -> None:
-        """Defense against forged MCP execution evidence at non-canonical paths.
+        """Defense against forged build-runtime execution evidence at non-canonical paths.
 
         A child agent that writes a forged command_log.jsonl at a non-
         canonical placement (e.g. <gen>/src/notes/command_log.jsonl) and
@@ -13004,7 +13004,7 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
             )
             self.assertTrue(
                 any(
-                    "canonical MCP audit log placement" in v for v in violations
+                    "canonical command log placement" in v for v in violations
                 ),
                 violations,
             )
@@ -13673,7 +13673,7 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
             self.assertTrue(
                 any(
                     "run_quality_checks command_id=cmd_quality_sibling" in v
-                    and "canonical MCP audit log placement" in v
+                    and "canonical command log placement" in v
                     for v in violations
                 ),
                 violations,
@@ -13740,7 +13740,7 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
             self.assertTrue(
                 any(
                     "run_program command_id=forged_cmd_001" in v
-                    and "canonical MCP audit log placement" in v
+                    and "canonical command log placement" in v
                     for v in violations
                 ),
                 violations,
@@ -14404,7 +14404,7 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
             vps._validate_generate_syntax_command_logs(
                 repo_root, meta_path, {"verification_status": "pass"}, "fortran", violations)
             self.assertTrue(
-                any("canonical MCP audit log placement" in v for v in violations),
+                any("canonical command log placement" in v for v in violations),
                 violations)
 
     def test_a_launcher_run_reports_the_targets_rank_count(self) -> None:

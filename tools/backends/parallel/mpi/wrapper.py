@@ -30,7 +30,7 @@ from collections.abc import Sequence
 COMPILER_WRAPPER = "mpif90"
 
 #: The `compiler` axis value the wrapper runs: the syntax stage of THAT compiler is run through
-#: the wrapper (`build_runtime_server.tool_run_syntax_check`), and a stage of any other compiler
+#: the wrapper (`build_runtime.tool_run_syntax_check`), and a stage of any other compiler
 #: is run as its adapter spells it.
 WRAPPED_COMPILER = "gfortran"
 

@@ -21,7 +21,7 @@ ssh <options> -- <host> 'echo; printf ... atmofab-submitted <epoch> && exec srun
   messages go to its stderr only.
 - `srun` takes the LAST of a repeated option, so the order is the policy. `--time` comes first:
   it is the job's commands' bounds plus the executor's grace (and the device probe's bound when
-  the class names one), rounded up to whole minutes — 96 or 97 minutes with the server's default
+  the class names one), rounded up to whole minutes — 96 or 97 minutes with the build-runtime library's default
   command timeouts — and a directive may replace it. A site whose partition, QOS or association
   allows less states its maximum there (`"--time=30"`); a job that reaches the shorter limit is
   killed and refused, never recorded. Without it such a site's job pends until `--immediate`
@@ -71,7 +71,7 @@ A site's `executes` is a claim about the machines its directives select. Nothing
 records `null`, and the runner's failure is recorded as the kernel's — a correct kernel fails
 Validate. So a class whose device must be requested gets a site of its own whose directives
 request it (`--gres`), and `targets:` maps each target to the site for its class. A `--time`
-directive shorter than the job's bound (96-97 minutes with the server's defaults) makes a command
+directive shorter than the job's bound (96-97 minutes with the build-runtime library's defaults) makes a command
 that runs long a refusal rather than the command's own timeout.
 
 - `srun` on the PATH of a NON-INTERACTIVE login. Where it is added by an interactive login's

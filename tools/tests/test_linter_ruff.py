@@ -488,9 +488,7 @@ class WiringTests(unittest.TestCase):
     def test_the_server_runs_the_argv_this_module_declares(self) -> None:
         """Pinned at the TABLE the tool reads, not at `_lint_preset_command`: a wiring that
         computed the right argv and then failed to put it in the table would satisfy the helper."""
-        if str(REPO_ROOT / "mcp_servers") not in sys.path:
-            sys.path.insert(0, str(REPO_ROOT / "mcp_servers"))
-        import build_runtime_server as server
+        from tools import build_runtime as server
 
         self.assertEqual(server._LINT_PRESET_COMMANDS["ruff"], lint.check_argv())
         # argv[0] is what the launch probe looks for; a flag ahead of it would send the probe

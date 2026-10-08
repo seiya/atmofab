@@ -33,6 +33,7 @@ This document set is organized so that "the reading order = the way to proceed".
 ### Execution / Performance (implementation and performance)
 - `IMPL_PLAN_SPEC.md`
 - `BACKEND_BOUNDARY.md`
+- `BUILD_RUNTIME.md` (the build-runtime library the conductor calls for compile / run / quality check / lint / syntax check)
 - `PERFORMANCE_DIAGNOSTICS.md`
 
 ### Optional flows (optional flows, outside the core workflow)
@@ -51,4 +52,4 @@ This document set is organized so that "the reading order = the way to proceed".
 - A stage that uses the `LLM` produces each stage's `<stage>_meta.json` as a required output, and in standard operation (`debug_mode=false`) does not save failed-attempt artifacts.
 - `workflow` execution follows the conventions in `ORCHESTRATION.md` and starts from the `orchestration agent`.
 - As soon as the trial procedure is settled, proceed with automation on the premise of `RUNBOOK.md`.
-- Run `compile` / `run` / `quality check` through the `MCP` server (`mcp_servers/build_runtime_server.py`).
+- `compile` / `run` / `quality check` run through the build-runtime library the conductor calls in-process (`tools/build_runtime.py`; `docs/BUILD_RUNTIME.md`).

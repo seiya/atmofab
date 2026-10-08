@@ -221,24 +221,25 @@ def compiler_wrapper_declarations() -> dict[str, str]:
     return members
 
 
-def _server():
-    return ort._build_runtime_server_module()
+def _build_runtime():
+    from tools import build_runtime
+    return build_runtime
 
 
 def build_tuple() -> dict[str, str]:
-    """The in-process build: the server's `compile_project` and its command runner, the
+    """The in-process build: the library's `compile_project` and its command runner, the
     conductor's build body and its dependency staging, the bundle build-graph derivation."""
     import tools.codegen_bundle as cb
-    server = _server()
+    server = _build_runtime()
     return {
-        "build_runtime_server.tool_compile_project": _source_digest(server.tool_compile_project),
-        "build_runtime_server._run_command": _source_digest(server._run_command),
+        "build_runtime.tool_compile_project": _source_digest(server.tool_compile_project),
+        "build_runtime._run_command": _source_digest(server._run_command),
         # The argv table and the two defaults `tool_compile_project` builds with (issue #333
         # PR-1 moved the defaults out of its body, which is what this tuple digested; round 1
         # found the move had taken them out of the pin).
-        "build_runtime_server.build_command": _source_digest(server.build_command),
-        "build_runtime_server.default_build_jobs": _source_digest(server.default_build_jobs),
-        "build_runtime_server.COMPILE_PROJECT_TIMEOUT_SEC":
+        "build_runtime.build_command": _source_digest(server.build_command),
+        "build_runtime.default_build_jobs": _source_digest(server.default_build_jobs),
+        "build_runtime.COMPILE_PROJECT_TIMEOUT_SEC":
             str(server.COMPILE_PROJECT_TIMEOUT_SEC),
         "Conductor._build_inproc": _source_digest(wc.Conductor._build_inproc),
         # Where it builds (issue #333): the remote executor a build at a site runs through, the
@@ -281,7 +282,7 @@ def build_tuple() -> dict[str, str]:
         "registry build_execute attr": registry_attr("build_execute"),
         "Conductor._require_build_execute":
             _source_digest(wc.Conductor._require_build_execute),
-        "build_runtime_server._build_execute_module":
+        "build_runtime._build_execute_module":
             _source_digest(server._build_execute_module),
     }
 
@@ -331,14 +332,14 @@ def launch_declarations() -> dict[str, str]:
 
 
 def execute_tuple() -> dict[str, str]:
-    """The in-process execute: the server's two run tools, the conductor's execute body and
+    """The in-process execute: the library's two run tools, the conductor's execute body and
     the evidence promotion / quality-check authoring it composes the run record from."""
-    server = _server()
+    server = _build_runtime()
     return {
-        "build_runtime_server.tool_run_program": _source_digest(server.tool_run_program),
-        "build_runtime_server.tool_run_quality_checks":
+        "build_runtime.tool_run_program": _source_digest(server.tool_run_program),
+        "build_runtime.tool_run_quality_checks":
             _source_digest(server.tool_run_quality_checks),
-        "build_runtime_server._run_command": _source_digest(server._run_command),
+        "build_runtime._run_command": _source_digest(server._run_command),
         "Conductor._execute_inproc": _source_digest(wc.Conductor._execute_inproc),
         # The local site's record (issue #333: shared with the build's).
         "workflow_conductor._local_site_record": _source_digest(wc._local_site_record),
@@ -352,13 +353,13 @@ def execute_tuple() -> dict[str, str]:
         "tools/remote_execution.py": _file_digest("tools/remote_execution.py"),
         "execution_sites.SitesConfig.site_for":
             _source_digest(es.SitesConfig.site_for),
-        "build_runtime_server.quality_check_command":
+        "build_runtime.quality_check_command":
             _source_digest(server.quality_check_command),
         # The preset table that function reads — a VALUE, which no source digest above carried
         # while it was a literal — and, since issue #424 PR-2, the build system's
         # `build_execute` it is composed from (the preset, its argv and its environment), the
         # attribute row and the dispatch.
-        "build_runtime_server._QUALITY_CHECK_PRESET_COMMANDS":
+        "build_runtime._QUALITY_CHECK_PRESET_COMMANDS":
             json.dumps(server._QUALITY_CHECK_PRESET_COMMANDS, sort_keys=True),
         "tools/backends/build_system/make/execute.py":
             _file_digest("tools/backends/build_system/make/execute.py"),
@@ -830,7 +831,12 @@ PINNED_RENDER: dict[str, str] = {
     # render-9 (issue #437): the rendered cuda_cpp runner drops the trailing blanks of each
     # status `checks_compute` returns before it fills the harness check record, so a padded
     # "na  " never reaches the harness writer from a physics node.
-    "render-9": "7d8a56413fd63d105b977996ce8a9db00a347c7caf687d1e6657a44119e956d9",
+    "render-9": "085095e71a92c9d5aa5fafd4e5ebdd7830af76f05d0908f5fca4909f6d1458ad",
+    # Re-pinned (issue #444), behaviour-preserving: two comments moved: `parallel/mpi/wrapper.py`
+    # and `language/fortran/bundle.py` cite `tools/build_runtime.py` instead of
+    # `mcp_servers/build_runtime_server.py`; nothing rendered moved. (Measured by diffing the tuple
+    # against origin/main ef28faa1's.) The digest `render-9` shipped with at ef28faa1:
+    "render-9@ef28faa1": "7d8a56413fd63d105b977996ce8a9db00a347c7caf687d1e6657a44119e956d9",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -884,7 +890,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "89efa6b9e029686253fceeaffc94306f1405906972029812e0439e12121d0f37",
+    "build-2": "4ba48dd98634f7851c4ff052945dd4feaf45c7490427c3ac54be785978ba5c9a",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build
@@ -932,6 +938,16 @@ PINNED_BUILD: dict[str, str] = {
     # `make/control_file.py` moved, four rows added, no other row.) The digest `build-2`
     # shipped with at 2e04c2c3:
     "build-2@2e04c2c3": "044347847c6a7b86593fc9622284ec137eb65ee4face4441c1a891f183106f70",
+    # Re-pinned (issue #444), behaviour-preserving: the library moved to `tools/build_runtime.py`
+    # (row labels renamed `build_runtime.*`); `_build_inproc` imports it as `from
+    # tools.build_runtime import` and stops passing the unread `repo_root` key;
+    # `tool_compile_project` drops the retired-argument refusal (no caller sends one); the rest is
+    # docstrings (`build_command` among them), comments, and `remote_execution` calling the library
+    # through a module import instead of a `sys.path` loader. The build command and the `command_log.jsonl` entry
+    # are byte-identical (measured on a make project at both revisions, timing fields aside).
+    # (Measured by diffing the tuple against origin/main ef28faa1's.) The digest `build-2` shipped
+    # with at ef28faa1:
+    "build-2@ef28faa1": "89efa6b9e029686253fceeaffc94306f1405906972029812e0439e12121d0f37",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -1049,7 +1065,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # longer copies it. (Measured by diffing `execute_tuple()` against origin/main dd5bbcb8's:
     # the `Conductor._author_snapshot_schema` row and no other.) The digest `execute-8` shipped
     # with at dd5bbcb8 is kept below.
-    "execute-8": "5fb6403d122596bed8e02ed4529a9dfd12b32edf18799da3c58db77e6fff621e",
+    "execute-8": "069da8155c9b74c2c071d59de8d11ca6ff8edf8f628f61f5f04713b5313572e1",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -1132,6 +1148,12 @@ PINNED_EXECUTE: dict[str, str] = {
     # 2e04c2c3's: `_execute_inproc` and `_author_quality_check` (prose) moved, five rows added,
     # no other row.) The digest `execute-8` shipped with at 2e04c2c3:
     "execute-8@2e04c2c3": "0012a7a9ab3bbb200b40a047f470602ebc9874b3b897f5db85301878036268ab",
+    # Re-pinned (issue #444), behaviour-preserving: as `build-2`'s: the library move, the import
+    # line and the unread `repo_root` key in `_execute_inproc`, the retired-argument refusal gone
+    # from `tool_run_program` / `tool_run_quality_checks`, `remote_execution`'s module import,
+    # docstrings (`quality_check_command` among them). (Measured by diffing the
+    # tuple against origin/main ef28faa1's.) The digest `execute-8` shipped with at ef28faa1:
+    "execute-8@ef28faa1": "5fb6403d122596bed8e02ed4529a9dfd12b32edf18799da3c58db77e6fff621e",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

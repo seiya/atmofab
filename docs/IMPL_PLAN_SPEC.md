@@ -42,7 +42,7 @@ Rules:
 - `toolchain.compiler` / `toolchain.linker` are optional pins.
 - State them only to fix the compiler or linker (for reproducibility). When absent, the execution environment's default is used.
 - When `toolchain.compiler` is set, the launch gate requires it to be an implemented `compiler` axis value, and the host-authored build control file uses it as the build compiler. The deterministic `Generate.gate` syntax check always runs against `toolchain.standard` regardless of the build compiler.
-- Calling a compiler directly for a one-off build is forbidden; every build runs through `toolchain.build_system` (`AGENTS.md` §MCP execution rules).
+- Calling a compiler directly for a one-off build is forbidden; every build runs through `toolchain.build_system` (`AGENTS.md` §Build-runtime execution rules).
 
 ### Lowering plan
 The remaining implementation choices are the bundle's `target_lowering_plan`, authored by the `Generate` producer. `precision` and `state_residency` are required members; `data_layout`, `parallelization`, `decomposition`, `communication`, `accelerator_mapping`, and `fusion` (whose groups' `members` are node_keys of the optimization unit — member fusion, not loop fusion, which is a member inside one of the objects) are optional (`tools/codegen_bundle.py:LOWERING_PLAN_REQUIRED_KEYS` / `LOWERING_PLAN_OPTIONAL_KEYS`).

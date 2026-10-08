@@ -17,7 +17,7 @@ Implementation notes (what shipped vs the proposal):
   keys" / "MCP command_log placement" sections).
 - `RUNNER_OUTPUT_CONTRACT.md` created and made the must-read for
   `generate.generate` / `generate.verify` / `validate.judge`;
-  `generate.generate` dropped `phase_03` + `MCP_COMMAND_LOG_PLACEMENT` +
+  `generate.generate` dropped `phase_03` + `COMMAND_LOG_PLACEMENT` +
   `PERFORMANCE_DIAGNOSTICS` (the Makefile contract stays inline in the
   generate-generate SKILL).
 - **Deviation honored from the §4 reconciliation:** `Compile` still force-reads
@@ -53,7 +53,7 @@ Implementation notes (what shipped vs the proposal):
   doc-size ceilings.
 - **Launch-prompt template reconciled** (`tools/prompt_templates/`):
   the static "MCP command-log & program-output placement" boilerplate line used to
-  instruct Generate leaves to *read* `MCP_COMMAND_LOG_PLACEMENT.md` — which would
+  instruct Generate leaves to *read* `COMMAND_LOG_PLACEMENT.md` — which would
   re-force the demoted doc at render time regardless of `skill_must_read_refs`
   (Codex review caught this; the must-read code change alone is insufficient). It
   now states the actionable minimum inline, points runner output at
@@ -65,7 +65,7 @@ Implementation notes (what shipped vs the proposal):
   guard now applies **only to docs the LLM leaf force-reads** (AGENT_CONTRACT,
   RUNNER_OUTPUT_CONTRACT, phase_01_compile) — those land in cold-start context so
   their size is a real cost. Docs that left the leaf must-read set (WORKFLOW_CORE,
-  phase_02/03/04, PERFORMANCE_DIAGNOSTICS, MCP_COMMAND_LOG_PLACEMENT) are no longer
+  phase_02/03/04, PERFORMANCE_DIAGNOSTICS, COMMAND_LOG_PLACEMENT) are no longer
   ceiling-guarded (their size no longer affects leaf context). The 5 per-substep
   LLM SKILLs are also leaf-read and are now ceiling-guarded too; Build /
   Validate.execute are deterministic (no SKILL) so are not guarded. The exact
@@ -121,7 +121,7 @@ describe the residual agentic path (an entry whose `capabilities:` drops `pure`)
 |---|---|
 | compile.generate | WORKFLOW_CORE, AGENT_CONTRACT, SKILL, phase_01 |
 | compile.verify | WORKFLOW_CORE, AGENT_CONTRACT, SKILL, phase_01 |
-| generate.generate | WORKFLOW_CORE, AGENT_CONTRACT, SKILL, phase_02, **phase_03**, **MCP_COMMAND_LOG_PLACEMENT**, **PERFORMANCE_DIAGNOSTICS** |
+| generate.generate | WORKFLOW_CORE, AGENT_CONTRACT, SKILL, phase_02, **phase_03**, **COMMAND_LOG_PLACEMENT**, **PERFORMANCE_DIAGNOSTICS** |
 | generate.verify | WORKFLOW_CORE, AGENT_CONTRACT, SKILL, phase_02 |
 | validate.judge | WORKFLOW_CORE, AGENT_CONTRACT, SKILL, phase_04 |
 
@@ -145,7 +145,7 @@ describe the residual agentic path (an entry whose `capabilities:` drops `pure`)
 - **The runner output contract** (`diagnostics.json` / `perf.json` / `raw/` /
   per-case snapshot naming / Fortran JSON-descriptor rules) is **defined twice**
   — in `phase_02_generate` and `phase_04_validate` — and is the binding subset
-  of `PERFORMANCE_DIAGNOSTICS.md` §2/§6 and of `MCP_COMMAND_LOG_PLACEMENT.md`.
+  of `PERFORMANCE_DIAGNOSTICS.md` §2/§6 and of `COMMAND_LOG_PLACEMENT.md`.
 - **SKILLs (5 files, 343 lines total)** — ~28% is boilerplate repeated 5×
   (direct-Write rules, workspace-root rule, meta keys, canonical-input rule,
   dev-mode fail), each block duplicating AGENT_CONTRACT/WORKFLOW_CORE. This
@@ -211,7 +211,7 @@ describe the residual agentic path (an entry whose `capabilities:` drops `pure`)
 - `phase_01..04` — orchestration + deterministic-step contract; phase_03/04 stay
   the canonical for the no-SKILL deterministic steps. Their leaf-actionable
   slices have moved into the SKILLs.
-- `PERFORMANCE_DIAGNOSTICS.md`, `MCP_COMMAND_LOG_PLACEMENT.md` — full reference
+- `PERFORMANCE_DIAGNOSTICS.md`, `COMMAND_LOG_PLACEMENT.md` — full reference
   canonical; their leaf-binding subset now lives in RUNNER_OUTPUT_CONTRACT.
 
 ### 5.3 Resulting leaf must-read (canonical docs; node spec/ir/tests unchanged)
@@ -237,7 +237,7 @@ describe the residual agentic path (an entry whose `capabilities:` drops `pure`)
 | Makefile contract (BIN ?=, object rules, OBJDIR/BINDIR/RUNDIR, no-relink) | phase_03 (Makefile parts only) | SKILL generate-generate |
 | phase_04 judge criteria slice | phase_04 §4-2 | SKILL validate-judge |
 | runner output contract (diagnostics/perf/raw/snapshot/JSON-descriptor) | phase_02 §2-1 + phase_04 §4-1 + PERF §2/§6 + MCP leaf subset | RUNNER_OUTPUT_CONTRACT.md (new) |
-| command_log placement (generic leaf rule) | MCP_COMMAND_LOG_PLACEMENT | AGENT_CONTRACT one-liner (exact path already in manifest/task-card) |
+| command_log placement (generic leaf rule) | COMMAND_LOG_PLACEMENT | AGENT_CONTRACT one-liner (exact path already in manifest/task-card) |
 | phase_01 compile schema slice | phase_01 §3/§5 | SKILL compile-generate; verify invariants V1–V7 → SKILL compile-verify |
 
 Phase docs keep: orchestration retry/decision tables, deterministic-step

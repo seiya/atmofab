@@ -20,8 +20,8 @@ What is PINNED here and what is only SAMPLED:
   * PINNED — that the writers and the guard land in one root, by driving the real
     `_claim_lock_path` / `_workflow_homes_root` / `protected_host_read_roots`
     under one patched `$HOME` (`test_the_two_writers_and_the_guard_resolve_one_root`);
-  * PINNED — that `".atmofab"` is spelled exactly ONCE across `tools/` and
-    `mcp_servers/`, and in `tools/operator_private_root.py`
+  * PINNED — that `".atmofab"` is spelled exactly ONCE across `tools/`, and in
+    `tools/operator_private_root.py`
     (`test_the_dot_atmofab_constant_is_spelled_once`). The FILE and the COUNT, not the
     function name: hoisting the literal to a module constant in that file strengthens the
     property and is allowed. A BOUND ON GROWTH,
@@ -237,7 +237,7 @@ class OnePrivateRootTests(unittest.TestCase):
                 # with the tool it guarded (see the docstring).
 
     def test_the_dot_atmofab_constant_is_spelled_once(self) -> None:
-        """`".atmofab"` is spelled exactly ONCE across `tools/` and `mcp_servers/`, in
+        """`".atmofab"` is spelled exactly ONCE across `tools/`, in
         `tools/operator_private_root.py`.
 
         A BOUND ON GROWTH, not a detector, and the difference matters. What it catches is
@@ -265,7 +265,7 @@ class OnePrivateRootTests(unittest.TestCase):
                        if d not in (".git", "__pycache__", "tests")
                        and not d.startswith("workspace")]
             rel_root = Path(root).relative_to(REPO_ROOT)
-            if not rel_root.parts or rel_root.parts[0] not in ("tools", "mcp_servers"):
+            if not rel_root.parts or rel_root.parts[0] != "tools":
                 continue
             for name in files:
                 if not name.endswith(".py"):

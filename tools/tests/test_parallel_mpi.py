@@ -3,7 +3,7 @@
 What the neutral core reads from it through the registry: the launcher's prefix and programs,
 the wrapper and the argv it replaces, the binding canary the launch probe compiles, and the
 (empty) launch environment. The seams that compose these are tested beside them
-(`test_host_execution.py`, `test_host_prerequisites.py`, `test_build_runtime_server.py`).
+(`test_host_execution.py`, `test_host_prerequisites.py`, `test_build_runtime.py`).
 """
 
 from __future__ import annotations

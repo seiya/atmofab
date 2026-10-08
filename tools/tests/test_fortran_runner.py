@@ -964,7 +964,7 @@ class RenderErrorMatrixTest(unittest.TestCase):
     def test_leading_dash_case_id_fails_closed(self) -> None:
         # A case id also reaches the runner's argv (`--cases <spec> <case_id>...`), where
         # a leading `-` reads as an option. Rejected at Compile so the run does not get
-        # several phases further and fail at the MCP argument rule instead.
+        # several phases further and fail at the build-runtime argument rule instead.
         for name in ("-c1", "--cases", "-"):
             with self.subTest(name=name):
                 self._expect(lambda ir, n=name: (

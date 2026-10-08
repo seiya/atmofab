@@ -548,14 +548,12 @@ class WiringTests(unittest.TestCase):
         self.assertIn("lint", registry.get("linter", "fortitude").backend_provides)
 
     def test_the_server_runs_the_argv_this_module_declares(self) -> None:
-        """The row the MCP tool actually launches, composed from here rather than spelled there.
+        """The row the build-runtime library actually launches, composed from here rather than spelled there.
 
         Pinned at the TABLE the tool reads, not at `_lint_preset_command`: a wiring that computed
         the right argv and then failed to put it in the table would satisfy the helper.
         """
-        if str(REPO_ROOT / "mcp_servers") not in sys.path:
-            sys.path.insert(0, str(REPO_ROOT / "mcp_servers"))
-        import build_runtime_server as server
+        from tools import build_runtime as server
 
         self.assertEqual(server._LINT_PRESET_COMMANDS["fortitude"], lint.check_argv())
         # argv[0] is what the launch probe looks for; a flag added ahead of it would send the
@@ -563,17 +561,18 @@ class WiringTests(unittest.TestCase):
         self.assertEqual(server.lint_preset_executables("fortitude"), (lint.EXECUTABLE,))
 
     def test_the_server_starts_from_a_foreign_working_directory(self) -> None:
-        """The witness for the dotted-import bootstrap the server gained for this.
+        """The library composes this row at import, and imports from a working directory that is
+        not the checkout once the checkout root is on `sys.path`.
 
-        The composition happens at import, so a `sys.path` that does not contain the checkout
-        root would break every launch of the server — including the one a leaf spawns, whose cwd
-        is not this repository.
+        Until issue #444 this witnessed a `sys.path` bootstrap inside the then MCP server, which
+        a leaf spawned from another cwd; the library is imported as `tools.build_runtime` now and
+        the bootstrap is gone, so what is left is the foreign-cwd import itself.
         """
         completed = subprocess.run(
             [sys.executable, "-c",
-             "import sys; sys.path.insert(0, %r); import build_runtime_server as s;"
+             "import sys; sys.path.insert(0, %r); from tools import build_runtime as s;"
              "print(s._LINT_PRESET_COMMANDS['fortitude'][0])"
-             % str(REPO_ROOT / "mcp_servers")],
+             % str(REPO_ROOT)],
             cwd=str(Path(tempfile.gettempdir())), text=True, capture_output=True,
             timeout=120, check=False)
         self.assertEqual(completed.returncode, 0, completed.stderr)

@@ -2,7 +2,7 @@
 
 `atmofab` generates, validates, and certifies weather and climate compute kernels from natural-language specifications.
 
-`controlled_spec.md` (physics and algorithm definition), `tests.md` (verification profile), and `deps.yaml` (dependency declaration) are authored by humans and are the canonical source. Every phase after them is executed by a deterministic conductor (`tools/workflow_conductor.py`), which fulfils the `orchestration agent` role: it launches each judgment-bearing `substep` as one isolated `substep agent` (an `LLM` leaf) under a fixed input/output contract, runs the deterministic gates and the build itself in its own process, and performs every build, execution, lint, and syntax check through the MCP build/runtime server.
+`controlled_spec.md` (physics and algorithm definition), `tests.md` (verification profile), and `deps.yaml` (dependency declaration) are authored by humans and are the canonical source. Every phase after them is executed by a deterministic conductor (`tools/workflow_conductor.py`), which fulfils the `orchestration agent` role: it launches each judgment-bearing `substep` as one isolated `substep agent` (an `LLM` leaf) under a fixed input/output contract, runs the deterministic gates and the build itself in its own process, and performs every build, execution, lint, and syntax check through the build-runtime library (`tools/build_runtime.py`).
 
 ## Scope
 
@@ -71,22 +71,11 @@ python3 tools/run_workflow.py spec/problem/dynamics/advection_diffusion/advdiff1
 | `--rederive PHASE[,PHASE]` | run the named phase(s) of the target although they are certified; the previous output stays eligible, and later phases re-derive only if the forced phase changed its output (`docs/RUNBOOK.md` §Updating a shared dependency spec) |
 | `--jobs N` | with `--with-deps`: run up to N dependency nodes whose own dependencies are ready at once, each as a child driver process; the explicit parallel-execution instruction the workflow invariants require (default 1 = sequential; `docs/RUNBOOK.md` §Parallel closure) |
 
-`docs/RUNBOOK.md` is the canonical operational procedure: preflight requirements per backend, the minimal loop, the failure-to-phase routing table, and the recovery procedures. On the Claude backend, preflight requires `build-runtime` to be enabled in the committed `.claude/settings.json` and permission-granted to the child agent session (`docs/RUNBOOK.md` §0-2).
+`docs/RUNBOOK.md` is the canonical operational procedure: preflight requirements per backend, the minimal loop, the failure-to-phase routing table, and the recovery procedures.
 
-## MCP tools
+## Build runtime
 
-`mcp_servers/build_runtime_server.py` is the standard server (stdio JSON-RPC, no dependency packages). Every `compile`, `run`, `quality check`, `static lint`, and `syntax check` goes through it; one-off `gcc` / `clang` / `gfortran` builds are forbidden.
-
-| tool | purpose |
-|---|---|
-| `compile_project` | build through a standard build tool that handles dependencies (`make` by default for the `fortran` / `c` families) |
-| `run_program` | run the built `runner` |
-| `run_quality_checks` | run a quality-check `preset` |
-| `run_linter` | run the `Generate` `static lint` `preset` (`fortitude` / `cppcheck` / `ruff` / `nvcc` / `mixed`) |
-| `run_syntax_check` | run a compiler front end in syntax-only mode, producing no build artifacts |
-| `detect_build_system` | recommend a build system from the marker files present (standalone use only) |
-
-The conductor passes `orchestration_id` and `agent_run_id` so a line of `command_log.jsonl` can be traced back to the run that issued it; the server validates every call the same way whether they are there or not. It held a capability gate under the workflow until [issue #171](https://github.com/seiya/atmofab/issues/171) PR-2, which retired it — no leaf reaches this server at all. `mcp_servers/README.md` is canonical for the argument allowlists and the operational rules; `mcp_servers/mcp_servers.example.json` holds client configuration examples.
+The conductor calls the build-runtime library `tools/build_runtime.py` in-process for every `compile`, `run`, `quality check`, `static lint`, and `syntax check`; no leaf calls it, and one-off `gcc` / `clang` / `gfortran` builds are forbidden. Its entry points, the validation each applies, and the `command_log.jsonl` record each writes are specified in `docs/BUILD_RUNTIME.md`.
 
 ## Artifacts
 
@@ -112,7 +101,6 @@ docs/         workflow contracts, phase specifications, runbook, glossary
 spec/         source specs (problem / component / profile / infrastructure) and the registry
 skills/       execution procedures (SKILL.md) for the flows an operator runs
 tools/        workflow driver, conductor, orchestration runtime, gates, validators, tests
-mcp_servers/  MCP build/runtime server and client configuration examples
 .claude/      the operator's own interactive session: settings, and the development skills
 releases/     the component registry, and the promoted official artifacts of the Promote flow (none yet)
 workspace/    trial artifacts

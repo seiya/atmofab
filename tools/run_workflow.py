@@ -168,7 +168,7 @@ def _host_probe_selection(target_profile: TargetProfile) -> dict[str, str]:
     run).
 
     Imported inside the function, like `_check_required_python_modules`'s `importlib`: the probe
-    reaches the MCP server's argv tables, and a startup path that has not yet decided it is
+    reaches the build-runtime library's argv tables, and a startup path that has not yet decided it is
     going to run should not pay for them."""
     from tools.host_prerequisites import resolve_launch_axis_selection
 
@@ -2497,8 +2497,8 @@ def _run_main(
 
     # Redirect THIS host interpreter's bytecode cache out of the repo SOURCE tree, as early as
     # repo_root allows, so every module imported from here on (notably the conductor's
-    # lazy build_runtime_server / tools.hooks.lint_evidence during compile.static / generate.gate)
-    # compiles into workspace/.pycache/ instead of mcp_servers/__pycache__/ etc. Those in-repo
+    # lazy tools.build_runtime / tools.hooks.lint_evidence during compile.static / generate.gate)
+    # compiles into workspace/.pycache/ instead of tools/__pycache__/ etc. Those in-repo
     # writes used to land in a child window's FS-diff and be misattributed as an
     # unauthorized write (issue #171 PR-2 deleted that diff); what they still are is bytecode
     # littering the source tree of a checkout every structural check reads.

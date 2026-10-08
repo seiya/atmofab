@@ -432,8 +432,7 @@ class RoundOneWitnessTests(unittest.TestCase):
         """The build derivation key's `compiler_version`: a driver that prints its NAME first
         must still be keyed by its release (the server's `_syntax_compiler_version`)."""
         import sys
-        sys.path.insert(0, str(REPO_ROOT / "mcp_servers"))
-        import build_runtime_server as server
+        from tools import build_runtime as server
         banner = (sys.executable, "-c",
                   ("print('driver: a compiler'); print('Copyright 2005-2026');"
                    "print('tools, release 13.4, V13.4.92')"))
@@ -3233,13 +3232,10 @@ class RealDriverTests(unittest.TestCase):
     def test_a_harness_shaped_node_passes_every_gate_and_builds(self) -> None:
         """The whole local path of a `cuda_cpp` harness, with the real driver: the host header and
         Makefile, a leaf model and runner written to the binding, the preprocessor allowlist, the
-        §5.1 pin, the lint and the syntax stage through the build-runtime server, then `make`."""
-        import sys
-
+        §5.1 pin, the lint and the syntax stage through the build-runtime library, then `make`."""
         from tools.backends import registry
         from tools.codegen_bundle import derive_build_graph
-        sys.path.insert(0, str(REPO_ROOT / "mcp_servers"))
-        import build_runtime_server as server
+        from tools import build_runtime as server
 
         model = ('#include <cstdio>\n#include "h_model.cuh"\nnamespace h_model {\n'
                  "void h__run(atmofab::View<dp, 1> u, h__cb cb, bool& ok) {\n"

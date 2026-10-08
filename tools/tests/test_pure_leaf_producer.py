@@ -3547,12 +3547,8 @@ class CudaCppHarnessTests(unittest.TestCase):
             return {"ok": root.name != "leaf", "return_code": 0 if root.name != "leaf" else 1,
                     "stdout": "", "stderr": ""}
 
-        import sys
-        mcp_dir = str(Path(wc.__file__).resolve().parents[1] / "mcp_servers")
-        if mcp_dir not in sys.path:
-            sys.path.insert(0, mcp_dir)
-        import build_runtime_server
-        with mock.patch.object(build_runtime_server, "tool_run_linter", fake_linter):
+        from tools import build_runtime
+        with mock.patch.object(build_runtime, "tool_run_linter", fake_linter):
             category, _excerpt = self.c._attribute_lint_findings(self.refs, "arid", "nvcc", ["x"])
         self.assertEqual("lint_findings", category)
         # Every host file here is of a suffix the linter is not handed (the header, the Makefile),

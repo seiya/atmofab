@@ -12,6 +12,7 @@ import atexit
 import errno
 import glob
 import hashlib
+import importlib
 import io
 import json
 import os
@@ -60,15 +61,11 @@ from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
 from tools.tests.target_fixtures import FORTRAN_CPU as _TP
 from tools.tests.target_fixtures import SECOND_TARGET
 
-def _server():
-    """The build-runtime server module, through the loader the conductor's gate bodies use
-    (`orchestration_runtime._build_runtime_server_module`, issue #422).
-
-    It returns whatever module object is current in `sys.modules`, and
-    `tools/tests/test_build_runtime_server.py` replaces that object on every load, so call
-    this per use and never cache its result at import: a row that patches an attribute on a
-    stale object patches nothing the conductor reads."""
-    return wc_runtime._build_runtime_server_module()
+def _build_runtime():
+    """The build-runtime library (`tools/build_runtime.py`), the module object the conductor's
+    `from tools.build_runtime import` statements read, so a `mock.patch.object` on it is what a
+    conductor call sees."""
+    return importlib.import_module("tools.build_runtime")
 
 
 # One repo root per test PROCESS, for the conductors below that need a path and build no
@@ -6175,7 +6172,6 @@ class LeafEnvThreadingSiteTest(unittest.TestCase):
         the host and an HTTP entry's credential can be in this dict."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
-            (repo / ".mcp.json").write_text('{"mcpServers": {}}', encoding="utf-8")
             c = self._conductor(repo)
             seen: dict = {}
 
@@ -9016,7 +9012,7 @@ class SubstepStatusAndResumeTest(unittest.TestCase):
             self.assertEqual(
                 c.determine_substep_status(self._refs(), "build", None, allowed)[0], "fail")
 
-    def test_build_passes_without_binary_side_mcp_log(self) -> None:
+    def test_build_passes_without_binary_side_command_log(self) -> None:
         import tempfile
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
@@ -16463,7 +16459,7 @@ class DeterministicBuildTest(unittest.TestCase):
         self.assertIn("finalize-child", subs)
 
     def test_build_infra_failure_nonzero_returncode_fails_substep(self) -> None:
-        # A conductor/MCP INFRA failure (the _run_deterministic_substep except clause)
+        # A conductor/build-runtime INFRA failure (the _run_deterministic_substep except clause)
         # returns rc != 0 -> transport fail (leaf_returncode 1). Content failures
         # (compile/gate) instead return rc 0 and route via the tables.
         class C(_FakeConductor):
@@ -16490,7 +16486,7 @@ class DeterministicBuildTest(unittest.TestCase):
         # (which escalated/fail_closed).
         import tempfile
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16505,7 +16501,7 @@ class DeterministicBuildTest(unittest.TestCase):
             def fake_compile(args):  # ok, but produces NO binary
                 return {"ok": True, "return_code": 0, "command_id": "cid"}
 
-            with mock.patch.object(build_runtime_server, "tool_compile_project", fake_compile):
+            with mock.patch.object(build_runtime, "tool_compile_project", fake_compile):
                 out = c._build_inproc(refs, "child-1")
 
             self.assertEqual(out["returncode"], 0)  # content fail, not transport
@@ -16518,7 +16514,7 @@ class DeterministicBuildTest(unittest.TestCase):
         """A Build whose compile reports success and leaves no binary; returns the refs and the
         `binary_meta.json` it wrote."""
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
         c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                                orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
         refs = wc.NodeRefs(target_id=_TARGET_ID,
@@ -16532,7 +16528,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 compile_spy.append(args)
             return {"ok": True, "return_code": 0, "command_id": "cid"}
 
-        with mock.patch.object(build_runtime_server, "tool_compile_project", fake_compile):
+        with mock.patch.object(build_runtime, "tool_compile_project", fake_compile):
             c._build_inproc(refs, "child-1")
         return refs, json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
 
@@ -16630,7 +16626,7 @@ class DeterministicBuildTest(unittest.TestCase):
         node language's whole staged suffix set rather than a literal list (issue #424)."""
         import tempfile
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16648,7 +16644,7 @@ class DeterministicBuildTest(unittest.TestCase):
                         "stderr": "src/p_model.cu(12): error: identifier \"q\" is undefined\n"
                                   "src/p_model.cuh(4): error: expected a \";\""}
 
-            with mock.patch.object(build_runtime_server, "tool_compile_project", fake_compile), \
+            with mock.patch.object(build_runtime, "tool_compile_project", fake_compile), \
                     mock.patch.object(c, "_read_toolchain",
                                       return_value={**real_tc, "language": "cuda_cpp"}):
                 out = c._build_inproc(refs, "child-1")
@@ -16662,7 +16658,7 @@ class DeterministicBuildTest(unittest.TestCase):
                              [f"{refs.source_dir()}/src/p_model.cu",
                               f"{refs.source_dir()}/src/p_model.cuh"])
 
-    def test_build_inproc_payload_survives_the_real_mcp_validators(self) -> None:
+    def test_build_inproc_payload_survives_the_real_build_runtime_validators(self) -> None:
         """The conductor's own compile payload must pass the server's orchestrated
         argument rules — the make-variable allowlist, the absolute-path-inside-the-repo
         value rule, and the project_dir / command_log_path containment.
@@ -16672,7 +16668,7 @@ class DeterministicBuildTest(unittest.TestCase):
         instead, leaving every check in the path."""
         import tempfile
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16689,7 +16685,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 return {"ok": True, "return_code": 0, "stdout": "", "stderr": "",
                         "command_id": "cid"}
 
-            with mock.patch.object(build_runtime_server, "_run_command", fake_run_command):
+            with mock.patch.object(build_runtime, "_run_command", fake_run_command):
                 c._build_inproc(refs, "child-1")
 
             # It reached the subprocess layer, i.e. no validator refused the payload.
@@ -16703,7 +16699,7 @@ class DeterministicBuildTest(unittest.TestCase):
         # BIN=<spec_id>_runner on the make command line and produces the binary there.
         import tempfile
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16724,7 +16720,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 (repo / refs.binary_dir() / "bin" / "spec_x_runner").write_text("x")
                 return {"ok": True, "return_code": 0, "command_id": "cid"}
 
-            with mock.patch.object(build_runtime_server, "tool_compile_project", fake_compile):
+            with mock.patch.object(build_runtime, "tool_compile_project", fake_compile):
                 c._build_inproc(refs, "child-1")
 
             self.assertIn("BIN=spec_x_runner", captured["extra_args"])
@@ -16737,7 +16733,7 @@ class DeterministicBuildTest(unittest.TestCase):
         Until #250 `compiler` was `""`."""
         import tempfile
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16754,15 +16750,15 @@ class DeterministicBuildTest(unittest.TestCase):
                 (repo / refs.binary_dir() / "bin" / "spec_x_runner").write_text("x")
                 return {"ok": True, "return_code": 0, "command_id": "cid"}
 
-            with mock.patch.object(build_runtime_server, "tool_compile_project", fake_compile), \
-                    mock.patch.object(build_runtime_server, "_syntax_compiler_version",
+            with mock.patch.object(build_runtime, "tool_compile_project", fake_compile), \
+                    mock.patch.object(build_runtime, "_syntax_compiler_version",
                                       lambda argv: f"probed {argv[0]}"), \
                     mock.patch.object(subprocess, "run",
                                       return_value=subprocess.CompletedProcess([], 0, "", "")):
                 c._build_inproc(refs, "child-1")
             meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
             from tools.tests.target_fixtures import FORTRAN_CPU
-            with mock.patch.object(build_runtime_server, "_syntax_compiler_version",
+            with mock.patch.object(build_runtime, "_syntax_compiler_version",
                                    lambda argv: f"probed {argv[0]}"):
                 expected = ort._target_toolchain_identity(FORTRAN_CPU)
             self.assertEqual(meta["target_id"], FORTRAN_CPU.target_id)
@@ -16789,7 +16785,7 @@ class DeterministicBuildTest(unittest.TestCase):
         the stager's return value and the record is what is pinned (issue #153)."""
         import tempfile
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16821,7 +16817,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 (repo / refs.binary_dir() / "bin" / "spec_x_runner").write_text("x")
                 return {"ok": True, "return_code": 0, "command_id": "cid"}
 
-            with mock.patch.object(build_runtime_server, "tool_compile_project", fake_compile), \
+            with mock.patch.object(build_runtime, "tool_compile_project", fake_compile), \
                     mock.patch.object(wc.subprocess, "run",
                                       lambda *a, **k: wc.subprocess.CompletedProcess(
                                           a[0] if a else [], 0, "", "")):
@@ -16846,7 +16842,7 @@ class DeterministicBuildTest(unittest.TestCase):
         `infrastructure` node: a physics node's closure holds its target's harness."""
         import tempfile
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16861,7 +16857,7 @@ class DeterministicBuildTest(unittest.TestCase):
             def fake_compile(args):
                 return {"ok": True, "return_code": 0, "command_id": "cid"}
 
-            with mock.patch.object(build_runtime_server, "tool_compile_project", fake_compile):
+            with mock.patch.object(build_runtime, "tool_compile_project", fake_compile):
                 c._build_inproc(refs, "child-1")
 
             meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
@@ -16875,7 +16871,7 @@ class DeterministicBuildTest(unittest.TestCase):
         # source_id values catch a swap.
         import tempfile
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16893,7 +16889,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 (repo / refs.binary_dir() / "bin" / "spec_x_runner").write_text("x")
                 return {"ok": True, "return_code": 0, "command_id": "cid"}
 
-            with mock.patch.object(build_runtime_server, "tool_compile_project", fake_compile):
+            with mock.patch.object(build_runtime, "tool_compile_project", fake_compile):
                 c._build_inproc(refs, "child-1")
 
             meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
@@ -16907,7 +16903,7 @@ class DeterministicBuildTest(unittest.TestCase):
         # env (the test target invokes `$(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`).
         import tempfile
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16936,8 +16932,8 @@ class DeterministicBuildTest(unittest.TestCase):
                 captured["env"] = dict(args.get("env") or {})
                 return {"ok": True, "command_id": "Q"}
 
-            with mock.patch.object(build_runtime_server, "tool_run_program", fake_run_program), \
-                 mock.patch.object(build_runtime_server, "tool_run_quality_checks", fake_run_quality_checks):
+            with mock.patch.object(build_runtime, "tool_run_program", fake_run_program), \
+                 mock.patch.object(build_runtime, "tool_run_quality_checks", fake_run_quality_checks):
                 try:
                     _record_build_site(c.repo_root, refs)
                     c._execute_inproc(refs, "child-1")
@@ -16999,7 +16995,7 @@ class DeterministicBuildTest(unittest.TestCase):
         clear."""
         import tempfile
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -17023,11 +17019,11 @@ class DeterministicBuildTest(unittest.TestCase):
                 raise ValueError("run_syntax_check project_dir must stay under the "
                                  "repository root under an orchestration")
 
-            with mock.patch.object(build_runtime_server, "tool_run_syntax_check", refuse):
+            with mock.patch.object(build_runtime, "tool_run_syntax_check", refuse):
                 with self.assertRaises(ValueError):
                     c._gate_syntax_check(refs, "child-1")
 
-    def test_execute_inproc_payload_survives_the_real_mcp_validators(self) -> None:
+    def test_execute_inproc_payload_survives_the_real_build_runtime_validators(self) -> None:
         """Validate.execute is where the six-key `env` allowlist is actually used, and
         its values are derived from the IR (`CASES` from the case ids, `BIN` from the
         spec id, `SPEC` from the IR path) rather than written out here. Replace
@@ -17035,7 +17031,7 @@ class DeterministicBuildTest(unittest.TestCase):
         real value rules."""
         import tempfile
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -17065,7 +17061,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 return {"ok": True, "return_code": 0, "stdout": "", "stderr": "",
                         "command_id": "cid"}
 
-            with mock.patch.object(build_runtime_server, "_run_command", fake_run_command):
+            with mock.patch.object(build_runtime, "_run_command", fake_run_command):
                 try:
                     _record_build_site(c.repo_root, refs)
                     c._execute_inproc(refs, "child-1")
@@ -17088,7 +17084,7 @@ class DeterministicBuildTest(unittest.TestCase):
         from unittest import mock
 
         from tools.backends.build_system.make import execute
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             c = _TargetedConductor(repo_root=repo, orchestration_id="t",
@@ -17125,7 +17121,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 authored.append(args[5])
                 return real_author(*args, **kwargs)
 
-            with mock.patch.object(build_runtime_server, "_run_command", fake_run_command), \
+            with mock.patch.object(build_runtime, "_run_command", fake_run_command), \
                     mock.patch.object(execute, "QUALITY_CHECK_PRESET", "make_check"), \
                     mock.patch.object(execute, "quality_check_env", spy_env), \
                     mock.patch.object(wc.Conductor, "_author_quality_check",
@@ -17141,13 +17137,13 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(len(env_calls), 1)
             self.assertEqual(authored, ["make_check"])
 
-    def test_execute_inproc_traced_payload_survives_the_real_mcp_validators(self) -> None:
+    def test_execute_inproc_traced_payload_survives_the_real_build_runtime_validators(self) -> None:
         """The traced run (issue #307): the prefixed binary command and the summary command
         cross the real `run_program` validation and reach the subprocess layer, in order, before
         the quality check."""
         import tempfile
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         from tools.host_execution import launch_shape
         target = self._traced_target()
@@ -17174,7 +17170,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 return {"ok": True, "return_code": 0, "stdout": "", "stderr": "",
                         "command_id": f"cid{len(seen)}"}
 
-            with mock.patch.object(build_runtime_server, "_run_command", fake_run_command):
+            with mock.patch.object(build_runtime, "_run_command", fake_run_command):
                 try:
                     _record_build_site(c.repo_root, refs)
                     c._execute_inproc(refs, "child-1")
@@ -17252,7 +17248,7 @@ class DeterministicBuildTest(unittest.TestCase):
         import platform as _platform
         import tempfile
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -17286,8 +17282,8 @@ class DeterministicBuildTest(unittest.TestCase):
                     json.dumps({"verdict": {"c_alpha": "pass"}}), encoding="utf-8")
                 return {"ok": True, "command_id": "Q"}
 
-            with mock.patch.object(build_runtime_server, "tool_run_program", fake_run_program), \
-                 mock.patch.object(build_runtime_server, "tool_run_quality_checks", fake_qc), \
+            with mock.patch.object(build_runtime, "tool_run_program", fake_run_program), \
+                 mock.patch.object(build_runtime, "tool_run_quality_checks", fake_qc), \
                  mock.patch.object(subprocess, "run",
                                    return_value=subprocess.CompletedProcess([], 0, "", "")):
                 _record_build_site(c.repo_root, refs)
@@ -17357,7 +17353,7 @@ class DeterministicBuildTest(unittest.TestCase):
         summary command, writing `SUMMARY` where the shape says the command writes it."""
         import tempfile
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         from tools.host_execution import launch_shape
         shape = launch_shape(target)
@@ -17408,8 +17404,8 @@ class DeterministicBuildTest(unittest.TestCase):
             out = (probe_answer or {}).get(tuple(argv), "") if isinstance(argv, list) else ""
             return subprocess.CompletedProcess(argv, 0, out, "")
 
-        with mock.patch.object(build_runtime_server, "tool_run_program", fake_run_program), \
-             mock.patch.object(build_runtime_server, "tool_run_quality_checks", fake_qc), \
+        with mock.patch.object(build_runtime, "tool_run_program", fake_run_program), \
+             mock.patch.object(build_runtime, "tool_run_quality_checks", fake_qc), \
              mock.patch.object(subprocess, "run", side_effect=fake_subprocess_run):
             _record_build_site(c.repo_root, refs)
             result = c._run_deterministic_substep(refs, "validate", "execute", "child-1", {})
@@ -17560,7 +17556,7 @@ class DeterministicBuildTest(unittest.TestCase):
         site runs at the local site, whose default `executes` is `cpu`."""
         import tempfile
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         from tools.tests.target_fixtures import profile_with
         target = profile_with(hardware={"class": "gpu", "architecture": "sm_90"})
@@ -17573,7 +17569,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
                 run_id="run_1", source_binary_id="bin_1")
-            with mock.patch.object(build_runtime_server, "tool_run_program") as run_program:
+            with mock.patch.object(build_runtime, "tool_run_program") as run_program:
                 _record_build_site(c.repo_root, refs)
                 result = c._run_deterministic_substep(refs, "validate", "execute", "child-1", {})
             run_program.assert_not_called()
@@ -17587,7 +17583,7 @@ class DeterministicBuildTest(unittest.TestCase):
         # predicate failure. Force run_program to fail after seeding a stale failing verdict.
         import tempfile
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -17608,7 +17604,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 json.dumps({"self_verdict": "fail", "failure_class": "physics_fail"}),
                 encoding="utf-8")
 
-            with mock.patch.object(build_runtime_server, "tool_run_program",
+            with mock.patch.object(build_runtime, "tool_run_program",
                                    lambda a: {"ok": False, "stderr": "boom"}):
                 _record_build_site(c.repo_root, refs)
                 out = c._execute_inproc(refs, "child-1")
@@ -18398,7 +18394,7 @@ class DeterministicBuildTest(unittest.TestCase):
         rather than a silent `gate_result`."""
         import subprocess as _sp
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         c = _TargetedConductor(repo_root=repo, orchestration_id="t",
                          orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
@@ -18428,9 +18424,9 @@ class DeterministicBuildTest(unittest.TestCase):
                 raise AssertionError(f"unexpected subprocess: {argv}")
             return _sp.CompletedProcess(argv, rc, stdout=out, stderr="")
 
-        with mock.patch.object(build_runtime_server, "tool_run_program",
+        with mock.patch.object(build_runtime, "tool_run_program",
                                lambda a: {"ok": True, "command_id": "R"}), \
-             mock.patch.object(build_runtime_server, "tool_run_quality_checks",
+             mock.patch.object(build_runtime, "tool_run_quality_checks",
                                lambda a: {"ok": True, "command_id": "Q"}), \
              mock.patch.object(wc.subprocess, "run", fake_subprocess_run):
             _record_build_site(c.repo_root, refs)
@@ -18721,7 +18717,7 @@ class DeterministicBuildTest(unittest.TestCase):
         # so a runner runtime error cannot be misrouted as a warm structural repair.
         import tempfile
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -18738,7 +18734,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 json.dumps({"status": "fail", "failure_category": "post_execute_violation",
                             "failure_excerpt": "stale"}), encoding="utf-8")
 
-            with mock.patch.object(build_runtime_server, "tool_run_program",
+            with mock.patch.object(build_runtime, "tool_run_program",
                                    lambda a: {"ok": False, "stderr": "SIGFPE"}):
                 _record_build_site(c.repo_root, refs)
                 c._execute_inproc(refs, "child-1")
@@ -18749,7 +18745,7 @@ class DeterministicBuildTest(unittest.TestCase):
         # before any trial_meta is authored, so classify_failure keeps its cold restart.
         import tempfile
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -18765,7 +18761,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 "  target:\n    class: cpu\n", encoding="utf-8")
             (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
 
-            with mock.patch.object(build_runtime_server, "tool_run_program",
+            with mock.patch.object(build_runtime, "tool_run_program",
                                    lambda a: {"ok": False, "stderr": "SIGFPE"}):
                 _record_build_site(c.repo_root, refs)
                 out = c._execute_inproc(refs, "child-1")
@@ -18859,8 +18855,8 @@ class DeterministicLintTest(unittest.TestCase):
 
     def _patch_linter(self, fn):
         from unittest import mock
-        build_runtime_server = _server()
-        return mock.patch.object(build_runtime_server, "tool_run_linter", fn)
+        build_runtime = _build_runtime()
+        return mock.patch.object(build_runtime, "tool_run_linter", fn)
 
     _M3C_NODE_KEY = "problem/adv1d@0.1.0"
 
@@ -19194,7 +19190,8 @@ class DeterministicLintTest(unittest.TestCase):
         self.assertIn("True", str(caught.exception))
 
     def test_the_probes_carry_the_capability_gate_fields_the_main_run_carries(self) -> None:
-        """A probe is a GATED MCP call, and every row here stubs the tool.
+        """A probe was a GATED MCP call until issue #171 PR-2 (a library call since #444), and
+        every row here stubs the tool.
 
         So nothing checked that the probes thread `orchestration_id` / `agent_run_id` /
         `capability_token` through — and the census reviewer confirmed against the real tool that
@@ -19225,7 +19222,8 @@ class DeterministicLintTest(unittest.TestCase):
         for call in seen:
             self.assertEqual(call["orchestration_id"], c.orchestration_id)
             self.assertEqual(call["agent_run_id"], "child-1")
-            self.assertEqual(call["repo_root"], str(repo))
+            # The library reads no `repo_root`; the conductor stopped passing it in issue #444.
+            self.assertNotIn("repo_root", call)
             self.assertEqual(call["capture_limit"], wc._FULL_CAPTURE_LIMIT)
 
     def test_the_probe_directories_are_emptied_before_each_run(self) -> None:
@@ -19429,83 +19427,67 @@ class DeterministicLintTest(unittest.TestCase):
             with self.assertRaisesRegex(RuntimeError, "has no static lint preset"):
                 c._gate_lint_check(refs, "child-1")
 
-    def test_gate_lint_check_imports_the_server_from_the_code_not_the_repo_root(self) -> None:
-        """Issue #422: the gate body resolves the build-runtime server from the checkout's code
-        location, never from `self.repo_root`. With the module out of `sys.modules` and every
-        `mcp_servers` entry off `sys.path` (both restored on exit), a conductor over a seeded
-        repository that holds no `mcp_servers/` still reaches the unknown-language refusal,
-        which sits after the gate's server import. Spelling the import from `self.repo_root`
-        again raises `ModuleNotFoundError` here instead."""
+    def test_gate_lint_check_imports_the_library_from_the_code_not_the_repo_root(self) -> None:
+        """Issue #422: the gate body resolves the build-runtime library from the checkout's code
+        location, never from `self.repo_root`. With the module out of `sys.modules` (restored on
+        exit), a conductor over a seeded repository that holds no `tools/build_runtime.py` still
+        reaches the unknown-language refusal, which sits after the gate's library import.
+        Since issue #444 the import is the package import `from tools.build_runtime import`, so
+        a `repo_root`-relative spelling would have to be written on purpose; this row is the
+        behavioural witness that it was not."""
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._refs()
             self._seed(repo, refs, language="brainfuck")
-            self.assertFalse((repo / "mcp_servers").exists())
+            self.assertFalse((repo / "tools" / "build_runtime.py").exists())
             c = self._conductor(repo)
-            clean_path = [p for p in sys.path if not p.rstrip("/").endswith("mcp_servers")]
-            with mock.patch.dict(sys.modules), mock.patch.object(sys, "path", clean_path):
-                sys.modules.pop("build_runtime_server", None)
+            # The re-import binds a NEW module object as the `tools` package's attribute, which
+            # `mock.patch.dict(sys.modules)` does not restore; without the attribute patch every
+            # later `from tools import build_runtime` reads a different object than the modules
+            # that imported it before this row (measured: `test_execution_sites` went red).
+            import tools
+            from tools import build_runtime  # bound as the attribute before it is patched
+            with mock.patch.dict(sys.modules), \
+                    mock.patch.object(tools, "build_runtime", build_runtime):
+                sys.modules.pop("tools.build_runtime", None)
                 with self.assertRaisesRegex(RuntimeError, "has no static lint preset"):
                     c._gate_lint_check(refs, "child-1")
 
-    def test_every_conductor_server_import_follows_the_loader(self) -> None:
-        """Issue #422: in `tools/workflow_conductor.py`, every function that imports
-        `build_runtime_server` (`from ... import` or `import`) has, as a TOP-LEVEL statement of
-        its own body and on a line before its first such import, a bare call
-        `_build_runtime_server_module()`; and no code string equals `"mcp_servers"`. Read with
-        `ast`, so a docstring that mentions the path does not count, and a string that merely
-        cites a file under that directory (a README pointer) is not refused.
-
-        Top-level means a call inside a branch, a loop, a nested `def` or a lambda does not
-        count, so a loader that might not run does not satisfy the row. What it does not see: an
-        import spelled through `importlib`, and a `return` placed between the call and the
-        import. And it refuses some legitimate spellings — the call made through the module
-        attribute, or a nested helper that imports without calling the loader itself — whose
-        remedy is to call the loader by its bare name in that function. That the loader
-        resolves the right directory is the behavioural row above's claim, driven through the
-        lint gate with the module out of `sys.modules`."""
+    def test_every_conductor_library_import_is_the_package_import(self) -> None:
+        """Issue #422, restated for issue #444: in `tools/workflow_conductor.py` every import of
+        the build-runtime library is a package import — `from tools.build_runtime import ...` or
+        `from tools import build_runtime`, both resolved from the code location (round 2 of #444:
+        accepting only the first refused the second, the spelling the plan names) — no
+        statement imports a bare `build_runtime` or the
+        deleted `build_runtime_server` module (which only a `sys.path` injection could
+        resolve), and no code string equals `"mcp_servers"`. Read with `ast`, so a docstring
+        does not count. What it does not see: an import spelled through `importlib`."""
         import ast
         tree = ast.parse(Path(wc.__file__).read_text(encoding="utf-8"))
 
-        def _imports_server(node: ast.AST) -> bool:
-            if isinstance(node, ast.ImportFrom):
-                return node.module == "build_runtime_server"
-            if isinstance(node, ast.Import):
-                return any(a.name == "build_runtime_server" for a in node.names)
-            return False
-
-        def _is_load(stmt: ast.stmt) -> bool:
-            return (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
-                    and isinstance(stmt.value.func, ast.Name)
-                    and stmt.value.func.id == "_build_runtime_server_module")
-
-        importers, unguarded = [], []
+        bare = {"build_runtime", "build_runtime_server"}
+        importers, stray = set(), []
         for fn in ast.walk(tree):
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            # The function's own statements, not those of a function nested in it, which is
-            # judged as a function of its own.
-            own, stack = [], list(fn.body)
-            while stack:
-                node = stack.pop()
-                own.append(node)
-                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda,
-                                         ast.ClassDef)):
-                    stack.extend(ast.iter_child_nodes(node))
-            imports = [n.lineno for n in own if _imports_server(n)]
-            if not imports:
-                continue
-            importers.append(fn.name)
-            loads = [st.lineno for st in fn.body if _is_load(st)]
-            if not loads or min(loads) > min(imports):
-                unguarded.append(fn.name)
+            for node in ast.walk(fn):
+                if isinstance(node, ast.ImportFrom) and (
+                        node.module == "tools.build_runtime"
+                        or (node.module == "tools"
+                            and any(a.name == "build_runtime" for a in node.names))):
+                    importers.add(fn.name)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module in bare:
+                stray.append(node.lineno)
+            if isinstance(node, ast.Import) and any(a.name in bare for a in node.names):
+                stray.append(node.lineno)
         # The detector's own surface: the five gate bodies issue #422 named must be found, or a
         # rename that hid them from this walk would leave the row green over nothing.
         self.assertLessEqual(
             {"_build_inproc", "_attribute_lint_findings", "_gate_lint_check",
-             "_gate_syntax_check", "_execute_inproc"}, set(importers))
-        self.assertEqual([], unguarded)
+             "_gate_syntax_check", "_execute_inproc"}, importers)
+        self.assertEqual([], stray)
         hits = [
             node.lineno for node in ast.walk(tree)
             if isinstance(node, ast.Constant) and node.value == "mcp_servers"
@@ -19515,7 +19497,7 @@ class DeterministicLintTest(unittest.TestCase):
 
 class DeterministicSyntaxTest(unittest.TestCase):
     """The generate.gate syntax checker (_gate_syntax_check) runs in-process: it stages the node
-    (+ dep closure) sources, runs the MCP run_syntax_check compiler gate (mandatory gfortran,
+    (+ dep closure) sources, runs the build-runtime run_syntax_check compiler gate (mandatory gfortran,
     optional ATMOFAB_SYNTAX_COMPILERS stages), returns the `syntax` section of gate_meta and
     writes the host-side syntax evidence. An unfixable attribution raises (transport
     fail_closed); the unioned gate_meta.json is exercised by DeterministicGateTest."""
@@ -19550,8 +19532,8 @@ class DeterministicSyntaxTest(unittest.TestCase):
 
     def _patch_syntax(self, fn):
         from unittest import mock
-        build_runtime_server = _server()
-        return mock.patch.object(build_runtime_server, "tool_run_syntax_check", fn)
+        build_runtime = _build_runtime()
+        return mock.patch.object(build_runtime, "tool_run_syntax_check", fn)
 
     def test_syntax_probe_stages_the_closure_from_bindings(self) -> None:
         """The syntax probe shares `_stage_dependency_sources` with Build, so it must survive the
@@ -19774,7 +19756,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
         The leaf authored that name and can rename it, so the section must carry the same
         `attribution` shape as every other return rather than omitting the key."""
         import tempfile
-        SyntaxSourceNameError = _server().SyntaxSourceNameError
+        SyntaxSourceNameError = _build_runtime().SyntaxSourceNameError
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
             refs = self._m3c_refs()
@@ -21163,10 +21145,10 @@ class DeterministicGateTest(unittest.TestCase):
 
     def _patches(self, linter, syntax, run=None):
         from unittest import mock
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
         ps = [
-            mock.patch.object(build_runtime_server, "tool_run_linter", linter),
-            mock.patch.object(build_runtime_server, "tool_run_syntax_check", syntax),
+            mock.patch.object(build_runtime, "tool_run_linter", linter),
+            mock.patch.object(build_runtime, "tool_run_syntax_check", syntax),
         ]
         if run is not None:
             ps.append(mock.patch.object(wc.subprocess, "run", run))
@@ -23713,7 +23695,7 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
     def _execute_with_real_gate(self, repo: Path, perf_body: bytes) -> tuple[dict, dict]:
         from unittest import mock
 
-        build_runtime_server = _server()
+        build_runtime = _build_runtime()
 
         refs = wc.NodeRefs(target_id=_TARGET_ID,
             node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
@@ -23740,9 +23722,9 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
         # can emit and `write_text` cannot express.
         (run_tmp / "perf.json").write_bytes(perf_body)
 
-        with mock.patch.object(build_runtime_server, "tool_run_program",
+        with mock.patch.object(build_runtime, "tool_run_program",
                                lambda a: {"ok": True, "command_id": "R"}), \
-             mock.patch.object(build_runtime_server, "tool_run_quality_checks",
+             mock.patch.object(build_runtime, "tool_run_quality_checks",
                                lambda a: {"ok": True, "command_id": "Q"}), \
              mock.patch.object(wc.subprocess, "run", self._shim(repo)):
             _record_build_site(c.repo_root, refs)
