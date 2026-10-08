@@ -7220,15 +7220,6 @@ def _resolve_pipeline_roots(
     return roots
 
 
-#: The reserved directory under `workspace/orchestrations/` that is NOT a run: the LEAF hook
-#: entrypoint recorded a refusal there when the payload could not name an orchestration
-#: (`docs/ORCHESTRATION.md` §38). That entrypoint is deleted (Z4, issue #171) so nothing writes
-#: the sink any more — the exclusion stays for the workspaces that already hold one, which is
-#: the same reason this validator keeps its pre-Z4 marker arms. Spelled once, here, and read by
-#: the hierarchy sweep below.
-HOOK_REFUSAL_SINK_DIR_NAME = "_global"
-
-
 def _validate_orchestration_hierarchy(
     workspace_path: Path,
     executions: list[NodeExecution],
@@ -7244,19 +7235,8 @@ def _validate_orchestration_hierarchy(
         )
         return
 
-    # `_global` IS NOT AN ORCHESTRATION. It is the reserved sink the deleted leaf hook
-    # entrypoint recorded a refusal under when the payload could not name one
-    # (`docs/ORCHESTRATION.md` §38), so it holds `hooks/` and nothing else — no
-    # `orchestration_meta.json`, no `steps/`. Swept as a run it produced five violations
-    # per refusal, which made the documented `--stage full` CI pass-condition
-    # (`docs/workflow/WORKFLOW_CORE.md`) fail from operator-local gitignored debris, with
-    # no artifact explaining it. Measured on the tree one refusal produces. The waiver
-    # flag an operator would reach for, `--allow-missing-orchestration`, is refused in
-    # their own session by `forbid_verify_bypass_flags_in_dev_mode`, so the escape hatch
-    # was closed in the same branch that opened the failure.
     orchestration_dirs = sorted(
-        path for path in orchestrations_root.iterdir()
-        if path.is_dir() and path.name != HOOK_REFUSAL_SINK_DIR_NAME
+        path for path in orchestrations_root.iterdir() if path.is_dir()
     )
     if not orchestration_dirs:
         violations.append(

@@ -521,8 +521,10 @@ re-run confirming Build passes on attempt 1 (operator-gated).
   `workflow_conductor.classify_failure`; extracted to the named module constant
   `C2_EXECUTE_FAIL_ESCALATION_THRESHOLD = 2` (near `MAX_ATTEMPTS_PER_PHASE`) for tunability.
   Behavior unchanged; covered by `test_recurring_execute_failure_escalates_to_compile`.
-- **L4** `_impl_is_leaf_node` disagrees with the YAML parser only for **invalid** YAML
-  (tab-indented `direct_deps`) — benign/unreachable (fails compile), not worth fixing.
+- **L4 — RESOLVED (2026-10-08, issue #445).** `_impl_is_leaf_node` disagreed with the YAML
+  parser only for **invalid** YAML (tab-indented `direct_deps`). Both it and its agreement
+  partner `Conductor._is_leaf_node` had no production caller and were deleted, so there is no
+  second reader left to disagree.
 - **L5 — PARTIALLY CLOSED (2026-07-12).** **Status (2026-09-15, issue #170)**: the reset-instant
   scrape and the `/usage` probe described below are retired; `--wait-usage-reset` now sleeps a
   fixed schedule on the `llm_usage_limit` tag alone (`docs/ORCHESTRATION.md` "leaf transient
@@ -777,7 +779,8 @@ workspace_root leaf responsibility (old Operations Rules 6/7). `phase_02_generat
 **Non-regression notes.**
 - The verify leaf invoked `validate_workspace_root.py` **without** `--write-scope-baseline`; the
   baseline branch was never reached. `_gate_static_check` reproduces the exact bare invocation — no
-  dropped argument. (Do not "correct" this by adding a baseline.)
+  dropped argument. (Do not "correct" this by adding a baseline.) The baseline branch itself was
+  deleted in issue #445.
 - `post_generate` is purely static and does **not** read `source_meta.verification_status`, so
   running it before verify is acyclic. It certifies `lint_evidence`, which the conductor wrote in
   `_gate_lint_check` earlier in the same attempt — i.e. it certifies conductor-owned evidence.

@@ -169,23 +169,6 @@ SUBSTEP_AWARE_STEPS = frozenset({"compile", "generate", "validate"})
 # A same-value re-call permits a cleanup retry only when the cleanup_committed marker is absent (F2).
 IDEMPOTENT_TERMINAL_STATUSES = TERMINAL_STATUSES | {"fail_closed"}
 
-# Single source of truth for the repo-relative root that Python bytecode is redirected into
-# (out of the repo SOURCE tree). It is consumed by sites that MUST agree, else the
-# unauthorized-write exemption silently stops matching and repo-tree `.pyc` writes resurface as
-# violations:
-#   1. run_workflow.py sets the in-process conductor host's `sys.pycache_prefix` to
-#      `<repo>/<this>` (redirects the host interpreter's lazy imports),
-#   2. `_gate_python_env` sets gate subprocesses' `PYTHONPYCACHEPREFIX` to `<repo>/<this>`,
-#   3. `_is_host_pycache_redirect_write` exempted writes under `<this>` from the terminal
-#      write-diff, which issue #171 PR-2 deleted; the predicate survives as a placement
-#      statement and has no consumer that refuses anything.
-#   4. validate_workspace_root.ALLOWED_WORKSPACE_TOP_LEVEL_DIRS must list this prefix's LEAF
-#      segment (`.pycache`) as a canonical top-level workspace dir, else _scan_workspace_layout
-#      flags the redirect target as a "non-canonical workspace directory".
-# test_orchestration_runtime.py drift-guards (1) via a source-text pin and (2)/(3)/(4) via unit
-# assertions, all keyed on this constant.
-_HOST_PYCACHE_REDIRECT_PREFIX = "workspace/.pycache"
-
 
 _DEPENDENCY_READINESS_STAGES: tuple[str, ...] = (
     "ir_ref",
@@ -6869,79 +6852,6 @@ def _pipeline_target_toolchain(repo_root: Path, pipeline_ref: str) -> dict[str, 
     return load_pipeline_target(repo_root, pipeline_ref).toolchain
 
 
-def _impl_is_leaf_node(repo_root: Path, ir_ref: str) -> bool | None:
-    """True iff spec.ir.yaml's `dependency.direct_deps` is empty (a leaf node).
-
-    Retained as the canonical runtime-side leaf predicate (and the agreement partner of
-    Conductor._is_leaf_node) even though Makefile host-authorship no longer keys off it
-    (authorship is now make∧fortran for leaf OR dependency nodes — see
-    `_resolved_makefile_host_authored` in record_launch); covered by its own unit test and
-    referenced by latent item L4 in docs/design/deterministic_followups.md.
-
-    Returns None when the IR / dependency block cannot be located. Line-scanned, unlike
-    the toolchain readers above, and deliberately: the scan is anchored at a top-level
-    `dependency:` key and tracks indentation, and a value nested under any other key
-    cannot produce a physical line at column 0, so the decoy that defeated an unscoped
-    scan has nothing to write. Finds the top-level `dependency:` block, then
-    `direct_deps:` within it — empty (`[]` inline, or no `- ` list item before the block
-    dedents) means leaf.
-    """
-    path = repo_root / _normalize_rel_posix(ir_ref) / "spec.ir.yaml"
-    if not path.is_file():
-        return None
-    try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
-    except OSError:
-        return None
-    lines = text.splitlines()
-    in_dep = False
-    dep_indent = 0
-    for i, raw in enumerate(lines):
-        stripped = raw.split("#", 1)[0].rstrip()
-        if not stripped.strip():
-            continue
-        indent = len(stripped) - len(stripped.lstrip())
-        key = stripped.strip()
-        if not in_dep:
-            if indent == 0 and key.split(":", 1)[0].strip() == "dependency":
-                in_dep = True
-                dep_indent = indent
-            continue
-        # inside dependency block
-        if indent <= dep_indent:
-            # dedented out of dependency without finding direct_deps
-            return None
-        head, _, rest = key.partition(":")
-        if head.strip() == "direct_deps":
-            rest = rest.strip()
-            if rest:
-                # inline flow value: an empty list with ANY internal whitespace (`[]`, `[ ]`,
-                # `[   ]`) is a leaf; a bracketed list with content (`[a]`) is non-leaf. Strip
-                # the brackets and test the inner content rather than matching exact strings,
-                # so the runtime agrees with the conductor's YAML parser (a stricter match
-                # would call `[  ]` non-leaf while the parser sees an empty list -> a
-                # host-author disagreement -> record_launch fail-closed).
-                if rest.startswith("[") and rest.endswith("]"):
-                    return rest[1:-1].strip() == ""
-                return False  # unexpected non-list inline scalar -> treat as non-leaf
-            # block form: scan following lines for a `- ` list item. A YAML block sequence
-            # may sit at the SAME indent as its key or deeper, so a `- ` item counts when its
-            # indent >= direct_deps' indent; a non-`-` line at indent <= direct_deps' is a
-            # sibling/parent key (dedent) -> no items -> leaf.
-            dd_indent = indent
-            for follow in lines[i + 1:]:
-                fstr = follow.split("#", 1)[0].rstrip()
-                if not fstr.strip():
-                    continue
-                find = len(fstr) - len(fstr.lstrip())
-                if fstr.strip().startswith("- ") and find >= dd_indent:
-                    return False  # has a dependency -> non-leaf
-                if find <= dd_indent:
-                    break  # dedented to a sibling/parent key: no list items -> leaf
-            return True
-    return None
-
-
 def _mandatory_phase_outputs_for_launch(
     request_payload: dict[str, Any],
     allowed_output_paths: Sequence[str],
@@ -7679,20 +7589,6 @@ def _canonical_command_log_paths_for_request(
     )
 
 
-def _with_trailing_slash(rel_posix: str) -> str:
-    if not rel_posix:
-        return ""
-    return rel_posix if rel_posix.endswith("/") else rel_posix + "/"
-
-
-def _repo_path_under_prefix(rel_posix: str, prefix_rel: str) -> bool:
-    p = _normalize_rel_posix(rel_posix)
-    base = _normalize_rel_posix(prefix_rel)
-    if not base:
-        return False
-    return p == base or p.startswith(base + "/")
-
-
 def _runtime_ro_bind_paths() -> list[str]:
     runtime_paths = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc"]
     paths = [p for p in runtime_paths if Path(p).exists()]
@@ -8299,7 +8195,6 @@ def build_readonly_bwrap_profile(
     backend_type: str = "",
     backend_ro_extra: Sequence[str] = (),
     backend_ro_mappings: Sequence[tuple[str, str]] = (),
-    backend_rw_mappings: Sequence[tuple[str, str]] = (),
     backend_rw_override: Sequence[str] | None = None,
     env_overrides: Mapping[str, str] | None = None,
     child_env: Mapping[str, str] | None = None,
@@ -8358,7 +8253,7 @@ def build_readonly_bwrap_profile(
         "write_roots": [],
         "runtime_ro_bind_paths": system_ro + backend_ro,
         "runtime_ro_bind_mappings": [list(pair) for pair in backend_ro_mappings],
-        "runtime_rw_bind_mappings": [list(pair) for pair in backend_rw_mappings],
+        "runtime_rw_bind_mappings": [],
         "runtime_rw_bind_paths": backend_rw,
         "tmp_dir": str(tmp_root),
         "workspace_tmp_rw_abs": str(workspace_tmp_host),
@@ -8449,6 +8344,17 @@ def _profile_child_env(child_env: Mapping[str, str] | None, *,
     return body
 
 
+# The profile fields that once carried a repository grant into the mount set. Each must be
+# empty; `render_bwrap_command` refuses a profile where one is not.
+_UNRENDERED_PROFILE_GRANTS: tuple[str, ...] = (
+    "read_roots",
+    "write_roots",
+    "runtime_rw_bind_mappings",
+    "runtime_rw_rel_paths",
+    "runtime_rw_file_paths",
+)
+
+
 def render_bwrap_command(
     *,
     profile: dict[str, Any],
@@ -8460,6 +8366,17 @@ def render_bwrap_command(
     tmp_dir = str(profile.get("tmp_dir") or "").strip()
     if not repo_root or not tmp_dir:
         raise ValueError("profile must include repo_root and tmp_dir")
+    # NOTHING UNDER THE CHECKOUT IS GRANTED, and a profile that says otherwise is refused
+    # rather than ignored. `build_readonly_bwrap_profile` records these five as empty, and
+    # their mounting arms went with the agentic leaf (issue #445). A profile is also re-read
+    # from `sandbox_profiles/<arid>.json` by the conductor; one carrying a grant there was
+    # altered after it was written, and rendering it without the grant would launch a leaf
+    # under a profile its record misstates.
+    for field in _UNRENDERED_PROFILE_GRANTS:
+        if profile.get(field):
+            raise ValueError(
+                f"profile field {field!r} must be empty: a leaf is granted no path under the "
+                f"checkout beyond its own scratch roots (got {profile.get(field)!r})")
     cmd: list[str] = [
         "bwrap",
         "--die-with-parent",
@@ -8540,36 +8457,8 @@ def render_bwrap_command(
     # lies inside the checkout by inode and by the mount table — keyed on where the checkout
     # would APPEAR in the sandbox, so the one place the tmpfs covers is the one place accepted.
     cmd.extend(["--tmpfs", repo_root])
-    # write_root absolute paths, used to suppress an ro read-bind that would otherwise
-    # make a writable artifact read-only.
-    _write_abs = [
-        (Path(repo_root) / _normalize_rel_posix(w)).resolve()
-        for w in profile.get("write_roots", [])
-        if isinstance(w, str) and w.strip()
-    ]
-    # UNREACHABLE IN PRODUCTION, like the `write_roots` file-pin branch above and
-    # `runtime_rw_file_paths` below: `build_readonly_bwrap_profile` is the only profile
-    # builder left and it emits `"read_roots": []` (the repository is not bound at all —
-    # an empty tmpfs sits at its path — and a pure leaf has no read input to grant). Kept because `render_bwrap_command` takes a
-    # profile dict from its caller and a test may hand it one; the exemption below describes
-    # a leaf that writes, and no leaf does since issue #171 PR-2.
-    for rel in profile.get("read_roots", []):
-        if not isinstance(rel, str) or not rel.strip():
-            continue
-        abs_path = (Path(repo_root) / _normalize_rel_posix(rel)).resolve()
-        if not abs_path.exists():
-            continue
-        # Do NOT ro-bind a read input that lives inside a writable write_root: the rw
-        # write_root bind already exposes it, and an ro file-pin would make it unwritable,
-        # breaking an in-place rewrite (git apply / atomic rename -> EBUSY) of a file that
-        # is both a read input and a managed output (e.g. generate.verify rewriting
-        # source_meta.json, which it both reads and writes).
-        if any(abs_path == w or abs_path.is_relative_to(w) for w in _write_abs):
-            continue
-        abs_token = str(abs_path)
-        cmd.extend(["--ro-bind", abs_token, abs_token])
     # Writable runtime binds (backend config/credential home) — emitted AFTER the tmpfs
-    # at repo_root and the (unreachable) read-root ro-binds. A home INSIDE repo_root is
+    # at repo_root. A home INSIDE repo_root is
     # refused by `_resolve_backend_rw_binds`, and for a home outside it the order is
     # immaterial; what the position records is that a later `--bind` wins over an earlier
     # mount at the same path (bwrap applies binds in order, later overriding earlier
@@ -8588,130 +8477,6 @@ def render_bwrap_command(
         if not (Path(source).is_file() and Path(destination).is_file()):
             raise ValueError("runtime_ro_bind_mapping source and destination must be existing files")
         cmd.extend(["--ro-bind", source, destination])
-    # Writable file mappings, emitted after the read-only ones so neither can be
-    # silently downgraded by ordering. The Claude private home uses exactly one:
-    # the operator's real credential file over the home's empty placeholder, so
-    # OAuth token refresh keeps working without binding the whole `~/.claude`.
-    for mapping in profile.get("runtime_rw_bind_mappings", []):
-        if not (isinstance(mapping, list) and len(mapping) == 2
-                and all(isinstance(part, str) and part.strip() for part in mapping)):
-            raise ValueError("runtime_rw_bind_mappings entries must be [source, destination]")
-        source, destination = mapping[0].strip(), mapping[1].strip()
-        if not (Path(source).is_file() and Path(destination).is_file()):
-            raise ValueError("runtime_rw_bind_mapping source and destination must be existing files")
-        cmd.extend(["--bind", source, destination])
-    for rel in profile.get("write_roots", []):
-        if not isinstance(rel, str) or not rel.strip():
-            continue
-        is_dir_root = rel.strip().endswith("/")
-        abs_path = (Path(repo_root) / _normalize_rel_posix(rel)).resolve()
-        # INVARIANT for _is_host_pycache_redirect_write: the host bytecode-cache redirect root
-        # must never become leaf-writable. `.resolve()` follows symlinks, so a symlinked write
-        # root (e.g. a pre-existing `workspace/pipelines -> .pycache`) would otherwise resolve
-        # here and be bind-mounted WRITABLE — the leaf could then write arbitrary files, or
-        # POISONED BYTECODE the trusted host later imports, into a subtree whose every change
-        # that exemption unconditionally suppresses from the terminal write-diff. Reject it
-        # fail-closed (the caller turns this into sandbox_enforcement_violation). Directory
-        # roots are checked here because only file pins carry the symlink guard below.
-        _pycache_abs = (Path(repo_root) / _HOST_PYCACHE_REDIRECT_PREFIX).resolve()
-        if abs_path == _pycache_abs or abs_path.is_relative_to(_pycache_abs):
-            raise ValueError(
-                f"write_roots entry {rel!r} resolves into the host bytecode-cache redirect root "
-                f"({_pycache_abs}); that subtree is exempt from unauthorized-write validation and "
-                f"must never be leaf-writable (check for a symlink in the path)"
-            )
-        if not abs_path.exists():
-            # A file pin must be pre-created by its profile builder before render. No builder
-            # emits one since issue #171 PR-2 (a leaf declares no write root), so this arm is
-            # reached only by a hand-built profile.
-            if not is_dir_root:
-                raise ValueError(
-                    f"write_roots file pin {rel!r} does not exist; "
-                    f"the profile's builder must pre-create it before render_bwrap_command is called"
-                )
-            continue
-        if not is_dir_root:
-            # File pins must be plain regular files — not directories or symlinks.
-            # Check the original (unresolved) path for symlinks: resolve() follows symlinks
-            # so is_symlink() on abs_path (resolved) is always False.
-            orig_path = Path(repo_root) / _normalize_rel_posix(rel)
-            if orig_path.is_symlink():
-                raise ValueError(
-                    f"write_roots file pin {rel!r} is a symlink ({orig_path}); "
-                    f"only regular files are permitted as file pins"
-                )
-            if not abs_path.is_file():
-                raise ValueError(
-                    f"write_roots file pin {rel!r} resolves to a non-file ({abs_path}); "
-                    f"add a trailing '/' to declare a directory write root instead"
-                )
-            # Bind the pin's PARENT DIRECTORY writable so the harness Write/Edit tool's atomic
-            # write can create its same-dir temp sibling (`<pin>.tmp.<pid>.<hash>`) and rename
-            # it over the pin. A file-granular `--bind` left the parent dir read-only, so that
-            # temp-sibling creation failed EROFS and a verify/judge leaf could not author its
-            # artifact at all — regressing compile.verify / generate.verify / validate.judge
-            # (i.e. every workflow) once the write_roots were narrowed to single-file pins.
-            # Then re-ro-bind every EXISTING sibling that is not itself a declared write_root,
-            # so certified artifacts sharing the dir (spec.ir.yaml / src/ / the host-authored
-            # verdict.json) keep their physical write protection: bwrap applies binds in order,
-            # later-overriding-earlier, so these ro-binds win over the parent rw-bind. Only NEW
-            # entries (the temp sibling, or a stray write) are physically creatable. A stray was
-            # caught by the terminal FS-diff plus the output-manifest hook, BOTH OF WHICH ARE
-            # DELETED (issue #171 PR-2) — so this branch's compensating control is gone with
-            # them. It is unreachable rather than fixed: `build_readonly_bwrap_profile` is the
-            # only profile builder left and hardcodes `write_roots: []`, so no pin reaches here.
-            # Same standing as `runtime_rw_file_paths` below. Net: the atomic-write mechanism works,
-            # while the narrowing's guarantee (a verify/judge leaf cannot mutate a same-dir
-            # certified artifact) is preserved. runtime_rw_file_paths (e.g. a cross-phase
-            # log) are rw-bound later and override any sibling ro-bind here.
-            parent = abs_path.parent
-            cmd.extend(["--bind", str(parent), str(parent)])
-            for sib in sorted(parent.iterdir()):
-                try:
-                    # Symlink siblings are not re-ro-bound (binding a symlink path would
-                    # bind its target, not the link node); regular-file/dir siblings are.
-                    # A symlink or a brand-new directory appearing in this now-writable
-                    # parent is instead caught at terminalization by the dedicated stray
-                    # check (_file_pin_parent_nonfile_strays), so nothing here is fail-open.
-                    if sib.is_symlink() or not sib.exists():
-                        continue
-                    sib_abs = sib.resolve()
-                except OSError:
-                    continue
-                if sib_abs == abs_path:
-                    continue  # the pin itself stays writable (rewritten via temp+rename)
-                if any(
-                    sib_abs == w or sib_abs.is_relative_to(w) or w.is_relative_to(sib_abs)
-                    for w in _write_abs
-                ):
-                    continue  # a declared write_root (or an ancestor/descendant of one) stays writable
-                cmd.extend(["--ro-bind", str(sib_abs), str(sib_abs)])
-            continue
-        abs_token = str(abs_path)
-        cmd.extend(["--bind", abs_token, abs_token])
-    # In-repo runtime bookkeeping dirs a leaf wrote via the runtime CLI (gate evidence under
-    # gates/<arid>/). Nothing populates this list since issue #171 PR-2 deleted `run-gate`;
-    # the rendering stays so a hand-built profile can still carry one.
-    for rel in profile.get("runtime_rw_rel_paths", []):
-        if not isinstance(rel, str) or not rel.strip():
-            continue
-        abs_path = (Path(repo_root) / _normalize_rel_posix(rel)).resolve()
-        if abs_path.is_dir():
-            abs_token = str(abs_path)
-            cmd.extend(["--bind", abs_token, abs_token])
-    # Authorized cross-phase command logs bound writable as individual files. Emitted
-    # AFTER the read-root ro-binds so a log inside a read input (e.g. a Make build's
-    # source/<id>/src/command_log.jsonl) becomes writable while the rest of that read
-    # input stays read-only (bwrap later-overrides-earlier). Nothing populates this list
-    # either since issue #171 PR-2: the cross-phase log is written by the build-runtime library in
-    # the conductor's own process, not from inside a sandbox.
-    for rel in profile.get("runtime_rw_file_paths", []):
-        if not isinstance(rel, str) or not rel.strip():
-            continue
-        abs_path = (Path(repo_root) / _normalize_rel_posix(rel)).resolve()
-        if abs_path.is_file():
-            abs_token = str(abs_path)
-            cmd.extend(["--bind", abs_token, abs_token])
     ws_rw = str(profile.get("workspace_tmp_rw_abs") or "").strip()
     if not ws_rw:
         raise ValueError("profile must include workspace_tmp_rw_abs")
@@ -8804,53 +8569,6 @@ def _compute_sha256(path: Path) -> str:
         for chunk in iter(lambda: f.read(65536), b""):
             digest.update(chunk)
     return f"sha256:{digest.hexdigest()}"
-
-
-def _build_artifact_hashes(
-    repo_root: Path,
-    output_refs: list[str],
-) -> dict[str, str]:
-    """Resolve each output_refs path relative to repo_root and compute the SHA-256."""
-    hashes: dict[str, str] = {}
-    for ref in output_refs:
-        if not isinstance(ref, str) or not ref.strip():
-            continue
-        r = ref.strip()
-        hashes[r] = _compute_sha256(repo_root / r)
-    return hashes
-
-
-def _is_host_pycache_redirect_write(rel_path: str) -> bool:
-    """True if `rel_path` is under the in-process conductor host's redirected bytecode cache
-    (``workspace/.pycache/``; see _HOST_PYCACHE_REDIRECT_PREFIX and run_workflow.py).
-
-    The workflow conductor runs in-process in run_workflow.py, whose sys.pycache_prefix is
-    redirected here, so its lazy imports (tools.build_runtime / tools.hooks.lint_evidence,
-    imported during compile.static / generate.gate) write *.pyc under this tree. That is a
-    trusted HOST write that lands in the child-window FS-diff and must be exempted from the
-    unauthorized-write check.
-
-    This is NOT a blanket ``*.pyc`` / ``__pycache__`` exemption: an explicit ``py_compile`` by
-    the (bwrap-confined) leaf writes to the compiled source's own ``__pycache__`` — never under
-    ``workspace/.pycache/``, whose pycache_prefix redirect only this host process sets (the leaf
-    env carries no PYTHONPYCACHEPREFIX) — so such a write still surfaces as an unauthorized write.
-
-    The exemption is the WHOLE redirect subtree (not a ``.pyc``-suffix filter) deliberately: the
-    only writer that can reach this dir is the trusted host (a leaf's sandbox holds no checkout at
-    all — an empty tmpfs at `repo_root`, issue #227 — so a confined leaf's write here lands on the
-    tmpfs and never on the host; see build_readonly_bwrap_profile / render_bwrap_command), and it writes
-    only bytecode plus CPython's atomic-write temp siblings (``<name>.pyc.<int>``, named
-    ``f'{path}.{id(path)}'`` in importlib._bootstrap_external). Matching the subtree covers those
-    temp files too; a suffix filter would spuriously flag them.
-    """
-    return _repo_path_under_prefix(_normalize_rel_posix(rel_path), _HOST_PYCACHE_REDIRECT_PREFIX)
-
-
-def _is_runtime_audit_artifact_path(orchestration_id: str, rel_path: str) -> bool:
-    orch_root = _normalize_rel_posix(f"workspace/orchestrations/{orchestration_id}")
-    rel = _normalize_rel_posix(rel_path)
-    prefixes: tuple[str, ...] = ()
-    return any(_repo_path_under_prefix(rel, prefix.rstrip("/")) for prefix in prefixes)
 
 
 def _cleanup_agent_tmp_root(
@@ -9171,14 +8889,6 @@ def _is_within_preflight_ttl(probed_at_iso: str, ttl_seconds: int) -> bool:
         return elapsed < ttl_seconds
     except (ValueError, TypeError):
         return False
-
-
-def _live_preflight_enforced() -> bool:
-    """Backward-compatibility wrapper.
-
-    New code should use _live_preflight_mode().
-    """
-    return _live_preflight_mode() != "never"
 
 
 def _update_preflight_probed_at(
@@ -10910,37 +10620,6 @@ def _node_key_to_safe(node_key: str) -> str:
     return f"{spec_kind}__{spec_id}__{spec_version}"
 
 
-def _dev_execute_trial_meta(repo_root: Path, root: Path, arid: str) -> dict[str, Any] | None:
-    """The failed execute run's `trial_meta.json`, or None.
-
-    Its path is not derivable from the orchestration root alone — the run node dir lives under
-    `workspace/pipelines/` — so it is recovered from the run's own
-    `launches/<arid>.request.json#allowed_output_paths`, which is where the conductor declared
-    it as an output."""
-    try:
-        request = _read_json(root / "launches" / f"{arid}.request.json")
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(request, dict):
-        return None
-    outs = request.get("allowed_output_paths")
-    trial_ref = next(
-        (
-            p
-            for p in (outs if isinstance(outs, list) else [])
-            if isinstance(p, str) and p.endswith("/trial_meta.json")
-        ),
-        None,
-    )
-    if not trial_ref:
-        return None
-    try:
-        trial = _read_json(repo_root / trial_ref)
-    except (OSError, json.JSONDecodeError):
-        return None
-    return trial if isinstance(trial, dict) else None
-
-
 def resume_orchestration(
     repo_root: Path,
     orchestration_id: str,
@@ -12559,21 +12238,8 @@ def post_phase_complete(
     agent_run_id: str,
     payload: dict[str, Any],
 ) -> None:
-    from tools.validate_workspace_root import _validate_write_scope_from_baseline
-
     step_token = step.strip().lower()
     violations: list[str] = []
-    baseline_ref = payload.get("write_scope_baseline_ref")
-    if isinstance(baseline_ref, str) and baseline_ref.strip():
-        bp = repo_root / _normalize_rel_posix(baseline_ref.strip())
-        if bp.is_file():
-            violations.extend(
-                _validate_write_scope_from_baseline(
-                    repo_root=repo_root,
-                    workspace_root="workspace/",
-                    baseline_path=bp,
-                )
-            )
     orch_root = _orchestration_root(repo_root, orchestration_id)
     resp_path = orch_root / "launches" / f"{agent_run_id.strip()}.response.json"
     req_path = orch_root / "launches" / f"{agent_run_id.strip()}.request.json"
@@ -14333,17 +13999,6 @@ def probe_execution_platform(
         ),
         "status": "pass" if can_launch_agents else "fail",
     }
-
-
-def probe_codex_cli(
-    codex_command: str = "codex",
-    runner: Callable[..., subprocess.CompletedProcess[str]] = subprocess.run,
-) -> dict[str, Any]:
-    return probe_execution_platform(
-        backend="codex",
-        agent_command=codex_command,
-        runner=runner,
-    )
 
 
 def _capture_repo_revision(

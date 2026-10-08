@@ -2384,9 +2384,8 @@ def _validated_pycache_redirect_root(repo_root: Path) -> Path:
 
     The host both WRITES bytecode here and, on later runs, LOADS it — so a cache root that is a
     symlink (or sits under one) is a code-execution vector: `.resolve()` follows it and the
-    trusted, UNSANDBOXED host would import bytecode from an attacker-chosen location, either
-    outside the repo (invisible to the terminal FS-diff) or inside a leaf-writable subtree (cache
-    poisoning). The workspace validator does not catch this — `_scan_workspace_layout` tests
+    trusted, UNSANDBOXED host would import bytecode from wherever the link points — outside the
+    repo, or a directory something else writes into (cache poisoning). The workspace validator does not catch this — `_scan_workspace_layout` tests
     `child.is_dir()`, which follows symlinks.
 
     Requiring resolution to be an IDENTITY rejects a symlink at any component and simultaneously
@@ -2407,9 +2406,8 @@ def _validated_pycache_redirect_root(repo_root: Path) -> Path:
         # Descendant symlinks are exactly as dangerous as a symlinked root: CPython follows a
         # symlinked directory in the mirrored source path when it writes AND when it LOADS a
         # cached module, so a link planted below the root (e.g. `.pycache/<mirror>/tools ->` a
-        # leaf-writable pipeline dir) redirects trusted-host bytecode just the same — and because
-        # this whole subtree is exempt from the terminal write-diff, the payload leaves no trace
-        # there. Walk without following links (so a symlinked dir is reported, not descended).
+        # pipeline dir) redirects trusted-host bytecode just the same. Walk without following
+        # links (so a symlinked dir is reported, not descended).
         for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
             for name in (*dirnames, *filenames):
                 entry = Path(dirpath) / name
@@ -2505,14 +2503,11 @@ def _run_main(
     # base_env's PYTHONDONTWRITEBYTECODE (set below) cannot do this
     # job: it governs SUBPROCESSES only, and sys.dont_write_bytecode is fixed at interpreter start.
     #
-    # The prefix is a LITERAL on purpose: importing orchestration_runtime here to read its
-    # _HOST_PYCACHE_REDIRECT_PREFIX would itself compile that ~20k-line module and write
-    # tools/__pycache__/orchestration_runtime.*.pyc into the source tree BEFORE this redirect is
-    # active (it is not yet in sys.modules at this point — validate_pipeline_semantics
-    # deliberately does not import it, and _default_claude_agent_model runs much later). The
-    # literal is drift-guarded against that constant by
-    # test_orchestration_runtime.HostPycacheRedirectExemptionTest, the same test-pin technique
-    # validate_workspace_root's allowlist entry uses to avoid the identical heavy import.
+    # The root is spelled once, as a literal in `_validated_pycache_redirect_root`, and not
+    # read from orchestration_runtime: importing that ~20k-line module here would compile it
+    # into tools/__pycache__/ BEFORE this redirect is active. validate_workspace_root's
+    # allowlist entry is drift-guarded against the literal by
+    # test_orchestration_runtime.HostPycacheRedirectRootTest.
     # This attribute is process-global; `main()` (the wrapper above) saves and restores it so an
     # in-process caller does not inherit this run's redirect.
     #

@@ -712,9 +712,9 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         self.assertTrue(cited_names, "no citations found — the reader is broken")
 
         # WHERE THE TESTS ARE, not where the suite runs them from. Issue #183 moved the
-        # two review instruments' tests to `.claude/skills/<skill>/scripts/tests/`, and a
-        # `defined` set built from `tools/tests/` alone then reports a citation of one of
-        # those 70 names as pointing at nothing — a false RED on a correct pointer, whose
+        # review instruments' tests to `.claude/skills/<skill>/scripts/tests/` (two then, one
+        # since issue #445), and a `defined` set built from `tools/tests/` alone then reports a
+        # citation of one of those names as pointing at nothing — a false RED on a correct pointer, whose
         # cheapest answer is to delete the pointer. Reading their NAMES is not the
         # coupling that move undid: the suite still does not RUN them, and the vocabulary
         # scan below already walks the whole tree including `.claude/`.
@@ -930,8 +930,9 @@ class NoShadowedTestMethodTests(unittest.TestCase):
     a string or a nested function is not a method. Suite-wide on purpose: the rule is not about
     one file, and a check scoped to the file that broke would be a pin on the result.
 
-    NOT repository-wide, since issue #183 moved the two review instruments' tests to
-    `.claude/skills/<skill>/scripts/tests/`. Those two are outside this scan, and outside
+    NOT repository-wide, since issue #183 moved the review instruments' tests to
+    `.claude/skills/<skill>/scripts/tests/` (one instrument since issue #445). They are outside
+    this scan, and outside
     `test_skip_reasons_are_declared.py`'s corpus for the same reason. Deliberately not widened:
     the whole point of that move is that the default run stops reading `.claude/`, and a glob
     added here would put it back. Each skill states the command that runs its own tests.

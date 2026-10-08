@@ -42,7 +42,6 @@ from tools.orchestration_runtime import (
     TERMINAL_STATUSES,
     _pre_phase_complete_judge_checks,
     _required_child_agent_kind,
-    _build_artifact_hashes,
     _capture_repo_revision,
     _compute_sha256,
     _is_within_preflight_ttl,
@@ -61,7 +60,6 @@ from tools.orchestration_runtime import (
     pre_phase_launch,
     probe_execution_platform,
     prepare_launch_request_payload,
-    probe_codex_cli,
     record_agent_run,
     record_launch,
     record_timeout,
@@ -1037,7 +1035,8 @@ shell_tool                       stable             true
                 return _FakeCompletedProcess(0, stdout=_CODEX_EXEC_RESUME_HELP)
             raise AssertionError(args)
 
-        result = probe_codex_cli(codex_command="codex", runner=runner)
+        result = probe_execution_platform(
+            backend="codex", agent_command="codex", runner=runner)
         self.assertEqual(result["status"], "pass")
         self.assertTrue(result["can_launch_step_agents"])
         self.assertTrue(result["can_launch_substep_agents"])
@@ -1057,7 +1056,8 @@ shell_tool                       stable             true
                 return _FakeCompletedProcess(0, stdout=_CODEX_EXEC_RESUME_HELP)
             raise AssertionError(args)
 
-        result = probe_codex_cli(codex_command="codex", runner=runner)
+        result = probe_execution_platform(
+            backend="codex", agent_command="codex", runner=runner)
         self.assertEqual(result["status"], "pass")
         self.assertTrue(result["can_launch_step_agents"])
         self.assertTrue(result["can_launch_substep_agents"])
@@ -4402,31 +4402,6 @@ shell_tool                       stable             true
         self.assertIn(
             f"{_FIX_PIPE_REF}/runs/{run_id}/{node_safe}/diagnostics.json", out
         )
-
-    def test_impl_is_leaf_node_reads_dependency_block(self) -> None:
-        from tools.orchestration_runtime import _impl_is_leaf_node
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            ir = repo / "ir"
-            ir.mkdir()
-
-            def _w(dep: str) -> bool | None:
-                (ir / "spec.ir.yaml").write_text(
-                    "impl_defaults:\n  toolchain:\n    build_system: make\n" + dep,
-                    encoding="utf-8")
-                return _impl_is_leaf_node(repo, "ir")
-
-            self.assertIs(_w("dependency:\n  direct_deps: []\n"), True)
-            # empty flow list with arbitrary internal whitespace is still leaf (valid YAML)
-            self.assertIs(_w("dependency:\n  direct_deps: [ ]\n"), True)
-            self.assertIs(_w("dependency:\n  direct_deps: [  ]\n"), True)
-            self.assertIs(_w("dependency:\n  direct_deps: [   ]\n"), True)
-            self.assertIs(_w("dependency:\n  direct_deps:\n  transitive_deps: []\n"), True)
-            self.assertIs(_w("dependency:\n  direct_deps:\n  - node_key: x\n"), False)
-            self.assertIs(_w("dependency:\n  direct_deps:\n    - node_key: x\n"), False)
-            self.assertIs(_w("dependency:\n  direct_deps: [component/x@0.1.0]\n"), False)
-            self.assertIs(_w("dependency:\n  direct_deps: [ component/x@0.1.0 ]\n"), False)
-            self.assertIsNone(_w("other: 1\n"))
 
     def test_generate_non_make_launch_does_not_inject_makefile_pin(self) -> None:
         """Fix 1 is Make-scoped: CMake/Meson Generate launches must NOT get a
@@ -10412,16 +10387,6 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
             p.write_bytes(b"v2")
             h2 = _compute_sha256(p)
             self.assertNotEqual(h1, h2)
-
-    def test_build_artifact_hashes_maps_refs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            rel = "workspace/x/y.txt"
-            (repo / rel).parent.mkdir(parents=True, exist_ok=True)
-            (repo / rel).write_text("z", encoding="utf-8")
-            h = _build_artifact_hashes(repo, [rel, "", "  "])
-            self.assertIn(rel, h)
-            self.assertTrue(h[rel].startswith("sha256:"))
 
     def test_resume_orchestration_raises_for_nonexistent_orchestration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -23149,116 +23114,66 @@ class DerivationKeyCertificationTests(unittest.TestCase):
                          ["component/b@0.1.0", "component/c@0.1.0", "component/d@0.1.0"])
 
 
-class HostPycacheRedirectExemptionTest(unittest.TestCase):
+class HostPycacheRedirectRootTest(unittest.TestCase):
     """The in-process conductor host redirects its bytecode cache to workspace/.pycache/
-    (run_workflow sets sys.pycache_prefix); _is_host_pycache_redirect_write exempts only that
-    redirect root from the unauthorized-write terminal diff, and nothing else — a repo-tree
-    __pycache__/ write still surfaces (defense-in-depth for an explicit agent py_compile).
+    (run_workflow sets sys.pycache_prefix from `_validated_pycache_redirect_root`).
 
-    The three producers that must agree (host sys.pycache_prefix, _gate_python_env's
-    PYTHONPYCACHEPREFIX, and this exemption) all derive from _HOST_PYCACHE_REDIRECT_PREFIX;
-    the drift-guard tests below pin each to that single constant so a silent divergence
-    (which would resurface the exact bug this fixes) fails the suite."""
+    The root is spelled once, in `run_workflow._validated_pycache_redirect_root`; the rows
+    below derive it from there and pin the two places that must agree with it — the
+    workspace layout allowlist, and the host's assignment of `sys.pycache_prefix`. (The
+    write-diff exemption that was a third consumer went with that diff, issue #171 PR-2, and
+    its predicate with issue #445.)"""
 
     _REPO_ROOT = Path(__file__).resolve().parents[2]
 
-    def test_real_cpython_redirect_path_shape_is_exempt(self):
-        # Real-behavior-driven (no fictional fixture shape): drive CPython's own
-        # cache_from_source under the production sys.pycache_prefix so the asserted path is
-        # EXACTLY what the interpreter writes on disk (it mirrors the absolute source dir under
-        # the prefix, with NO extra __pycache__/ segment).
-        import importlib.util
-        from tools.orchestration_runtime import (
-            _is_host_pycache_redirect_write,
-            _HOST_PYCACHE_REDIRECT_PREFIX,
-        )
-        repo = self._REPO_ROOT
-        prefix_abs = (repo / _HOST_PYCACHE_REDIRECT_PREFIX).resolve()
-        saved = sys.pycache_prefix
-        try:
-            sys.pycache_prefix = str(prefix_abs)
-            for src in ("tools/build_runtime.py",
-                        "tools/hooks/lint_evidence.py"):
-                pyc_abs = Path(importlib.util.cache_from_source(str(repo / src)))
-                # Sanity: the real path is under the redirect prefix and carries no __pycache__ seg.
-                self.assertTrue(pyc_abs.is_relative_to(prefix_abs))
-                self.assertNotIn("__pycache__", pyc_abs.relative_to(prefix_abs).parts)
-                rel = pyc_abs.relative_to(repo).as_posix()
-                self.assertTrue(
-                    _is_host_pycache_redirect_write(rel),
-                    f"real redirect path not exempted: {rel}")
-        finally:
-            sys.pycache_prefix = saved
-
-    def test_repo_tree_bytecode_is_still_flagged(self):
-        from tools.orchestration_runtime import _is_host_pycache_redirect_write
-
-        # An in-place __pycache__ write in the repo SOURCE tree is NOT exempt — an explicit
-        # agent py_compile writes here and must still surface as an unauthorized write.
-        self.assertFalse(_is_host_pycache_redirect_write(
-            "tools/__pycache__/build_runtime.cpython-313.pyc"))
-        self.assertFalse(_is_host_pycache_redirect_write(
-            "tools/hooks/__pycache__/lint_evidence.cpython-313.pyc"))
-        # A genuine artifact under an orchestration root is unaffected.
-        self.assertFalse(_is_host_pycache_redirect_write(
-            "workspace/orchestrations/orch_x/pipelines/p/src/model.f90"))
-
-    def test_prefix_boundary_is_not_a_substring_match(self):
-        from tools.orchestration_runtime import _is_host_pycache_redirect_write
-
-        # A sibling dir sharing the string prefix but not the path boundary must not match.
-        self.assertFalse(_is_host_pycache_redirect_write("workspace/.pycacheX/y.pyc"))
-        self.assertFalse(_is_host_pycache_redirect_write("workspace/.pycache-old/y.pyc"))
-
-    def test_exemption_predicate_is_keyed_on_the_shared_constant(self):
-        # Ties the exemption to _HOST_PYCACHE_REDIRECT_PREFIX: any path under the constant is
-        # exempt; a path just outside it is not.
-        from tools.orchestration_runtime import (
-            _is_host_pycache_redirect_write,
-            _HOST_PYCACHE_REDIRECT_PREFIX,
-        )
-        self.assertTrue(_is_host_pycache_redirect_write(
-            f"{_HOST_PYCACHE_REDIRECT_PREFIX}/anything/here.pyc"))
-        self.assertFalse(_is_host_pycache_redirect_write(
-            f"{_HOST_PYCACHE_REDIRECT_PREFIX}-not/here.pyc"))
+    @staticmethod
+    def _redirect_prefix() -> str:
+        from tools.run_workflow import _validated_pycache_redirect_root
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp).resolve()
+            return _validated_pycache_redirect_root(repo).relative_to(repo).as_posix()
 
     def test_workspace_layout_allowlist_contains_the_redirect_leaf_segment(self):
-        # Drift-guard consumer (4): validate_workspace_root's canonical top-level allowlist must
-        # contain the redirect prefix's LEAF segment, else _scan_workspace_layout would flag the
-        # redirect target as a non-canonical workspace directory. Pinned here (not by a runtime
-        # import into the standalone validator) so a rename of the constant that misses that file
-        # fails the suite.
-        from tools.orchestration_runtime import _HOST_PYCACHE_REDIRECT_PREFIX
+        # validate_workspace_root's canonical top-level allowlist must contain the redirect
+        # root's LEAF segment, else _scan_workspace_layout would flag the redirect target as a
+        # non-canonical workspace directory. Pinned here (not by a runtime import into the
+        # standalone validator) so a rename of the root that misses that file fails the suite.
         from tools.validate_workspace_root import ALLOWED_WORKSPACE_TOP_LEVEL_DIRS
-        leaf_segment = _HOST_PYCACHE_REDIRECT_PREFIX.split("/")[-1]
+        prefix = self._redirect_prefix()
+        # The VALUE, not only its agreement with the allowlist: `docs/RUNBOOK.md` tells the
+        # operator to `rm -rf workspace/.pycache` before a same-size-edit re-certification, so a
+        # root moved to another allowlisted dir (`workspace/tmp`) would make that step clear the
+        # wrong tree while every agreement check here stayed green.
+        self.assertEqual(prefix, "workspace/.pycache")
+        leaf_segment = prefix.split("/")[-1]
         self.assertIn(leaf_segment, ALLOWED_WORKSPACE_TOP_LEVEL_DIRS)
         # The prefix is exactly workspace/<leaf> (one segment under workspace/), matching how
         # _scan_workspace_layout enumerates top-level children of workspace/.
-        self.assertEqual(_HOST_PYCACHE_REDIRECT_PREFIX, f"workspace/{leaf_segment}")
+        self.assertEqual(prefix, f"workspace/{leaf_segment}")
 
     def test_symlinked_redirect_root_is_rejected_before_use(self):
         # The host writes AND later loads bytecode from the redirect root, so a symlinked root is
-        # a code-execution vector (target may be outside the repo — invisible to the FS-diff — or
-        # inside a leaf-writable subtree = cache poisoning). `_scan_workspace_layout` does not
+        # a code-execution vector (the target may be outside the repo, or a directory something
+        # else writes into = cache poisoning). `_scan_workspace_layout` does not
         # catch it (is_dir() follows symlinks), so run_workflow must reject it itself.
         from tools.run_workflow import _validated_pycache_redirect_root
-        from tools.orchestration_runtime import _HOST_PYCACHE_REDIRECT_PREFIX
+        prefix = self._redirect_prefix()
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp).resolve()
             (repo / "workspace").mkdir()
             # Happy path: absent root (created later by CPython) and a real dir both pass.
             self.assertEqual(
-                _validated_pycache_redirect_root(repo), repo / _HOST_PYCACHE_REDIRECT_PREFIX)
-            (repo / _HOST_PYCACHE_REDIRECT_PREFIX).mkdir()
+                _validated_pycache_redirect_root(repo), repo / prefix)
+            (repo / prefix).mkdir()
             self.assertEqual(
-                _validated_pycache_redirect_root(repo), repo / _HOST_PYCACHE_REDIRECT_PREFIX)
+                _validated_pycache_redirect_root(repo), repo / prefix)
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp).resolve()
             (repo / "workspace").mkdir()
             outside = repo.parent / "outside_target"
             outside.mkdir(exist_ok=True)
-            (repo / _HOST_PYCACHE_REDIRECT_PREFIX).symlink_to(outside)
+            (repo / prefix).symlink_to(outside)
             with self.assertRaises(ValueError) as ctx:
                 _validated_pycache_redirect_root(repo)
             self.assertIn("symlink", str(ctx.exception))
@@ -23274,10 +23189,9 @@ class HostPycacheRedirectExemptionTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             # A symlink DEEP INSIDE the cache (the mirrored source path) is rejected: CPython
-            # follows it when loading cached modules, and this subtree is exempt from the
-            # write-diff, so the payload would leave no trace.
+            # follows it when loading cached modules.
             repo = Path(tmp).resolve()
-            mirrored = repo / _HOST_PYCACHE_REDIRECT_PREFIX / "home" / "u" / "atmofab"
+            mirrored = repo / prefix / "home" / "u" / "atmofab"
             mirrored.mkdir(parents=True)
             target = repo.parent / "leaf_writable"
             target.mkdir(exist_ok=True)
@@ -23289,7 +23203,7 @@ class HostPycacheRedirectExemptionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             # A symlinked FILE inside the cache is rejected as well.
             repo = Path(tmp).resolve()
-            mirrored = repo / _HOST_PYCACHE_REDIRECT_PREFIX / "home"
+            mirrored = repo / prefix / "home"
             mirrored.mkdir(parents=True)
             payload = repo.parent / "forged.pyc"
             payload.write_bytes(b"")
@@ -23297,51 +23211,25 @@ class HostPycacheRedirectExemptionTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 _validated_pycache_redirect_root(repo)
 
-    def test_write_root_resolving_into_the_redirect_root_is_rejected(self):
-        # The exemption unconditionally suppresses every change under the redirect root, so that
-        # subtree must never be leaf-writable. `.resolve()` follows symlinks, so a symlinked
-        # directory write root (e.g. workspace/pipelines -> .pycache) would otherwise be
-        # bind-mounted writable and let a leaf hide arbitrary files — or bytecode the trusted host
-        # later imports — there. render_bwrap_command must fail closed instead.
-        from tools.orchestration_runtime import render_bwrap_command, _HOST_PYCACHE_REDIRECT_PREFIX
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp).resolve()
-            (repo / _HOST_PYCACHE_REDIRECT_PREFIX).mkdir(parents=True)
-            tmp_dir = repo / "workspace" / "tmp" / "arid"
-            tmp_dir.mkdir(parents=True)
-            # A symlinked write root whose target is the redirect cache.
-            (repo / "workspace" / "pipelines").symlink_to(repo / _HOST_PYCACHE_REDIRECT_PREFIX)
-            profile = {
-                "repo_root": str(repo),
-                "tmp_dir": str(tmp_dir),
-                "workspace_tmp_rw_abs": str(tmp_dir),
-                "write_roots": ["workspace/pipelines/"],
-                "read_roots": [],
-            }
-            with self.assertRaises(ValueError) as ctx:
-                render_bwrap_command(profile=profile, command_argv=["claude"])
-            self.assertIn("redirect root", str(ctx.exception))
-
-    def test_run_workflow_sets_pycache_prefix_from_the_shared_constant(self):
-        # Drift-guard producer (1): the host sys.pycache_prefix assignment is not unit-callable
+    def test_run_workflow_sets_pycache_prefix_from_the_validated_root(self):
+        # The host sys.pycache_prefix assignment is not unit-callable
         # (it lives inside run_workflow.main()), so pin it by source text — its removal would
         # silently reintroduce the original defect while every predicate test still passes.
         import re
-        from tools.orchestration_runtime import _HOST_PYCACHE_REDIRECT_PREFIX
+        prefix = self._redirect_prefix()
         src = (self._REPO_ROOT / "tools" / "run_workflow.py").read_text(encoding="utf-8")
-        # The assignment must spell the prefix as a LITERAL, derived here FROM the constant so a
-        # rename of the constant fails this test unless run_workflow is updated too. It must NOT
-        # import orchestration_runtime to read the constant: that import would compile the
-        # ~20k-line module into tools/__pycache__/ BEFORE the redirect is active (it is not in
-        # sys.modules at that point — validate_pipeline_semantics deliberately does not import it
-        # and _default_claude_agent_model runs later), defeating the redirect's purpose.
-        segments = _HOST_PYCACHE_REDIRECT_PREFIX.split("/")
+        # The root must be built from a LITERAL inside `_validated_pycache_redirect_root` (the
+        # prefix is derived above from that function, so this pins the construction's shape,
+        # not its value). run_workflow must NOT import orchestration_runtime at module level:
+        # that import would compile the ~20k-line module into tools/__pycache__/ BEFORE the
+        # redirect is active, defeating the redirect's purpose (asserted below).
+        segments = prefix.split("/")
         literal_path = r"\s*/\s*".join(re.escape(f'"{seg}"') for seg in segments)
         # The redirect root is built from the literal inside _validated_pycache_redirect_root.
         self.assertIsNotNone(
             re.search(r"^\s*root\s*=\s*repo_root\s*/\s*" + literal_path + r"\s*$",
                       src, re.MULTILINE),
-            "the redirect root must be built from the constant's value as a literal")
+            "the redirect root must be built from a literal")
         # Anchored to the FULL assignment form (not a bare `sys.pycache_prefix =`), because
         # main()'s save/restore wrapper also assigns that attribute — a looser pattern would
         # match the restore line instead and silently test the wrong statement.
@@ -25446,22 +25334,6 @@ class CrossPhaseLogPlacementTests(unittest.TestCase):
                                          value)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
-#: How long the in-flight witness below holds a request body back. MEASURED, not chosen:
-#: without `daemon_threads = False` the context manager's own exit takes ~0.5 s, so a
-#: shorter trickle lands inside that window and the capture arrives whether the fix is
-#: present or not. At this value the unfixed server returns no capture at all.
-_IN_FLIGHT_TRICKLE_SECONDS = 2.0
-
-
-def _leaf_tools() -> list[str]:
-    from tools.orchestration_runtime import CLAUDE_LEAF_TOOLS
-    return list(CLAUDE_LEAF_TOOLS)
-
-
 class ClaudeRosterProbeRepoRootPropagationTests(unittest.TestCase):
     """`repo_root` must reach EVERY claude probe, not only the top-level one.
 
@@ -26551,64 +26423,6 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                                      "the refusal must arrive before anything is made")
 
 
-class DevHookSourcesNameOnlyTheDevEntrypointTests(unittest.TestCase):
-    """This repository's two DEV hook sources name `tools.hooks.dev_cli` and nothing else.
-
-    Until Z4 (issue #171) this class was `HookLayerSeparationTests` and compared FOUR files:
-    the two DEV sources against the two LEAF ones under `leaf_config/`, because one file could
-    not both fail closed for a leaf and leave an operator's session alone (issue #102). The leaf
-    hook layer is gone — no leaf holds a tool — so `leaf_config/` is gone with it and only the
-    operator-facing half is left to check.
-
-    What survives is the half that still has a subject: a DEV source must name the DEV
-    entrypoint. The `tools.hooks.cli` assertion is kept as an ABSENCE rather than dropped,
-    because the module could be reintroduced and a hook source pointing at it would be a leaf
-    policy applied to the operator — the refusal `docs/ORCHESTRATION.md` §39 states.
-    """
-
-    REPO_ROOT = Path(__file__).resolve().parents[2]
-    DEV = (".claude/settings.json", ".codex/hooks.json")
-    LEAF_ENTRYPOINT = "tools.hooks.cli"
-    DEV_ENTRYPOINT = "tools.hooks.dev_cli"
-
-    @classmethod
-    def _commands(cls, rel: str) -> set:
-        payload = json.loads((cls.REPO_ROOT / rel).read_text(encoding="utf-8"))
-        return {
-            hook.get("command")
-            for _event, blocks in (payload.get("hooks") or {}).items()
-            for block in blocks
-            for hook in block.get("hooks", [])
-            if isinstance(hook.get("command"), str)
-        }
-
-    def test_every_source_actually_registers_commands(self) -> None:
-        """First, because every assertion below is vacuous over an empty set — and an
-        empty `hooks` object is exactly what a bad edit to one of these files produces."""
-        for rel in self.DEV:
-            with self.subTest(rel=rel):
-                self.assertTrue(self._commands(rel), f"{rel} registers no hook command")
-
-    def test_a_dev_source_never_names_the_leaf_entrypoint(self) -> None:
-        """`tools.hooks.dev_cli` CONTAINS `tools.hooks.cli` as a substring in neither
-        spelling — `dev_cli` is a different module name — but the assertion is written so that
-        a rename making one a prefix of the other cannot turn this green by accident.
-        """
-        self.assertNotIn(self.LEAF_ENTRYPOINT, self.DEV_ENTRYPOINT.split(" ")[0].replace(
-            "dev_cli", "sentinel"))
-        for rel in self.DEV:
-            for command in self._commands(rel):
-                with self.subTest(rel=rel, command=command[-60:]):
-                    self.assertIn(self.DEV_ENTRYPOINT, command)
-                    self.assertNotIn(f"{self.LEAF_ENTRYPOINT} ", command)
-
-    def test_no_leaf_hook_source_is_left_in_the_tree(self) -> None:
-        """The other half of the separation, now that there is nothing to separate FROM: the
-        leaf-owned sources must stay deleted. A file reappearing under `leaf_config/` would be
-        a hook layer nothing launches and nothing validates."""
-        self.assertFalse((self.REPO_ROOT / "leaf_config").exists())
-
-
 class LeafEnvAllowlistHygieneTests(unittest.TestCase):
     """The owner constants for the leaf's declared environment (issue #63, PR-B).
 
@@ -26917,6 +26731,48 @@ class LeafEnvClosureTests(unittest.TestCase):
         argv = ort.render_bwrap_command(profile=self._profile(), command_argv=["claude"])
         self.assertEqual(argv.count("--clearenv"), 1)
         self.assertLess(argv.index("--clearenv"), argv.index("--setenv"))
+
+    def test_a_profile_granting_a_repository_path_is_refused(self) -> None:
+        """Issue #445 deleted the arms that mounted these five fields; a profile that
+        carries one (a hand-built one, or a persisted `sandbox_profiles/<arid>.json` altered
+        after it was written and re-read by the conductor) must fail closed rather than
+        render without the grant its record states. One row per field, each value naming
+        an EXISTING path, so the refusal is the field and not a missing file."""
+        self.assertEqual(ort._UNRENDERED_PROFILE_GRANTS, (
+            "read_roots", "write_roots", "runtime_rw_bind_mappings",
+            "runtime_rw_rel_paths", "runtime_rw_file_paths"))
+        ort.render_bwrap_command(profile=self._profile(), command_argv=["claude"])  # control
+        base = self._profile()
+        repo = Path(base["repo_root"])
+        (repo / "d").mkdir()
+        (repo / "f").write_text("x", encoding="utf-8")
+        grants = {
+            "read_roots": ["d/"],
+            "write_roots": ["d/"],
+            "runtime_rw_bind_mappings": [[str(repo / "f"), str(repo / "f")]],
+            "runtime_rw_rel_paths": ["d"],
+            "runtime_rw_file_paths": ["f"],
+        }
+        self.assertEqual(set(grants), set(ort._UNRENDERED_PROFILE_GRANTS))
+        for field, value in grants.items():
+            with self.subTest(field=field):
+                with self.assertRaises(ValueError) as ctx:
+                    ort.render_bwrap_command(profile={**base, field: value},
+                                             command_argv=["claude"])
+                self.assertIn(repr(field), str(ctx.exception))
+
+    def test_the_profile_builder_records_every_refused_grant_empty(self) -> None:
+        """The other half of the refusal: the one builder emits each refused field, empty,
+        so the refusal can never fire on a profile production builds."""
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d, True)
+        profile = ort.build_readonly_bwrap_profile(
+            repo_root=d, orchestration_id="orch_x", agent_run_id="arid_x",
+            backend_command="claude", backend_rw_override=[])
+        for field in ort._UNRENDERED_PROFILE_GRANTS:
+            with self.subTest(field=field):
+                self.assertIn(field, profile)
+                self.assertEqual(profile[field], [])
 
     def test_the_rendered_setenv_set_is_exactly_the_profile_env(self) -> None:
         """Set identity, not containment: a `--setenv` the profile does not name is a
@@ -29325,3 +29181,7 @@ class CrossTargetNotReadyReasonTests(unittest.TestCase):
         self.assertTrue(cause.endswith("WHY IT-FAILED"))
         short = ort.cross_target_not_ready_reason(self._agreement("unevaluable", error="e"))
         self.assertEqual(short, "cross_target_unevaluable:e")
+
+
+if __name__ == "__main__":
+    unittest.main()

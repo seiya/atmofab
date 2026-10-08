@@ -672,11 +672,6 @@ GENERATE_VERDICT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # `validate_judge_conformance_violation` and escalates in prod. Two reasons, one of which
 # already existed — which is the point: no third one was added.
 SEMANTIC_REVIEW_DOCUMENT_VIOLATION = "semantic_review_document_violation"
-JUDGE_DOCUMENT_FAILURE_CATEGORIES: tuple[str, ...] = (
-    "pure_response_unparseable",
-    "pure_response_truncated",
-    SEMANTIC_REVIEW_DOCUMENT_VIOLATION,
-)
 
 # --- Z1 pure-leaf IR-document routing (issue #168) -----------------------------
 # The pure `compile.generate` producer returns exactly one IR document
@@ -5470,21 +5465,6 @@ class Conductor:
         path.write_text(
             json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         return surface
-
-    def _is_leaf_node(self, refs: NodeRefs) -> bool:
-        """A node whose `dependency.direct_deps` is explicitly present and empty. An absent
-        dependency block / absent direct_deps returns False (undeterminable -> treat as
-        non-leaf, matching the runtime's `_impl_is_leaf_node` which returns None there).
-
-        NOTE: leaf-ness no longer gates `src/Makefile` authorship — the conductor authors it
-        for every make+fortran node (leaf OR dependency; see `_conductor_authors_makefile` /
-        `_write_makefile`'s Model B branch). Retained as the canonical leaf predicate for the
-        leaf concept itself (and its agreement with `_impl_is_leaf_node`)."""
-        ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
-        dep = ir.get("dependency") if isinstance(ir, dict) else None
-        if not isinstance(dep, dict) or "direct_deps" not in dep:
-            return False
-        return not dep.get("direct_deps")
 
     def _read_toolchain(self, refs: NodeRefs) -> dict[str, str]:
         """The target's toolchain fields every host-side author shares: `language`,
@@ -11038,7 +11018,7 @@ class Conductor:
         on a deterministically-clean source). Returns the `static` section of gate_meta (status /
         failure_category / failure_excerpt); `_gate_inproc` composes the single gate_meta.json
         verdict and only calls this when lint AND syntax both passed. Runs
-        validate_workspace_root.py (bare, as the leaf did - no --write-scope-baseline) and
+        validate_workspace_root.py (bare, as the leaf did; it takes no baseline since issue #445) and
         validate_pipeline_semantics --stage post_generate, in the same order/idiom as the
         post_build gate in _build_inproc. A violation is a CONTENT failure (status="fail" +
         failure_category) the gate routes to generate.generate via a warm-resume reopen; only an

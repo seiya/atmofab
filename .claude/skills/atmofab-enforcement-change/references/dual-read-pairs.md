@@ -65,12 +65,6 @@ there is one payload.
   "Same key name, therefore same value" does not hold
 - Symptom: "I fixed every reader, yet one layer's behaviour did not change"
 
-## Deliberately not unified
-
-- `_impl_is_leaf_node` remains a line scan. It is **anchored on a `dependency:` at indent 0**, so
-  a value nested under another key cannot produce a physical line at column 0 and the free-text
-  hijack does not work. If you change it, verify that premise along with it.
-
 ## A neighbouring shape: one name defined twice in one file (shadowing)
 
 Sibling of "two places read the same fact", in which **the later definition silently overrides

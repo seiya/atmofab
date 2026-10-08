@@ -4,20 +4,16 @@
 from __future__ import annotations
 
 import json
-import subprocess
 import tempfile
 import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from tools.validate_workspace_root import validate, validate_with_scope
+from tools.validate_workspace_root import validate
 
 
 class ValidateWorkspaceRootTests(unittest.TestCase):
-    def _init_git_repo(self, repo_root: Path) -> None:
-        subprocess.run(["git", "init"], cwd=repo_root, check=True, capture_output=True, text=True)
-
     def test_detects_forbidden_python_script_under_workspace(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -1376,83 +1372,6 @@ class ValidateWorkspaceRootTests(unittest.TestCase):
                 any(str(build_qc) in v and "python script under workspace/ is forbidden" in v for v in violations)
             )
             self.assertFalse(created_workspace)
-
-    def test_write_scope_detects_outside_workspace_change(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._init_git_repo(repo_root)
-
-            violations, _ = validate_with_scope(
-                repo_root=repo_root,
-                workspace_root="workspace",
-                write_scope_baseline="workspace/write_scope_baseline.json",
-                stage="Generate",
-                node_key="problem/shallow_water2d@0.3.0",
-                pipeline_id="pipe_001",
-            )
-            self.assertEqual(violations, [])
-
-            outside = repo_root / "tools" / "outside_change.txt"
-            outside.parent.mkdir(parents=True, exist_ok=True)
-            outside.write_text("forbidden\n", encoding="utf-8")
-
-            violations, _ = validate_with_scope(
-                repo_root=repo_root,
-                workspace_root="workspace",
-                write_scope_baseline="workspace/write_scope_baseline.json",
-                stage="Generate",
-                node_key="problem/shallow_water2d@0.3.0",
-                pipeline_id="pipe_001",
-            )
-            self.assertTrue(
-                any("write_scope_violation detected outside workspace" in v for v in violations)
-            )
-
-    def test_write_scope_allows_workspace_only_change(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            self._init_git_repo(repo_root)
-
-            violations, _ = validate_with_scope(
-                repo_root=repo_root,
-                workspace_root="workspace",
-                write_scope_baseline="workspace/write_scope_baseline.json",
-                stage="Execute",
-                node_key="component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0",
-                pipeline_id="pipe_001",
-            )
-            self.assertEqual(violations, [])
-
-            inside = repo_root / "workspace" / "pipelines" / "node" / "file.txt"
-            inside.parent.mkdir(parents=True, exist_ok=True)
-            inside.write_text("allowed\n", encoding="utf-8")
-
-            violations, _ = validate_with_scope(
-                repo_root=repo_root,
-                workspace_root="workspace",
-                write_scope_baseline="workspace/write_scope_baseline.json",
-                stage="Execute",
-                node_key="component/dynamics_shallow_water_flux_2d_rusanov_p0@0.1.0",
-                pipeline_id="pipe_001",
-            )
-            self.assertFalse(
-                any("write_scope_violation detected outside workspace" in v for v in violations)
-            )
-
-    def test_write_scope_fails_closed_when_git_is_unavailable(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            violations, _ = validate_with_scope(
-                repo_root=repo_root,
-                workspace_root="workspace",
-                write_scope_baseline="workspace/write_scope_baseline.json",
-                stage="Generate",
-                node_key="problem/shallow_water2d@0.3.0",
-                pipeline_id="pipe_001",
-            )
-            self.assertTrue(
-                any("write_scope baseline capture failed" in v for v in violations)
-            )
 
     def test_rejects_noncanonical_workspace_root_argument(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -18,7 +18,7 @@ encodings cannot drift from what each CLI expects.
 
 What it enforces is two stdlib-only rule modules and nothing else.
 `tools/hooks/operator_safety.py` guards the operator's own checkout (the hard-reset
-command, the verify-bypass flags in dev mode). `tools/hooks/dev_session_hygiene.py` guards
+command, the validator's verify-bypass flags). `tools/hooks/dev_session_hygiene.py` guards
 the session's own process table: an agent session must not wait by sleeping. They stay
 separate modules because they answer different questions, not for tidiness.
 """
@@ -27,7 +27,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from typing import Any
 
@@ -111,9 +110,7 @@ def main(argv: list[str] | None = None) -> int:
         command = _extract_command(payload)
         # Order is not load-bearing — both refuse — but the checkout-guarding rule is asked
         # first so a command that trips both reports the more serious cause.
-        violation = operator_safety_violation(
-            command, workflow_exec_mode=os.environ.get("ATMOFAB_WORKFLOW_EXEC_MODE")
-        ) or polling_wait_violation(command)
+        violation = operator_safety_violation(command) or polling_wait_violation(command)
         if violation is None:
             return 0
         reason = violation[0]

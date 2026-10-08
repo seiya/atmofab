@@ -14581,7 +14581,6 @@ class WriteMakefileTest(unittest.TestCase):
             refs = self._refs()
             self._write_ir(repo, refs)
             c = self._conductor(repo)
-            self.assertTrue(c._is_leaf_node(refs))
             c._write_makefile(refs)
             mk = repo / refs.source_dir() / "src" / "Makefile"
             self.assertTrue(mk.is_file())
@@ -14689,27 +14688,6 @@ class WriteMakefileTest(unittest.TestCase):
             self._write_ir(repo, refs, build_system="cmake")
             self._conductor(repo)._write_makefile(refs)
             self.assertFalse((repo / refs.source_dir() / "src" / "Makefile").exists())
-
-    def test_is_leaf_node_false_for_dependency(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = self._refs()
-            self._write_ir(repo, refs, direct_deps="[component/dep@0.1.0]")
-            self.assertFalse(self._conductor(repo)._is_leaf_node(refs))
-
-    def test_is_leaf_node_false_when_direct_deps_absent(self) -> None:
-        # Undeterminable leaf-ness (no dependency block / no direct_deps key) -> False, to
-        # agree with the runtime's _impl_is_leaf_node (None -> treated as non-leaf). A
-        # disagreement would author the Makefile but still pin it (or vice versa).
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = self._refs()
-            ir_dir = repo / refs.ir_ref
-            ir_dir.mkdir(parents=True, exist_ok=True)
-            (ir_dir / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n",
-                encoding="utf-8")
-            self.assertFalse(self._conductor(repo)._is_leaf_node(refs))
 
     def test_conductor_authors_makefile_requires_make_fortran(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

@@ -211,7 +211,7 @@ had to be replaced by re-running the sweep, because nothing could recover the li
 you accept is a classification, and rule 1-b applies to it.
 
 **An instrument you commit needs a machine-readable verdict and its own test.** `measure_claude_tool.py`
-shipped with `main` returning 0 unconditionally, rows a reader classified by eye, and no test —
+(issue #71; the leaf tools it measured went in issue #171, the script in issue #445) shipped with `main` returning 0 unconditionally, rows a reader classified by eye, and no test —
 and a review round then found five defects in it, two functional. If a script's output is
 evidence for a decision, it must be able to say PASS or FAIL, and an error (a timeout, a launch
 that produced nothing) must fail whatever the row expected rather than being scored as one of
@@ -657,28 +657,3 @@ What the branch shipped, and what it is worth:
 Use `.claude/skills/atmofab-review-loop/scripts/mutation_check.py`. The procedure is owned by
 `atmofab-review-loop`'s "Before you hand it over (round 0)".
 
-## Measuring what a Claude Code TOOL actually reaches
-
-`scripts/measure_claude_tool.py` in this skill. Use it whenever a rule you are writing,
-deleting or narrowing rests on **what a vendor tool can reach** — which paths a search
-tool walks, whether a filter can leave its root, whether a spelling is inert.
-
-    python3 .claude/skills/atmofab-enforcement-change/scripts/measure_claude_tool.py
-
-It drives the real tool through a loopback stand-in for the Messages endpoint (no model
-turn, so nothing is billed), in a fixture where every location a pattern could resolve to
-holds a marked file, and each row DECLARES whether it must read or must be inert. It exits
-non-zero on any disagreement, so it can be run without classifying rows by eye.
-
-**Why a script and not a probe you write on the spot.** Issue #71's `Glob` question was
-answered wrongly four times before this existed — Python's `glob` twice, bare `ripgrep`
-once, and a hand-written driver whose fixture could not tell "the tool is confined" from
-"the target was absent". Every one of those was written down as a measurement of the tool.
-Rule 1-b says a deletion needs an execution record; this is what makes that record
-re-takeable by the next person instead of a sentence they have to trust.
-
-`scripts/tests/test_measure_claude_tool.py` beside it pins its case-list coverage, fixture
-saturation, result detector and verdict — a harness with no witness gets broken again, and
-this one had four faults in that layer found in a single review round. `pytest tools/tests`
-does not collect it; run it with
-`python3 -m pytest .claude/skills/atmofab-enforcement-change/scripts/tests -q -p no:randomly`.

@@ -808,9 +808,6 @@ def _shape_compatible(a: Any, b: Any, what: str) -> None:
             "equal, or 1 on one side)")
 
 
-_REDUCTIONS: frozenset[str] = frozenset({"sum", "mean", "min", "max", "norm2", "maxabs"})
-
-
 def _reducible(name: str, value: Any) -> Any:
     """A reduction over an array with an extent-1 axis (a coordinate the host could not
     expand to the state's shape) would count one cell where the state has a whole row; it is

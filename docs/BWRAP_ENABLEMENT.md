@@ -24,9 +24,9 @@ profile builder, the leaf-launch path, or the build toolchain.
 2. Claude backend preflight already passes: see `docs/RUNBOOK.md` §0-2. Run the normal
    preflight first.
 3. **Run this standalone.** It is a billed, autonomous `--run-conductor` orchestration; do
-   not run it concurrently with other manual workflow activity or it will pollute the
-   workspace-global baseline (the truth is `meta=pass` + `aggregate_verdict`; a polluted
-   parallel run can false-fail). Use a clean workspace state.
+   not run it concurrently with other manual workflow activity, so the run you inspect is
+   the only writer under `workspace/` (the truth is `meta=pass` + `aggregate_verdict`).
+   Use a clean workspace state.
 4. **Do not set `ATMOFAB_ORCHESTRATION_ASSUME_BWRAP`.** That env var is a test-only
    affordance that makes the preflight probe *assume* bwrap is available (so unit/
    integration tests can drive the enforced launch path without bwrap installed). On a
