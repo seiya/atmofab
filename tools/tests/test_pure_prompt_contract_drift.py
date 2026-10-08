@@ -925,7 +925,7 @@ PINNED: dict[str, str] = {
     # `checks_contract_gate_guards_section` moved and no other member. Witness:
     # orch_20261007T141634Z_85026fe2 (codex, `harness_fortran_cpu_mpi`, `fortran_cpu_mpi`,
     # `validate.execute` rc=134 on every rank, in the self-test's JSON parser).
-    "pure-71": "c1ac93fbdf09683e00fe629e5df63946d440c85e9fd103050f233da3d0bcd3ad",
+    "pure-71": "7cc1230e5f4a290e5d9b938d15408abac499d5f7dc932144a9fdff943cfc89d8",
 }
 
 

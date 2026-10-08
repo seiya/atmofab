@@ -230,4 +230,5 @@ node's self-test).
   array of nodes indexed by integers, each node holding the indices of its children rather
   than the children, or consume the input without building a tree. A type that no chain of
   components leads back to (a deferred-length character, a `real(dp)` array, an integer
-  index array, a component of another non-recursive type) is unaffected.
+  index array, a component of another non-recursive type) is unaffected, and so is a
+  `pointer` component of the type's own type.
