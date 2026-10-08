@@ -37,6 +37,7 @@ from tools.orchestration_runtime import (
     write_preflight,
 )
 from tools.llm_config import LLM_LEAF_SUBSTEPS
+from tools.tests.orchestration_fixtures import claude_launch_checks
 from tools.tests.target_fixtures import TARGET_ID
 from tools.tests.target_fixtures import composed_pure_template
 from tools.pure_leaf import (
@@ -244,8 +245,8 @@ def _preflight(repo_root: Path) -> None:
             "sandbox_enforced": True,
             "can_launch_step_agents": True,
             "can_launch_substep_agents": True,
-            "feature_states": {"multi_agent": True, "hooks": True},
-            "checks": [{"name": "multi_agent_enabled", "pass": True}],
+            "backend": "claude",
+            "checks": claude_launch_checks(),
         },
     )
 

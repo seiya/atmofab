@@ -860,16 +860,13 @@ def _create_minimal_orchestration_tree(
         orchestration_root / "preflight.json",
         {
             "status": "pass",
+            "backend": "claude",
             "can_launch_step_agents": True,
             "can_launch_substep_agents": True,
-            "feature_states": {
-                "multi_agent": True,
-            },
             "checks": [
-                {
-                    "name": "multi_agent_enabled",
-                    "pass": True,
-                }
+                {"name": "claude_version_available", "pass": True},
+                {"name": "claude_help_probe_available", "pass": True},
+                {"name": "claude_prompt_stdin", "pass": True},
             ],
         },
     )
@@ -29219,6 +29216,71 @@ class SourceFingerprintTests(unittest.TestCase):
             self.assertEqual(vps._build_artifact_suffixes(
                 repo, repo / "workspace" / "pipelines" / self._NK / "zz_no_target" / "p1"),
                 frozenset())
+
+
+
+class PreflightBlockTests(unittest.TestCase):
+    """What the validator reads of `preflight.json` (issue #447, D1): status, both
+    `can_launch_*` flags and a `checks` list. The `multi_agent` feature state and check it
+    used to require are read by nothing — a past document that still carries them, either
+    way, is neither required nor refused."""
+
+    def _preflight_violations(self, preflight: dict[str, object]) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            # The tree `test_passes_with_orchestration_when_required` validates clean, so a
+            # preflight violation below is the only one the document can cause.
+            _seed_shape_expr_schema_into(repo_root)
+            _create_minimal_execution_tree(
+                repo_root,
+                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text=(
+                    "module shallow_water2d_model\n"
+                    "use dynamics_shallow_water_flux_2d_rusanov_p0_model\n"
+                    "implicit none\ncontains\nsubroutine solve(flag)\n"
+                    "  logical, intent(out) :: flag\n"
+                    "  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)\n"
+                    "end subroutine solve\nend module shallow_water2d_model\n"),
+                runner_text=(
+                    "program shallow_water2d_runner\nimplicit none\nwrite(*,*) 'ok'\n"
+                    "end program shallow_water2d_runner\n"),
+                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+            )
+            _create_minimal_orchestration_tree(repo_root)
+            path = repo_root / "workspace" / "orchestrations" / "orch_test_001" / "preflight.json"
+            _write_json(path, preflight)
+            violations = validate(
+                repo_root=repo_root, workspace_root="workspace", require_orchestration=True)
+        return [v for v in violations if "preflight.json" in v]
+
+    _CURRENT = {
+        "status": "pass", "backend": "claude",
+        "can_launch_step_agents": True, "can_launch_substep_agents": True,
+        "checks": [{"name": "claude_help_probe_available", "pass": True}],
+    }
+
+    def test_a_document_without_feature_states_is_accepted(self) -> None:
+        self.assertEqual(self._preflight_violations(dict(self._CURRENT)), [])
+
+    def test_a_past_document_with_multi_agent_false_is_accepted(self) -> None:
+        past = {**self._CURRENT, "feature_states": {"multi_agent": False},
+                "checks": [{"name": "multi_agent_enabled", "pass": False}]}
+        self.assertEqual(self._preflight_violations(past), [])
+
+    def test_the_remaining_conditions_still_refuse(self) -> None:
+        for label, doc, needle in (
+            ("checks dict", {**self._CURRENT, "checks": {}}, "checks must be list"),
+            ("checks absent", {k: v for k, v in self._CURRENT.items() if k != "checks"},
+             "checks must be list"),
+            ("status fail", {**self._CURRENT, "status": "fail"}, "status must be pass"),
+            ("step flag false", {**self._CURRENT, "can_launch_step_agents": False},
+             "can_launch_step_agents must be true"),
+            ("substep flag false", {**self._CURRENT, "can_launch_substep_agents": False},
+             "can_launch_substep_agents must be true"),
+        ):
+            with self.subTest(label):
+                found = self._preflight_violations(doc)
+                self.assertTrue(any(needle in v for v in found), found)
 
 
 if __name__ == "__main__":

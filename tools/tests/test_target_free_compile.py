@@ -40,6 +40,7 @@ from tools.tests.orchestration_fixtures import (
     EMPTY_DEPS_YAML,
     accept_any_certified_ir,
     certify_node,
+    claude_launch_checks,
     ensure_spec_entry,
     ensure_target_harness_certified,
 )
@@ -345,8 +346,8 @@ class InitialReadinessTests(unittest.TestCase):
                 payload={"status": "pass", "sandbox_runtime": "bwrap",
                          "sandbox_enforced": True, "can_launch_step_agents": True,
                          "can_launch_substep_agents": True,
-                         "feature_states": {"multi_agent": True, "hooks": True},
-                         "checks": [{"name": "multi_agent_enabled", "pass": True},
+                         "backend": "claude",
+                         "checks": [*claude_launch_checks(),
                                     {"name": "hooks_enabled", "pass": True},
                                     {"name": "codex_home_writable", "pass": True},
                                     {"name": "sandbox_bwrap_available", "pass": True},

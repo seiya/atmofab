@@ -238,10 +238,10 @@ where it runs as it is, and `--gpu` adds the `gpu` class's device probe. It writ
 ## 0-2. Claude backend preflight requirements (operator setup)
 
 When any leaf runs on the `claude_cli` provider (the copied `llm_claude.example.yaml`; preflight
-`--backend claude`), the checks are the five `_probe_claude_backend` emits —
-`claude_version_available`, `claude_features_list_available`, `claude_help_probe_available`,
-`claude_prompt_stdin` (the prompt arrives on stdin, never as an argv element) and
-`multi_agent_enabled`, which gates a launch on every backend except codex — plus the three
+`--backend claude`), the launch gate is the conjunction of every check named in
+`CLAUDE_REQUIRED_LAUNCH_CHECKS` (`tools/orchestration_runtime.py`): the three
+`_probe_claude_backend` emits — `claude_version_available`, `claude_help_probe_available` and
+`claude_prompt_stdin` (the prompt arrives on stdin, never as an argv element) — plus the three
 `sandbox_bwrap_*` checks every backend needs. Authentication is NOT probed: a CLI that is on
 `PATH` and answers `--version` passes preflight and fails at the first billed launch instead.
 
@@ -261,9 +261,15 @@ operator who set it up will find it no longer checked:
   allowlist. A pure leaf is launched with `--tools ""` and the roster question does not arise;
   the check probed the agentic argv only, which its own text recorded as its limit.
 
+`multi_agent_enabled` and `feature_states.multi_agent` went in
+[issue #447](https://github.com/seiya/atmofab/issues/447) (D1): the conductor launches each leaf
+as its own CLI process and never uses a platform's own subagents. On claude the check was
+`--help` answering, which `claude_help_probe_available` records and now gates by name; the
+skipped `claude_features_list_available` row went with it.
+
 ## 0-3. Codex backend preflight requirements (operator setup)
 
-When any leaf runs on the `codex_cli` provider (preflight `--backend codex`), the launch gate is the conjunction of every check named in `CODEX_REQUIRED_LAUNCH_CHECKS` (`tools/orchestration_runtime.py`), which already includes the sandbox members; only `multi_agent_enabled` is advisory, and a check added later gates by default rather than silently becoming advisory. Reading a recorded `preflight.json` back applies more than that set. `_preflight_launch_refusals` (`tools/orchestration_runtime.py`) is the one list of launch conditions — a `feature_states` mapping, a `checks` list, `status`, both `can_launch_*` fields, `sandbox_enforced`, every provider's launchability, and on the codex branch every `CODEX_REQUIRED_LAUNCH_CHECKS` member; `_preflight_allows_agent_launch` is "that list is empty", and `write_preflight` refuses a document that claims launchability while the list is not. The `multi_agent` feature state and the `multi_agent_enabled` check are conditions on the NON-codex branch only, which is why `multi_agent_enabled` is advisory here. **This section covers the members of that set an operator configures**, plus one requirement that is enforced at launch instead. The CLI-capability members (`codex_version_available`, `codex_features_list_available`, `codex_exec_*`) are properties of the installed build rather than of the operator's configuration, and the sandbox members belong to `docs/BWRAP_ENABLEMENT.md`; read the set in the code for the whole list. The section exists because the repository can commit the hook source and the launch flags, and cannot commit the operator's own CLI state.
+When any leaf runs on the `codex_cli` provider (preflight `--backend codex`), the launch gate is the conjunction of every check named in `CODEX_REQUIRED_LAUNCH_CHECKS` (`tools/orchestration_runtime.py`), which already includes the sandbox members. At probe time every emitted check gates, on both backends, so a check added later gates by default. Reading a recorded `preflight.json` back applies more than that set. `_preflight_launch_refusals` (`tools/orchestration_runtime.py`) is the one list of launch conditions — a `checks` list, `status`, both `can_launch_*` fields, `sandbox_enforced`, a `backend` that names a required set, every member of that set (`CODEX_REQUIRED_LAUNCH_CHECKS` or `CLAUDE_REQUIRED_LAUNCH_CHECKS`), and every provider's launchability; `_preflight_allows_agent_launch` is "that list is empty", and `write_preflight` refuses a document that claims launchability while the list is not. The probe no longer runs `codex features list`: its only reader was the `multi_agent_enabled` check, which went in [issue #447](https://github.com/seiya/atmofab/issues/447) (D1, D4) with `feature_states`, so a CLI with the feature off launches as before. **This section covers the members of that set an operator configures**, plus one requirement that is enforced at launch instead. The CLI-capability members (`codex_version_available`, `codex_exec_*`, `codex_prompt_stdin`) are properties of the installed build rather than of the operator's configuration, and the sandbox members belong to `docs/BWRAP_ENABLEMENT.md`; read the set in the code for the whole list. The section exists because the repository can commit the hook source and the launch flags, and cannot commit the operator's own CLI state.
 
 - **The CLI's `hooks` feature is no longer required.** `checks.hooks_enabled` and
   `checks.codex_project_hooks_validated` were part of this gate until Z4

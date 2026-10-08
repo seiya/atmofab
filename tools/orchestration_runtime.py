@@ -8723,23 +8723,29 @@ def _preflight_path(repo_root: Path, orchestration_id: str) -> Path:
     return _orchestration_root(repo_root, orchestration_id) / "preflight.json"
 
 
-# The codex probe checks a launchable `preflight.json` must carry as `pass: true`, read by
-# `_preflight_launch_refusals` — ONE source for the gate, the validator and this set.
+# The probe checks a launchable `preflight.json` must carry as `pass: true`, per backend, read
+# by `_preflight_launch_refusals` — ONE source for the gate, the validator and these sets.
 # The three hook checks — `hooks_enabled`, `codex_project_hooks_validated`,
 # `codex_project_hook_trust_bypass` — went with the leaf's hook layer in Z4 (issue #171).
+# The `multi_agent` feature state, its `multi_agent_enabled` check and the codex
+# `features list` probe that was its only producer went in issue #447 (D1, D4): the conductor
+# spawns independent CLI processes and never uses a platform's own subagents, so the feature
+# said nothing about launchability. On claude the check was `--help` answering, which
+# `claude_help_probe_available` already records and now gates by name.
 CODEX_REQUIRED_LAUNCH_CHECKS = frozenset({
-    "codex_version_available", "codex_features_list_available",
+    "codex_version_available",
     "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
     "sandbox_bwrap_exec", "codex_exec_json_streaming",
     "codex_exec_pure_isolation_flags", "codex_exec_resume", "codex_prompt_stdin",
 })
-
-# Codex probe checks recorded for diagnostics that do NOT gate a launch: the conductor
-# spawns independent `codex exec` processes and never uses Codex subagents, so the CLI's
-# own `multi_agent` feature says nothing about launchability. Everything NOT listed here
-# gates, so a check added to `_probe_codex_backend` later fails closed by default rather
-# than silently becoming non-gating.
-CODEX_ADVISORY_ONLY_CHECKS = frozenset({"multi_agent_enabled"})
+CLAUDE_REQUIRED_LAUNCH_CHECKS = frozenset({
+    "claude_version_available", "claude_help_probe_available", "claude_prompt_stdin",
+    "sandbox_bwrap_available", "sandbox_bwrap_userns", "sandbox_bwrap_exec",
+})
+REQUIRED_LAUNCH_CHECKS_BY_BACKEND: dict[str, frozenset[str]] = {
+    "codex": CODEX_REQUIRED_LAUNCH_CHECKS,
+    "claude": CLAUDE_REQUIRED_LAUNCH_CHECKS,
+}
 
 # Every option `Conductor.leaf_command` puts on a codex warm-resume argv, checked against
 # `codex exec resume --help` by the `codex_exec_resume` probe. The `exec` and `exec resume`
@@ -8777,10 +8783,6 @@ def _preflight_launch_refusals(payload: dict[str, Any]) -> list[str]:
     (`_validate_preflight_payload`) refuses a document that claims launchability while it is
     not — so the two cannot disagree on any document."""
     reasons: list[str] = []
-    feature_states = payload.get("feature_states")
-    if not isinstance(feature_states, dict):
-        reasons.append("feature_states must be a mapping")
-        feature_states = {}
     checks = payload.get("checks")
     if not isinstance(checks, list):
         reasons.append("checks must be a list of capability probe results")
@@ -8793,23 +8795,16 @@ def _preflight_launch_refusals(payload: dict[str, Any]) -> list[str]:
             reasons.append(f"{flag} must be true")
     if payload.get("sandbox_enforced") is not True:
         reasons.append("sandbox_enforced must be true")
-    if str(payload.get("backend", "")).strip().lower() == "codex":
-        missing = sorted(
-            name for name in CODEX_REQUIRED_LAUNCH_CHECKS if check_values.get(name) is not True)
+    backend = str(payload.get("backend", "")).strip().lower()
+    required = REQUIRED_LAUNCH_CHECKS_BY_BACKEND.get(backend)
+    if required is None:
+        reasons.append(f"backend must be one of {sorted(REQUIRED_LAUNCH_CHECKS_BY_BACKEND)}")
+    else:
+        missing = sorted(name for name in required if check_values.get(name) is not True)
         if missing:
             reasons.append(
-                "codex launchable preflight is missing required capabilities: "
+                f"{backend} launchable preflight is missing required capabilities: "
                 + ", ".join(missing))
-    else:
-        # `multi_agent` is advisory ONLY for codex (see CODEX_ADVISORY_ONLY_CHECKS).
-        # Every other backend still launches its step/substep agents through the
-        # platform's own multi-agent capability, so a launchable document must keep
-        # asserting it — dropping the assertion here would silently relax the claude
-        # gate as well.
-        if feature_states.get("multi_agent") is not True:
-            reasons.append("feature_states.multi_agent must be true")
-        if check_values.get("multi_agent_enabled") is not True:
-            reasons.append("checks.multi_agent_enabled.pass must be true")
     # With a `providers` map (issue #28), the top-level verdict above describes `defaults`
     # only. A run whose config also names a provider that did NOT probe launchable would reach
     # that provider's first substep and fail there, phases in — so require every probed
@@ -12423,21 +12418,6 @@ def _validate_step_result_payload(
             )
 
 
-def parse_feature_list(raw: str) -> dict[str, bool]:
-    features: dict[str, bool] = {}
-    for line in raw.splitlines():
-        parts = line.strip().split()
-        if len(parts) < 3:
-            continue
-        enabled = parts[-1].lower()
-        if enabled not in {"true", "false"}:
-            continue
-        feature_name = parts[0].strip()
-        if feature_name:
-            features[feature_name] = enabled == "true"
-    return features
-
-
 def _probe_existing_directory_writable(path: Path) -> tuple[bool, str]:
     if not path.exists():
         return False, f"{path} does not exist"
@@ -13465,15 +13445,14 @@ def _probe_codex_backend(
     backend_token: str,
     command: str | Sequence[str],
     runner: Callable[..., subprocess.CompletedProcess[str]],
-) -> tuple[list[dict[str, Any]], dict[str, bool], bool, str]:
-    """Run the codex backend probe and return (checks, features, multi_agent_enabled, agent_version)."""
+) -> tuple[list[dict[str, Any]], str]:
+    """Run the codex backend probe and return (checks, agent_version)."""
     command_argv = (
         list(command) if not isinstance(command, str) else shlex.split(command)
     )
     if not command_argv:
         raise ValueError("codex command must be non-empty")
     version_proc = runner([*command_argv, "--version"], text=True, capture_output=True, check=False)
-    features_proc = runner([*command_argv, "features", "list"], text=True, capture_output=True, check=False)
     try:
         exec_help_proc = runner(
             [*command_argv, "exec", "--help"], text=True, capture_output=True, check=False
@@ -13490,13 +13469,6 @@ def _probe_codex_backend(
         resume_help_proc = subprocess.CompletedProcess(
             [*command_argv, "exec", "resume", "--help"], 1, "", str(exc)
         )
-    features: dict[str, bool] = {}
-    features_list_available = features_proc.returncode == 0
-    multi_agent_enabled = False
-    if features_proc.returncode == 0:
-        features = parse_feature_list(features_proc.stdout)
-        multi_agent_enabled = features.get("multi_agent") is True
-    features_list_detail = features_proc.stdout.strip() or features_proc.stderr.strip()
     exec_help_text = (exec_help_proc.stdout or "") + "\n" + (exec_help_proc.stderr or "")
     exec_help_detail = exec_help_text.strip() or f"exit={exec_help_proc.returncode}"
     resume_help_text = (resume_help_proc.stdout or "") + "\n" + (resume_help_proc.stderr or "")
@@ -13506,16 +13478,6 @@ def _probe_codex_backend(
             "name": f"{backend_token}_version_available",
             "pass": version_proc.returncode == 0,
             "detail": version_proc.stdout.strip() or version_proc.stderr.strip(),
-        },
-        {
-            "name": f"{backend_token}_features_list_available",
-            "pass": features_list_available,
-            "detail": features_list_detail,
-        },
-        {
-            "name": "multi_agent_enabled",
-            "pass": multi_agent_enabled,
-            "detail": f"multi_agent={features.get('multi_agent')}",
         },
         {
             "name": "codex_exec_json_streaming",
@@ -13570,7 +13532,7 @@ def _probe_codex_backend(
             "detail": f"exec: {exec_help_detail}\nexec resume: {resume_help_detail}",
         },
     ]
-    return checks, features, multi_agent_enabled, version_proc.stdout.strip()
+    return checks, version_proc.stdout.strip()
 
 
 def _pass_values_by_check_name(checks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -13583,25 +13545,6 @@ def _pass_values_by_check_name(checks: list[dict[str, Any]]) -> dict[str, Any]:
         if isinstance(name, str):
             by_name[name] = item.get("pass")
     return by_name
-
-
-def _can_launch_from_help_fallback_checks(
-    backend_token: str, checks: list[dict[str, Any]]
-) -> bool:
-    """For claude. Even without `features list`, treat it as launchable if `--help` passes."""
-    passes = _pass_values_by_check_name(checks)
-    version_ok = passes.get(f"{backend_token}_version_available") is True
-    features_list_ok = passes.get(f"{backend_token}_features_list_available") is True
-    help_pass = passes.get(f"{backend_token}_help_probe_available")
-    multi_ok = passes.get("multi_agent_enabled") is True
-    # The leaf prompt reaches the CLI only over stdin, so a build that stopped accepting it
-    # there could not be launched at all. Gated, not advisory, for the same reason
-    # `codex_prompt_stdin` gates the codex side.
-    stdin_ok = passes.get(f"{backend_token}_prompt_stdin") is True
-    # When `pass` is None, --help was not run (multi_agent already determined by features list).
-    # In that case, delegate to `features_list_ok` and do not silently treat `None` as False-equivalent.
-    help_confirms_launch = help_pass is True
-    return version_ok and multi_ok and stdin_ok and (features_list_ok or help_confirms_launch)
 
 
 def _all_strict_boolean_probe_checks_pass(checks: list[dict[str, Any]]) -> bool:
@@ -13636,21 +13579,12 @@ def _probe_claude_backend(
     backend_token: str,
     command: str | Sequence[str],
     runner: Callable[..., subprocess.CompletedProcess[str]],
-) -> tuple[list[dict[str, Any]], dict[str, bool], bool, str]:
-    """A probe specific to the claude backend.
+) -> tuple[list[dict[str, Any]], str]:
+    """A probe specific to the claude backend; returns (checks, agent_version).
 
-    `claude features list` is a subcommand that does not exist in the Claude Code CLI,
-    and running it makes claude return its chat response as-is to stdout (exit 0).
-    This response mixes into `features_list_available.detail` and contaminates preflight.json
-    (observed in orch_20260610T130256Z_ebe96a51).
-
-    Fix: on the claude backend, do not run `features list` and treat it as advisory,
-    and use the `--help` liveness probe for the best-effort detection of multi_agent.
-    Because Claude Code's child agent is launched not by a CLI subcommand but by the `Agent` tool,
-    no `agents` subcommand appears in the `--help` output (the old docstring's claim is wrong).
-    This probe requires (a) `--help` to exit 0 and (b) stdout to return help text,
-    preventing a false-pass of an empty-output binary impersonating `claude`. The authoritative gate of `multi_agent`
-    remains on the launch-time live preflight side of `record_launch`.
+    `claude features list` is not a CLI subcommand (claude answers it as a chat prompt), so it
+    is not run. The `--help` probe requires (a) exit 0 and (b) help text on stdout, so an
+    empty-output binary named `claude` does not pass.
     """
     # SPLIT, like the codex prober and like `Conductor._provider_command_base`: a configured
     # command may carry flags (`mywrap --flag`), and the leaf is launched with it split. Passing
@@ -13661,15 +13595,6 @@ def _probe_claude_backend(
         raise ValueError("claude command must be non-empty")
     version_proc = runner([*command_argv, "--version"], text=True, capture_output=True,
                           check=False)
-    # Skip `features list` for claude: the subcommand does not exist in Claude Code CLI
-    # and would result in a full chat session response being captured as the probe output,
-    # contaminating preflight.json with assistant text.  Mark as advisory (pass=None).
-    features_list_pass: bool | None = None
-    features_list_detail = (
-        "skipped for claude backend: 'claude features list' is not a structured CLI "
-        "subcommand; Claude Code responds with a chat reply which is not machine-parseable. "
-        "multi_agent detection uses --help probe instead."
-    )
 
     # The leaf prompt travels on stdin, not argv (a single argv element is capped at
     # 128 KiB and a node's prompt exceeds it), and the claude contract is the ABSENCE of a
@@ -13686,11 +13611,8 @@ def _probe_claude_backend(
     # P2-C: require BOTH exit 0 AND non-empty help stdout.  Exit-code alone is a
     # weak proxy — any binary named `claude` that exits 0 (even with no output)
     # would otherwise pass.  Requiring help text on stdout rules out broken or
-    # substitute binaries.  This is still a best-effort liveness signal; the
-    # authoritative multi_agent gate is the launch-time live preflight.
-    multi_agent_enabled = help_proc.returncode == 0 and bool(help_stdout)
-    features: dict[str, bool] = {"multi_agent": multi_agent_enabled}
-    help_probe_pass = multi_agent_enabled
+    # substitute binaries.
+    help_probe_pass = help_proc.returncode == 0 and bool(help_stdout)
     help_detail = help_stdout or help_proc.stderr.strip()
     help_probe_detail = help_detail if help_detail else "(no stdout/stderr from --help)"
 
@@ -13699,11 +13621,6 @@ def _probe_claude_backend(
             "name": f"{backend_token}_version_available",
             "pass": version_proc.returncode == 0,
             "detail": version_proc.stdout.strip() or version_proc.stderr.strip(),
-        },
-        {
-            "name": f"{backend_token}_features_list_available",
-            "pass": features_list_pass,
-            "detail": features_list_detail,
         },
         {
             "name": f"{backend_token}_help_probe_available",
@@ -13722,20 +13639,15 @@ def _probe_claude_backend(
                      and "through stdin" in stdin_probe_text),
             "detail": stdin_probe_text.strip() or f"exit={stdin_probe_proc.returncode}",
         },
-        {
-            "name": "multi_agent_enabled",
-            "pass": multi_agent_enabled,
-            "detail": f"multi_agent={features.get('multi_agent')}",
-        },
     ]
-    return checks, features, multi_agent_enabled, version_proc.stdout.strip()
+    return checks, version_proc.stdout.strip()
 
 
 _BACKEND_PROBERS: dict[
     str,
     Callable[
         [str, str, Callable[..., subprocess.CompletedProcess[str]]],
-        tuple[list[dict[str, Any]], dict[str, bool], bool, str],
+        tuple[list[dict[str, Any]], str],
     ],
 ] = {
     "codex": _probe_codex_backend,
@@ -13941,26 +13853,18 @@ def probe_execution_platform(
         break
 
     prober = _BACKEND_PROBERS[backend_token]
-    checks, features, multi_agent_enabled, agent_version = prober(backend_token, command, runner)
+    checks, agent_version = prober(backend_token, command, runner)
 
-    if backend_token == "claude":
-        # What a claude leaf needs of its host is now only that the CLI is there, answers
-        # `--version`, and can start: a pure leaf loads no settings layer (`--safe-mode`), is
-        # launched with no MCP configuration and no tools, and runs no hook. The three probes
-        # that stood here — the committed leaf configuration, the MCP registry, and the live
-        # tool-roster measurement of issue #71 — each measured a surface the agentic leaf had
-        # and this one does not (Z4, issue #171).
-        can_launch_agents = _can_launch_from_help_fallback_checks(backend_token, checks)
-    else:
-        # Codex's internal multi_agent feature is diagnostic only: the conductor
-        # launches independent CLI processes and does not use Codex subagents. Every
-        # OTHER probe check gates — an allowlist here would silently make a check
-        # added to `_probe_codex_backend` later non-gating, so the advisory set is
-        # named instead and anything new fails closed by default.
-        can_launch_agents = _all_strict_boolean_probe_checks_pass(
-            [item for item in checks
-             if not (isinstance(item, dict) and item.get("name") in CODEX_ADVISORY_ONLY_CHECKS)]
-        )
+    # Every probe check gates, on both backends — a check added to a prober later fails
+    # closed by default rather than silently becoming non-gating.
+    # What a claude leaf needs of its host is only that the CLI is there, answers
+    # `--version` and `--help`, and takes its prompt on stdin: a pure leaf loads no settings
+    # layer (`--safe-mode`), is launched with no MCP configuration and no tools, and runs no
+    # hook. The three probes that stood here — the committed leaf configuration, the MCP
+    # registry, and the live tool-roster measurement of issue #71 — each measured a surface
+    # the agentic leaf had and this one does not (Z4, issue #171).
+    can_launch_agents = _all_strict_boolean_probe_checks_pass(checks)
+    if backend_token == "codex":
         # The codex hooks FEATURE check, and the committed-hook-file check beside it, went
         # with the leaf's hook layer in Z4 (issue #171). A pure codex leaf is confined by the
         # read-only bwrap profile plus `--sandbox read-only` / `sandbox_mode="read-only"`;
@@ -13986,7 +13890,6 @@ def probe_execution_platform(
         "backend": backend_token,
         "probe_command": command,
         "agent_version": agent_version,
-        "feature_states": features,
         "checks": checks,
         "sandbox_runtime": "bwrap",
         "sandbox_enforced": sandbox_enforced,

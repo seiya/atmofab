@@ -44,6 +44,15 @@ _PHASE_ORDER = ("compile", "generate", "build", "validate")
 EMPTY_DEPS_YAML = "dependencies:\n  components: []\n  profiles: []\n  infrastructure: []\n"
 
 
+def claude_launch_checks() -> list[dict[str, Any]]:
+    """A passing row for every member of `CLAUDE_REQUIRED_LAUNCH_CHECKS`, for a fixture
+    preflight that claims launchability on the claude backend. Derived from the constant,
+    so a member added there is supplied here without editing every fixture (issue #447)."""
+    from tools.orchestration_runtime import CLAUDE_REQUIRED_LAUNCH_CHECKS
+    return [{"name": name, "pass": True} for name in sorted(CLAUDE_REQUIRED_LAUNCH_CHECKS)]
+
+
+
 def spec_ref_of(node_key: str) -> str:
     """The spec directory `ensure_spec_entry` writes for `node_key`: `spec/<kind>/<spec_id>`."""
     kind, rest = node_key.split("/", 1)
