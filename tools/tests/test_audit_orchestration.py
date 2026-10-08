@@ -516,62 +516,15 @@ class AuditIntegrationTests(unittest.TestCase):
         self.assertIn("run_bad", result["invalid_run_ids"])
 
 
-class LaunchIncidentSnapshotTests(unittest.TestCase):
-    def test_audit_surfaces_persisted_snapshot_after_window_cleared(self) -> None:
-        # P2: after --resume clears the active-child markers, live detection returns
-        # None, but a persisted launch_incident.runtime.*.json must still be surfaced
-        # so the documented later-diagnosis path works.
-        with tempfile.TemporaryDirectory() as tmp:
-            orch_id = "orch_snap"
-            orch_root = Path(tmp) / "workspace" / "orchestrations" / orch_id
-            orch_root.mkdir(parents=True)
-            # No active_child markers (window cleared) → live build returns None.
-            (orch_root / "launch_incident.runtime.0123456789ab.json").write_text(
-                json.dumps(
-                    {
-                        "schema": "launch_incident/v1",
-                        "orchestration_id": orch_id,
-                        "dangling_child": {
-                            "agent_run_id": "f00d83b5",
-                            "node_key_safe": "component__x__0.1.0",
-                            "step": "compile",
-                            "substep": "verify",
-                            "launch_recorded_at": "2026-06-16T12:36:58Z",
-                            "elapsed_seconds": 700.0,
-                        },
-                        "host_session_id": "b60f2e51",
-                        "transcripts": {"child_transcript": {"found": False, "reason": "cleaned"}},
-                        "abort_marker": {
-                            "interrupted": True,
-                            "interrupt_ts": "2026-06-16T12:48:47Z",
-                            "interrupt_text": "[Request interrupted by user]",
-                            "last_activity_ts": "2026-06-16T12:38:47Z",
-                            "dead_air_seconds": 600.0,
-                        },
-                    }
-                ),
-                encoding="utf-8",
-            )
-            result = audit(Path(tmp), orch_id)
-            self.assertIsNone(result["launch_incident"])
-            self.assertEqual(len(result["launch_incident_snapshots"]), 1)
-            md = _render_markdown(result)
-        self.assertIn("Captured incident snapshots", md)
-        self.assertIn("launch_incident.runtime.0123456789ab.json", md)
-        # Decisive evidence from the snapshot's abort_marker is rendered even though
-        # the live transcript is gone.
-        self.assertIn("[Request interrupted by user]", md)
-        self.assertIn("600s", md)
-
-    def test_audit_reports_nothing_when_no_window_and_no_snapshot(self) -> None:
+class NoDanglingWindowTests(unittest.TestCase):
+    def test_audit_reports_a_clean_negative_when_no_window_is_open(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             orch_id = "orch_clean"
             (Path(tmp) / "workspace" / "orchestrations" / orch_id).mkdir(parents=True)
             result = audit(Path(tmp), orch_id)
             self.assertIsNone(result["launch_incident"])
-            self.assertEqual(result["launch_incident_snapshots"], [])
             md = _render_markdown(result)
-        self.assertIn("no captured incident snapshots", md)
+        self.assertIn("No dangling active_child window detected.", md)
 
 
 class LiveIncidentMatchMethodTests(unittest.TestCase):
@@ -646,20 +599,13 @@ class LiveIncidentMatchMethodTests(unittest.TestCase):
 
 
 class IncidentMatchMethodRenderTests(unittest.TestCase):
-    """The renderer's two shapes, side by side: the clause serves both."""
+    """The renderer's `matched via` clause over the live incident's shape."""
 
     def _md(self, ct: dict) -> str:
         lines: list[str] = []
         _render_incident_body({"dangling_child": {}, "transcripts": {"child_transcript": ct}},
                               lines)
         return "\n".join(lines)
-
-    def test_a_legacy_snapshot_keeps_its_method_and_gains_no_root(self) -> None:
-        # A persisted `launch_incident.runtime.*.json` from the host-session era carries
-        # `tool_use_id` and no root. Rendering it must be untouched by the live fix.
-        md = self._md({"found": True, "path": "/x.jsonl", "match_method": "tool_use_id"})
-        self.assertIn("(matched via `tool_use_id`)", md)
-        self.assertNotIn("under `", md)
 
     def test_a_missing_method_renders_as_None_rather_than_a_guess(self) -> None:
         """The comment above the clause justifies itself by the ABSENCE of a fallback.
@@ -680,10 +626,10 @@ class IncidentMatchMethodRenderTests(unittest.TestCase):
             "(matched via `session_id` under `/home/op/.atmofab/homes/o/claude/projects`)", md)
 
 
-class LegacyIncidentApiErrorRenderTests(unittest.TestCase):
-    def test_renders_api_error_from_raw_tail_when_structured_field_missing(self) -> None:
-        """A legacy snapshot predating the structured api_error field still carries the
-        529 marker in raw_tail; audit must surface it from there."""
+class IncidentApiErrorRenderTests(unittest.TestCase):
+    def test_renders_the_structured_api_error(self) -> None:
+        """The live incident carries `api_error`, computed over the whole transcript by
+        `summarize_transcript_tail`; the renderer surfaces it as a transient error."""
         incident = {
             "dangling_child": {"agent_run_id": "child-1", "step": "compile",
                                "substep": "generate"},
@@ -692,19 +638,11 @@ class LegacyIncidentApiErrorRenderTests(unittest.TestCase):
                 "child_transcript": {
                     "found": True,
                     "path": "/x.jsonl",
-                    "match_method": "tool_use_id",
+                    "match_method": "session_id",
                     "last_activity_ts": "2026-06-17T01:17:30.724Z",
                     "last_event_type": "assistant",
-                    # No structured "api_error" field (legacy snapshot) ...
-                    "raw_tail": [
-                        {
-                            "type": "assistant",
-                            "isApiErrorMessage": True,
-                            "apiErrorStatus": 529,
-                            "message": {"role": "assistant", "content": [
-                                {"type": "text", "text": "API Error: 529 Overloaded."}]},
-                        }
-                    ],
+                    "api_error": {"status": 529, "message": "API Error: 529 Overloaded.",
+                                  "retryable": True},
                 }
             },
         }
@@ -1884,7 +1822,6 @@ class InRepoRecordSectionTests(unittest.TestCase):
                 {"path": "workspace/orchestrations/o/steps/n/generate/arid-9/step_result.json",
                  "status": "fail", "failed_substeps": ["gate"]}],
             "recommended_retry_decisions": [{"repair_strategy": "restart"}],
-            "launch_incident_refs": [],
         }
         doc.update(overrides)
         return doc
@@ -1937,24 +1874,19 @@ class InRepoRecordSectionTests(unittest.TestCase):
         self.assertIn("reason `leaf_timeout`", md)
         self.assertIn("sidecar `failure_analysis.fallback.0123456789ab.json`", md)
 
-    def test_a_null_failed_agent_run_and_incident_refs_render(self) -> None:
+    def test_a_null_failed_agent_run_renders(self) -> None:
         # `failed_run = failed_runs[-1] if failed_runs else None` (tools/run_workflow.py):
-        # a fail with no failed row in agent_runs.jsonl writes `null`, and a dangling launch
-        # writes a snapshot ref. Neither shape is in the corpus's 10 files; both are real.
+        # a fail with no failed row in agent_runs.jsonl writes `null`. Not in the corpus's
+        # 10 files, but real.
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp, status="fail")
             (root / "failure_analysis.json").write_text(json.dumps(self._failure_doc(
-                failed_agent_run=None, failed_step_results=[],
-                launch_incident_refs=["workspace/orchestrations/o/launch_incident.runtime.ab.json"])),
+                failed_agent_run=None, failed_step_results=[])),
                 encoding="utf-8")
             result, md = self._rendered(tmp)
         fa = result["failure_analysis"]["canonical"]
         self.assertIsNone(fa["failed_agent_run"])
-        self.assertEqual(fa["launch_incident_refs"],
-                         ["workspace/orchestrations/o/launch_incident.runtime.ab.json"])
         self.assertIn("- failed agent run: none recorded", md)
-        self.assertIn("- launch incident: `workspace/orchestrations/o/"
-                      "launch_incident.runtime.ab.json`", md)
         self.assertNotIn("failed step results", md)
 
     def test_an_absent_analysis_is_rendered_next_to_the_terminal_status(self) -> None:
@@ -2135,23 +2067,6 @@ class DiagnosticFailureRecordingTests(unittest.TestCase):
             self.assertNotIn("No dangling active_child window detected", rendered)
             self.assertIn("## ⚠ diagnostic failures", rendered)
             self.assertIn("`launch_incident` — `RuntimeError: boom`", rendered)
-
-    def test_a_snapshot_still_renders_when_live_detection_failed(self) -> None:
-        """The snapshots are read independently of the live window, so a failed detection
-        must not suppress the durable evidence that does exist."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            root = repo_root / "workspace" / "orchestrations" / self.ORCH_ID
-            root.mkdir(parents=True)
-            (root / "launch_incident.runtime.abc.json").write_text(json.dumps(
-                {"dangling_child": {"agent_run_id": "arid-x", "step": "compile"}}),
-                encoding="utf-8")
-            with mock.patch.object(ao, "build_launch_incident",
-                                   side_effect=RuntimeError("boom")):
-                result = ao.audit(repo_root, self.ORCH_ID)
-            rendered = ao._render_markdown(result)
-            self.assertIn("Dangling-launch detection FAILED", rendered)
-            self.assertIn("`arid-x`", rendered)
 
     def test_a_failed_token_cost_collection_is_recorded_with_its_cause(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

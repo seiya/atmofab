@@ -22474,17 +22474,18 @@ class ExecutePromoterTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             node = Path(td)
             run_diag = {"checks": {"c1": {"status": "pass"}},
-                        "verdict": {"overall": "pass", "failed_checks": []},
-                        "cases": [{"case_id": "a", "verdict": {"overall": "pass"}}]}
+                        "verdict": {"overall": "pass", "failed_checks": []}}
             c = self._conductor(node)
             status = c._author_quality_check(node, run_diag, run_diag, "R", "Q", "make_test", 1)
             self.assertEqual(status, "pass")
             doc = json.loads((node / "quality_check.json").read_text())
             self.assertTrue(all(doc["checks"].values()))
+            # Issue #464: the comparison carries the two sides and nothing else; the
+            # per-case and per-check maps it used to add had no reader.
+            self.assertEqual(set(doc["comparison"]), {"reference", "candidate"})
             # mismatched verdict -> fail
             qc_diag = {"checks": {"c1": {"status": "fail"}},
-                       "verdict": {"overall": "fail", "failed_checks": ["c1"]},
-                       "cases": [{"case_id": "a", "verdict": {"overall": "fail"}}]}
+                       "verdict": {"overall": "fail", "failed_checks": ["c1"]}}
             status2 = c._author_quality_check(node, run_diag, qc_diag, "R", "Q", "make_test", 1)
             self.assertEqual(status2, "fail")
 _INCIDENT_DICT_REASON = {

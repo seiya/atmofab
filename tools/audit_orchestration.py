@@ -13,8 +13,7 @@ workspace/orchestrations/<id>/ (docs/WORKSPACE_LAYOUT.md is canonical for them):
 - Dangling launch (open active_child window with no child return / terminal run),
   correlated with the leaf transcript tail under the operator's ~/.claude/projects (see
   orchestration_diagnostics.build_launch_incident) — the one read outside the
-  repository. Also surfaced: any persisted launch_incident.runtime.*.json snapshots
-  (which survive after --resume clears the window or the transcript is expired)
+  repository
 - violations/*.json (sandbox enforcement)
 - per-leaf token cost from the `usage` rows of agent_runs.jsonl
 - the pure-leaf A/B metrics from bundle_meta.json / verdict_meta.json
@@ -38,7 +37,6 @@ try:
     from tools.leaf_usage import LEAF_USAGE_SOURCE_UNRECORDED, normalize_leaf_usage
     from tools.llm_config import LLM_LEAF_SUBSTEPS as _LLM_LEAF_SUBSTEPS
     from tools.orchestration_diagnostics import (
-        api_error_from_records,
         build_launch_incident,
         summarize_pure_leaf_metas,
     )
@@ -50,7 +48,6 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     from tools.leaf_usage import LEAF_USAGE_SOURCE_UNRECORDED, normalize_leaf_usage
     from tools.llm_config import LLM_LEAF_SUBSTEPS as _LLM_LEAF_SUBSTEPS
     from tools.orchestration_diagnostics import (
-        api_error_from_records,
         build_launch_incident,
         summarize_pure_leaf_metas,
     )
@@ -294,7 +291,6 @@ def _summarize_failure_analysis_doc(doc: dict[str, Any]) -> dict[str, Any]:
     failed_run = failed_run if isinstance(failed_run, dict) else {}
     step_results = doc.get("failed_step_results")
     step_results = step_results if isinstance(step_results, list) else []
-    refs = doc.get("launch_incident_refs")
     return {
         "status": doc.get("status"),
         "reason_code": doc.get("reason_code"),
@@ -308,8 +304,6 @@ def _summarize_failure_analysis_doc(doc: dict[str, Any]) -> dict[str, Any]:
             {"path": r.get("path"), "status": r.get("status")}
             for r in step_results if isinstance(r, dict)
         ],
-        "launch_incident_refs": [r for r in refs if isinstance(r, str)]
-                                if isinstance(refs, list) else [],
     }
 
 
@@ -907,20 +901,6 @@ def audit(repo_root: Path, orchestration_id: str) -> dict[str, Any]:
     except Exception as exc:  # noqa: BLE001 - diagnostics must never break the audit
         failure_analysis = None
         _record_failure("failure_analysis", exc)
-    # Persisted incident snapshots captured at run time. These survive after
-    # `--resume` clears the active-child markers (live detection then returns None)
-    # and after ~/.claude cleanup removes the transcript, so they are the durable
-    # diagnosis source for the documented later-analysis path. Surfaced even when
-    # the live window is closed.
-    launch_incident_snapshots: list[dict[str, Any]] = []
-    for snap_path in sorted(root.glob("launch_incident.runtime.*.json")):
-        doc = _load_json_if_dict(snap_path)
-        if doc is None:
-            continue
-        launch_incident_snapshots.append(
-            {"ref": str(snap_path.relative_to(repo_root)), "incident": doc}
-        )
-
     return {
         "orchestration_id": orchestration_id,
         "orchestration_status": meta.get("status"),
@@ -929,7 +909,6 @@ def audit(repo_root: Path, orchestration_id: str) -> dict[str, Any]:
         "failure_analysis": failure_analysis,
         "sandbox_violations": sandbox_violations,
         "launch_incident": launch_incident,
-        "launch_incident_snapshots": launch_incident_snapshots,
         "agent_run_summary": collect_agent_run_summary(agent_runs, invalid_runs),
         "token_cost_summary": token_cost_summary,
         "pure_leaf_ab_summary": pure_leaf_ab_summary,
@@ -955,7 +934,7 @@ def _render_api_error_line(api_error: Any, lines: list[str]) -> None:
 
 
 def _render_incident_body(incident: dict[str, Any], lines: list[str]) -> None:
-    """Render the decisive fields of one launch-incident dict (live or persisted)."""
+    """Render the decisive fields of the live launch-incident dict."""
     child = incident.get("dangling_child", {})
     lines.append("| field | value |")
     lines.append("|---|---|")
@@ -973,15 +952,10 @@ def _render_incident_body(incident: dict[str, Any], lines: list[str]) -> None:
         dead_air = ct.get("dead_air_seconds")
         lines.append("Child subagent transcript (decisive evidence):")
         lines.append("")
-        # The `matched via` clause is CANONICAL here for a closed vocabulary with two
-        # OWNERS and three values.
-        # A LIVE incident is always `session_id` and additionally carries the projects
-        # root the hit came from, which is what the `under` suffix shows: an agentic
-        # leaf's private home, or the operator's `~/.claude` — which a PURE leaf uses on
-        # a current run (it is prepared no private home) as well as any pre-#63 run. A PERSISTED `launch_incident.runtime.*.json`
-        # snapshot written by the host-session-era conductor carries `tool_use_id` or
-        # `arid_in_body` and no root; all 5 snapshots on this machine hold the former
-        # (measured 2026-09-02), which is why the clause stays instead of being deleted.
+        # The live incident is always matched via `session_id` and carries the projects
+        # root the hit came from, which is what the `under` suffix shows. Since Z4
+        # (issue #171) `claude_leaf_projects_roots` returns the operator's
+        # `~/.claude/projects` alone, so that is the only root it can name.
         # No fallback for a missing key: `None` here is the visible signal that the live
         # producer (`orchestration_diagnostics.build_launch_incident`) has regressed.
         matched_root = ct.get("matched_projects_root")
@@ -1000,51 +974,22 @@ def _render_incident_body(incident: dict[str, Any], lines: list[str]) -> None:
             lines.append(
                 f"- abort marker: `{ct.get('interrupt_text')}` at `{ct.get('interrupt_ts')}`"
             )
-        # Fall back to parsing raw_tail for legacy snapshots captured before the
-        # structured api_error field existed.
-        _render_api_error_line(
-            ct.get("api_error") or api_error_from_records(ct.get("raw_tail")), lines
-        )
+        _render_api_error_line(ct.get("api_error"), lines)
     else:
-        # Live re-derivation: ~/.claude transcript ephemeral. A persisted snapshot
-        # (rendered from "Captured incident snapshots" below) keeps the evidence even
-        # then, since the decisive tail was copied in-repo at incident time.
-        abort = incident.get("abort_marker")
-        if isinstance(abort, dict) and abort:
-            dead_air = abort.get("dead_air_seconds")
-            lines.append("Child subagent transcript (decisive evidence, from snapshot):")
-            lines.append("")
-            lines.append(f"- last activity: `{abort.get('last_activity_ts')}`")
-            lines.append(
-                f"- dead-air before abort: "
-                f"{f'{dead_air:.0f}s' if isinstance(dead_air, (int, float)) else 'n/a'}"
-            )
-            if abort.get("interrupted"):
-                lines.append(
-                    f"- abort marker: `{abort.get('interrupt_text')}` at `{abort.get('interrupt_ts')}`"
-                )
-            # Legacy snapshot fallback: abort_marker predates api_error; recover it
-            # from the child transcript's raw_tail if that field is missing.
-            _render_api_error_line(
-                abort.get("api_error") or api_error_from_records(ct.get("raw_tail")), lines
-            )
-        else:
-            lines.append(
-                f"Child subagent transcript not available: {ct.get('reason', 'unknown')} "
-                "(leaf transcripts are machine-local: the orchestration's private "
-                "home, else ~/.claude)."
-            )
+        lines.append(
+            f"Child subagent transcript not available: {ct.get('reason', 'unknown')} "
+            "(leaf transcripts are machine-local, under ~/.claude/projects)."
+        )
     lines.append("")
 
 
 def _render_launch_incident(
     incident: dict[str, Any] | None,
-    snapshots: list[dict[str, Any]] | None,
     lines: list[str],
     failure: dict[str, str] | None = None,
     unmeasured_reason: str | None = None,
 ) -> None:
-    """Render the dangling-launch section: live window and/or persisted snapshots.
+    """Render the dangling-launch section from the live window.
 
     The clean negative ("No dangling active_child window detected") is printed ONLY when
     detection actually ran over a real orchestration — `incident is None` on its own
@@ -1052,7 +997,6 @@ def _render_launch_incident(
     ``failure`` is the recorded `diagnostic_failures` entry when detection RAISED, and
     ``unmeasured_reason`` is set when there was nothing to detect over.
     """
-    snapshots = snapshots or []
     lines.append("## Dangling launch (active_child window)")
     lines.append("")
 
@@ -1068,12 +1012,6 @@ def _render_launch_incident(
             "read this section as 'no window'."
         )
         lines.append("")
-        if not snapshots:
-            return
-        lines.append(
-            "Captured incident snapshot(s) below are independent of the live detection."
-        )
-        lines.append("")
     elif incident:
         lines.append(
             "An open active_child window was found with no child return / terminal "
@@ -1081,32 +1019,9 @@ def _render_launch_incident(
         )
         lines.append("")
         _render_incident_body(incident, lines)
-    elif not snapshots:
-        lines.append(
-            "No dangling active_child window detected and no captured incident snapshots."
-        )
-        lines.append("")
-        return
     else:
-        lines.append(
-            "No active_child window is currently open (e.g. cleared by `--resume`), but "
-            "incident snapshot(s) captured at run time are preserved in-repo below."
-        )
+        lines.append("No dangling active_child window detected.")
         lines.append("")
-
-    if snapshots:
-        lines.append("### Captured incident snapshots (`launch_incident.runtime.*.json`)")
-        lines.append("")
-        for snap in snapshots:
-            ref = snap.get("ref")
-            doc = snap.get("incident")
-            lines.append(f"- `{ref}`")
-            lines.append("")
-            if isinstance(doc, dict):
-                _render_incident_body(doc, lines)
-            else:
-                lines.append("  (unreadable snapshot)")
-                lines.append("")
 
 
 def _fmt_tok(n: Any) -> str:
@@ -1375,8 +1290,6 @@ def _render_failure_analysis_doc(doc: dict[str, Any], lines: list[str]) -> None:
         lines.append(f"- failed step results: {len(step_results)}")
         for r in step_results:
             lines.append(f"  - `{r.get('path')}` (status `{r.get('status')}`)")
-    for ref in doc.get("launch_incident_refs") or []:
-        lines.append(f"- launch incident: `{ref}`")
 
 
 def _render_failure_analysis(result: dict[str, Any], lines: list[str], *,
@@ -1497,7 +1410,7 @@ def _render_markdown(result: dict[str, Any]) -> str:
         unmeasured = ("No orchestration was found at the path above, so NOTHING was "
                       "measured here")
     _render_launch_incident(
-        result.get("launch_incident"), result.get("launch_incident_snapshots"), lines,
+        result.get("launch_incident"), lines,
         failure=failures_by_section.get("launch_incident"),
         unmeasured_reason=unmeasured,
     )

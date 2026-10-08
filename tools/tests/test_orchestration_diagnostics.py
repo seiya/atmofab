@@ -359,15 +359,13 @@ class BuildLaunchIncidentTests(unittest.TestCase):
             self.assertEqual(child["match_method"], "session_id")
             self.assertEqual(child["matched_projects_root"],
                              str(home / ".claude" / "projects"))
-            self.assertTrue(incident["abort_marker"]["interrupted"])
-            self.assertEqual(
-                incident["abort_marker"]["interrupt_text"], "[Request interrupted by user]"
-            )
-            self.assertAlmostEqual(incident["abort_marker"]["dead_air_seconds"], 600.0, places=1)
+            self.assertTrue(child["interrupted"])
+            self.assertEqual(child["interrupt_text"], "[Request interrupted by user]")
+            self.assertAlmostEqual(child["dead_air_seconds"], 600.0, places=1)
 
     def test_incident_degrades_when_transcript_ephemeral(self) -> None:
         # ~/.claude cleaned/absent: dangling still detected from in-repo artifacts;
-        # child transcript reported not-found and abort_marker is None (never raises).
+        # child transcript reported not-found (never raises).
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp) / "repo"
             empty_home = Path(tmp) / "home"
@@ -379,7 +377,6 @@ class BuildLaunchIncidentTests(unittest.TestCase):
             assert incident is not None
             self.assertEqual(incident["dangling_child"]["agent_run_id"], CHILD_ARID)
             self.assertFalse(incident["transcripts"]["child_transcript"]["found"])
-            self.assertIsNone(incident["abort_marker"])
 
     def test_no_incident_when_window_closed(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
