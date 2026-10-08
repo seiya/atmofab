@@ -894,8 +894,8 @@ When a child leaf is cut off midway by an API stream idle timeout, the orchestra
 
 ```bash
 # pass the return-token via the two-step method (steps 6a/6b inline below).
-# step 6a: print the token with a single cat (it matches the allowlist
-#          `Bash(cat workspace/orchestrations/*)` and requires no approval). Do not use the
+# step 6a: print the token with a single cat (the project allow list no longer pre-approves
+#          it since issue #444, so the session asks once). Do not use the
 #          $(cat ...) command-substitution form because the Bash tool's static analysis
 #          rejects it with `Contains shell syntax ... cannot be statically analyzed`.
 #          Do not use the VAR=$(cat ...) 2-step shell-var form either, as it breaks
