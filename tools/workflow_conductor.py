@@ -9784,8 +9784,6 @@ class Conductor:
             # fail_closed, `--resume` retries it — as does the site lacking the build compiler
             # (checked before the command runs, `required_programs`), which make would
             # otherwise report as a failure of the source.
-            from tools.build_runtime import _validate_build_argv_overrides
-
             from tools.remote_execution import (
                 CommandSpec,
                 JobRequest,
@@ -9802,8 +9800,6 @@ class Conductor:
                                                and path.name in AUDIT_LOG_BASENAMES):
                         ship[f"{prefix}/{path.relative_to(root).as_posix()}"] = path
             remote_args = build_args(f"{jdir}/build", f"{jdir}/bin")
-            _validate_build_argv_overrides(None, remote_args, "compile_project",
-                                           build_system=build_system)
             jobs = default_build_jobs()
             job = execute_job(JobRequest(
                 site=site, job_dir=jdir, ship=ship,

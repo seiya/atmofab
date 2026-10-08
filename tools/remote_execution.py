@@ -202,8 +202,8 @@ class CommandSpec:
     command stands for — the `project_dir` the local path would have handed the library — and it
     is what the entry records as `cwd`: the post-execute gate requires a quality check's `cwd`
     to be the node's own `source/<source_id>/src`, holding its build control file. The remote
-    `cwd` is the entry's `site.remote_cwd`. `env` is an override set, checked with
-    the library's own `_validate_env_overrides` before anything is contacted. `timeout_sec` has
+    `cwd` is the entry's `site.remote_cwd`. `env` is an override set whose names must be
+    variable names (each word is rendered through `shlex.quote`). `timeout_sec` has
     no default: the local library's are 3600 for `run_program`, 1800 for `run_quality_checks`
     and 1800 for `compile_project`, and the same bound is kept only by passing them.
 
@@ -390,7 +390,6 @@ def _validate(request: JobRequest) -> None:
                              f"local path")
         if c.cwd != request.job_dir:
             _relative(c.cwd[len(request.job_dir) + 1:], f"command {c.tag!r} cwd")
-        build_runtime._validate_env_overrides(dict(c.env), c.tool_name)
         for key in c.env:
             if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", str(key)):
                 raise ValueError(f"command {c.tag!r} env name {key!r} is not a variable name")

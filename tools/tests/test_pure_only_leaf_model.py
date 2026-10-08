@@ -1312,20 +1312,12 @@ class ServerHasOneValidationModeTests(unittest.TestCase):
 
     No leaf reaches this library after Z4 (it was an MCP server until issue #444): a pure
     leaf launches with `--tools ""` and holds no tool at all. The only caller under a run
-    is the conductor, in the host process. So the allowlist defends nothing, and what is
-    left is the denylist — applied to EVERY call, which is a widening of the standalone
-    mode, not a narrowing of the orchestrated one.
+    is the conductor, in the host process. So the allowlist defends nothing, and what was
+    left was the denylist, applied to every call — until issue #457 deleted that too,
+    because every in-tree caller composes its arguments from host constants.
 
-    The four rows below are the cases that used to answer differently on each side."""
-
-    MODES: ClassVar[tuple[tuple[str, dict[str, object], dict[str, str]], ...]] = (
-        ("standalone", {}, {}),
-        ("attributed", {"orchestration_id": "orch_x", "agent_run_id": "arid_x"}, {}),
-        ("workflow-env", {}, {"ATMOFAB_WORKFLOW_MODE": "1"}),
-        ("workflow-env+attributed",
-         {"orchestration_id": "orch_x", "agent_run_id": "arid_x"},
-         {"ATMOFAB_WORKFLOW_MODE": "1", "ATMOFAB_ORCHESTRATION_ID": "orch_x"}),
-    )
+    The two rows below pin that the mode inputs decide nothing: the workflow environment
+    is not read, and the conductor's own build arguments run under attribution."""
 
     def setUp(self) -> None:
         self.server = _load_module()
@@ -1339,26 +1331,6 @@ class ServerHasOneValidationModeTests(unittest.TestCase):
                 "build_system": "make", "timeout_sec": 5, **extra}
         with mock.patch.dict("os.environ", env, clear=False):
             return self.server.tool_compile_project(args)
-
-    def _refusal(self, extra: dict[str, object], env: dict[str, str]) -> str:
-        with self.assertRaises(ValueError) as caught:
-            self._call(extra, env)
-        return str(caught.exception)
-
-    def test_an_execution_redirecting_env_override_is_refused_in_every_mode(self) -> None:
-        for name, attribution, env in self.MODES:
-            for key in ("LD_PRELOAD", "MAKEFLAGS"):
-                with self.subTest(mode=name, key=key):
-                    message = self._refusal(
-                        {**attribution, "env": {key: "x"}}, env)
-                    self.assertIn(key, message)
-
-    def test_a_non_assignment_extra_arg_is_refused_in_every_mode(self) -> None:
-        for name, attribution, env in self.MODES:
-            with self.subTest(mode=name):
-                message = self._refusal(
-                    {**attribution, "extra_args": ["--eval=$(shell id)"]}, env)
-                self.assertIn("--eval", message)
 
     def test_the_workflow_environment_decides_nothing(self) -> None:
         """The two variables `tools/run_workflow.py` sets reached this server through the
