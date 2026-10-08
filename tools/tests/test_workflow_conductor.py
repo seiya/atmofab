@@ -1006,18 +1006,6 @@ class DecisionTableTest(unittest.TestCase):
         self.assertEqual(wc.classify_gate_failure([]).reason, "gate_fail_no_category")
         self.assertEqual(wc.classify_gate_failure(None).reason, "gate_fail_no_category")
 
-    def test_validate_judge_routing(self) -> None:
-        self.assertEqual(wc.classify_validate_judge("pass", None).action, "advance")
-        d = wc.classify_validate_judge("structural_violation", "ir")
-        self.assertEqual((d.action, d.target_phase), ("reopen", "compile"))
-        d = wc.classify_validate_judge("physics_fail", "code")
-        self.assertEqual((d.action, d.target_phase, d.repair_strategy), ("retry", "generate", "reuse"))
-        d = wc.classify_validate_judge("physics_fail", "spec")
-        self.assertEqual(d.action, "fail_closed")
-        d = wc.classify_validate_judge("evidence_mismatch", "evidence")
-        self.assertEqual((d.action, d.target_phase, d.repair_strategy), ("retry", "validate", "re_execute"))
-        self.assertEqual(wc.classify_validate_judge("novel_class", "code").action, "escalate")
-
     def test_dev_verify_severity_gate(self) -> None:
         self.assertEqual(wc.classify_verify_severity("none", "dev").action, "advance")
         # minor (both modes): warm (reuse) SAME-PHASE producer repair — not tolerated, not fail.
@@ -1683,11 +1671,11 @@ class RevocationNotLandedTerminalTest(unittest.TestCase):
             # cross-phase reopen: validate fails and rolls back to compile (prod keeps it)
             "cross-phase reopen (prod)": (
                 "prod", fail_judge, lambda phase, outcomes: wc.RouteDecision(
-                    "reopen", target_phase="compile", reason="judge_ir")),
+                    "reopen", target_phase="compile", reason="the IR under-specifies the halo")),
             # the same rollback in dev, which fail-fasts on the first occurrence (F1)
             "dev cross-phase rollback": (
                 "dev", fail_judge, lambda phase, outcomes: wc.RouteDecision(
-                    "reopen", target_phase="compile", reason="judge_ir")),
+                    "reopen", target_phase="compile", reason="the IR under-specifies the halo")),
         }
         for label, (mode, status_fn, decision_fn) in routes.items():
             with self.subTest(route=label):
@@ -3184,19 +3172,19 @@ class ConductRoutingTest(unittest.TestCase):
             self.assertIn(code, FAIL_CLOSED_REASON_CODES)
 
     def test_generic_fail_closed_uses_allowlisted_reason_code(self) -> None:
-        # A generic phase fail_closed decision (e.g. judge spec-attribution) maps to the
+        # A generic phase fail_closed decision (e.g. a declared compile fail) maps to the
         # allowlisted conductor_phase_fail_closed code, with the specific reason in detail.
         from tools.orchestration_runtime import FAIL_CLOSED_REASON_CODES
         c = self._conductor()
         c.status_fn = lambda phase, substep, n: "fail" if phase == "compile" else "pass"
         c.decision_fn = lambda phase, outcomes: wc.RouteDecision(
-            "fail_closed", reason="judge_physics_fail_spec")
+            "fail_closed", reason=wc.COMPILE_DECLARED_FAIL)
         status = c.conduct(self._refs(), "compile")
         self.assertEqual(status, "fail_closed")
         ss = [cap for s, cap in c.calls if s == "set-status"][-1]
         self.assertEqual(ss["--reason-code"], "conductor_phase_fail_closed")
         self.assertIn(ss["--reason-code"], FAIL_CLOSED_REASON_CODES)
-        self.assertEqual(ss["--reason-detail"], "judge_physics_fail_spec")
+        self.assertEqual(ss["--reason-detail"], wc.COMPILE_DECLARED_FAIL)
 
     def test_conduct_terminalizes_sandbox_enforcement_as_fail_closed(self) -> None:
         # A SandboxEnforcementError from a substep (bwrap on, no profile) must
@@ -3228,14 +3216,14 @@ class ConductRoutingTest(unittest.TestCase):
 
         c.status_fn = status_fn
         c.decision_fn = lambda phase, outcomes: wc.RouteDecision(
-            "reopen", target_phase="compile", reason="judge_structural_violation_ir")
+            "reopen", target_phase="compile", reason="the IR under-specifies the halo")
 
         status = c.conduct(self._refs(), "validate")
         self.assertEqual(status, "pass")
         revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
         self.assertEqual(len(revokes), 1)
         self.assertEqual(revokes[0]["--step"], "compile")
-        self.assertEqual(revokes[0]["--reason"], "judge_structural_violation_ir")
+        self.assertEqual(revokes[0]["--reason"], "the IR under-specifies the halo")
         # trigger is the failed (judge) substep arid
         self.assertTrue(revokes[0]["--trigger-agent-run-id"].startswith("child-"))
         # validate ran twice (once failed, once after reopen)
@@ -3638,6 +3626,91 @@ class ConductRoutingTest(unittest.TestCase):
             self.assertEqual(launches[1]["repair_strategy"], "reuse")
             self.assertEqual(launches[1]["repair_findings"], self._FOLD_353)
 
+    # -- issue #455: a judge finding travels on the revocation the directive causes ---------
+
+    @staticmethod
+    def _review_455() -> dict:
+        return {"decision": "fail", "findings": [
+            {"attribution": "ir", "confidence": "high",
+             "description": "the IR omits the halo width the spec states " + "h" * 2600,
+             "evidence_refs": ["workspace/ir/spec.ir.yaml#case"]},
+            {"attribution": "code", "confidence": "low", "description": "second " + "s" * 2600,
+             "evidence_refs": ["workspace/run/diagnostics.json"]}]}
+
+    def _judging_conductor(self, tmp: str, mode: str,
+                           directive: wc.RouteDecision) -> tuple[_FakeConductor, wc.NodeRefs]:
+        """validate.judge fails once and writes `_review_455()` (and a clean verdict) into the run
+        directory the FAILED attempt names; `classify_failure` and `_read_repair_findings` are
+        the real ones, so the host reason is the one the judge branch produces."""
+        c = _FakeConductor(repo_root=Path(tmp), orchestration_id="orch_x",
+                           orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+        c.calls = []
+        c.workflow_mode = mode
+        refs = self._refs()
+        state = {"fails": 0, "run_dirs": []}
+
+        def status_fn(phase, substep, n):
+            if (phase, substep) == ("validate", "judge") and state["fails"] < 1:
+                state["fails"] += 1
+                d = Path(tmp) / refs.run_node_dir()
+                d.mkdir(parents=True, exist_ok=True)
+                (d / "verdict.json").write_text(json.dumps(
+                    {"self_verdict": "pass", "failure_class": "pass", "per_test": []}),
+                    encoding="utf-8")
+                (d / "semantic_review.json").write_text(json.dumps(self._review_455()),
+                                                        encoding="utf-8")
+                return "fail"
+            return "pass"
+
+        hosts: list[str | None] = []
+
+        def escalate(refs_, phase, outcome):
+            hosts.append(outcome.decision.reason if outcome.decision else None)
+            return directive
+
+        c.status_fn = status_fn
+        c.escalate = escalate  # type: ignore[assignment]
+        c.hosts_455 = hosts  # type: ignore[attr-defined]
+        return c, refs
+
+    def test_a_judge_finding_travels_on_the_prod_compile_reopen(self) -> None:
+        from tools.pure_leaf import judge_repair_text
+        folded = judge_repair_text(self._review_455())
+        self.assertGreater(len(folded), 5000)  # past every per-artifact clip in the tree
+        with tempfile.TemporaryDirectory() as tmp:
+            c, refs = self._judging_conductor(
+                tmp, "prod",
+                wc.RouteDecision("reopen", target_phase="compile", repair_strategy="reuse",
+                                 severity="major", reason="the IR under-specifies the halo"))
+            self.assertEqual(c.conduct(refs, "validate"), "pass")
+            self.assertEqual(c.hosts_455, ["judge_semantic_review_fail"])
+            revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+            self.assertEqual([r["--step"] for r in revokes], ["compile"])
+            self.assertEqual(revokes[0]["--last-fail-reason"], folded)
+            self.assertEqual(revokes[0]["--reason"], "the IR under-specifies the halo")
+            launches = self._producer_launches(c, "compile")
+            self.assertEqual(len(launches), 2)
+            self.assertNotIn("repair_findings", launches[0])
+            self.assertEqual(launches[1]["repair_findings"], folded)
+
+    def test_a_judge_finding_travels_on_the_dev_rollback(self) -> None:
+        # dev terminalizes the backward reopen as `dev_phase_rollback`, AFTER the revocation,
+        # so the operator's `--resume` seeds the warm repair from the artifact.
+        from tools.pure_leaf import judge_repair_text
+        with tempfile.TemporaryDirectory() as tmp:
+            c, refs = self._judging_conductor(
+                tmp, "dev",
+                wc.RouteDecision("reopen", target_phase="compile", repair_strategy="reuse",
+                                 severity="major", reason="the IR under-specifies the halo"))
+            self.assertEqual(c.conduct(refs, "validate"), "fail_closed")
+            revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+            self.assertEqual([r["--step"] for r in revokes], ["compile"])
+            self.assertEqual(revokes[0]["--last-fail-reason"],
+                             judge_repair_text(self._review_455()))
+            ss = [cap for s, cap in c.calls if s == "set-status"][-1]
+            self.assertEqual((ss["--reason-code"], ss["--reason-detail"]),
+                             ("dev_phase_rollback", "the IR under-specifies the halo"))
+
     _DECLARED_355 = ("Compile fail: the spec names no boundary condition for the east edge, "
                      "and the IR schema has no default to take")
 
@@ -3831,11 +3904,16 @@ class ConductRoutingTest(unittest.TestCase):
         self.assertIn(status, ("fail", "fail_closed"))
         self.assertEqual([s for s, _ in c.calls if s == "revoke-artifact"], [])
 
-    def test_fail_closed_on_spec_attribution(self) -> None:
+    def test_fail_closed_directive_on_a_judge_finding_terminalizes(self) -> None:
+        # A spec-attributed judge finding is not routed by the conductor (issue #455): it
+        # escalates like every judge fail, and a `fail_closed` directive is how the run stops.
         c = self._conductor()
         c.status_fn = lambda phase, substep, n: (
             "fail" if (phase == "validate" and substep == "judge") else "pass")
-        c.decision_fn = lambda phase, outcomes: wc.RouteDecision("fail_closed", reason="physics_fail_spec")
+        c.decision_fn = lambda phase, outcomes: wc.RouteDecision(
+            "escalate", reason="judge_semantic_review_fail")
+        c.escalate = lambda refs, phase, outcome: wc.RouteDecision(  # type: ignore[assignment]
+            "fail_closed", reason="the spec leaves the east boundary undefined")
         status = c.conduct(self._refs(), "validate")
         self.assertEqual(status, "fail_closed")
         self.assertEqual(c.calls[-1][1]["--status"], "fail_closed")
@@ -3847,7 +3925,7 @@ class ConductRoutingTest(unittest.TestCase):
         c.status_fn = lambda phase, substep, n: (
             "fail" if (phase == "validate" and substep == "judge") else "pass")
         c.decision_fn = lambda phase, outcomes: wc.RouteDecision(
-            "reopen", target_phase="compile", reason="judge_ir")
+            "reopen", target_phase="compile", reason="the IR under-specifies the halo")
         status = c.conduct(self._refs(), "validate")
         self.assertEqual(status, "fail_closed")
         revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
@@ -3860,7 +3938,7 @@ class ConductRoutingTest(unittest.TestCase):
         # the one retry route outside the "every route issues both halves" rule.
         self.assertEqual(len(revokes), wc.MAX_ATTEMPTS_PER_PHASE + 1)
         self.assertEqual({cap["--step"] for cap in revokes}, {"compile"})
-        self.assertEqual(revokes[-1]["--reason"], "judge_ir")
+        self.assertEqual(revokes[-1]["--reason"], "the IR under-specifies the halo")
         resets = [cap for s, cap in c.calls if s == "reset-phase"]
         self.assertEqual(len(resets), wc.MAX_ATTEMPTS_PER_PHASE + 1)
 
@@ -3931,12 +4009,12 @@ class DevPhaseRollbackTest(unittest.TestCase):
         c = self._conductor("dev")
         c.status_fn = lambda phase, substep, n: "fail" if (phase == "validate" and substep == "judge") else "pass"
         c.decision_fn = lambda phase, outcomes: wc.RouteDecision(
-            "reopen", target_phase="compile", reason="judge_structural_violation_ir")
+            "reopen", target_phase="compile", reason="the IR under-specifies the halo")
         status = c.conduct(self._refs(), "validate")
         self.assertEqual(status, "fail_closed")
         ss = self._last_set_status(c)
         self.assertEqual(ss["--reason-code"], "dev_phase_rollback")
-        self.assertEqual(ss["--reason-detail"], "judge_structural_violation_ir")
+        self.assertEqual(ss["--reason-detail"], "the IR under-specifies the halo")
         # The rollback still fail_closes, but it REVOKES the target first (issue
         # #177): the decision that the artifact must be re-derived has to reach the
         # artifact, or the operator's `--resume` skips the target as certified.
@@ -3973,7 +4051,7 @@ class DevPhaseRollbackTest(unittest.TestCase):
 
         c.status_fn = status_fn
         c.decision_fn = lambda phase, outcomes: wc.RouteDecision(
-            "reopen", target_phase="compile", reason="judge_structural_violation_ir")
+            "reopen", target_phase="compile", reason="the IR under-specifies the halo")
         status = c.conduct(self._refs(), "validate")
         self.assertEqual(status, "pass")
         revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
@@ -4870,11 +4948,31 @@ class TransportFailureTest(unittest.TestCase):
             "fail" if (phase == "validate" and substep == "judge") else "pass")
         c.judge_semantic_decision_value = "fail"
         c.decision_fn = lambda phase, outcomes: wc.RouteDecision(
-            "retry", target_phase="generate", repair_strategy="restart", reason="physics_fail")
+            "escalate", reason="judge_semantic_review_fail")
         oc = c.run_phase(self._refs(), "validate")
-        self.assertEqual(oc.decision.action, "retry")
+        self.assertEqual((oc.decision.action, oc.decision.reason),
+                         ("escalate", "judge_semantic_review_fail"))
         subs = [s for s, _ in c.calls]
         self.assertIn("write-step-result", subs)
+
+    def test_an_execute_failure_never_launches_the_judge(self) -> None:
+        # The run_phase half of issue #455's premise (the handler half is
+        # `test_a_non_pass_failure_class_fails_execute_so_no_judge_sees_it`): the substep loop
+        # breaks at the failed execute, so no judge leaf is recorded and the outcome names
+        # execute as the failed substep. The pass control launches it, so the absence is not a
+        # recorder that never fires.
+        for status, judged in (("fail", False), ("pass", True)):
+            with self.subTest(execute=status):
+                c = self._conductor()
+                c.status_fn = lambda phase, substep, n, status=status: (
+                    status if (phase == "validate" and substep == "execute") else "pass")
+                oc = c.run_phase(self._refs(), "validate")
+                launched = [cap["--request-json"].get("substep") for s, cap in c.calls
+                            if s == "record-launch"
+                            and cap.get("--request-json", {}).get("step") == "validate"]
+                self.assertEqual("judge" in launched, judged, launched)
+                if not judged:
+                    self.assertEqual(len(oc.substep_arids), 2)
 
     def test_pass_path_unchanged(self) -> None:
         c = self._conductor()
@@ -5233,12 +5331,12 @@ class TransportFailureTest(unittest.TestCase):
             c.status_fn = lambda phase, substep, n: (
                 "fail" if (phase == "validate" and substep == "judge") else "pass")
             c.decision_fn = lambda phase, outcomes: wc.RouteDecision(
-                "retry", target_phase="generate", repair_strategy="reuse", reason="judge_physics_fail_code")
+                "escalate", reason="judge_semantic_review_fail")
             oc = c.run_phase(refs, "validate")
             self.assertEqual(gate_calls["n"], 0)  # post_judge never ran (loop broke at judge)
             self.assertEqual(oc.status, "fail")
-            self.assertEqual(oc.decision.action, "retry")  # routed, NOT fail_closed
-            self.assertEqual(oc.decision.target_phase, "generate")
+            self.assertEqual(oc.decision.action, "escalate")  # routed, NOT fail_closed
+            self.assertEqual(oc.decision.reason, "judge_semantic_review_fail")
             subs = [s for s, _ in c.calls]
             self.assertIn("write-step-result", subs)  # routeable fail writes a step_result
 
@@ -18020,9 +18118,9 @@ class DeterministicBuildTest(unittest.TestCase):
 
     def test_semantic_review_fail_on_clean_verdict_escalates(self) -> None:
         # G6 (Codex P2): the judge substep fails on semantic_review.decision=="fail" even when
-        # the mechanical per_test is clean (failure_class stays "pass"). classify_validate_judge
-        # would treat failure_class=="pass" as `advance`, silently dropping the finding; the
-        # classify_failure judge branch must route it to the diagnostician (escalate) instead.
+        # the mechanical per_test is clean (failure_class stays "pass", the only value a judge
+        # ever sees: execute fails first on anything else). The classify_failure judge branch
+        # routes it to the diagnostician (escalate), whatever the finding's attribution.
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -18045,12 +18143,34 @@ class DeterministicBuildTest(unittest.TestCase):
             decision = c.classify_failure(refs, "validate", judge_fail)
             self.assertEqual(decision.action, "escalate")
             self.assertEqual(decision.reason, "judge_semantic_review_fail")
-            # a genuine physics failure_class still routes via the decision table (not escalate).
-            (rn / "verdict.json").write_text(json.dumps(
-                {"per_test": [{"test_id": "t1", "status": "fail"}],
-                 "failure_class": "physics_fail"}), encoding="utf-8")
-            decision2 = c.classify_failure(refs, "validate", judge_fail)
-            self.assertEqual((decision2.action, decision2.target_phase), ("retry", "generate"))
+            # Issue #455: no (failure_class, attribution) table routes a judge failure. An
+            # `ir` or `spec` attribution, and a verdict the judge is never shown, all escalate
+            # with the same reason — the diagnostician reads the attribution, the conductor
+            # does not.
+            for attribution, failure_class in (("ir", "pass"), ("spec", "pass"),
+                                               ("ir", "physics_fail")):
+                (rn / "verdict.json").write_text(json.dumps(
+                    {"per_test": [], "failure_class": failure_class}), encoding="utf-8")
+                (rn / "semantic_review.json").write_text(json.dumps(
+                    {"decision": "fail",
+                     "findings": [{"attribution": attribution, "confidence": "high",
+                                   "description": "x"}]}), encoding="utf-8")
+                d = c.classify_failure(refs, "validate", judge_fail)
+                self.assertEqual((d.action, d.reason, d.target_phase),
+                                 ("escalate", "judge_semantic_review_fail", None),
+                                 (attribution, failure_class))
+            # A judge failure whose review does not say `fail` is the state run_phase's
+            # conformance branch takes first. If it reaches here it is named and escalated,
+            # never read as `advance` (the deleted table's `pass` row did that).
+            for review in ({"decision": "pass", "findings": []}, None):
+                if review is None:
+                    (rn / "semantic_review.json").unlink()
+                else:
+                    (rn / "semantic_review.json").write_text(json.dumps(review),
+                                                             encoding="utf-8")
+                d = c.classify_failure(refs, "validate", judge_fail)
+                self.assertEqual((d.action, d.reason), ("escalate", "judge_fail_unclassified"),
+                                 review)
 
     def test_recurring_execute_failure_escalates_to_compile(self) -> None:
         # C2 backstop: a first execute failure (no verdict.json) routes to Generate
@@ -18695,6 +18815,38 @@ class DeterministicBuildTest(unittest.TestCase):
             # The B1 routing table keys on failure_category; a verdict failure is NOT one of its
             # categories, and classify_failure's no-verdict branch must never see one here.
             self.assertNotIn("failure_category", meta)
+
+    def test_a_non_pass_failure_class_fails_execute_so_no_judge_sees_it(self) -> None:
+        """Issue #455's premise, executed at the handler: every non-`pass` `failure_class`
+        `_execute_inproc` writes into verdict.json comes with a failed execute substep (the
+        trial_meta `determine_substep_status` reads), so `run_phase` breaks before the judge
+        and `classify_failure` takes the EXECUTE branch. The judge only ever runs over
+        `failure_class == "pass"`, which is why its branch has no (failure_class,
+        attribution) table to consult. The clean row is the control."""
+        import tempfile
+        outcomes = [wc.SubstepOutcome("pj", "pass", [], 0), wc.SubstepOutcome("ex", "fail", [], 0)]
+        physics = {"checks": {"k": {"status": "pass"}}, "verdict": {"overall": "fail"}}
+        structural = {"checks": {"k": {"status": "pass"}}, "verdict": {"overall": "pass"},
+                      "per_case": {"c_alpha": {"metrics": {"metrics.other": 0.0}}}}
+        rows = (("physics_fail", self._B1_IR_CLEAN_VERDICT, physics),
+                ("structural_violation", self._B1_IR_VERDICT_FAIL, structural),
+                ("pass", self._B1_IR_CLEAN_VERDICT, None))
+        for expected, ir_yaml, diag in rows:
+            with self.subTest(failure_class=expected), tempfile.TemporaryDirectory() as td:
+                repo = Path(td)
+                _out, meta = self._b1_execute(repo, ir_yaml, gate_result=(0, ""),
+                                              matching_diagnostics=True, diagnostics=diag)
+                verdict = json.loads((repo / self._b1_refs().run_node_dir() / "verdict.json")
+                                     .read_text(encoding="utf-8"))
+                self.assertEqual(verdict["failure_class"], expected)
+                self.assertEqual(meta["status"], "pass" if expected == "pass" else "fail")
+                if expected == "pass":
+                    continue
+                c = _TargetedConductor(repo_root=repo, orchestration_id="t",
+                                       orchestration_agent_run_id="x",
+                                       llm_config=_cfg("claude"), env={}, workflow_mode="prod")
+                d = c.classify_failure(self._b1_refs(), "validate", outcomes)
+                self.assertTrue(d.reason.startswith(wc.VALIDATE_EXECUTE_REASON_PREFIX), d)
 
     def test_execute_inproc_verdict_fail_excerpt_is_bounded(self) -> None:
         import tempfile

@@ -473,6 +473,51 @@ class VerifyRepairTextTest(unittest.TestCase):
         self.assertEqual(text, f"r\n1. {long}\n2. {long}")
 
 
+class JudgeRepairTextTest(unittest.TestCase):
+    """`judge_repair_text` is the whole of what a repair learns from a judge `fail` (issue
+    #455): `_read_repair_findings` folds the host-written `semantic_review.json` with it, and
+    the fold rides on the revocation the diagnostician's directive causes."""
+
+    @staticmethod
+    def _finding(attribution: str, confidence: str, description: str, *refs: str) -> dict:
+        return {"attribution": attribution, "confidence": confidence,
+                "description": description, "evidence_refs": list(refs)}
+
+    def test_every_finding_in_order_with_its_classification_and_evidence(self):
+        review = {"decision": "fail", "findings": [
+            self._finding("ir", "high", "  halo width absent from the IR \n",
+                          "workspace/ir/spec.ir.yaml#case", "workspace/run/verdict.json"),
+            self._finding("code", "low", "second", "workspace/run/diagnostics.json")]}
+        self.assertEqual(
+            pl.judge_repair_text(review),
+            "[ir/high] halo width absent from the IR (evidence: workspace/ir/spec.ir.yaml#case, "
+            "workspace/run/verdict.json)\n"
+            "[code/low] second (evidence: workspace/run/diagnostics.json)")
+
+    def test_nothing_is_clipped(self):
+        long = "x" * 5000
+        text = pl.judge_repair_text({"decision": "fail", "findings": [
+            self._finding("spec", "medium", long, "a")]})
+        self.assertEqual(text, f"[spec/medium] {long} (evidence: a)")
+
+    def test_anything_but_a_fail_review_with_a_finding_is_null(self):
+        # The input is a file read back from disk: a malformed one gives no findings, never a
+        # raise inside the conduct loop.
+        one = [self._finding("ir", "high", "d", "a")]
+        for review in (None, [], "fail", {"decision": "pass", "findings": one},
+                       {"decision": "fail"}, {"decision": "fail", "findings": "x"},
+                       {"decision": "fail", "findings": []},
+                       {"decision": "fail", "findings": [1, "x", None]}):
+            with self.subTest(review=review):
+                self.assertIsNone(pl.judge_repair_text(review))
+
+    def test_a_non_object_finding_is_skipped_not_fatal(self):
+        self.assertEqual(
+            pl.judge_repair_text({"decision": "fail", "findings": [
+                "junk", self._finding("evidence", "high", "d", "a")]}),
+            "[evidence/high] d (evidence: a)")
+
+
 class VerdictVocabParityTest(unittest.TestCase):
     """Guard the verdict enums against drift from the conductor's severity router — the two
     must agree or the model could author a severity the router mishandles (or vice versa)."""
