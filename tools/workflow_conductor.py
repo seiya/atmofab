@@ -270,10 +270,10 @@ def phases_through(until_phase: str) -> tuple[str, ...]:
 
 # --- deterministic failure-routing decision tables -----------------------------
 #
-# Canonical sources:
-#   docs/workflow/phases/phase_03_build.md  (Build failure_category -> retry)
-#   docs/workflow/phases/phase_04_validate.md  (Validate.judge failure_class x attribution)
-# Kept as data so the conductor (and its unit tests) route deterministically.
+# Canonical source for the Build table: docs/workflow/phases/phase_03_build.md
+# (Build failure_category -> retry). Kept as data so the conductor (and its unit tests)
+# route deterministically. A Validate.judge failure has no table: it escalates
+# (`classify_failure`'s judge branch; issue #455).
 
 # Build failure_category -> (retry_target_phase, repair_strategy)
 BUILD_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
@@ -509,9 +509,8 @@ def _cross_target_disagreement_report(cross: Mapping[str, Any]) -> list[str]:
 
 # Validate.execute STRUCTURAL failure_category -> (retry_target_phase, repair_strategy).
 # A structural execute failure authors no verdict.json (the judge leaf never ran), so the
-# defect is in the generated runner/model code, not in a physics predicate: the same class the
-# judge would have reported as ("structural_violation", "code") -> ("generate", "reuse"). It is
-# routed warm (reuse) with the gate's own violation text threaded through as repair findings
+# defect is in the generated runner/model code, not in a physics predicate (the class the deleted
+# judge table, issue #455, used to send to ("generate", "reuse")). It is routed warm (reuse) with the gate's own violation text threaded through as repair findings
 # (trial_meta.json#failure_excerpt), instead of a blind cold restart that discards the reason
 # the run failed. `_execute_inproc` records the category; an execute failure with NO trial_meta
 # (a runner runtime error, whose cause is in stderr rather than a gate report) keeps the cold
@@ -724,22 +723,6 @@ COMPILE_VERDICT_FAILURE_CATEGORIES: tuple[str, ...] = (
 )
 COMPILE_VERDICT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
     category: ("compile", "restart") for category in COMPILE_VERDICT_FAILURE_CATEGORIES
-}
-
-# Validate.judge (failure_class, attribution) -> routing action.
-# Action is one of:
-#   ("generate", strategy) | ("compile", "reopen") | ("validate", "re_execute")
-#   ("fail_closed", None)  -> manual intervention (spec attribution)
-VALIDATE_JUDGE_ROUTING: dict[tuple[str, str], tuple[str, str | None]] = {
-    ("evidence_mismatch", "code"): ("generate", "reuse"),
-    ("evidence_mismatch", "ir"): ("compile", "reopen"),
-    ("evidence_mismatch", "evidence"): ("validate", "re_execute"),
-    ("physics_fail", "code"): ("generate", "reuse"),
-    ("physics_fail", "ir"): ("compile", "reopen"),
-    ("physics_fail", "spec"): ("fail_closed", None),
-    ("runtime_error", "code"): ("generate", "reuse"),
-    ("structural_violation", "code"): ("generate", "reuse"),
-    ("structural_violation", "ir"): ("compile", "reopen"),
 }
 
 
@@ -995,28 +978,6 @@ def classify_validate_gate_failure(substep: str, meta: dict[str, Any] | None) ->
     # preserve, is what this line already produces for that category — an explicit branch for
     # it would be an equivalent mutant (round 1 confirmed: deleting one left every test green).
     return f"validate_{category}"
-
-
-def classify_validate_judge(failure_class: str | None, attribution: str | None) -> RouteDecision:
-    if failure_class == "pass":
-        return RouteDecision("advance")
-    if not failure_class or not attribution:
-        return RouteDecision("escalate", reason="judge_missing_class_or_attribution")
-    routed = VALIDATE_JUDGE_ROUTING.get((failure_class, attribution))
-    if routed is None:
-        return RouteDecision("escalate",
-                             reason=f"judge_unrouted:{failure_class}/{attribution}")
-    target, strategy = routed
-    if target == "fail_closed":
-        return RouteDecision("fail_closed", reason=f"judge_{failure_class}_spec")
-    if target == "compile":
-        return RouteDecision("reopen", target_phase="compile",
-                             reason=f"judge_{failure_class}_ir")
-    if target == "validate":
-        return RouteDecision("retry", target_phase="validate", repair_strategy="re_execute",
-                             reason=f"judge_{failure_class}_evidence")
-    return RouteDecision("retry", target_phase=target, repair_strategy=strategy,
-                         reason=f"judge_{failure_class}_{attribution}")
 
 
 def classify_verify_severity(issue_severity: str | None, workflow_mode: str) -> RouteDecision:
@@ -12543,12 +12504,21 @@ class Conductor:
                                 (compile -> ir/ir_meta.json, generate -> source/source_meta.json)
           `validate_execute_<category>` (category in VALIDATE_EXECUTE_FAILURE_ROUTING)
                              -> runs/<run_id>/trial_meta.json#failure_excerpt
+          `judge_semantic_review_fail`
+                             -> runs/<run_id>/semantic_review.json#findings[], one entry per
+                                finding (folded here by `judge_repair_text`, issue #455)
         Read at the conduct reopen point where `refs` still names the FAILED artifact (rotation
         to the fresh id happens later, inside run_phase -> _ensure_fresh_producer_id). Returns
         None when unavailable so the repair simply falls back to the full prompt.
         `compile_declared_fail` matches no clause, by intent: a producer's declaration is not a
         finding to correct, and it terminalizes before any repair (issue #355)."""
         r = (reason or "")
+        if r == "judge_semantic_review_fail":
+            # The judge's findings are a document, not a meta field: fold them the one way
+            # (`judge_repair_text`), from the review the failed run wrote.
+            from tools.pure_leaf import judge_repair_text
+            return judge_repair_text(
+                _read_json(self.repo_root / refs.run_node_dir() / "semantic_review.json"))
         field = "failure_excerpt"
         # compile_static_ is checked before gate_ for clarity; the two share no prefix, so order
         # is not load-bearing.
@@ -13854,8 +13824,7 @@ class Conductor:
                 # B1: below the C2 threshold, split the no-verdict failure by the category
                 # _execute_inproc recorded in trial_meta.json. A recognized structural category
                 # is a code defect the failing gate DESCRIBED, so repair it warm (reuse) with
-                # that description threaded through as findings (_read_repair_findings), the
-                # same treatment the judge's ("structural_violation","code") already gets. A
+                # that description threaded through as findings (_read_repair_findings). A
                 # runner runtime error writes no trial_meta, and an unknown category is not
                 # understood well enough to guide a repair — both keep the cold restart.
                 # (`trial` / `category` were read above the C2 counter, which the terminal
@@ -13886,22 +13855,22 @@ class Conductor:
                                          reason=f"{VALIDATE_EXECUTE_REASON_PREFIX}{category}")
                 return RouteDecision("retry", target_phase="generate", repair_strategy="restart",
                                      reason="validate_execute_fail")
-            verdict = _read_json(self.repo_root / refs.run_node_dir() / "verdict.json") or {}
+            # The judge is spawned only after a clean execute (`_execute_inproc` fails the
+            # execute substep on any per-test failure), so `verdict.json#failure_class` is
+            # `pass` whenever this branch runs, and a judge `fail` is a semantic finding on
+            # passing tests. Attribution (code / ir / spec / evidence) needs reasoning, so every
+            # judge `fail` goes to the diagnostician, which reads semantic_review.json (its
+            # `attribution` and `confidence` included) and decides the route; the conductor
+            # gates on neither field. The findings travel on whatever the directive revokes
+            # (`_read_repair_findings`' `judge_semantic_review_fail` clause). `run_phase` sends
+            # a judge failure whose decision is not `fail` down its conformance branch before
+            # this one, so the second return names a state that branch should have taken
+            # (issue #455 deleted the (failure_class, attribution) table that used to sit here
+            # and read that state as `advance`).
             review = _read_json(self.repo_root / refs.run_node_dir() / "semantic_review.json") or {}
-            findings = review.get("findings") or []
-            attribution = findings[0].get("attribution") if findings and isinstance(findings[0], dict) else None
-            failure_class = verdict.get("failure_class")
-            # R2: the judge substep fails on `semantic_review.decision == "fail"` even when the
-            # host-authored (execute) per_test is clean (a fabrication / consistency finding on
-            # passing tests). In that case `verdict.failure_class` is `pass`, and classify_validate_judge would
-            # treat `pass` as `advance` — silently dropping the finding and terminalizing the failed
-            # phase as a generic `fail`. Route it to the diagnostician instead (it reads
-            # semantic_review + verdict and decides reuse/restart/reopen/fail_closed), matching how an
-            # under-specified judge output (missing class/attribution) already escalates.
-            if (str(review.get("decision") or "").strip().lower() == "fail"
-                    and failure_class in (None, "", "pass")):
+            if str(review.get("decision") or "").strip().lower() == "fail":
                 return RouteDecision("escalate", reason="judge_semantic_review_fail")
-            return classify_validate_judge(failure_class, attribution)
+            return RouteDecision("escalate", reason="judge_fail_unclassified")
         # compile / generate: verify severity gate. A failed phase with no
         # recorded severity (e.g. the producing substep itself failed) is
         # unclassifiable -> escalate to the diagnostician rather than guessing.

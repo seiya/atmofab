@@ -1289,7 +1289,9 @@ correct-by-construction; the judge authors only `verdict.json` + `semantic_revie
   mechanical `per_test` is clean (a fabrication finding on passing tests), `classify_failure`'s judge
   branch special-cases a `decision=="fail"` with a `pass`/missing `failure_class`: it escalates
   (`judge_semantic_review_fail`) to the diagnostician instead of letting `classify_validate_judge` treat
-  `failure_class=="pass"` as `advance` and silently drop the finding (Codex P2).
+  `failure_class=="pass"` as `advance` and silently drop the finding (Codex P2). (Issue #455 later deleted
+  `classify_validate_judge` and `VALIDATE_JUDGE_ROUTING`: the special case is the only one the judge branch
+  reaches, since execute fails first on every non-`pass` `failure_class`.)
 - **Contract / non-writable wiring.** The judge's `allowed_output_paths` + `_matches_phase_contract`
   `allowed_files` shrink to `{verdict.json, semantic_review.json}`; `post_judge` accepts
   `{post_judge_meta.json, aggregate_verdict.json, summary.json, validate_meta.json}` (pre_judge stays
