@@ -12456,7 +12456,7 @@ class Conductor:
           `validate_execute_<category>` (category in VALIDATE_EXECUTE_FAILURE_ROUTING)
                              -> runs/<run_id>/trial_meta.json#failure_excerpt
           `build_<category>` (category in BUILD_FAILURE_ROUTING)
-                             -> binaries/<binary_id>/binary_meta.json#failure_excerpt
+                             -> binary/<binary_id>/binary_meta.json#failure_excerpt
           `judge_semantic_review_fail`
                              -> runs/<run_id>/semantic_review.json#findings[], one entry per
                                 finding (folded here by `judge_repair_text`, issue #455)
