@@ -917,7 +917,7 @@ After the calls, the orchestration agent subsequently calls `set-status --status
 
 ### Escape hatch for a wedged child
 
-Only when `deactivate-child` cannot be reached because the leaf process is in an abnormal state where no return can be observed at all, the marker check can be bypassed with `record-timeout --force-reason "<operator override content>"`. Prioritize the normal flow, and use it as a last resort.
+`deactivate-child` verifies nothing about the leaf; it refuses only when the Claude sequential pointer `active_child_agent_run_id.txt` names a different child, and then the per-arid marker stays and `record-timeout` refuses too. Only in that case, the marker check can be bypassed with `record-timeout --force-reason "<operator override content>"`. Prioritize the normal flow, and use it as a last resort.
 
 ## Incomplete launch recovery (dangling active_child window) {#launch-incomplete-recovery}
 

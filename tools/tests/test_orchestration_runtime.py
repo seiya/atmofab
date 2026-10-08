@@ -16506,8 +16506,8 @@ class RecordTimeoutTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root)
-            # Intentionally do NOT call _deactivate — simulate a wedged child
-            # where deactivate-child is unreachable.
+            # Intentionally do NOT call _deactivate: the markers are still present, which
+            # is the state --force-reason exists to bypass.
             from tools.orchestration_runtime import (
                 _active_child_marker_path, _active_child_agent_run_id_path,
             )

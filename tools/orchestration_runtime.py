@@ -4934,8 +4934,8 @@ def _active_children_dir(repo_root: Path, orchestration_id: str) -> Path:
     Each launched child writes `active_children/<agent_run_id>.txt` here.
     deactivate_child / record_agent_run terminal / record_timeout's success
     path remove the marker. record_timeout REFUSES to proceed while the
-    marker exists — this provides Codex with the same liveness
-    handshake protection that Claude got from active_child_agent_run_id.txt.
+    marker exists — this gives Codex the same refusal that Claude gets from
+    active_child_agent_run_id.txt.
     """
     return _orchestration_root(repo_root, orchestration_id) / "active_children"
 
@@ -14979,14 +14979,13 @@ def record_timeout(
     while liveness markers are still present.
 
     Adv-26 escape hatch: pass `force_reason` (or --force-reason on CLI) to
-    bypass the active-children/legacy-marker guards for genuinely wedged
-    children where deactivate-child is unreachable (child leaf process killed
-    before the parent observed any return). The bypass clears both markers
-    on the operator's responsibility; force_reason is appended to the audit
-    trail (timeout_reason) and recorded as `forced=True` in the run payload.
-
-    Without --force-reason, a wedged child is a permanent dead end because
-    deactivate-child → record-timeout cannot make progress. With it, operators retain a controlled finalization path.
+    bypass the active-children/legacy-marker guards. deactivate-child verifies
+    nothing about the leaf (it only clears markers), so the one state it
+    refuses is a Claude sequential pointer naming a DIFFERENT child — and
+    there the per-arid marker stays, so record-timeout refuses too. The bypass
+    clears both markers on the operator's responsibility; force_reason is
+    appended to the audit trail (timeout_reason) and recorded as
+    `forced=True` in the run payload.
     """
     if not isinstance(agent_run_id, str) or not agent_run_id.strip():
         raise ValueError("record-timeout requires non-empty --agent-run-id")
@@ -15082,11 +15081,10 @@ def record_timeout(
                 )
             break
     # Adv-16: backend-neutral active-child marker check. record-launch creates
-    # `active_children/<arid>.txt` for ALL backends; deactivate-child (the
-    # documented signal that the child leaf returned) removes it. While the
-    # marker exists, the orchestration agent has not yet acknowledged that the
-    # child finished — firing record-timeout in that state would race the
-    # still-pending leaf return on Codex as well as Claude.
+    # `active_children/<arid>.txt` for ALL backends; deactivate-child removes
+    # it once the caller has seen the child leaf exit. While the marker exists
+    # nobody has said the child finished — firing record-timeout in that state
+    # would race the still-pending leaf return on Codex as well as Claude.
     # Adv-26: forced=True skips this guard for genuinely-wedged children
     # (operator override; force_reason is recorded in the audit trail).
     # Adv-37: forced bypass NO LONGER unlinks markers up-front. If
@@ -15100,10 +15098,10 @@ def record_timeout(
             raise ValueError(
                 f"record-timeout: active-child marker {marker_path.name} still exists "
                 f"under workspace/orchestrations/{orchestration_id}/active_children/. "
-                f"Run `deactivate-child --child-run-id {arid}` first to confirm the "
-                f"child leaf actually returned, then retry record-timeout. "
-                f"For genuinely-wedged children where deactivate-child is "
-                f"unreachable, use --force-reason '<text>' to bypass."
+                f"Once the child leaf process has exited, run "
+                f"`deactivate-child --child-run-id {arid}`, then retry record-timeout. "
+                f"If deactivate-child refuses because the Claude sequential pointer "
+                f"names a different child, use --force-reason '<text>' to bypass."
             )
         # Forced bypass: queue the marker for removal AFTER record_agent_run
         # commits the durable terminal entry.
@@ -15121,10 +15119,9 @@ def record_timeout(
                 if not forced:
                     raise ValueError(
                         f"record-timeout: active_child_agent_run_id.txt still points "
-                        f"to {arid!r}. Run `deactivate-child --child-run-id {arid}` "
-                        f"first to confirm the child leaf actually returned, then "
-                        f"retry record-timeout. For genuinely-wedged children, "
-                        f"use --force-reason '<text>' to bypass."
+                        f"to {arid!r}. Once the child leaf process has exited, run "
+                        f"`deactivate-child --child-run-id {arid}`, then retry "
+                        f"record-timeout."
                     )
                 forced_marker_to_remove.append(active_path)
     started_at = resp_doc.get("started_at")
@@ -17232,8 +17229,8 @@ def main(argv: list[str] | None = None) -> int:
         "--force-reason", default=None,
         help=(
             "Adv-26 escape hatch: bypass the active-children/legacy marker guards "
-            "for genuinely-wedged children where deactivate-child is unreachable "
-            "(e.g. child leaf process killed before parent observed return). "
+            "when deactivate-child refuses (the Claude sequential pointer names a "
+            "different child). "
             "Required text becomes part of timeout_reason and the run payload "
             "carries forced=True + forced_reason for audit. Use sparingly — the "
             "normal deactivate-child → record-timeout flow is preferred whenever "
