@@ -3790,7 +3790,12 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         """A child diverted to agent_runs_invalid.jsonl (terminal-payload validation
         failure) has no agent_runs.jsonl row and usually no step_result reference, but
         it DID reach record-agent-run. Its edge must be KEPT so pass-validation still
-        surfaces the invalid terminal attempt (Codex P2)."""
+        surfaces the invalid terminal attempt (Codex P2).
+
+        The child WAS launched (`launches/<arid>.request.json`), so the never-launched
+        clause cannot be what keeps its edge: the `agent_runs_invalid.jsonl` read of
+        `_protected_child_arids` is. Issue #464 deleted the tombstone test that used to
+        pin that read; this row is its witness now."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             oid = "orch_resume_invalid_run"
@@ -3800,6 +3805,9 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 (root / "orchestration_meta.json").read_text(encoding="utf-8")
             )["orchestration_agent_run_id"]
             invalid_child = "child-diverted-to-invalid"
+            (root / "launches").mkdir(exist_ok=True)
+            (root / "launches" / f"{invalid_child}.request.json").write_text(
+                "{}", encoding="utf-8")
             (root / "agent_runs_invalid.jsonl").write_text(
                 json.dumps(
                     {"agent_run_id": invalid_child, "status": "fail",
