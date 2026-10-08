@@ -15266,6 +15266,44 @@ class RecordTimeoutTests(unittest.TestCase):
                 _active_child_marker_path(repo_root, "orch_to_001", arid).exists()
             )
 
+    def test_finalize_child_refuses_a_closed_launch_before_writing_the_reply(self) -> None:
+        """A second finalization of one arid is refused before anything is written.
+
+        The retired `record_child_return` refused an arid with no active-child marker before
+        any write (issue #447, D2). Without that, the repeat call overwrote
+        `launches/<arid>.reply.txt` and only then hit `duplicate agent_run_id`, leaving a reply
+        that disagrees with the recorded row. The repeat here carries a DIFFERENT reply, so a
+        write that slipped through would show."""
+        from tools.orchestration_runtime import finalize_child
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            arid = self._setup_substep_launch(repo_root)
+            payload = {
+                "agent_run_id": arid,
+                "agent_role": "substep",
+                "agent_backend": "claude",
+                "status": "fail",
+                "agent_session_id": arid,
+                "context_id": "ctx_finalize_twice_001",
+                "context_isolated": True,
+                "node_key": "problem/shallow_water2d@0.3.0",
+                "started_at": "2026-05-09T08:00:00Z",
+                "finished_at": "2026-05-09T08:05:00Z",
+                "result_summary": "generate fail-stopped (test fixture)",
+            }
+            first = "status: fail\noutput_refs:\n- (none)\nrationale: first"
+            finalize_child(repo_root=repo_root, orchestration_id="orch_to_001",
+                           agent_run_id=arid, reply_text=first, agent_run_payload=payload)
+            reply_path = (
+                repo_root / "workspace/orchestrations/orch_to_001/launches" / f"{arid}.reply.txt"
+            )
+            with self.assertRaisesRegex(ValueError, "no active_children/.*marker"):
+                finalize_child(repo_root=repo_root, orchestration_id="orch_to_001",
+                               agent_run_id=arid,
+                               reply_text="status: pass\noutput_refs:\n- (none)\nrationale: second",
+                               agent_run_payload={**payload, "status": "pass"})
+            self.assertEqual(reply_path.read_text(encoding="utf-8").rstrip("\n"), first)
+
     def test_finalize_child_records_the_callers_usage_and_never_backfills(self) -> None:
         # `usage` is the CALLER's to supply — the conductor reads it from the leaf's own output
         # and always passes one (a normalized dict, or an explicit marker). finalize_child

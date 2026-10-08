@@ -15743,6 +15743,16 @@ def finalize_child(
             f"status line, output_refs, and a few lines of rationale; full detail belongs in the artifacts."
         )
 
+    # The launch must still be open: `record_launch` writes this marker last and the first
+    # finalization consumes it. Without the check a second finalization of the same arid, or
+    # one for an arid never launched, would overwrite `launches/<arid>.reply.txt` before
+    # `record_agent_run` refused it, leaving a reply that disagrees with the recorded row.
+    # The retired `record_child_return` used to refuse here (issue #447, D2).
+    if not _active_child_marker_path(repo_root, orchestration_id, arid).is_file():
+        raise ValueError(
+            f"finalize-child: no active_children/{arid}.txt marker — the run was never "
+            f"launched or is already finalized. Nothing was written."
+        )
     deactivation = deactivate_child_agent(
         repo_root,
         orchestration_id,
