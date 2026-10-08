@@ -2985,7 +2985,8 @@ class ConductHappyPathTest(unittest.TestCase):
         label deliberately does not read the operator's home (issue #63; the reason is now
         the one `default_agent_model_for_backend` gives — the stamp is a prediction the
         envelope corrects; since issue #453 no reader of that home exists at all) — the
-        run is driven under a `HOME` whose settings name a SENTINEL model, and the assertion
+        run is driven under a `HOME` (both `$HOME` and `Path.home()`) whose settings name a
+        SENTINEL model, and the assertion
         is that the stamp is the default and is NOT the sentinel.
 
         The configuration is built model-LESS rather than taken from the shipped sample: the
@@ -3012,7 +3013,8 @@ class ConductHappyPathTest(unittest.TestCase):
              patch.object(wc.Conductor, "conduct", return_value="pass"), \
              patch.object(wc, "resolve_run_target", return_value=None), \
              tempfile.TemporaryDirectory() as home, \
-             patch("pathlib.Path.home", return_value=Path(home)):
+             patch("pathlib.Path.home", return_value=Path(home)), \
+             patch.dict(os.environ, {"HOME": home}):
             (Path(home) / ".claude").mkdir()
             (Path(home) / ".claude" / "settings.json").write_text(
                 json.dumps({"model": SENTINEL}), encoding="utf-8")

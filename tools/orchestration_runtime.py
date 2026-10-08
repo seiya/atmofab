@@ -7521,8 +7521,8 @@ LEAF_ENV_ALLOWLIST: dict[str, str] = {
     "HOME": (
         "the CLI's own fallbacks, and for a claude leaf its credentials and the session "
         "transcript a warm `--resume` reads. Not its settings: `--restricted` ignores the "
-        "settings files under it, and preflight refuses an `env` block in its "
-        "`~/.claude.json` (`default_agent_model_for_backend`; issue #453). A codex "
+        "settings files under it, and preflight refuses an `env` block in its global "
+        "config (`_claude_global_config_paths`; issue #453). A codex "
         "leaf's home arrives as CODEX_HOME."
     ),
     "LANG": (
@@ -10843,8 +10843,9 @@ def default_agent_model_for_backend(backend: str) -> str:
     local settings file applies: neither a settings `model` key, nor an `env` block's
     `ANTHROPIC_MODEL`, nor an `env.ANTHROPIC_DEFAULT_OPUS_MODEL` remap of a declared
     `opus` reaches the leaf (measured, with the endpoint as a fourth row; the flag ignores
-    the whole file). The global state file `~/.claude.json` is not a settings file and its
-    `env` block is NOT ignored; preflight refuses one (`claude_global_config_env_absent`).
+    the whole file). The CLI's global config (`_claude_global_config_paths`) is not a
+    settings file and its `env` block is NOT ignored; preflight refuses one
+    (`claude_global_config_env_absent`).
     `ANTHROPIC_MODEL` in the operator's PROCESS environment takes no part either (it is not
     on `LEAF_ENV_ALLOWLIST`). Before issue #453 each of those
     settings channels decided or remapped the model; the measurements, with and without the
@@ -13506,45 +13507,68 @@ def _probe_claude_backend(
     return checks, version_proc.stdout.strip()
 
 
-_CLAUDE_RESTRICTED_OPTION_LINE_RE = re.compile(r"(?m)^[ \t]*(?:-\w,[ \t]*)?--restricted(?![\w-])")
+# An option line of the help: a short indent (2 on CLI 2.1.294), an optional short alias,
+# then the flag. The indent is BOUNDED because the help wraps descriptions at column 40 and a
+# wrapped line can itself begin with an option name (17 lines do on 2.1.294), so an unbounded
+# indent let a description that merely mentions `--restricted` answer for the option.
+_CLAUDE_RESTRICTED_OPTION_LINE_RE = re.compile(
+    r"(?m)^[ \t]{0,8}(?:-\w,[ \t]*)?--restricted(?![\w-])")
+
+
+def _claude_global_config_paths() -> tuple[Path, ...]:
+    """The files the claude CLI may read as its GLOBAL config, both under the leaf's `HOME`.
+
+    `~/.claude.json`, and the legacy `~/.claude/.config.json`: measured on CLI 2.1.294, when
+    the legacy file exists the CLI reads IT and ignores `~/.claude.json` (whose `env` then
+    has no effect), and otherwise reads `~/.claude.json` (issue #453). Both are named from
+    `backend_credential_home_paths`, the resolver that names the sandbox's rw binds (the
+    file itself, and the `~/.claude` directory that holds the legacy one), so the check reads
+    the files the leaf can see. Which one wins is the CLI's internal rule; the check does
+    not copy it and reads both."""
+    dirs, files = _backend_credential_home_paths("claude")
+    return (*files, *(d / ".config.json" for d in dirs))
 
 
 def _claude_global_config_env_check(backend_token: str) -> dict[str, Any]:
-    """Refuse a claude leaf whose global state file carries an `env` block (issue #453).
+    """Refuse a claude leaf whose global config carries an `env` block (issue #453).
 
     `--restricted` ignores the user, project and local SETTINGS files; the CLI's global
-    state file `~/.claude.json` is not one of them, and its `env` block still reaches every
-    leaf — `ANTHROPIC_MODEL`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, … —
-    under `--restricted` and under `--setting-sources ""` alike (measured on CLI 2.1.294
-    against a loopback endpoint, issue #453). The file cannot be withheld: it is the
-    credential/state file the sandbox binds read-write (`backend_credential_home_paths`,
-    the same resolver that names the bind, so the check reads exactly what the leaf sees),
-    and the CLI writes it. So the channel is refused rather than closed: the check passes
-    when the file is absent, or parses to an object whose `env` is absent or empty.
+    config (`_claude_global_config_paths`) is not one of them, and its `env` block still
+    reaches every leaf — `ANTHROPIC_MODEL` (and an `ANTHROPIC_DEFAULT_OPUS_MODEL` remap of a
+    declared `opus`), `ANTHROPIC_BASE_URL`, effort, and `CLAUDE_CODE_MAX_OUTPUT_TOKENS`,
+    which OVERRIDES the ceiling the conductor sets in the leaf's own environment — under
+    `--restricted` and under `--setting-sources ""` alike (measured on CLI 2.1.294 against a
+    loopback endpoint, issue #453). The file cannot be withheld: it is the credential/state
+    file the sandbox binds read-write, and the CLI writes it. So the channel is refused
+    rather than closed: the check passes when each file is absent, or parses to an object
+    whose `env` is absent or empty, and fails if EITHER carries one.
 
     An unreadable or unparseable file FAILS: what the CLI makes of it is not something this
     check can name, and the operator can always fix it."""
     name = f"{backend_token}_global_config_env_absent"
-    _dirs, files = _backend_credential_home_paths("claude")
-    path = files[0] if files else None
-    if path is None or not path.exists():
-        return {"name": name, "pass": True, "detail": f"{path}: absent"}
-    try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+    seen: list[str] = []
+    for path in _claude_global_config_paths():
+        if not path.exists():
+            seen.append(f"{path}: absent")
+            continue
+        try:
+            doc = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            return {"name": name, "pass": False,
+                    "detail": f"{path}: unreadable or not JSON ({exc}); fix the file"}
+        if not isinstance(doc, dict):
+            return {"name": name, "pass": False,
+                    "detail": f"{path}: not a JSON object; fix the file"}
+        env = doc.get("env")
+        if env in (None, {}):
+            seen.append(f"{path}: no `env` block")
+            continue
+        keys = sorted(env) if isinstance(env, dict) else [type(env).__name__]
         return {"name": name, "pass": False,
-                "detail": f"{path}: unreadable or not JSON ({exc}); fix the file"}
-    env = doc.get("env") if isinstance(doc, dict) else None
-    if not isinstance(doc, dict):
-        return {"name": name, "pass": False,
-                "detail": f"{path}: not a JSON object; fix the file"}
-    if env in (None, {}):
-        return {"name": name, "pass": True, "detail": f"{path}: no `env` block"}
-    keys = sorted(env) if isinstance(env, dict) else [type(env).__name__]
-    return {"name": name, "pass": False,
-            "detail": (f"{path}: carries an `env` block ({', '.join(keys)}), which reaches "
-                       "every claude leaf despite `--restricted` (issue #453); remove the "
-                       "`env` key from that file")}
+                "detail": (f"{path}: carries an `env` block ({', '.join(keys)}), which "
+                           "reaches every claude leaf despite `--restricted` (issue #453); "
+                           "remove the `env` key from that file")}
+    return {"name": name, "pass": True, "detail": "; ".join(seen)}
 
 
 _BACKEND_PROBERS: dict[
@@ -13762,7 +13786,8 @@ def probe_execution_platform(
     # Every probe check gates, on both backends — a check added to a prober later fails
     # closed by default rather than silently becoming non-gating.
     # What a claude leaf needs of its host is only that the CLI is there, answers
-    # `--version` and `--help`, and takes its prompt on stdin: a pure leaf loads no
+    # `--version` and `--help` (naming `--restricted`), takes its prompt on stdin, and finds
+    # no `env` block in its global config (issue #453): a pure leaf loads no
     # customization (`--safe-mode`), is launched with no MCP configuration and no tools, and
     # runs no hook. The three probes that stood here — the committed leaf configuration, the MCP
     # registry, and the live tool-roster measurement of issue #71 — each measured a surface

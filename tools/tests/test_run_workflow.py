@@ -397,6 +397,31 @@ class RunWorkflowTests(unittest.TestCase):
         self.assertIn("status='fail'", detail)
         self.assertIn("can_launch_step_agents=False", detail)
 
+    def test_preflight_fail_names_each_failing_check_and_its_detail(self) -> None:
+        """Issue #453: the operator is told WHICH check failed and why, not only that
+        preflight did — `claude_global_config_env_absent` fails on the contents of their own
+        file, and its first detail line carries the path and the remedy. A passing check and
+        a skipped one (`pass: None`) are not reported."""
+        ok, detail = run_workflow._ensure_preflight_pass({
+            "status": "fail", "can_launch_step_agents": False,
+            "can_launch_substep_agents": False,
+            "checks": [
+                {"name": "claude_version_available", "pass": True, "detail": "2.1.294"},
+                {"name": "claude_global_config_env_absent", "pass": False,
+                 "detail": "/h/.claude.json: carries an `env` block (ANTHROPIC_MODEL); "
+                           "remove the `env` key from that file"},
+                {"name": "claude_restricted_flag_available", "pass": False,
+                 "detail": "Usage: claude [options]\n  --other  x"},
+                {"name": "sandbox_bwrap_exec", "pass": None, "detail": "skipped"},
+            ]})
+        self.assertFalse(ok)
+        self.assertIn("claude_global_config_env_absent: /h/.claude.json: carries an `env` "
+                      "block (ANTHROPIC_MODEL); remove the `env` key from that file", detail)
+        self.assertIn("claude_restricted_flag_available: Usage: claude [options]", detail)
+        self.assertNotIn("--other", detail)          # first detail line only
+        self.assertNotIn("claude_version_available", detail)
+        self.assertNotIn("sandbox_bwrap_exec", detail)
+
     def test_prompt_contains_required_inputs(self) -> None:
         text = run_workflow._build_orchestration_prompt(
             orchestration_id="orch_test",

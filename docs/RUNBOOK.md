@@ -244,9 +244,11 @@ When any leaf runs on the `claude_cli` provider (the copied `llm_claude.example.
 `claude_prompt_stdin` (the prompt arrives on stdin, never as an argv element),
 `claude_restricted_flag_available` (the `--help` text names `--restricted` as an option, the
 flag that keeps the operator's settings files out of a leaf) and
-`claude_global_config_env_absent` (`~/.claude.json` carries no `env` block: that file is not a
-settings file, `--restricted` does not ignore it, and its `env` block would set a leaf's model,
-endpoint and output ceiling; remove the `env` key to pass) — plus the three `sandbox_bwrap_*`
+`claude_global_config_env_absent` (neither `~/.claude.json` nor the legacy
+`~/.claude/.config.json` carries an `env` block: the CLI reads one of them as its global config,
+which is not a settings file, `--restricted` does not ignore it, and its `env` block would set a
+leaf's model, endpoint and output ceiling; the failing check's detail names the file — remove its
+`env` key to pass) — plus the three `sandbox_bwrap_*`
 checks every backend needs ([issue #453](https://github.com/seiya/atmofab/issues/453) for the
 last two). Authentication is NOT probed: a CLI that is on `PATH`, answers `--version` and
 `--help`, names `--restricted`, and refuses an empty `-p` naming stdin passes preflight and fails

@@ -149,8 +149,9 @@ def pure_leaf_flags() -> list[str]:
                             block's `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` — is ignored
                             with the rest of the file, so a leaf authenticates through the
                             credential store or not at all ("Not logged in", measured). Nor
-                            does it touch the global state file `~/.claude.json`, whose `env`
-                            block still reaches the leaf; preflight refuses one
+                            does it touch the CLI's global config (`~/.claude.json`, or the
+                            legacy `~/.claude/.config.json`), whose `env` block still reaches
+                            the leaf; preflight refuses one
                             (`claude_global_config_env_absent`, issue #453). Its other
                             effects — removing the code-running built-in tools, confining
                             the file tools — are already moot under `--tools ""`.
@@ -190,9 +191,9 @@ def pure_leaf_flags() -> list[str]:
     `--setting-sources` and gets NO private `CLAUDE_CONFIG_DIR`. `--safe-mode` disables the
     customizations a private home existed to keep out (CLAUDE.md, skills, hooks, MCP
     servers, …) and `--restricted` the settings files, and preflight refuses an `env` block
-    in `~/.claude.json`, so what the leaf still reads from the operator's home is the CLI's
-    credential store, its global state and its own transcript — which is why `HOME` stays
-    on `LEAF_ENV_ALLOWLIST`. An unpinned leaf therefore runs the
+    in the CLI's global config, so what the leaf still reads from the operator's home is
+    the CLI's credential store, its global state and its own transcript — which is why
+    `HOME` stays on `LEAF_ENV_ALLOWLIST`. An unpinned leaf therefore runs the
     CLI's own default model, and a declared alias stays the CLI's alias
     (`orchestration_runtime.default_agent_model_for_backend`). Admin-managed settings
     still apply; they are the operator's machine and out of scope.

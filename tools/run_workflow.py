@@ -1179,6 +1179,15 @@ def _ensure_preflight_pass(preflight: dict[str, Any]) -> tuple[bool, str]:
         reasons.append(f"can_launch_step_agents={can_step!r}")
     if can_substep is not True:
         reasons.append(f"can_launch_substep_agents={can_substep!r}")
+    # The failing checks themselves, each with its own detail: the status fields alone say
+    # THAT preflight failed and leave the operator to open `preflight.json` for why — and a
+    # check such as `claude_global_config_env_absent` (issue #453) fails on the contents of
+    # the operator's own file, which only its detail names, together with the remedy.
+    checks = preflight.get("checks")
+    for check in checks if isinstance(checks, list) else []:
+        if isinstance(check, dict) and check.get("pass") is False:
+            detail = str(check.get("detail") or "").strip().splitlines()
+            reasons.append(f"{check.get('name')}: {detail[0] if detail else 'failed'}")
     if reasons:
         return False, ", ".join(reasons)
     return True, "pass"

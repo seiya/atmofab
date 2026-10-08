@@ -1096,6 +1096,11 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             # Named inside another option's description, not as an option of its own.
             ("description mention",
              "Usage: claude [options]\n  --safe-mode  like --restricted, but broader\n"),
+            # The real help wraps descriptions at column 40, and a wrapped line can BEGIN
+            # with an option name (17 lines do on 2.1.294).
+            ("wrapped description line",
+             "Usage: claude [options]\n  --safe-mode                           Like\n"
+             + " " * 40 + "--restricted, but broader\n"),
         ):
             with self.subTest(case=label):
                 checks, _ = _probe_claude_backend("claude", "claude", runner_for(help_text))
@@ -8472,13 +8477,41 @@ class ClaudeGlobalConfigEnvCheckTests(unittest.TestCase):
     `_backend_credential_home_paths` — the resolver that names the sandbox's rw bind — so
     each row moves `HOME` and lets the real resolver find the file."""
 
-    def _check(self, content: str | None) -> dict:
+    def _check(self, content: str | None, *, legacy: str | None = None) -> dict:
         from tools.orchestration_runtime import _claude_global_config_env_check
         with tempfile.TemporaryDirectory() as home:
             if content is not None:
                 (Path(home) / ".claude.json").write_text(content, encoding="utf-8")
+            if legacy is not None:
+                (Path(home) / ".claude").mkdir()
+                (Path(home) / ".claude" / ".config.json").write_text(legacy, encoding="utf-8")
             with patch.dict(os.environ, {"HOME": home}):
                 return _claude_global_config_env_check("claude")
+
+    def test_the_legacy_global_config_is_read_too(self) -> None:
+        """Measured on CLI 2.1.294: when `~/.claude/.config.json` exists the CLI reads it as
+        its global config instead of `~/.claude.json`, and its `env` reaches the leaf. The
+        check reads both, so an `env` in either fails — including the legacy file alone,
+        with `~/.claude.json` absent (the shape round 2 measured passing before)."""
+        env = '{"env": {"ANTHROPIC_MODEL": "x"}}'
+        self.assertFalse(self._check(None, legacy=env)["pass"])
+        self.assertFalse(self._check("{}", legacy=env)["pass"])
+        self.assertFalse(self._check(env, legacy="{}")["pass"])
+        self.assertTrue(self._check("{}", legacy="{}")["pass"])
+
+    def test_the_files_come_from_the_bind_resolver(self) -> None:
+        """The check reads the files `_backend_credential_home_paths` names — the resolver
+        that names the sandbox's binds — not a `HOME` it re-derives. Driven with `HOME`
+        pointing at a clean directory and the resolver at one whose file carries `env`."""
+        from tools import orchestration_runtime as ort
+        with tempfile.TemporaryDirectory() as clean, tempfile.TemporaryDirectory() as dirty:
+            (Path(dirty) / ".claude.json").write_text('{"env": {"ANTHROPIC_MODEL": "x"}}',
+                                                      encoding="utf-8")
+            with patch.dict(os.environ, {"HOME": clean}), \
+                    patch.object(ort, "_backend_credential_home_paths",
+                                 return_value=((Path(dirty) / ".claude",),
+                                               (Path(dirty) / ".claude.json",))):
+                self.assertFalse(ort._claude_global_config_env_check("claude")["pass"])
 
     def test_passes_without_an_env_block(self) -> None:
         for label, content in (("absent", None), ("no env", '{"theme": "dark"}'),
