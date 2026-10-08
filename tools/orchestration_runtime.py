@@ -7501,7 +7501,9 @@ def _runtime_ro_bind_paths() -> list[str]:
 # names, and a name absent here is absent from the child. What this closes is the PROCESS
 # environment only. A claude leaf's `HOME` is the operator's, and an `env` block in the
 # settings file under it set both names again (measured; issue #453) until the leaf
-# launched with `--restricted`, which ignores that file (`pure_leaf.pure_leaf_flags`).
+# launched with `--restricted`, which ignores that file (`pure_leaf.pure_leaf_flags`). An
+# `env` block in the CLI's GLOBAL config under it still sets them: that channel is not
+# closed but refused, by preflight (`claude_global_config_env_absent`).
 #
 # Division of labour, stated once. The conductor's `_child_env` is the single AUTHOR of
 # a leaf's environment (it calls `leaf_env_from` and adds the per-run values); the bwrap
@@ -13500,7 +13502,11 @@ def _probe_claude_backend(
             "name": f"{backend_token}_restricted_flag_available",
             "pass": (help_proc.returncode == 0
                      and _CLAUDE_RESTRICTED_OPTION_LINE_RE.search(help_stdout) is not None),
-            "detail": help_probe_detail,
+            # The verdict first, so the one line an operator is shown says what is missing.
+            "detail": ("`--help` names `--restricted` as an option"
+                       if _CLAUDE_RESTRICTED_OPTION_LINE_RE.search(help_stdout)
+                       else "`--help` names no `--restricted` option; this CLI cannot run a "
+                            "pure leaf (issue #453)") + "\n" + help_probe_detail,
         },
         _claude_global_config_env_check(backend_token),
     ]
@@ -13564,10 +13570,13 @@ def _claude_global_config_env_check(backend_token: str) -> dict[str, Any]:
             seen.append(f"{path}: no `env` block")
             continue
         keys = sorted(env) if isinstance(env, dict) else [type(env).__name__]
+        # The remedy on the first line: an operator is shown that line alone, cut at 240
+        # characters with the other reasons around it (`run_workflow._ensure_preflight_pass`).
         return {"name": name, "pass": False,
-                "detail": (f"{path}: carries an `env` block ({', '.join(keys)}), which "
-                           "reaches every claude leaf despite `--restricted` (issue #453); "
-                           "remove the `env` key from that file")}
+                "detail": (f"remove the `env` key ({', '.join(keys)}) from {path}\n"
+                           "the CLI's global config is not a settings file, so its `env` "
+                           "block reaches every claude leaf despite `--restricted` "
+                           "(issue #453)")}
     return {"name": name, "pass": True, "detail": "; ".join(seen)}
 
 

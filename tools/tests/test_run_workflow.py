@@ -400,7 +400,7 @@ class RunWorkflowTests(unittest.TestCase):
     def test_preflight_fail_names_each_failing_check_and_its_detail(self) -> None:
         """Issue #453: the operator is told WHICH check failed and why, not only that
         preflight did — `claude_global_config_env_absent` fails on the contents of their own
-        file, and its first detail line carries the path and the remedy. A passing check and
+        file, and its first detail line carries the remedy and the path. A passing check and
         a skipped one (`pass: None`) are not reported."""
         ok, detail = run_workflow._ensure_preflight_pass({
             "status": "fail", "can_launch_step_agents": False,
@@ -408,19 +408,52 @@ class RunWorkflowTests(unittest.TestCase):
             "checks": [
                 {"name": "claude_version_available", "pass": True, "detail": "2.1.294"},
                 {"name": "claude_global_config_env_absent", "pass": False,
-                 "detail": "/h/.claude.json: carries an `env` block (ANTHROPIC_MODEL); "
-                           "remove the `env` key from that file"},
+                 "detail": "remove the `env` key (ANTHROPIC_MODEL) from /h/.claude.json\n"
+                           "the CLI's global config is not a settings file"},
                 {"name": "claude_restricted_flag_available", "pass": False,
-                 "detail": "Usage: claude [options]\n  --other  x"},
+                 "detail": "`--help` names no `--restricted` option\nUsage: claude\n  --other"},
                 {"name": "sandbox_bwrap_exec", "pass": None, "detail": "skipped"},
             ]})
         self.assertFalse(ok)
-        self.assertIn("claude_global_config_env_absent: /h/.claude.json: carries an `env` "
-                      "block (ANTHROPIC_MODEL); remove the `env` key from that file", detail)
-        self.assertIn("claude_restricted_flag_available: Usage: claude [options]", detail)
-        self.assertNotIn("--other", detail)          # first detail line only
+        self.assertIn("claude_global_config_env_absent: remove the `env` key "
+                      "(ANTHROPIC_MODEL) from /h/.claude.json", detail)
+        self.assertIn("claude_restricted_flag_available: `--help` names no `--restricted` "
+                      "option", detail)
+        self.assertNotIn("Usage", detail)          # first detail line only
         self.assertNotIn("claude_version_available", detail)
         self.assertNotIn("sandbox_bwrap_exec", detail)
+        # The failing checks come BEFORE the status fields (the in-run line is cut at 240).
+        self.assertLess(detail.index("claude_global_config_env_absent"),
+                        detail.index("status='fail'"))
+
+    def test_the_operator_sees_the_env_remedy_inside_the_elided_fail_line(self) -> None:
+        """Issue #453, driven end to end on the rendering: the REAL check's output for a
+        realistically long home path, through `_ensure_preflight_pass`, rendered the way the
+        in-run `[FAIL]` line is (`_format_event_human`, elided). The remedy must survive the
+        240-character cut — which it did not while the status fields led and the remedy
+        closed a long first line."""
+        from tools.orchestration_runtime import _claude_global_config_env_check
+        with tempfile.TemporaryDirectory() as tmp:
+            home = Path(tmp) / ("h" * 60)
+            home.mkdir()
+            (home / ".claude.json").write_text(
+                json.dumps({"env": {"ANTHROPIC_MODEL": "x",
+                                    "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "4321"}}),
+                encoding="utf-8")
+            with mock.patch.dict(os.environ, {"HOME": str(home)}):
+                check = _claude_global_config_env_check("claude")
+        self.assertFalse(check["pass"])
+        ok, detail = run_workflow._ensure_preflight_pass({
+            "status": "fail", "can_launch_step_agents": False,
+            "can_launch_substep_agents": False, "checks": [check]})
+        self.assertFalse(ok)
+        line = run_workflow._format_event_human(
+            {"status": "fail", "reason": "preflight_failed",
+             "orchestration_id": "orch_20261008T000000Z_00000000", "detail": detail})
+        self.assertGreater(len(detail), 240)           # the probe straddles the cut
+        self.assertTrue(line.endswith("..."), line)
+        self.assertIn("remove the `env` key (ANTHROPIC_MODEL, CLAUDE_CODE_MAX_OUTPUT_TOKENS) "
+                      "from ", line)
 
     def test_prompt_contains_required_inputs(self) -> None:
         text = run_workflow._build_orchestration_prompt(

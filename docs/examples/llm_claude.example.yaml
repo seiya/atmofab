@@ -23,7 +23,8 @@
 #            that ran is recovered afterwards from the leaf's own CLI result envelope and
 #            recorded on its `agent_runs` row. Because this file DECLARES it, it is passed as
 #            `claude --model opus`. Delete the `model:` lines and no `--model` is passed,
-#            which hands the choice to the CLI's own default. Every leaf is a PURE leaf since
+#            which hands the choice to the CLI's own default (admin-managed settings
+#            aside). Every leaf is a PURE leaf since
 #            Z4 (issue #171) and launches with `--restricted`, so the operator's own
 #            `~/.claude/settings.json` takes no part: neither its `model` key nor an `env`
 #            block remap of an alias such as `opus` reaches the leaf (issue #453).

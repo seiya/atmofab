@@ -1089,6 +1089,12 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             checks, _ = _probe_claude_backend("claude", "claude", runner_for(help_text))
             self.assertTrue({c["name"]: c for c in checks}
                             ["claude_restricted_flag_available"]["pass"], help_text)
+        # A failure's first detail line says what is missing (the operator sees that line).
+        checks, _ = _probe_claude_backend("claude", "claude",
+                                          runner_for("Usage: claude [options]\n"))
+        self.assertIn("names no `--restricted` option",
+                      {c["name"]: c for c in checks}
+                      ["claude_restricted_flag_available"]["detail"].splitlines()[0])
         for label, help_text in (
             ("absent", "Usage: claude [options] [command] [prompt]\n"),
             ("longer option", "Usage: claude [options]\n  --restricted-mode  x\n"),
@@ -8524,8 +8530,9 @@ class ClaudeGlobalConfigEnvCheckTests(unittest.TestCase):
     def test_an_env_block_fails_and_names_its_keys(self) -> None:
         check = self._check('{"env": {"ANTHROPIC_MODEL": "x", "ANTHROPIC_BASE_URL": "y"}}')
         self.assertFalse(check["pass"])
-        self.assertIn("ANTHROPIC_BASE_URL, ANTHROPIC_MODEL", check["detail"])
-        self.assertIn("remove the `env` key", check["detail"])
+        # The remedy, with the keys, is the FIRST line: that line alone reaches the operator.
+        first = check["detail"].splitlines()[0]
+        self.assertIn("remove the `env` key (ANTHROPIC_BASE_URL, ANTHROPIC_MODEL) from", first)
 
     def test_a_file_this_check_cannot_read_fails(self) -> None:
         for label, content in (("not json", "{"), ("not an object", "[1]"),

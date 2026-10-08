@@ -252,7 +252,7 @@ leaf's model, endpoint and output ceiling; the failing check's detail names the 
 checks every backend needs ([issue #453](https://github.com/seiya/atmofab/issues/453) for the
 last two). Authentication is NOT probed: a CLI that is on `PATH`, answers `--version` and
 `--help`, names `--restricted`, and refuses an empty `-p` naming stdin passes preflight and fails
-at the first billed launch instead. That includes a machine that authenticates through the
+at the first launch instead. That includes a machine that authenticates through the
 settings file — `apiKeyHelper`, or `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` in its `env`
 block: `--restricted` ignores the file, so every leaf there answers "Not logged in" (measured,
 issue #453). A claude leaf authenticates through the CLI's own credential store (`/login` in an
