@@ -7497,7 +7497,9 @@ def _runtime_ro_bind_paths() -> list[str]:
 # which is the repo's default launch, since `--model` is passed only for a model the
 # configuration FILE declares. Neither appears in any artifact. So the rule is the same
 # one the configuration surface already follows: what the leaf gets is what this file
-# names, and a name absent here is absent from the child.
+# names, and a name absent here is absent from the child. What this closes is the PROCESS
+# environment only: a claude leaf's `HOME` is the operator's, and an `env` block in the
+# settings file under it sets both names again (measured, issue #446; issue #453).
 #
 # Division of labour, stated once. The conductor's `_child_env` is the single AUTHOR of
 # a leaf's environment (it calls `leaf_env_from` and adds the per-run values); the bwrap
@@ -7516,9 +7518,10 @@ LEAF_ENV_ALLOWLIST: dict[str, str] = {
     ),
     "HOME": (
         "the CLI's own fallbacks, and for a claude leaf its settings: `--safe-mode` "
-        "disables customizations but not settings keys, so the operator's `~/.claude` "
-        "settings `model` decides an unpinned leaf (issue #446). A codex leaf's home "
-        "arrives as CODEX_HOME."
+        "disables customizations but not settings, so the operator's `~/.claude` "
+        "settings (their `env` block and `model` key) decide an unpinned leaf's model "
+        "(`default_agent_model_for_backend`; issue #446). A codex leaf's home arrives "
+        "as CODEX_HOME."
     ),
     "LANG": (
         "text-I/O encoding for the leaf and its subprocesses. Passed together with "
@@ -10856,16 +10859,19 @@ def default_agent_model_for_backend(backend: str) -> str:
     It is a PREDICTED label, not a measurement — the conductor passes no `--model` for an
     undeclared model, so what actually ran is decided by the CLI. The measured value
     replaces it after the fact from the leaf's own result envelope (`_agent_run_json`),
-    which is the only reading the row can rely on. `ANTHROPIC_MODEL` no longer takes part:
-    the leaf's environment is reconstructed from `LEAF_ENV_ALLOWLIST`, which that name is
-    outside.
+    which is the only reading the row can rely on.
 
-    HOW THE CLI RESOLVES AN UNPINNED CLAUDE LEAF (measured on CLI 2.1.294, issue #446,
-    with the exact `pure_leaf_flags()` set against a loopback endpoint that stored the
-    request): a `model` key in the settings under the leaf's `HOME` — the operator's,
-    since `HOME` is on `LEAF_ENV_ALLOWLIST` — reached the request; `--model` overrode it;
-    with no settings file the CLI's own default ran. `--safe-mode` disables customizations,
-    not settings keys.
+    HOW THE CLI RESOLVES AN UNPINNED CLAUDE LEAF — the one statement of it; other sites
+    point here (measured on CLI 2.1.294, issue #446, with the exact `pure_leaf_flags()`
+    set against a loopback endpoint that stored the request). `--safe-mode` disables
+    customizations, not settings, and the leaf's `HOME` is the operator's (`HOME` is on
+    `LEAF_ENV_ALLOWLIST`), so the settings under the operator's `~/.claude` take part.
+    In order: `--model` (passed only for a model the configuration file declares); else
+    an `ANTHROPIC_MODEL` in that settings file's `env` block; else its `model` key; else
+    the CLI's own default. `ANTHROPIC_MODEL` in the operator's PROCESS environment takes
+    no part — the allowlist excludes it — but the settings `env` block is a second
+    environment channel the allowlist does not close (it carries `ANTHROPIC_BASE_URL`
+    as well; issue #453).
 
     It still deliberately does NOT read the operator's `~/.claude`
     (`resolve_claude_model_alias`, which serves the orchestration row instead): the stamp

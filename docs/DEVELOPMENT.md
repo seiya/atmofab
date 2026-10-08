@@ -17,7 +17,7 @@ Out of scope, each with its owner named rather than restated here:
 - Running a trial, and recovering from a failure — `docs/RUNBOOK.md`.
 
 ## Fresh-machine setup
-A fresh clone needs the host tools and the operator's own CLI state. Every file that decides what a leaf loads FROM THIS REPOSITORY is committed; what is left in a home directory is the backend CLI's own state, and it is not nothing. One member of it reaches past holding credentials. The leaf-`LLM` configuration is untracked by design, and it is authoritative for a leaf's model **when it declares one**; when it does not, the CLI resolves it — for a claude leaf, a `model` key in the operator's own `~/.claude` settings decides, because `--safe-mode` disables customizations but not settings keys, and the CLI's own default decides only where there is none (measured, [issue #446](https://github.com/seiya/atmofab/issues/446)).
+A fresh clone needs the host tools and the operator's own CLI state. Every file that decides what a leaf loads FROM THIS REPOSITORY is committed; what is left in a home directory is the backend CLI's own state, and it is not nothing. One member of it reaches past holding credentials. The leaf-`LLM` configuration is untracked by design, and it is authoritative for a leaf's model **when it declares one**; when it does not, the CLI resolves it — for a claude leaf, the operator's own `~/.claude` settings decide (their `env` block, then their `model` key), because `--safe-mode` disables customizations but not settings, and the CLI's own default decides only where they name no model (measured, [issue #446](https://github.com/seiya/atmofab/issues/446)).
 
 | step | requirement | canonical source |
 |---|---|---|

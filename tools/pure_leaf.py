@@ -166,13 +166,12 @@ def pure_leaf_flags() -> list[str]:
     WHAT THIS SET DOES NOT DO, and it is deliberate: a pure leaf takes NO
     `--setting-sources` and gets NO private `CLAUDE_CONFIG_DIR`. `--safe-mode` already
     disables the customizations a private home existed to keep out (CLAUDE.md, skills,
-    hooks, MCP servers, …), but it does NOT disable settings keys: the leaf's `HOME` is the
-    operator's, so a `model` key in the operator's `~/.claude` settings decides an UNPINNED
-    leaf's model (measured on CLI 2.1.294 against a loopback endpoint, issue #446: the
-    request carried the settings model; `--model` overrode it; with no settings file the
-    CLI's own default ran). That is recorded in
-    `orchestration_runtime.default_agent_model_for_backend`, and it is the reason the model
-    stamp is treated as a prediction the result envelope corrects.
+    hooks, MCP servers, …), but it does NOT disable settings: the leaf's `HOME` is the
+    operator's, so the operator's `~/.claude` settings decide an UNPINNED leaf's model
+    (measured on CLI 2.1.294 against a loopback endpoint, issue #446).
+    `orchestration_runtime.default_agent_model_for_backend` is the one statement of the
+    order, and this is the reason the model stamp is treated as a prediction the result
+    envelope corrects.
 
     `--session-id`, the warm-repair `--resume <arid> --fork-session`, and the trailing `-p`
     are added by `Conductor.leaf_command` around this set. `-p` takes no prompt argument:

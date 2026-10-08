@@ -1941,10 +1941,10 @@ def build_launch_request(
 #
 # The conductor does NOT pin the leaf model (`leaf_command` passes no `--model` unless the
 # configuration file declared one). The unpinned case then resolves as the CLI resolves it:
-# `--safe-mode` disables customizations, not settings keys, and the leaf's `HOME` is the
-# operator's (`LEAF_ENV_ALLOWLIST`), so a `model` key in the operator's `~/.claude` settings
-# decides it, and the CLI's own default decides only where there is none (measured on CLI
-# 2.1.294, issue #446). 128,000 is the ceiling of the Opus 4.8 /
+# `--safe-mode` disables customizations, not settings, and the leaf's `HOME` is the
+# operator's (`LEAF_ENV_ALLOWLIST`), so the operator's `~/.claude` settings decide it where
+# they name a model, and the CLI's own default only where they do not (measured on CLI
+# 2.1.294, issue #446; `orchestration_runtime.default_agent_model_for_backend` is the one statement of the order). 128,000 is the ceiling of the Opus 4.8 /
 # Sonnet 5 tier; a model whose output limit is lower (Haiku 4.5 caps at 64,000) rejects this
 # value, and rejects it on EVERY launch: `API Error: 400 {"type":"invalid_request_error",
 # "message":"max_tokens: 128000 > 64000 ..."}`. That failure is deliberately classified
@@ -3715,8 +3715,9 @@ class Conductor:
     def _resolve_claude_model_aliases(self) -> None:
         """Fill in the spec-side alias for every model-less `claude_cli` entry, ONCE.
 
-        A `claude_cli` entry that names no `model:` is taking the CLI's own default: the
-        conductor passes no `--model` for it (`leaf_command` keys on `model_declared`, which
+        A `claude_cli` entry that names no `model:` is resolved by the CLI (from the
+        operator's `~/.claude` settings, else its own default —
+        `default_agent_model_for_backend`): the conductor passes no `--model` for it (`leaf_command` keys on `model_declared`, which
         this fill does not set). What is filled in is therefore the LABEL such a launch is
         recorded under, not a choice being made — a prediction the leaf's result envelope
         corrects after the fact (`default_agent_model_for_backend`). Done once at
@@ -4049,9 +4050,9 @@ class Conductor:
             # launching the CLI's own default would be provenance that describes a run that did
             # not happen. A model the file did not declare is deliberately NOT pinned — that is
             # the repo's long-standing rule (see LEAF_MAX_OUTPUT_TOKENS) and it is what keeps
-            # every pre-issue-#28 launch byte-identical. The unpinned case is decided by a
-            # `model` key in the operator's `~/.claude` settings where there is one, and by the
-            # CLI's own default otherwise (see LEAF_MAX_OUTPUT_TOKENS).
+            # every pre-issue-#28 launch byte-identical. The unpinned case is decided by the
+            # operator's `~/.claude` settings where they name a model, and by the CLI's own
+            # default otherwise (`default_agent_model_for_backend` states the order).
             if entry.model_declared and entry.model.strip():
                 flags += ["--model", entry.model.strip()]
             # Reasoning effort has no "unpinned alias" story the way the model does — there is
