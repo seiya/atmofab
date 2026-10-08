@@ -16597,6 +16597,17 @@ class SlimRepairLaunchPromptMarkerTest(unittest.TestCase):
                 self.assertTrue(
                     any(name in str(v) and "orchestration_meta.json" in str(v)
                         for v in violations), violations)
+        # An EMPTY `orchestrations/` is not a pass: the sweep must still say there is no run
+        # (the half of the deleted `_global` sink row that held this, issue #445).
+        with tempfile.TemporaryDirectory() as tmp:
+            workspace = Path(tmp) / "workspace"
+            (workspace / "orchestrations").mkdir(parents=True)
+            violations = []
+            _validate_orchestration_hierarchy(
+                workspace_path=workspace, executions=[], violations=violations,
+                current_orchestration_id=None)
+            self.assertTrue(
+                any("no orchestration run found" in str(v) for v in violations), violations)
 
     def test_slim_marker_list_is_satisfied_by_the_frozen_record(self) -> None:
         # Drift guard on the marker LIST (not just the sentinel constants). It compared the

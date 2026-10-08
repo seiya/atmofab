@@ -23140,6 +23140,11 @@ class HostPycacheRedirectRootTest(unittest.TestCase):
         # standalone validator) so a rename of the root that misses that file fails the suite.
         from tools.validate_workspace_root import ALLOWED_WORKSPACE_TOP_LEVEL_DIRS
         prefix = self._redirect_prefix()
+        # The VALUE, not only its agreement with the allowlist: `docs/RUNBOOK.md` tells the
+        # operator to `rm -rf workspace/.pycache` before a same-size-edit re-certification, so a
+        # root moved to another allowlisted dir (`workspace/tmp`) would make that step clear the
+        # wrong tree while every agreement check here stayed green.
+        self.assertEqual(prefix, "workspace/.pycache")
         leaf_segment = prefix.split("/")[-1]
         self.assertIn(leaf_segment, ALLOWED_WORKSPACE_TOP_LEVEL_DIRS)
         # The prefix is exactly workspace/<leaf> (one segment under workspace/), matching how
