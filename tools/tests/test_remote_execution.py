@@ -928,12 +928,9 @@ class RequestValidationTests(unittest.TestCase):
                 self._invalid("record_argv must be a non-empty argv tuple", self.h.request(
                     dataclasses.replace(run, record_argv=bad)))
 
-    def test_an_env_the_server_refuses_is_refused_here(self) -> None:
-        for env, pattern in (({"LD_PRELOAD": "/x.so"}, "redirect execution"),
-                             ({"KNOB": "a;b"}, "reach the make recipe"),
-                             ({"A-B": "1"}, "not a variable name")):
-            with self.subTest(env=env):
-                self._invalid(pattern, self.h.request(self.h.command("run", ("true",), env=env)))
+    def test_an_env_name_that_is_not_a_variable_name_is_refused(self) -> None:
+        self._invalid("not a variable name",
+                      self.h.request(self.h.command("run", ("true",), env={"A-B": "1"})))
 
     def test_a_site_this_executor_does_not_run(self) -> None:
         batch = es.Site(site_id="c", executes=("cpu",), host="c", workdir=str(self.h.workdir),

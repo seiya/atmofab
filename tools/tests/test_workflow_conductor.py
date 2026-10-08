@@ -5263,7 +5263,10 @@ class TransportFailureTest(unittest.TestCase):
         # Runtime defense-in-depth: read_case_ids builds the runner argv (--cases ...), from
         # which the snapshot path raw/state_snapshots/<case_id>.json is formed. A `/` or `..`
         # must never reach the argv — even from a hand-crafted IR that bypassed the Compile gate
-        # — or the honest runner writes outside its directory. Safe ids survive; unsafe are dropped.
+        # — or the honest runner writes outside its directory. The same list is the quality
+        # check's `CASES`, which the build control file interpolates unquoted into a recipe line,
+        # and since issue #457 nothing downstream refuses a shell-active character in it; so an
+        # id carrying one is dropped here too. Safe ids survive; unsafe are dropped.
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
@@ -5274,6 +5277,8 @@ class TransportFailureTest(unittest.TestCase):
             (ir_dir / "spec.ir.yaml").write_text(json.dumps({"case": {"test_case_set": [
                 {"case_id": "c_ok"}, {"case_id": "l0.v1-2"},
                 {"case_id": "../../evil"}, {"case_id": "a/b"}, {"case_id": ".."},
+                {"case_id": "a;id"}, {"case_id": "$(id)"}, {"case_id": "a|b"},
+                {"case_id": "`id`"},
             ]}}), encoding="utf-8")
             self.assertEqual(c.read_case_ids(refs), ("c_ok", "l0.v1-2"))
 
@@ -16770,14 +16775,13 @@ class DeterministicBuildTest(unittest.TestCase):
                              [f"{refs.source_dir()}/src/p_model.cu",
                               f"{refs.source_dir()}/src/p_model.cuh"])
 
-    def test_build_inproc_payload_survives_the_real_build_runtime_validators(self) -> None:
-        """The conductor's own compile payload must pass the server's orchestrated
-        argument rules — the make-variable allowlist, the absolute-path-inside-the-repo
-        value rule, and the project_dir / command_log_path containment.
+    def test_build_inproc_payload_reaches_the_real_build_runtime_entry_point(self) -> None:
+        """The conductor's own compile payload crosses the real `tool_compile_project` —
+        its type rules and the argv it composes.
 
         The other Build tests replace `tool_compile_project` wholesale, so none of them
-        crosses the validation the workflow depends on; this one replaces `_run_command`
-        instead, leaving every check in the path."""
+        crosses the entry point; this one replaces `_run_command` instead, leaving every
+        check in the path."""
         import tempfile
         from unittest import mock
         build_runtime = _build_runtime()
@@ -17135,12 +17139,11 @@ class DeterministicBuildTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     c._gate_syntax_check(refs, "child-1")
 
-    def test_execute_inproc_payload_survives_the_real_build_runtime_validators(self) -> None:
-        """Validate.execute is where the six-key `env` allowlist is actually used, and
-        its values are derived from the IR (`CASES` from the case ids, `BIN` from the
-        spec id, `SPEC` from the IR path) rather than written out here. Replace
-        `_run_command` rather than the tool functions, so the real payload crosses the
-        real value rules."""
+    def test_execute_inproc_payload_reaches_the_real_build_runtime_entry_points(self) -> None:
+        """Validate.execute's six-key quality-check `env` is derived from the IR (`CASES`
+        from the case ids, `BIN` from the spec id, `SPEC` from the IR path) rather than
+        written out here. Replace `_run_command` rather than the tool functions, so the
+        real payload crosses the real entry points."""
         import tempfile
         from unittest import mock
         build_runtime = _build_runtime()
@@ -17249,9 +17252,9 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(len(env_calls), 1)
             self.assertEqual(authored, ["make_check"])
 
-    def test_execute_inproc_traced_payload_survives_the_real_build_runtime_validators(self) -> None:
+    def test_execute_inproc_traced_payload_reaches_the_real_build_runtime_entry_point(self) -> None:
         """The traced run (issue #307): the prefixed binary command and the summary command
-        cross the real `run_program` validation and reach the subprocess layer, in order, before
+        cross the real `run_program` entry point and reach the subprocess layer, in order, before
         the quality check."""
         import tempfile
         from unittest import mock

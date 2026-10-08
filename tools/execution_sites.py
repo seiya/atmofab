@@ -18,8 +18,7 @@ class in its `executes`. The local site's default is `LOCAL_DEFAULT_EXECUTES`.
 The loader follows `tools/llm_config.py`: a closed document shape, a repeated key refused, and
 every refusal NAMED (`SitesConfigError.rule`, one of `SITES_CONFIG_RULES`), because this is a
 file an operator writes by hand. Values that reach a remote shell — `host`, `workdir` — are
-refused at load when they carry a character the build-runtime library refuses in a value for the
-same reason (`_SHELL_ACTIVE_CHARS`), read from the library rather than copied. A
+refused at load when they carry a character a shell acts on (`_SHELL_ACTIVE_CHARS`). A
 `scheduler_directives` word reaches the remote shell only as one `shlex.quote`d argv word of the
 prefix the scheduler's backend spells (`remote_execution._run_job`), so it is refused only for a
 character that is not printable ASCII: a real directive's `|`, `[` or `'` is the scheduler's
@@ -137,17 +136,10 @@ _NoDuplicateKeyLoader.add_constructor(
     lambda loader, node: _no_duplicate_keys(loader, node))
 
 
-def _shell_active_chars() -> frozenset[str]:
-    """The build-runtime library's set of characters a shell acts on, read from the library so
-    the two refusals cannot drift.
-
-    Imported here rather than at module level: `tools/run_workflow.py` imports this module at
-    startup, before it redirects `sys.pycache_prefix`, and the library composes its backend
-    tables at import — a module-level import made every startup pay for them and compiled their
-    bytecode into the source tree (found in review of issue #444)."""
-    from tools import build_runtime
-
-    return frozenset(build_runtime._SHELL_ACTIVE_CHARS)
+#: The characters a shell acts on, refused in a `host` or `workdir` value: both reach the site's
+#: shell inside an ssh command line. Over-refuses deliberately (`~ [ ] * ? { }` are literal in
+#: some positions); a refusal names the character, and an operator renames a directory once.
+_SHELL_ACTIVE_CHARS = frozenset("\t\n\r;&|$`'\"\\<>()*?[]{}~#!")
 
 
 @dataclass(frozen=True)
@@ -193,12 +185,12 @@ def _string(value: Any, where: str) -> str:
 
 
 def _remote_safe(value: str, where: str, *, spaces: bool, quoted: bool = False) -> str:
-    """Refuse a value a remote shell would act on or misread: a character in the library's
-    shell-active set unless the value reaches the shell `quoted` (a directive word), anything
+    """Refuse a value a remote shell would act on or misread: a character in
+    `_SHELL_ACTIVE_CHARS` unless the value reaches the shell `quoted` (a directive word), anything
     that is not printable ASCII (a NUL ends an argv element, a non-breaking space reads as a
     space to a person and not to a shell), and a plain space where `spaces` is False (it is
     admissible inside a directive, never in a host or a path)."""
-    bad = [] if quoted else sorted(set(value) & _shell_active_chars())
+    bad = [] if quoted else sorted(set(value) & _SHELL_ACTIVE_CHARS)
     bad += sorted({c for c in value if not (c.isascii() and c.isprintable())})
     if not spaces and " " in value:
         bad.append(" ")

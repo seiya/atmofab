@@ -901,7 +901,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "4ba48dd98634f7851c4ff052945dd4feaf45c7490427c3ac54be785978ba5c9a",
+    "build-2": "48f39285564b16bbcf9e0ba7683330152d45c9b870feb05c597bbbf8c48f0bc7",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build
@@ -959,6 +959,14 @@ PINNED_BUILD: dict[str, str] = {
     # (Measured by diffing the tuple against origin/main ef28faa1's.) The digest `build-2` shipped
     # with at ef28faa1:
     "build-2@ef28faa1": "89efa6b9e029686253fceeaffc94306f1405906972029812e0439e12121d0f37",
+    # Re-pinned (issue #457), behaviour-preserving: the library's argv/env content validation
+    # is deleted — `tool_compile_project` keeps only the type checks, `_build_inproc` stops
+    # calling the deleted validator on the remote path, and `remote_execution` stops calling it
+    # on each command's `env`. Removed are the refusals and the stripping of whitespace around a
+    # `target`; no in-tree caller composed a value they refused, and none passes a `target`, so
+    # every build that ran before runs the same argv and writes the same record. (Measured by diffing `build_tuple()` against origin/main 93a9e683's: those three
+    # rows and no other.) The digest `build-2` shipped with at 93a9e683:
+    "build-2@93a9e683": "4ba48dd98634f7851c4ff052945dd4feaf45c7490427c3ac54be785978ba5c9a",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -1076,7 +1084,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # longer copies it. (Measured by diffing `execute_tuple()` against origin/main dd5bbcb8's:
     # the `Conductor._author_snapshot_schema` row and no other.) The digest `execute-8` shipped
     # with at dd5bbcb8 is kept below.
-    "execute-8": "069da8155c9b74c2c071d59de8d11ca6ff8edf8f628f61f5f04713b5313572e1",
+    "execute-8": "0e61c90960c5568a4fd5a2eefed86693c250ff0b47d289289f23722cb1a3d4d0",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -1165,6 +1173,14 @@ PINNED_EXECUTE: dict[str, str] = {
     # docstrings (`quality_check_command` among them). (Measured by diffing the
     # tuple against origin/main ef28faa1's.) The digest `execute-8` shipped with at ef28faa1:
     "execute-8@ef28faa1": "5fb6403d122596bed8e02ed4529a9dfd12b32edf18799da3c58db77e6fff621e",
+    # Re-pinned (issue #457), behaviour-preserving: `tool_run_program` and
+    # `tool_run_quality_checks` stop calling the deleted env validator (and the latter's
+    # PYTHONPATH comment is reworded), and `remote_execution` stops calling it on each command's
+    # `env`. Only refusals are removed; the launch env and the quality-check env the conductor
+    # composes were never refused, so every run records what it recorded before. (Measured by
+    # diffing `execute_tuple()` against origin/main 93a9e683's: those three rows and no other.)
+    # The digest `execute-8` shipped with at 93a9e683:
+    "execute-8@93a9e683": "069da8155c9b74c2c071d59de8d11ca6ff8edf8f628f61f5f04713b5313572e1",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

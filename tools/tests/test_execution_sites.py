@@ -211,7 +211,7 @@ class LoadTests(unittest.TestCase):
     def test_a_remote_site_carries_its_setup_lines_as_written(self) -> None:
         """A setup line is shell text, so every printable character loads — the shell-active
         set included — at a site of either kind; a site without the key has none."""
-        chars = "".join(sorted(c for c in es._shell_active_chars() if c.isprintable()))
+        chars = "".join(sorted(c for c in es._SHELL_ACTIVE_CHARS if c.isprintable()))
         lines = ["module load cuda/12.4", "export PATH=/opt/cuda/bin:$PATH  # nvcc",
                  f"true {chars}"]
         for scheduler in ("none", "zz_batch"):
@@ -272,7 +272,7 @@ class RefusalTests(unittest.TestCase):
             es.SitesConfigError("sites_config_no_such_rule", "x")
 
     def test_every_shell_active_character_is_refused_in_host_and_workdir(self) -> None:
-        for ch in sorted(es._shell_active_chars()) + [" "]:
+        for ch in sorted(es._SHELL_ACTIVE_CHARS) + [" "]:
             for field, value in (("host", f"b{ch}x"), ("workdir", f"/s/j{ch}x")):
                 with self.subTest(field=field, ch=ch):
                     body = _BASE.replace("host: box", f"host: {value!r}" if field == "host"
@@ -290,20 +290,18 @@ class RefusalTests(unittest.TestCase):
         with _with_batch_scheduler(), tempfile.TemporaryDirectory() as tmp:
             base = _BASE.replace("scheduler: none", "scheduler: zz_batch")
             # Every printable member (the set's control characters stay refused: not printable).
-            chars = "".join(sorted(c for c in es._shell_active_chars() if c.isprintable()))
+            chars = "".join(sorted(c for c in es._SHELL_ACTIVE_CHARS if c.isprintable()))
             directives = ["--constraint=a|b", "--nodelist=n[01-02]", f"--a{chars}", "-p gpu"]
             cfg = _Repo(tmp).load(base + f"    scheduler_directives: {json.dumps(directives)}\n")
         self.assertEqual(cfg.sites["box"].scheduler_directives, tuple(directives))
 
-    def test_the_shell_active_set_is_the_librarys_own(self) -> None:
-        """Read from the build-runtime library, not copied: a character the library starts
-        refusing is refused here too."""
-        chars = es._shell_active_chars()
-        from tools import build_runtime
-
-        self.assertEqual(chars, frozenset(build_runtime._SHELL_ACTIVE_CHARS))
-        with mock.patch.object(build_runtime, "_SHELL_ACTIVE_CHARS",
-                               set(build_runtime._SHELL_ACTIVE_CHARS) | {"%"}):
+    def test_the_shell_active_set_is_this_modules_own(self) -> None:
+        """This module's own set since issue #457 deleted the build-runtime library's argv/env
+        validation, which held it before: pinned by its members, and the refusal reads the
+        constant (a member added to it is refused at load)."""
+        self.assertEqual(es._SHELL_ACTIVE_CHARS,
+                         frozenset("\t\n\r;&|$`'\"\\<>()*?[]{}~#!"))
+        with mock.patch.object(es, "_SHELL_ACTIVE_CHARS", es._SHELL_ACTIVE_CHARS | {"%"}):
             exc = self._refuse(_BASE.replace("host: box", "host: 'b%x'"))
         self.assertEqual(exc.rule, "sites_config_shell_active_value")
 

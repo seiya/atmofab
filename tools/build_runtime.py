@@ -56,170 +56,6 @@ def _bounded_int(raw: Any, default: int, minimum: int, name: str) -> int:
     return value
 
 
-_UNSAFE_ENV_OVERRIDE_KEYS = frozenset({
-    "BASH_ENV", "ENV", "IFS", "PATH", "PYTHONPATH",
-    # gcc/gfortran is a driver: it finds and execs its own front end (`f951`), `as`
-    # and `ld` through these, none of which is PATH or LD_*.
-    "COMPILER_PATH", "GCC_EXEC_PREFIX", "LIBRARY_PATH",
-    # GNU make parses these as command-line switches / extra makefiles, so
-    # `--eval=$(shell ...)` runs before the certified Makefile is read.
-    "MAKEFLAGS", "GNUMAKEFLAGS", "MAKEFILES", "MAKESHELL",
-    # make's own spelling is the special variable `.SHELLFLAGS`, and it is taken from the
-    # ENVIRONMENT as well as from the command line. Measured on GNU Make 4.3:
-    #   env '.SHELLFLAGS=-c ./evil.sh' make all   ->  ./evil.sh runs, the recipe does not,
-    #                                                 and make exits 0
-    # The leading dot is normalised off before the lookup (`_normalized_override_name`), so
-    # both spellings are refused on both halves. This lived in the argv-only set until the
-    # measurement above; "matters only on a command line" was an assumption.
-    "SHELLFLAGS",
-    # ONE SET FOR BOTH HALVES, and the reason is the history. `SHELL` and `MAKE` sat in an
-    # argv-only set on the written premise that they "matter only on a command line", and
-    # that premise was wrong for `MAKE`: measured on GNU Make 4.3, against a Makefile whose
-    # recipe calls `$(MAKE)`,
-    #   env 'MAKE=./evil' make all   ->  ./evil runs, the inner recipe does not, rc 0
-    # `MAKE_COMMAND` is the same mechanism under make's other spelling. `SHELL` genuinely is
-    # argv-only — make sets it itself and ignores the environment's, verified — and it is
-    # here anyway, because the SET DIFFERENCE is the defect class: issue #171 PR-2's review
-    # found the same hole three times (`.SHELLFLAGS` in argv then in env, then `MAKE`), and
-    # round 6 unified the NORMALISER while leaving the sets apart, so the class reopened one
-    # level up. A name that is argv-only costs nothing in the env half; a name missing from
-    # one half is a hole by construction.
-    "SHELL", "MAKE", "MAKE_COMMAND",
-})
-_UNSAFE_ENV_OVERRIDE_PREFIXES = ("LD_", "DYLD_")
-
-# The SAME names, refused as a make command-line ASSIGNMENT. A command-line assignment
-# overrides even a hard assignment in the Makefile, so this surface carries MORE authority
-# than the environment, not less — and `SHELL=` is not the `FC` class it was first grouped
-# with: it replaces the interpreter of every recipe line, which is arbitrary execution rather
-# than a redirected compiler. `make SHELL=./evil all` runs `./evil` (measured, GNU Make 4.3).
-# THE SAME SET, deliberately not a superset. Every name make reads as a redirection of what
-# is executed is refused on both halves, whichever way it arrives — an environment key and a
-# command-line assignment are one vocabulary to make, so two sets is two answers to one
-# question. The alias is kept as a name because the two call sites read differently.
-_UNSAFE_ASSIGNMENT_NAMES = _UNSAFE_ENV_OVERRIDE_KEYS
-
-# The make recipe interpolates a make variable's value unquoted (`cd $(RUNDIR) &&
-# $(BINDIR)/$(BIN) --cases $(SPEC) $(CASES)`), so a value carrying a character that
-# line's shell or make acts on is a command rather than a value. A space is not one of
-# them: it splits words in the recipe, but `CASES` is a word LIST by contract and a
-# checkout path may legitimately hold one.
-#
-# THIS SET OVER-REFUSES, deliberately and with a named cost. `~ [ ] * ? { }` are in it and
-# only some of them break something: a leading `~` in `$(BINDIR)/$(BIN)` IS tilde-expanded
-# by the recipe's shell, and a glob character matching a real file silently redirects the
-# command — but `/a/b~c` is literal, `{}` is literal under `/bin/sh`, and a glob that
-# matches nothing is literal too. So a checkout under `/home/user-1/x[1]` is refused by
-# name, and the recipe would have run. The refusal is LOUD and names the character, the
-# operator learns immediately, and narrowing the set means one measurement per character on
-# a surface that cannot confine anyone (see the scope paragraph in
-# `_validate_build_argv_overrides`) — the longer list the five review rounds on this surface
-# argue against. Recorded rather than narrowed.
-_SHELL_ACTIVE_CHARS = set("\t\n\r;&|$`'\"\\<>()*?[]{}~#!")
-
-
-def _normalized_override_name(raw: Any) -> str:
-    """The name make reads, from the name a caller spelled.
-
-    ONE normaliser for both halves. `env` keys and `extra_args` assignment names are the
-    same vocabulary — make imports an environment name as a variable and reads a
-    command-line assignment as one — so a normalisation applied to one half and not the
-    other is a hole on the weaker half by construction. That is how `.SHELLFLAGS` stayed
-    reachable through `env` after it was refused in `extra_args`: the argv side stripped the
-    leading dot and the env side did not.
-
-    Surrounding space, a leading `.` (make's special-variable spelling) and the flavour
-    operators `:` `+` `!` `?` come off; the result is upper-cased, which over-refuses
-    (make variables are case-sensitive) rather than under-refuses.
-    """
-    return str(raw).strip().rstrip(":+!?").strip().lstrip(".").upper()
-
-
-def _validate_env_overrides(env: Any, tool_name: str) -> None:
-    """Refuse an environment override that redirects what the command executes.
-
-    Every tool here except `run_program` (whose `command` is caller-chosen argv by
-    design) constrains argv to a fixed preset or a build-tool invocation, and the
-    environment goes around that constraint: the loader takes `LD_PRELOAD`, the gcc
-    driver takes `COMPILER_PATH` to find the front end it execs, and make takes
-    `MAKEFLAGS` as command-line switches.
-
-    ONE mode since Z4 (issue #171). There were two: an ALLOWLIST of the make variables
-    the workflow declares, switched on by an `orchestration_id` argument or by the
-    workflow environment variables, and this denylist for everything else. The allowlist
-    existed because the caller might be a LEAF whose grant it had to bound; no leaf
-    reaches this library (a pure leaf holds no tool), so the only caller under a run is
-    the conductor in the host process, and the allowlist bounded nobody. What survives is the denylist, which
-    catches a mistake rather than confining a caller — and it now applies to the
-    conductor's calls too, which it did not before.
-
-    The VALUE rule is the same one `_validate_build_argv_overrides` applies, and it is
-    here for the same reason: make imports an environment name as a make variable, so a
-    value arriving this way is interpolated unquoted into the host-authored recipe
-    exactly as a command-line assignment would be. Refusing it in one half and accepting
-    it in the other guards nothing.
-
-    What the retired allowlist did and this does NOT: bound the names a MAKEFILE reads. `FC`
-    is not an execution-redirecting name, and make imports it as the variable a certified
-    build control file's compiler comes from. That is a real gap and it is recorded rather
-    than closed, because closing it means an allowlist, an allowlist bounds a caller's GRANT,
-    and there is no longer a caller whose grant needs bounding: no leaf reaches this
-    library, and the conductor passes a fixed six-key dict it composes itself. A denylist
-    over names does not terminate, which is why this one covers only the names that
-    redirect what is EXECUTED rather than what a build control file reads.
-
-    Call this on the raw `env` argument, before this module composes its own addition
-    (`PYTHONPATH` for the pytest preset) — that is this module's own decision and is not
-    caller-controlled. A parallel runtime's thread variables used to be a second such
-    addition on `run_program`; since issue #289 they are the caller's and arrive here, and
-    none of them is an execution-redirecting name.
-    """
-    if not env:
-        return
-    offending = sorted(
-        str(key)
-        for key in env
-        if (norm := _normalized_override_name(key)) in _UNSAFE_ENV_OVERRIDE_KEYS
-        or norm.startswith(_UNSAFE_ENV_OVERRIDE_PREFIXES)
-    )
-    if offending:
-        raise ValueError(
-            f"{tool_name} does not accept env overrides that redirect execution: "
-            + ", ".join(offending)
-        )
-    unsafe = sorted(
-        str(key) for key, value in env.items()
-        if set(str(value)) & _SHELL_ACTIVE_CHARS
-    )
-    if unsafe:
-        raise ValueError(
-            f"{tool_name} env values reach the make recipe's shell: refused "
-            + ", ".join(unsafe)
-        )
-
-
-# A build-tool command line takes a make VARIABLE ASSIGNMENT and nothing else. The name
-# is what decides: `--eval=$(shell ...)` and `--load-average=8` both carry an `=`, and
-# make reads them as switches that run before the certified Makefile is read at all.
-_MAKE_ASSIGNMENT_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-# `target` reaches the build tool's argv POSITIONALLY for every build system here
-# (`make -jN <target>`, `ninja -jN <target>`, `cmake --build . --target <target>`), so it
-# is the same surface `extra_args` is: anything that opens with `-` is a SWITCH the build
-# tool reads before the certified control file, and a metacharacter is a command rather
-# than a name. The orchestrated arm refused a target outright until Z4 (issue #171) because
-# the caller might be a leaf; no leaf reaches this library, but the rule that kept
-# `--eval=$(shell ...)` off the command line was doing a second job — catching a defect in
-# a caller this repository writes — and that job is not retired, so it applies to every
-# caller now.
-#
-# Stated as what is REFUSED rather than as an allowlist of name characters. A first attempt
-# spelled the allowlist and refused real goals across the build systems this module runs:
-# `:app:assembleDebug` (gradle), `build:prod` (an npm script), `lib.so:shared_library`
-# (meson), `%.o` (a make pattern goal). None of those is dangerous, and an allowlist over a
-# grammar this module does not own answers a question it cannot know.
-_TARGET_REFUSED_CHARS = _SHELL_ACTIVE_CHARS | set(" ")
-
-
 def _build_syntax_source_re(suffixes: tuple[str, ...]) -> re.Pattern[str]:
     """A source name: a file name carrying one of the language's source suffixes.
 
@@ -228,192 +64,6 @@ def _build_syntax_source_re(suffixes: tuple[str, ...]) -> re.Pattern[str]:
     `sources` list refuses."""
     alternation = "|".join(re.escape(s.lstrip(".")) for s in suffixes)
     return re.compile(rf"^[A-Za-z0-9_][A-Za-z0-9_.+-]*\.({alternation})$", re.IGNORECASE)
-
-
-#: The build systems whose command line takes a VARIABLE ASSIGNMENT and interpolates its
-#: value into a shell recipe. `make` is also the build system the WORKFLOW uses, so it is
-#: the one command line this repository composes rather than the operator: the shape rule
-#: is here to catch a defect in that composition.
-#:
-#: The ground is NOT "a switch is harmless elsewhere", which was the first version of this
-#: comment and is false for two of the eleven: `cmake` forwards `extra_args` to the native
-#: tool after `--`, and `ninja` reads `-f` as its build file and `-t` as a subtool. It is
-#: that outside the workflow the caller is the OPERATOR, who chose the argv and owns the
-#: machine — defending them against their own switches is out of scope
-#: (`AGENTS.md` §Development premises), and refusing them makes the library unusable for the
-#: build systems it supports (`DEPENDENCY_AWARE_BUILD_SYSTEMS`). The two rules that are NOT about argv shape —
-#: no execution-redirecting assignment, no character a shell acts on — apply to every
-#: build system and to `target` as well, because those catch a composition defect rather
-#: than bound a caller.
-_ASSIGNMENT_ARGV_BUILD_SYSTEMS = frozenset({"make"})
-
-
-def _is_shell_assignment(element: str) -> bool:
-    """``NAME!=<command>`` — make's SHELL ASSIGNMENT, which executes its value.
-
-    Not a spelling of a name: an OPERATOR, and the danger is the operator. `FOO!=touch
-    /tmp/x` runs `touch /tmp/x` while make reports the build as succeeding, whatever `FOO`
-    is called, so no name denylist can reach it. Measured on GNU Make 4.3:
-
-        make 'FOO!=touch /tmp/mk2/PWN' all   ->  "REAL"   and /tmp/mk2/PWN exists
-
-    A first version of this module's normalisation stripped `!` as if it were part of the
-    name, which turned an arbitrary-execution operator into a lookup that could never
-    match. Refused on EVERY build system: `cmake` forwards `extra_args` to the native tool
-    after `--`, so a make command line is reachable from more than `build_system=make`.
-    """
-    head = element.split("=", 1)[0] if "=" in element else ""
-    return head.rstrip().endswith("!")
-
-
-def _is_execution_redirecting_assignment(element: str) -> bool:
-    """``NAME=value`` whose NAME make reads as a redirection of what is EXECUTED.
-
-    The name is normalised the way MAKE reads it, not the way the string is spelled.
-    Measured against GNU Make 4.3 with a `SHELL` that prints instead of running the
-    recipe. ALL of these execute `./evil` as every recipe line's interpreter:
-
-        SHELL=./evil    SHELL:=./evil    SHELL::=./evil
-        SHELL+=./evil   SHELL!=./evil     SHELL=./evil   (leading space)
-
-    Only `SHELL?=` does not, because `SHELL` is already set. So every assignment operator
-    make accepts — `:` `+` `!` `?`, and `::` — and the surrounding space come off before
-    the lookup. The list is measured, not derived from the manual: `!=` is the shell-
-    assignment operator and was the one a first version of this normalisation missed.
-
-    Without that, this predicate misses `SHELL:=` and the only thing refusing it is the
-    make-ONLY assignment-shape rule — two rules each covering half of one hole, which is
-    the shape that has reopened three times on this branch. One rule, self-sufficient.
-    """
-    if "=" not in element:
-        return False
-    name = _normalized_override_name(element.split("=", 1)[0])
-    return (name in _UNSAFE_ASSIGNMENT_NAMES
-            or name.startswith(_UNSAFE_ENV_OVERRIDE_PREFIXES))
-
-
-def _refuse_execution_redirecting_assignments(
-    elements: list[str], tool_name: str, where: str
-) -> None:
-    """One rule, asked of EVERY caller-chosen argv element — whichever argument carries it.
-
-    `target` and `extra_args` land on the same command line, so make cannot tell them apart:
-    `make -jN SHELL=./evil` is an assignment whether the caller put that string in `target`
-    or in `extra_args`. Refusing it in one argument and accepting it in the other guards
-    nothing, which is the sentence this module has now had to learn twice — once for the
-    env/argv pair, and once for the target/extra_args pair, where widening the target rule
-    from a name allowlist to a metacharacter refusal dropped `=` out of both sets.
-    """
-    executing = sorted(e for e in elements if _is_shell_assignment(e))
-    if executing:
-        raise ValueError(
-            f"{tool_name} does not accept a shell assignment (NAME!=command) in {where}: "
-            "make EXECUTES its value; refused " + ", ".join(executing)
-        )
-    offending = sorted(e for e in elements if _is_execution_redirecting_assignment(e))
-    if offending:
-        raise ValueError(
-            f"{tool_name} does not accept {where} that redirect execution: "
-            + ", ".join(offending)
-        )
-
-
-def _validate_build_argv_overrides(
-    target: Any, extra_args: Any, tool_name: str, *, build_system: str = "make"
-) -> str | None:
-    """Constrain the caller-chosen part of the build argv; return the target to use.
-
-    Both halves of the caller-chosen argv are constrained, because both land on the same
-    command line. `extra_args` is appended to it, where a make assignment overrides even
-    a hard assignment in the Makefile: an element must ASSIGN a make variable — which is
-    what keeps `--eval=$(shell ...)` and every other switch out — its NAME must not be one
-    make reads as a redirection of what is executed, and its value must not carry a character
-    the recipe's shell acts on. `target` is placed positionally on the same line (`make -jN
-    <target>`), so a `target` that opens with `-` is that same switch by another argument, and
-    it must be a build GOAL name.
-
-    The NAME rule is the twin of `_validate_env_overrides`'s denylist and must not be weaker,
-    because an assignment on the command line overrides even a hard assignment in the Makefile
-    while an environment name does not. `SHELL=./evil` replaces the interpreter of every recipe
-    line; `MAKEFILES=` reads an attacker's makefile before the certified one; `MAKEFLAGS=-n`
-    makes the build execute nothing and still answer rc 0, which is a PASS over a binary that
-    was never built. The round-1 fix made only the VALUE rule symmetric and named `FC` —
-    the weakest member — as the residue, which understated what was open.
-
-    WHAT THESE RULES ARE, and it bounds how much they are worth. `run_program`'s `command`
-    is caller-chosen argv by design and is constrained by nothing, so a caller that wants to
-    execute an arbitrary program calls THAT tool. These rules therefore cannot confine the
-    caller they are checked against — they catch a MISTAKE in the one composition this
-    repository writes (`workflow_conductor._build_inproc`, a fixed three-element list of
-    host paths), and they are documented that way everywhere they are documented. A finding
-    here is judged as a defect in that composition, never as an escape: rounds 1-5 of issue
-    #171 PR-2's review spent five rounds on this surface and each round found another make
-    spelling, which is what the shape of the surface predicts — the answer is a rule stated
-    once and derived, not a longer list.
-
-    ONE mode since Z4 (issue #171), like `_validate_env_overrides` above and for the same
-    reason. The orchestrated arm held THREE further things: an allowlist of six variable
-    NAMES, a containment rule on the four whose value is a path, and an outright refusal
-    of any `target`. The first two bounded a leaf's grant and no leaf reaches this library,
-    so they are retired. The third is not retired but GENERALIZED: refusing every target
-    was a grant bound, while refusing a SWITCH spelled as a target catches the second
-    defended class — a defect in a caller this repository writes — and so applies to every
-    caller, including the standalone one, which had no check on either half before.
-
-    The validated `target` is returned so the string that was checked is the string that
-    runs.
-    """
-    if target is not None and not isinstance(target, str):
-        raise ValueError(f"{tool_name} target must be a string")
-    if not isinstance(extra_args, list) or not all(isinstance(a, str) for a in extra_args):
-        raise ValueError(f"{tool_name} extra_args must be an array of strings")
-    resolved_target = target.strip() if isinstance(target, str) and target.strip() else None
-    if resolved_target is not None:
-        if resolved_target.startswith("-"):
-            raise ValueError(
-                f"{tool_name} target must be a build goal, not a switch: refused "
-                f"{resolved_target}"
-            )
-        if set(resolved_target) & _TARGET_REFUSED_CHARS:
-            raise ValueError(
-                f"{tool_name} target must be a build goal, not a switch: refused "
-                f"{resolved_target} (it carries whitespace or a character the shell acts on)"
-            )
-        _refuse_execution_redirecting_assignments(
-            [resolved_target], tool_name, "a target")
-        if build_system in _ASSIGNMENT_ARGV_BUILD_SYSTEMS and "=" in resolved_target:
-            raise ValueError(
-                f"{tool_name} target must be a build goal, not a variable assignment: "
-                f"refused {resolved_target} (make reads a positional NAME=value as an "
-                "assignment, never as a goal; pass it in extra_args, where the assignment "
-                "rules apply)"
-            )
-    # The two rules that hold for EVERY build system run FIRST, so the refusal a caller
-    # reads names the strongest reason rather than whichever rule happened to be checked
-    # first: `FOO!=touch /tmp/x` is arbitrary execution, not a malformed make assignment,
-    # and reporting it as the latter is how round 4 came to believe it was handled.
-    _refuse_execution_redirecting_assignments(extra_args, tool_name, "extra_args")
-    if build_system in _ASSIGNMENT_ARGV_BUILD_SYSTEMS:
-        offending = [
-            arg for arg in extra_args
-            if "=" not in arg
-            or not _MAKE_ASSIGNMENT_NAME_RE.match(arg.split("=", 1)[0])
-        ]
-        if offending:
-            raise ValueError(
-                f"{tool_name} accepts only make variable assignments (NAME=value) in "
-                "extra_args; refused: " + ", ".join(offending)
-            )
-    unsafe = sorted(
-        arg for arg in extra_args
-        if set(arg.split("=", 1)[1] if "=" in arg else arg) & _SHELL_ACTIVE_CHARS
-    )
-    if unsafe:
-        raise ValueError(
-            f"{tool_name} extra_args carry a character a shell acts on: refused "
-            + ", ".join(unsafe)
-        )
-    return resolved_target
 
 
 class SyntaxSourceNameError(ValueError):
@@ -808,7 +458,10 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _validate_env_overrides(env, "compile_project")
+    if target is not None and not isinstance(target, str):
+        raise ValueError("compile_project target must be a string")
+    if not isinstance(extra_args, list) or not all(isinstance(a, str) for a in extra_args):
+        raise ValueError("compile_project extra_args must be an array of strings")
 
     build_system = args.get("build_system")
     if build_system:
@@ -820,11 +473,6 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(
             "build_system must be a standard dependency-aware build tool"
         )
-    # Resolved FIRST, because the argv rules differ by build system: only make reads an
-    # `extra_args` element as a variable assignment interpolated into a shell recipe.
-    target = _validate_build_argv_overrides(
-        target, extra_args, "compile_project", build_system=build_system)
-
     if _is_compiled_language(str(language or "")) and build_system not in {
         "make",
         "cmake",
@@ -919,7 +567,6 @@ def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
     command = [str(item) for item in command]
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _validate_env_overrides(env, "run_program")
 
     run_env: dict[str, str] | None
     if env is None:
@@ -949,7 +596,6 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _validate_env_overrides(env, "run_quality_checks")
     preset = str(args.get("preset", "make_test"))
 
     if "command" in args:
@@ -967,8 +613,8 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
         if run_env is None:
             run_env = {}
         project_path = str(Path(project_dir).resolve())
-        # The caller cannot contribute PYTHONPATH (_validate_env_overrides), so the
-        # only inherited value is this module's own.
+        # This module's own value replaces any PYTHONPATH the caller passed; the only
+        # value inherited is the process environment's.
         existing = os.environ.get("PYTHONPATH", "")
         if existing:
             run_env["PYTHONPATH"] = f"{project_path}{os.pathsep}{existing}"
@@ -1149,7 +795,6 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _validate_env_overrides(env, "run_linter")
 
     if "command" in args:
         raise ValueError("run_linter does not allow custom command; use preset")
@@ -1328,7 +973,6 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    _validate_env_overrides(env, "run_syntax_check")
 
     if "command" in args:
         raise ValueError(

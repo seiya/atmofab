@@ -504,45 +504,14 @@ class RunSyntaxCheckGfortranSmokeTests(_StandaloneServerEnvMixin, unittest.TestC
         self.assertTrue(result["ok"], msg=result.get("stderr"))
 
 
-class EnvOverrideDenylistTests(unittest.TestCase):
-    """Caller-supplied `env` may not redirect what runs.
+class CallerEnvTests(unittest.TestCase):
+    """A caller-supplied `env` reaches the command as given.
 
-    argv is constrained to fixed presets and build-tool invocations (except
-    `run_program`, whose `command` is caller-chosen by design), but before this
-    `_run_command` merged the caller's `env` into `os.environ` unfiltered, so
-    `LD_PRELOAD` / `PATH` / `BASH_ENV` walked around that constraint.
-
-    ONE mode since issue #171. There was a second — an allowlist of the six make variables
-    `Validate.execute` declares, applied when the call carried an `orchestration_id` — which
-    existed because the caller might be a LEAF, and which no longer bounds anybody: no leaf
-    reaches this library. So this denylist is now the whole rule, and it is deliberately
-    INCOMPLETE (see `test_the_denylist_is_not_claimed_to_be_complete`): every program these
-    tools run reads its own configuration from the environment, and the list catches a
-    mistake rather than confining a caller."""
-
-    UNSAFE = (
-        "LD_PRELOAD",
-        "LD_AUDIT",
-        "LD_LIBRARY_PATH",
-        "DYLD_INSERT_LIBRARIES",
-        "BASH_ENV",
-        "ENV",
-        "IFS",
-        "PATH",
-        "PYTHONPATH",
-        # The gcc driver finds and execs its own front end through these: with
-        # COMPILER_PATH pointing at a directory holding an executable `f951`,
-        # run_syntax_check returned ok=True on Fortran no compiler had parsed.
-        "COMPILER_PATH",
-        "GCC_EXEC_PREFIX",
-        "LIBRARY_PATH",
-        # GNU make reads these as switches / extra makefiles, so
-        # MAKEFLAGS='--eval=$(shell ...)' runs before the certified Makefile is read.
-        "MAKEFLAGS",
-        "GNUMAKEFLAGS",
-        "MAKEFILES",
-        "MAKESHELL",
-    )
+    The library refused execution-redirecting names and shell-active values until issue
+    #457, which deleted that layer: the conductor is the only caller under a run, and every
+    `env` it passes is composed from host paths, the target profile and the backend
+    packages, plus the IR's case ids in `CASES`, which `CASE_ID_TOKEN_RE` bounds upstream. What is pinned here is that each entry point hands the caller's `env` through
+    unmodified, and that the library's own addition (the pytest `PYTHONPATH`) still happens."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -576,41 +545,6 @@ class EnvOverrideDenylistTests(unittest.TestCase):
             args.update(compiler="gfortran", std="f2008")
         return args
 
-    def test_denylisted_keys_are_refused_by_every_env_accepting_tool(self) -> None:
-        tools = (
-            "compile_project",
-            "run_program",
-            "run_quality_checks",
-            "run_linter",
-            "run_syntax_check",
-        )
-        for tool in tools:
-            for key in self.UNSAFE:
-                with self.subTest(tool=tool, key=key):
-                    with self._spy_run_command() as run_command:
-                        with self.assertRaises(ValueError) as ctx:
-                            getattr(self.mod, f"tool_{tool}")(
-                                self._args(tool, {key: "/tmp/evil"}))
-                    self.assertIn(key, str(ctx.exception))
-                    # Refused, not stripped after the merge: nothing ran.
-                    run_command.assert_not_called()
-
-    def test_an_env_value_that_reaches_the_recipe_shell_is_refused(self) -> None:
-        # make imports an environment name as a make VARIABLE, so a value arriving this
-        # way is interpolated into the host-authored recipe exactly as a command-line
-        # assignment would be. `extra_args` has had this rule all along; the env half
-        # had no value check at all, so `CASES='; touch /tmp/x'` was accepted there and
-        # refused one argument over.
-        for value in ("a; touch /tmp/x", "a && id", "$(shell id)", "`id`", "a|b",
-                      "a>b", "a\nb", "'x'"):
-            with self.subTest(value=value):
-                with self._spy_run_command() as run_command:
-                    with self.assertRaises(ValueError) as ctx:
-                        self.mod.tool_run_quality_checks(
-                            self._args("run_quality_checks", {"CASES": value}))
-                self.assertIn("reach the make recipe's shell", str(ctx.exception))
-                run_command.assert_not_called()
-
     def test_compile_project_defaults_are_the_module_values_a_remote_build_is_handed(self) -> None:
         """Issue #333: a build at a remote site is handed `COMPILE_PROJECT_TIMEOUT_SEC` and
         `default_build_jobs()` because `tool_compile_project` does not run there, so the library must build with
@@ -628,9 +562,25 @@ class EnvOverrideDenylistTests(unittest.TestCase):
         with mock.patch.object(self.mod.os, "cpu_count", return_value=None):
             self.assertEqual(self.mod.default_build_jobs(), 1)
 
-    def test_the_conductor_env_payload_is_accepted(self) -> None:
-        # The six make variables `Validate.execute` declares. If this payload ever
-        # grows a value the rule refuses, it fails here rather than mid-phase.
+    def test_every_entry_point_hands_the_caller_env_through_unmodified(self) -> None:
+        # No name dropped, no value rewritten, nothing added — on each of the five entry
+        # points that take `env`.
+        # `PATH` and `LD_PRELOAD` among them: names the deleted denylist refused (issue #457).
+        payload = {"LDFLAGS": "-lm", "ENVIRONMENT": "ci", "FC": "/usr/bin/gfortran",
+                   "PATH": "/opt/x/bin", "LD_PRELOAD": "/opt/x/lib.so"}
+        for tool in ("compile_project", "run_program", "run_quality_checks", "run_linter",
+                     "run_syntax_check"):
+            with self.subTest(tool=tool), self._spy_run_command() as run_command, \
+                    mock.patch.object(self.mod.shutil, "which", return_value="/bin/true"):
+                (self.project_dir / "a.f90").write_text("program p\nend program p\n",
+                                                        encoding="utf-8")
+                getattr(self.mod, f"tool_{tool}")(self._args(tool, dict(payload)))
+            self.assertEqual(run_command.call_args.kwargs["env"], payload)
+
+    def test_the_conductor_quality_check_env_reaches_the_quality_check_unmodified(
+        self,
+    ) -> None:
+        # Validate.execute's make_test re-run: `execute.quality_check_env`'s six variables.
         payload = {
             "OBJDIR": "/repo/workspace/tmp/a/build",
             "BINDIR": "/repo/workspace/binary/bin_1/bin",
@@ -641,109 +591,17 @@ class EnvOverrideDenylistTests(unittest.TestCase):
         }
         with self._spy_run_command() as run_command:
             self.mod.tool_run_quality_checks(
-                self._args("run_quality_checks", payload))
-        run_command.assert_called_once()
-
-    def test_the_shell_flags_variable_is_refused_through_env_too(self) -> None:
-        """make takes `.SHELLFLAGS` from the ENVIRONMENT, not only from the command line.
-
-        Measured on GNU Make 4.3:
-
-            env '.SHELLFLAGS=-c ./evil.sh' make -f Makefile all
-            OWNED_VIA_ENV      <- ./evil.sh ran; the recipe did not
-            rc=0               <- and make reported the build as succeeding
-
-        It was refused in `extra_args` and accepted here, which is the asymmetry this
-        module's own docstring calls out ("must not be weaker than the env twin", and the
-        reverse). The two halves share ONE normaliser now, so a spelling handled on one
-        side cannot be missed on the other. The value `-c ./evil.sh` carries only a space,
-        deliberately outside `_SHELL_ACTIVE_CHARS`, so the value rule does not catch it."""
-        for key in (".SHELLFLAGS", "SHELLFLAGS", ".shellflags", " .SHELLFLAGS "):
-            with self.subTest(key=key):
-                with self._spy_run_command() as run_command, \
-                        self.assertRaises(ValueError) as ctx:
-                    self.mod.tool_compile_project(
-                        self._args("compile_project", {key: "-c /tmp/evil.sh"}))
-                self.assertIn("redirect execution", str(ctx.exception))
-                run_command.assert_not_called()
-
-    def test_the_two_halves_refuse_exactly_the_same_names(self) -> None:
-        """ONE set, asserted as a set — not sampled.
-
-        The first version of this row iterated six SPELLINGS, all drawn from the set the two
-        halves already shared, so it could not see a set DIFFERENCE by construction: it was
-        green while `_UNSAFE_ASSIGNMENT_NAMES - _UNSAFE_ENV_OVERRIDE_KEYS == {MAKE, SHELL}`
-        and `env MAKE=./evil` ran `./evil` through a recipe calling `$(MAKE)`.
-
-        That difference is the defect class this branch met three times — `.SHELLFLAGS` in
-        argv then in env, then `MAKE` — so what is pinned is the identity, plus a drive of
-        EVERY member through both halves so the identity cannot be satisfied by a set neither
-        validator reads."""
-        self.assertEqual(self.mod._UNSAFE_ASSIGNMENT_NAMES,
-                         self.mod._UNSAFE_ENV_OVERRIDE_KEYS)
-        for name in sorted(self.mod._UNSAFE_ENV_OVERRIDE_KEYS):
-            with self.subTest(name=name):
-                with self.assertRaises(ValueError):
-                    self.mod._validate_env_overrides({name: "x"}, "compile_project")
-                with self.assertRaises(ValueError):
-                    self.mod._validate_build_argv_overrides(
-                        None, [f"{name}=x"], "compile_project", build_system="cargo")
-
-    def test_the_two_halves_share_one_name_normaliser(self) -> None:
-        # The other half of the same claim: the sets being equal buys nothing if the two
-        # call sites normalise the spelling differently before the lookup. Each of these
-        # reaches a member only through the normaliser.
-        for spelling in (".SHELLFLAGS", "SHELLFLAGS ", " .shellflags", ".MAKEFLAGS",
-                         "ld_preload", " LD_PRELOAD", "MAKE:", "shell?"):
-            with self.subTest(spelling=spelling):
-                with self.assertRaises(ValueError):
-                    self.mod._validate_env_overrides({spelling: "x"}, "compile_project")
-                with self.assertRaises(ValueError):
-                    self.mod._validate_build_argv_overrides(
-                        None, [f"{spelling}=x"], "compile_project",
-                        build_system="cargo")
-
-    def test_denylist_is_case_insensitive_and_prefix_exact(self) -> None:
-        with self._spy_run_command():
-            with self.assertRaises(ValueError):
-                self.mod.tool_run_linter(self._args("run_linter", {"ld_preload": "x"}))
-        # Neighbours that merely look similar stay usable.
-        with self._spy_run_command() as run_command:
-            self.mod.tool_run_linter(
-                self._args("run_linter", {"LDFLAGS": "-lm", "ENVIRONMENT": "ci"}))
-        self.assertEqual(
-            run_command.call_args.kwargs["env"], {"LDFLAGS": "-lm", "ENVIRONMENT": "ci"})
-
-    def test_the_denylist_is_not_claimed_to_be_complete(self) -> None:
-        # Names that redirect execution just as effectively and are NOT refused: make
-        # imports any environment name as a make variable, so `FC` replaces the compiler a
-        # certified Makefile invokes. The orchestrated allowlist used to close this and was
-        # retired with the gate (issue #171); pinned here so the rule that remains is not
-        # mistaken for a boundary.
-        with self._spy_run_command() as run_command:
-            self.mod.tool_run_quality_checks(
-                self._args("run_quality_checks", {"FC": "/tmp/evil-gfortran"}))
-        self.assertEqual(run_command.call_args.kwargs["env"], {"FC": "/tmp/evil-gfortran"})
-
-    def test_conductor_quality_check_env_payload_is_accepted(self) -> None:
-        # The only caller-supplied env in the repository (Validate.execute's make_test
-        # re-run) must survive the denylist unmodified.
-        payload = {
-            "OBJDIR": "/tmp/obj", "BINDIR": "/tmp/bin", "RUNDIR": "/tmp/run",
-            "BIN": "sw2d_runner", "SPEC": "/tmp/spec.ir.yaml", "CASES": "c1 c2",
-        }
-        with self._spy_run_command() as run_command:
-            self.mod.tool_run_quality_checks(
                 {"project_dir": str(self.project_dir), "preset": "make_test",
                  "env": dict(payload)})
         self.assertEqual(run_command.call_args.kwargs["env"], payload)
 
-    def test_server_injected_env_is_not_subject_to_the_denylist(self) -> None:
-        # The check sits where the caller's argument is read, so the library's own
-        # addition still happens: PYTHONPATH for the pytest preset.
+    def test_the_library_adds_its_own_pythonpath_for_the_pytest_preset(self) -> None:
+        # A caller's PYTHONPATH is replaced, not kept (the comment at the addition says so).
         with self._spy_run_command() as run_command:
             self.mod.tool_run_quality_checks(
-                {"project_dir": str(self.project_dir), "preset": "pytest"})
+                {"project_dir": str(self.project_dir), "preset": "pytest",
+                 "env": {"PYTHONPATH": "/caller/path"}})
+        self.assertNotIn("/caller/path", run_command.call_args.kwargs["env"]["PYTHONPATH"])
         # project_dir goes first; anything after it is this library's own inherited
         # PYTHONPATH, which varies with how the suite was started.
         self.assertEqual(
@@ -752,7 +610,7 @@ class EnvOverrideDenylistTests(unittest.TestCase):
 
     def test_the_conductor_launch_env_reaches_run_program_unmodified(self) -> None:
         # Since issue #289 a parallel runtime's thread variables are the CALLER's, composed by
-        # `tools/host_execution.py` and passed as `env` — so they cross the denylist, and must
+        # `tools/host_execution.py` and passed as `env` — so they must
         # arrive exactly as sent: no name dropped, no value rewritten, nothing added.
         from tools.host_execution import launch_shape
         from tools.tests.target_fixtures import FORTRAN_CPU
@@ -767,301 +625,14 @@ class EnvOverrideDenylistTests(unittest.TestCase):
         self.assertEqual(run_command.call_args.kwargs["env"], payload)
 
 
-class BuildArgvOverrideTests(unittest.TestCase):
-    """`extra_args` is a list of make variable assignments, and nothing else.
+class CompileProjectArgumentTests(unittest.TestCase):
+    """`compile_project`'s `target` and `extra_args` are checked for TYPE and nothing else.
 
-    It replaced an ALLOWLIST that ran only under an orchestration — six variable names,
-    plus a containment rule on the four whose value is a path, plus an outright refusal of
-    `target`. That arm bounded a LEAF's grant, and since Z4 (issue #171) no leaf reaches
-    this library at all, so PR-2 of that issue retired it. What is left applies to every
-    call, which the old standalone arm did not: an element must ASSIGN (so make switches
-    such as `--eval=$(shell ...)` are refused by construction rather than by name), and its
-    value may not carry a character the make recipe's shell acts on.
-
-    These two rules are kept for the SECOND defended class — a defect in a caller this
-    repository writes (`AGENTS.md` §Development premises) — not against a leaf, and the
-    docstring says which because the rule for deleting them later is different."""
-
-    @classmethod
-    def setUpClass(cls) -> None:
-        cls.mod = _load_module()
-
-    def _check(self, extra_args: list[str]) -> None:
-        self.mod._validate_build_argv_overrides(None, extra_args, "compile_project")
-
-    def test_the_conductor_payload_is_accepted(self) -> None:
-        # Exactly what `_build_inproc` passes. If that payload grows, this fails here
-        # rather than the run failing mid-phase.
-        self._check(["OBJDIR=/repo/workspace/tmp/a/build",
-                     "BINDIR=/repo/workspace/binary/bin_1/bin",
-                     "BIN=sw2d_runner"])
-
-    def test_a_make_switch_is_refused_however_it_is_spelled(self) -> None:
-        for arg in ("--eval=$(shell id)", "-f/tmp/Makefile", "--load-average=8",
-                    "-j", "clean", "--warn-undefined-variables"):
-            with self.subTest(arg=arg):
-                with self.assertRaises(ValueError) as ctx:
-                    self._check([arg])
-                self.assertIn("make variable assignments", str(ctx.exception))
-
-    def test_an_execution_redirecting_name_is_refused_as_an_assignment_too(self) -> None:
-        """The NAME rule, which must not be weaker than the env twin's.
-
-        A make COMMAND-LINE assignment overrides even a hard assignment in the Makefile, so
-        this surface carries more authority than the environment — the canonical document says
-        so. PR-2 deleted the argv-side name allowlist with the leaf's grant and its round-1
-        correction made only the VALUE rule symmetric, so `SHELL=./evil` — the interpreter of
-        every recipe line — was accepted here while `MAKESHELL` was refused one argument over.
-        """
-        for name in sorted(self.mod._UNSAFE_ASSIGNMENT_NAMES) + ["LD_PRELOAD", "DYLD_LIBRARY_PATH"]:
-            with self.subTest(name=name):
-                with self.assertRaises(ValueError) as ctx:
-                    self._check([f"{name}=/tmp/x"])
-                self.assertIn("redirect execution", str(ctx.exception))
-
-    def test_a_shell_assignment_is_refused_whatever_the_variable_is_called(self) -> None:
-        """`NAME!=command` EXECUTES its value. The operator is the danger, not the name.
-
-        Measured on GNU Make 4.3: `make 'FOO!=touch /tmp/mk2/PWN' all` prints the recipe's
-        own output and creates the file — the build reports success while an arbitrary
-        command has run. No name denylist can reach this, because `FOO` is not on one and
-        never will be.
-
-        Round 4 mistook `!` for part of a NAME spelling and stripped it before the lookup,
-        which turned an arbitrary-execution operator into a comparison that could never
-        match. Under `make` the assignment-SHAPE rule hid it; `cmake` forwards `extra_args`
-        to the native tool after `--`, so a make command line is reachable from more than
-        `build_system=make` and there it was live."""
-        for build_system in ("make", "cmake", "ninja", "cargo", "maven"):
-            for element in ("FOO!=touch /tmp/x", "X!=id", "harmless_name!=whoami",
-                            "SHELL!=id", "A !=id"):
-                with self.subTest(build_system=build_system, element=element):
-                    with self.assertRaises(ValueError) as ctx:
-                        self.mod._validate_build_argv_overrides(
-                            None, [element], "compile_project",
-                            build_system=build_system)
-                    self.assertIn("shell assignment", str(ctx.exception))
-
-    def test_the_shell_flags_variable_is_refused_in_both_spellings(self) -> None:
-        # `.SHELLFLAGS` is make's special variable for the arguments `SHELL` is invoked
-        # with; measured, `make '.SHELLFLAGS=-c touch /tmp/x;' all` runs `touch`. The dotted
-        # spelling is the real one and the undotted is what a caller is likely to write, so
-        # the leading dot is normalised off and both are refused.
-        for element in (".SHELLFLAGS=-c id;", "SHELLFLAGS=-c id;", ".shellflags=-c"):
-            with self.subTest(element=element):
-                with self.assertRaises(ValueError) as ctx:
-                    self.mod._validate_build_argv_overrides(
-                        None, [element], "compile_project", build_system="cargo")
-                self.assertIn("redirect execution", str(ctx.exception))
-
-    def test_an_ordinary_dotted_variable_is_not_swallowed(self) -> None:
-        # The dot normalisation must not refuse a legitimate name that happens to start
-        # with one; only the denylisted stems are refused.
-        self.mod._validate_build_argv_overrides(
-            None, [".SOMETHING_ELSE=1"], "compile_project", build_system="cargo")
-
-    def test_the_name_rule_alone_closes_every_spelling_make_honours(self) -> None:
-        """Self-sufficiency, measured against GNU Make 4.3 rather than assumed.
-
-        With a `SHELL` that prints instead of running the recipe, `SHELL=./evil`,
-        `SHELL:=./evil`, `SHELL+=./evil` and ` SHELL=./evil` all execute `./evil` as every
-        recipe line's interpreter; `SHELL?=` does not, because SHELL is already set.
-
-        The predicate is driven DIRECTLY here, not through the validator, because under
-        `make` the assignment-SHAPE rule refuses the flavour spellings first — so driving
-        the validator would report green while the name rule itself still missed them, and
-        the hole would be closed by two rules each covering half of it. That is the shape
-        that has reopened three times on this branch."""
-        for spelling in ("SHELL=./evil", "SHELL:=./evil", "SHELL::=./evil",
-                         "SHELL+=./evil", " SHELL=./evil",
-                         "SHELL =./evil", "shell=./evil",
-                         "LD_PRELOAD:=/tmp/x.so", "MAKEFILES+=/tmp/evil.mk"):
-            with self.subTest(spelling=spelling):
-                self.assertTrue(
-                    self.mod._is_execution_redirecting_assignment(spelling))
-
-    def test_the_name_rule_reaches_a_build_system_with_no_shape_rule(self) -> None:
-        # The other half of the same claim, through the real validator on a build system
-        # where nothing else would catch it.
-        for spelling in ("SHELL:=./evil", "SHELL::=./evil", "SHELL+=./evil",
-                         " SHELL=./evil"):
-            with self.subTest(spelling=spelling):
-                with self.assertRaises(ValueError) as ctx:
-                    self.mod._validate_build_argv_overrides(
-                        None, [spelling], "compile_project", build_system="cargo")
-                self.assertIn("redirect execution", str(ctx.exception))
-
-    def test_an_ordinary_variable_keeps_its_flavour_operators(self) -> None:
-        # The normalisation must not swallow a legitimate name: only the flavour
-        # operators and surrounding space come off, and only from the NAME.
-        self.assertFalse(self.mod._is_execution_redirecting_assignment("OBJDIR:=/repo/obj"))
-        self.assertFalse(self.mod._is_execution_redirecting_assignment("CASES=a b"))
-        self.assertFalse(self.mod._is_execution_redirecting_assignment("all"))
-
-    def test_a_non_make_build_system_may_pass_its_own_switches(self) -> None:
-        """The assignment SHAPE rule belongs to make, and only to make.
-
-        `build_command` serves eleven build systems and the rule was applied to all of
-        them, so `cargo build --release` and `mvn -DskipTests` were refused as "not a make
-        variable assignment". Nothing runs through a shell here — this library never passes
-        `shell=True` — so a switch is not dangerous for a build tool that does not read one
-        as an extra makefile. `origin/main`'s standalone arm had no `extra_args` check at
-        all, so this was a capability PR-2 narrowed without saying so."""
-        for build_system, args in (
-            ("cargo", ["--release"]),
-            ("maven", ["-DskipTests"]),
-            ("gradle", ["-Pflag=1"]),
-            ("ninja", ["-v"]),
-        ):
-            with self.subTest(build_system=build_system):
-                self.mod._validate_build_argv_overrides(
-                    None, args, "compile_project", build_system=build_system)
-
-    def test_the_other_two_rules_still_apply_to_every_build_system(self) -> None:
-        # What does NOT depend on the build system: a metacharacter anywhere in the element,
-        # and an assignment to a name that redirects what is executed.
-        for build_system in ("make", "cargo", "maven", "gradle", "ninja", "cmake"):
-            with self.subTest(build_system=build_system, rule="metacharacter"):
-                with self.assertRaises(ValueError) as ctx:
-                    self.mod._validate_build_argv_overrides(
-                        None, ["X=a; id"], "compile_project", build_system=build_system)
-                self.assertIn("carry a character a shell acts on", str(ctx.exception))
-            with self.subTest(build_system=build_system, rule="redirect"):
-                with self.assertRaises(ValueError) as ctx:
-                    self.mod._validate_build_argv_overrides(
-                        None, ["SHELL=/tmp/x"], "compile_project",
-                        build_system=build_system)
-                self.assertIn("redirect execution", str(ctx.exception))
-
-    def test_the_handler_resolves_the_build_system_before_it_checks_the_argv(self) -> None:
-        # The order is load-bearing: the rules differ by build system, so validating first
-        # applies make's rule to every caller — which is the defect this row is about.
-        project_dir = Path(tempfile.mkdtemp())
-        self.addCleanup(shutil.rmtree, project_dir, ignore_errors=True)
-        with mock.patch.object(
-            self.mod, "_run_command",
-            return_value={"ok": True, "return_code": 0, "stdout": "", "stderr": ""},
-        ) as run_command:
-            self.mod.tool_compile_project({
-                "project_dir": str(project_dir), "build_system": "cargo",
-                "extra_args": ["--release"],
-            })
-        run_command.assert_called_once()
-
-    def test_the_names_that_are_deliberately_still_accepted(self) -> None:
-        # The recorded residue, pinned so "what is open" cannot drift into prose alone: a name
-        # a Makefile merely READS is not refused, because bounding those means an allowlist and
-        # an allowlist bounds a grant no caller holds any more.
-        self._check(["FC=/usr/bin/gfortran", "CFLAGS=-O2", "OBJDIR=/repo/obj"])
-
-    def test_a_value_that_reaches_the_recipe_shell_is_refused(self) -> None:
-        # The host-authored Makefile interpolates an assignment unquoted into a recipe
-        # line, so a metacharacter in a value is a command rather than a value.
-        for value in ("a; touch /tmp/x", "a && id", "$(shell id)", "`id`", "a|b",
-                      "a\nb", "a>b", "'x'"):
-            with self.subTest(value=value):
-                with self.assertRaises(ValueError) as ctx:
-                    self._check([f"CASES={value}"])
-                self.assertIn("carry a character a shell acts on", str(ctx.exception))
-
-    def test_every_assignment_is_checked_not_just_the_last(self) -> None:
-        with self.assertRaises(ValueError) as ctx:
-            self._check(["OBJDIR=/tmp/obj", "CASES=c1;id", "BIN=runner"])
-        self.assertIn("CASES=c1;id", str(ctx.exception))
-
-    def test_a_space_is_a_value_not_a_metacharacter(self) -> None:
-        # `CASES` is a word LIST by contract, and a checkout path may hold a space, so
-        # the space is deliberately outside the refused set.
-        self._check(["CASES=case_a case_b"])
-
-    def test_the_case_id_grammar_fits_the_value_rule(self) -> None:
-        # Validate.execute joins the IR's case ids into CASES, so every id the Compile
-        # gate accepts must survive this rule. Otherwise a run passes Compile and Build
-        # and fails several phases later on an id no gate objected to.
-        from tools.spec_input_gates import CASE_ID_TOKEN_RE
-        for case_id in ("c1", "l0_v1.2-alpha", "A.b_c-d", "9x"):
-            with self.subTest(case_id=case_id):
-                self.assertTrue(CASE_ID_TOKEN_RE.match(case_id))
-                self._check([f"CASES={case_id}"])
-
-    def test_the_types_are_still_checked(self) -> None:
-        with self.assertRaises(ValueError):
-            self.mod._validate_build_argv_overrides(None, "OBJDIR=x", "compile_project")
-        with self.assertRaises(ValueError):
-            self.mod._validate_build_argv_overrides(7, [], "compile_project")
-
-    def test_a_switch_spelled_as_the_target_is_refused_too(self) -> None:
-        # `build_command` places the target POSITIONALLY on the same line the
-        # `extra_args` rule guards (`make -jN <target>`), so refusing a switch in one
-        # half and accepting it in the other guards nothing. Until Z4 the orchestrated
-        # arm refused every target and the standalone arm checked neither half.
-        for target in ("--eval=$(shell touch /tmp/x)", "-f/tmp/Makefile",
-                       "--load-average=8", "-j24", "all; id", "$(shell id)",
-                       "a b", "-"):
-            with self.subTest(target=target):
-                with self.assertRaises(ValueError) as ctx:
-                    self.mod._validate_build_argv_overrides(
-                        target, [], "compile_project")
-                self.assertIn("must be a build goal, not a switch", str(ctx.exception))
-
-    def test_an_assignment_spelled_as_the_target_is_refused_too(self) -> None:
-        """The same rule as `extra_args`, because make cannot tell the two apart.
-
-        `make -jN SHELL=./evil` is an assignment whether the caller put that string in
-        `target` or in `extra_args` — a positional argument containing `=` is never a goal
-        to make. The first version of this class drove eight switch spellings and NONE of
-        them carried an `=`, so when the target rule was widened from a name allowlist to a
-        metacharacter refusal (neither set holds `=`), the whole execution-redirect denylist
-        became reachable one argument over and the suite stayed green.
-        """
-        for target in ("SHELL=./evil", "MAKEFLAGS=-n", "MAKEFILES=/tmp/evil.mk",
-                       "LD_PRELOAD=/tmp/x.so", "PATH=/tmp", "MAKE=/tmp/x"):
-            with self.subTest(target=target, build_system="make"):
-                with self.assertRaises(ValueError) as ctx:
-                    self.mod._validate_build_argv_overrides(
-                        target, [], "compile_project", build_system="make")
-                self.assertIn("redirect execution", str(ctx.exception))
-            # And on a build system that does not read a positional assignment at all,
-            # the name rule still applies — it is about what is EXECUTED, not about make.
-            with self.subTest(target=target, build_system="cargo"):
-                with self.assertRaises(ValueError) as ctx:
-                    self.mod._validate_build_argv_overrides(
-                        target, [], "compile_project", build_system="cargo")
-                self.assertIn("redirect execution", str(ctx.exception))
-
-    def test_an_ordinary_assignment_as_a_make_target_is_refused_as_a_misplacement(
-        self,
-    ) -> None:
-        # Not dangerous, but not a goal either: make would silently set the variable and
-        # build the default target, so the caller's build is not the one they asked for.
-        with self.assertRaises(ValueError) as ctx:
-            self.mod._validate_build_argv_overrides(
-                "OBJDIR=/repo/obj", [], "compile_project", build_system="make")
-        self.assertIn("not a variable assignment", str(ctx.exception))
-
-    def test_a_real_build_goal_is_still_accepted(self) -> None:
-        # Across the build systems `build_command` serves, not just make: a gradle task
-        # path, an npm script name and a meson typed target all carry `:`, and a make
-        # pattern goal carries `%`. A first version of this rule spelled an allowlist of
-        # name characters and refused all four — an allowlist over a grammar this library
-        # does not own answers a question it cannot know.
-        for target in ("all", "clean", "sw2d_runner", "build/libcore.a", "lib.so.1",
-                       "x86_64-target", "c++filt", ":app:assembleDebug", "build:prod",
-                       "lib.so:shared_library", "%.o", "install-strip"):
-            with self.subTest(target=target):
-                self.assertEqual(
-                    self.mod._validate_build_argv_overrides(
-                        target, [], "compile_project"),
-                    target,
-                )
-
-
-class BuildArgvOverrideWiringTests(unittest.TestCase):
-    """The argv rules are REACHED by the handler, not merely defined beside it.
-
-    `_validate_env_overrides` has such a witness (`test_denylisted_keys_are_refused_by_
-    every_env_accepting_tool`); its argv twin had only direct-call tests, so deleting the
-    single call site at `tool_compile_project` left the suite green."""
+    Until issue #457 the library also refused a switch, an execution-redirecting assignment
+    and a shell-active character in either half. Every in-tree caller composes these values
+    from host constants (`_build_inproc` passes the make backend's `build_overrides` and no
+    `target`), so that layer was deleted; these rows pin what remains and that the argv the
+    caller composes is the argv that runs."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -1071,42 +642,47 @@ class BuildArgvOverrideWiringTests(unittest.TestCase):
         self.project_dir = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.project_dir, ignore_errors=True)
 
-    def _args(self, **extra) -> dict:
+    def _run(self, **extra) -> mock.MagicMock:
         args: dict = {"project_dir": str(self.project_dir), "build_system": "make"}
         args.update(extra)
-        return args
-
-    def test_the_handler_refuses_a_switch_in_either_half_before_running_anything(
-        self,
-    ) -> None:
-        cases = (
-            ("target", {"target": "--eval=$(shell id)"}, "must be a build goal, not a switch"),
-            ("extra_args", {"extra_args": ["--eval=$(shell id)"]},
-             "make variable assignments"),
-            ("value", {"extra_args": ["CASES=a; id"]},
-             "carry a character a shell acts on"),
-        )
-        for label, payload, message in cases:
-            with self.subTest(half=label):
-                with mock.patch.object(
-                    self.mod, "_run_command",
-                    return_value={"ok": True, "return_code": 0,
-                                  "stdout": "", "stderr": ""},
-                ) as run_command:
-                    with self.assertRaises(ValueError) as ctx:
-                        self.mod.tool_compile_project(self._args(**payload))
-                self.assertIn(message, str(ctx.exception))
-                run_command.assert_not_called()
-
-    def test_the_validated_target_is_the_string_that_runs(self) -> None:
         with mock.patch.object(
             self.mod, "_run_command",
             return_value={"ok": True, "return_code": 0, "stdout": "", "stderr": ""},
         ) as run_command:
-            self.mod.tool_compile_project(self._args(target="  sw2d_runner  "))
-        argv = run_command.call_args.kwargs["command"]
-        self.assertIn("sw2d_runner", argv)
-        self.assertNotIn("  sw2d_runner  ", argv)
+            self.mod.tool_compile_project(args)
+        return run_command
+
+    def test_the_types_are_checked_before_anything_runs(self) -> None:
+        for payload, message in (({"extra_args": "OBJDIR=x"}, "extra_args must be an array"),
+                                 ({"extra_args": ["A=1", 2]}, "extra_args must be an array"),
+                                 ({"target": 7}, "target must be a string"),
+                                 ({"env": ["A=1"]}, "env must be an object")):
+            with self.subTest(payload=payload), mock.patch.object(
+                    self.mod, "_run_command") as run_command:
+                with self.assertRaises(ValueError) as ctx:
+                    self.mod.tool_compile_project(
+                        {"project_dir": str(self.project_dir), "build_system": "make",
+                         **payload})
+                self.assertIn(message, str(ctx.exception))
+                run_command.assert_not_called()
+
+    def test_the_conductor_payload_runs_as_composed(self) -> None:
+        # Exactly the shape `_build_inproc` passes: three assignments, no target.
+        extra = ["OBJDIR=/repo/workspace/tmp/a/build",
+                 "BINDIR=/repo/workspace/binary/bin_1/bin", "BIN=sw2d_runner"]
+        run_command = self._run(extra_args=list(extra), jobs=3)
+        self.assertEqual(run_command.call_args.kwargs["command"],
+                         self.mod.build_command("make", None, 3, extra))
+
+    def test_the_target_is_the_string_that_runs(self) -> None:
+        run_command = self._run(target="sw2d_runner", jobs=2)
+        self.assertEqual(run_command.call_args.kwargs["command"],
+                         self.mod.build_command("make", "sw2d_runner", 2, []))
+
+    def test_a_non_make_build_system_may_pass_its_own_switches(self) -> None:
+        run_command = self._run(build_system="cargo", extra_args=["--release"], jobs=2)
+        self.assertEqual(run_command.call_args.kwargs["command"],
+                         self.mod.build_command("cargo", None, 2, ["--release"]))
 
 
 class SyntaxCheckSourcesTests(_StandaloneServerEnvMixin, unittest.TestCase):
@@ -1664,25 +1240,6 @@ class ArgumentContractTests(unittest.TestCase):
                         with self.assertRaises(ValueError) as ctx:
                             handler(partial)
                         self.assertIn(name, str(ctx.exception))
-
-    def test_each_argv_shape_is_refused(self) -> None:
-        """The seven argv payloads `compile_project`'s served descriptions were driven against
-        before issue #444 deleted those descriptions. The description half went with them; the
-        refusal half is kept, one sub-row per payload."""
-        rows = (
-            {"target": "--eval=$(shell id)"},
-            {"target": "a b"},
-            {"target": "SHELL=./evil"},
-            {"target": "OBJDIR=/repo/obj"},
-            {"extra_args": ["--release"]},
-            {"extra_args": ["SHELL=/tmp/x"]},
-            {"extra_args": ["X=a; id"]},
-        )
-        for payload in rows:
-            with self.subTest(payload=payload), self.assertRaises(ValueError):
-                self.mod._validate_build_argv_overrides(
-                    payload.get("target"), payload.get("extra_args", []),
-                    "compile_project", build_system="make")
 
     def test_compile_project_passes_its_target_to_the_build_tool(self) -> None:
         # `target` is `compile_project`'s build goal; `run_program` once read an argument of
