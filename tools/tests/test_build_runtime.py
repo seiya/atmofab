@@ -510,7 +510,7 @@ class CallerEnvTests(unittest.TestCase):
     The library refused execution-redirecting names and shell-active values until issue
     #457, which deleted that layer: the conductor is the only caller under a run, and every
     `env` it passes is composed from host paths, the target profile and the backend
-    packages. What is pinned here is that each entry point hands the caller's `env` through
+    packages, plus the IR's case ids in `CASES`, which `CASE_ID_TOKEN_RE` bounds upstream. What is pinned here is that each entry point hands the caller's `env` through
     unmodified, and that the library's own addition (the pytest `PYTHONPATH`) still happens."""
 
     @classmethod
