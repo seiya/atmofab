@@ -37,7 +37,7 @@ workspace/
 │       │   ├── <agent_run_id>.response.json       (the launch response written by record-launch)
 │       │   ├── <agent_run_id>.prompt.txt          (the child agent prompt body. 1-to-1 with the leaf launch prompt input; no leaf can read it -- a pure leaf holds no tool. The read manifest that used to forbid it went with issue #171 PR-2)
 │       │   ├── <agent_run_id>.reply.txt           (overwritten by record-reply with the leaf response)
-│       │   └── <agent_run_id>.http_response.txt  (an HTTP leaf's raw provider response body, written by the conductor before it is parsed; absent for a CLI leaf. `.txt`, not `.json`: the body it most needs to keep is a non-JSON error page, and every `workspace/**/*.json` is parsed by validate_workspace_root. A `<agent_run_id>.parent_return_token` a past orchestration left here is the retired child-return token, issue #447 (D2))
+│       │   └── <agent_run_id>.http_response.txt  (an HTTP leaf's raw provider response body, written by the conductor before it is parsed; absent for a CLI leaf. `.txt`, not `.json`: the body it most needs to keep is a non-JSON error page, and every `workspace/**/*.json` is parsed by validate_workspace_root. A `<agent_run_id>.parent_return_token` a past orchestration left here is the retired child-return token, issue #447 (D2); so is an empty `child_returns/` directory beside `launches/`)
 │       │
 │       ├── agents/
 │       │   └── <agent_run_id>/                     all dialog for one child agent

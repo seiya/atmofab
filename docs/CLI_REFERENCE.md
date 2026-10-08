@@ -2,7 +2,7 @@
 
 ## Position of this document
 
-The **canonical CLI reference for the frequent subcommands (Tier-A)** of `tools/orchestration_runtime.py`. It covers those whose payload schema is complex, that have per-phase required-argument switching, and that cannot be determined from the `--help` output alone: `record-launch` / `record-agent-run` / `finalize-child` / `deactivate-child` / `record-reply` / `set-status` / `write-step-result` / `workflow-launch-check` / `reserve-phase-root` / `mark-dependency-readiness` (11 total).
+The **canonical CLI reference for the frequent subcommands (Tier-A)** of `tools/orchestration_runtime.py`. It covers those whose payload schema is complex, that have per-phase required-argument switching, and that cannot be determined from the `--help` output alone: `record-launch` / `record-agent-run` / `finalize-child` / `deactivate-child` / `record-reply` / `set-status` / `write-step-result` / `workflow-launch-check` / `reserve-phase-root` / `mark-dependency-readiness` (10 total).
 
 For the rare subcommands (Tier-B: `init` / `preflight` / `preflight-status` / `record-timeout` / `check-phase-certified` / `revoke-artifact` / `reset-phase`), only an overview is in [docs/CLI_REFERENCE_RARE.md](CLI_REFERENCE_RARE.md), and the canonical source for details is `python3 tools/orchestration_runtime.py <sub> --help`.
 
@@ -14,7 +14,7 @@ When the argparse definition is updated, update this file in sync (during a `too
 
 Choose the path for obtaining CLI argument information based on the target subcommand's frequency, payload schema complexity, and doc synchronization cost (cross-backend; applies to Codex / Claude Code alike).
 
-- Frequent subcommands of `tools/orchestration_runtime.py` (the 12 Tier-A listed above): this document is canonical (complex payload schema, per-phase required-argument switching — `--help` alone is insufficient).
+- Frequent subcommands of `tools/orchestration_runtime.py` (the 10 Tier-A listed above): this document is canonical (complex payload schema, per-phase required-argument switching — `--help` alone is insufficient).
 - Rare subcommands of `tools/orchestration_runtime.py` (`init` / `preflight` / `preflight-status` / `record-timeout` / `check-phase-certified` / `revoke-artifact` / `reset-phase`), and `tools/run_workflow.py` / `tools/validate_pipeline_semantics.py` / `tools/audit_orchestration.py`: `<tool> [<sub>] --help` is canonical. [docs/CLI_REFERENCE_RARE.md](CLI_REFERENCE_RARE.md) retains only an overview of the rare subcommands.
 - `tools/prune_workflow_homes.py`: `--help` is canonical for the arguments, and `docs/RUNBOOK.md` §"The operator-private root" is canonical for WHEN to run it and what deleting a home costs. Operator-only, never invoked by the workflow.
 - `tools/new_agent_run_id.py` takes no arguments. A leaf consults no policy of any kind: since Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) it holds no shell and invokes no subcommand.

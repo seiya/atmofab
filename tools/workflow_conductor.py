@@ -11922,7 +11922,7 @@ class Conductor:
           retry/warm-resume/exemplar decision it needed, went with it.
         * A DETERMINISTIC substep (Build, Compile.static, Generate.gate, Validate.pre_judge /
           execute / post_judge) runs in-process below. It still takes an agent_run_id, a
-          recorded launch and a child-return, so the integrity validators read it as an
+          recorded launch and a finalize-child, so the integrity validators read it as an
           ordinary substep agent run; what it does not take is a leaf, a sandbox, or a retry —
           none of the transient-death, usage-limit or warm-resume paths the old loop carried
           could ever fire for it, so the loop is gone too.
