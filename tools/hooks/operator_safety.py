@@ -22,13 +22,16 @@ a commit message that quotes the rule, a heredoc that writes documentation about
 for it. Measured 2026-08-26: the commit that introduced this module was refused by it. It
 stands because the failure direction is refusal rather than a missed one and the operator
 can rephrase. The verify-bypass rule is narrower since issue #445: it refuses only a command
-that names the validator that defines the flags AND carries one of them, so a grep for a
-flag or an echo of a document quoting one passes, and so does a command naming one of them
-for another program.
+whose text names the validator that defines the flags AND carries one of them. A grep for a
+flag over `docs/`, an echo of a document quoting one, and a flag given to another program
+pass; a grep for a flag IN the validator's own source names both and is refused — the same
+over-refusal as the hard-reset rule, with the same answer (rephrase).
 
 **What the verify-bypass rule does not see, and why that is accepted.** A `python3 -c` that
 imports the validator and calls it with a bypass argument names no script file and no flag
-spelling; a shell variable holding the script name hides it the same way. Both pass. The
+spelling; a shell variable holding the script name hides it the same way; and an argparse
+abbreviation of a flag (the validator's parser keeps `allow_abbrev`) is not the full
+spelling. All three pass. The
 rule guards the operator's own development session against an accidental bypass, and
 `AGENTS.md` §Development premises puts a defense against the operator outside the defended
 set — no workflow leaf issues a command at all.

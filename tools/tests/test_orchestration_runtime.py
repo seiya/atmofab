@@ -23148,8 +23148,8 @@ class HostPycacheRedirectRootTest(unittest.TestCase):
 
     def test_symlinked_redirect_root_is_rejected_before_use(self):
         # The host writes AND later loads bytecode from the redirect root, so a symlinked root is
-        # a code-execution vector (target may be outside the repo — invisible to the FS-diff — or
-        # inside a leaf-writable subtree = cache poisoning). `_scan_workspace_layout` does not
+        # a code-execution vector (the target may be outside the repo, or a directory something
+        # else writes into = cache poisoning). `_scan_workspace_layout` does not
         # catch it (is_dir() follows symlinks), so run_workflow must reject it itself.
         from tools.run_workflow import _validated_pycache_redirect_root
         prefix = self._redirect_prefix()
@@ -23184,8 +23184,7 @@ class HostPycacheRedirectRootTest(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             # A symlink DEEP INSIDE the cache (the mirrored source path) is rejected: CPython
-            # follows it when loading cached modules, and this subtree is exempt from the
-            # write-diff, so the payload would leave no trace.
+            # follows it when loading cached modules.
             repo = Path(tmp).resolve()
             mirrored = repo / prefix / "home" / "u" / "atmofab"
             mirrored.mkdir(parents=True)

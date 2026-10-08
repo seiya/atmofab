@@ -139,8 +139,8 @@ leaf deadline / abandon / teardown guards executed by nobody.
 The review instrument under `.claude/skills/` — `atmofab-review-loop/scripts/mutation_check.py` —
 carries its tests beside it in `scripts/tests/`. Its skill states the command that runs them
 (`.claude/skills/atmofab-review-loop/SKILL.md`), because no command in this section collects
-them — measured at the issue #445 branch: `pytest tools/tests/` and a bare `pytest` each collect
-6268, and that directory holds 52 tests. (A second instrument, `measure_claude_tool.py`, went
+them — measured at `dfeb73dc`: `pytest tools/tests/` and a bare `pytest` each collect 6266, and
+that directory holds 52 tests. (A second instrument, `measure_claude_tool.py`, went
 with the leaf tools it measured in issue #445.)
 
 **That command gets none of the guards `tools/tests/conftest.py` installs** for the suite's
