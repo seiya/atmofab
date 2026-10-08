@@ -564,3 +564,21 @@ follow it, because nothing prompts the author to read a history entry when re-pi
 Both were found only by running the defect at both revisions; every instrument that compares
 HEAD against itself was green on them.
 
+## Rule 1-b: an import moved to module level moved the time the module runs (issue #444 / PR #448, 2026-10-08)
+
+PR-1 of #444 moved the build-runtime library from `mcp_servers/` into `tools/` and replaced the
+`sys.path` loaders in `tools/execution_sites.py`, `tools/host_prerequisites.py` and
+`tools/remote_execution.py` with module-level `from tools import build_runtime`. The loaders had
+run inside functions. `tools/run_workflow.py` imports `tools.execution_sites` at module level,
+before `_run_main` redirects `sys.pycache_prefix` to `workspace/.pycache/`, and
+`tools/build_runtime.py` composes its linter and build-system tables through the registry at
+import. Measured by the round-2 reviewer: `import tools.run_workflow` left `tools.build_runtime`
+out of `sys.modules` on `origin/main` and put it in at the branch; `env -u
+PYTHONDONTWRITEBYTECODE python3 tools/run_workflow.py --help` wrote 17 `.pyc` under `tools/` on
+`origin/main` and 34 on the branch. Three statements became false — `run_workflow.py`'s
+redirect comment, `_host_probe_selection`'s "should not pay for them", and RUNBOOK's list of
+lazily imported modules. The suite, the drift pins and the hunk sweep were all green: the change
+was a correct import of a correct module, and only a cross-revision comparison of WHEN it ran
+shows the difference. Fixed in 9494a549 by importing inside `_shell_active_chars` again;
+`host_prerequisites` and `remote_execution` stayed module-level because nothing imports them at
+startup (checked the same way).

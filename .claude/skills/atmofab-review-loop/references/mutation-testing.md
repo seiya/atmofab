@@ -733,3 +733,21 @@ exactly as much as green" is this rule's parent, and it did not fire, because th
 look like a setup error — it looked like the mutation working. The trigger point is narrower than
 the parent suggests: it is not only round 0's sweep but every hand mutation taken mid-loop to
 confirm a fix.
+
+## A serial baseline found an order dependence `-n` hid (issue #444 / PR #448, 2026-10-08)
+
+The branch rewrote the #422 behavioural row in `tools/tests/test_workflow_conductor.py`: with
+the library out of `sys.modules`, a conductor over a seeded repository must still reach the
+lint gate's refusal. The first version popped `tools.build_runtime` inside
+`mock.patch.dict(sys.modules)`. The gate's `from tools.build_runtime import` then re-executed the
+module and bound the new object as `tools.build_runtime`; on exit `patch.dict` restored the
+dict entry but not the package attribute. The full suite under `-n 24` was green (the rows that
+cared ran in other workers). `scripts/mutation_check.py`'s baseline, which runs the `--test-cmd`
+serially, went red on `test_execution_sites::test_the_shell_active_set_is_the_librarys_own`: it
+patched `_SHELL_ACTIVE_CHARS` on the object `from tools import build_runtime` returned, while
+`tools.execution_sites` read the object it had imported before the pop. Fixed (ea14dccf) by
+patching the package attribute too; round 2 then found the row raised `AttributeError` when no
+earlier row had imported the module, so the module is imported before it is patched
+(765921f3). A second error from the same loop: I passed `--continue-on-collection-errors` to the
+script instead of inside `--test-cmd`, and the backgrounded run reported only "failed" — read
+the output file before relaunching.
