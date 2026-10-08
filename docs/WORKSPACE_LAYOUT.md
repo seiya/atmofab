@@ -2,7 +2,7 @@
 
 ## Position of this document
 
-Shows the **canonical directory layout** under `workspace/` with a tree diagram. So that the orchestration agent can reference this file instead of confirming positions with `ls workspace/...`, it lists the **generation timing** / **writer** / **reader** for each path.
+Shows the **canonical directory layout** under `workspace/` with a tree diagram. So that a reader (operator or developer) can reference this file instead of confirming positions with `ls workspace/...`, it lists the **generation timing** / **writer** / **reader** for each path.
 
 Related canonical sources:
 - orchestration contract: `docs/ORCHESTRATION.md`
@@ -144,7 +144,7 @@ workspace/
 | `orchestration_meta.json` | `init` | runtime commands such as `set-status` | orchestration agent / runtime | `status`, `dependency_readiness`, `orchestration_agent_run_id`, etc. |
 | `preflight.json` | `preflight` | runtime only (including auto-update of probed_at) | runtime / orchestration agent | manual editing forbidden. `status=pass` + `can_launch_*=true` required |
 | `llm_config_snapshot.yaml` | cold `run_workflow.py` init | `run_workflow.py` (once, before any leaf launch) | the operator | the exact bytes `invocation.llm_config_sha256` describes. The default configuration is the operator's own gitignored `./llm.yaml`, so an edit mid-run is otherwise unrecoverable and the resume refusal would be permanent; the `llm_config_changed_since_launch` message names this file as the restore source. Never rewritten on resume |
-| `failure_analysis.json` | on a dev mode fail | orchestration agent (`Edit`/`Write`) | runtime (double-writes to `failure_analysis.runtime.<uuid12>.json` as a safety-net) | the `orchestration_agent_run_id` field is required |
+| `failure_analysis.json` | on a dev mode fail | `run_workflow.py` (`_write_failure_analysis`, exclusive create) | the operator; `tools/audit_orchestration.py` (`collect_failure_analysis`) | the `orchestration_agent_run_id` field is required. A file already present — one the operator annotated, or a stale one — is preserved, and the current payload goes to `failure_analysis.runtime.<uuid12>.json` (a failed write falls back to `failure_analysis.fallback.<uuid12>.json`) |
 | `cross_target/<node_key_safe>.json` | just before `set-status pass` of a run that reached Validate, for a node whose IR has a cross-target predicate | conductor (`_cross_target_stop`) | the operator | the node's `cross-target agreement` ([issue #383](https://github.com/seiya/atmofab/issues/383)) as `check-phase-certified --step validate` reported it: `status`, `comparands`, `absent`, `disagreeing`, `records`, `own_run`, `error`, plus `node_key`, `target_id` and `evaluated_at`. Written for every status but `not_applicable`, and overwritten by a later run of the same orchestration. A relation between two runs at one time, so it is kept here and not in the run directory, whose deliverables Validate's `artifact_hashes` pin; nothing reads it back |
 | `agent_runs.jsonl` | `record-agent-run` | runtime (append across the lock) | runtime / validator | 1 line = 1 agent_run record — the ATTEMPT record of [issue #250](https://github.com/seiya/atmofab/issues/250): a step / substep row carries `derivation_key` (and `node_key` / `step` / `substep`), copied from its launch request, whatever its outcome |
 
@@ -227,7 +227,7 @@ than a redirect, and `output_manifest_write_guard` as what refused the alternati
 and PR-2 of the same issue deleted the output manifest that declared the root along with the
 `run-gate` subcommand that left a result copy in it. A `pure-function leaf` writes no file at
 all, temporary or otherwise: it returns one JSON document the host writes from, and it runs
-under a read-only sandbox in which this root is not bound writable.
+under a sandbox that binds this root writable (one of its two scratch roots) but gives it no write tool there (a claude leaf has no tools; a codex leaf runs under `--sandbox read-only`).
 
 What uses the root is the CONDUCTOR's own deterministic substeps, in its own process: the
 out-of-source build directory `Build` writes objects to, and the run and quality-check output

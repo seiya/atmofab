@@ -228,8 +228,8 @@ def _discard_isolated_homes(orchestration_id: str) -> None:
 
 # A wrapper around `init_orchestration` stood here until Z4 (issue #171): it seeded every
 # synthetic repo with `leaf_config/claude/settings.json`, because a claude-shaped launch
-# prepared its private home from that file and fail-closed without it. No launch reads a
-# settings layer any more, so the file is gone and the choke point with it — the real
+# prepared its private home from that file and fail-closed without it. No launch prepares a
+# private home any more, so the file is gone and the choke point with it — the real
 # `init_orchestration` is imported directly.
 
 
@@ -8310,9 +8310,8 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
     def test_new_agent_run_id_script_emits_parsable_uuid(self) -> None:
         """`tools/new_agent_run_id.py` prints a parsable UUID4 to stdout and exits 0.
 
-        Canonical UUID source for Claude Code orchestration agents — replaces
-        `cat /proc/sys/kernel/random/uuid` (blocked by session sandbox) and
-        `python3 -c 'import uuid; ...'` (blocked by forbid_python_inline_write).
+        Canonical UUID source for a child `agent_run_id` (the conductor calls it as
+        a subprocess).
 
         Exercised via subprocess (not in-process) on purpose: the script must
         remain runnable even when `tools.orchestration_runtime` or its import
@@ -14976,8 +14975,8 @@ class RecordTimeoutTests(unittest.TestCase):
         return arid
 
     def test_record_launch_prepares_no_claude_home_for_any_launch(self) -> None:
-        """Z4 (issue #171): the private CLAUDE_CONFIG_DIR existed for the AGENTIC leaf, the
-        only launch that read a settings layer. With that leaf retired, NO launch prepares one
+        """Z4 (issue #171): the private CLAUDE_CONFIG_DIR existed for the AGENTIC leaf, to
+        keep the operator's configuration out. With that leaf retired, NO launch prepares one
         — not the pure leaf (`--safe-mode`, no tools, no hooks) and not the deterministic
         in-process substep, which spawns no process at all.
 
@@ -15044,8 +15043,8 @@ class RecordTimeoutTests(unittest.TestCase):
         rendered argv is the only thing that reflects the wiring rather than restating it.
 
         Since Z4 (issue #171) the launch this drives is the PURE one, so there is no private
-        `CLAUDE_CONFIG_DIR` among the deliverer-owned names — a pure leaf reads no settings
-        layer and `record_launch` prepares no home for it. The sibling row below keeps its own
+        `CLAUDE_CONFIG_DIR` among the deliverer-owned names — a pure leaf takes `--safe-mode`
+        and `record_launch` prepares no home for it. The sibling row below keeps its own
         `request_extra` and adds the host-poison control.
         """
         authored = {"PATH": "/usr/bin:/bin", "HOME": "/tmp/leaf-home",
@@ -21062,10 +21061,10 @@ class SpecCatalogZeroByteCorruptionTests(unittest.TestCase):
 class TerseResultProjectionTests(unittest.TestCase):
     """Default terse stdout projection for high-frequency bookkeeping subcommands.
 
-    The orchestration agent re-reads its whole transcript every turn, so echoing
-    the full bookkeeping payload (record-agent-run reflects the entire input,
-    up to ~50KB) inflates its resident context and the cache-read cost that
-    scales with it. The CLI sink projects successful results to a minimal field
+    The default dates from an LLM orchestrator, which re-read its whole transcript
+    every turn, so the full bookkeeping payload (record-agent-run reflects the
+    entire input, up to ~50KB) inflated its context; the conductor only parses the
+    projected fields. The CLI sink projects successful results to a minimal field
     set by default; --verbose restores the full JSON.
     """
 
@@ -21817,11 +21816,10 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(default_agent_model_for_backend(None), "")   # type: ignore[arg-type]
 
     def test_the_leaf_label_does_not_read_the_operators_home(self) -> None:
-        """Issue #63 separates the two readers at the function boundary. An agentic
-        claude leaf launches with `--setting-sources user` against a private home and
-        therefore cannot see the operator's `~/.claude`; a stamp from it would label the launch
-        with a model
-        that could not have run.
+        """Issue #63 separates the two readers at the function boundary. It did so because
+        the agentic claude leaf could not see the operator's `~/.claude`; a pure leaf can
+        (issue #446), and the separation stays because the leaf stamp is a prediction the
+        result envelope corrects (`default_agent_model_for_backend`).
 
         Pinned STRUCTURALLY — `resolve_claude_model_alias` is made to raise — rather than by
         comparing values. Both functions fall back to DEFAULT_CLAUDE_MODEL_ALIAS, so on the
@@ -25217,7 +25215,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         """A repo the home preparer can run against, with its operator credential beside it.
 
         Named `_claude_repo` no longer: since Z4 (issue #171) there is only one preparer left
-        (`_prepare_codex_workflow_home`), because a claude leaf reads no settings layer and is
+        (`_prepare_codex_workflow_home`), because a claude leaf takes `--safe-mode` and is
         given no private home. This helper keeps its callers and hands back the same `Path`,
         and `_prepare_home` below is what every row drives."""
         root = Path(td)
@@ -26637,7 +26635,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         every launch would fail closed.
 
         `CLAUDE_CONFIG_DIR` left this set with the agentic leaf (Z4, issue #171): a pure
-        claude leaf reads no settings layer and is prepared no private home, so a profile
+        claude leaf takes `--safe-mode` and is prepared no private home, so a profile
         naming one describes a configuration surface nothing built. It is asserted REFUSED
         below rather than merely dropped from this list."""
         profile = self._profile()

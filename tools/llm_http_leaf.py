@@ -663,9 +663,10 @@ def _anthropic_request(
     url = entry.base_url.rstrip("/") + "/v1/messages"
     payload: dict[str, Any] = {
         "model": entry.model,
-        # The system channel is pinned to the same fixed prompt the CLI pure leaf gets via
-        # `--system-prompt`, so the model's total input stays a function of the host-assembled
-        # body alone (A2) on either transport.
+        # The system channel is the same fixed prompt the CLI pure leaf gets via
+        # `--system-prompt`. On this transport the model's total input is a function of the
+        # host-assembled body alone (A2); on the CLI transport it is not — the CLI adds its own
+        # text (`pure_leaf.PURE_SYSTEM_PROMPT`; issue #454).
         "system": PURE_SYSTEM_PROMPT,
         "messages": list(messages),
         # Required by this API, unlike OpenAI's, where it is optional.

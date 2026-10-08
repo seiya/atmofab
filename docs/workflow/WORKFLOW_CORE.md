@@ -16,9 +16,9 @@ This document defines the workflow's phase sequence, inter-phase input/output co
 
 ## Document responsibility
 - This document (`WORKFLOW_CORE.md`) defines, as the canonical source, the workflow common invariants, phase sequence, per-`phase` I/O contract list, artifact layout rules, and completion criteria. The detailed contract of each `phase` uses the files under [phases/](phases/) as the canonical source.
-- `ORCHESTRATION.md` defines the workflow's agent hierarchical execution conventions as the canonical source.
+- `ORCHESTRATION.md` defines the workflow's orchestration conventions — how the conductor launches each leaf and records it — as the canonical source.
 - `SPEC.md` defines the overall policy, `spec` management requirements, and registry requirements as the canonical source.
-- The execution procedure, retry procedure, tool-call order, and on-failure operations of each phase use the corresponding `SKILL.md` as the canonical source.
+- The core phases have no `SKILL.md`: a leaf reads none, and its whole contract is the launch prompt the host renders (`docs/AGENT_SKILLS.md`). The retry procedure and on-failure operations of each phase are canonical in its file under [phases/](phases/) and in `ORCHESTRATION.md`.
 - The contracts of the optional flows (`Tune` / `Promote`) are reserved and not yet designed; `docs/design/simplification_program.md` §Premise statements records that both are required and that their reserved surface stays. They are not included in the core workflow.
 
 ## term rules
@@ -59,7 +59,7 @@ This document defines the workflow's phase sequence, inter-phase input/output co
 8. Workflow execution uses, as input, only the repository-managed `spec` canonical source and the preceding artifacts generated in the relevant trial.
 9. Do not extract and complete a requirement, judgment rule, or input/output contract not defined in `docs/`, `spec/`, or the relevant trial's artifacts from the implementation under `tools/`, verification scripts, test code, or validator code.
 10. Workflow execution must execute each phase (`Compile` / `Generate` / `Validate`) with the `LLM`. `Build` is a deterministic process and is executed by the conductor's in-process call to the build-runtime library's `compile_project` (`docs/BUILD_RUNTIME.md`).
-11. For workflow execution, a script that proxies multiple phases at once must not be newly generated or executed. Phase execution allows only `orchestration agent -> step agent` or `orchestration agent -> substep agent`.
+11. For workflow execution, a script that proxies multiple phases at once must not be newly generated or executed. Phase execution allows only the conductor launching each leaf (`docs/ORCHESTRATION.md`).
 12. The storage root for workflow artifacts allows only `workspace/`. If `workspace/` does not exist, create it directly under the repository root.
 13. During workflow execution, the artifacts under `workspace/ir` and `workspace/pipelines` of the target `DAG` must not be deleted.
 14. `quality check` uses the comparison of `diagnostics.json` and `verdict.json` as the canonical source, and must not finalize pass/fail by `stdout` diff alone.
@@ -67,17 +67,17 @@ This document defines the workflow's phase sequence, inter-phase input/output co
 16. `trial_meta.json` requires recording `generated_by_stage`, `source_source_id`, `source_binary_id`, `source_command_ref`, and `source_artifact_hash` (`run_id` is canonically encoded by the `runs/<run_id>/` directory path itself where the trial_meta is placed, and a separate `source_run_id` field is not recorded — because it is self-referential / circular). Each entry of `source_command_ref` declares a `tool_name` (`run_program` or `run_quality_checks`), and must match the `tool_name` of the corresponding build-runtime `command_log` record. The trial_meta of the execute part of `Validate` must have at least 1 entry with `tool_name='run_program'`. The `source_meta.json` that `source_source_id` points to must have `verification_status=pass`. The `<pipeline>/binary/<source_binary_id>/bin/` that `source_binary_id` points to must exist, and the executable of the `run_program` log record must resolve under that bin/.
 17. Across different `pipeline_id`, the artifact body must not be reused by changing only the `id`-family metadata. When detected, treat it as `copy_based_artifact_reuse` and mark it `invalid`.
 18. A violation of these norms is a workflow specification violation, and marks the relevant `pipeline` `invalid`.
-19. All phases of the core workflow must not write outside of `workspace/`. The exception for the optional flow (`Promote`) is reserved by the `promote` write roots in `tools/orchestration_runtime.py` and is defined with that flow when it is designed (`docs/design/simplification_program.md` §Premise statements).
+19. All phases of the core workflow must not write outside of `workspace/`. The exception for the optional flow (`Promote`) is reserved by the `promote` branch of the output-path check `_allowed_output_paths_for_launch` in `tools/orchestration_runtime.py` and is defined with that flow when it is designed (`docs/design/simplification_program.md` §Premise statements).
 20. Rule 19 is held by the launch shape, not detected after the fact: a `pure-function leaf` holds no write authority (it returns one document, and a CLI leaf's sandbox binds nothing under the checkout but its own two scratch roots under `workspace/`), and the host writes every artifact. No phase captures a write baseline and no diff is taken (`docs/ORCHESTRATION.md` §baseline diff contract on re-submission; the repository-wide baseline went with issue #445).
 21. (Retired with rule 20's diff, issue #445; the number is kept so later rules keep theirs.)
-22. When `python` execution is used in the workflow path, a setting in which `__pycache__` is not generated outside of `workspace/` is required. Use `PYTHONDONTWRITEBYTECODE=1` or `PYTHONPYCACHEPREFIX=workspace/.pycache/<pipeline_id>/`.
+22. When `python` execution is used in the workflow path, a setting in which `__pycache__` is not generated outside of `workspace/` is required. Use `PYTHONDONTWRITEBYTECODE=1` or a `PYTHONPYCACHEPREFIX` under `workspace/` (`tools/run_workflow.py` redirects the host's own cache to `workspace/.pycache`).
 23. (Retired with rule 20's diff, issue #445.)
 24. (Retired with rule 20's diff, issue #445.)
 25. The workflow's hierarchical execution contract, and the requirements of `preflight`, `agent_runs.jsonl`, `agent_graph.json`, and `step_result.json` must be applied using `ORCHESTRATION.md` as the canonical source.
 26. The canonical entrypoint for starting the workflow is `python3 tools/run_workflow.py <spec_ref> <until_phase> --target <target_id> [--llm-config <path>]`. `<until_phase>` specifies one of `compile` / `generate` / `build` / `validate`; `--target` names the target profile (`spec/targets/<target_id>.yaml`), required while more than one is declared; `--llm-config` selects the LLM of each phase / `substep` from a configuration file (default `./llm.yaml`, created by copying a sample from `docs/examples/`), and a `codex_cli` entry additionally requires an explicit `model:`. The configuration file is the only thing that says what a leaf launches.
-27. When `preflight` is `fail`, the `orchestration agent` must not launch a child `agent`. The workflow must stop with `fail`.
+27. When `preflight` is `fail`, the conductor must not launch a leaf. The workflow must stop with `fail`.
 28. `preflight.json` must not be manually edited or post-edited to make it `pass`.
-29. Just before launching a child `agent`, confirm the launchability of the child `agent` on its backend's required capability checks, re-running the execution platform's live check unless one succeeded within the preflight TTL (canonical: `docs/ORCHESTRATION.md` §preflight and launch control; the TTL is §Operations Rules item 37).
+29. Just before launching a leaf, confirm its launchability on its backend's required capability checks, re-running the execution platform's live check unless one succeeded within the preflight TTL (canonical: `docs/ORCHESTRATION.md` §preflight and launch control; the TTL is §Operations Rules item 37).
 30. The phase artifacts of `workspace/ir/` and `workspace/pipelines/` are authored by the conductor's own process, inside a recorded phase (`docs/ORCHESTRATION.md` §phase artifact authorship). Until Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) the author was the child leaf, bounded by a capability's `write_roots`; a leaf holds no write authority now.
 31. The requirement definition for the output format, input/output contract, and judgment conditions must reference only `controlled_spec.md`, `tests.md`, `deps.yaml`, `spec.ir.yaml`, and `docs/` canonical-source documents.
 32. The verification python scripts, quality-check implementations, and verify implementations under `tools/` are treated as input dedicated to validity confirmation, and must not be referenced as input for the requirement definition or output-format definition.
@@ -103,7 +103,7 @@ This document defines the workflow's phase sequence, inter-phase input/output co
 
 ### Agent hierarchical execution
 - Apply `ORCHESTRATION.md` for the workflow's hierarchical execution contract, parent-child relationships, launch order, stop conditions, and execution-record format.
-- This document, as the canonical source for the phase contract the `orchestration agent` passes to the child `agent`, defines each phase's `execution input`, `verification input`, and `output`.
+- This document, as the canonical source for the phase contract the conductor passes to each leaf, defines each phase's `execution input`, `verification input`, and `output`.
 
 ### artifact layout rules
 #### Root structure

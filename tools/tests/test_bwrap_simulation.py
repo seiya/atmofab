@@ -925,8 +925,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         row execs the real CLI with the production argv under the rendered profile and
         observes its first request at a loopback stand-in. `ANTHROPIC_BASE_URL` is set by an
         `env` prefix INSIDE the sandbox because the profile's env allowlist refuses the name
-        (it is the redirect the allowlist exists to close); `--safe-mode` reads no settings
-        layer, so the env variable is the only redirect available and it is honoured.
+        (it is the redirect the allowlist exists to close); set there, it is honoured.
         """
         argv, profile, _repo = self._pure_launch_under_profile("claude", private_home=False)
         server = _Loopback400()

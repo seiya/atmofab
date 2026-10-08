@@ -290,19 +290,13 @@ class ResolvedLeafEntry:
     a mutable one would let a late branch rewrite what was already recorded.
 
     `model` empty is MEANINGFUL, not missing: for `claude_cli` it means no `--model` is
-    passed, so the CLI's own default decides and the recorded label is the spec-side
+    passed, so the CLI resolves the model and the recorded label is the spec-side
     prediction `orchestration_runtime.default_agent_model_for_backend` supplies. That
-    function's docstring is the ONE statement of what the stamp does and does not claim;
-    this sentence deliberately does not restate it. (It has been restated wrongly three
-    times here — first asserting the operator's settings decide, then that a leaf never
-    reads them, then that on the agentic path the prediction constrains the outcome. The
-    last was true when it was written: `--setting-sources` closes the settings-file
-    channel, not the ENVIRONMENT, and `ANTHROPIC_MODEL` then decided the unpinned model
-    — measured, issue #63. That environment channel is now closed too: the conductor's
-    `_child_env` reconstructs the leaf environment from
-    `orchestration_runtime.LEAF_ENV_ALLOWLIST`, which `ANTHROPIC_MODEL` is outside, so an
-    unpinned model is decided by the CLI's own default and nothing else. A fifth wording
-    is not the fix; having one home for the rule is.) For `codex_cli` it is an operator
+    function's docstring is the ONE statement of how the CLI resolves it and of what the
+    stamp does and does not claim; this sentence deliberately does not restate it. (It has
+    been restated here four times, each against the launch shape of its day; the last —
+    that the CLI's own default decides "and nothing else" — was measured false in issue
+    #446. Another wording is not the fix; having one home for the rule is.) For `codex_cli` it is an operator
     omission, caught at run START by `validate_runnable` rather than at load, so that a
     configuration whose codex slug has been blanked still LOADS — and can be tested, and can be
     reported on — instead of failing where the rule cannot be named."""

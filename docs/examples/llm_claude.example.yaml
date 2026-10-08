@@ -24,10 +24,12 @@
 #            recorded on its `agent_runs` row. Because this file DECLARES it, it is passed as
 #            `claude --model opus`. Delete the `model:` lines and no `--model` is passed,
 #            which hands the choice to whatever that leaf's launch resolves to. Every leaf is
-#            a PURE leaf since Z4 (issue #171), and a pure launch takes `--safe-mode` with no
-#            settings-layer flag, so there the operator's own `~/.claude/settings.json` can
-#            still decide the unpinned model. Declaring `model:` here is what makes that a
-#            recorded choice rather than an ambient one.
+#            a PURE leaf since Z4 (issue #171), and `--safe-mode` disables customizations but
+#            not settings, so the operator's own `~/.claude/settings.json` decides the unpinned
+#            model. Declaring `model:` here records the choice, but an ALIAS such as `opus` can
+#            still be remapped by that settings file's `env` block
+#            (`env.ANTHROPIC_DEFAULT_OPUS_MODEL`); only a full model id was measured unaffected
+#            (issue #453).
 #   effort   `low` | `medium` | `high` | `xhigh` | `max`, passed as `claude --effort`.
 #            Delete the lines and no `--effort` is passed; the operator's own `effortLevel`
 #            then decides, for the same reason as the model above.

@@ -1052,8 +1052,8 @@ def _write_failure_analysis(
       write sidecar with existing_file_status="valid".
       → analysis_ref = failure_analysis.json, runtime_ref = failure_analysis.runtime.json,
         stale_canonical_ref = None
-    - When failure_analysis.json exists but is invalid/stale: preserve canonical (agent
-      owns it), write current payload to sidecar with existing_file_status="invalid".
+    - When failure_analysis.json exists but is invalid/stale: preserve canonical (an
+      earlier writer's, or the operator's), write current payload to sidecar with existing_file_status="invalid".
       analysis_ref is redirected to the sidecar so callers always get current-run data.
       → analysis_ref = failure_analysis.runtime.json, runtime_ref = None,
         stale_canonical_ref = failure_analysis.json
@@ -1065,7 +1065,7 @@ def _write_failure_analysis(
     canonical_written = _atomic_write_json_exclusive(path, payload, tmp_dir=effective_tmp)
     if canonical_written:
         return str(rel), None, None
-    # File already existed (or appeared concurrently) — agent owns canonical; write sidecar only.
+    # File already existed (or appeared concurrently) — preserve canonical; write sidecar only.
     existing = _read_json_if_exists(path)
     orchestration_agent_run_id = payload.get("orchestration_agent_run_id") if isinstance(payload.get("orchestration_agent_run_id"), str) else None
     existing_is_valid = _is_valid_failure_analysis(
@@ -3027,15 +3027,15 @@ def _run_main(
         f":{base_env['PYTHONPATH']}" if base_env.get("PYTHONPATH") else ""
     )
     # Prevent Python from writing *.pyc / __pycache__ bytecode under tools/.
-    # Without this, any `python3 tools/orchestration_runtime.py` call made by
-    # the orchestration agent (or child subprocesses) generates
+    # Without this, any `python3 tools/orchestration_runtime.py` subprocess the
+    # conductor starts generates
     # tools/__pycache__/orchestration_runtime.cpython-<ver>.pyc. That used to be
     # refused at record-agent-run as an unauthorized write (the output manifest and
     # the terminal diff both went with issue #171 PR-2); it is still bytecode in the
     # source tree of a checkout every structural check reads.  Setting this in the shared env
-    # dict ensures it propagates to: (a) _runtime_command() subprocesses,
-    # (b) the orchestration agent launch subprocess, and (c) any grandchild
-    # `python3 tools/...` invocations the agent makes.
+    # dict ensures it propagates to `_runtime_command()` subprocesses and, via the
+    # env copied from it, to the conductor's own (`orchestration_runtime.py`,
+    # `new_agent_run_id.py`).
     base_env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     # NOTE: this only covers SUBPROCESSES. The IN-PROCESS conductor host's own bytecode is kept
     # out of the repo source tree by the `sys.pycache_prefix` redirect installed near the top of
@@ -4133,7 +4133,7 @@ def _run_node(
                             fail_output["stale_canonical_ref"] = stale_canonical_ref
                     except Exception as primary_exc:  # noqa: BLE001
                         # Primary write failed — attempt an emergency exclusive-create write so
-                        # at least some artifact survives without clobbering agent-owned canonical.
+                        # at least some artifact survives without clobbering an existing canonical file.
                         orch_dir = (
                             repo_root / "workspace" / "orchestrations" / orchestration_id
                         )

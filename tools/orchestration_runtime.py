@@ -4950,8 +4950,8 @@ def _clear_stale_active_child_markers(
     """Clear a stale active_child window left by a host that died mid-launch.
 
     When the host process exits while a child launch is in flight (interrupted /
-    hung child, or a token-limit kill), no live orchestration agent runs
-    deactivate-child / record-timeout, so `active_child_agent_run_id.txt` and the
+    hung child, or a token-limit kill), no live host is left to finalize the child, and
+    nobody has yet run deactivate-child / record-timeout by hand, so `active_child_agent_run_id.txt` and the
     `active_children/<arid>.txt` markers persist. The Claude-backend sequential
     check in `record_launch` then rejects the next launch, permanently wedging the
     documented recovery (`launch_incomplete_active_child` / `llm_launch_interrupted`).
@@ -6758,9 +6758,7 @@ def _mandatory_phase_outputs_for_launch(
     substep_token = str(request_payload.get("substep") or "").strip().lower()
     pipeline_ref = _normalize_rel_posix(str(request_payload.get("pipeline_ref") or ""))
     # Phase-2: the pipeline ``lineage.json`` is no longer a leaf output — it sits at the
-    # pipeline root, which must stay non-writable to the sandboxed leaf (the Edit/Write
-    # tools' atomic temp-sibling+rename would need the whole root writable). The conductor
-    # authors it host-side (workflow_conductor._write_lineage) before generate.gate's static
+    # pipeline root, and a pure leaf writes nothing. The conductor authors it host-side (workflow_conductor._write_lineage) before generate.gate's static
     # post_generate gate runs, so it is NOT injected into the generate child's
     # allowed_output_paths (historical audit: orch_20260615T095217Z_74450292 predates this).
     if step_token != "validate" or substep_token != "execute" or not pipeline_ref:
@@ -7114,7 +7112,8 @@ def _allowed_output_paths_for_launch(
                 or base.endswith("_meta.json")
             )
         if step_token == "promote":
-            # Promote contract per docs/workflow/phases/phase_07_promote.md:
+            # Promote output shape (reserved; the flow's phase document is not yet written —
+            # docs/design/simplification_program.md §Premise statements):
             #   releases/<spec_kind>/<domain>/<family>/<spec_id>/
             #     <target_id>/<release_id>/<artifact_path...>
             #   spec/registry/spec_catalog.yaml (exact file)
@@ -7294,10 +7293,10 @@ def _allowed_output_paths_for_launch(
 # Integrity-protected audit logs written exclusively by the build-runtime library as evidence
 # of tool execution. `validate_pipeline_semantics.py` reads these files and
 # trusts their JSONL records (e.g. `tool_name`, `ok`, `command`) as the source
-# of truth that a build-runtime entry point actually ran. Direct `Edit` / `Write` access by
-# child agents would let them forge successful runs, so canonical placements
-# (computed by `_canonical_command_log_paths()`) are excluded from
-# `allowed_file_tool_paths` (and so are never file-tool-writable by a child).
+# of truth that a build-runtime entry point actually ran. Their canonical placements lie
+# outside every read-write bind of a leaf's sandbox profile, so the library is their only
+# writer; the placements are computed by
+# `_canonical_command_log_paths()` so the validators trust only those.
 #
 # Protection is scoped to canonical placements only — a non-canonical file
 # that happens to share this basename (e.g. an unrelated source asset under a
@@ -7499,7 +7498,9 @@ def _runtime_ro_bind_paths() -> list[str]:
 # which is the repo's default launch, since `--model` is passed only for a model the
 # configuration FILE declares. Neither appears in any artifact. So the rule is the same
 # one the configuration surface already follows: what the leaf gets is what this file
-# names, and a name absent here is absent from the child.
+# names, and a name absent here is absent from the child. What this closes is the PROCESS
+# environment only: a claude leaf's `HOME` is the operator's, and an `env` block in the
+# settings file under it sets both names again (measured; issue #453).
 #
 # Division of labour, stated once. The conductor's `_child_env` is the single AUTHOR of
 # a leaf's environment (it calls `leaf_env_from` and adds the per-run values); the bwrap
@@ -7517,8 +7518,11 @@ LEAF_ENV_ALLOWLIST: dict[str, str] = {
         "env -> the default below."
     ),
     "HOME": (
-        "the CLI's own non-config fallbacks. NOT a config home: a claude leaf reads no "
-        "settings layer at all, and a codex leaf's home arrives as CODEX_HOME."
+        "the CLI's own fallbacks, and for a claude leaf its settings: `--safe-mode` "
+        "disables customizations but not settings, so the operator's `~/.claude` "
+        "settings (their `env` block and `model` key) decide an unpinned leaf's model "
+        "(`default_agent_model_for_backend`; issues #446, #453). A codex leaf's home arrives "
+        "as CODEX_HOME."
     ),
     "LANG": (
         "text-I/O encoding for the leaf and its subprocesses. Passed together with "
@@ -7661,7 +7665,7 @@ def leaf_env_from(host_env: Mapping[str, str]) -> dict[str, str]:
 # said the tuple "is the exclusion set `_child_env` enforces", which the conductor-side
 # comment had already retracted — leaving the rule's two homes disagreeing.
 # `CLAUDE_CONFIG_DIR` left this tuple with the agentic leaf (Z4, issue #171): a pure claude
-# leaf takes `--safe-mode`, reads no settings layer, and is prepared no private home, so there
+# leaf takes `--safe-mode` (no customizations) and is prepared no private home, so there
 # is no config home to declare through the sandbox and none for `_child_env` to pop.
 _BACKEND_HOME_ENV_VARS = ("CODEX_HOME",)
 
@@ -10682,7 +10686,7 @@ def resume_orchestration(
         # (idempotent — the helper no-ops once the row is already `running`).
         _reset_orchestration_run_row_to_running(repo_root, orchestration_id)
         # A host that died mid-launch leaves the active_child window open (no live
-        # agent ran deactivate-child / record-timeout). The terminal status proves
+        # host finalized the child, and nobody ran deactivate-child / record-timeout). The terminal status proves
         # no child is actually running, so clear the stale markers here — otherwise
         # the resumed agent's first record-launch hits the Claude-backend sequential
         # check and is rejected, permanently wedging recovery for
@@ -10827,9 +10831,8 @@ def resolve_claude_model_alias(home: Path | None = None) -> str:
     their model only in the local file is still honored. This is the spec-side value
     for the ORCHESTRATION row — the process `tools/run_workflow.py` starts, which does
     run in the operator's own environment and does read their settings. It is NOT the
-    label for a leaf: an agentic claude leaf is launched with `--setting-sources
-    project` and never reads this home, so `default_agent_model_for_backend` deliberately
-    does not call this. Falls back to DEFAULT_CLAUDE_MODEL_ALIAS when no settings file is
+    label for a leaf: `default_agent_model_for_backend` does not call it (its docstring
+    says why). Falls back to DEFAULT_CLAUDE_MODEL_ALIAS when no settings file is
     present / readable or none carries a `model` key. (Only the spec-side label is
     affected; the EXACT version is always recovered post-run from the result envelope,
     so a fallback here is cosmetic.)"""
@@ -10854,26 +10857,33 @@ def default_agent_model_for_backend(backend: str) -> str:
     the backend's own unpinned alias ("codex"). Other/unknown backends get "" (left to
     sibling backfill). Never returns a pinned version.
 
-    It is a PREDICTED label, not a measurement, on both leaf paths — the conductor
-    passes no `--model` for an undeclared model, so what actually ran is decided by the
-    CLI. The measured value replaces it after the fact from the leaf's own result
-    envelope (`_agent_run_json`), which is the only reading either path can rely on.
-    What the prediction is up against is now NARROWER than it was: `ANTHROPIC_MODEL`
-    used to decide the unpinned model from the operator's environment (measured on CLI
-    2.1.235), and it no longer reaches a leaf at all — the leaf's environment is
-    reconstructed from `LEAF_ENV_ALLOWLIST`, which that name is outside. The label stays
-    a prediction, because the CLI's own default is still the CLI's to choose; the
-    difference is that the choice is now the CLI's alone.
+    It is a PREDICTED label, not a measurement — the conductor passes no `--model` for an
+    undeclared model, so what actually ran is decided by the CLI. The measured value
+    replaces it after the fact from the leaf's own result envelope (`_agent_run_json`),
+    which is the only reading the row can rely on.
 
-    It deliberately does NOT read the operator's `~/.claude` (`resolve_claude_model_alias`,
-    which serves the orchestration row instead). An agentic claude leaf runs with
-    `--setting-sources user` against a private home and cannot see the operator's, so
-    stamping a value read from
-    it would describe a run that did not happen. A PURE claude leaf is asymmetric: its
-    flag set (`pure_leaf_flags`) carries no `--setting-sources`, so operator settings can
-    still decide its model. Predicting per-path would make the stamp claim a precision
-    neither path has; treating both as predictions and letting the envelope correct them
-    is the one consistent reading."""
+    WHAT DECIDES A CLAUDE LEAF'S MODEL — the one statement of it; other sites point here.
+    `--safe-mode` disables customizations, not settings, and the leaf's `HOME` is the
+    operator's (`HOME` is on `LEAF_ENV_ALLOWLIST`), so the operator's
+    `~/.claude/settings.json` applies to the leaf, its `env` block included. That `env`
+    block is a second environment channel the allowlist does not close (it carries
+    `ANTHROPIC_BASE_URL` too); `ANTHROPIC_MODEL` in the operator's PROCESS environment takes
+    no part. Measured on CLI 2.1.294 with the exact `pure_leaf_flags()` set against a
+    loopback endpoint that stored the request (issue #446 comment 6053241634 for the `model`
+    key; issue #453 comments for the `env` block and the alias remap):
+      - no `--model`, a settings `model` key       -> that key's model;
+      - the same plus `env.ANTHROPIC_MODEL`        -> the env value;
+      - `--model <alias>` (e.g. `opus`)            -> beats both, BUT an
+        `env.ANTHROPIC_DEFAULT_OPUS_MODEL` remaps the alias itself, pinned or not;
+      - `--model <full model id>`                  -> that id, unaffected by the remap;
+      - no settings file                           -> the CLI's own default.
+    These are measured cases, not a complete list of what the CLI reads (admin policy
+    settings, for one, were not measured). Whether to close the channel is issue #453.
+
+    It still deliberately does NOT read the operator's `~/.claude`
+    (`resolve_claude_model_alias`, which serves the orchestration row instead): the stamp
+    is a prediction either way, and the envelope correction is what makes the row true.
+    Whether an unpinned claude leaf should be allowed at all is a separate question."""
     b = (backend or "").strip().lower()
     if b == "claude":
         return DEFAULT_CLAUDE_MODEL_ALIAS
@@ -12344,8 +12354,8 @@ def _require_secure_backend_home(home: Path, label: str = "Codex", *,
                                  tighten: bool = False) -> None:
     """Fail closed unless ``home`` is a private, non-symlinked directory.
 
-    ONE spelling for both backends: the Claude private home (issue #63) has the
-    same threat model as the Codex one — a world-writable or symlinked home lets
+    ONE spelling for every backend home: the Claude private home (issue #63; gone with
+    the agentic leaf in Z4, issue #171) had the same threat model as the Codex one — a world-writable or symlinked home lets
     another process substitute the very configuration that is about to be
     SHA-pinned, so the pin would certify bytes the leaf never loads. ``label``
     only names the backend in the message; the checks are identical by design and
@@ -12973,9 +12983,9 @@ def _secure_backend_home_file(
 
     ``verify_existing=False`` seeds ``data`` when the file is absent but accepts
     whatever an already-present file contains. That is required for a file the
-    BACKEND itself rewrites: the Claude private home's ``.claude.json`` gains
-    cached feature flags and a machine id on first launch (measured, CLI 2.1.235),
-    so a warm resume re-preparing the same home would otherwise fail with
+    BACKEND itself rewrites: the Claude private home's ``.claude.json`` (gone with the
+    agentic leaf in Z4, issue #171) gained cached feature flags and a machine id on
+    first launch (measured, CLI 2.1.235), so a warm resume re-preparing the same home would otherwise fail with
     "differs from its verified source". Files the workflow PINS (``settings.json``,
     Codex's ``hooks.json`` / ``config.toml``) keep the default and are verified.
     """
@@ -13726,9 +13736,9 @@ def probe_execution_platform(
     # Every probe check gates, on both backends — a check added to a prober later fails
     # closed by default rather than silently becoming non-gating.
     # What a claude leaf needs of its host is only that the CLI is there, answers
-    # `--version` and `--help`, and takes its prompt on stdin: a pure leaf loads no settings
-    # layer (`--safe-mode`), is launched with no MCP configuration and no tools, and runs no
-    # hook. The three probes that stood here — the committed leaf configuration, the MCP
+    # `--version` and `--help`, and takes its prompt on stdin: a pure leaf loads no
+    # customization (`--safe-mode`), is launched with no MCP configuration and no tools, and
+    # runs no hook. The three probes that stood here — the committed leaf configuration, the MCP
     # registry, and the live tool-roster measurement of issue #71 — each measured a surface
     # the agentic leaf had and this one does not (Z4, issue #171).
     can_launch_agents = _all_strict_boolean_probe_checks_pass(checks)
@@ -14484,10 +14494,9 @@ def record_launch(
         "launch_prompt_ref": prompt_ref,
         "launch_reply_ref": reply_ref,
         # The exact prompt text record-launch rendered and wrote to
-        # launches/<child_arid>.prompt.txt. Returned so the orchestration agent
-        # can pass it verbatim to the child leaf WITHOUT reading the template
-        # (the tools/prompt_templates/ templates) or the written prompt file (both blocked for the
-        # orchestration). The child-leaf prompt is then identical in content to
+        # launches/<child_arid>.prompt.txt. Returned so the conductor passes it
+        # verbatim to the leaf rather than re-reading the template or the written
+        # prompt file. The leaf prompt is then identical in content to
         # the recorded artifact by construction (audit 1-to-1); the .prompt.txt
         # file only differs by a trailing newline the text writer appends.
         # Retained in terse output.
@@ -14721,7 +14730,7 @@ def record_launch(
             # `record_agent_run`'s terminal check requires `sandbox_runtime == "bwrap"` for a
             # non-HTTP row, so it takes this as its second exemption. Stamped on the RESPONSE,
             # like the HTTP one and for the same reason: the response is host-authored and
-            # outside every leaf's write roots, so the exemption cannot be claimed by a leaf.
+            # outside every read-write bind of a leaf's sandbox, so a leaf cannot claim it.
             request_payload.setdefault("leaf_transport", "in_process")
             response_payload.setdefault("leaf_transport", "in_process")
             response_payload.setdefault("sandbox_runtime", "none")
@@ -14758,10 +14767,12 @@ def record_launch(
                     # is recorded against the same home.
                     response_payload["codex_workflow_home"] = codex_isolation["home"]
                     response_payload["codex_lineage_id"] = codex_isolation["lineage_id"]
-                # NO claude private home. Issue #63 prepared one for the AGENTIC leaf, which was
-                # the only launch that read a settings layer; Z4 (issue #171) retired that leaf,
-                # and a pure claude leaf takes `--safe-mode` — no settings layer, no tools, no
-                # hooks — so preparing one would record a configuration surface nothing reads.
+                # NO claude private home. Issue #63 prepared one for the AGENTIC leaf to keep
+                # the operator's configuration out; Z4 (issue #171) retired that leaf, and a
+                # pure claude leaf takes `--safe-mode` — no customizations, no tools, no hooks.
+                # What a private home also kept out — the operator's settings, `model` and
+                # `env` block included — now reaches the leaf (`default_agent_model_for_backend`);
+                # whether to close that is issue #453.
                 profile_kwargs: dict[str, Any] = {}
                 if codex_isolation is not None:
                     profile_kwargs = codex_isolation_profile_kwargs(codex_isolation)
@@ -15390,8 +15401,8 @@ def record_agent_run(
                 # is no child process, so there is nothing for bwrap to confine and
                 # `record_launch` records `leaf_transport: "http"` with no profile. The
                 # sandbox block below asserts a profile that, for such a launch, correctly does
-                # not exist. The exemption is granted on the LAUNCH RESPONSE — host-authored
-                # and outside every leaf's write roots — and only when it names a genuine HTTP
+                # not exist. The exemption is granted on the LAUNCH RESPONSE — host-authored,
+                # and outside every read-write bind of a leaf's sandbox — and only when it names a genuine HTTP
                 # provider token, so a leaf cannot claim it. Everything else about the terminal
                 # payload, including the unauthorized-write check below, still applies.
                 _launch_backend = launch_response_payload.get("backend")
@@ -16388,8 +16399,8 @@ def update_orchestration_status(
                     # failures (the caller may have lost the response even though
                     # the first call succeeded) must not error — the system is
                     # already in the requested state. Narrative updates still
-                    # belong in failure_analysis.json (orchestration agent's
-                    # allowed_file_tool_path), but reissuing set-status with the
+                    # belong in failure_analysis.json (written by the driver on
+                    # the dev path, annotated by the operator), but reissuing set-status with the
                     # same status returns the existing meta unchanged.
                     #
                     # Codex round 18 F2: if the canonical `set_status` audit
@@ -16864,10 +16875,10 @@ def _validate_write_step_result_fields(payload: dict[str, Any], step: str) -> No
 
 
 # Default (terse) result projections for the high-frequency bookkeeping
-# subcommands. Each maps a subcommand to the result fields the orchestration
-# agent actually consumes downstream. Anything not listed is dropped from the
-# default stdout to keep the orchestration's resident context small (its
-# cache-read cost scales with context size times turn count). The full payload
+# subcommands. Each maps a subcommand to the result fields the conductor
+# parses downstream. Anything not listed is dropped from the default stdout (the
+# default dates from an LLM orchestrator whose context the full payload
+# inflated). The full payload
 # is still written to its canonical artifact files and recoverable with
 # --verbose. Commands absent from this map are emitted unprojected.
 _TERSE_RESULT_FIELDS: dict[str, tuple[str, ...]] = {
@@ -17293,8 +17304,8 @@ def main(argv: list[str] | None = None) -> int:
                                      choices=sorted(SUPPORTED_PROVIDER_TOKENS))
     launch_check_parser.add_argument(
         "--require-child-agent", required=True, choices=("step", "substep"),
-        help="Expected child agent kind. Plan/Generate/Tune require 'substep'; "
-             "Build/Execute/Judge/Promote require 'step'.",
+        help="Expected child agent kind. Compile/Generate/Validate require 'substep'; "
+             "Build requires 'step'.",
     )
     launch_check_parser.add_argument(
         "--launch-request-json",
@@ -17306,12 +17317,12 @@ def main(argv: list[str] | None = None) -> int:
     reserve_root_parser = subparsers.add_parser(
         "reserve-phase-root",
         description=(
-            "Reserve an ir_id or pipeline_id before the child agent creates the directory. "
+            "Reserve an ir_id or pipeline_id before the conductor creates the directory. "
             "Writes a reservation marker only; does NOT create workspace/ir/ or "
             "workspace/pipelines/ directories. "
             "Use --step compile to reserve an ir_id; --step generate to reserve a pipeline_id. "
-            "Both reservations are typically needed before launching Plan phase substeps, "
-            "because record-launch requires a valid pipeline_ref even for Plan."
+            "Both reservations are typically needed before launching Compile substeps, "
+            "because record-launch requires a valid pipeline_ref even for Compile."
         ),
     )
     reserve_root_parser.add_argument("--repo-root", required=True)
@@ -17468,10 +17479,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # The bookkeeping subcommands default to a terse result projection (see
-    # _project_terse_result): the orchestration agent re-reads its whole
-    # transcript every turn, so echoing the full payload (record-agent-run
-    # reflects the entire input, up to ~50KB) inflates its resident context and
-    # the cache-read cost that scales with it. --verbose restores the full JSON
+    # _project_terse_result), a default dating from an LLM orchestrator whose
+    # context the full payload (up to ~50KB for record-agent-run) inflated; the
+    # conductor parses only the projected fields. --verbose restores the full JSON
     # for debugging/audit. The flag lives on each terse subparser so it can be
     # appended after the subcommand (e.g. `record-launch ... --verbose`).
     for _terse_parser in (

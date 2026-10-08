@@ -1603,7 +1603,7 @@ class PureJudgeAbRollupTests(unittest.TestCase):
                          f"{legacy}/runs/run_1/component__spec_x__0.1.0")
         self.assertTrue(node["judge"]["found"])
 
-    def test_an_agentic_judge_leaves_no_row(self) -> None:
+    def test_a_judge_request_without_leaf_mode_leaves_no_row(self) -> None:
         request = dict(self._REQUEST)
         del request["leaf_mode"]
         summary, _ = self._rollup(request=request, meta=self._META)
