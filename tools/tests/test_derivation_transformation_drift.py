@@ -962,9 +962,9 @@ PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #457), behaviour-preserving: the library's argv/env content validation
     # is deleted — `tool_compile_project` keeps only the type checks, `_build_inproc` stops
     # calling the deleted validator on the remote path, and `remote_execution` stops calling it
-    # on each command's `env`. Only refusals are removed, and no in-tree caller composed a value
-    # they refused, so every build that ran before runs the same argv and writes the same
-    # record. (Measured by diffing `build_tuple()` against origin/main 93a9e683's: those three
+    # on each command's `env`. Removed are the refusals and the stripping of whitespace around a
+    # `target`; no in-tree caller composed a value they refused, and none passes a `target`, so
+    # every build that ran before runs the same argv and writes the same record. (Measured by diffing `build_tuple()` against origin/main 93a9e683's: those three
     # rows and no other.) The digest `build-2` shipped with at 93a9e683:
     "build-2@93a9e683": "4ba48dd98634f7851c4ff052945dd4feaf45c7490427c3ac54be785978ba5c9a",
 }
