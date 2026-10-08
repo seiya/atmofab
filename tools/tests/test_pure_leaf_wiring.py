@@ -1543,15 +1543,18 @@ class PureRenderTests(unittest.TestCase):
         # Re-taken a NINTH time for issue #455: the cold-resume sentence no longer names the
         # deleted `judge_*_ir` reasons, and says a rollback after a judge finding carries the
         # judge's findings. READ: the same routing tokens, nothing assigned. Round 1 narrowed
-        # that clause to the `dev` directive that reopens instead of failing closed. READ: same.
+        # that clause to the `dev` directive that reopens instead of failing closed, and
+        # replaced the dangling pointer to an "agent-driven `attribution=ir` route" entry.
+        # READ: same tokens, nothing assigned.
         ("docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-         " #742ecb0eb288"),
+         " #92d095c5c044"),
         # Issue #455: the cross-phase re-derivation bullet names what reaches it — a judge
         # `fail` or, in `prod`, a `Generate.verify` `major` naming `ir_inconsistency`, each by
         # the reason it escalates under (`verify_severity_major`). READ: it states what the
-        # conductor does with a value the rubric already chose; it assigns nothing.
+        # conductor does with a value the rubric already chose; it assigns nothing. Round 1
+        # re-worded its "(an LLM `structural_violation` ...)" parenthetical. READ: same.
         ("docs/RUNBOOK.md: - Cross-phase `Compile` re-derivation of an already-`certifi"
-         " #17786f6a705f"),
+         " #31a8d262854d"),
         # Issue #455: phase_02's on-failure bullet states the route of an `ir_inconsistency`
         # finding — `dev_verify_major` in `dev`, `verify_severity_major` and a directive in
         # `prod` — where it used to say "the orchestration agent decides". It points at

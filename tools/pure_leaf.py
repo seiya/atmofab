@@ -742,8 +742,8 @@ def semantic_review_document_violations(
         return violations
 
     # The one joint invariant: the decision and the findings must agree. A `fail` with no
-    # finding gives the operator nothing to act on and gives `classify_failure` no attribution
-    # to route by; a `pass` with findings is a review that reports a defect and waves it
+    # finding gives the operator and the diagnostician nothing to act on and the repair no
+    # findings to carry (`judge_repair_text`); a `pass` with findings is a review that reports a defect and waves it
     # through, which is the shape this whole substep exists to refuse.
     if doc["decision"] == "pass":
         if doc["findings"]:

@@ -242,9 +242,9 @@ This document defines the orchestration contract — the **conductor** (`tools/w
 
 - The feedback direction from a failed phase is fixed per phase:
   - `Compile` failure → only an in-Compile retry (no automatic retry because upstream is the manual Spec).
-  - `Generate` failure → an in-Generate retry. When a verify failure of `source_meta.json` is judged `attribution=ir`, go back to `Compile`.
+  - `Generate` failure → an in-Generate retry. A `Generate.verify` `major` naming `ir_inconsistency` goes back to `Compile` through the diagnostician in `prod` and terminalizes in `dev` (`docs/workflow/phases/phase_02_generate.md` §On-failure behavior).
   - `Build` failure → go back to Generate. Because Build itself is a deterministic process, it does not involve an LLM, and forwards to Generate, as `repair_reason`, one of `compile_error` / `link_error` / `make_error` recorded in `build_log` (for details, the retry-trigger section of `docs/workflow/phases/phase_03_build.md`).
-  - `Validate` failure → routed by its origin: a structural `execute` failure goes to Generate deterministically by `trial_meta.json#failure_category`; a per-test predicate `fail` and every `judge` `fail` need an attribution, which the diagnostician reads and the conductor does not (the canonical routing is the "Decision criteria for retry on failure" section of `docs/workflow/phases/phase_04_validate.md`).
+  - `Validate` failure → routed by its origin: a structural `execute` failure goes to Generate deterministically by `trial_meta.json#failure_category`; every `judge` `fail` escalates to the diagnostician, which reads its attribution, and the conductor reads none; a per-test predicate `fail` escalates in `prod`, and in `dev` the conductor routes a `structural_violation` to Generate and fails the rest closed (the canonical routing is the "Decision criteria for retry on failure" section of `docs/workflow/phases/phase_04_validate.md`).
 
 ## Design Policy
 - Single responsibility: one `agent` has only one responsibility.
