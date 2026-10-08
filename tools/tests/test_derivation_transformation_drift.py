@@ -1084,7 +1084,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # longer copies it. (Measured by diffing `execute_tuple()` against origin/main dd5bbcb8's:
     # the `Conductor._author_snapshot_schema` row and no other.) The digest `execute-8` shipped
     # with at dd5bbcb8 is kept below.
-    "execute-8": "0e61c90960c5568a4fd5a2eefed86693c250ff0b47d289289f23722cb1a3d4d0",
+    "execute-8": "41f91e600bc6d362177325f639ad15107107bbb2274bb856bb32999eca8b74e5",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -1181,6 +1181,14 @@ PINNED_EXECUTE: dict[str, str] = {
     # diffing `execute_tuple()` against origin/main 93a9e683's: those three rows and no other.)
     # The digest `execute-8` shipped with at 93a9e683:
     "execute-8@93a9e683": "069da8155c9b74c2c071d59de8d11ca6ff8edf8f628f61f5f04713b5313572e1",
+    # Re-pinned by issue #464: `Conductor._author_quality_check` stops writing
+    # `comparison.per_case_verdict_match` (always `{}`: 423/423 records on disk; it read
+    # `cases`, which no diagnostics file carries — the harness writes `per_case`) and
+    # `comparison.diagnostics_checks_match`. As for issue #396 the record's bytes DO change,
+    # but no gate, verdict or document reads either key. (Measured by diffing `execute_tuple()`
+    # against origin/main 8f8f0298's: the `Conductor._author_quality_check` row and no other.)
+    # The digest `execute-8` shipped with at 8f8f0298:
+    "execute-8@8f8f0298": "0e61c90960c5568a4fd5a2eefed86693c250ff0b47d289289f23722cb1a3d4d0",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

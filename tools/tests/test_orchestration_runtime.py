@@ -3640,185 +3640,16 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             self.assertEqual(len(pruned), 1)
             self.assertEqual(pruned[0].get("pruned_child_agent_run_ids"), [dangling])
 
-    def test_resume_tombstones_orphan_launch_artifacts(self) -> None:
-        """Resume writes launches/<arid>.pruned.json for the abandoned launch so a
-        later inspection can distinguish the residual orphan artifacts (no terminal
-        agent_runs row) from a real protocol violation."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            oid = "orch_resume_tombstone"
-            init_orchestration(repo_root=repo_root, orchestration_id=oid)
-            root = repo_root / "workspace" / "orchestrations" / oid
-            orch_arid = json.loads(
-                (root / "orchestration_meta.json").read_text(encoding="utf-8")
-            )["orchestration_agent_run_id"]
-            dangling = "dead-air-dangling-arid"
-            (root / "launches").mkdir(exist_ok=True)
-            (root / "launches" / f"{dangling}.request.json").write_text("{}", encoding="utf-8")
-            (root / "agent_graph.json").write_text(
-                json.dumps(
-                    {
-                        "edges": [
-                            {"parent_agent_run_id": orch_arid, "child_agent_run_id": dangling,
-                             "relation_type": "launch"},
-                        ]
-                    }
-                ),
-                encoding="utf-8",
-            )
-
-            update_orchestration_status(
-                repo_root=repo_root,
-                orchestration_id=oid,
-                status="fail",
-                reason_code="launch_incomplete_active_child",
-                reason_detail="child launch did not return",
-            )
-            resume_orchestration(repo_root, oid)
-
-            tomb = root / "launches" / f"{dangling}.pruned.json"
-            self.assertTrue(tomb.is_file())
-            doc = json.loads(tomb.read_text(encoding="utf-8"))
-            self.assertEqual(doc["agent_run_id"], dangling)
-            self.assertEqual(doc["reason"], "resume_pruned_orphan")
-            log_events = [
-                json.loads(line)
-                for line in (root / "phase_state_log.jsonl").read_text().splitlines()
-                if line.strip()
-            ]
-            tombstoned = [
-                e for e in log_events if e.get("event") == "resume_tombstoned_orphan_launches"
-            ]
-            self.assertEqual(len(tombstoned), 1)
-            self.assertIn(dangling, tombstoned[0].get("tombstoned_agent_run_ids"))
-
-    def test_resume_ignores_leftover_ack_but_does_not_tombstone_invalid_children(self) -> None:
-        """A cleared active-child marker is NOT a sufficient orphan signal: a child that
-        attempted terminalization (agent_runs_invalid entry) must NOT be tombstoned as an
-        expected orphan. A `child_returns/<arid>.txt` ack a past orchestration left is no
-        longer evidence of anything (issue #447 D2 retired the return handshake), so a
-        child whose only trace beyond its launch is such an ack is tombstoned exactly like
-        the genuinely-abandoned launch."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            oid = "orch_resume_tombstone_protected"
-            init_orchestration(repo_root=repo_root, orchestration_id=oid)
-            root = repo_root / "workspace" / "orchestrations" / oid
-            (root / "launches").mkdir(exist_ok=True)
-            (root / "child_returns").mkdir(exist_ok=True)
-            (root / "active_children").mkdir(exist_ok=True)
-
-            dangling = "genuine-orphan-arid"
-            leftover_ack = "leftover-ack-no-row-arid"
-            invalid = "invalid-run-arid"
-            for arid in (dangling, leftover_ack, invalid):
-                (root / "launches" / f"{arid}.request.json").write_text("{}", encoding="utf-8")
-                # All three left a stale active_children marker (host died mid-flight).
-                (root / "active_children" / f"{arid}.txt").write_text(arid, encoding="utf-8")
-            # `leftover_ack` has a stale child_returns ack; `invalid` has an invalid-run entry.
-            (root / "child_returns" / f"{leftover_ack}.txt").write_text("ack", encoding="utf-8")
-            (root / "agent_runs_invalid.jsonl").write_text(
-                json.dumps({"agent_run_id": invalid, "agent_role": "substep"}) + "\n",
-                encoding="utf-8",
-            )
-
-            update_orchestration_status(
-                repo_root=repo_root,
-                orchestration_id=oid,
-                status="fail",
-                reason_code="launch_incomplete_active_child",
-                reason_detail="child launch did not return",
-            )
-            resume_orchestration(repo_root, oid)
-
-            self.assertTrue((root / "launches" / f"{dangling}.pruned.json").is_file())
-            self.assertTrue((root / "launches" / f"{leftover_ack}.pruned.json").is_file())
-            self.assertFalse((root / "launches" / f"{invalid}.pruned.json").is_file())
-            log_events = [
-                json.loads(line)
-                for line in (root / "phase_state_log.jsonl").read_text().splitlines()
-                if line.strip()
-            ]
-            tombstoned = next(
-                e for e in log_events if e.get("event") == "resume_tombstoned_orphan_launches"
-            )
-            self.assertEqual(
-                sorted(tombstoned.get("tombstoned_agent_run_ids")),
-                sorted([dangling, leftover_ack]),
-            )
-
-    def test_resume_tombstones_orphan_from_durable_artifact_after_lists_cleared(self) -> None:
-        """An interrupted resume retry re-enters terminal_reset with the active-child
-        markers and graph edges already deleted (cleared/pruned lists empty), but the
-        durable launches/<arid>.request.json persists — so the orphan must still be
-        tombstoned from that residual artifact."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            oid = "orch_resume_tombstone_retry"
-            init_orchestration(repo_root=repo_root, orchestration_id=oid)
-            root = repo_root / "workspace" / "orchestrations" / oid
-            # Simulate the half-committed state: NO active_children marker, NO
-            # agent_graph edge — only the residual launch artifact remains.
-            (root / "launches").mkdir(exist_ok=True)
-            dangling = "half-committed-orphan-arid"
-            (root / "launches" / f"{dangling}.request.json").write_text("{}", encoding="utf-8")
-
-            update_orchestration_status(
-                repo_root=repo_root,
-                orchestration_id=oid,
-                status="fail",
-                reason_code="launch_incomplete_active_child",
-                reason_detail="child launch did not return",
-            )
-            resume_orchestration(repo_root, oid)
-
-            self.assertTrue((root / "launches" / f"{dangling}.pruned.json").is_file())
-
-    def test_resume_does_not_tombstone_deactivated_unfinalized_child(self) -> None:
-        """A child that returned + deactivated (a durable agents/<arid>/deactivate_snapshot.json
-        a past orchestration left) but died before record-agent-run has no terminal row —
-        but it is NOT an abandoned launch and must not be tombstoned as an expected orphan.
-        A genuine orphan alongside it still is."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            oid = "orch_resume_tombstone_deactivated"
-            init_orchestration(repo_root=repo_root, orchestration_id=oid)
-            root = repo_root / "workspace" / "orchestrations" / oid
-            (root / "launches").mkdir(exist_ok=True)
-
-            deactivated = "returned-deactivated-arid"
-            orphan = "genuine-orphan-arid"
-            for arid in (deactivated, orphan):
-                (root / "launches" / f"{arid}.request.json").write_text("{}", encoding="utf-8")
-            # The deactivated child left a durable snapshot.
-            (root / "agents" / deactivated).mkdir(parents=True, exist_ok=True)
-            (root / "agents" / deactivated / "deactivate_snapshot.json").write_text(
-                json.dumps({"kind": "deactivate_snapshot", "agent_run_id": deactivated}),
-                encoding="utf-8",
-            )
-
-            update_orchestration_status(
-                repo_root=repo_root,
-                orchestration_id=oid,
-                status="fail",
-                reason_code="launch_incomplete_active_child",
-                reason_detail="child launch did not return",
-            )
-            resume_orchestration(repo_root, oid)
-
-            self.assertFalse((root / "launches" / f"{deactivated}.pruned.json").is_file())
-            self.assertTrue((root / "launches" / f"{orphan}.pruned.json").is_file())
-
     def test_resume_treats_a_leftover_ack_child_as_an_abandoned_launch(self) -> None:
         """Issue #447 D2: with the return handshake retired, a terminal-reset resume
         decides a child's fate from its terminal row alone (plus the step_result /
-        invalid-run / deactivate-snapshot evidence other rows pin). Three launched
-        children, each with a graph edge and a stale active marker:
+        invalid-run evidence other rows pin). Three launched children, each with a graph
+        edge and a stale active marker:
 
-          (a) a terminal `agent_runs.jsonl` row — edge kept, not tombstoned;
-          (b) launch + active marker only (abandoned) — edge pruned, tombstoned;
+          (a) a terminal `agent_runs.jsonl` row — edge kept;
+          (b) launch + active marker only (abandoned) — edge pruned;
           (c) as (b) plus a `child_returns/<arid>.txt` a past orchestration left —
-              the ack is ignored, so the child is pruned and tombstoned like (b).
+              the ack is ignored, so the child is pruned like (b).
         """
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -3865,9 +3696,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             self.assertIn(finished, children)
             self.assertNotIn(abandoned, children)
             self.assertNotIn(leftover_ack, children)
-            self.assertFalse((root / "launches" / f"{finished}.pruned.json").is_file())
-            self.assertTrue((root / "launches" / f"{abandoned}.pruned.json").is_file())
-            self.assertTrue((root / "launches" / f"{leftover_ack}.pruned.json").is_file())
             log_events = [
                 json.loads(line)
                 for line in (root / "phase_state_log.jsonl").read_text().splitlines()
@@ -3878,50 +3706,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             )
             self.assertEqual(sorted(pruned.get("pruned_child_agent_run_ids")),
                              sorted([abandoned, leftover_ack]))
-            tombstoned = next(
-                e for e in log_events if e.get("event") == "resume_tombstoned_orphan_launches"
-            )
-            self.assertEqual(sorted(tombstoned.get("tombstoned_agent_run_ids")),
-                             sorted([abandoned, leftover_ack]))
-
-    def test_latest_launch_incident_ref_ranks_by_detected_at_not_filename(self) -> None:
-        """The incident filename suffix is a random uuid fragment, so newest must be
-        chosen by `detected_at` (or mtime), never by lexicographic filename order."""
-        from tools.orchestration_runtime import _latest_launch_incident_ref
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            oid = "orch_incident_rank"
-            init_orchestration(repo_root=repo_root, orchestration_id=oid)
-            root = repo_root / "workspace" / "orchestrations" / oid
-            # Lexicographically SMALLEST filename carries the NEWEST detected_at;
-            # lexicographically LARGEST filename carries an OLDER detected_at.
-            (root / "launch_incident.runtime.000000000000.json").write_text(
-                json.dumps({"detected_at": "2026-06-17T05:00:00+00:00"}), encoding="utf-8"
-            )
-            (root / "launch_incident.runtime.ffffffffffff.json").write_text(
-                json.dumps({"detected_at": "2026-06-17T01:00:00+00:00"}), encoding="utf-8"
-            )
-            ref = _latest_launch_incident_ref(repo_root, oid)
-            self.assertTrue(ref.endswith("launch_incident.runtime.000000000000.json"), ref)
-
-    def test_latest_launch_incident_ref_falls_back_to_mtime_when_no_detected_at(self) -> None:
-        from tools.orchestration_runtime import _latest_launch_incident_ref
-
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            oid = "orch_incident_mtime"
-            init_orchestration(repo_root=repo_root, orchestration_id=oid)
-            root = repo_root / "workspace" / "orchestrations" / oid
-            older = root / "launch_incident.runtime.ffffffffffff.json"
-            newer = root / "launch_incident.runtime.000000000000.json"
-            older.write_text("{}", encoding="utf-8")
-            newer.write_text("{}", encoding="utf-8")
-            import os
-            os.utime(older, (1_700_000_000, 1_700_000_000))
-            os.utime(newer, (1_800_000_000, 1_800_000_000))
-            ref = _latest_launch_incident_ref(repo_root, oid)
-            self.assertTrue(ref.endswith("launch_incident.runtime.000000000000.json"), ref)
 
     def test_resume_keeps_orphan_edge_for_step_result_referenced_child(self) -> None:
         """A child referenced by a step_result.json but missing its agent_runs row is
@@ -23857,36 +23641,6 @@ class MultiProviderPreflightTests(unittest.TestCase):
                 write_preflight(repo_root=repo_root, orchestration_id="orch_001",
                                 payload=payload)
             self.assertIn("openai_compatible", str(ctx.exception))
-
-
-class LaunchInputEvidenceKeepAwayTests(unittest.TestCase):
-    """`launches/<arid>.request.input.json` must stay invisible to the `*.request.json` scans.
-
-    The conductor writes the evidence file BEFORE record-launch runs, so a lone one
-    (no sibling `.request.json`) is exactly the record-launch-failed case. Treating it
-    as a launch record would make the resume path tombstone an arid that was never
-    launched. Pinned so a future rename cannot land inside the glob.
-    """
-
-    def test_orphan_tombstoning_ignores_a_lone_request_input_json(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            oid = "orch_evidence_keepaway"
-            init_orchestration(repo_root=repo_root, orchestration_id=oid)
-            root = repo_root / "workspace" / "orchestrations" / oid
-            launches = root / "launches"
-            launches.mkdir(exist_ok=True)
-            evidence_only = "evidence-only-arid"
-            launched = "genuinely-launched-arid"
-            (launches / f"{evidence_only}.request.input.json").write_text(
-                "{}", encoding="utf-8")
-            (launches / f"{launched}.request.json").write_text("{}", encoding="utf-8")
-            (launches / f"{launched}.request.input.json").write_text("{}", encoding="utf-8")
-
-            written = ort._write_orphan_launch_tombstones(repo_root, oid, [])
-
-            self.assertEqual(written, [launched])
-            self.assertFalse((launches / f"{evidence_only}.pruned.json").exists())
 
 
 class JsonPayloadFileArgTests(unittest.TestCase):

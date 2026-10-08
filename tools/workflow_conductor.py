@@ -5165,8 +5165,8 @@ class Conductor:
 
         The file is kept, never cleaned up: it is the evidence of what was handed to the
         runtime, and it survives a call that failed before writing anything of its own.
-        `.input.json` deliberately falls outside the `*.request.json` glob the orphan
-        tombstone scan and validate_workspace_root use.
+        `.input.json` deliberately falls outside the `*.request.json` glob
+        validate_workspace_root and audit_orchestration use.
         """
         from tools.orchestration_runtime import _atomic_write_text
         rel = f"workspace/orchestrations/{self.orchestration_id}/launches/{filename}"
@@ -11268,12 +11268,6 @@ class Conductor:
         verdict_available = bool(run_verdict) and bool(qc_verdict)
         diagnostics_match = run_checks == qc_checks
         verdict_match = run_verdict == qc_verdict
-        run_cases = {c.get("case_id"): c.get("verdict")
-                     for c in run_diag.get("cases") or [] if isinstance(c, dict)}
-        qc_cases = {c.get("case_id"): c.get("verdict")
-                    for c in qc_diag.get("cases") or [] if isinstance(c, dict)}
-        per_case = {cid: (run_cases.get(cid) == qc_cases.get(cid)) for cid in run_cases}
-        checks_match = {k: (run_checks.get(k) == qc_checks.get(k)) for k in run_checks}
         status = "pass" if (verdict_available and diagnostics_match and verdict_match) else "fail"
         doc = {
             "status": status,
@@ -11290,8 +11284,6 @@ class Conductor:
                 "candidate": {"source": f"run_quality_checks/{preset}", "command_id": qc_cmd_id,
                               "threads_per_rank": "make_default", "ranks": 1,
                               "verdict": qc_verdict},
-                "diagnostics_checks_match": checks_match,
-                "per_case_verdict_match": per_case,
             },
             "notes": (f"conductor in-process: run_program (threads_per_rank={threads}, "
                       f"ranks={ranks}) and {preset} re-run (one process) diagnostics checks "

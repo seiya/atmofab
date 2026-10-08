@@ -5072,8 +5072,7 @@ def _protected_child_arids(repo_root: Path, orchestration_id: str) -> set[str]:
     Any child appearing here is NOT an abandoned launch: it has a terminal
     `agent_runs.jsonl` row, is vouched for by a `step_result.json`, has an
     `agent_runs_invalid.jsonl` entry (terminal-payload validation diverted it). Used to
-    keep `_prune_orphan_agent_graph_edges` from pruning such edges AND to keep the
-    resume orphan-tombstone set from mislabeling these as expected orphans.
+    keep `_prune_orphan_agent_graph_edges` from pruning such edges.
     """
     root = _orchestration_root(repo_root, orchestration_id)
     protected: set[str] = set(_load_run_records(root).keys())
@@ -5120,133 +5119,6 @@ def _protected_child_arids(repo_root: Path, orchestration_id: str) -> set[str]:
     # pruned like one. A `child_returns/` directory a past orchestration left behind is
     # no longer read.
     return protected
-
-
-def _latest_launch_incident_ref(repo_root: Path, orchestration_id: str) -> str | None:
-    """Newest `launch_incident.runtime.*.json` (repo-relative), or None.
-
-    The filename suffix is a random uuid fragment (`uuid4().hex[:12]`), so
-    lexicographic order is meaningless — ranking by it could attach the tombstone
-    to an older / unrelated incident. Rank by each snapshot's own `detected_at`
-    (its authoritative logical time), falling back to file mtime when that field is
-    absent or unparseable.
-    """
-    root = _orchestration_root(repo_root, orchestration_id)
-    snaps = list(root.glob("launch_incident.runtime.*.json"))
-    if not snaps:
-        return None
-
-    def _recency_key(p: Path) -> float:
-        try:
-            mtime = p.stat().st_mtime
-        except OSError:
-            mtime = 0.0
-        try:
-            doc = _read_json(p)
-        except (OSError, json.JSONDecodeError):
-            doc = None
-        if isinstance(doc, dict):
-            detected = doc.get("detected_at")
-            if isinstance(detected, str) and detected.strip():
-                s = detected.strip()
-                if s.endswith("Z"):
-                    s = s[:-1] + "+00:00"
-                try:
-                    return datetime.fromisoformat(s).timestamp()
-                except ValueError:
-                    pass
-        return mtime
-
-    newest = max(snaps, key=_recency_key)
-    return str(newest.relative_to(repo_root))
-
-
-def _write_orphan_launch_tombstones(
-    repo_root: Path, orchestration_id: str, orphan_arids: list[str]
-) -> list[str]:
-    """Write a `launches/<arid>.pruned.json` tombstone for each abandoned-launch arid
-    cleared/pruned during resume.
-
-    A dangling launch (host died mid-Agent-call) leaves orphan launch artifacts
-    (`launches/<arid>.{prompt,request,response,reply}`, `sandbox_profiles/<arid>.json`) with NO
-    terminal `agent_runs.jsonl` row. (The set used to include `capabilities/<arid>.json` and
-    `output_manifests/<arid>.json`, neither of which is written since issue #171 PR-2; the
-    tombstone key is
-    derived solely from `launches/<arid>.request.json`, so a pure orphan is tombstoned the same
-    way.) Resume keeps those artifacts for forensics but,
-    without a marker, a later manual inspection / audit tool cannot distinguish them
-    from a genuine protocol violation (a launched child that vanished). The tombstone
-    records that the runtime intentionally pruned the orphan during recovery. It lives
-    under `launches/`. (Until PR-2 of issue #171 this placement also mattered because the
-    terminal write-diff exempted the runtime prefix; that diff is gone with the leaf's write
-    authority, so the placement is now only about where an auditor looks.)
-    Idempotent: an existing tombstone is overwritten with the same content.
-
-    Candidates are derived from the DURABLE residual launch artifacts
-    (`launches/*.request.json`), not only from the destructive resume steps'
-    return values (`_clear_stale_active_child_markers` deletes markers,
-    `_prune_orphan_agent_graph_edges` removes edges). This makes the tombstone
-    resilient to an interrupted resume retry: if the host dies after those deletions
-    but before the meta commit, the retry re-enters terminal_reset with empty
-    cleared/pruned lists — yet the launch artifacts persist, so the orphan is still
-    found and tombstoned. The passed `orphan_arids` are folded in as a supplementary
-    hint. The set is then filtered to GENUINE orphans: launched
-    (`launches/<arid>.request.json` exists) AND not in `_protected_child_arids` (no
-    terminal row / step_result vouch / invalid-run entry) AND with
-    no `agents/<arid>/deactivate_snapshot.json`. `deactivate-child` has not written that
-    snapshot since issue #171 PR-2; the exclusion reads one a past orchestration left. It is
-    separate from `_protected_child_arids` on purpose: the snapshot
-    proves the child leaf returned — that is a lost-finalization / corruption case,
-    not an abandoned launch, so it must not be tombstoned as an "expected orphan". It
-    is excluded HERE rather than in `_protected_child_arids` because
-    `_prune_orphan_agent_graph_edges` must still prune that child's orphan edge for the
-    resumed run's `set-status pass` to be accepted.
-    """
-    root = _orchestration_root(repo_root, orchestration_id)
-    launches_dir = root / "launches"
-    launches_dir.mkdir(parents=True, exist_ok=True)
-    protected = _protected_child_arids(repo_root, orchestration_id)
-    # Children that returned + deactivated (child leaf returned) — proven by a
-    # durable deactivate snapshot a past orchestration left. Not orphans.
-    deactivated: set[str] = {
-        p.parent.name for p in (root / "agents").glob("*/deactivate_snapshot.json")
-    }
-    # Durable candidate source: every launched arid still has its request.json
-    # (the tombstone is <arid>.pruned.json, so it is never re-globbed here).
-    candidate_set: set[str] = {p.name[: -len(".request.json")] for p in launches_dir.glob("*.request.json")}
-    candidate_set.update(a.strip() for a in orphan_arids if isinstance(a, str) and a.strip())
-    orphans = sorted(
-        arid
-        for arid in candidate_set
-        if arid
-        and arid not in protected
-        and arid not in deactivated
-        and (launches_dir / f"{arid}.request.json").is_file()
-    )
-    if not orphans:
-        return []
-    incident_ref = _latest_launch_incident_ref(repo_root, orchestration_id)
-    written: list[str] = []
-    for arid in orphans:
-        _write_json(
-            launches_dir / f"{arid}.pruned.json",
-            {
-                "schema": "launch_orphan_tombstone/v1",
-                "agent_run_id": arid,
-                "orchestration_id": orchestration_id,
-                "reason": "resume_pruned_orphan",
-                "note": (
-                    "Abandoned launch (active_child window left open, no terminal "
-                    "agent_runs row); pruned during "
-                    "checkpoint resume. Residual launches/ and sandbox_profiles/ "
-                    "artifacts for this arid are expected orphans, not a violation."
-                ),
-                "pruned_at": _utc_now_iso(),
-                "incident_ref": incident_ref,
-            },
-        )
-        written.append(arid)
-    return written
 
 
 def _reset_stale_child_running_node_steps(
@@ -10707,18 +10579,6 @@ def resume_orchestration(
         # completion vouch and the `--stage pre_judge` audit. The phase-state init below
         # preserves node_states, so this reset survives into the resumed run.
         reset_child_running = _reset_stale_child_running_node_steps(repo_root, orchestration_id)
-        # Tombstone the abandoned launches' residual artifacts so a later manual
-        # inspection / audit can tell them apart from a genuine protocol violation.
-        # _write_orphan_launch_tombstones self-derives candidates from the durable
-        # launches/*.request.json artifacts (resilient to an interrupted resume retry
-        # where the cleared/pruned lists below would be empty) and filters to GENUINE
-        # orphans (launched ∧ not in _protected_child_arids). The pruned/cleared lists
-        # are passed only as a supplementary hint.
-        orphan_tombstones = _write_orphan_launch_tombstones(
-            repo_root,
-            orchestration_id,
-            list(pruned_graph_children) + list(cleared_active_child),
-        )
     # The `driver` block is GONE (issue #177): nothing reads it any more, and a record that
     # nothing reads is a record that drifts. A stale one was actively harmful — a reused pid
     # made a probe call a dead run alive — so a resume drops it rather than refreshing it.
@@ -10802,17 +10662,6 @@ def resume_orchestration(
                     "to": "not_started",
                     "note": "stale child_running node/step authority reset for checkpoint resume",
                     "reset_node_steps": reset_child_running,
-                },
-            )
-        if orphan_tombstones:
-            _append_phase_state_log(
-                repo_root,
-                orchestration_id,
-                {
-                    "ts": _utc_now_iso(),
-                    "event": "resume_tombstoned_orphan_launches",
-                    "note": "orphan launch artifacts marked with launches/<arid>.pruned.json for checkpoint resume",
-                    "tombstoned_agent_run_ids": orphan_tombstones,
                 },
             )
     return meta

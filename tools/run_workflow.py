@@ -848,14 +848,6 @@ def _collect_failure_analysis(repo_root: Path, orchestration_id: str) -> dict[st
         if isinstance(agent_summary_ref, str) and agent_summary_ref.strip():
             agent_summary_tail = _tail_text(repo_root / agent_summary_ref.strip())
 
-    # Surface any dangling-launch incident snapshot (written at incident time by the
-    # synchronous-launch capture in main()) so failure_analysis links to it. Globbed
-    # rather than threaded through a parameter so it also resolves on resume / re-collect.
-    launch_incident_refs = [
-        str(p.relative_to(repo_root))
-        for p in sorted(orch_root.glob("launch_incident.runtime.*.json"))
-    ]
-
     return {
         "status": "fail",
         "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -869,7 +861,6 @@ def _collect_failure_analysis(repo_root: Path, orchestration_id: str) -> dict[st
         "failed_step_results": failed_step_results,
         "launch_reply_tail": launch_reply_tail,
         "agent_summary_tail": agent_summary_tail,
-        "launch_incident_refs": launch_incident_refs,
     }
 
 
@@ -997,10 +988,11 @@ def _is_valid_failure_analysis(
         "failed_step_results",
         "launch_reply_tail",
         "agent_summary_tail",
-        # In the degraded dangling-launch path (both terminalize set-status calls
-        # failed), the dangling child has no terminal agent_runs row and meta carries
-        # no reason_code/detail, so the incident snapshot ref is the only evidence.
-        "launch_incident_refs",
+        # The degraded dangling-launch path (both terminalize set-status calls failed)
+        # carries none of these: the dangling child has no terminal agent_runs row and
+        # meta has no reason_code/detail. Such an analysis is not valid. The incident
+        # snapshot that once stood in as its evidence has not been written since
+        # d2728d6a, and issue #464 deleted its reader.
     )
     has_evidence = any(
         obj.get(f) not in (None, "", []) for f in evidence_fields

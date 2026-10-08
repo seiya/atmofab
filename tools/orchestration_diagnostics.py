@@ -27,9 +27,7 @@ the abort, and any final API error are the decisive evidence for whether the
 launch was a retryable transport blip or a hang; this module recovers them from
 that transcript when it is still on disk. That is the only thing it reads a transcript
 for: each leaf's token usage is recorded in-repo from the leaf's own output (issue #47,
-``tools/leaf_usage.py``), and no workflow path reads ``~/.claude``. Older runs may additionally carry a persisted
-``launch_incident.runtime.<uuid>.json`` snapshot, which the audit renderer
-surfaces; the conductor writes no new ones.
+``tools/leaf_usage.py``), and no workflow path reads ``~/.claude``.
 
 It is intentionally dependency-free (stdlib only) and **defensive** against the
 Claude Code transcript format: parse failures degrade to raw tails and
@@ -38,8 +36,6 @@ Claude Code transcript format: parse failures degrade to raw tails and
 Callers:
 - ``tools/audit_orchestration.py`` invokes it on demand for after-the-fact analysis
   of a dangling launch (open active_child window with no child return / terminal run).
-  (Legacy ``launch_incident.runtime.<uuid12>.json`` snapshots from older runs are also
-  surfaced when present; the conductor does not write new ones.)
 """
 from __future__ import annotations
 
@@ -315,9 +311,7 @@ def api_error_from_records(records: list[dict[str, Any]] | None) -> dict[str, An
     Reports an API error only when it is the FINAL relevant activity: any later
     non-interrupt, non-error record means the error was recovered, so it is cleared
     (otherwise a later unrelated hang would be mislabeled as a retryable transport
-    blip). Shared by `summarize_transcript_tail` and the audit renderer's fallback
-    for legacy incident snapshots that predate the structured `api_error` field but
-    still carry `isApiErrorMessage` / `apiErrorStatus` in their `raw_tail`.
+    blip). Used by `summarize_transcript_tail` over every record of the transcript.
     """
     if not records:
         return None
@@ -412,14 +406,9 @@ def summarize_transcript_tail(path: Path, *, n: int = 40) -> dict[str, Any]:
     }
 
 
-# The vocabulary of `match_method` is closed, and the two halves have different
-# owners. LIVE incidents are always `session_id`: the conductor pins the leaf's
-# Claude session id to its agent_run_id (`claude --session-id <arid>`), so the
-# lookup below is an exact filename match on that id. `tool_use_id` /
-# `arid_in_body` belong ONLY to persisted `launch_incident.runtime.*.json`
-# snapshots written by the host-session-era conductor (`resolve_transcripts`,
-# deleted in `977bd75`); nothing produces them now, and the audit renderer still
-# has to display them. See `tools/audit_orchestration.py::_render_incident_body`.
+# `match_method` is always `session_id`: the conductor pins the leaf's Claude session
+# id to its agent_run_id (`claude --session-id <arid>`), so the lookup below is an
+# exact filename match on that id. See `tools/audit_orchestration.py::_render_incident_body`.
 LEAF_TRANSCRIPT_MATCH_METHOD = "session_id"
 
 
@@ -715,9 +704,7 @@ def build_launch_incident(
     child arid (no host/parent session is needed); it yields the child's last
     activity, the dead-air before the abort, and the final API error (so a
     retryable 529 is distinguishable from other failures). Degrades gracefully to
-    the in-repo facts when ``~/.claude`` is absent or cleaned. Persisted
-    ``launch_incident.runtime.*.json`` snapshots from older runs are additionally
-    surfaced by the audit renderer.
+    the in-repo facts when ``~/.claude`` is absent or cleaned.
 
     Only conductor-spawned leaves (arid-pinned sessions) are correlated: a transcript
     is located by ``<projects-root>/<slug>/<arid>.jsonl`` and by nothing else.
@@ -747,22 +734,10 @@ def build_launch_incident(
                            "a pre-Z4 agentic run whose transcript is in the orchestration's "
                            "private home, which is no longer searched)"}
 
-    abort_marker = None
-    if child.get("found"):
-        abort_marker = {
-            "interrupted": child.get("interrupted"),
-            "interrupt_ts": child.get("interrupt_ts"),
-            "interrupt_text": child.get("interrupt_text"),
-            "last_activity_ts": child.get("last_activity_ts"),
-            "dead_air_seconds": child.get("dead_air_seconds"),
-            "api_error": child.get("api_error"),
-        }
-
     return {
         "schema": "launch_incident/v1",
         "orchestration_id": orchestration_id,
         "detected_at": datetime.now(timezone.utc).isoformat(),
         "dangling_child": dangling,
         "transcripts": {"child_transcript": child},
-        "abort_marker": abort_marker,
     }

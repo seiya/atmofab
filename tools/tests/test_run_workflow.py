@@ -259,10 +259,11 @@ class RunWorkflowTests(unittest.TestCase):
             analysis = run_workflow._collect_failure_analysis(repo_root, "orch_allok")
             self.assertIsNone(analysis.get("failed_agent_run"))
 
-    def test_is_valid_failure_analysis_accepts_launch_incident_refs_only(self) -> None:
-        """In the degraded dangling-launch path the incident ref is the sole evidence
-        (no reason_code/detail, no failed_agent_run). It must count as evidence so the
-        canonical failure_analysis.json is not misclassified as stale (Codex P3)."""
+    def test_is_valid_failure_analysis_rejects_the_degraded_dangling_launch_shape(self) -> None:
+        """The degraded dangling-launch path (no reason_code/detail, no failed_agent_run,
+        no tails) carries no evidence, so its analysis is invalid. A
+        `launch_incident_refs` key a past run left counts for nothing: issue #464
+        deleted it from the evidence fields."""
         obj = {
             "orchestration_id": "orch_x",
             "status": "fail",
@@ -273,44 +274,20 @@ class RunWorkflowTests(unittest.TestCase):
             "failed_step_results": [],
             "launch_reply_tail": "",
             "agent_summary_tail": "",
-            "launch_incident_refs": [
-                "workspace/orchestrations/orch_x/launch_incident.runtime.0123456789ab.json"
-            ],
         }
+        for doc in (obj, {**obj, "launch_incident_refs": [
+                "workspace/orchestrations/orch_x/launch_incident.runtime.0123456789ab.json"]}):
+            self.assertFalse(
+                run_workflow._is_valid_failure_analysis(
+                    doc, "orch_x", orchestration_agent_run_id="orch_arid_1"
+                )
+            )
         self.assertTrue(
             run_workflow._is_valid_failure_analysis(
-                obj, "orch_x", orchestration_agent_run_id="orch_arid_1"
+                {**obj, "reason_code": "launch_incomplete_active_child"},
+                "orch_x", orchestration_agent_run_id="orch_arid_1",
             )
         )
-        # With no evidence at all (empty incident refs too), it is invalid.
-        obj_no_evidence = {**obj, "launch_incident_refs": []}
-        self.assertFalse(
-            run_workflow._is_valid_failure_analysis(
-                obj_no_evidence, "orch_x", orchestration_agent_run_id="orch_arid_1"
-            )
-        )
-
-    def test_collect_failure_analysis_includes_launch_incident_refs(self) -> None:
-        """A `launch_incident.runtime.*.json` snapshot is linked from failure_analysis."""
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            orch_root = repo_root / "workspace" / "orchestrations" / "orch_inc"
-            orch_root.mkdir(parents=True, exist_ok=True)
-            (orch_root / "orchestration_meta.json").write_text(
-                json.dumps({"orchestration_id": "orch_inc", "status": "fail"}, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            snap = orch_root / "launch_incident.runtime.0123456789ab.json"
-            snap.write_text(json.dumps({"schema": "launch_incident/v1"}), encoding="utf-8")
-            analysis = run_workflow._collect_failure_analysis(repo_root, "orch_inc")
-            self.assertEqual(
-                analysis.get("launch_incident_refs"),
-                ["workspace/orchestrations/orch_inc/launch_incident.runtime.0123456789ab.json"],
-            )
-
-
-
-
 
     def test_discover_source_dependency_ref_from_file_spec_ref(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
