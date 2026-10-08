@@ -3209,11 +3209,11 @@ class PureRecordLaunchTests(unittest.TestCase):
                 self.assertTrue(profile.get("readonly"))
                 self.assertEqual(profile.get("write_roots"), [])
                 # NO claude private home, and that is the pure branch's own rule rather than
-                # an omission: a pure claude leaf takes no settings layer at all
-                # (`--safe-mode`, no tools, no hooks), so preparing one would record a
-                # configuration surface it never reads. This is a real posture CHANGE for
-                # this leaf — it was the one claude leaf that re-derived a private home for
-                # itself — and what it changes to is what every other pure leaf already has.
+                # an omission: a pure claude leaf takes `--safe-mode` (no customizations, no
+                # tools, no hooks), so there is nothing left for a private home to keep out.
+                # This is a real posture CHANGE for this leaf — it was the one claude leaf that
+                # re-derived a private home for itself — and what it changes to is what every
+                # other pure leaf already has.
                 meta = json.loads((base / "orchestration_meta.json").read_text())
                 self.assertNotIn("claude_workflow_home", meta)
                 self.assertNotIn("CLAUDE_CONFIG_DIR", profile.get("env") or {})

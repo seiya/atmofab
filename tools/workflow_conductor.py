@@ -1940,11 +1940,11 @@ def build_launch_request(
 # more; it only stops a leaf that needed the room from being truncated into nothing.
 #
 # The conductor does NOT pin the leaf model (`leaf_command` passes no `--model` unless the
-# configuration file declared one). What the unpinned case then resolves to depends on the
-# launch: an AGENTIC leaf runs the CLI's own default, because `--setting-sources user`
-# against a private CLAUDE_CONFIG_DIR means it never reads the operator's configuration
-# (issue #63); a PURE leaf carries
-# no `--setting-sources`, so there the operator's configuration still decides. 128,000 is the ceiling of the Opus 4.8 /
+# configuration file declared one). The unpinned case then resolves as the CLI resolves it:
+# `--safe-mode` disables customizations, not settings keys, and the leaf's `HOME` is the
+# operator's (`LEAF_ENV_ALLOWLIST`), so a `model` key in the operator's `~/.claude` settings
+# decides it, and the CLI's own default decides only where there is none (measured on CLI
+# 2.1.294, issue #446). 128,000 is the ceiling of the Opus 4.8 /
 # Sonnet 5 tier; a model whose output limit is lower (Haiku 4.5 caps at 64,000) rejects this
 # value, and rejects it on EVERY launch: `API Error: 400 {"type":"invalid_request_error",
 # "message":"max_tokens: 128000 > 64000 ..."}`. That failure is deliberately classified
@@ -3878,8 +3878,8 @@ class Conductor:
 
         THE HOME THIS LAUNCH WILL USE, and only that one. `--resume` is served from the
         launching process's `CLAUDE_CONFIG_DIR`, and a pure leaf sets none: `--safe-mode`
-        already refuses every settings layer, so `record_launch` prepares no private home for
-        it, and its `--session-id` transcript is written to — and served from — the operator's
+        disables the customizations a private home once existed to keep out, so
+        `record_launch` prepares no private home for it, and its `--session-id` transcript is written to — and served from — the operator's
         `~/.claude/projects`. MEASURED: the real `pure_leaf_flags()` set plus `--session-id`
         does write `<config-home>/projects/<slug>/<sid>.jsonl`.
 
@@ -4037,8 +4037,9 @@ class Conductor:
         base = _provider_command_base(entry)
         if entry.provider == "claude_cli":
             # `-p` runs non-interactively, and `pure_leaf_flags()` below is the whole of the
-            # leaf's surface: no tools, no MCP servers, no slash commands, no settings layer
-            # (`--safe-mode`), and the JSON result envelope. Since Z4 (issue #171) there is no
+            # leaf's surface: no tools, no MCP servers, no slash commands, no customizations
+            # (`--safe-mode`; settings keys such as `model` still apply), and the JSON result
+            # envelope. Since Z4 (issue #171) there is no
             # second arm here — the agentic launch that carried `--setting-sources user`, a
             # private CLAUDE_CONFIG_DIR, an MCP configuration and a tool allowlist is gone, and
             # so is everything that existed to confine it.
@@ -4048,9 +4049,9 @@ class Conductor:
             # launching the CLI's own default would be provenance that describes a run that did
             # not happen. A model the file did not declare is deliberately NOT pinned — that is
             # the repo's long-standing rule (see LEAF_MAX_OUTPUT_TOKENS) and it is what keeps
-            # every pre-issue-#28 launch byte-identical. With `--setting-sources user` against
-            # a private home, the unpinned case is decided by the CLI itself, not by the
-            # operator's `~/.claude`.
+            # every pre-issue-#28 launch byte-identical. The unpinned case is decided by a
+            # `model` key in the operator's `~/.claude` settings where there is one, and by the
+            # CLI's own default otherwise (see LEAF_MAX_OUTPUT_TOKENS).
             if entry.model_declared and entry.model.strip():
                 flags += ["--model", entry.model.strip()]
             # Reasoning effort has no "unpinned alias" story the way the model does — there is
@@ -5282,7 +5283,7 @@ class Conductor:
 
         Since Z4 (issue #171) that is one field: the TOOLS the leaf was launched with. The
         `--setting-sources` layer choice and the `.mcp.json` server set went with the agentic
-        leaf — a pure leaf takes `--safe-mode` (no settings layer at all), `--strict-mcp-config`
+        leaf — a pure leaf takes `--safe-mode` (no customizations), `--strict-mcp-config`
         with no configuration, and `--tools ""`.
 
         `claude_tools` stays because it is still written down nowhere else: the persisted
@@ -5346,10 +5347,8 @@ class Conductor:
     def _write_lineage(self, refs: NodeRefs) -> list[dict[str, str]]:
         """Author/refresh the pipeline `lineage.json` host-side (runtime-owned).
 
-        `lineage.json` lives at the pipeline root, which must stay non-writable to the
-        sandboxed leaf (the root contains the future source/binary/runs areas, and the
-        Edit/Write tools' atomic temp-sibling+rename would need the whole root writable).
-        So the conductor — which runs unconfined and already holds every id — writes it,
+        `lineage.json` lives at the pipeline root, and a pure leaf writes nothing: the host
+        writes every artifact. So the conductor — which already holds every id — writes it,
         matching `docs/WORKSPACE_LAYOUT.md` ("added by each phase ... runtime"). Called at
         each pipeline phase start after the producer id is reserved; idempotent, it
         accumulates the stage ids (source_id at generate, +binary_id at build, +run_id at
@@ -9006,8 +9005,7 @@ class Conductor:
             # no flag for it.
             env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
             # CLAUDE_CONFIG_DIR is deliberately NOT set: a pure leaf has no private home to
-            # name (`--safe-mode` refuses every settings layer, so `record_launch` prepares
-            # none), and naming one here would point the leaf at a configuration surface
+            # name (`record_launch` prepares none), and naming one here would point the leaf at a configuration surface
             # nothing prepared, hashed or recorded.
         elif entry.provider == "codex_cli":
             # ATMOFAB_HOME was the historical private alias for CODEX_HOME. An operator

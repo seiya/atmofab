@@ -136,7 +136,7 @@ def claude_leaf_projects_roots(repo_root: Path,
     """Every directory a Claude leaf's per-project state may live under.
 
     ONE root since Z4 (issue #171): the operator's `~/.claude/projects`. Every claude leaf is a
-    PURE leaf, which takes no settings layer (`--safe-mode`) and is prepared no private
+    PURE leaf, which takes `--safe-mode` (no customizations) and is prepared no private
     `CLAUDE_CONFIG_DIR`, so it writes its `--session-id` transcript there. Issue #63's
     per-orchestration private home existed for the AGENTIC leaf and went with it; a transcript
     written under one before Z4 is no longer reachable from here — accepted, and the reason the

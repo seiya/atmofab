@@ -1052,8 +1052,8 @@ def _write_failure_analysis(
       write sidecar with existing_file_status="valid".
       → analysis_ref = failure_analysis.json, runtime_ref = failure_analysis.runtime.json,
         stale_canonical_ref = None
-    - When failure_analysis.json exists but is invalid/stale: preserve canonical (agent
-      owns it), write current payload to sidecar with existing_file_status="invalid".
+    - When failure_analysis.json exists but is invalid/stale: preserve canonical (an
+      earlier writer's, or the operator's), write current payload to sidecar with existing_file_status="invalid".
       analysis_ref is redirected to the sidecar so callers always get current-run data.
       → analysis_ref = failure_analysis.runtime.json, runtime_ref = None,
         stale_canonical_ref = failure_analysis.json
@@ -1065,7 +1065,7 @@ def _write_failure_analysis(
     canonical_written = _atomic_write_json_exclusive(path, payload, tmp_dir=effective_tmp)
     if canonical_written:
         return str(rel), None, None
-    # File already existed (or appeared concurrently) — agent owns canonical; write sidecar only.
+    # File already existed (or appeared concurrently) — preserve canonical; write sidecar only.
     existing = _read_json_if_exists(path)
     orchestration_agent_run_id = payload.get("orchestration_agent_run_id") if isinstance(payload.get("orchestration_agent_run_id"), str) else None
     existing_is_valid = _is_valid_failure_analysis(

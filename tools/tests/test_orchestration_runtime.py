@@ -15044,8 +15044,8 @@ class RecordTimeoutTests(unittest.TestCase):
         rendered argv is the only thing that reflects the wiring rather than restating it.
 
         Since Z4 (issue #171) the launch this drives is the PURE one, so there is no private
-        `CLAUDE_CONFIG_DIR` among the deliverer-owned names — a pure leaf reads no settings
-        layer and `record_launch` prepares no home for it. The sibling row below keeps its own
+        `CLAUDE_CONFIG_DIR` among the deliverer-owned names — a pure leaf takes `--safe-mode`
+        and `record_launch` prepares no home for it. The sibling row below keeps its own
         `request_extra` and adds the host-poison control.
         """
         authored = {"PATH": "/usr/bin:/bin", "HOME": "/tmp/leaf-home",
@@ -25217,7 +25217,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         """A repo the home preparer can run against, with its operator credential beside it.
 
         Named `_claude_repo` no longer: since Z4 (issue #171) there is only one preparer left
-        (`_prepare_codex_workflow_home`), because a claude leaf reads no settings layer and is
+        (`_prepare_codex_workflow_home`), because a claude leaf takes `--safe-mode` and is
         given no private home. This helper keeps its callers and hands back the same `Path`,
         and `_prepare_home` below is what every row drives."""
         root = Path(td)
@@ -26637,7 +26637,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         every launch would fail closed.
 
         `CLAUDE_CONFIG_DIR` left this set with the agentic leaf (Z4, issue #171): a pure
-        claude leaf reads no settings layer and is prepared no private home, so a profile
+        claude leaf takes `--safe-mode` and is prepared no private home, so a profile
         naming one describes a configuration surface nothing built. It is asserted REFUSED
         below rather than merely dropped from this list."""
         profile = self._profile()

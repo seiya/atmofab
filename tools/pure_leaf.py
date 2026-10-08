@@ -42,10 +42,11 @@ PURE_PROMPT_CONTRACT_VERSION = "pure-70"
 # Claude's pure leaf system prompt is REPLACED with this fixed string via `--system-prompt`. The
 # default Claude Code system prompt injects per-machine DYNAMIC sections (cwd, environment,
 # memory paths, git status); `--exclude-dynamic-system-prompt-sections` only relocates them
-# into the first user message (still host-varying), so it does not close the context — a
-# fixed `--system-prompt` does, because the dynamic sections are omitted entirely when the
-# system prompt is explicit. That makes the model's total input a byte-stable function of the
-# host-assembled `-p` body alone (A2). Deliberately minimal: the full persona, output
+# into the first user message (still host-varying). A fixed `--system-prompt` takes them out
+# of the system prompt, but it does not take them out of the request: measured on CLI 2.1.294
+# (issue #446), the request still carries a `system`-role message with cwd, platform, OS
+# version, today's date and the model name, so the model's total input is NOT a byte-stable
+# function of the host-assembled `-p` body alone. Deliberately minimal: the full persona, output
 # contract, and inlined context live in the `-p` body (rendered in M-B); this only pins the
 # system channel and states the pure-function shape. A change here is a prompt-contract change
 # (bump `PURE_PROMPT_CONTRACT_VERSION`).
@@ -97,7 +98,8 @@ def is_pure_request(request_payload: Any) -> bool:
     """True when a launch request selects the pure-function path (`leaf_mode == "pure"`,
     case/space-insensitively). THE single detection predicate — orchestration_runtime and
     validate_pipeline_semantics both delegate here so the producer and the validators cannot
-    disagree about what "pure" is. An absent/other `leaf_mode` is the legacy agentic path."""
+    disagree about what "pure" is. An absent/other `leaf_mode` is not a pure request: since Z4
+    (issue #171) it means a deterministic substep or a malformed request."""
     if not isinstance(request_payload, dict):
         return False
     return str(request_payload.get("leaf_mode", "")).strip().lower() == PURE_LEAF_MODE
@@ -146,8 +148,11 @@ def pure_leaf_flags() -> list[str]:
                             otherwise carries per-machine DYNAMIC sections (cwd, env, memory
                             paths, git status). `--safe-mode` does not remove those (they are
                             the base prompt, not a customization); replacing the system prompt
-                            omits them, so the model's input is a byte-stable function of the
-                            host `-p` body alone (A2).
+                            omits them from the system prompt. It does NOT make the input a
+                            function of the `-p` body alone: measured on CLI 2.1.294 (issue
+                            #446), the request still carries a `system`-role message with an
+                            environment block — cwd, platform, OS version, today's date and
+                            the model name.
     - `--tools ""`         no file/shell/gate/write tool is available to the model
                             (`--safe-mode` disables customizations, not the built-in tools).
     - `--strict-mcp-config` defense-in-depth: no ambient MCP server even if a future
@@ -159,14 +164,15 @@ def pure_leaf_flags() -> list[str]:
                             without touching the session transcript (~/.claude is not read).
 
     WHAT THIS SET DOES NOT DO, and it is deliberate: a pure leaf takes NO
-    `--setting-sources` and gets NO private `CLAUDE_CONFIG_DIR`. It does not need one —
-    `--safe-mode` already refuses every settings layer, and preparing a home would record a
-    configuration surface the leaf never reads. The consequence is that an operator's
-    `~/.claude` can still decide an UNPINNED leaf's model. The agentic path closed that with
-    a private home, and until Z4 (issue #171) this was an ASYMMETRY between the two; it is
-    now simply the behaviour, recorded in
-    `orchestration_runtime.default_agent_model_for_backend`, and the reason the model stamp
-    is treated as a prediction the result envelope corrects.
+    `--setting-sources` and gets NO private `CLAUDE_CONFIG_DIR`. `--safe-mode` already
+    disables the customizations a private home existed to keep out (CLAUDE.md, skills,
+    hooks, MCP servers, …), but it does NOT disable settings keys: the leaf's `HOME` is the
+    operator's, so a `model` key in the operator's `~/.claude` settings decides an UNPINNED
+    leaf's model (measured on CLI 2.1.294 against a loopback endpoint, issue #446: the
+    request carried the settings model; `--model` overrode it; with no settings file the
+    CLI's own default ran). That is recorded in
+    `orchestration_runtime.default_agent_model_for_backend`, and it is the reason the model
+    stamp is treated as a prediction the result envelope corrects.
 
     `--session-id`, the warm-repair `--resume <arid> --fork-session`, and the trailing `-p`
     are added by `Conductor.leaf_command` around this set. `-p` takes no prompt argument:

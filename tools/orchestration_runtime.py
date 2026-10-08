@@ -6758,9 +6758,7 @@ def _mandatory_phase_outputs_for_launch(
     substep_token = str(request_payload.get("substep") or "").strip().lower()
     pipeline_ref = _normalize_rel_posix(str(request_payload.get("pipeline_ref") or ""))
     # Phase-2: the pipeline ``lineage.json`` is no longer a leaf output — it sits at the
-    # pipeline root, which must stay non-writable to the sandboxed leaf (the Edit/Write
-    # tools' atomic temp-sibling+rename would need the whole root writable). The conductor
-    # authors it host-side (workflow_conductor._write_lineage) before generate.gate's static
+    # pipeline root, and a pure leaf writes nothing. The conductor authors it host-side (workflow_conductor._write_lineage) before generate.gate's static
     # post_generate gate runs, so it is NOT injected into the generate child's
     # allowed_output_paths (historical audit: orch_20260615T095217Z_74450292 predates this).
     if step_token != "validate" or substep_token != "execute" or not pipeline_ref:
@@ -7114,7 +7112,8 @@ def _allowed_output_paths_for_launch(
                 or base.endswith("_meta.json")
             )
         if step_token == "promote":
-            # Promote contract per docs/workflow/phases/phase_07_promote.md:
+            # Promote output shape (reserved; the flow's phase document is not yet written —
+            # docs/design/simplification_program.md §Premise statements):
             #   releases/<spec_kind>/<domain>/<family>/<spec_id>/
             #     <target_id>/<release_id>/<artifact_path...>
             #   spec/registry/spec_catalog.yaml (exact file)
@@ -7517,8 +7516,10 @@ LEAF_ENV_ALLOWLIST: dict[str, str] = {
         "env -> the default below."
     ),
     "HOME": (
-        "the CLI's own non-config fallbacks. NOT a config home: a claude leaf reads no "
-        "settings layer at all, and a codex leaf's home arrives as CODEX_HOME."
+        "the CLI's own fallbacks, and for a claude leaf its settings: `--safe-mode` "
+        "disables customizations but not settings keys, so the operator's `~/.claude` "
+        "settings `model` decides an unpinned leaf (issue #446). A codex leaf's home "
+        "arrives as CODEX_HOME."
     ),
     "LANG": (
         "text-I/O encoding for the leaf and its subprocesses. Passed together with "
@@ -7661,7 +7662,7 @@ def leaf_env_from(host_env: Mapping[str, str]) -> dict[str, str]:
 # said the tuple "is the exclusion set `_child_env` enforces", which the conductor-side
 # comment had already retracted — leaving the rule's two homes disagreeing.
 # `CLAUDE_CONFIG_DIR` left this tuple with the agentic leaf (Z4, issue #171): a pure claude
-# leaf takes `--safe-mode`, reads no settings layer, and is prepared no private home, so there
+# leaf takes `--safe-mode` (no customizations) and is prepared no private home, so there
 # is no config home to declare through the sandbox and none for `_child_env` to pop.
 _BACKEND_HOME_ENV_VARS = ("CODEX_HOME",)
 
@@ -10827,9 +10828,8 @@ def resolve_claude_model_alias(home: Path | None = None) -> str:
     their model only in the local file is still honored. This is the spec-side value
     for the ORCHESTRATION row — the process `tools/run_workflow.py` starts, which does
     run in the operator's own environment and does read their settings. It is NOT the
-    label for a leaf: an agentic claude leaf is launched with `--setting-sources
-    project` and never reads this home, so `default_agent_model_for_backend` deliberately
-    does not call this. Falls back to DEFAULT_CLAUDE_MODEL_ALIAS when no settings file is
+    label for a leaf: `default_agent_model_for_backend` does not call it (its docstring
+    says why). Falls back to DEFAULT_CLAUDE_MODEL_ALIAS when no settings file is
     present / readable or none carries a `model` key. (Only the spec-side label is
     affected; the EXACT version is always recovered post-run from the result envelope,
     so a fallback here is cosmetic.)"""
@@ -10854,26 +10854,24 @@ def default_agent_model_for_backend(backend: str) -> str:
     the backend's own unpinned alias ("codex"). Other/unknown backends get "" (left to
     sibling backfill). Never returns a pinned version.
 
-    It is a PREDICTED label, not a measurement, on both leaf paths — the conductor
-    passes no `--model` for an undeclared model, so what actually ran is decided by the
-    CLI. The measured value replaces it after the fact from the leaf's own result
-    envelope (`_agent_run_json`), which is the only reading either path can rely on.
-    What the prediction is up against is now NARROWER than it was: `ANTHROPIC_MODEL`
-    used to decide the unpinned model from the operator's environment (measured on CLI
-    2.1.235), and it no longer reaches a leaf at all — the leaf's environment is
-    reconstructed from `LEAF_ENV_ALLOWLIST`, which that name is outside. The label stays
-    a prediction, because the CLI's own default is still the CLI's to choose; the
-    difference is that the choice is now the CLI's alone.
+    It is a PREDICTED label, not a measurement — the conductor passes no `--model` for an
+    undeclared model, so what actually ran is decided by the CLI. The measured value
+    replaces it after the fact from the leaf's own result envelope (`_agent_run_json`),
+    which is the only reading the row can rely on. `ANTHROPIC_MODEL` no longer takes part:
+    the leaf's environment is reconstructed from `LEAF_ENV_ALLOWLIST`, which that name is
+    outside.
 
-    It deliberately does NOT read the operator's `~/.claude` (`resolve_claude_model_alias`,
-    which serves the orchestration row instead). An agentic claude leaf runs with
-    `--setting-sources user` against a private home and cannot see the operator's, so
-    stamping a value read from
-    it would describe a run that did not happen. A PURE claude leaf is asymmetric: its
-    flag set (`pure_leaf_flags`) carries no `--setting-sources`, so operator settings can
-    still decide its model. Predicting per-path would make the stamp claim a precision
-    neither path has; treating both as predictions and letting the envelope correct them
-    is the one consistent reading."""
+    HOW THE CLI RESOLVES AN UNPINNED CLAUDE LEAF (measured on CLI 2.1.294, issue #446,
+    with the exact `pure_leaf_flags()` set against a loopback endpoint that stored the
+    request): a `model` key in the settings under the leaf's `HOME` — the operator's,
+    since `HOME` is on `LEAF_ENV_ALLOWLIST` — reached the request; `--model` overrode it;
+    with no settings file the CLI's own default ran. `--safe-mode` disables customizations,
+    not settings keys.
+
+    It still deliberately does NOT read the operator's `~/.claude`
+    (`resolve_claude_model_alias`, which serves the orchestration row instead): the stamp
+    is a prediction either way, and the envelope correction is what makes the row true.
+    Whether an unpinned claude leaf should be allowed at all is a separate question."""
     b = (backend or "").strip().lower()
     if b == "claude":
         return DEFAULT_CLAUDE_MODEL_ALIAS
@@ -12344,8 +12342,8 @@ def _require_secure_backend_home(home: Path, label: str = "Codex", *,
                                  tighten: bool = False) -> None:
     """Fail closed unless ``home`` is a private, non-symlinked directory.
 
-    ONE spelling for both backends: the Claude private home (issue #63) has the
-    same threat model as the Codex one — a world-writable or symlinked home lets
+    ONE spelling for every backend home: the Claude private home (issue #63; gone with
+    the agentic leaf in Z4, issue #171) had the same threat model as the Codex one — a world-writable or symlinked home lets
     another process substitute the very configuration that is about to be
     SHA-pinned, so the pin would certify bytes the leaf never loads. ``label``
     only names the backend in the message; the checks are identical by design and
@@ -12973,9 +12971,9 @@ def _secure_backend_home_file(
 
     ``verify_existing=False`` seeds ``data`` when the file is absent but accepts
     whatever an already-present file contains. That is required for a file the
-    BACKEND itself rewrites: the Claude private home's ``.claude.json`` gains
-    cached feature flags and a machine id on first launch (measured, CLI 2.1.235),
-    so a warm resume re-preparing the same home would otherwise fail with
+    BACKEND itself rewrites: the Claude private home's ``.claude.json`` (gone with the
+    agentic leaf in Z4, issue #171) gained cached feature flags and a machine id on
+    first launch (measured, CLI 2.1.235), so a warm resume re-preparing the same home would otherwise fail with
     "differs from its verified source". Files the workflow PINS (``settings.json``,
     Codex's ``hooks.json`` / ``config.toml``) keep the default and are verified.
     """
@@ -14758,10 +14756,11 @@ def record_launch(
                     # is recorded against the same home.
                     response_payload["codex_workflow_home"] = codex_isolation["home"]
                     response_payload["codex_lineage_id"] = codex_isolation["lineage_id"]
-                # NO claude private home. Issue #63 prepared one for the AGENTIC leaf, which was
-                # the only launch that read a settings layer; Z4 (issue #171) retired that leaf,
-                # and a pure claude leaf takes `--safe-mode` — no settings layer, no tools, no
-                # hooks — so preparing one would record a configuration surface nothing reads.
+                # NO claude private home. Issue #63 prepared one for the AGENTIC leaf to keep
+                # the operator's customizations out; Z4 (issue #171) retired that leaf, and a
+                # pure claude leaf takes `--safe-mode` — no customizations, no tools, no hooks —
+                # so there is nothing left for a private home to keep out. (Settings keys such
+                # as `model` still reach it from the operator's home; issue #446.)
                 profile_kwargs: dict[str, Any] = {}
                 if codex_isolation is not None:
                     profile_kwargs = codex_isolation_profile_kwargs(codex_isolation)
