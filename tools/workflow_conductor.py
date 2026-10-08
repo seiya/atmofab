@@ -509,9 +509,8 @@ def _cross_target_disagreement_report(cross: Mapping[str, Any]) -> list[str]:
 
 # Validate.execute STRUCTURAL failure_category -> (retry_target_phase, repair_strategy).
 # A structural execute failure authors no verdict.json (the judge leaf never ran), so the
-# defect is in the generated runner/model code, not in a physics predicate: the same class the
-# judge would have reported as ("structural_violation", "code") -> ("generate", "reuse"). It is
-# routed warm (reuse) with the gate's own violation text threaded through as repair findings
+# defect is in the generated runner/model code, not in a physics predicate (the class the deleted
+# judge table, issue #455, used to send to ("generate", "reuse")). It is routed warm (reuse) with the gate's own violation text threaded through as repair findings
 # (trial_meta.json#failure_excerpt), instead of a blind cold restart that discards the reason
 # the run failed. `_execute_inproc` records the category; an execute failure with NO trial_meta
 # (a runner runtime error, whose cause is in stderr rather than a gate report) keeps the cold
@@ -13825,8 +13824,7 @@ class Conductor:
                 # B1: below the C2 threshold, split the no-verdict failure by the category
                 # _execute_inproc recorded in trial_meta.json. A recognized structural category
                 # is a code defect the failing gate DESCRIBED, so repair it warm (reuse) with
-                # that description threaded through as findings (_read_repair_findings), the
-                # same treatment the judge's ("structural_violation","code") already gets. A
+                # that description threaded through as findings (_read_repair_findings). A
                 # runner runtime error writes no trial_meta, and an unknown category is not
                 # understood well enough to guide a repair — both keep the cold restart.
                 # (`trial` / `category` were read above the C2 counter, which the terminal

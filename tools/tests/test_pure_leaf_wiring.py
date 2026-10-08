@@ -1553,10 +1553,10 @@ class PureRenderTests(unittest.TestCase):
         # the reason it escalates under (`verify_severity_major`). READ: it states what the
         # conductor does with a value the rubric already chose; it assigns nothing. Round 1
         # re-worded its "(an LLM `structural_violation` ...)" parenthetical; round 2 added the
-        # deterministic `Validate.execute` reopens and the manual revocation's findings. READ:
-        # same, nothing assigned.
+        # deterministic `Validate.execute` reopens and the manual revocation's findings; round 3
+        # made that recipe a complete command. READ: same, nothing assigned.
         ("docs/RUNBOOK.md: - Cross-phase `Compile` re-derivation of an already-`certifi"
-         " #ec696a4421a8"),
+         " #569579fb2cde"),
         # Issue #455: phase_02's on-failure bullet states the route of an `ir_inconsistency`
         # finding — `dev_verify_major` in `dev`, `verify_severity_major` and a directive in
         # `prod` — where it used to say "the orchestration agent decides". It points at

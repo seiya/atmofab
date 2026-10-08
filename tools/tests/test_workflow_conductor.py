@@ -3361,8 +3361,7 @@ class ConductRoutingTest(unittest.TestCase):
 
     def test_structural_execute_failure_warm_reopens_generate_cross_phase(self) -> None:
         # B1 end to end (prod): a structural validate.execute failure cross-phase revokes
-        # generate with a WARM reuse repair carrying the gate's findings — the same treatment
-        # the judge's ("structural_violation","code") route already gets. The findings must be
+        # generate with a WARM reuse repair carrying the gate's findings. The findings must be
         # read BEFORE reopen-phase, while refs still names the failed run.
         c = self._conductor()
         c.workflow_mode = "prod"  # cross-phase reopen is prod-only (dev fail_closes; see F1)
@@ -4939,7 +4938,7 @@ class TransportFailureTest(unittest.TestCase):
         self.assertEqual(oc.decision.reason, "validate_judge_conformance_violation")
         self.assertNotIn("write-step-result", [s for s, _ in c.calls])
 
-    def test_judge_physics_fail_with_decision_fail_still_routes(self) -> None:
+    def test_judge_fail_with_decision_fail_still_routes(self) -> None:
         # Guard scoping: a GENUINE physics/semantic judge fail (decision=="fail") is a routeable
         # failure — run_phase writes the step_result (the hook allows fail+fail) and routes via
         # classify_failure, unchanged by the conformance guard.
