@@ -140,8 +140,8 @@ The review instrument under `.claude/skills/` — `atmofab-review-loop/scripts/m
 carries its tests beside it in `scripts/tests/`. Its skill states the command that runs them
 (`.claude/skills/atmofab-review-loop/SKILL.md`), because no command in this section collects
 them — measured at `dfeb73dc`: `pytest tools/tests/` and a bare `pytest` each collect 6266, and
-that directory holds 52 tests. (A second instrument, `measure_claude_tool.py`, went
-with the leaf tools it measured in issue #445.)
+that directory holds 52 tests. (A second instrument, `measure_claude_tool.py`, measured the
+leaf tools that went in issue #171, and was deleted in issue #445.)
 
 **That command gets none of the guards `tools/tests/conftest.py` installs** for the suite's
 own directory: not the environment strip, not the private-root redirect, not

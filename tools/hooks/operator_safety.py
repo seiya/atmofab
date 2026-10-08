@@ -27,11 +27,11 @@ flag over `docs/`, an echo of a document quoting one, and a flag given to anothe
 pass; a grep for a flag IN the validator's own source names both and is refused — the same
 over-refusal as the hard-reset rule, with the same answer (rephrase).
 
-**What the verify-bypass rule does not see, and why that is accepted.** A `python3 -c` that
-imports the validator and calls it with a bypass argument names no script file and no flag
-spelling; a shell variable holding the script name hides it the same way; and an argparse
-abbreviation of a flag (the validator's parser keeps `allow_abbrev`) is not the full
-spelling. All three pass. The
+**What the verify-bypass rule does not see, and why that is accepted.** It reads text, so a
+command that never spells both halves passes: the script name held in a shell variable, a
+flag assembled from pieces, and an argparse abbreviation of a flag (the validator's parser
+keeps `allow_abbrev`). A `python3 -c` that imports the validator by module name and passes a
+flag in full IS refused — both spellings are in its text. The
 rule guards the operator's own development session against an accidental bypass, and
 `AGENTS.md` §Development premises puts a defense against the operator outside the defended
 set — no workflow leaf issues a command at all.

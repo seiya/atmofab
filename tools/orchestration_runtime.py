@@ -8375,8 +8375,8 @@ def render_bwrap_command(
     for field in _UNRENDERED_PROFILE_GRANTS:
         if profile.get(field):
             raise ValueError(
-                f"profile field {field!r} must be empty: no leaf is granted a repository "
-                f"path (got {profile.get(field)!r})")
+                f"profile field {field!r} must be empty: a leaf is granted no path under the "
+                f"checkout beyond its own scratch roots (got {profile.get(field)!r})")
     cmd: list[str] = [
         "bwrap",
         "--die-with-parent",

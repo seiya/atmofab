@@ -211,7 +211,7 @@ had to be replaced by re-running the sweep, because nothing could recover the li
 you accept is a classification, and rule 1-b applies to it.
 
 **An instrument you commit needs a machine-readable verdict and its own test.** `measure_claude_tool.py`
-(issue #71; deleted with the leaf tools it measured, issue #445) shipped with `main` returning 0 unconditionally, rows a reader classified by eye, and no test —
+(issue #71; the leaf tools it measured went in issue #171, the script in issue #445) shipped with `main` returning 0 unconditionally, rows a reader classified by eye, and no test —
 and a review round then found five defects in it, two functional. If a script's output is
 evidence for a decision, it must be able to say PASS or FAIL, and an error (a timeout, a launch
 that produced nothing) must fail whatever the row expected rather than being scored as one of
