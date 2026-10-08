@@ -2,7 +2,7 @@
 
 ## Position of this document
 
-Shows the **canonical directory layout** under `workspace/` with a tree diagram. So that the orchestration agent can reference this file instead of confirming positions with `ls workspace/...`, it lists the **generation timing** / **writer** / **reader** for each path.
+Shows the **canonical directory layout** under `workspace/` with a tree diagram. So that a reader (operator or developer) can reference this file instead of confirming positions with `ls workspace/...`, it lists the **generation timing** / **writer** / **reader** for each path.
 
 Related canonical sources:
 - orchestration contract: `docs/ORCHESTRATION.md`

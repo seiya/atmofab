@@ -3027,15 +3027,15 @@ def _run_main(
         f":{base_env['PYTHONPATH']}" if base_env.get("PYTHONPATH") else ""
     )
     # Prevent Python from writing *.pyc / __pycache__ bytecode under tools/.
-    # Without this, any `python3 tools/orchestration_runtime.py` call made by
-    # the orchestration agent (or child subprocesses) generates
+    # Without this, any `python3 tools/orchestration_runtime.py` subprocess the
+    # conductor starts generates
     # tools/__pycache__/orchestration_runtime.cpython-<ver>.pyc. That used to be
     # refused at record-agent-run as an unauthorized write (the output manifest and
     # the terminal diff both went with issue #171 PR-2); it is still bytecode in the
     # source tree of a checkout every structural check reads.  Setting this in the shared env
-    # dict ensures it propagates to: (a) _runtime_command() subprocesses,
-    # (b) the orchestration agent launch subprocess, and (c) any grandchild
-    # `python3 tools/...` invocations the agent makes.
+    # dict ensures it propagates to `_runtime_command()` subprocesses and, via the
+    # env copied from it, to the conductor's own (`orchestration_runtime.py`,
+    # `new_agent_run_id.py`).
     base_env.setdefault("PYTHONDONTWRITEBYTECODE", "1")
     # NOTE: this only covers SUBPROCESSES. The IN-PROCESS conductor host's own bytecode is kept
     # out of the repo source tree by the `sys.pycache_prefix` redirect installed near the top of

@@ -7293,10 +7293,9 @@ def _allowed_output_paths_for_launch(
 # Integrity-protected audit logs written exclusively by the build-runtime library as evidence
 # of tool execution. `validate_pipeline_semantics.py` reads these files and
 # trusts their JSONL records (e.g. `tool_name`, `ok`, `command`) as the source
-# of truth that a build-runtime entry point actually ran. Direct `Edit` / `Write` access by
-# child agents would let them forge successful runs, so canonical placements
-# (computed by `_canonical_command_log_paths()`) are excluded from
-# `allowed_file_tool_paths` (and so are never file-tool-writable by a child).
+# of truth that a build-runtime entry point actually ran. No leaf holds a write tool, so the
+# library is their only writer; canonical placements are computed by
+# `_canonical_command_log_paths()` so the validators trust only those.
 #
 # Protection is scoped to canonical placements only — a non-canonical file
 # that happens to share this basename (e.g. an unrelated source asset under a
@@ -14482,10 +14481,9 @@ def record_launch(
         "launch_prompt_ref": prompt_ref,
         "launch_reply_ref": reply_ref,
         # The exact prompt text record-launch rendered and wrote to
-        # launches/<child_arid>.prompt.txt. Returned so the orchestration agent
-        # can pass it verbatim to the child leaf WITHOUT reading the template
-        # (the tools/prompt_templates/ templates) or the written prompt file (both blocked for the
-        # orchestration). The child-leaf prompt is then identical in content to
+        # launches/<child_arid>.prompt.txt. Returned so the conductor passes it
+        # verbatim to the leaf rather than re-reading the template or the written
+        # prompt file. The leaf prompt is then identical in content to
         # the recorded artifact by construction (audit 1-to-1); the .prompt.txt
         # file only differs by a trailing newline the text writer appends.
         # Retained in terse output.
@@ -14718,8 +14716,8 @@ def record_launch(
             #
             # `record_agent_run`'s terminal check requires `sandbox_runtime == "bwrap"` for a
             # non-HTTP row, so it takes this as its second exemption. Stamped on the RESPONSE,
-            # like the HTTP one and for the same reason: the response is host-authored and
-            # outside every leaf's write roots, so the exemption cannot be claimed by a leaf.
+            # like the HTTP one and for the same reason: the response is host-authored and a
+            # leaf writes no file, so the exemption cannot be claimed by a leaf.
             request_payload.setdefault("leaf_transport", "in_process")
             response_payload.setdefault("leaf_transport", "in_process")
             response_payload.setdefault("sandbox_runtime", "none")
@@ -15389,8 +15387,8 @@ def record_agent_run(
                 # is no child process, so there is nothing for bwrap to confine and
                 # `record_launch` records `leaf_transport: "http"` with no profile. The
                 # sandbox block below asserts a profile that, for such a launch, correctly does
-                # not exist. The exemption is granted on the LAUNCH RESPONSE — host-authored
-                # and outside every leaf's write roots — and only when it names a genuine HTTP
+                # not exist. The exemption is granted on the LAUNCH RESPONSE — host-authored,
+                # and no leaf writes any file — and only when it names a genuine HTTP
                 # provider token, so a leaf cannot claim it. Everything else about the terminal
                 # payload, including the unauthorized-write check below, still applies.
                 _launch_backend = launch_response_payload.get("backend")
@@ -16387,8 +16385,8 @@ def update_orchestration_status(
                     # failures (the caller may have lost the response even though
                     # the first call succeeded) must not error — the system is
                     # already in the requested state. Narrative updates still
-                    # belong in failure_analysis.json (orchestration agent's
-                    # allowed_file_tool_path), but reissuing set-status with the
+                    # belong in failure_analysis.json (written by the driver on
+                    # the dev path, annotated by the operator), but reissuing set-status with the
                     # same status returns the existing meta unchanged.
                     #
                     # Codex round 18 F2: if the canonical `set_status` audit
@@ -16863,10 +16861,10 @@ def _validate_write_step_result_fields(payload: dict[str, Any], step: str) -> No
 
 
 # Default (terse) result projections for the high-frequency bookkeeping
-# subcommands. Each maps a subcommand to the result fields the orchestration
-# agent actually consumes downstream. Anything not listed is dropped from the
-# default stdout to keep the orchestration's resident context small (its
-# cache-read cost scales with context size times turn count). The full payload
+# subcommands. Each maps a subcommand to the result fields the conductor
+# parses downstream. Anything not listed is dropped from the default stdout (the
+# default dates from an LLM orchestrator whose context the full payload
+# inflated). The full payload
 # is still written to its canonical artifact files and recoverable with
 # --verbose. Commands absent from this map are emitted unprojected.
 _TERSE_RESULT_FIELDS: dict[str, tuple[str, ...]] = {
@@ -17292,8 +17290,8 @@ def main(argv: list[str] | None = None) -> int:
                                      choices=sorted(SUPPORTED_PROVIDER_TOKENS))
     launch_check_parser.add_argument(
         "--require-child-agent", required=True, choices=("step", "substep"),
-        help="Expected child agent kind. Plan/Generate/Tune require 'substep'; "
-             "Build/Execute/Judge/Promote require 'step'.",
+        help="Expected child agent kind. Compile/Generate/Validate require 'substep'; "
+             "Build requires 'step'.",
     )
     launch_check_parser.add_argument(
         "--launch-request-json",
@@ -17305,12 +17303,12 @@ def main(argv: list[str] | None = None) -> int:
     reserve_root_parser = subparsers.add_parser(
         "reserve-phase-root",
         description=(
-            "Reserve an ir_id or pipeline_id before the child agent creates the directory. "
+            "Reserve an ir_id or pipeline_id before the conductor creates the directory. "
             "Writes a reservation marker only; does NOT create workspace/ir/ or "
             "workspace/pipelines/ directories. "
             "Use --step compile to reserve an ir_id; --step generate to reserve a pipeline_id. "
-            "Both reservations are typically needed before launching Plan phase substeps, "
-            "because record-launch requires a valid pipeline_ref even for Plan."
+            "Both reservations are typically needed before launching Compile substeps, "
+            "because record-launch requires a valid pipeline_ref even for Compile."
         ),
     )
     reserve_root_parser.add_argument("--repo-root", required=True)
@@ -17467,10 +17465,9 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     # The bookkeeping subcommands default to a terse result projection (see
-    # _project_terse_result): the orchestration agent re-reads its whole
-    # transcript every turn, so echoing the full payload (record-agent-run
-    # reflects the entire input, up to ~50KB) inflates its resident context and
-    # the cache-read cost that scales with it. --verbose restores the full JSON
+    # _project_terse_result), a default dating from an LLM orchestrator whose
+    # context the full payload (up to ~50KB for record-agent-run) inflated; the
+    # conductor parses only the projected fields. --verbose restores the full JSON
     # for debugging/audit. The flag lives on each terse subparser so it can be
     # appended after the subcommand (e.g. `record-launch ... --verbose`).
     for _terse_parser in (

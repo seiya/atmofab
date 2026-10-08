@@ -8310,9 +8310,8 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
     def test_new_agent_run_id_script_emits_parsable_uuid(self) -> None:
         """`tools/new_agent_run_id.py` prints a parsable UUID4 to stdout and exits 0.
 
-        Canonical UUID source for Claude Code orchestration agents — replaces
-        `cat /proc/sys/kernel/random/uuid` (blocked by session sandbox) and
-        `python3 -c 'import uuid; ...'` (blocked by forbid_python_inline_write).
+        Canonical UUID source for a child `agent_run_id` (the conductor calls it as
+        a subprocess).
 
         Exercised via subprocess (not in-process) on purpose: the script must
         remain runnable even when `tools.orchestration_runtime` or its import
@@ -21062,10 +21061,10 @@ class SpecCatalogZeroByteCorruptionTests(unittest.TestCase):
 class TerseResultProjectionTests(unittest.TestCase):
     """Default terse stdout projection for high-frequency bookkeeping subcommands.
 
-    The orchestration agent re-reads its whole transcript every turn, so echoing
-    the full bookkeeping payload (record-agent-run reflects the entire input,
-    up to ~50KB) inflates its resident context and the cache-read cost that
-    scales with it. The CLI sink projects successful results to a minimal field
+    The default dates from an LLM orchestrator, which re-read its whole transcript
+    every turn, so the full bookkeeping payload (record-agent-run reflects the
+    entire input, up to ~50KB) inflated its context; the conductor only parses the
+    projected fields. The CLI sink projects successful results to a minimal field
     set by default; --verbose restores the full JSON.
     """
 
