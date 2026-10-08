@@ -19447,16 +19447,19 @@ class DeterministicLintTest(unittest.TestCase):
             # later `from tools import build_runtime` reads a different object than the modules
             # that imported it before this row (measured: `test_execution_sites` went red).
             import tools
+            from tools import build_runtime  # bound as the attribute before it is patched
             with mock.patch.dict(sys.modules), \
-                    mock.patch.object(tools, "build_runtime", tools.build_runtime):
+                    mock.patch.object(tools, "build_runtime", build_runtime):
                 sys.modules.pop("tools.build_runtime", None)
                 with self.assertRaisesRegex(RuntimeError, "has no static lint preset"):
                     c._gate_lint_check(refs, "child-1")
 
     def test_every_conductor_library_import_is_the_package_import(self) -> None:
         """Issue #422, restated for issue #444: in `tools/workflow_conductor.py` every import of
-        the build-runtime library is `from tools.build_runtime import ...` (the package import,
-        resolved from the code location), no statement imports a bare `build_runtime` or the
+        the build-runtime library is a package import — `from tools.build_runtime import ...` or
+        `from tools import build_runtime`, both resolved from the code location (round 2 of #444:
+        accepting only the first refused the second, the spelling the plan names) — no
+        statement imports a bare `build_runtime` or the
         deleted `build_runtime_server` module (which only a `sys.path` injection could
         resolve), and no code string equals `"mcp_servers"`. Read with `ast`, so a docstring
         does not count. What it does not see: an import spelled through `importlib`."""
@@ -19469,7 +19472,10 @@ class DeterministicLintTest(unittest.TestCase):
             if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
             for node in ast.walk(fn):
-                if isinstance(node, ast.ImportFrom) and node.module == "tools.build_runtime":
+                if isinstance(node, ast.ImportFrom) and (
+                        node.module == "tools.build_runtime"
+                        or (node.module == "tools"
+                            and any(a.name == "build_runtime" for a in node.names))):
                     importers.add(fn.name)
         for node in ast.walk(tree):
             if isinstance(node, ast.ImportFrom) and node.module in bare:
