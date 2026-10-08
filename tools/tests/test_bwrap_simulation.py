@@ -942,7 +942,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
 
 
 
-@unittest.skipUnless(shutil.which("claude"), "the claude CLI is not installed")
+@unittest.skipUnless(shutil.which("claude"), "backend CLI not installed on this host")
 class ClaudeSettingsIsolationTests(unittest.TestCase):
     """UNBILLED (issue #453): the operator's settings FILE does not reach a pure claude leaf.
 
@@ -976,15 +976,17 @@ class ClaudeSettingsIsolationTests(unittest.TestCase):
         self.assertTrue(server.bodies, res.stdout + res.stderr)
         return [json.loads(body).get("model") for body in server.bodies]
 
+    _MODEL_CHANNELS = (
+        ("model key", {"model": "claude-marker-key"}, [], "claude-marker-key"),
+        ("env model", {"env": {"ANTHROPIC_MODEL": "claude-marker-env"}}, [],
+         "claude-marker-env"),
+        ("env alias remap",
+         {"env": {"ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-marker-remap"}},
+         ["--model", "opus"], "claude-marker-remap"),
+    )
+
     def test_no_settings_channel_reaches_a_restricted_leaf(self) -> None:
-        for label, settings, extra, marker in (
-            ("model key", {"model": "claude-marker-key"}, [], "claude-marker-key"),
-            ("env model", {"env": {"ANTHROPIC_MODEL": "claude-marker-env"}}, [],
-             "claude-marker-env"),
-            ("env alias remap",
-             {"env": {"ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-marker-remap"}},
-             ["--model", "opus"], "claude-marker-remap"),
-        ):
+        for label, settings, extra, marker in self._MODEL_CHANNELS:
             with self.subTest(channel=label):
                 self.assertNotIn(marker, self._request(settings, extra))
 
@@ -996,8 +998,11 @@ class ClaudeSettingsIsolationTests(unittest.TestCase):
         self._request({"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:1/"}}, [])
 
     def test_control_without_restricted_the_marker_reaches_the_request(self) -> None:
-        self.assertIn("claude-marker-key",
-                      self._request({"model": "claude-marker-key"}, [], restricted=False))
+        """One control PER CHANNEL, so a CLI that stops honouring one of them (and would
+        leave its marker-absent row green for the wrong reason) turns this row red."""
+        for label, settings, extra, marker in self._MODEL_CHANNELS:
+            with self.subTest(channel=label):
+                self.assertIn(marker, self._request(settings, extra, restricted=False))
 
 
 if __name__ == "__main__":

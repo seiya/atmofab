@@ -5282,8 +5282,10 @@ class Conductor:
 
         Since Z4 (issue #171) that is one field: the TOOLS the leaf was launched with. The
         `--setting-sources` layer choice and the `.mcp.json` server set went with the agentic
-        leaf — a pure leaf takes `--safe-mode` (no customizations), `--strict-mcp-config`
-        with no configuration, and `--tools ""`.
+        leaf — a pure leaf takes `--restricted` (no settings file; issue #453), `--safe-mode`
+        (no customizations), `--strict-mcp-config` with no configuration, and `--tools ""`.
+        None of them is recorded per launch: they are constants of `pure_leaf_flags`, whose
+        golden (`test_pure_leaf.py`) is the record, and `repo_revision` names the set.
 
         `claude_tools` stays because it is still written down nowhere else: the persisted
         `sandbox_command` renders `command_argv` as the executable alone, so the tool set a

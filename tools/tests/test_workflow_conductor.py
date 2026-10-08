@@ -22687,8 +22687,8 @@ class LeafEntryThreadingTests(unittest.TestCase):
         """The repo's long-standing rule: a model the FILE did not declare — one applied as a
         run-wide override (what the preflight subprocess re-applies), or filled in as the
         spec-side label — is NOT pinned onto the argv. What such a launch resolves to is
-        the CLI's choice (the operator's `~/.claude` settings, else its own default —
-        `default_agent_model_for_backend`; measured, issue #446)."""
+        the CLI's own default (`default_agent_model_for_backend`; the operator's settings
+        files are out of reach under `--restricted`, issue #453)."""
         c = wc.Conductor(
             repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=lc.apply_defaults_overrides(

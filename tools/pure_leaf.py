@@ -142,9 +142,16 @@ def pure_leaf_flags() -> list[str]:
                             leaf's model, remapped a declared alias through its `env` block,
                             and redirected the endpoint (measured on CLI 2.1.294 against a
                             loopback endpoint; issues #446, #453). It does not touch the
-                            credentials or the session transcript under `~/.claude`, which
-                            are not settings files: subscription OAuth and the warm
-                            `--resume` both work under it (measured, issue #453). Its other
+                            CLI's credential store or the session transcript under
+                            `~/.claude`, which are not settings files: subscription OAuth and
+                            the warm `--resume` both work under it (measured, issue #453). A
+                            credential the SETTINGS file supplies — `apiKeyHelper`, an `env`
+                            block's `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` — is ignored
+                            with the rest of the file, so a leaf authenticates through the
+                            credential store or not at all ("Not logged in", measured). Nor
+                            does it touch the global state file `~/.claude.json`, whose `env`
+                            block still reaches the leaf; preflight refuses one
+                            (`claude_global_config_env_absent`, issue #453). Its other
                             effects — removing the code-running built-in tools, confining
                             the file tools — are already moot under `--tools ""`.
     - `--safe-mode`        disables ALL ambient customizations — `CLAUDE.md`, skills,
@@ -182,9 +189,10 @@ def pure_leaf_flags() -> list[str]:
     WHAT THIS SET DOES NOT DO, and it is deliberate: a pure leaf takes NO
     `--setting-sources` and gets NO private `CLAUDE_CONFIG_DIR`. `--safe-mode` disables the
     customizations a private home existed to keep out (CLAUDE.md, skills, hooks, MCP
-    servers, …) and `--restricted` the settings files, so the one thing the leaf still
-    reads from the operator's `~/.claude` is its credentials and its own transcript —
-    which is why `HOME` stays on `LEAF_ENV_ALLOWLIST`. An unpinned leaf therefore runs the
+    servers, …) and `--restricted` the settings files, and preflight refuses an `env` block
+    in `~/.claude.json`, so what the leaf still reads from the operator's home is the CLI's
+    credential store, its global state and its own transcript — which is why `HOME` stays
+    on `LEAF_ENV_ALLOWLIST`. An unpinned leaf therefore runs the
     CLI's own default model, and a declared alias stays the CLI's alias
     (`orchestration_runtime.default_agent_model_for_backend`). Admin-managed settings
     still apply; they are the operator's machine and out of scope.

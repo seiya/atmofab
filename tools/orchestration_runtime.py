@@ -7521,7 +7521,8 @@ LEAF_ENV_ALLOWLIST: dict[str, str] = {
     "HOME": (
         "the CLI's own fallbacks, and for a claude leaf its credentials and the session "
         "transcript a warm `--resume` reads. Not its settings: `--restricted` ignores the "
-        "settings files under it (`default_agent_model_for_backend`; issue #453). A codex "
+        "settings files under it, and preflight refuses an `env` block in its "
+        "`~/.claude.json` (`default_agent_model_for_backend`; issue #453). A codex "
         "leaf's home arrives as CODEX_HOME."
     ),
     "LANG": (
@@ -8620,7 +8621,8 @@ CODEX_REQUIRED_LAUNCH_CHECKS = frozenset({
 })
 CLAUDE_REQUIRED_LAUNCH_CHECKS = frozenset({
     "claude_version_available", "claude_help_probe_available", "claude_prompt_stdin",
-    "claude_restricted_flag_available", "sandbox_bwrap_available", "sandbox_bwrap_userns", "sandbox_bwrap_exec",
+    "claude_restricted_flag_available", "claude_global_config_env_absent",
+    "sandbox_bwrap_available", "sandbox_bwrap_userns", "sandbox_bwrap_exec",
 })
 REQUIRED_LAUNCH_CHECKS_BY_BACKEND: dict[str, frozenset[str]] = {
     "codex": CODEX_REQUIRED_LAUNCH_CHECKS,
@@ -10840,8 +10842,11 @@ def default_agent_model_for_backend(backend: str) -> str:
     leaf launches with `--restricted` (`pure_leaf.pure_leaf_flags`), so no user, project or
     local settings file applies: neither a settings `model` key, nor an `env` block's
     `ANTHROPIC_MODEL`, nor an `env.ANTHROPIC_DEFAULT_OPUS_MODEL` remap of a declared
-    `opus` reaches the leaf (the four measured rows; the flag ignores the whole file), and `ANTHROPIC_MODEL` in the operator's PROCESS environment
-    takes no part either (it is not on `LEAF_ENV_ALLOWLIST`). Before issue #453 each of those
+    `opus` reaches the leaf (measured, with the endpoint as a fourth row; the flag ignores
+    the whole file). The global state file `~/.claude.json` is not a settings file and its
+    `env` block is NOT ignored; preflight refuses one (`claude_global_config_env_absent`).
+    `ANTHROPIC_MODEL` in the operator's PROCESS environment takes no part either (it is not
+    on `LEAF_ENV_ALLOWLIST`). Before issue #453 each of those
     settings channels decided or remapped the model; the measurements, with and without the
     flag, are issue #446 comment 6053241634 and the issue #453 comments (CLI 2.1.294,
     loopback capture). Admin-managed settings still apply; they are the operator's machine
@@ -13487,16 +13492,59 @@ def _probe_claude_backend(
             # `pure_leaf_flags()` opens with `--restricted`, which keeps the operator's
             # settings files out of the leaf (issue #453). A CLI that does not know the flag
             # refuses the whole argv, so every leaf would die as a transport failure; this
-            # moves that to preflight. Matched as a whole option, so `--restricted-foo` does
+            # moves that to preflight. Matched as an OPTION LINE of the help — the flag at
+            # the start of a line, after an optional short alias — so a longer option
+            # (`--restricted-mode`) or a mention inside another option's description does
             # not answer for it.
             "name": f"{backend_token}_restricted_flag_available",
             "pass": (help_proc.returncode == 0
-                     and re.search(r"(?<![\w-])--restricted(?![\w-])", help_stdout)
-                     is not None),
+                     and _CLAUDE_RESTRICTED_OPTION_LINE_RE.search(help_stdout) is not None),
             "detail": help_probe_detail,
         },
+        _claude_global_config_env_check(backend_token),
     ]
     return checks, version_proc.stdout.strip()
+
+
+_CLAUDE_RESTRICTED_OPTION_LINE_RE = re.compile(r"(?m)^[ \t]*(?:-\w,[ \t]*)?--restricted(?![\w-])")
+
+
+def _claude_global_config_env_check(backend_token: str) -> dict[str, Any]:
+    """Refuse a claude leaf whose global state file carries an `env` block (issue #453).
+
+    `--restricted` ignores the user, project and local SETTINGS files; the CLI's global
+    state file `~/.claude.json` is not one of them, and its `env` block still reaches every
+    leaf — `ANTHROPIC_MODEL`, `ANTHROPIC_BASE_URL`, `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, … —
+    under `--restricted` and under `--setting-sources ""` alike (measured on CLI 2.1.294
+    against a loopback endpoint, issue #453). The file cannot be withheld: it is the
+    credential/state file the sandbox binds read-write (`backend_credential_home_paths`,
+    the same resolver that names the bind, so the check reads exactly what the leaf sees),
+    and the CLI writes it. So the channel is refused rather than closed: the check passes
+    when the file is absent, or parses to an object whose `env` is absent or empty.
+
+    An unreadable or unparseable file FAILS: what the CLI makes of it is not something this
+    check can name, and the operator can always fix it."""
+    name = f"{backend_token}_global_config_env_absent"
+    _dirs, files = _backend_credential_home_paths("claude")
+    path = files[0] if files else None
+    if path is None or not path.exists():
+        return {"name": name, "pass": True, "detail": f"{path}: absent"}
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        return {"name": name, "pass": False,
+                "detail": f"{path}: unreadable or not JSON ({exc}); fix the file"}
+    env = doc.get("env") if isinstance(doc, dict) else None
+    if not isinstance(doc, dict):
+        return {"name": name, "pass": False,
+                "detail": f"{path}: not a JSON object; fix the file"}
+    if env in (None, {}):
+        return {"name": name, "pass": True, "detail": f"{path}: no `env` block"}
+    keys = sorted(env) if isinstance(env, dict) else [type(env).__name__]
+    return {"name": name, "pass": False,
+            "detail": (f"{path}: carries an `env` block ({', '.join(keys)}), which reaches "
+                       "every claude leaf despite `--restricted` (issue #453); remove the "
+                       "`env` key from that file")}
 
 
 _BACKEND_PROBERS: dict[

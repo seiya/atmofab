@@ -613,6 +613,26 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         accept_ir = accept_any_certified_ir()
         accept_ir.start()
         self.addCleanup(accept_ir.stop)
+        # Issue #453: the claude probe reads the operator's `~/.claude.json` for an `env`
+        # block (`claude_global_config_env_absent`). This class's claude probes are about the
+        # OTHER checks, so the file they read is an absent one under a temporary directory —
+        # otherwise a host whose real file carries `env` turns every claude row red. The
+        # rows that pin the check itself (`ClaudeGlobalConfigEnvCheckTests`) build the file.
+        self._claude_home = tempfile.TemporaryDirectory()
+        self.addCleanup(self._claude_home.cleanup)
+        _claude_home_path = Path(self._claude_home.name)
+        from tools import orchestration_runtime as _ort
+        _real_credential_paths = _ort._backend_credential_home_paths
+
+        def _credential_paths(backend_type: str):  # type: ignore[no-untyped-def]
+            if (backend_type or "").strip().lower() == "claude":
+                return (_claude_home_path / ".claude",), (_claude_home_path / ".claude.json",)
+            return _real_credential_paths(backend_type)
+
+        credential_patch = patch.object(_ort, "_backend_credential_home_paths",
+                                        side_effect=_credential_paths)
+        credential_patch.start()
+        self.addCleanup(credential_patch.stop)
         self._old_live_preflight = os.environ.get("ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT")
         self._old_assume_bwrap = os.environ.get("ATMOFAB_ORCHESTRATION_ASSUME_BWRAP")
         self._old_codex_home = os.environ.get("ATMOFAB_HOME")
@@ -1049,8 +1069,9 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
     def test_a_claude_help_without_restricted_fails_preflight(self) -> None:
         """Issue #453: `pure_leaf_flags()` opens with `--restricted`, and a CLI that does not
         know it refuses the whole argv, so every leaf would die at launch. Preflight refuses
-        it first — as a whole option: a help naming only `--restricted-mode` (a longer
-        option sharing the prefix) or `--restrictedness` does not answer for it."""
+        it first — as an OPTION LINE: a help naming only `--restricted-mode` (a longer
+        option sharing the prefix), `--restrictedness`, or `--restricted` inside another
+        option's description does not answer for it; a short alias before it does."""
         from tools.orchestration_runtime import _probe_claude_backend
 
         def runner_for(help_text: str):  # type: ignore[no-untyped-def]
@@ -1064,13 +1085,17 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 raise AssertionError(args)
             return runner
 
-        checks, _ = _probe_claude_backend("claude", "claude", runner_for(_CLAUDE_HELP_TEXT))
-        self.assertTrue({c["name"]: c for c in checks}
-                        ["claude_restricted_flag_available"]["pass"])
+        for help_text in (_CLAUDE_HELP_TEXT, "Usage: claude\n  -R, --restricted  x\n"):
+            checks, _ = _probe_claude_backend("claude", "claude", runner_for(help_text))
+            self.assertTrue({c["name"]: c for c in checks}
+                            ["claude_restricted_flag_available"]["pass"], help_text)
         for label, help_text in (
             ("absent", "Usage: claude [options] [command] [prompt]\n"),
             ("longer option", "Usage: claude [options]\n  --restricted-mode  x\n"),
             ("longer word", "Usage: claude [options]\n  --restrictedness  x\n"),
+            # Named inside another option's description, not as an option of its own.
+            ("description mention",
+             "Usage: claude [options]\n  --safe-mode  like --restricted, but broader\n"),
         ):
             with self.subTest(case=label):
                 checks, _ = _probe_claude_backend("claude", "claude", runner_for(help_text))
@@ -8438,6 +8463,63 @@ def _setup_certifiable_generate(repo_root: Path, *, verification_status: str = "
         "compile": "step_result_written", "generate": "child_finished",
         "build": "not_started", "validate": "not_started"}
     ps_path.write_text(json.dumps(ps, indent=2) + "\n", encoding="utf-8")
+
+
+class ClaudeGlobalConfigEnvCheckTests(unittest.TestCase):
+    """Issue #453: `~/.claude.json` is not a settings file, so `--restricted` does not ignore
+    its `env` block, and that block sets a claude leaf's model, endpoint and output ceiling
+    (measured on CLI 2.1.294). Preflight refuses it. The file is read through
+    `_backend_credential_home_paths` — the resolver that names the sandbox's rw bind — so
+    each row moves `HOME` and lets the real resolver find the file."""
+
+    def _check(self, content: str | None) -> dict:
+        from tools.orchestration_runtime import _claude_global_config_env_check
+        with tempfile.TemporaryDirectory() as home:
+            if content is not None:
+                (Path(home) / ".claude.json").write_text(content, encoding="utf-8")
+            with patch.dict(os.environ, {"HOME": home}):
+                return _claude_global_config_env_check("claude")
+
+    def test_passes_without_an_env_block(self) -> None:
+        for label, content in (("absent", None), ("no env", '{"theme": "dark"}'),
+                               ("empty env", '{"env": {}}'), ("null env", '{"env": null}')):
+            with self.subTest(case=label):
+                check = self._check(content)
+                self.assertEqual(check["name"], "claude_global_config_env_absent")
+                self.assertTrue(check["pass"], check)
+
+    def test_an_env_block_fails_and_names_its_keys(self) -> None:
+        check = self._check('{"env": {"ANTHROPIC_MODEL": "x", "ANTHROPIC_BASE_URL": "y"}}')
+        self.assertFalse(check["pass"])
+        self.assertIn("ANTHROPIC_BASE_URL, ANTHROPIC_MODEL", check["detail"])
+        self.assertIn("remove the `env` key", check["detail"])
+
+    def test_a_file_this_check_cannot_read_fails(self) -> None:
+        for label, content in (("not json", "{"), ("not an object", "[1]"),
+                               ("env not an object", '{"env": "ANTHROPIC_MODEL=x"}')):
+            with self.subTest(case=label):
+                self.assertFalse(self._check(content)["pass"])
+
+    def test_the_failure_blocks_a_claude_launch(self) -> None:
+        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+            if args[1:] == ["--version"]:
+                return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
+            if args[1:] == ["-p"]:
+                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
+            if args[1:] == ["--help"]:
+                return _FakeCompletedProcess(0, stdout=_CLAUDE_HELP_TEXT)
+            raise AssertionError(args)
+
+        with tempfile.TemporaryDirectory() as home:
+            (Path(home) / ".claude.json").write_text('{"env": {"ANTHROPIC_MODEL": "x"}}',
+                                                     encoding="utf-8")
+            with patch.dict(os.environ, {"HOME": home,
+                                         "ATMOFAB_ORCHESTRATION_ASSUME_BWRAP": "1"}):
+                result = probe_execution_platform(backend="claude", runner=runner)
+        self.assertEqual(result["status"], "fail")
+        self.assertFalse(result["can_launch_step_agents"])
+        by_name = {c["name"]: c for c in result["checks"]}
+        self.assertFalse(by_name["claude_global_config_env_absent"]["pass"])
 
 
 class PhaseCertificationTests(unittest.TestCase):
@@ -23042,7 +23124,7 @@ class HostPycacheRedirectRootTest(unittest.TestCase):
         self.assertLess(gate_m.start(), assign_m.start())
         # No MODULE-LEVEL orchestration_runtime import: it would execute at run_workflow import
         # time, before main() installs the redirect, writing that module's .pyc into the source
-        # tree. Function-local imports (e.g. the `DEFAULT_CLAUDE_MODEL_ALIAS` import in `_run_main`) are fine — they run later.
+        # tree. Function-local imports (e.g. the `DEFAULT_CLAUDE_MODEL_ALIAS` import in `_run_node`) are fine — they run later.
         self.assertIsNone(
             re.search(r"^from tools\.orchestration_runtime import", src, re.MULTILINE),
             "module-level orchestration_runtime import writes its .pyc into the repo source "
