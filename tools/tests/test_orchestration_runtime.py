@@ -23206,7 +23206,7 @@ class HostPycacheRedirectRootTest(unittest.TestCase):
             with self.assertRaises(ValueError):
                 _validated_pycache_redirect_root(repo)
 
-    def test_run_workflow_sets_pycache_prefix_from_the_shared_constant(self):
+    def test_run_workflow_sets_pycache_prefix_from_the_validated_root(self):
         # The host sys.pycache_prefix assignment is not unit-callable
         # (it lives inside run_workflow.main()), so pin it by source text — its removal would
         # silently reintroduce the original defect while every predicate test still passes.
@@ -23224,7 +23224,7 @@ class HostPycacheRedirectRootTest(unittest.TestCase):
         self.assertIsNotNone(
             re.search(r"^\s*root\s*=\s*repo_root\s*/\s*" + literal_path + r"\s*$",
                       src, re.MULTILINE),
-            "the redirect root must be built from the constant's value as a literal")
+            "the redirect root must be built from a literal")
         # Anchored to the FULL assignment form (not a bare `sys.pycache_prefix =`), because
         # main()'s save/restore wrapper also assigns that attribute — a looser pattern would
         # match the restore line instead and silently test the wrong statement.
