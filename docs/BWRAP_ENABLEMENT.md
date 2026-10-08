@@ -11,7 +11,7 @@ profile builder, the leaf-launch path, or the build toolchain.
 - **Why a live run is required:** `record-launch` builds a per-arid bwrap profile and
   records `sandbox_enforced: true`, and `spawn_leaf` wraps every leaf in
   `render_bwrap_command`. A unit test confirms the wrapping, but only a full `claude -p`
-  run exercises real auth, the in-process build-runtime calls, hooks firing, the
+  run exercises real auth, the in-process build-runtime calls, the
   `--session-id` transcript, and the **compile/build toolchain writing objects, module artifacts and the executable**
   from the conductor's own process while the leaves run confined.
 

@@ -9,7 +9,7 @@ This document set is organized so that "the reading order = the way to proceed".
 4. `PHYSICAL_VALIDATION.md` (requirements for physical-validity judgment)
 5. `GLOSSARY.md` (`Artifacts` / `terms`)
 6. `WORKFLOW.md` (entry point for the 5-phase `Spec → Compile → Generate → Build → Validate`; the body is split into `workflow/WORKFLOW_CORE.md` and `workflow/phases/`)
-7. `ORCHESTRATION.md` (execution conventions for `orchestration agent -> substep agent` and `orchestration agent -> step agent`)
+7. `ORCHESTRATION.md` (execution conventions for the conductor and the leaves it launches)
 8. `RUNBOOK.md` (minimal operational procedures for running trials)
 9. `IMPL_PLAN_SPEC.md` (the target profile and the lowering plan: the required fields of `spec/targets/<target_id>.yaml`, and the lowering choices the CodegenBundle's `target_lowering_plan` holds)
 10. `BACKEND_BOUNDARY.md` (where knowledge of a concrete target-stack technology may live; canonical for the `axis` list)
@@ -50,6 +50,6 @@ This document set is organized so that "the reading order = the way to proceed".
 - Regardless of language, the generated code separates `model` (physics computation) and `runner` (execution / judgment coordination).
 - A stage that uses the `LLM` performs `generate -> verify -> regenerate` inside the stage, and saves only the final accepted artifact.
 - A stage that uses the `LLM` produces each stage's `<stage>_meta.json` as a required output, and in standard operation (`debug_mode=false`) does not save failed-attempt artifacts.
-- `workflow` execution follows the conventions in `ORCHESTRATION.md` and starts from the `orchestration agent`.
+- `workflow` execution follows the conventions in `ORCHESTRATION.md` and starts from `tools/run_workflow.py`, which runs the conductor.
 - As soon as the trial procedure is settled, proceed with automation on the premise of `RUNBOOK.md`.
 - `compile` / `run` / `quality check` run through the build-runtime library the conductor calls in-process (`tools/build_runtime.py`; `docs/BUILD_RUNTIME.md`).
