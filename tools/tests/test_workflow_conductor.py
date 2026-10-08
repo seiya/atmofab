@@ -727,8 +727,7 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
         """Warm resume must follow the transcript, and there is ONE place it can be.
 
         `--resume` is served from the launching process's `CLAUDE_CONFIG_DIR`. A pure leaf
-        sets none — `--safe-mode` refuses every settings layer, so `record_launch` prepares no
-        private home for it — and its `--session-id` transcript is therefore written to, and
+        sets none — `record_launch` prepares no private home for it — and its `--session-id` transcript is therefore written to, and
         served from, the operator's `~/.claude/projects`.
 
         This row used to have two halves, because the AGENTIC leaf wrote under the private
@@ -7156,11 +7155,11 @@ class TransientRetryWallClockBudgetTest(LeafTransientRetryTest):
             self.assertFalse(c._pure_transient_retry(
                 retries_done=1, elapsed_s=350.0, spent_s=350.0, **kw))
 
-    def test_the_agentic_loop_does_not_charge_a_usage_limit_wait_to_this_budget(self) -> None:
-        """The drift the two implementations had. In the pure loops the usage-limit `continue`
-        sits above the accumulator, so a wait was already free there; in the agentic loop (gone
-        since Z4, issue #171 — the name of this row is that history) the accumulator ran first
-        and charged it. `--wait-usage-reset` parks on its fixed schedule
+    def test_run_substep_does_not_charge_a_usage_limit_wait_to_this_budget(self) -> None:
+        """Driven end to end through `run_substep`. The drift two implementations once had: in
+        the pure loops the usage-limit `continue` sits above the accumulator, so a wait is free;
+        in the agentic loop (gone since Z4, issue #171) the accumulator ran first and charged
+        it. `--wait-usage-reset` parks on its fixed schedule
         (fifteen minutes for the first wait) after an attempt that itself ran twenty minutes —
         and billing that attempt to the transient budget refused the two-second flake that
         followed, on time no transient attempt ever spent."""
@@ -7203,12 +7202,13 @@ class TransientRetryWallClockBudgetTest(LeafTransientRetryTest):
                 child_arid="child-2", retries_done=0, elapsed_s=2.0, spent_s=0.0))
         self.assertEqual([e["event"] for e in events].count("leaf_transient_retry_declined"), 0)
 
-    def test_the_agentic_loop_refuses_on_count_without_naming_the_wall_clock(self) -> None:
-        """The agentic half of the ordering. Three attempts at 250 s each: the COUNT budget is
-        what refuses the third, and the clock must stay silent about it. Consulting the budget
+    def test_run_substep_refuses_on_count_without_naming_the_wall_clock(self) -> None:
+        """The end-to-end half of the ordering, driven through `run_substep`. Three attempts at
+        250 s each: the COUNT budget is what refuses the third, and the clock must stay silent
+        about it. Consulting the budget
         before the count check leaves every other test green while telling the operator to blame
-        a clock budget that decided nothing — and the pure loop's version of this pin drives the
-        helper, so it says nothing about this loop's inline predicate."""
+        a clock budget that decided nothing — and the helper-level version of this pin (below)
+        says nothing about the order the loop consults it in."""
         events: list = []
         c = self._clocked([self._flake()], seconds_per_attempt=250.0)
         c.emit = lambda event, **f: events.append({"event": event, **f})  # type: ignore
@@ -16148,7 +16148,7 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
             self.assertTrue(c._pure_leaf_substep(refs, "generate", "generate"))
             self.assertTrue(c._pure_leaf_substep(refs, "generate", "verify"))
 
-    def test_claude_non_m3c_is_agentic_residual(self) -> None:
+    def test_claude_non_m3c_has_no_pure_path(self) -> None:
         # (c) claude but non-M3c: an IR that states no physics kind (none at all, or a
         # `profile`, which is never a node) has no bundle representation for the runner, so the
         # node has no pure GENERATE path — the fail-SAFE dispatch for a hand-crafted IR, never a
@@ -23479,7 +23479,7 @@ class LeafUsageRecordingTests(unittest.TestCase):
         return [cap["--agent-run-json"] for sub, cap in c.calls
                 if sub == "finalize-child"][-1]
 
-    def test_an_agentic_leafs_usage_and_model_reach_its_agent_run_row(self) -> None:
+    def test_an_llm_leafs_usage_and_model_reach_its_agent_run_row(self) -> None:
         """The whole point: the numbers the capture boundary took off the envelope are what the
         durable row carries — in-boundary, and readable by `tools/audit_orchestration.py`."""
         c = self._conductor(wc.ProcResult(0, "done", "", usage=dict(self._CAPTURED_USAGE),
@@ -23584,7 +23584,7 @@ class LeafUsageRecordingTests(unittest.TestCase):
                 self.assertEqual(any(p.endswith("/kernel_trace.csv")
                                      for p in req["allowed_output_paths"]), traced)
 
-    def test_every_agentic_and_deterministic_launch_records_a_usage_field(self) -> None:
+    def test_every_llm_and_deterministic_launch_records_a_usage_field(self) -> None:
         """The invariant that retired the runtime's ~/.claude backfill: `finalize_child` no
         longer reconstructs anything, so a path that leaves `usage` absent silently loses the
         measurement instead of falling back. (The pure loops are covered by
