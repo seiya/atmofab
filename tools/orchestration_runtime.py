@@ -13729,9 +13729,9 @@ def probe_execution_platform(
     # Every probe check gates, on both backends — a check added to a prober later fails
     # closed by default rather than silently becoming non-gating.
     # What a claude leaf needs of its host is only that the CLI is there, answers
-    # `--version` and `--help`, and takes its prompt on stdin: a pure leaf loads no settings
-    # layer (`--safe-mode`), is launched with no MCP configuration and no tools, and runs no
-    # hook. The three probes that stood here — the committed leaf configuration, the MCP
+    # `--version` and `--help`, and takes its prompt on stdin: a pure leaf loads no
+    # customization (`--safe-mode`), is launched with no MCP configuration and no tools, and
+    # runs no hook. The three probes that stood here — the committed leaf configuration, the MCP
     # registry, and the live tool-roster measurement of issue #71 — each measured a surface
     # the agentic leaf had and this one does not (Z4, issue #171).
     can_launch_agents = _all_strict_boolean_probe_checks_pass(checks)

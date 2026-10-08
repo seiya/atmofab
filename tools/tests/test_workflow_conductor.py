@@ -2981,12 +2981,11 @@ class ConductHappyPathTest(unittest.TestCase):
 
         Since issue #28 the alias is filled into the resolved leaf entries at construction
         (`Conductor._resolve_claude_model_aliases`) rather than passed in as a run-wide
-        `agent_model`, so the assertion reads the entry every leaf will launch with. Since
-        issue #63 the leaf launches with `--setting-sources user` against a private
-        CLAUDE_CONFIG_DIR and never sees
-        that home, so a stamp taken from it would describe a run that did not happen —
-        `resolve_claude_model_alias` is patched to a SENTINEL here, and the assertion is
-        that the stamp is the default and is NOT the sentinel.
+        `agent_model`, so the assertion reads the entry every leaf will launch with. The leaf
+        label deliberately does not read the operator's home (issue #63; the reason is now
+        the one `default_agent_model_for_backend` gives — the stamp is a prediction the
+        envelope corrects) — `resolve_claude_model_alias` is patched to a SENTINEL here,
+        and the assertion is that the stamp is the default and is NOT the sentinel.
 
         The configuration is built model-LESS rather than taken from the shipped sample: the
         sample declares a model on every entry, so `_resolve_claude_model_aliases` returns
@@ -22683,9 +22682,9 @@ class LeafEntryThreadingTests(unittest.TestCase):
     def test_an_undeclared_model_is_still_left_unpinned(self) -> None:
         """The repo's long-standing rule: a model the FILE did not declare — one applied as a
         run-wide override (what the preflight subprocess re-applies), or filled in as the
-        spec-side label — is NOT pinned onto the argv. Since issue #63 what such a
-        launch resolves to is the CLI's own default rather than the operator's
-        `~/.claude/settings.json`, which the leaf no longer reads."""
+        spec-side label — is NOT pinned onto the argv. What such a launch resolves to is
+        the CLI's choice (the operator's `~/.claude` settings, else its own default —
+        `default_agent_model_for_backend`; measured, issue #446)."""
         c = wc.Conductor(
             repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=lc.apply_defaults_overrides(

@@ -44,11 +44,13 @@ PURE_PROMPT_CONTRACT_VERSION = "pure-70"
 # memory paths, git status); `--exclude-dynamic-system-prompt-sections` only relocates them
 # into the first user message (still host-varying). A fixed `--system-prompt` takes them out
 # of the system prompt, but it does not take them out of the request: measured on CLI 2.1.294
-# (issue #446), the request still carries a `system`-role message with cwd, platform, OS
-# version, today's date and the model name, so the model's total input is NOT a byte-stable
-# function of the host-assembled `-p` body alone. Deliberately minimal: the full persona, output
-# contract, and inlined context live in the `-p` body (rendered in M-B); this only pins the
-# system channel and states the pure-function shape. A change here is a prompt-contract change
+# (issue #446; issue #454), the request's `messages` still carry an environment block (cwd,
+# platform, OS version, today's date, the model name), and the `system` field holds a
+# version-bearing CLI header and the CLI's own one-line preamble ahead of this string. So the
+# model's total input is NOT a byte-stable function of the host-assembled `-p` body alone.
+# Deliberately minimal: the full persona, output contract, and inlined context live in the `-p`
+# body (rendered in M-B); this string is the host's part of the system channel and states the
+# pure-function shape. A change here is a prompt-contract change
 # (bump `PURE_PROMPT_CONTRACT_VERSION`).
 PURE_SYSTEM_PROMPT = (
     "You are a host-mediated pure function. You have no tools, no filesystem, and no shell. "
@@ -150,9 +152,10 @@ def pure_leaf_flags() -> list[str]:
                             the base prompt, not a customization); replacing the system prompt
                             omits them from the system prompt. It does NOT make the input a
                             function of the `-p` body alone: measured on CLI 2.1.294 (issue
-                            #446), the request still carries a `system`-role message with an
+                            #446; issue #454), the request's `messages` still carry an
                             environment block — cwd, platform, OS version, today's date and
-                            the model name.
+                            the model name — and the `system` field carries CLI text ahead
+                            of this string (see `PURE_SYSTEM_PROMPT`).
     - `--tools ""`         no file/shell/gate/write tool is available to the model
                             (`--safe-mode` disables customizations, not the built-in tools).
     - `--strict-mcp-config` defense-in-depth: no ambient MCP server even if a future
@@ -613,9 +616,7 @@ def verify_repair_text(verdict: dict[str, Any]) -> str | None:
 # that, and this is the first machine check the finding table has ever had.
 #
 # `finding_id` is deliberately NOT a key. The plan named one; the phase document's table does
-# not, no reader of `semantic_review.json#findings[*]` resolves one, and the only `finding_id`
-# this tree reads comes from `failure_analysis.json#original_finding`, a different,
-# agent-authored artifact.
+# not, and no reader of `semantic_review.json#findings[*]` resolves one.
 # Adding a field nothing reads is the surface this migration exists to remove.
 SEMANTIC_REVIEW_DECISIONS: tuple[str, ...] = ("pass", "fail")
 SEMANTIC_REVIEW_ATTRIBUTIONS: tuple[str, ...] = ("code", "ir", "spec", "evidence")

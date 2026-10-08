@@ -4133,7 +4133,7 @@ def _run_node(
                             fail_output["stale_canonical_ref"] = stale_canonical_ref
                     except Exception as primary_exc:  # noqa: BLE001
                         # Primary write failed — attempt an emergency exclusive-create write so
-                        # at least some artifact survives without clobbering agent-owned canonical.
+                        # at least some artifact survives without clobbering an existing canonical file.
                         orch_dir = (
                             repo_root / "workspace" / "orchestrations" / orchestration_id
                         )

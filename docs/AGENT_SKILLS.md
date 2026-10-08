@@ -21,8 +21,8 @@ This document defines the reference conventions for the `skills` used in the pro
 - The SKILL of the optional flows `Tune` / `Promote` is handled separately from the core workflow.
 - OUT OF SCOPE: the skills under `.claude/skills/`. Those are dev-only procedures for an operator's
   interactive session (how to review a change, how to change enforcement machinery); no phase maps to
-  them, and no leaf can load them — a pure leaf runs under `--safe-mode`, which refuses every
-  settings layer (`CLAUDE.md`).
+  them, and no leaf can load them — a pure leaf runs under `--safe-mode`, which disables skills
+  along with every other customization (`CLAUDE.md`).
 
 ## Requirements
 - An OPERATOR running one of the flows below identifies the target phase, then reads the corresponding `SKILL.md`. A workflow leaf does not: the host renders its contract into its prompt.
