@@ -46,15 +46,19 @@ class PureLeafFlagsTest(unittest.TestCase):
     def test_flag_set_golden(self):
         self.assertEqual(
             pl.pure_leaf_flags(),
-            ["--safe-mode", "--system-prompt", pl.PURE_SYSTEM_PROMPT, "--tools", "",
+            ["--restricted", "--safe-mode", "--system-prompt", pl.PURE_SYSTEM_PROMPT,
+             "--tools", "",
              "--strict-mcp-config", "--disable-slash-commands", "--output-format", "json"])
 
     def test_context_closing_flags_present(self):
         # --safe-mode disables CLAUDE.md + the repo's UserPromptSubmit hook; --system-prompt
         # replaces the default system prompt (dropping its per-machine dynamic sections).
         # A regression that drops either re-opens ambient / host-varying input.
+        # --restricted keeps the operator's settings files out (issue #453): dropping it
+        # hands an unpinned leaf's model and endpoint back to `~/.claude/settings.json`.
         flags = pl.pure_leaf_flags()
         self.assertIn("--safe-mode", flags)
+        self.assertIn("--restricted", flags)
         self.assertEqual(flags[flags.index("--system-prompt") + 1], pl.PURE_SYSTEM_PROMPT)
 
     def test_flags_are_a_fresh_list(self):

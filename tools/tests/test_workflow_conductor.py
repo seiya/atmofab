@@ -2984,8 +2984,9 @@ class ConductHappyPathTest(unittest.TestCase):
         `agent_model`, so the assertion reads the entry every leaf will launch with. The leaf
         label deliberately does not read the operator's home (issue #63; the reason is now
         the one `default_agent_model_for_backend` gives — the stamp is a prediction the
-        envelope corrects) — `resolve_claude_model_alias` is patched to a SENTINEL here,
-        and the assertion is that the stamp is the default and is NOT the sentinel.
+        envelope corrects; since issue #453 no reader of that home exists at all) — the
+        run is driven under a `HOME` whose settings name a SENTINEL model, and the assertion
+        is that the stamp is the default and is NOT the sentinel.
 
         The configuration is built model-LESS rather than taken from the shipped sample: the
         sample declares a model on every entry, so `_resolve_claude_model_aliases` returns
@@ -3010,8 +3011,11 @@ class ConductHappyPathTest(unittest.TestCase):
              patch.object(wc.Conductor, "__init__", _capture_init), \
              patch.object(wc.Conductor, "conduct", return_value="pass"), \
              patch.object(wc, "resolve_run_target", return_value=None), \
-             patch("tools.orchestration_runtime.resolve_claude_model_alias",
-                   return_value=SENTINEL):
+             tempfile.TemporaryDirectory() as home, \
+             patch("pathlib.Path.home", return_value=Path(home)):
+            (Path(home) / ".claude").mkdir()
+            (Path(home) / ".claude" / "settings.json").write_text(
+                json.dumps({"model": SENTINEL}), encoding="utf-8")
             status = wc.run_conductor(
                 repo_root=str(_SHARED_REPO_ROOT), orchestration_id="o",
                 orchestration_agent_run_id="O", spec_ref="spec/c/x",

@@ -252,7 +252,7 @@ class ExchangeTests(unittest.TestCase):
         # The WHOLE argv: measurement 4 was taken with exactly these flags (`--verbose` is what
         # puts the event into a `-p` stream-json stream).
         self.assertEqual(seen["argv"], [
-            "--model", "haiku", "--safe-mode", "--system-prompt",
+            "--model", "haiku", "--restricted", "--safe-mode", "--system-prompt",
             ur._CLAUDE_PROBE_SYSTEM_PROMPT, "--tools", "", "--strict-mcp-config",
             "--disable-slash-commands", "--no-session-persistence",
             "--output-format", "stream-json", "--verbose", "-p"])

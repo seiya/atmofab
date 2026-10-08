@@ -73,7 +73,6 @@ from tools.orchestration_runtime import (
     write_preflight,
     write_step_result,
     DEFAULT_CLAUDE_MODEL_ALIAS,
-    resolve_claude_model_alias,
     default_agent_model_for_backend,
 )
 
@@ -559,6 +558,12 @@ _CLAUDE_EMPTY_PROMPT_REFUSAL = (
     "Error: Input must be provided either through stdin or as a prompt argument "
     "when using --print"
 )
+# A subset of the real `claude --help` (CLI 2.1.294): the usage line and the `--restricted`
+# option line, which `claude_restricted_flag_available` reads (issue #453).
+_CLAUDE_HELP_TEXT = (
+    "Usage: claude [options] [command] [prompt]\n"
+    "  --restricted                          Restricted mode: removes the built-in\n"
+)
 
 
 # Subsets of the real `codex exec --help` / `codex exec resume --help`: every flag the
@@ -1027,7 +1032,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 # input channels. See `_probe_claude_backend`.
                 return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             if args[0] == "claude" and args[1:] == ["--help"]:
-                return _FakeCompletedProcess(0, stdout="Usage: claude [options] [command] [prompt]\n")
+                return _FakeCompletedProcess(0, stdout=_CLAUDE_HELP_TEXT)
             raise AssertionError(args)
 
         result = probe_execution_platform(backend="claude", runner=runner)
@@ -1040,6 +1045,41 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         self.assertEqual(
             {c["name"] for c in result["checks"]} & set(CLAUDE_REQUIRED_LAUNCH_CHECKS),
             set(CLAUDE_REQUIRED_LAUNCH_CHECKS))
+
+    def test_a_claude_help_without_restricted_fails_preflight(self) -> None:
+        """Issue #453: `pure_leaf_flags()` opens with `--restricted`, and a CLI that does not
+        know it refuses the whole argv, so every leaf would die at launch. Preflight refuses
+        it first — as a whole option: a help naming only `--restricted-mode` (a longer
+        option sharing the prefix) or `--restrictedness` does not answer for it."""
+        from tools.orchestration_runtime import _probe_claude_backend
+
+        def runner_for(help_text: str):  # type: ignore[no-untyped-def]
+            def runner(args, **kwargs):  # type: ignore[no-untyped-def]
+                if args[1:] == ["--version"]:
+                    return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
+                if args[1:] == ["-p"]:
+                    return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
+                if args[1:] == ["--help"]:
+                    return _FakeCompletedProcess(0, stdout=help_text)
+                raise AssertionError(args)
+            return runner
+
+        checks, _ = _probe_claude_backend("claude", "claude", runner_for(_CLAUDE_HELP_TEXT))
+        self.assertTrue({c["name"]: c for c in checks}
+                        ["claude_restricted_flag_available"]["pass"])
+        for label, help_text in (
+            ("absent", "Usage: claude [options] [command] [prompt]\n"),
+            ("longer option", "Usage: claude [options]\n  --restricted-mode  x\n"),
+            ("longer word", "Usage: claude [options]\n  --restrictedness  x\n"),
+        ):
+            with self.subTest(case=label):
+                checks, _ = _probe_claude_backend("claude", "claude", runner_for(help_text))
+                self.assertFalse({c["name"]: c for c in checks}
+                                 ["claude_restricted_flag_available"]["pass"])
+                result = probe_execution_platform(backend="claude",
+                                                  runner=runner_for(help_text))
+                self.assertEqual(result["status"], "fail")
+                self.assertFalse(result["can_launch_step_agents"])
 
     def test_probe_execution_platform_claude_fails_when_help_also_unavailable(self) -> None:
         def runner(args, **kwargs):  # type: ignore[no-untyped-def]
@@ -1422,7 +1462,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             if cmd[-1] == "--version":
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
             if cmd[-1] == "--help":
-                return _FakeCompletedProcess(0, stdout="Usage: claude [options]\n")
+                return _FakeCompletedProcess(0, stdout=_CLAUDE_HELP_TEXT)
             if cmd[-1] == "-p":
                 return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             raise AssertionError(cmd)
@@ -1493,7 +1533,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             if cmd[-1] == "--version":
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
             if cmd[-1] == "--help":
-                return _FakeCompletedProcess(0, stdout="Usage: claude [options]\n")
+                return _FakeCompletedProcess(0, stdout=_CLAUDE_HELP_TEXT)
             if cmd[-1] == "-p":
                 return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
             raise AssertionError(cmd)
@@ -21748,39 +21788,6 @@ class ModelResolutionTests(unittest.TestCase):
         (home / ".claude" / "settings.json").write_text(
             json.dumps(doc), encoding="utf-8")
 
-    def test_alias_reads_settings_model(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            self._write_settings(home, "opus")
-            self.assertEqual(resolve_claude_model_alias(home), "opus")
-
-    def test_alias_falls_back_when_settings_absent_or_modelless(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            # no settings.json at all
-            self.assertEqual(resolve_claude_model_alias(home), DEFAULT_CLAUDE_MODEL_ALIAS)
-            # settings.json present but no model key
-            self._write_settings(home, None)
-            self.assertEqual(resolve_claude_model_alias(home), DEFAULT_CLAUDE_MODEL_ALIAS)
-
-    def test_alias_local_settings_take_precedence(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            self._write_settings(home, "opus")
-            (home / ".claude" / "settings.local.json").write_text(
-                json.dumps({"model": "sonnet"}), encoding="utf-8")
-            self.assertEqual(resolve_claude_model_alias(home), "sonnet")
-            # local file present but with no model key -> base settings model wins
-            (home / ".claude" / "settings.local.json").write_text(
-                json.dumps({"theme": "dark"}), encoding="utf-8")
-            self.assertEqual(resolve_claude_model_alias(home), "opus")
-
-    def test_alias_is_never_a_pinned_version(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
-            home = Path(tmp)
-            self._write_settings(home, "opus")
-            self.assertNotRegex(resolve_claude_model_alias(home), r"-\d+-\d+$")
-
     def test_default_agent_model_per_backend(self) -> None:
         self.assertEqual(default_agent_model_for_backend("claude"),
                          DEFAULT_CLAUDE_MODEL_ALIAS)
@@ -21816,29 +21823,24 @@ class ModelResolutionTests(unittest.TestCase):
         self.assertEqual(default_agent_model_for_backend(None), "")   # type: ignore[arg-type]
 
     def test_the_leaf_label_does_not_read_the_operators_home(self) -> None:
-        """Issue #63 separates the two readers at the function boundary. It did so because
-        the agentic claude leaf could not see the operator's `~/.claude`; a pure leaf can
-        (issue #446), and the separation stays because the leaf stamp is a prediction the
-        result envelope corrects (`default_agent_model_for_backend`).
+        """The leaf's spec-side label is the constant, whatever the operator's settings say.
 
-        Pinned STRUCTURALLY — `resolve_claude_model_alias` is made to raise — rather than by
-        comparing values. Both functions fall back to DEFAULT_CLAUDE_MODEL_ALIAS, so on the
-        common machine (no `model` key in settings) a call-through and a non-call-through
-        return the same string, and an equality assertion would be green either way."""
-        with patch("tools.orchestration_runtime.resolve_claude_model_alias",
-                   side_effect=AssertionError(
-                       "default_agent_model_for_backend must not read operator settings")):
-            self.assertEqual(default_agent_model_for_backend("claude"),
-                             DEFAULT_CLAUDE_MODEL_ALIAS)
-
-    def test_the_orchestration_row_still_reads_the_operators_home(self) -> None:
-        """The other side of the same separation: `run_workflow.py` runs in the operator's
-        own environment, so the ORCHESTRATION row's label is theirs to set. Removing the
-        leaf's read must not remove this one."""
+        Until issue #453 a second reader (`resolve_claude_model_alias`) served the
+        orchestration row from `~/.claude/settings*.json`, and this row pinned that the leaf
+        label did not call it. That reader is deleted: a pure leaf launches with
+        `--restricted`, so nothing the settings file names reaches it, and a label read from
+        that file would describe a launch that did not happen. Driven through a `HOME` whose
+        settings and local settings both name a marker model, so a reader of either file
+        returns the marker."""
         with tempfile.TemporaryDirectory() as tmp:
             home = Path(tmp)
-            self._write_settings(home, "sonnet")
-            self.assertEqual(resolve_claude_model_alias(home), "sonnet")
+            self._write_settings(home, "claude-marker-settings")
+            (home / ".claude" / "settings.local.json").write_text(
+                json.dumps({"model": "claude-marker-local"}), encoding="utf-8")
+            with patch.dict(os.environ, {"HOME": str(home)}), \
+                    patch("pathlib.Path.home", return_value=home):
+                self.assertEqual(default_agent_model_for_backend("claude"),
+                                 DEFAULT_CLAUDE_MODEL_ALIAS)
 
 
 class InfrastructureSpecKindTests(unittest.TestCase):
@@ -23040,7 +23042,7 @@ class HostPycacheRedirectRootTest(unittest.TestCase):
         self.assertLess(gate_m.start(), assign_m.start())
         # No MODULE-LEVEL orchestration_runtime import: it would execute at run_workflow import
         # time, before main() installs the redirect, writing that module's .pyc into the source
-        # tree. Function-local imports (e.g. _default_claude_agent_model) are fine — they run later.
+        # tree. Function-local imports (e.g. the `DEFAULT_CLAUDE_MODEL_ALIAS` import in `_run_main`) are fine — they run later.
         self.assertIsNone(
             re.search(r"^from tools\.orchestration_runtime import", src, re.MULTILINE),
             "module-level orchestration_runtime import writes its .pyc into the repo source "

@@ -1141,23 +1141,30 @@ class RunWorkflowTests(unittest.TestCase):
 
     def test_fresh_claude_run_records_orchestration_agent_model(self) -> None:
         """A fresh (non-resume) claude run threads --agent-model into init so the
-        orchestration agent_runs row records the model (P2). The default is the
-        operator's UNPINNED alias (e.g. 'opus'), not a pinned version."""
-        from tools.orchestration_runtime import resolve_claude_model_alias
-        with tempfile.TemporaryDirectory() as tmp:
+        orchestration agent_runs row records the model (P2). The default is the spec-side
+        UNPINNED alias (`DEFAULT_CLAUDE_MODEL_ALIAS`), not a pinned version, and not what
+        the operator's `~/.claude` settings name (issue #453: nothing in the run reads them
+        for a model) — driven under a `HOME` whose settings name a marker."""
+        from tools.orchestration_runtime import DEFAULT_CLAUDE_MODEL_ALIAS
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as home:
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
-            code, out, calls = self._run_main_with_fake_runtime(
-                ["spec/problem/test.md", "compile",
-                 "--repo-root", str(repo_root), "--no-run-conductor"]
-            )
+            (Path(home) / ".claude").mkdir()
+            (Path(home) / ".claude" / "settings.json").write_text(
+                json.dumps({"model": "claude-marker-settings"}), encoding="utf-8")
+            with mock.patch("pathlib.Path.home", return_value=Path(home)), \
+                    mock.patch.dict(os.environ, {"HOME": home}):
+                code, out, calls = self._run_main_with_fake_runtime(
+                    ["spec/problem/test.md", "compile",
+                     "--repo-root", str(repo_root), "--no-run-conductor"]
+                )
             self.assertEqual(code, 0, out)
             init_calls = [c for c in calls if c and c[0] == "init"]
             self.assertEqual(len(init_calls), 1)
             self.assertNotIn("--resume", init_calls[0])
             idx = init_calls[0].index("--agent-model")
             recorded = init_calls[0][idx + 1]
-            self.assertEqual(recorded, resolve_claude_model_alias())
+            self.assertEqual(recorded, DEFAULT_CLAUDE_MODEL_ALIAS)
             # never a pinned version id
             self.assertNotRegex(recorded, r"-\d+-\d+$")
 

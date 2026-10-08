@@ -194,8 +194,9 @@ def parse_claude_rate_limit_events(stdout: str) -> ResetReading:
 def _read_claude_cli(*, command_base: list[str], model: str, env: Mapping[str, str],
                      cwd: str) -> ResetReading:
     argv = [*command_base, *(["--model", model] if model else []),
-            "--safe-mode", "--system-prompt", _CLAUDE_PROBE_SYSTEM_PROMPT, "--tools", "",
-            "--strict-mcp-config", "--disable-slash-commands", "--no-session-persistence",
+            "--restricted", "--safe-mode", "--system-prompt", _CLAUDE_PROBE_SYSTEM_PROMPT,
+            "--tools", "", "--strict-mcp-config", "--disable-slash-commands",
+            "--no-session-persistence",
             "--output-format", "stream-json", "--verbose", "-p"]
     lines, why = _exchange(argv, env=env, cwd=cwd, send=_CLAUDE_PROBE_PROMPT,
                            close_stdin_after_send=True, until=lambda _line: False)

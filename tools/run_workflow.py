@@ -93,17 +93,6 @@ DEFAULT_LLM_COMMANDS = {
     "codex": "codex",
     "claude": "claude",
 }
-# Default orchestration-agent model recorded on the orchestration agent_runs row
-# for the Claude backend, as an UNPINNED alias (e.g. "opus") read from the
-# operator's settings — never a pinned version, which would go stale as versions
-# update. Operators on a different Claude model name it in the leaf-LLM configuration.
-# Codex is intentionally excluded: its fresh and resume workflows require an
-# explicit model slug, which the conductor pins in every `codex exec --model`
-# launch and records as host-side provenance.
-def _default_claude_agent_model() -> str:
-    from tools.orchestration_runtime import resolve_claude_model_alias
-    return resolve_claude_model_alias()
-
 PHASE_ALIASES = {
     "compile": "Compile",
     "generate": "Generate",
@@ -3851,8 +3840,9 @@ def _run_node(
                 source_dependency_ref,
             ]
             # Record the orchestration agent's own model so its agent_runs row is not a
-            # cost-attribution blind spot. Default to the operator's configured (unpinned)
-            # claude alias ONLY for the claude backend running the UNMODIFIED default command —
+            # cost-attribution blind spot. Default to the unpinned spec-side claude alias
+            # (`DEFAULT_CLAUDE_MODEL_ALIAS`; nothing here reads the operator's `~/.claude`,
+            # issue #453) ONLY for the claude backend running the UNMODIFIED default command —
             # a configured `command:` (e.g. a wrapper selecting a different model) could launch
             # a different model, so we must not assert the alias there; leave it unset.
             orchestration_model = agent_model
@@ -3861,7 +3851,8 @@ def _run_node(
                 and llm == "claude"
                 and llm_command == DEFAULT_LLM_COMMANDS["claude"]
             ):
-                orchestration_model = _default_claude_agent_model()
+                from tools.orchestration_runtime import DEFAULT_CLAUDE_MODEL_ALIAS
+                orchestration_model = DEFAULT_CLAUDE_MODEL_ALIAS
             if orchestration_model:
                 init_args += ["--agent-model", orchestration_model]
             # Persist the reproduction/closure record on the cold init only. On the

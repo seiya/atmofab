@@ -135,6 +135,18 @@ def pure_leaf_flags() -> list[str]:
     A fresh list per call (never a shared constant) so a caller that splices it into an
     argv cannot mutate the canonical set. The set is the load-bearing contract:
 
+    - `--restricted`       ignores the user, project and local SETTINGS FILES (managed
+                            settings and `--settings` still apply; the leaf passes no
+                            `--settings`). The leaf's `HOME` is the operator's, so without it
+                            the operator's `~/.claude/settings.json` decided an unpinned
+                            leaf's model, remapped a declared alias through its `env` block,
+                            and redirected the endpoint (measured on CLI 2.1.294 against a
+                            loopback endpoint; issues #446, #453). It does not touch the
+                            credentials or the session transcript under `~/.claude`, which
+                            are not settings files: subscription OAuth and the warm
+                            `--resume` both work under it (measured, issue #453). Its other
+                            effects — removing the code-running built-in tools, confining
+                            the file tools — are already moot under `--tools ""`.
     - `--safe-mode`        disables ALL ambient customizations — `CLAUDE.md`, skills,
                             plugins, MCP servers, custom commands/agents, and crucially the
                             configured HOOKS (the `UserPromptSubmit`
@@ -142,8 +154,9 @@ def pure_leaf_flags() -> list[str]:
                             or run side effects). This is what makes the context CLOSED (A2):
                             without it, `claude -p` loads `CLAUDE.md` and runs the configured
                             hooks, so the "pure function" would still receive ambient
-                            instructions. Admin policy settings still apply, and auth / model
-                            / permissions work normally — so subscription billing is preserved
+                            instructions. It disables customizations, not settings (that
+                            is `--restricted`'s half). Auth works normally — so subscription
+                            billing is preserved
                             (this is why `--safe-mode`, not `--bare`, which forces API-key auth
                             and would break subscription billing).
     - `--system-prompt <PURE_SYSTEM_PROMPT>` replaces the default system prompt, which
@@ -167,14 +180,14 @@ def pure_leaf_flags() -> list[str]:
                             without touching the session transcript (~/.claude is not read).
 
     WHAT THIS SET DOES NOT DO, and it is deliberate: a pure leaf takes NO
-    `--setting-sources` and gets NO private `CLAUDE_CONFIG_DIR`. `--safe-mode` already
-    disables the customizations a private home existed to keep out (CLAUDE.md, skills,
-    hooks, MCP servers, …), but it does NOT disable settings: the leaf's `HOME` is the
-    operator's, so the operator's `~/.claude` settings decide an UNPINNED leaf's model and
-    can remap a declared alias (measured on CLI 2.1.294 against a loopback endpoint;
-    issues #446, #453). `orchestration_runtime.default_agent_model_for_backend` is the one
-    statement of the measured cases, and this is the reason the model stamp is treated as
-    a prediction the result envelope corrects.
+    `--setting-sources` and gets NO private `CLAUDE_CONFIG_DIR`. `--safe-mode` disables the
+    customizations a private home existed to keep out (CLAUDE.md, skills, hooks, MCP
+    servers, …) and `--restricted` the settings files, so the one thing the leaf still
+    reads from the operator's `~/.claude` is its credentials and its own transcript —
+    which is why `HOME` stays on `LEAF_ENV_ALLOWLIST`. An unpinned leaf therefore runs the
+    CLI's own default model, and a declared alias stays the CLI's alias
+    (`orchestration_runtime.default_agent_model_for_backend`). Admin-managed settings
+    still apply; they are the operator's machine and out of scope.
 
     `--session-id`, the warm-repair `--resume <arid> --fork-session`, and the trailing `-p`
     are added by `Conductor.leaf_command` around this set. `-p` takes no prompt argument:
@@ -184,7 +197,7 @@ def pure_leaf_flags() -> list[str]:
     (breaking the subscription billing the operator requires), and
     `--no-session-persistence` would break the warm-resume repair path.
     """
-    return ["--safe-mode", "--system-prompt", PURE_SYSTEM_PROMPT, "--tools", "",
+    return ["--restricted", "--safe-mode", "--system-prompt", PURE_SYSTEM_PROMPT, "--tools", "",
             "--strict-mcp-config", "--disable-slash-commands", "--output-format", "json"]
 
 

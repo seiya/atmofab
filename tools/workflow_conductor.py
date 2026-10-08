@@ -1940,11 +1940,9 @@ def build_launch_request(
 # more; it only stops a leaf that needed the room from being truncated into nothing.
 #
 # The conductor does NOT pin the leaf model (`leaf_command` passes no `--model` unless the
-# configuration file declared one). The unpinned case then resolves as the CLI resolves it:
-# `--safe-mode` disables customizations, not settings, and the leaf's `HOME` is the
-# operator's (`LEAF_ENV_ALLOWLIST`), so the operator's `~/.claude` settings decide it where
-# they name a model, and the CLI's own default only where they do not (measured on CLI
-# 2.1.294, issues #446 and #453; `orchestration_runtime.default_agent_model_for_backend` is the one statement of it). 128,000 is the ceiling of the Opus 4.8 /
+# configuration file declared one). The unpinned case then takes the CLI's own default:
+# `--restricted` keeps the operator's settings files out of the leaf (issue #453;
+# `orchestration_runtime.default_agent_model_for_backend` is the one statement of it). 128,000 is the ceiling of the Opus 4.8 /
 # Sonnet 5 tier; a model whose output limit is lower (Haiku 4.5 caps at 64,000) rejects this
 # value, and rejects it on EVERY launch: `API Error: 400 {"type":"invalid_request_error",
 # "message":"max_tokens: 128000 > 64000 ..."}`. That failure is deliberately classified
@@ -3715,10 +3713,9 @@ class Conductor:
     def _resolve_claude_model_aliases(self) -> None:
         """Fill in the spec-side alias for every model-less `claude_cli` entry, ONCE.
 
-        A `claude_cli` entry that names no `model:` is resolved by the CLI (from the
-        operator's `~/.claude` settings, else its own default —
-        `default_agent_model_for_backend`): the conductor passes no `--model` for it (`leaf_command` keys on `model_declared`, which
-        this fill does not set). What is filled in is therefore the LABEL such a launch is
+        A `claude_cli` entry that names no `model:` is resolved by the CLI to its own default
+        (`default_agent_model_for_backend`): the conductor passes no `--model` for it
+        (`leaf_command` keys on `model_declared`, which this fill does not set). What is filled in is therefore the LABEL such a launch is
         recorded under, not a choice being made — a prediction the leaf's result envelope
         corrects after the fact (`default_agent_model_for_backend`). Done once at
         construction rather than per launch so every recorded launch of the run agrees about
@@ -3879,9 +3876,12 @@ class Conductor:
 
         THE HOME THIS LAUNCH WILL USE, and only that one. `--resume` is served from the
         launching process's `CLAUDE_CONFIG_DIR`, and a pure leaf sets none: `record_launch`
-        prepares no private home for it (issue #453 asks whether it should), and its `--session-id` transcript is written to — and served from — the operator's
-        `~/.claude/projects`. MEASURED: the real `pure_leaf_flags()` set plus `--session-id`
-        does write `<config-home>/projects/<slug>/<sid>.jsonl`.
+        prepares no private home for it, and its `--session-id` transcript is written to —
+        and served from — the operator's `~/.claude/projects`. `--restricted` ignores the
+        settings files there and not the transcripts (issue #453). MEASURED: the real
+        `pure_leaf_flags()` set plus `--session-id` does write
+        `<config-home>/projects/<slug>/<sid>.jsonl`, and a `--resume <sid> --fork-session`
+        under it answers (issue #453).
 
         Until Z4 (issue #171) this took a `pure` argument and searched this orchestration's
         private home for the agentic shape. That home is gone with the shape; searching a
@@ -4038,7 +4038,7 @@ class Conductor:
         if entry.provider == "claude_cli":
             # `-p` runs non-interactively, and `pure_leaf_flags()` below is the whole of the
             # leaf's surface: no tools, no MCP servers, no slash commands, no customizations
-            # (`--safe-mode`; settings keys such as `model` still apply), and the JSON result
+            # (`--safe-mode`), no settings file (`--restricted`), and the JSON result
             # envelope. Since Z4 (issue #171) there is no
             # second arm here — the agentic launch that carried `--setting-sources user`, a
             # private CLAUDE_CONFIG_DIR, an MCP configuration and a tool allowlist is gone, and
@@ -4049,9 +4049,8 @@ class Conductor:
             # launching the CLI's own default would be provenance that describes a run that did
             # not happen. A model the file did not declare is deliberately NOT pinned — that is
             # the repo's long-standing rule (see LEAF_MAX_OUTPUT_TOKENS) and it is what keeps
-            # every pre-issue-#28 launch byte-identical. The unpinned case is decided by the
-            # operator's `~/.claude` settings where they name a model, and by the CLI's own
-            # default otherwise (`default_agent_model_for_backend` states what was measured).
+            # every pre-issue-#28 launch byte-identical. The unpinned case takes the CLI's own
+            # default (`default_agent_model_for_backend`).
             if entry.model_declared and entry.model.strip():
                 flags += ["--model", entry.model.strip()]
             # Reasoning effort has no "unpinned alias" story the way the model does — there is

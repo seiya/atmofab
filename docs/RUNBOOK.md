@@ -239,12 +239,14 @@ where it runs as it is, and `--gpu` adds the `gpu` class's device probe. It writ
 
 When any leaf runs on the `claude_cli` provider (the copied `llm_claude.example.yaml`; preflight
 `--backend claude`), the launch gate is the conjunction of every check named in
-`CLAUDE_REQUIRED_LAUNCH_CHECKS` (`tools/orchestration_runtime.py`): the three
-`_probe_claude_backend` emits — `claude_version_available`, `claude_help_probe_available` and
-`claude_prompt_stdin` (the prompt arrives on stdin, never as an argv element) — plus the three
-`sandbox_bwrap_*` checks every backend needs. Authentication is NOT probed: a CLI that is on
-`PATH`, answers `--version` and `--help`, and refuses an empty `-p` naming stdin passes
-preflight and fails at the first billed launch instead.
+`CLAUDE_REQUIRED_LAUNCH_CHECKS` (`tools/orchestration_runtime.py`): the four
+`_probe_claude_backend` emits — `claude_version_available`, `claude_help_probe_available`,
+`claude_prompt_stdin` (the prompt arrives on stdin, never as an argv element) and
+`claude_restricted_flag_available` (the `--help` text names `--restricted`, the flag that keeps
+the operator's settings files out of a leaf; [issue #453](https://github.com/seiya/atmofab/issues/453))
+— plus the three `sandbox_bwrap_*` checks every backend needs. Authentication is NOT probed: a
+CLI that is on `PATH`, answers `--version` and `--help`, names `--restricted`, and refuses an
+empty `-p` naming stdin passes preflight and fails at the first billed launch instead.
 
 Everything else this section required went with the agentic leaf in Z4
 ([issue #171](https://github.com/seiya/atmofab/issues/171)), and each is named here because an
@@ -269,7 +271,8 @@ as its own CLI process and never uses a platform's own subagents. On claude the 
 skipped `claude_features_list_available` row went with it. The recorded document is now held
 to every member of `CLAUDE_REQUIRED_LAUNCH_CHECKS`, so a claude `preflight.json` written
 before `claude_prompt_stdin` existed (orchestrations from 2026-07-23 to 2026-08-02 on the
-machine this was measured on) is refused by every command that reads the stored document —
+machine this was measured on), or before `claude_restricted_flag_available` existed (every claude
+orchestration before issue #453), is refused by every command that reads the stored document —
 `revoke-artifact`, `reset-phase`, `check-phase-certified`, `set-status pass`. Re-run that
 orchestration's preflight first: `--resume` does it before anything else reads the document.
 

@@ -7499,8 +7499,9 @@ def _runtime_ro_bind_paths() -> list[str]:
 # configuration FILE declares. Neither appears in any artifact. So the rule is the same
 # one the configuration surface already follows: what the leaf gets is what this file
 # names, and a name absent here is absent from the child. What this closes is the PROCESS
-# environment only: a claude leaf's `HOME` is the operator's, and an `env` block in the
-# settings file under it sets both names again (measured; issue #453).
+# environment only. A claude leaf's `HOME` is the operator's, and an `env` block in the
+# settings file under it set both names again (measured; issue #453) until the leaf
+# launched with `--restricted`, which ignores that file (`pure_leaf.pure_leaf_flags`).
 #
 # Division of labour, stated once. The conductor's `_child_env` is the single AUTHOR of
 # a leaf's environment (it calls `leaf_env_from` and adds the per-run values); the bwrap
@@ -7518,11 +7519,10 @@ LEAF_ENV_ALLOWLIST: dict[str, str] = {
         "env -> the default below."
     ),
     "HOME": (
-        "the CLI's own fallbacks, and for a claude leaf its settings: `--safe-mode` "
-        "disables customizations but not settings, so the operator's `~/.claude` "
-        "settings (their `env` block and `model` key) decide an unpinned leaf's model "
-        "(`default_agent_model_for_backend`; issues #446, #453). A codex leaf's home arrives "
-        "as CODEX_HOME."
+        "the CLI's own fallbacks, and for a claude leaf its credentials and the session "
+        "transcript a warm `--resume` reads. Not its settings: `--restricted` ignores the "
+        "settings files under it (`default_agent_model_for_backend`; issue #453). A codex "
+        "leaf's home arrives as CODEX_HOME."
     ),
     "LANG": (
         "text-I/O encoding for the leaf and its subprocesses. Passed together with "
@@ -8620,7 +8620,7 @@ CODEX_REQUIRED_LAUNCH_CHECKS = frozenset({
 })
 CLAUDE_REQUIRED_LAUNCH_CHECKS = frozenset({
     "claude_version_available", "claude_help_probe_available", "claude_prompt_stdin",
-    "sandbox_bwrap_available", "sandbox_bwrap_userns", "sandbox_bwrap_exec",
+    "claude_restricted_flag_available", "sandbox_bwrap_available", "sandbox_bwrap_userns", "sandbox_bwrap_exec",
 })
 REQUIRED_LAUNCH_CHECKS_BY_BACKEND: dict[str, frozenset[str]] = {
     "codex": CODEX_REQUIRED_LAUNCH_CHECKS,
@@ -10824,33 +10824,6 @@ def resume_orchestration(
 DEFAULT_CLAUDE_MODEL_ALIAS = "opus"
 
 
-def resolve_claude_model_alias(home: Path | None = None) -> str:
-    """The unpinned Claude model alias the OPERATOR configured (e.g. "opus"), read
-    from the Claude Code settings files. settings.local.json takes precedence over
-    settings.json (matching Claude Code's own precedence), so an operator who pins
-    their model only in the local file is still honored. This is the spec-side value
-    for the ORCHESTRATION row — the process `tools/run_workflow.py` starts, which does
-    run in the operator's own environment and does read their settings. It is NOT the
-    label for a leaf: `default_agent_model_for_backend` does not call it (its docstring
-    says why). Falls back to DEFAULT_CLAUDE_MODEL_ALIAS when no settings file is
-    present / readable or none carries a `model` key. (Only the spec-side label is
-    affected; the EXACT version is always recovered post-run from the result envelope,
-    so a fallback here is cosmetic.)"""
-    base = home if home is not None else Path.home()
-    resolved = DEFAULT_CLAUDE_MODEL_ALIAS
-    # Highest precedence last: a model key in settings.local.json overrides settings.json.
-    for name in ("settings.json", "settings.local.json"):
-        try:
-            doc = json.loads((base / ".claude" / name).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if isinstance(doc, dict):
-            model = doc.get("model")
-            if isinstance(model, str) and model.strip():
-                resolved = model.strip()
-    return resolved
-
-
 def default_agent_model_for_backend(backend: str) -> str:
     """The spec-side default agent_model stamped on a LEAF launch whose configuration
     entry declares no `model:`. For claude this is DEFAULT_CLAUDE_MODEL_ALIAS; for codex
@@ -10863,27 +10836,20 @@ def default_agent_model_for_backend(backend: str) -> str:
     which is the only reading the row can rely on.
 
     WHAT DECIDES A CLAUDE LEAF'S MODEL — the one statement of it; other sites point here.
-    `--safe-mode` disables customizations, not settings, and the leaf's `HOME` is the
-    operator's (`HOME` is on `LEAF_ENV_ALLOWLIST`), so the operator's
-    `~/.claude/settings.json` applies to the leaf, its `env` block included. That `env`
-    block is a second environment channel the allowlist does not close (it carries
-    `ANTHROPIC_BASE_URL` too); `ANTHROPIC_MODEL` in the operator's PROCESS environment takes
-    no part. Measured on CLI 2.1.294 with the exact `pure_leaf_flags()` set against a
-    loopback endpoint that stored the request (issue #446 comment 6053241634 for the `model`
-    key; issue #453 comments for the `env` block and the alias remap):
-      - no `--model`, a settings `model` key       -> that key's model;
-      - the same plus `env.ANTHROPIC_MODEL`        -> the env value;
-      - `--model <alias>` (e.g. `opus`)            -> beats both, BUT an
-        `env.ANTHROPIC_DEFAULT_OPUS_MODEL` remaps the alias itself, pinned or not;
-      - `--model <full model id>`                  -> that id, unaffected by the remap;
-      - no settings file                           -> the CLI's own default.
-    These are measured cases, not a complete list of what the CLI reads (admin policy
-    settings, for one, were not measured). Whether to close the channel is issue #453.
+    The declared `--model` when the entry names one, else the CLI's own default. A pure
+    leaf launches with `--restricted` (`pure_leaf.pure_leaf_flags`), so no user, project or
+    local settings file applies: neither a settings `model` key, nor an `env` block's
+    `ANTHROPIC_MODEL`, nor an `env.ANTHROPIC_DEFAULT_OPUS_MODEL` remap of a declared
+    `opus` reaches the leaf (the four measured rows; the flag ignores the whole file), and `ANTHROPIC_MODEL` in the operator's PROCESS environment
+    takes no part either (it is not on `LEAF_ENV_ALLOWLIST`). Before issue #453 each of those
+    settings channels decided or remapped the model; the measurements, with and without the
+    flag, are issue #446 comment 6053241634 and the issue #453 comments (CLI 2.1.294,
+    loopback capture). Admin-managed settings still apply; they are the operator's machine
+    and out of scope. A declared alias stays the CLI's alias: what it resolves to is read
+    back from the envelope, not required to be a full id.
 
-    It still deliberately does NOT read the operator's `~/.claude`
-    (`resolve_claude_model_alias`, which serves the orchestration row instead): the stamp
-    is a prediction either way, and the envelope correction is what makes the row true.
-    Whether an unpinned claude leaf should be allowed at all is a separate question."""
+    Nothing in the run reads the operator's `~/.claude` for a model: the orchestration row
+    is stamped with DEFAULT_CLAUDE_MODEL_ALIAS too (`tools/run_workflow.py`)."""
     b = (backend or "").strip().lower()
     if b == "claude":
         return DEFAULT_CLAUDE_MODEL_ALIAS
@@ -13517,6 +13483,18 @@ def _probe_claude_backend(
                      and "through stdin" in stdin_probe_text),
             "detail": stdin_probe_text.strip() or f"exit={stdin_probe_proc.returncode}",
         },
+        {
+            # `pure_leaf_flags()` opens with `--restricted`, which keeps the operator's
+            # settings files out of the leaf (issue #453). A CLI that does not know the flag
+            # refuses the whole argv, so every leaf would die as a transport failure; this
+            # moves that to preflight. Matched as a whole option, so `--restricted-foo` does
+            # not answer for it.
+            "name": f"{backend_token}_restricted_flag_available",
+            "pass": (help_proc.returncode == 0
+                     and re.search(r"(?<![\w-])--restricted(?![\w-])", help_stdout)
+                     is not None),
+            "detail": help_probe_detail,
+        },
     ]
     return checks, version_proc.stdout.strip()
 
@@ -14769,10 +14747,9 @@ def record_launch(
                     response_payload["codex_lineage_id"] = codex_isolation["lineage_id"]
                 # NO claude private home. Issue #63 prepared one for the AGENTIC leaf to keep
                 # the operator's configuration out; Z4 (issue #171) retired that leaf, and a
-                # pure claude leaf takes `--safe-mode` — no customizations, no tools, no hooks.
-                # What a private home also kept out — the operator's settings, `model` and
-                # `env` block included — now reaches the leaf (`default_agent_model_for_backend`);
-                # whether to close that is issue #453.
+                # pure claude leaf takes `--safe-mode` — no customizations, no tools, no hooks —
+                # and `--restricted`, which keeps out the operator's settings files, the other
+                # thing a private home kept out (issue #453; `default_agent_model_for_backend`).
                 profile_kwargs: dict[str, Any] = {}
                 if codex_isolation is not None:
                     profile_kwargs = codex_isolation_profile_kwargs(codex_isolation)
