@@ -5263,7 +5263,10 @@ class TransportFailureTest(unittest.TestCase):
         # Runtime defense-in-depth: read_case_ids builds the runner argv (--cases ...), from
         # which the snapshot path raw/state_snapshots/<case_id>.json is formed. A `/` or `..`
         # must never reach the argv — even from a hand-crafted IR that bypassed the Compile gate
-        # — or the honest runner writes outside its directory. Safe ids survive; unsafe are dropped.
+        # — or the honest runner writes outside its directory. The same list is the quality
+        # check's `CASES`, which the build control file interpolates unquoted into a recipe line,
+        # and since issue #457 nothing downstream refuses a shell-active character in it; so an
+        # id carrying one is dropped here too. Safe ids survive; unsafe are dropped.
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             repo, refs = Path(td), self._refs()
@@ -5274,6 +5277,8 @@ class TransportFailureTest(unittest.TestCase):
             (ir_dir / "spec.ir.yaml").write_text(json.dumps({"case": {"test_case_set": [
                 {"case_id": "c_ok"}, {"case_id": "l0.v1-2"},
                 {"case_id": "../../evil"}, {"case_id": "a/b"}, {"case_id": ".."},
+                {"case_id": "a;id"}, {"case_id": "$(id)"}, {"case_id": "a|b"},
+                {"case_id": "`id`"},
             ]}}), encoding="utf-8")
             self.assertEqual(c.read_case_ids(refs), ("c_ok", "l0.v1-2"))
 

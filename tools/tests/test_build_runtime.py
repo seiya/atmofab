@@ -565,7 +565,9 @@ class CallerEnvTests(unittest.TestCase):
     def test_every_entry_point_hands_the_caller_env_through_unmodified(self) -> None:
         # No name dropped, no value rewritten, nothing added — on each of the five entry
         # points that take `env`.
-        payload = {"LDFLAGS": "-lm", "ENVIRONMENT": "ci", "FC": "/usr/bin/gfortran"}
+        # `PATH` and `LD_PRELOAD` among them: names the deleted denylist refused (issue #457).
+        payload = {"LDFLAGS": "-lm", "ENVIRONMENT": "ci", "FC": "/usr/bin/gfortran",
+                   "PATH": "/opt/x/bin", "LD_PRELOAD": "/opt/x/lib.so"}
         for tool in ("compile_project", "run_program", "run_quality_checks", "run_linter",
                      "run_syntax_check"):
             with self.subTest(tool=tool), self._spy_run_command() as run_command, \
@@ -650,7 +652,8 @@ class CompileProjectArgumentTests(unittest.TestCase):
     def test_the_types_are_checked_before_anything_runs(self) -> None:
         for payload, message in (({"extra_args": "OBJDIR=x"}, "extra_args must be an array"),
                                  ({"extra_args": ["A=1", 2]}, "extra_args must be an array"),
-                                 ({"target": 7}, "target must be a string")):
+                                 ({"target": 7}, "target must be a string"),
+                                 ({"env": ["A=1"]}, "env must be an object")):
             with self.subTest(payload=payload), mock.patch.object(
                     self.mod, "_run_command") as run_command:
                 with self.assertRaises(ValueError) as ctx:

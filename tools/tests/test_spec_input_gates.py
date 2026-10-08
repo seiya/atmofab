@@ -100,6 +100,15 @@ class CaseIdTokenGrammarTest(unittest.TestCase):
         for bad in ("../evil", "a/b", "a\\b", "-c", "", " x", "a b", "caf\u00e9"):
             self.assertIsNone(CASE_ID_TOKEN_RE.match(bad), bad)
 
+    def test_refuses_every_character_a_shell_acts_on(self) -> None:
+        # A case id also reaches the quality check's `CASES`, which the build control file
+        # interpolates unquoted into a recipe line; since issue #457 deleted the build-runtime
+        # library's value check, this grammar is what keeps a shell-active character out of it.
+        # Each character is tried mid-token, where only the grammar can refuse it.
+        for ch in "\t\n\r;&|$`'\"\\<>()*?[]{}~#!":
+            with self.subTest(ch=ch):
+                self.assertIsNone(CASE_ID_TOKEN_RE.match(f"a{ch}b"))
+
     def test_a_leading_dash_is_refused_because_it_reaches_an_argv(self) -> None:
         # A case id reaches the runner's argv, where a word opening with `-` is an option's
         # spelling, and nothing downstream refuses one (`spec_input_gates` says why); this is
