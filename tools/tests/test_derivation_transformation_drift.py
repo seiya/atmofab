@@ -1182,9 +1182,10 @@ PINNED_EXECUTE: dict[str, str] = {
     # The digest `execute-8` shipped with at 93a9e683:
     "execute-8@93a9e683": "069da8155c9b74c2c071d59de8d11ca6ff8edf8f628f61f5f04713b5313572e1",
     # Re-pinned by issue #464: `Conductor._author_quality_check` stops writing
-    # `comparison.per_case_verdict_match` (always `{}`: 423/423 records on disk; it read
-    # `cases`, which no diagnostics file carries — the harness writes `per_case`) and
-    # `comparison.diagnostics_checks_match`. As for issue #396 the record's bytes DO change,
+    # `comparison.per_case_verdict_match` (`{}` in 423/423 records under `workspace/`: it
+    # read `cases`, and every current harness writes `per_case` — 0 of 423 diagnostics files
+    # there carry `cases`; the archived `workspace_*` trees hold 38 that do and one non-empty
+    # record) and `comparison.diagnostics_checks_match`. As for issue #396 the record's bytes DO change,
     # but no gate, verdict or document reads either key. (Measured by diffing `execute_tuple()`
     # against origin/main 8f8f0298's: the `Conductor._author_quality_check` row and no other.)
     # The digest `execute-8` shipped with at 8f8f0298:
