@@ -93,12 +93,13 @@ BACKEND_CREDENTIAL_BACKEND_TYPES = ("claude", "codex")
 def backend_credential_home_paths(backend_type: str) -> tuple[tuple[Path, ...], tuple[Path, ...]]:
     """The backend CLI's config/credential home, as `(dirs, files)`.
 
-    ONE consumer now: `tools/orchestration_runtime.py::_backend_runtime_bind_paths`, which
-    rw-binds these into a leaf's bwrap sandbox (the CLI refreshes auth and writes its session
-    transcript there). It was canonical for TWO that must not diverge — the second was the
-    Bash read guard, which had to forbid reading exactly what that profile makes reachable,
-    and which went with the leaf hook layer in Z4 (issue #171). With the pair gone the
-    divergence risk is gone with it; what remains is one caller reading one list.
+    TWO consumers, which must not diverge: `tools/orchestration_runtime.py::
+    _backend_runtime_bind_paths`, which rw-binds these into a leaf's bwrap sandbox (the CLI
+    refreshes auth and writes its session transcript there), and `_claude_global_config_paths`,
+    from which preflight's `claude_global_config_env_absent` reads the claude global config
+    the leaf can see (issue #453). Changing what this returns changes both what is bound and
+    what that check reads. (A Bash read guard was a consumer too, until it went with the leaf
+    hook layer in Z4, issue #171.)
     Split dirs/files because the bind side materializes a missing config *dir*
     but existence-gates the auth *file* (it cannot be fabricated).
     """

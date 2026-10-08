@@ -239,12 +239,24 @@ where it runs as it is, and `--gpu` adds the `gpu` class's device probe. It writ
 
 When any leaf runs on the `claude_cli` provider (the copied `llm_claude.example.yaml`; preflight
 `--backend claude`), the launch gate is the conjunction of every check named in
-`CLAUDE_REQUIRED_LAUNCH_CHECKS` (`tools/orchestration_runtime.py`): the three
-`_probe_claude_backend` emits — `claude_version_available`, `claude_help_probe_available` and
-`claude_prompt_stdin` (the prompt arrives on stdin, never as an argv element) — plus the three
-`sandbox_bwrap_*` checks every backend needs. Authentication is NOT probed: a CLI that is on
-`PATH`, answers `--version` and `--help`, and refuses an empty `-p` naming stdin passes
-preflight and fails at the first billed launch instead.
+`CLAUDE_REQUIRED_LAUNCH_CHECKS` (`tools/orchestration_runtime.py`): the five
+`_probe_claude_backend` emits — `claude_version_available`, `claude_help_probe_available`,
+`claude_prompt_stdin` (the prompt arrives on stdin, never as an argv element),
+`claude_restricted_flag_available` (the `--help` text names `--restricted` as an option, the
+flag that keeps the operator's settings files out of a leaf) and
+`claude_global_config_env_absent` (neither `~/.claude.json` nor the legacy
+`~/.claude/.config.json` carries an `env` block: the CLI reads one of them as its global config,
+which is not a settings file, `--restricted` does not ignore it, and its `env` block would set a
+leaf's model, endpoint and output ceiling; the failing check's detail names the file — remove its
+`env` key to pass) — plus the three `sandbox_bwrap_*`
+checks every backend needs ([issue #453](https://github.com/seiya/atmofab/issues/453) for the
+last two). Authentication is NOT probed: a CLI that is on `PATH`, answers `--version` and
+`--help`, names `--restricted`, and refuses an empty `-p` naming stdin passes preflight and fails
+at the first launch instead. That includes a machine that authenticates through the
+settings file — `apiKeyHelper`, or `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` in its `env`
+block: `--restricted` ignores the file, so every leaf there answers "Not logged in" (measured,
+issue #453). A claude leaf authenticates through the CLI's own credential store (`/login` in an
+interactive `claude` session writes it).
 
 Everything else this section required went with the agentic leaf in Z4
 ([issue #171](https://github.com/seiya/atmofab/issues/171)), and each is named here because an
@@ -269,7 +281,8 @@ as its own CLI process and never uses a platform's own subagents. On claude the 
 skipped `claude_features_list_available` row went with it. The recorded document is now held
 to every member of `CLAUDE_REQUIRED_LAUNCH_CHECKS`, so a claude `preflight.json` written
 before `claude_prompt_stdin` existed (orchestrations from 2026-07-23 to 2026-08-02 on the
-machine this was measured on) is refused by every command that reads the stored document —
+machine this was measured on), or before `claude_restricted_flag_available` and
+`claude_global_config_env_absent` existed (every claude orchestration before issue #453), is refused by every command that reads the stored document —
 `revoke-artifact`, `reset-phase`, `check-phase-certified`, `set-status pass`. Re-run that
 orchestration's preflight first: `--resume` does it before anything else reads the document.
 

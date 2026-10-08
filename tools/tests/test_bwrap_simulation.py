@@ -941,5 +941,69 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         self.assertIn('"terminal_reason":"api_error"', res.stdout, res.stdout + res.stderr)
 
 
+
+@unittest.skipUnless(shutil.which("claude"), "backend CLI not installed on this host")
+class ClaudeSettingsIsolationTests(unittest.TestCase):
+    """UNBILLED (issue #453): the operator's settings FILE does not reach a pure claude leaf.
+
+    The leaf's `HOME` is the operator's, so `$HOME/.claude/settings.json` is in reach of the
+    CLI; `--restricted` (first in `pure_leaf_flags()`) is what makes the CLI ignore it. Each
+    row writes one settings channel into a fresh `HOME`, execs the real CLI with the
+    production flag set against a loopback stand-in, and reads the model (or the endpoint)
+    off the request it stored. No bwrap: the question is about a settings file, not a mount.
+
+    The CONTROL row removes `--restricted` and requires the marker to be PRESENT, so a dead
+    capture — or a CLI that stopped reading settings for some other reason — cannot pass the
+    marker-absent rows for the wrong reason.
+    """
+
+    def _request(self, settings: dict, extra: list[str], *, restricted: bool = True) -> list:
+        from tools.pure_leaf import pure_leaf_flags
+        flags = pure_leaf_flags()
+        if not restricted:
+            flags.remove("--restricted")
+        server = _Loopback400()
+        self.addCleanup(server.close)
+        with tempfile.TemporaryDirectory() as home, tempfile.TemporaryDirectory() as cwd:
+            (Path(home) / ".claude").mkdir()
+            (Path(home) / ".claude" / "settings.json").write_text(json.dumps(settings))
+            env = {"HOME": home, "PATH": os.environ.get("PATH", "/usr/bin:/bin"),
+                   "ANTHROPIC_BASE_URL": server.base_url,
+                   "ANTHROPIC_API_KEY": "atmofab-loopback"}
+            res = subprocess.run(["claude", *flags, *extra, "-p"], input="Say hi.",
+                                 capture_output=True, text=True, env=env, cwd=cwd,
+                                 timeout=240, check=False)
+        self.assertTrue(server.bodies, res.stdout + res.stderr)
+        return [json.loads(body).get("model") for body in server.bodies]
+
+    _MODEL_CHANNELS = (
+        ("model key", {"model": "claude-marker-key"}, [], "claude-marker-key"),
+        ("env model", {"env": {"ANTHROPIC_MODEL": "claude-marker-env"}}, [],
+         "claude-marker-env"),
+        ("env alias remap",
+         {"env": {"ANTHROPIC_DEFAULT_OPUS_MODEL": "claude-marker-remap"}},
+         ["--model", "opus"], "claude-marker-remap"),
+    )
+
+    def test_no_settings_channel_reaches_a_restricted_leaf(self) -> None:
+        for label, settings, extra, marker in self._MODEL_CHANNELS:
+            with self.subTest(channel=label):
+                self.assertNotIn(marker, self._request(settings, extra))
+
+    def test_a_settings_endpoint_does_not_redirect_a_restricted_leaf(self) -> None:
+        """The `env` block's `ANTHROPIC_BASE_URL` names a closed port; the request still
+        arrives at the process-environment loopback (`_request` asserts it arrived). Without
+        the flag the CLI goes to the settings URL and retries until its own timeout
+        (measured, issue #453), which is why that half is not a row here."""
+        self._request({"env": {"ANTHROPIC_BASE_URL": "http://127.0.0.1:1/"}}, [])
+
+    def test_control_without_restricted_the_marker_reaches_the_request(self) -> None:
+        """One control PER CHANNEL, so a CLI that stops honouring one of them (and would
+        leave its marker-absent row green for the wrong reason) turns this row red."""
+        for label, settings, extra, marker in self._MODEL_CHANNELS:
+            with self.subTest(channel=label):
+                self.assertIn(marker, self._request(settings, extra, restricted=False))
+
+
 if __name__ == "__main__":
     unittest.main()

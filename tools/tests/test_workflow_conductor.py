@@ -2984,8 +2984,10 @@ class ConductHappyPathTest(unittest.TestCase):
         `agent_model`, so the assertion reads the entry every leaf will launch with. The leaf
         label deliberately does not read the operator's home (issue #63; the reason is now
         the one `default_agent_model_for_backend` gives — the stamp is a prediction the
-        envelope corrects) — `resolve_claude_model_alias` is patched to a SENTINEL here,
-        and the assertion is that the stamp is the default and is NOT the sentinel.
+        envelope corrects; since issue #453 no reader of that home exists at all) — the
+        run is driven under a `HOME` (both `$HOME` and `Path.home()`) whose settings name a
+        SENTINEL model, and the assertion
+        is that the stamp is the default and is NOT the sentinel.
 
         The configuration is built model-LESS rather than taken from the shipped sample: the
         sample declares a model on every entry, so `_resolve_claude_model_aliases` returns
@@ -3010,8 +3012,12 @@ class ConductHappyPathTest(unittest.TestCase):
              patch.object(wc.Conductor, "__init__", _capture_init), \
              patch.object(wc.Conductor, "conduct", return_value="pass"), \
              patch.object(wc, "resolve_run_target", return_value=None), \
-             patch("tools.orchestration_runtime.resolve_claude_model_alias",
-                   return_value=SENTINEL):
+             tempfile.TemporaryDirectory() as home, \
+             patch("pathlib.Path.home", return_value=Path(home)), \
+             patch.dict(os.environ, {"HOME": home}):
+            (Path(home) / ".claude").mkdir()
+            (Path(home) / ".claude" / "settings.json").write_text(
+                json.dumps({"model": SENTINEL}), encoding="utf-8")
             status = wc.run_conductor(
                 repo_root=str(_SHARED_REPO_ROOT), orchestration_id="o",
                 orchestration_agent_run_id="O", spec_ref="spec/c/x",
@@ -22683,8 +22689,8 @@ class LeafEntryThreadingTests(unittest.TestCase):
         """The repo's long-standing rule: a model the FILE did not declare — one applied as a
         run-wide override (what the preflight subprocess re-applies), or filled in as the
         spec-side label — is NOT pinned onto the argv. What such a launch resolves to is
-        the CLI's choice (the operator's `~/.claude` settings, else its own default —
-        `default_agent_model_for_backend`; measured, issue #446)."""
+        the CLI's own default (`default_agent_model_for_backend`; the operator's settings
+        files are out of reach under `--restricted`, issue #453)."""
         c = wc.Conductor(
             repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=lc.apply_defaults_overrides(

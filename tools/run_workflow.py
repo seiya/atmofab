@@ -93,17 +93,6 @@ DEFAULT_LLM_COMMANDS = {
     "codex": "codex",
     "claude": "claude",
 }
-# Default orchestration-agent model recorded on the orchestration agent_runs row
-# for the Claude backend, as an UNPINNED alias (e.g. "opus") read from the
-# operator's settings — never a pinned version, which would go stale as versions
-# update. Operators on a different Claude model name it in the leaf-LLM configuration.
-# Codex is intentionally excluded: its fresh and resume workflows require an
-# explicit model slug, which the conductor pins in every `codex exec --model`
-# launch and records as host-side provenance.
-def _default_claude_agent_model() -> str:
-    from tools.orchestration_runtime import resolve_claude_model_alias
-    return resolve_claude_model_alias()
-
 PHASE_ALIASES = {
     "compile": "Compile",
     "generate": "Generate",
@@ -1184,6 +1173,17 @@ def _ensure_preflight_pass(preflight: dict[str, Any]) -> tuple[bool, str]:
     can_step = preflight.get("can_launch_step_agents")
     can_substep = preflight.get("can_launch_substep_agents")
     reasons: list[str] = []
+    # The failing checks FIRST, each with the first line of its own detail: the status fields
+    # alone say THAT preflight failed and leave the operator to open `preflight.json` for why,
+    # and the in-run `[FAIL]` line elides its detail at 240 characters, so whatever comes
+    # first is what the operator reads. A check such as `claude_global_config_env_absent`
+    # (issue #453) fails on the contents of the operator's own file; its first line is the
+    # remedy.
+    checks = preflight.get("checks")
+    for check in checks if isinstance(checks, list) else []:
+        if isinstance(check, dict) and check.get("pass") is False:
+            detail = str(check.get("detail") or "").strip().splitlines()
+            reasons.append(f"{check.get('name')}: {detail[0] if detail else 'failed'}")
     if status != "pass":
         reasons.append(f"status={status!r}")
     if can_step is not True:
@@ -3851,8 +3851,9 @@ def _run_node(
                 source_dependency_ref,
             ]
             # Record the orchestration agent's own model so its agent_runs row is not a
-            # cost-attribution blind spot. Default to the operator's configured (unpinned)
-            # claude alias ONLY for the claude backend running the UNMODIFIED default command —
+            # cost-attribution blind spot. Default to the unpinned spec-side claude alias
+            # (`DEFAULT_CLAUDE_MODEL_ALIAS`; nothing here reads the operator's `~/.claude`,
+            # issue #453) ONLY for the claude backend running the UNMODIFIED default command —
             # a configured `command:` (e.g. a wrapper selecting a different model) could launch
             # a different model, so we must not assert the alias there; leave it unset.
             orchestration_model = agent_model
@@ -3861,7 +3862,8 @@ def _run_node(
                 and llm == "claude"
                 and llm_command == DEFAULT_LLM_COMMANDS["claude"]
             ):
-                orchestration_model = _default_claude_agent_model()
+                from tools.orchestration_runtime import DEFAULT_CLAUDE_MODEL_ALIAS
+                orchestration_model = DEFAULT_CLAUDE_MODEL_ALIAS
             if orchestration_model:
                 init_args += ["--agent-model", orchestration_model]
             # Persist the reproduction/closure record on the cold init only. On the
