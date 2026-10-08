@@ -599,7 +599,18 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Round 2: the component coordinate's `count` and `length` are both the case's component
     # count, and V3 (vi) compares the `count` value with the token's extent, whatever its key.
     # Round 3: the parenthetical says `count` is every case's extent (why an `inputs.<path>`).
-    "compile-docs-13": "6dc0a6af22e9a4bce122425315e233ead04b835a1e7cb431f1e02218c99aaa70",
+    # Re-pinned (issue #455), behaviour-preserving: §"Acceptance of retry from Validate" states
+    # the route the conductor runs (a judge `fail` escalates; a reopening directive revokes the
+    # IR with the judge's findings) in place of the deleted decision-table contract
+    # (`validate_feedback:<finding_id>`, a `confidence` gate, `repair_target_sections[]`), which
+    # no code implemented and which told the producer nothing it does differently: both role
+    # lines keep their instruction (the producer authors the IR from the finding text and
+    # returns `last_fail_reason: null`; the reviewer judges on the merits). A bump would
+    # re-derive every node's Compile for an IR authored to the same rules.
+    "compile-docs-13": "f7defee4fcd2fe6982950c0cce24408002a037114bd280c6203966281ccc4f12",
+    # ...and the digest `compile-docs-13` SHIPPED with (origin/main b9a2a615), kept so a later
+    # version returning to those bytes collides (`test_no_empty_bump_or_silent_revert`).
+    "compile-docs-13@b9a2a615": "6dc0a6af22e9a4bce122425315e233ead04b835a1e7cb431f1e02218c99aaa70",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

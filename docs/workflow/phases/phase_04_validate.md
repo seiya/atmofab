@@ -122,9 +122,9 @@ A `raw/` that grows to hundreds of megabytes will need the excerpt computed by s
 ## Decision criteria for retry on failure
 There are three `Validate`-failure origins with distinct routing:
 
-1. **A deterministic per-test predicate `fail` at `execute`** (R2): `verdict.json#failure_class ∈ {physics_fail, structural_violation}`, host-authored, the judge NOT spawned. Attribution (`code` / `ir` / `spec`) needs reasoning, so `classify_failure` routes it to the **escalate diagnostician** in prod (which reads `verdict.json#per_test.basis`) and **`fail_closed`** in dev (F1 cross-phase-rollback posture). The decision table below is the diagnostician's mapping once it assigns an attribution.
+1. **A deterministic per-test predicate `fail` at `execute`** (R2): `verdict.json#failure_class ∈ {physics_fail, structural_violation}`, host-authored, the judge NOT spawned. Attribution (`code` / `ir` / `spec`) needs reasoning, so `classify_failure` routes it to the **escalate diagnostician** in prod (which reads `verdict.json#per_test.basis`) and **`fail_closed`** in dev (F1 cross-phase-rollback posture).
 2. **A structural `fail` at `execute`** (no `verdict.json` is authored): the run produced bad or missing primary evidence, so no predicate could be evaluated. Routed deterministically to `Generate` without LLM inference, by the `trial_meta.json` failure fields below.
-3. **A semantic-review `fail` at `judge`**: `semantic_review.json#decision=fail`; the mechanical verdict was clean. Routed via `findings[*].attribution` (below), through the escalate diagnostician (`judge_semantic_review_fail`).
+3. **A semantic-review `fail` at `judge`**: `semantic_review.json#decision=fail`; the mechanical verdict was clean, because the judge is spawned only after a clean `execute` (origin 1 fails the phase first). Every one escalates to the diagnostician (`judge_semantic_review_fail`) in both modes, whatever `findings[*].attribution` says: the diagnostician reads `attribution` and `confidence` and decides the route, and the conductor gates on neither field. When the directive revokes a phase (a `Compile` reopen, a `Generate` retry), the revocation carries the judge's findings as its `last_fail_reason`, one line per finding, so the re-derived producer repairs from them — in the same run in `prod`, and on the operator's `--resume` after a `dev` `dev_phase_rollback`.
 
 The judgment input is `semantic_review.json#findings[*]` (judge origin) and `verdict.json#failure_class` + `per_test.basis` (execute origin).
 
@@ -169,32 +169,8 @@ When `Validate.judge` detects a failure, it records the following keys in `seman
 
 `verdict.json#failure_class` is host-authored at execute (R2) and is one of `physics_fail` / `structural_violation` / `pass` (the LLM-era `runtime_error` / `evidence_mismatch` classes now surface as an execute structural failure with no verdict, or a judge `semantic_review` finding, respectively).
 
-### Decision table
-The `orchestration agent` decides the retry target by the following deterministic mapping:
-
-| `verdict.json#failure_class` | `attribution` (judge) | retry target |
-|---|---|---|
-| `evidence_mismatch` | `code` | `Generate` |
-| `evidence_mismatch` | `ir` | `Compile` |
-| `evidence_mismatch` | `evidence` | `Validate.execute` (re-collection of primary evidence) |
-| `physics_fail` | `code` | `Generate` |
-| `physics_fail` | `ir` | `Compile` |
-| `physics_fail` | `spec` | **`Spec` (fail_closed)**: manual intervention required |
-| `runtime_error` | `code` (always) | `Generate` |
-| `structural_violation` | `code` | `Generate` |
-| `structural_violation` | `ir` | `Compile` |
-
-### Launch contract for Compile retry
-When launching a retry to `Compile`, the `orchestration agent` must satisfy the following:
-
-- At least 1 finding with `semantic_review.json#findings[*].attribution=ir` exists.
-- The `confidence` of the relevant finding is `high` or `medium` (when `low`, try a `Generate` retry first).
-- Quote the relevant finding's `description` and `evidence_refs[]` in `launches/<new_agent_run_id>.request.json#repair_reason`.
-- When `Compile` is already `certified`, the return to `Compile` first runs `revoke-artifact --step compile --node-key <node_key> --trigger-agent-run-id <judge_fail_substep_agent_run_id> --reason <reason_code>` and then `reset-phase --from-phase compile`: the revocation is what makes `check-phase-certified` refuse the stale IR, so the re-run actually happens (and reaches a later run too). Canonical: `docs/CLI_REFERENCE_RARE.md#revoke-artifact`, `docs/ORCHESTRATION.md` item 50.
-- The re-submitted `Compile` **makes explicit the section of `spec.ir.yaml` to be fixed as the `restart` scope**, and records `validate_feedback:<finding_id>` in `ir_meta.json.last_fail_reason` (or, for a pure judge's finding, which carries no `finding_id`, `validate_feedback:` with the finding's description text).
-
 ### Handling of Spec retry
-A retry to `Spec` is not automated in the core workflow (because `controlled_spec.md` needs to be updated by hand). On a `physics_fail` with `attribution=spec` the conductor stops with `fail_closed` (any other class with `attribution=spec` is unrouted and escalates — `VALIDATE_JUDGE_ROUTING`); the finding itself stays in `semantic_review.json`, and on the `dev` path `tools/run_workflow.py` writes `failure_analysis.json`.
+A retry to `Spec` is not automated in the core workflow (because `controlled_spec.md` needs to be updated by hand). A judge finding with `attribution=spec` escalates like every judge finding, and a `fail_closed` directive is how the run stops; the finding itself stays in `semantic_review.json`, and on the `dev` path `tools/run_workflow.py` writes `failure_analysis.json`.
 
 ## Design trade-offs
 - The reason for placing `execute` and `judge` as substeps of the same phase: "execution → pass/fail judgment" is essentially a single integrated task, and splitting them into separate phases would make the `judge` input always depend on the latest `execute` result, weakening the meaning of the phase boundary. Integrating into Validate simplifies the judgment path and makes the judgment artifacts self-contained under `run_id`.
