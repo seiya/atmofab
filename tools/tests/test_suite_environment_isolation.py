@@ -71,7 +71,7 @@ _CITATION_SOURCES = (
 _SUBJECT_POISON = {"CODEX_HOME": "/tmp/atmofab_witness_codex_home"}
 _SUBJECT_MODULE = "tools.tests.test_orchestration_runtime"
 _SUBJECT_CLASS = "CodexOrchestrationRuntimeTests"
-_SUBJECT_TEST = "test_probe_codex_cli_accepts_multi_agent_as_advisory"
+_SUBJECT_TEST = "test_probe_codex_cli_passes_without_running_features_list"
 
 def _environment_names_read_by(repo_root: Path) -> set[str]:
     """Every upper-case environment name READ in non-test `tools/`.

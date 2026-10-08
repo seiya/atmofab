@@ -34,11 +34,12 @@ from tools import build_runtime
 from tools import derivation as tools_derivation
 from tools import orchestration_runtime as ort
 from tools.tests.orchestration_fixtures import (
-    accept_any_certified_ir, certify_node, ensure_spec_entry, record_orchestration_target,
-    spec_ref_of)
+    accept_any_certified_ir, certify_node, claude_launch_checks, ensure_spec_entry,
+    record_orchestration_target, spec_ref_of)
 from tools.llm_config import config_sha256 as lc_config_sha256
 
 from tools.orchestration_runtime import (
+    CLAUDE_REQUIRED_LAUNCH_CHECKS,
     TERMINAL_STATUSES,
     _pre_phase_complete_judge_checks,
     _required_child_agent_kind,
@@ -55,7 +56,6 @@ from tools.orchestration_runtime import (
     init_orchestration,
     main,
     _project_terse_result,
-    parse_feature_list,
     pre_orchestration_start,
     pre_phase_launch,
     probe_execution_platform,
@@ -586,7 +586,6 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
     def _codex_launch_checks(*, legacy_hooks: bool = False) -> list[dict[str, object]]:
         checks: list[dict[str, object]] = [
             {"name": "codex_version_available", "pass": True},
-            {"name": "codex_features_list_available", "pass": True},
             {"name": "codex_exec_json_streaming", "pass": True},
             {"name": "codex_exec_pure_isolation_flags", "pass": True},
             {"name": "codex_exec_resume", "pass": True},
@@ -1000,35 +999,13 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         self.assertTrue(result["codex_lineage_home_missing"])
         self.assertEqual(result["codex_lineage_id"], "lineage-1")
 
-    def test_parse_feature_list_extracts_boolean_flags(self) -> None:
-        raw = """
-multi_agent                      experimental       true
-child_agents_md                  under development  false
-shell_tool                       stable             true
-"""
-        parsed = parse_feature_list(raw)
-        self.assertEqual(
-            parsed,
-            {
-                "multi_agent": True,
-                "child_agents_md": False,
-                "shell_tool": True,
-            },
-        )
-
-    def test_probe_codex_cli_accepts_multi_agent_as_advisory(self) -> None:
+    def test_probe_codex_cli_passes_without_running_features_list(self) -> None:
+        """Issue #447 (D4): the codex probe no longer runs `codex features list` — its only
+        reader was the deleted `multi_agent` check. The fake raises on any argv it does not
+        script, so a probe that ran it again fails this row."""
         def runner(args, **kwargs):  # type: ignore[no-untyped-def]
             if args[1:] == ["--version"]:
                 return _FakeCompletedProcess(0, stdout="codex-cli 0.114.0\n")
-            if args[1:] == ["features", "list"]:
-                return _FakeCompletedProcess(
-                    0,
-                    stdout=(
-                        "multi_agent experimental true\n"
-                        "hooks under-development true\n"
-                        "child_agents_md under development false\n"
-                    ),
-                )
             if args[1:] == ["exec", "--help"]:
                 return _FakeCompletedProcess(0, stdout=_CODEX_EXEC_HELP)
             if args[1:] == ["exec", "resume", "--help"]:
@@ -1040,37 +1017,11 @@ shell_tool                       stable             true
         self.assertEqual(result["status"], "pass")
         self.assertTrue(result["can_launch_step_agents"])
         self.assertTrue(result["can_launch_substep_agents"])
-
-    def test_probe_codex_cli_accepts_disabled_multi_agent_when_capabilities_exist(self) -> None:
-        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
-            if args[1:] == ["--version"]:
-                return _FakeCompletedProcess(0, stdout="codex-cli 0.114.0\n")
-            if args[1:] == ["features", "list"]:
-                return _FakeCompletedProcess(
-                    0,
-                    stdout="multi_agent experimental false\nhooks under-development true\n",
-                )
-            if args[1:] == ["exec", "--help"]:
-                return _FakeCompletedProcess(0, stdout=_CODEX_EXEC_HELP)
-            if args[1:] == ["exec", "resume", "--help"]:
-                return _FakeCompletedProcess(0, stdout=_CODEX_EXEC_RESUME_HELP)
-            raise AssertionError(args)
-
-        result = probe_execution_platform(
-            backend="codex", agent_command="codex", runner=runner)
-        self.assertEqual(result["status"], "pass")
-        self.assertTrue(result["can_launch_step_agents"])
-        self.assertTrue(result["can_launch_substep_agents"])
-
-
-
 
     def test_probe_execution_platform_supports_claude_backend(self) -> None:
         def runner(args, **kwargs):  # type: ignore[no-untyped-def]
             if args[0] == "claude" and args[1:] == ["--version"]:
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
-            if args[0] == "claude" and args[1:] == ["features", "list"]:
-                return _FakeCompletedProcess(1, stderr="unknown command\n")
             if args[0] == "claude" and args[1:] == ["-p"]:
                 # The zero-token stdin-support probe: the CLI's own refusal names its
                 # input channels. See `_probe_claude_backend`.
@@ -1085,34 +1036,15 @@ shell_tool                       stable             true
         self.assertEqual(result["status"], "pass")
         self.assertTrue(result["can_launch_step_agents"])
         self.assertTrue(result["can_launch_substep_agents"])
-        self.assertEqual(result["feature_states"].get("multi_agent"), True)
-
-    def test_probe_execution_platform_claude_fallback_when_features_list_has_no_multi_agent(self) -> None:
-        def runner(args, **kwargs):  # type: ignore[no-untyped-def]
-            if args[0] == "claude" and args[1:] == ["--version"]:
-                return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
-            if args[0] == "claude" and args[1:] == ["features", "list"]:
-                return _FakeCompletedProcess(0, stdout="multi_agent experimental false\n")
-            if args[0] == "claude" and args[1:] == ["-p"]:
-                # The zero-token stdin-support probe: the CLI's own refusal names its
-                # input channels. See `_probe_claude_backend`.
-                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
-            if args[0] == "claude" and args[1:] == ["--help"]:
-                return _FakeCompletedProcess(0, stdout="Usage: claude [options] [command] [prompt]\n")
-            raise AssertionError(args)
-
-        result = probe_execution_platform(backend="claude", runner=runner)
-        self.assertEqual(result["backend"], "claude")
-        self.assertEqual(result["status"], "pass")
-        self.assertTrue(result["can_launch_step_agents"])
-        self.assertEqual(result["feature_states"].get("multi_agent"), True)
+        self.assertNotIn("feature_states", result)
+        self.assertEqual(
+            {c["name"] for c in result["checks"]} & set(CLAUDE_REQUIRED_LAUNCH_CHECKS),
+            set(CLAUDE_REQUIRED_LAUNCH_CHECKS))
 
     def test_probe_execution_platform_claude_fails_when_help_also_unavailable(self) -> None:
         def runner(args, **kwargs):  # type: ignore[no-untyped-def]
             if args[0] == "claude" and args[1:] == ["--version"]:
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
-            if args[0] == "claude" and args[1:] == ["features", "list"]:
-                return _FakeCompletedProcess(1, stderr="error\n")
             if args[0] == "claude" and args[1:] == ["-p"]:
                 # The zero-token stdin-support probe: the CLI's own refusal names its
                 # input channels. See `_probe_claude_backend`.
@@ -1127,14 +1059,12 @@ shell_tool                       stable             true
         self.assertFalse(result["can_launch_substep_agents"])
 
     def test_probe_execution_platform_claude_fails_when_help_exit0_but_empty_stdout(self) -> None:
-        """P2-C: `claude --help` exiting 0 with EMPTY stdout must NOT pass as
-        multi_agent — guards against a substitute/broken binary named `claude`
-        that returns success with no help text."""
+        """P2-C: `claude --help` exiting 0 with EMPTY stdout must NOT pass the help probe —
+        guards against a substitute/broken binary named `claude` that returns success with
+        no help text."""
         def runner(args, **kwargs):  # type: ignore[no-untyped-def]
             if args[0] == "claude" and args[1:] == ["--version"]:
                 return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
-            if args[0] == "claude" and args[1:] == ["features", "list"]:
-                return _FakeCompletedProcess(1, stderr="unknown command\n")
             if args[0] == "claude" and args[1:] == ["-p"]:
                 # The zero-token stdin-support probe: the CLI's own refusal names its
                 # input channels. See `_probe_claude_backend`.
@@ -1147,7 +1077,8 @@ shell_tool                       stable             true
         self.assertEqual(result["backend"], "claude")
         self.assertEqual(result["status"], "fail")
         self.assertFalse(result["can_launch_substep_agents"])
-        self.assertNotEqual(result["feature_states"].get("multi_agent"), True)
+        by_name = {c["name"]: c["pass"] for c in result["checks"]}
+        self.assertIs(by_name["claude_help_probe_available"], False)
 
     # `test_the_permission_remedy_points_at_the_layer_the_gate_reads` stood here until Z4
     # (issue #171). It pinned that `_CLAUDE_MCP_PERMISSION_REMEDIATION` — the only guidance an
@@ -1164,10 +1095,6 @@ shell_tool                       stable             true
             seen["command"] = args[0]
             if args[1:] == ["--version"]:
                 return _FakeCompletedProcess(0, stdout="custom 1.0.0\n")
-            if args[1:] == ["features", "list"]:
-                return _FakeCompletedProcess(
-                    0, stdout="multi_agent experimental true\nhooks under-development true\n"
-                )
             raise AssertionError(args)
 
         result = probe_execution_platform(
@@ -1182,11 +1109,6 @@ shell_tool                       stable             true
         def runner(args, **kwargs):  # type: ignore[no-untyped-def]
             if args[1:] == ["--version"]:
                 return _FakeCompletedProcess(0, stdout="codex-cli 0.114.0\n")
-            if args[1:] == ["features", "list"]:
-                return _FakeCompletedProcess(
-                    0,
-                    stdout="multi_agent experimental true\nhooks under-development true\n",
-                )
             raise AssertionError(args)
 
         with patch.dict(os.environ, {"ATMOFAB_ORCHESTRATION_ASSUME_BWRAP": "0"}):
@@ -1201,11 +1123,6 @@ shell_tool                       stable             true
         def runner(args, **kwargs):  # type: ignore[no-untyped-def]
             if args[1:] == ["--version"]:
                 return _FakeCompletedProcess(0, stdout="codex-cli 0.114.0\n")
-            if args[1:] == ["features", "list"]:
-                return _FakeCompletedProcess(
-                    0,
-                    stdout="multi_agent experimental true\nhooks under-development true\n",
-                )
             raise AssertionError(args)
 
         with patch.dict(
@@ -1236,8 +1153,6 @@ shell_tool                       stable             true
             seen["command"] = args[0]
             if args[0] == "codex" and args[1:] == ["--version"]:
                 return _FakeCompletedProcess(0, stdout="codex 1.0.0\n")
-            if args[0] == "codex" and args[1:] == ["features", "list"]:
-                return _FakeCompletedProcess(0, stdout="multi_agent experimental true\n")
             raise AssertionError(args)
 
         result = probe_execution_platform(
@@ -1248,9 +1163,9 @@ shell_tool                       stable             true
         self.assertEqual(seen["command"], "codex")
         self.assertEqual(result["probe_command"], "codex")
 
-    def test_probe_codex_backend_calls_features_list(self) -> None:
-        """_probe_codex_backend calls the features list command and detects multi_agent."""
-        import subprocess as _subprocess
+    def test_probe_codex_backend_does_not_call_features_list(self) -> None:
+        """Issue #447 (D4): `_probe_codex_backend` runs no `features list` and records neither
+        the features-list check nor `multi_agent_enabled`."""
         from tools.orchestration_runtime import _probe_codex_backend
         calls: list[list[str]] = []
 
@@ -1258,20 +1173,14 @@ shell_tool                       stable             true
             calls.append(list(cmd))
             if cmd[-1] == "--version":
                 return _FakeCompletedProcess(0, stdout="codex 1.0.0")
-            if cmd[-2:] == ["features", "list"]:
-                return _FakeCompletedProcess(0, stdout="multi_agent  available  true")
             return _FakeCompletedProcess(1, stdout="")
 
-        checks, features, multi_agent_enabled, agent_version = _probe_codex_backend(
-            "codex", "codex", runner
-        )
-        self.assertTrue(multi_agent_enabled)
-        self.assertTrue(features.get("multi_agent"))
-        called_cmds = [" ".join(c) for c in calls]
-        self.assertTrue(any("features" in c for c in called_cmds))
+        checks, agent_version = _probe_codex_backend("codex", "codex", runner)
+        self.assertEqual(agent_version, "codex 1.0.0")
+        self.assertFalse(any("features" in c for c in calls))
         by_name = {c["name"]: c for c in checks}
-        self.assertIn("codex_features_list_available", by_name)
-        self.assertNotIn("codex_features_available", by_name)
+        self.assertNotIn("codex_features_list_available", by_name)
+        self.assertNotIn("multi_agent_enabled", by_name)
 
     def test_probe_codex_backend_rejects_cli_without_json_exec(self) -> None:
         from tools.orchestration_runtime import _probe_codex_backend
@@ -1279,13 +1188,11 @@ shell_tool                       stable             true
         def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
             if cmd[-1] == "--version":
                 return _FakeCompletedProcess(0, stdout="codex 1.0.0")
-            if cmd[-2:] == ["features", "list"]:
-                return _FakeCompletedProcess(0, stdout="hooks available true")
             if cmd[-2:] == ["exec", "--help"]:
                 return _FakeCompletedProcess(0, stdout="usage: codex exec [PROMPT]")
             raise AssertionError(cmd)
 
-        checks, _, _, _ = _probe_codex_backend("codex", "codex", runner)
+        checks, _ = _probe_codex_backend("codex", "codex", runner)
         by_name = {check["name"]: check for check in checks}
         self.assertFalse(by_name["codex_exec_json_streaming"]["pass"])
         self.assertFalse(by_name["codex_exec_pure_isolation_flags"]["pass"])
@@ -1303,8 +1210,6 @@ shell_tool                       stable             true
             def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
                 if cmd[-1] == "--version":
                     return _FakeCompletedProcess(0, stdout="codex 1.0.0")
-                if cmd[-2:] == ["features", "list"]:
-                    return _FakeCompletedProcess(0, stdout="hooks available true")
                 if cmd[-2:] == ["exec", "--help"]:
                     return _FakeCompletedProcess(0, stdout=exec_help)
                 if cmd[-3:] == ["exec", "resume", "--help"]:
@@ -1318,17 +1223,17 @@ shell_tool                       stable             true
         }
         for help_text in without.values():
             self.assertNotIn("--skip-git-repo-check", help_text)
-        checks, _, _, _ = _probe_codex_backend(
+        checks, _ = _probe_codex_backend(
             "codex", "codex", _runner(without["exec"], _CODEX_EXEC_RESUME_HELP))
         by_name = {check["name"]: check for check in checks}
         self.assertFalse(by_name["codex_exec_pure_isolation_flags"]["pass"])
         self.assertTrue(by_name["codex_exec_resume"]["pass"])
-        checks, _, _, _ = _probe_codex_backend(
+        checks, _ = _probe_codex_backend(
             "codex", "codex", _runner(_CODEX_EXEC_HELP, without["resume"]))
         by_name = {check["name"]: check for check in checks}
         self.assertTrue(by_name["codex_exec_pure_isolation_flags"]["pass"])
         self.assertFalse(by_name["codex_exec_resume"]["pass"])
-        checks, _, _, _ = _probe_codex_backend(
+        checks, _ = _probe_codex_backend(
             "codex", "codex", _runner(_CODEX_EXEC_HELP, _CODEX_EXEC_RESUME_HELP))
         by_name = {check["name"]: check for check in checks}
         self.assertTrue(by_name["codex_exec_pure_isolation_flags"]["pass"])
@@ -1340,8 +1245,6 @@ shell_tool                       stable             true
         def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
             if cmd[-1] == "--version":
                 return _FakeCompletedProcess(0, stdout="codex 1.0.0")
-            if cmd[-2:] == ["features", "list"]:
-                return _FakeCompletedProcess(0, stdout="hooks available true")
             if cmd[-2:] == ["exec", "--help"]:
                 return _FakeCompletedProcess(
                     0, stdout="--json --sandbox --ignore-rules "
@@ -1350,7 +1253,7 @@ shell_tool                       stable             true
                 return _FakeCompletedProcess(0, stdout="--model --json")
             raise AssertionError(cmd)
 
-        checks, _, _, _ = _probe_codex_backend("codex", "codex", runner)
+        checks, _ = _probe_codex_backend("codex", "codex", runner)
         by_name = {check["name"]: check for check in checks}
         self.assertFalse(by_name["codex_exec_resume"]["pass"])
 
@@ -1367,8 +1270,6 @@ shell_tool                       stable             true
             def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
                 if cmd[-1] == "--version":
                     return _FakeCompletedProcess(0, stdout="codex 1.0.0")
-                if cmd[-2:] == ["features", "list"]:
-                    return _FakeCompletedProcess(0, stdout="hooks available true")
                 if cmd[-2:] == ["exec", "--help"]:
                     return _FakeCompletedProcess(
                         0, stdout=_CODEX_EXEC_HELP if where != "exec" else "--model --json")
@@ -1381,14 +1282,14 @@ shell_tool                       stable             true
 
         for where in ("exec", "resume"):
             with self.subTest(dropped_by=where):
-                checks, _, _, _ = _probe_codex_backend("codex", "codex", _runner_missing(where))
+                checks, _ = _probe_codex_backend("codex", "codex", _runner_missing(where))
                 by_name = {check["name"]: check for check in checks}
                 self.assertFalse(by_name["codex_prompt_stdin"]["pass"])
                 # The evidence must be the help that actually lacks it: reporting only the
                 # `exec` text answers a resume-side failure with a help that documents stdin.
                 self.assertIn("exec resume:", by_name["codex_prompt_stdin"]["detail"])
 
-        checks, _, _, _ = _probe_codex_backend("codex", "codex", _runner_missing("neither"))
+        checks, _ = _probe_codex_backend("codex", "codex", _runner_missing("neither"))
         by_name = {check["name"]: check for check in checks}
         self.assertTrue(by_name["codex_prompt_stdin"]["pass"])
 
@@ -1418,11 +1319,11 @@ shell_tool                       stable             true
                 raise AssertionError(cmd)
             return runner
 
-        from tools.orchestration_runtime import _can_launch_from_help_fallback_checks
+        from tools.orchestration_runtime import _all_strict_boolean_probe_checks_pass
 
         real = ("Error: Input must be provided either through stdin or as a prompt "
                 "argument when using --print")
-        checks, _, _, _ = _probe_claude_backend("claude", "claude", _runner(real))
+        checks, _ = _probe_claude_backend("claude", "claude", _runner(real))
         self.assertTrue({c["name"]: c for c in checks}["claude_prompt_stdin"]["pass"])
 
         for label, refusal, code in (
@@ -1434,12 +1335,17 @@ shell_tool                       stable             true
             ("accepted", real, 0),
         ):
             with self.subTest(case=label):
-                checks, _, _, _ = _probe_claude_backend(
+                checks, _ = _probe_claude_backend(
                     "claude", "claude", _runner(refusal, code))
                 by_name = {c["name"]: c for c in checks}
                 self.assertFalse(by_name["claude_prompt_stdin"]["pass"])
-                # And that failure must block the launch, not sit there as advisory.
-                self.assertFalse(_can_launch_from_help_fallback_checks("claude", checks))
+                # And that failure must block the launch, not sit there as advisory —
+                # through the probe-time gate itself, not just the helper it calls.
+                self.assertFalse(_all_strict_boolean_probe_checks_pass(checks))
+                result = probe_execution_platform(
+                    backend="claude", runner=_runner(refusal, code))
+                self.assertIs(result["can_launch_step_agents"], False)
+                self.assertEqual(result["status"], "fail")
 
     def test_probe_codex_backend_rejects_fresh_exec_missing_model_flag(self) -> None:
         from tools.orchestration_runtime import _probe_codex_backend
@@ -1447,8 +1353,6 @@ shell_tool                       stable             true
         def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
             if cmd[-1] == "--version":
                 return _FakeCompletedProcess(0, stdout="codex 1.0.0")
-            if cmd[-2:] == ["features", "list"]:
-                return _FakeCompletedProcess(0, stdout="hooks available true")
             if cmd[-2:] == ["exec", "--help"]:
                 return _FakeCompletedProcess(
                     0, stdout="--json --sandbox --ignore-rules "
@@ -1458,7 +1362,7 @@ shell_tool                       stable             true
                 return _FakeCompletedProcess(0, stdout=_CODEX_EXEC_RESUME_HELP)
             raise AssertionError(cmd)
 
-        checks, _, _, _ = _probe_codex_backend("codex", "codex", runner)
+        checks, _ = _probe_codex_backend("codex", "codex", runner)
         by_name = {check["name"]: check for check in checks}
         self.assertFalse(by_name["codex_exec_json_streaming"]["pass"])
 
@@ -1471,8 +1375,6 @@ shell_tool                       stable             true
             calls.append(list(cmd))
             if cmd[-1] == "--version":
                 return _FakeCompletedProcess(0, stdout="codex 1.0.0")
-            if cmd[-2:] == ["features", "list"]:
-                return _FakeCompletedProcess(0, stdout="hooks available true")
             if cmd[-2:] == ["exec", "--help"]:
                 return _FakeCompletedProcess(0, stdout=_CODEX_EXEC_HELP)
             if cmd[-3:] == ["exec", "resume", "--help"]:
@@ -1482,27 +1384,22 @@ shell_tool                       stable             true
         _probe_codex_backend("codex", "env codex", runner)
         self.assertEqual(calls[0], ["env", "codex", "--version"])
 
-    def test_codex_required_and_advisory_sets_partition_the_emitted_checks(self) -> None:
-        """Every codex check is either required or explicitly advisory — no third state.
+    def test_codex_required_set_equals_the_emitted_checks(self) -> None:
+        """Every check the codex probe emits is in `CODEX_REQUIRED_LAUNCH_CHECKS`, and every
+        member is emitted — no advisory third state since issue #447 (D1).
 
         Deduping the required set to one constant does not by itself keep it honest: a
-        name dropped from it stops being required by BOTH the gate and the validator at
-        once (e.g. losing `codex_project_hooks_validated` would make a preflight whose
-        project-hook validation FAILED launchable). Pinning the partition against what
-        the probe actually emits closes that, and pins the deny-list from the other side
-        too — a newly emitted check must be classified, not silently ungated.
+        name dropped from it stops being required by the document gate at once, so a
+        recorded preflight whose check FAILED would read as launchable. Pinning the set
+        against what the probe actually emits closes that from both sides.
         """
         from tools.orchestration_runtime import (
-            CODEX_ADVISORY_ONLY_CHECKS, CODEX_REQUIRED_LAUNCH_CHECKS,
-            probe_execution_platform,
+            CODEX_REQUIRED_LAUNCH_CHECKS, probe_execution_platform,
         )
 
         def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
             if cmd[-1] == "--version":
                 return _FakeCompletedProcess(0, stdout="codex 1.0.0")
-            if cmd[-2:] == ["features", "list"]:
-                return _FakeCompletedProcess(
-                    0, stdout="multi_agent experimental true\nhooks available true\n")
             if cmd[-2:] == ["exec", "--help"]:
                 return _FakeCompletedProcess(0, stdout=_CODEX_EXEC_HELP)
             if cmd[-3:] == ["exec", "resume", "--help"]:
@@ -1515,28 +1412,41 @@ shell_tool                       stable             true
                 backend="codex", agent_command="codex", runner=runner,
                 repo_root=repo_root)
         emitted = {str(item["name"]) for item in result["checks"]}
-        self.assertEqual(emitted - CODEX_ADVISORY_ONLY_CHECKS,
-                         set(CODEX_REQUIRED_LAUNCH_CHECKS))
-        self.assertEqual(CODEX_ADVISORY_ONLY_CHECKS - emitted, set())
+        self.assertEqual(emitted, set(CODEX_REQUIRED_LAUNCH_CHECKS))
+
+    def test_claude_required_set_equals_the_emitted_checks(self) -> None:
+        """The claude twin of the row above (issue #447, D1): `CLAUDE_REQUIRED_LAUNCH_CHECKS`
+        is what the claude probe emits, so the `--help` liveness check that the deleted
+        `multi_agent_enabled` used to carry is gated by its own name."""
+        def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            if cmd[-1] == "--version":
+                return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
+            if cmd[-1] == "--help":
+                return _FakeCompletedProcess(0, stdout="Usage: claude [options]\n")
+            if cmd[-1] == "-p":
+                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
+            raise AssertionError(cmd)
+
+        result = probe_execution_platform(backend="claude", runner=runner)
+        self.assertTrue(result["can_launch_step_agents"], result["checks"])
+        emitted = {str(item["name"]) for item in result["checks"]}
+        self.assertEqual(emitted, set(CLAUDE_REQUIRED_LAUNCH_CHECKS))
 
     def test_unlisted_failing_codex_check_still_blocks_launch(self) -> None:
-        """A codex probe check that is not in the advisory set gates by default.
+        """A codex probe check that no required set names still gates the probe's verdict.
 
-        The gate is a deny-list (CODEX_ADVISORY_ONLY_CHECKS), not an allow-list of
-        gating names: with an allow-list, a check added to `_probe_codex_backend`
-        later would be recorded as failing and still launch.
+        The probe-time gate is "every emitted check passes", not an allow-list of gating
+        names: with an allow-list, a check added to `_probe_codex_backend` later would be
+        recorded as failing and still launch.
         """
         from tools import orchestration_runtime as ort
         from tools.orchestration_runtime import (
-            CODEX_ADVISORY_ONLY_CHECKS, probe_execution_platform,
+            CODEX_REQUIRED_LAUNCH_CHECKS, probe_execution_platform,
         )
 
         def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
             if cmd[-1] == "--version":
                 return _FakeCompletedProcess(0, stdout="codex 1.0.0")
-            if cmd[-2:] == ["features", "list"]:
-                return _FakeCompletedProcess(
-                    0, stdout="multi_agent experimental true\nhooks available true\n")
             if cmd[-2:] == ["exec", "--help"]:
                 return _FakeCompletedProcess(0, stdout=_CODEX_EXEC_HELP)
             if cmd[-3:] == ["exec", "resume", "--help"]:
@@ -1546,11 +1456,11 @@ shell_tool                       stable             true
         original = ort._probe_codex_backend
 
         def _with_future_check(backend_token, command, run):  # type: ignore[no-untyped-def]
-            checks, features, multi, version = original(backend_token, command, run)
+            checks, version = original(backend_token, command, run)
             checks.append({"name": "codex_future_capability", "pass": False})
-            return checks, features, multi, version
+            return checks, version
 
-        self.assertNotIn("codex_future_capability", CODEX_ADVISORY_ONLY_CHECKS)
+        self.assertNotIn("codex_future_capability", CODEX_REQUIRED_LAUNCH_CHECKS)
         with tempfile.TemporaryDirectory() as tmp:
             # An OWN repo_root, not `Path.cwd()`: `probe_execution_platform` also runs
             # `_probe_codex_project_hooks(repo_root)`, so under a different working
@@ -1573,23 +1483,73 @@ shell_tool                       stable             true
         self.assertFalse(result["can_launch_step_agents"])
         self.assertFalse(result["can_launch_substep_agents"])
 
+    def test_unlisted_failing_claude_check_still_blocks_launch(self) -> None:
+        """The claude twin of the codex row above (issue #447): the claude probe-time gate is
+        every emitted check, not `CLAUDE_REQUIRED_LAUNCH_CHECKS`, so a check added to
+        `_probe_claude_backend` later fails closed before anyone adds it to the set."""
+        from tools import orchestration_runtime as ort
+
+        def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            if cmd[-1] == "--version":
+                return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
+            if cmd[-1] == "--help":
+                return _FakeCompletedProcess(0, stdout="Usage: claude [options]\n")
+            if cmd[-1] == "-p":
+                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
+            raise AssertionError(cmd)
+
+        original = ort._probe_claude_backend
+
+        def _with_future_check(backend_token, command, run):  # type: ignore[no-untyped-def]
+            checks, version = original(backend_token, command, run)
+            checks.append({"name": "claude_future_capability", "pass": False})
+            return checks, version
+
+        self.assertNotIn("claude_future_capability", CLAUDE_REQUIRED_LAUNCH_CHECKS)
+        for prober, launchable in ((original, True), (_with_future_check, False)):
+            with self.subTest(future=prober is _with_future_check), patch.dict(
+                    ort._BACKEND_PROBERS, {"claude": prober}):
+                result = ort.probe_execution_platform(backend="claude", runner=runner)
+            self.assertIs(result["can_launch_step_agents"], launchable, result["checks"])
+
+    def test_an_unwritable_codex_home_blocks_the_codex_launch(self) -> None:
+        """`codex_home_writable` is appended after the prober runs, so it reaches the probe-time
+        gate through its own conjunct rather than through `_all_strict_boolean_probe_checks_pass`
+        over the prober's checks. Control: the same probe with a writable home launches."""
+        from tools import orchestration_runtime as ort
+
+        def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            if cmd[-1] == "--version":
+                return _FakeCompletedProcess(0, stdout="codex 1.0.0")
+            if cmd[-2:] == ["exec", "--help"]:
+                return _FakeCompletedProcess(0, stdout=_CODEX_EXEC_HELP)
+            if cmd[-3:] == ["exec", "resume", "--help"]:
+                return _FakeCompletedProcess(0, stdout=_CODEX_EXEC_RESUME_HELP)
+            raise AssertionError(cmd)
+
+        for writable in (True, False):
+            with self.subTest(writable=writable), mock.patch.object(
+                    ort, "_probe_codex_home_writable",
+                    return_value={"name": "codex_home_writable", "pass": writable}):
+                result = ort.probe_execution_platform(
+                    backend="codex", agent_command="codex", runner=runner)
+            self.assertIs(result["can_launch_step_agents"], writable, result["checks"])
+
     def test_all_strict_boolean_probe_checks_pass_skips_none_pass(self) -> None:
         """A check with `pass: None` is treated as unrun, and it passes if all others are True."""
         from tools.orchestration_runtime import _all_strict_boolean_probe_checks_pass
 
         checks_ok = [
             {"name": "codex_version_available", "pass": True},
-            {"name": "codex_features_list_available", "pass": True},
+            {"name": "codex_exec_resume", "pass": True},
             {"name": "codex_help_probe_available", "pass": None},
-            {"name": "multi_agent_enabled", "pass": True},
         ]
         self.assertTrue(_all_strict_boolean_probe_checks_pass(checks_ok))
 
         checks_bad = [
             {"name": "codex_version_available", "pass": True},
-            {"name": "codex_features_list_available", "pass": False},
+            {"name": "codex_exec_resume", "pass": False},
             {"name": "codex_help_probe_available", "pass": None},
-            {"name": "multi_agent_enabled", "pass": True},
         ]
         self.assertFalse(_all_strict_boolean_probe_checks_pass(checks_bad))
 
@@ -1701,8 +1661,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks()],
                 },
             )
             record_agent_run(
@@ -2042,7 +2002,6 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
                     "checks": self._codex_launch_checks(),
                 },
             )
@@ -2178,7 +2137,6 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
                     "checks": self._codex_launch_checks(),
                 },
             )
@@ -2415,42 +2373,10 @@ shell_tool                       stable             true
             self.assertTrue((orch_root / "launches" / "substep_run_plan_generate_001.request.json").exists())
             self.assertTrue((orch_root / "launches" / "substep_run_plan_generate_001.prompt.txt").exists())
             self.assertTrue((orch_root / "launches" / "substep_run_plan_generate_001.reply.txt").exists())
-            self.assertTrue(
-                (
-                    orch_root
-                    / "agents"
-                    / "substep_run_plan_generate_001"
-                    / "dialogs"
-                    / "child.request.json"
-                ).exists()
-            )
-            self.assertTrue(
-                (
-                    orch_root
-                    / "agents"
-                    / "substep_run_plan_generate_001"
-                    / "dialogs"
-                    / "child.response.json"
-                ).exists()
-            )
-            self.assertTrue(
-                (
-                    orch_root
-                    / "agents"
-                    / "substep_run_plan_generate_001"
-                    / "dialogs"
-                    / "child.prompt.txt"
-                ).exists()
-            )
-            self.assertTrue(
-                (
-                    orch_root
-                    / "agents"
-                    / "substep_run_plan_generate_001"
-                    / "dialogs"
-                    / "child.reply.txt"
-                ).exists()
-            )
+            # The `dialogs/child.*` mirrors of the four `launches/` files went in issue #447
+            # (D3); `dialogs/` keeps the agent's own result and summary.
+            dialogs = orch_root / "agents" / "substep_run_plan_generate_001" / "dialogs"
+            self.assertEqual(sorted(p.name for p in dialogs.glob("child.*")), [])
             self.assertTrue(
                 (
                     orch_root
@@ -2498,45 +2424,16 @@ shell_tool                       stable             true
                 ).read_text(encoding="utf-8")
             )
             self.assertEqual(
-                request_payload["child_launch_request_ref"],
-                "workspace/orchestrations/orch_001/agents/substep_run_plan_generate_001/dialogs/child.request.json",
+                request_payload["launch_prompt_ref"],
+                "workspace/orchestrations/orch_001/launches/substep_run_plan_generate_001.prompt.txt",
             )
             self.assertEqual(
-                request_payload["child_launch_prompt_ref"],
-                "workspace/orchestrations/orch_001/agents/substep_run_plan_generate_001/dialogs/child.prompt.txt",
+                response_payload["launch_reply_ref"],
+                "workspace/orchestrations/orch_001/launches/substep_run_plan_generate_001.reply.txt",
             )
-            self.assertEqual(
-                response_payload["child_launch_response_ref"],
-                "workspace/orchestrations/orch_001/agents/substep_run_plan_generate_001/dialogs/child.response.json",
-            )
-            self.assertEqual(
-                response_payload["child_launch_reply_ref"],
-                "workspace/orchestrations/orch_001/agents/substep_run_plan_generate_001/dialogs/child.reply.txt",
-            )
-            self.assertEqual(
-                (orch_root / "launches" / "substep_run_plan_generate_001.prompt.txt").read_text(
-                    encoding="utf-8"
-                ),
-                (
-                    orch_root
-                    / "agents"
-                    / "substep_run_plan_generate_001"
-                    / "dialogs"
-                    / "child.prompt.txt"
-                ).read_text(encoding="utf-8"),
-            )
-            self.assertEqual(
-                (orch_root / "launches" / "substep_run_plan_generate_001.reply.txt").read_text(
-                    encoding="utf-8"
-                ),
-                (
-                    orch_root
-                    / "agents"
-                    / "substep_run_plan_generate_001"
-                    / "dialogs"
-                    / "child.reply.txt"
-                ).read_text(encoding="utf-8"),
-            )
+            # No ref names a `dialogs/child.*` mirror any more (issue #447, D3).
+            self.assertEqual([k for k in (*request_payload, *response_payload)
+                              if k.startswith("child_launch_")], [])
             result_payload = json.loads(
                 (
                     orch_root
@@ -2727,8 +2624,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             full_prompt = _substep_launch_prompt(
@@ -2787,8 +2684,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             record_launch(
@@ -2862,8 +2759,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             record_launch(
@@ -4198,8 +4095,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             record_agent_run(
@@ -4442,8 +4339,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             with self.assertRaisesRegex(ValueError, "ir_ref must not contain placeholder"):
@@ -4491,8 +4388,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             with self.assertRaisesRegex(ValueError, "launch request must include non-empty dependency_ref"):
@@ -4543,8 +4440,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             with self.assertRaisesRegex(ValueError, "launch request dependency_ref must not contain placeholder tokens"):
@@ -4596,8 +4493,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             bad_pipeline = (
@@ -4644,8 +4541,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             with self.assertRaisesRegex(ValueError, "source_id"):
@@ -4688,8 +4585,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             record_agent_run(
@@ -4802,8 +4699,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             payload = record_agent_run(
@@ -4841,8 +4738,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             payload = record_agent_run(
@@ -4873,8 +4770,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             record_agent_run(
@@ -4952,8 +4849,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             record_agent_run(
@@ -5032,8 +4929,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             record_agent_run(
@@ -5117,8 +5014,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             record_agent_run(
@@ -5209,8 +5106,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             record_agent_run(
@@ -5304,8 +5201,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             record_agent_run(
@@ -5407,8 +5304,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             record_agent_run(
@@ -5503,8 +5400,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             record_agent_run(
@@ -5586,8 +5483,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             record_agent_run(
@@ -5671,8 +5568,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             record_agent_run(
@@ -5756,8 +5653,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             record_agent_run(
@@ -5844,8 +5741,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             record_agent_run(
@@ -5933,8 +5830,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             with self.assertRaisesRegex(ValueError, "child agent identifier"):
@@ -6182,8 +6079,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             record_launch(
@@ -6247,9 +6144,9 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
+                    "backend": "claude",
                     "checks": [
-                        {"name": "multi_agent_enabled", "pass": True},
+                        *claude_launch_checks(),
                     ],
                 },
             )
@@ -6278,10 +6175,7 @@ shell_tool                       stable             true
                     "status": "fail",
                     "can_launch_step_agents": False,
                     "can_launch_substep_agents": False,
-                    "feature_states": {"multi_agent": False},
-                    "checks": [
-                        {"name": "multi_agent_enabled", "pass": False},
-                    ],
+                    "checks": [],
                 },
             )
             with self.assertRaisesRegex(RuntimeError, "preflight gate failed"):
@@ -6334,70 +6228,31 @@ shell_tool                       stable             true
                     },
                 )
 
-    def test_accepts_multi_agent_as_advisory_in_preflight_payload(self) -> None:
-        """A codex document stays launchable with multi_agent false.
-
-        The conductor spawns independent Codex CLI processes, so the CLI's own
-        multi_agent feature says nothing about launchability. That the carve-out is
-        keyed on `backend` rather than applied unconditionally is pinned separately, by
-        `test_multi_agent_stays_required_outside_the_codex_carve_out`.
-        """
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root = Path(tmp)
-            init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
-            _mark_dependencies_ready(repo_root)
-            write_preflight(
-                repo_root=repo_root,
-                orchestration_id="orch_001",
-                payload={
-                    "status": "pass",
-                    "backend": "codex",
-                    "sandbox_runtime": "bwrap",
-                    "sandbox_enforced": True,
-                    "can_launch_step_agents": True,
-                    "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": False, "hooks": True},
-                    "checks": [
-                        *self._codex_launch_checks(),
-                        {"name": "multi_agent_enabled", "pass": False},
-                    ],
-                },
-            )
-
-    def test_multi_agent_stays_required_outside_the_codex_carve_out(self) -> None:
-        """The codex carve-out must not silently relax the claude preflight too.
-
-        A claude leaf really is launched through the platform's multi-agent capability,
-        so a launchable document that admits `multi_agent=false` is self-contradictory
-        and must still be rejected.
-        """
-        base = {
-            "status": "pass",
-            "backend": "claude",
-            "sandbox_runtime": "bwrap",
-            "sandbox_enforced": True,
-            "can_launch_step_agents": True,
-            "can_launch_substep_agents": True,
-        }
-        for states, checks in (
-            ({"multi_agent": False}, [{"name": "multi_agent_enabled", "pass": True}]),
-            ({"multi_agent": True}, [{"name": "multi_agent_enabled", "pass": False}]),
-            ({}, [{"name": "multi_agent_enabled", "pass": True}]),
-            # The gate requires the check to be PRESENT and true, so the validator
-            # must reject these too — otherwise `write_preflight` persists a
-            # `status=pass` document that every later record-launch refuses, with a
-            # gate message that names no missing check.
-            ({"multi_agent": True}, []),
-            ({"multi_agent": True}, [{"name": "multi_agent_enabled", "pass": None}]),
-        ):
-            with self.subTest(states=states, checks=checks):
-                from tools.orchestration_runtime import (
-                    _preflight_allows_agent_launch, _validate_preflight_payload,
+    def test_accepts_a_past_preflight_that_still_carries_multi_agent(self) -> None:
+        """A preflight written before issue #447 (D1) carries `feature_states` and a
+        `multi_agent_enabled` check — false on a codex host. Nothing reads either any more,
+        so such a document stays writable and launchable on both backends."""
+        for backend, checks in (("codex", self._codex_launch_checks()),
+                                ("claude", claude_launch_checks())):
+            with self.subTest(backend=backend), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
+                _mark_dependencies_ready(repo_root)
+                write_preflight(
+                    repo_root=repo_root,
+                    orchestration_id="orch_001",
+                    payload={
+                        "status": "pass",
+                        "backend": backend,
+                        "sandbox_runtime": "bwrap",
+                        "sandbox_enforced": True,
+                        "can_launch_step_agents": True,
+                        "can_launch_substep_agents": True,
+                        "feature_states": {"multi_agent": False, "hooks": True},
+                        "checks": [*checks, {"name": "multi_agent_enabled", "pass": False}],
+                    },
                 )
-                payload = {**base, "feature_states": states, "checks": checks}
-                with self.assertRaises(ValueError):
-                    _validate_preflight_payload(payload)
-                self.assertFalse(_preflight_allows_agent_launch(payload))
+                _require_preflight_launchable(repo_root, "orch_001", enforce_live_probe=False)
 
     def test_accepts_legacy_codex_hooks_preflight_alias(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -6414,7 +6269,6 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "codex_hooks": True},
                     "checks": self._codex_launch_checks(legacy_hooks=True),
                 },
             )
@@ -6436,9 +6290,7 @@ shell_tool                       stable             true
                         "sandbox_enforced": True,
                         "can_launch_step_agents": True,
                         "can_launch_substep_agents": True,
-                        "feature_states": {"multi_agent": True, "hooks": True},
                         "checks": [
-                            {"name": "multi_agent_enabled", "pass": True},
                             {"name": "hooks_enabled", "pass": True},
                         ],
                     },
@@ -6458,8 +6310,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             os.environ["ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = "1"
@@ -6471,8 +6323,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 }
                 record_launch(
                     repo_root=repo_root,
@@ -6528,8 +6380,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             os.environ["ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT"] = "0"
@@ -6632,8 +6484,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             record_agent_run(
@@ -6747,8 +6599,8 @@ shell_tool                       stable             true
                 "sandbox_enforced": True,
                 "can_launch_step_agents": True,
                 "can_launch_substep_agents": True,
-                "feature_states": {"multi_agent": True, "hooks": True},
-                "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                "backend": "claude",
+                "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
             },
         )
         record_agent_run(
@@ -6846,8 +6698,8 @@ shell_tool                       stable             true
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             with self.assertRaisesRegex(RuntimeError, "write_step_result phase gate"):
@@ -8211,8 +8063,8 @@ shell_tool                       stable             true
                 "sandbox_enforced": True,
                 "can_launch_step_agents": True,
                 "can_launch_substep_agents": True,
-                "feature_states": {"multi_agent": True, "hooks": True},
-                "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                "backend": "claude",
+                "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
             },
         )
         record_agent_run(
@@ -8454,8 +8306,8 @@ def _setup_certifiable_generate(repo_root: Path, *, verification_status: str = "
         payload={
             "status": "pass", "sandbox_runtime": "bwrap", "sandbox_enforced": True,
             "can_launch_step_agents": True, "can_launch_substep_agents": True,
-            "feature_states": {"multi_agent": True, "hooks": True},
-            "checks": [{"name": "multi_agent_enabled", "pass": True},
+            "backend": "claude",
+            "checks": [*claude_launch_checks(),
                        {"name": "hooks_enabled", "pass": True},
                        {"name": "codex_home_writable", "pass": True},
                        {"name": "sandbox_bwrap_available", "pass": True},
@@ -8532,8 +8384,8 @@ class PhaseCertificationTests(unittest.TestCase):
                 "sandbox_enforced": True,
                 "can_launch_step_agents": True,
                 "can_launch_substep_agents": True,
-                "feature_states": {"multi_agent": True, "hooks": True},
-                "checks": [{"name": "multi_agent_enabled", "pass": True},
+                "backend": "claude",
+                "checks": [*claude_launch_checks(),
                            {"name": "hooks_enabled", "pass": True},
                            {"name": "codex_home_writable", "pass": True},
                            {"name": "sandbox_bwrap_available", "pass": True},
@@ -8958,8 +8810,8 @@ class PhaseCertificationTests(unittest.TestCase):
                 payload={"status": "pass", "sandbox_runtime": "bwrap",
                          "sandbox_enforced": True, "can_launch_step_agents": True,
                          "can_launch_substep_agents": True,
-                         "feature_states": {"multi_agent": True, "hooks": True},
-                         "checks": [{"name": "multi_agent_enabled", "pass": True},
+                         "backend": "claude",
+                         "checks": [*claude_launch_checks(),
                                     {"name": "hooks_enabled", "pass": True},
                                     {"name": "codex_home_writable", "pass": True},
                                     {"name": "sandbox_bwrap_available", "pass": True},
@@ -10106,8 +9958,8 @@ class CompletionVouchAttemptModelTests(unittest.TestCase):
             repo_root=repo, orchestration_id="o1",
             payload={"status": "pass", "sandbox_runtime": "bwrap", "sandbox_enforced": True,
                      "can_launch_step_agents": True, "can_launch_substep_agents": True,
-                     "feature_states": {"multi_agent": True, "hooks": True},
-                     "checks": [{"name": "multi_agent_enabled", "pass": True},
+                     "backend": "claude",
+                     "checks": [*claude_launch_checks(),
                                 {"name": "hooks_enabled", "pass": True},
                                 {"name": "codex_home_writable", "pass": True},
                                 {"name": "sandbox_bwrap_available", "pass": True},
@@ -10335,8 +10187,8 @@ class ResumeOrchestrationRuntimeTests(unittest.TestCase):
                 "sandbox_enforced": True,
                 "can_launch_step_agents": True,
                 "can_launch_substep_agents": True,
-                "feature_states": {"multi_agent": True, "hooks": True},
-                "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                "backend": "claude",
+                "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
             },
         )
         record_agent_run(
@@ -10940,8 +10792,7 @@ class PreflightOneReasonListTests(unittest.TestCase):
         return {
             "status": "pass", "backend": "claude", "sandbox_runtime": "bwrap",
             "sandbox_enforced": True, "can_launch_step_agents": True,
-            "can_launch_substep_agents": True, "feature_states": {"multi_agent": True},
-            "checks": [{"name": "multi_agent_enabled", "pass": True}],
+            "can_launch_substep_agents": True, "checks": claude_launch_checks(),
         }
 
     @staticmethod
@@ -10954,7 +10805,9 @@ class PreflightOneReasonListTests(unittest.TestCase):
 
     def _perturbations(self) -> list[tuple[str, dict[str, object], str | None]]:
         """(label, payload, a reason text the list must carry — None for a launchable one)."""
-        from tools.orchestration_runtime import CODEX_REQUIRED_LAUNCH_CHECKS
+        from tools.orchestration_runtime import (
+            CLAUDE_REQUIRED_LAUNCH_CHECKS, CODEX_REQUIRED_LAUNCH_CHECKS,
+        )
         codex = _launchable_preflight_dict()
         claude = self._claude_launchable()
         out: list[tuple[str, dict[str, object], str | None]] = [
@@ -10969,14 +10822,17 @@ class PreflightOneReasonListTests(unittest.TestCase):
                 (f"{tag} sandbox absent",
                  {k: v for k, v in base.items() if k != "sandbox_enforced"},
                  "sandbox_enforced must be true"),
-                (f"{tag} feature_states absent",
-                 {k: v for k, v in base.items() if k != "feature_states"},
-                 "feature_states must be a mapping"),
-                (f"{tag} feature_states list", {**base, "feature_states": ["multi_agent"]},
-                 "feature_states must be a mapping"),
+                # A past document still carries the key (issue #447, D1): it is read by
+                # nothing and refuses nothing.
+                (f"{tag} past feature_states",
+                 {**base, "feature_states": {"multi_agent": False}}, None),
+                (f"{tag} past multi_agent_enabled false",
+                 self._with_check(base, "multi_agent_enabled", False), None),
+                (f"{tag} backend absent", {k: v for k, v in base.items() if k != "backend"},
+                 "backend must be one of ['claude', 'codex']"),
                 (f"{tag} checks absent", {k: v for k, v in base.items() if k != "checks"},
                  "checks must be a list of capability probe results"),
-                (f"{tag} checks dict", {**base, "checks": {"multi_agent_enabled": True}},
+                (f"{tag} checks dict", {**base, "checks": {"claude_version_available": True}},
                  "checks must be a list of capability probe results"),
                 (f"{tag} unlaunchable provider",
                  {**base, "providers": {"openai_compatible": {"launchable": False}}},
@@ -10992,23 +10848,25 @@ class PreflightOneReasonListTests(unittest.TestCase):
                      f"{flag} must be true"),
                 ]
         out += [
-            ("claude feature_states empty", {**claude, "feature_states": {}},
-             "feature_states.multi_agent must be true"),
-            ("claude multi_agent false", {**claude, "feature_states": {"multi_agent": False}},
-             "feature_states.multi_agent must be true"),
-            ("claude checks empty", {**claude, "checks": []},
-             "checks.multi_agent_enabled.pass must be true"),
+            ("backend unknown", {**claude, "backend": "gemini"},
+             "backend must be one of ['claude', 'codex']"),
+            # The deleted `multi_agent_enabled` carried the claude `--help` liveness; a
+            # document asserting it no longer substitutes for the named check.
+            ("claude help probe absent, multi_agent_enabled true",
+             self._with_check(
+                 self._with_check(claude, "claude_help_probe_available", None, drop=True),
+                 "multi_agent_enabled", True),
+             "claude launchable preflight is missing required capabilities: "
+             "claude_help_probe_available"),
         ]
-        for value, drop in ((None, True), (False, False), (None, False), (1, False)):
-            out.append((f"claude multi_agent_enabled {'absent' if drop else repr(value)}",
-                        self._with_check(claude, "multi_agent_enabled", value, drop=drop),
-                        "checks.multi_agent_enabled.pass must be true"))
-        for name in sorted(CODEX_REQUIRED_LAUNCH_CHECKS):
-            for value, drop in ((None, True), (False, False), (None, False)):
-                out.append((f"codex {name} {'absent' if drop else repr(value)}",
-                            self._with_check(codex, name, value, drop=drop),
-                            "codex launchable preflight is missing required capabilities: "
-                            f"{name}"))
+        for tag, base, required in (("codex", codex, CODEX_REQUIRED_LAUNCH_CHECKS),
+                                    ("claude", claude, CLAUDE_REQUIRED_LAUNCH_CHECKS)):
+            for name in sorted(required):
+                for value, drop in ((None, True), (False, False), (None, False), (1, False)):
+                    out.append((f"{tag} {name} {'absent' if drop else repr(value)}",
+                                self._with_check(base, name, value, drop=drop),
+                                f"{tag} launchable preflight is missing required "
+                                f"capabilities: {name}"))
         # Strictness: every boolean condition is `is True`, never truthiness, and the backend
         # token is normalized. A producer writes bools and lowercase tokens, so these pin the
         # comparison rather than a shape a run stores.
@@ -11030,18 +10888,18 @@ class PreflightOneReasonListTests(unittest.TestCase):
              {**self._with_check(codex, "codex_prompt_stdin", None, drop=True),
               "backend": " CODEX "},
              "codex launchable preflight is missing required capabilities: codex_prompt_stdin"),
-            ("claude multi_agent 1", {**claude, "feature_states": {"multi_agent": 1}},
-             "feature_states.multi_agent must be true"),
+            ("claude backend spelled 'Claude'", {**claude, "backend": "Claude"}, None),
             ("codex required check 1", self._with_check(codex, "codex_home_writable", 1),
              "codex launchable preflight is missing required capabilities: codex_home_writable"),
             # Duplicate rows: the LAST row for a name decides (`_codex_check_pass_values`).
-            ("claude multi_agent_enabled rows True then None",
-             {**claude, "checks": [{"name": "multi_agent_enabled", "pass": True},
-                                   {"name": "multi_agent_enabled", "pass": None}]},
-             "checks.multi_agent_enabled.pass must be true"),
-            ("claude multi_agent_enabled rows None then True",
-             {**claude, "checks": [{"name": "multi_agent_enabled", "pass": None},
-                                   {"name": "multi_agent_enabled", "pass": True}]},
+            ("claude help probe rows True then None",
+             {**claude, "checks": [*claude["checks"],  # type: ignore[misc]
+                                   {"name": "claude_help_probe_available", "pass": None}]},
+             "claude launchable preflight is missing required capabilities: "
+             "claude_help_probe_available"),
+            ("claude help probe rows None then True",
+             {**claude, "checks": [{"name": "claude_help_probe_available", "pass": None},
+                                   *claude["checks"]]},  # type: ignore[misc]
              None),
         ]
         # Non-claiming shapes: both flags false, with a refusal elsewhere. They claim nothing,
@@ -11094,13 +10952,11 @@ class PreflightOneReasonListTests(unittest.TestCase):
                     self.assertIn(reason, reasons)
 
     def test_the_two_holes_the_mirror_left_are_closed(self) -> None:
-        """Before issue #433 PR-2 the validator ACCEPTED both of these and the gate refused
-        them, so `write_preflight` persisted a document every later record-launch refused."""
+        """Before issue #433 PR-2 the validator ACCEPTED these and the gate refused them, so
+        `write_preflight` persisted a document every later record-launch refused. (A third
+        row, a document without `feature_states`, went with that key in issue #447.)"""
         from tools.orchestration_runtime import _validate_preflight_payload
         codex = _launchable_preflight_dict()
-        with self.assertRaisesRegex(ValueError, "feature_states must be a mapping"):
-            _validate_preflight_payload(
-                {k: v for k, v in codex.items() if k != "feature_states"})
         with self.assertRaisesRegex(ValueError, "can_launch_substep_agents must be true"):
             _validate_preflight_payload({**codex, "can_launch_substep_agents": False})
         with self.assertRaisesRegex(ValueError, "can_launch_step_agents must be true"):
@@ -11155,13 +11011,10 @@ def _launchable_preflight_dict(**extra: object) -> dict[str, object]:
             "allow_substep_agent_launch": True,
         },
         "session_policy_launchable": True,
-        "feature_states": {"multi_agent": True, "hooks": True},
         "checks": [
-            {"name": "multi_agent_enabled", "pass": True},
             {"name": "hooks_enabled", "pass": True},
             {"name": "codex_home_writable", "pass": True},
             {"name": "codex_version_available", "pass": True},
-            {"name": "codex_features_list_available", "pass": True},
             {"name": "sandbox_bwrap_available", "pass": True},
             {"name": "sandbox_bwrap_userns", "pass": True},
             {"name": "sandbox_bwrap_exec", "pass": True},
@@ -11173,6 +11026,9 @@ def _launchable_preflight_dict(**extra: object) -> dict[str, object]:
             {"name": "codex_project_hook_trust_bypass", "pass": True},
         ],
     }
+    if extra.get("backend") == "claude":
+        base["probe_command"] = "claude"
+        base["checks"] = claude_launch_checks()
     base.update(extra)
     return base
 
@@ -12183,8 +12039,8 @@ class TestPhase1RuleSourceAudit(unittest.TestCase):
                     "sandbox_enforced": True,
                     "can_launch_step_agents": True,
                     "can_launch_substep_agents": True,
-                    "feature_states": {"multi_agent": True, "hooks": True},
-                    "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                    "backend": "claude",
+                    "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
                 },
             )
             orch = repo_root / "workspace/orchestrations/orch_p1m"
@@ -12364,11 +12220,6 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             def runner(args, **kwargs):  # type: ignore[no-untyped-def]
                 if args[1:] == ["--version"]:
                     return _FakeCompletedProcess(0, stdout="codex-cli 0.114.0\n")
-                if args[1:] == ["features", "list"]:
-                    return _FakeCompletedProcess(
-                        0,
-                        stdout="multi_agent experimental true\nhooks under-development true\n",
-                    )
                 raise AssertionError(args)
 
             preflight_payload = _launchable_preflight_dict()
@@ -12535,8 +12386,8 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 "sandbox_enforced": True,
                 "can_launch_step_agents": True,
                 "can_launch_substep_agents": True,
-                "feature_states": {"multi_agent": True, "hooks": True},
-                "checks": [{"name": "multi_agent_enabled", "pass": True}, {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
+                "backend": "claude",
+                "checks": [*claude_launch_checks(), {"name": "hooks_enabled", "pass": True}, {"name": "codex_home_writable", "pass": True}, {"name": "sandbox_bwrap_available", "pass": True}, {"name": "sandbox_bwrap_userns", "pass": True}],
             },
         )
 
@@ -14899,9 +14750,8 @@ class ClaudeSequentialLaunchTests(unittest.TestCase):
                 "sandbox_enforced": True,
                 "can_launch_step_agents": True,
                 "can_launch_substep_agents": True,
-                "feature_states": {"multi_agent": True, "hooks": True},
                 "checks": [
-                    {"name": "multi_agent_enabled", "pass": True},
+                    *claude_launch_checks(),
                     {"name": "hooks_enabled", "pass": True},
                     {"name": "codex_home_writable", "pass": True},
                     {"name": "sandbox_bwrap_available", "pass": True},
@@ -14983,9 +14833,8 @@ class RecordTimeoutTests(unittest.TestCase):
                 "sandbox_enforced": True,
                 "can_launch_step_agents": True,
                 "can_launch_substep_agents": True,
-                "feature_states": {"multi_agent": True, "hooks": True},
                 "checks": [
-                    {"name": "multi_agent_enabled", "pass": True},
+                    *claude_launch_checks(),
                     {"name": "hooks_enabled", "pass": True},
                     {"name": "codex_home_writable", "pass": True},
                     {"name": "sandbox_bwrap_available", "pass": True},
@@ -15035,9 +14884,8 @@ class RecordTimeoutTests(unittest.TestCase):
                 "status": "pass", "backend": "claude", "sandbox_runtime": "bwrap",
                 "sandbox_enforced": True, "can_launch_step_agents": True,
                 "can_launch_substep_agents": True,
-                "feature_states": {"multi_agent": True},
                 "checks": [
-                    {"name": "multi_agent_enabled", "pass": True},
+                    *claude_launch_checks(),
                     {"name": "sandbox_bwrap_available", "pass": True},
                     {"name": "sandbox_bwrap_userns", "pass": True},
                 ],
@@ -16816,7 +16664,8 @@ class LaunchSettingSurfacePersistenceTests(unittest.TestCase):
     the REAL `record_launch` handler — the two facts it pins are properties of the runtime,
     not of the conductor, and neither is visible from a conductor-side test:
 
-    (1) the runtime persists keys it does not know, into both copies of the response;
+    (1) the runtime persists keys it does not know, into the launches response (the one copy
+        since the `dialogs/child.response.json` mirror went in issue #447, D3);
     (2) `_TERSE_RESULT_FIELDS["record-launch"]` projects them AWAY, because the conductor
         consumes neither — they are a record, not an instruction, and adding them to the
         terse set would grow every launch's stdout for nothing.
@@ -16831,17 +16680,17 @@ class LaunchSettingSurfacePersistenceTests(unittest.TestCase):
         "claude_tools": [""],
     }
 
-    def test_the_setting_surface_is_persisted_in_both_response_copies(self) -> None:
+    def test_the_setting_surface_is_persisted_in_the_launch_response(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             arid = self._setup_substep_launch(repo_root, response_extra=dict(self.SURFACE))
             orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
-            for path in (orch_root / "launches" / f"{arid}.response.json",
-                         orch_root / "agents" / arid / "dialogs" / "child.response.json"):
-                doc = json.loads(path.read_text(encoding="utf-8"))
-                self.assertEqual(doc["claude_setting_sources"], "user", msg=str(path))
-                self.assertEqual(doc["claude_tools"], self.SURFACE["claude_tools"],
-                                 msg=str(path))
+            path = orch_root / "launches" / f"{arid}.response.json"
+            doc = json.loads(path.read_text(encoding="utf-8"))
+            self.assertEqual(doc["claude_setting_sources"], "user")
+            self.assertEqual(doc["claude_tools"], self.SURFACE["claude_tools"])
+            self.assertFalse((orch_root / "agents" / arid / "dialogs" / "child.response.json")
+                             .exists())
 
 
 class SetStatusIdempotencyTests(unittest.TestCase):
@@ -16951,9 +16800,9 @@ class PreflightDependencyReadinessInitTests(unittest.TestCase):
         "sandbox_enforced": True,
         "can_launch_step_agents": True,
         "can_launch_substep_agents": True,
-        "feature_states": {"multi_agent": True, "hooks": True},
+        "backend": "claude",
         "checks": [
-            {"name": "multi_agent_enabled", "pass": True},
+            *claude_launch_checks(),
             {"name": "hooks_enabled", "pass": True},
             {"name": "codex_home_writable", "pass": True},
             {"name": "sandbox_bwrap_available", "pass": True},
@@ -20040,9 +19889,9 @@ class PreflightLeafRecomputeTests(unittest.TestCase):
     _PAYLOAD = {
         "status": "pass", "sandbox_runtime": "bwrap", "sandbox_enforced": True,
         "can_launch_step_agents": True, "can_launch_substep_agents": True,
-        "feature_states": {"multi_agent": True, "hooks": True},
+        "backend": "claude",
         "checks": [
-            {"name": "multi_agent_enabled", "pass": True},
+            *claude_launch_checks(),
             {"name": "hooks_enabled", "pass": True},
             {"name": "codex_home_writable", "pass": True},
             {"name": "sandbox_bwrap_available", "pass": True},
@@ -21916,8 +21765,8 @@ _REOPEN_LAUNCHABLE_PREFLIGHT = {
     "sandbox_enforced": True,
     "can_launch_step_agents": True,
     "can_launch_substep_agents": True,
-    "feature_states": {"multi_agent": True, "hooks": True},
-    "checks": [{"name": "multi_agent_enabled", "pass": True}],
+    "backend": "claude",
+    "checks": [*claude_launch_checks()],
 }
 
 

@@ -860,16 +860,13 @@ def _create_minimal_orchestration_tree(
         orchestration_root / "preflight.json",
         {
             "status": "pass",
+            "backend": "claude",
             "can_launch_step_agents": True,
             "can_launch_substep_agents": True,
-            "feature_states": {
-                "multi_agent": True,
-            },
             "checks": [
-                {
-                    "name": "multi_agent_enabled",
-                    "pass": True,
-                }
+                {"name": "claude_version_available", "pass": True},
+                {"name": "claude_help_probe_available", "pass": True},
+                {"name": "claude_prompt_stdin", "pass": True},
             ],
         },
     )
@@ -973,17 +970,6 @@ def _create_minimal_orchestration_tree(
             "finished_at": "2026-03-01T00:01:10Z",
         }
         _write_json(step_agent_dir / "agent.result.json", step_payload)
-        _write_json(
-            step_agent_dir / "child.response.json",
-            {
-                "agent_run_id": step_ids[step],
-                **_spawn_response_payload(
-                    f"sess_step_{step}",
-                    f"accepted: sess_step_{step}",
-                ),
-                "launch_reply_ref": step_reply_ref,
-            },
-        )
         (step_agent_dir / "agent.summary.txt").write_text(
             f"agent_run_id: {step_ids[step]}\nstatus: pass\noutput_refs:\n- workspace/pipelines/{node_safe}/pipeline_step_{step}\n",
             encoding="utf-8",
@@ -1063,17 +1049,6 @@ def _create_minimal_orchestration_tree(
                 "finished_at": "2026-03-01T00:00:50Z",
             }
             _write_json(substep_agent_dir / "agent.result.json", substep_payload)
-            _write_json(
-                substep_agent_dir / "child.response.json",
-                {
-                    "agent_run_id": substep_id,
-                    **_spawn_response_payload(
-                        f"sess_substep_{step}_{idx}",
-                        f"accepted: sess_substep_{step}_{idx}",
-                    ),
-                    "launch_reply_ref": substep_reply_ref,
-                },
-            )
             (substep_agent_dir / "agent.summary.txt").write_text(
                 f"agent_run_id: {substep_id}\nstatus: pass\noutput_refs:\n- workspace/ir/{node_safe}/plan_{step}_{idx}\n",
                 encoding="utf-8",
@@ -9721,18 +9696,6 @@ end program shallow_water2d_runner
             payload.pop("agent_session_id", None)
             _write_json(response_path, payload)
 
-            child_response_path = (
-                repo_root
-                / "workspace"
-                / "orchestrations"
-                / "orch_test_001"
-                / "agents"
-                / "step_run_build_001"
-                / "dialogs"
-                / "child.response.json"
-            )
-            _write_json(child_response_path, payload)
-
             violations = validate(
                 repo_root=repo_root,
                 workspace_root="workspace",
@@ -9883,10 +9846,6 @@ end program shallow_water2d_runner
             response_payload["agent_session_id"] = "session_1_1"
             response_payload["launch_reply"] = "problem/shallow_water2d@0.3.0 build step launched."
             _write_json(response_path, response_payload)
-            _write_json(
-                orch_root / "agents" / "step_run_build_001" / "dialogs" / "child.response.json",
-                response_payload,
-            )
 
             runs_path = orch_root / "agent_runs.jsonl"
             items = [
@@ -27308,10 +27267,6 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         resp.pop("sandbox_profile_ref", None)
         body = json.dumps(resp, ensure_ascii=False)
         resp_path.write_text(body, encoding="utf-8")
-        # `record_launch` writes BOTH copies and the sweep compares them; mutating only one
-        # leaves a `must equal launches response payload` violation the filter would hide.
-        (orch_root / "agents" / self._ARID / "dialogs"
-         / "child.response.json").write_text(body, encoding="utf-8")
         # `record_agent_run` stamps the row from the same response.
         self._patch_row(repo_root, agent_backend=backend)
         if not keep_profile:
@@ -29219,6 +29174,71 @@ class SourceFingerprintTests(unittest.TestCase):
             self.assertEqual(vps._build_artifact_suffixes(
                 repo, repo / "workspace" / "pipelines" / self._NK / "zz_no_target" / "p1"),
                 frozenset())
+
+
+
+class PreflightBlockTests(unittest.TestCase):
+    """What the validator reads of `preflight.json` (issue #447, D1): status, both
+    `can_launch_*` flags and a `checks` list. The `multi_agent` feature state and check it
+    used to require are read by nothing — a past document that still carries them, either
+    way, is neither required nor refused."""
+
+    def _preflight_violations(self, preflight: dict[str, object]) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            # The tree `test_passes_with_orchestration_when_required` validates clean, so a
+            # preflight violation below is the only one the document can cause.
+            _seed_shape_expr_schema_into(repo_root)
+            _create_minimal_execution_tree(
+                repo_root,
+                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text=(
+                    "module shallow_water2d_model\n"
+                    "use dynamics_shallow_water_flux_2d_rusanov_p0_model\n"
+                    "implicit none\ncontains\nsubroutine solve(flag)\n"
+                    "  logical, intent(out) :: flag\n"
+                    "  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)\n"
+                    "end subroutine solve\nend module shallow_water2d_model\n"),
+                runner_text=(
+                    "program shallow_water2d_runner\nimplicit none\nwrite(*,*) 'ok'\n"
+                    "end program shallow_water2d_runner\n"),
+                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+            )
+            _create_minimal_orchestration_tree(repo_root)
+            path = repo_root / "workspace" / "orchestrations" / "orch_test_001" / "preflight.json"
+            _write_json(path, preflight)
+            violations = validate(
+                repo_root=repo_root, workspace_root="workspace", require_orchestration=True)
+        return [v for v in violations if "preflight.json" in v]
+
+    _CURRENT = {
+        "status": "pass", "backend": "claude",
+        "can_launch_step_agents": True, "can_launch_substep_agents": True,
+        "checks": [{"name": "claude_help_probe_available", "pass": True}],
+    }
+
+    def test_a_document_without_feature_states_is_accepted(self) -> None:
+        self.assertEqual(self._preflight_violations(dict(self._CURRENT)), [])
+
+    def test_a_past_document_with_multi_agent_false_is_accepted(self) -> None:
+        past = {**self._CURRENT, "feature_states": {"multi_agent": False},
+                "checks": [{"name": "multi_agent_enabled", "pass": False}]}
+        self.assertEqual(self._preflight_violations(past), [])
+
+    def test_the_remaining_conditions_still_refuse(self) -> None:
+        for label, doc, needle in (
+            ("checks dict", {**self._CURRENT, "checks": {}}, "checks must be list"),
+            ("checks absent", {k: v for k, v in self._CURRENT.items() if k != "checks"},
+             "checks must be list"),
+            ("status fail", {**self._CURRENT, "status": "fail"}, "status must be pass"),
+            ("step flag false", {**self._CURRENT, "can_launch_step_agents": False},
+             "can_launch_step_agents must be true"),
+            ("substep flag false", {**self._CURRENT, "can_launch_substep_agents": False},
+             "can_launch_substep_agents must be true"),
+        ):
+            with self.subTest(label):
+                found = self._preflight_violations(doc)
+                self.assertTrue(any(needle in v for v in found), found)
 
 
 if __name__ == "__main__":

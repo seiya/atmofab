@@ -50,6 +50,7 @@ import tools.orchestration_runtime as ort
 from tools import target_profile as tp
 from tools.orchestration_runtime import init_orchestration, write_preflight
 from tools.tests.orchestration_fixtures import accept_any_certified_ir, certify_node
+from tools.tests.orchestration_fixtures import claude_launch_checks
 from tools.tests.target_fixtures import (
     FORTRAN_CPU,
     SECOND_TARGET,
@@ -74,8 +75,8 @@ def _preflight(repo_root: Path, oid: str = "o1") -> None:
             "sandbox_enforced": True,
             "can_launch_step_agents": True,
             "can_launch_substep_agents": True,
-            "feature_states": {"multi_agent": True, "hooks": True},
-            "checks": [{"name": "multi_agent_enabled", "pass": True},
+            "backend": "claude",
+            "checks": [*claude_launch_checks(),
                        {"name": "hooks_enabled", "pass": True},
                        {"name": "codex_home_writable", "pass": True},
                        {"name": "sandbox_bwrap_available", "pass": True},

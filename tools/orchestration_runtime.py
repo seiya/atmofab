@@ -4617,14 +4617,17 @@ def _fsync_directory(path: Path) -> None:
 def _codex_registration_transaction_targets(
     transaction_dir: Path,
     agent_run_id: str,
-) -> tuple[Path, Path, Path]:
+) -> tuple[Path, Path]:
+    """The launch response and the session index, committed together. A third target, the
+    `agents/<arid>/dialogs/child.response.json` mirror, went with the mirror in issue #447
+    (D3); a journal a pre-upgrade crash left with three entries is refused as invalid rather
+    than replayed onto two targets."""
     if _AGENT_RUN_ID_RE.fullmatch(agent_run_id) is None:
         raise RuntimeError(
             f"invalid agent_run_id in Codex registration transaction: {agent_run_id!r}"
         )
     return (
         transaction_dir / "launches" / f"{agent_run_id}.response.json",
-        transaction_dir / "agents" / agent_run_id / "dialogs" / "child.response.json",
         transaction_dir / "session_run_index.json",
     )
 
@@ -4706,8 +4709,8 @@ def _recover_json_transactions_unlocked(transaction_dir: Path) -> None:
             not isinstance(agent_run_id, str)
             or not isinstance(old_exists, list)
             or not isinstance(old_sha256, list)
-            or len(old_exists) != 3
-            or len(old_sha256) != 3
+            or len(old_exists) != 2
+            or len(old_sha256) != 2
             or any(type(value) is not bool for value in old_exists)
             or any(
                 (exists and (
@@ -4724,7 +4727,7 @@ def _recover_json_transactions_unlocked(transaction_dir: Path) -> None:
         targets = _codex_registration_transaction_targets(
             transaction_dir, agent_run_id
         )
-        for idx in reversed(range(3)):
+        for idx in reversed(range(len(targets))):
             target = targets[idx]
             old_path = tx_dir / f"{idx}.old"
             if not old_exists[idx]:
@@ -4826,11 +4829,8 @@ def _write_json_transaction(
             if isinstance(raw_lineage, str) and raw_lineage.strip()
             else None
         )
-        transaction_updates = {
-            expected_targets[0]: response,
-            expected_targets[1]: response,
-        }
-        session_index = _read_session_run_index_from_path(expected_targets[2])
+        transaction_updates = {expected_targets[0]: response}
+        session_index = _read_session_run_index_from_path(expected_targets[1])
         _upsert_session_run_index_entry(
             session_index,
             agent_run_id=agent_run_id,
@@ -4840,7 +4840,7 @@ def _write_json_transaction(
             status=status,
             codex_lineage_id=lineage,
         )
-        transaction_updates[expected_targets[2]] = session_index
+        transaction_updates[expected_targets[1]] = session_index
         targets = list(expected_targets)
         tx_root.mkdir(parents=True, exist_ok=True)
         if tx_root.is_symlink():
@@ -8723,23 +8723,29 @@ def _preflight_path(repo_root: Path, orchestration_id: str) -> Path:
     return _orchestration_root(repo_root, orchestration_id) / "preflight.json"
 
 
-# The codex probe checks a launchable `preflight.json` must carry as `pass: true`, read by
-# `_preflight_launch_refusals` — ONE source for the gate, the validator and this set.
+# The probe checks a launchable `preflight.json` must carry as `pass: true`, per backend, read
+# by `_preflight_launch_refusals` — ONE source for the gate, the validator and these sets.
 # The three hook checks — `hooks_enabled`, `codex_project_hooks_validated`,
 # `codex_project_hook_trust_bypass` — went with the leaf's hook layer in Z4 (issue #171).
+# The `multi_agent` feature state, its `multi_agent_enabled` check and the codex
+# `features list` probe that was its only producer went in issue #447 (D1, D4): the conductor
+# spawns independent CLI processes and never uses a platform's own subagents, so the feature
+# said nothing about launchability. On claude the check was `--help` answering, which
+# `claude_help_probe_available` already records and now gates by name.
 CODEX_REQUIRED_LAUNCH_CHECKS = frozenset({
-    "codex_version_available", "codex_features_list_available",
+    "codex_version_available",
     "codex_home_writable", "sandbox_bwrap_available", "sandbox_bwrap_userns",
     "sandbox_bwrap_exec", "codex_exec_json_streaming",
     "codex_exec_pure_isolation_flags", "codex_exec_resume", "codex_prompt_stdin",
 })
-
-# Codex probe checks recorded for diagnostics that do NOT gate a launch: the conductor
-# spawns independent `codex exec` processes and never uses Codex subagents, so the CLI's
-# own `multi_agent` feature says nothing about launchability. Everything NOT listed here
-# gates, so a check added to `_probe_codex_backend` later fails closed by default rather
-# than silently becoming non-gating.
-CODEX_ADVISORY_ONLY_CHECKS = frozenset({"multi_agent_enabled"})
+CLAUDE_REQUIRED_LAUNCH_CHECKS = frozenset({
+    "claude_version_available", "claude_help_probe_available", "claude_prompt_stdin",
+    "sandbox_bwrap_available", "sandbox_bwrap_userns", "sandbox_bwrap_exec",
+})
+REQUIRED_LAUNCH_CHECKS_BY_BACKEND: dict[str, frozenset[str]] = {
+    "codex": CODEX_REQUIRED_LAUNCH_CHECKS,
+    "claude": CLAUDE_REQUIRED_LAUNCH_CHECKS,
+}
 
 # Every option `Conductor.leaf_command` puts on a codex warm-resume argv, checked against
 # `codex exec resume --help` by the `codex_exec_resume` probe. The `exec` and `exec resume`
@@ -8777,10 +8783,6 @@ def _preflight_launch_refusals(payload: dict[str, Any]) -> list[str]:
     (`_validate_preflight_payload`) refuses a document that claims launchability while it is
     not — so the two cannot disagree on any document."""
     reasons: list[str] = []
-    feature_states = payload.get("feature_states")
-    if not isinstance(feature_states, dict):
-        reasons.append("feature_states must be a mapping")
-        feature_states = {}
     checks = payload.get("checks")
     if not isinstance(checks, list):
         reasons.append("checks must be a list of capability probe results")
@@ -8793,23 +8795,16 @@ def _preflight_launch_refusals(payload: dict[str, Any]) -> list[str]:
             reasons.append(f"{flag} must be true")
     if payload.get("sandbox_enforced") is not True:
         reasons.append("sandbox_enforced must be true")
-    if str(payload.get("backend", "")).strip().lower() == "codex":
-        missing = sorted(
-            name for name in CODEX_REQUIRED_LAUNCH_CHECKS if check_values.get(name) is not True)
+    backend = str(payload.get("backend", "")).strip().lower()
+    required = REQUIRED_LAUNCH_CHECKS_BY_BACKEND.get(backend)
+    if required is None:
+        reasons.append(f"backend must be one of {sorted(REQUIRED_LAUNCH_CHECKS_BY_BACKEND)}")
+    else:
+        missing = sorted(name for name in required if check_values.get(name) is not True)
         if missing:
             reasons.append(
-                "codex launchable preflight is missing required capabilities: "
+                f"{backend} launchable preflight is missing required capabilities: "
                 + ", ".join(missing))
-    else:
-        # `multi_agent` is advisory ONLY for codex (see CODEX_ADVISORY_ONLY_CHECKS).
-        # Every other backend still launches its step/substep agents through the
-        # platform's own multi-agent capability, so a launchable document must keep
-        # asserting it — dropping the assertion here would silently relax the claude
-        # gate as well.
-        if feature_states.get("multi_agent") is not True:
-            reasons.append("feature_states.multi_agent must be true")
-        if check_values.get("multi_agent_enabled") is not True:
-            reasons.append("checks.multi_agent_enabled.pass must be true")
     # With a `providers` map (issue #28), the top-level verdict above describes `defaults`
     # only. A run whose config also names a provider that did NOT probe launchable would reach
     # that provider's first substep and fail there, phases in — so require every probed
@@ -9133,16 +9128,6 @@ def _launch_refs(orchestration_id: str, agent_run_id: str) -> tuple[str, str]:
 
 def _launch_dialog_refs(orchestration_id: str, agent_run_id: str) -> tuple[str, str]:
     prefix = f"workspace/orchestrations/{orchestration_id}/launches/{agent_run_id}"
-    return f"{prefix}.prompt.txt", f"{prefix}.reply.txt"
-
-
-def _child_launch_refs(orchestration_id: str, agent_run_id: str) -> tuple[str, str]:
-    prefix = f"workspace/orchestrations/{orchestration_id}/agents/{agent_run_id}/dialogs/child"
-    return f"{prefix}.request.json", f"{prefix}.response.json"
-
-
-def _child_dialog_refs(orchestration_id: str, agent_run_id: str) -> tuple[str, str]:
-    prefix = f"workspace/orchestrations/{orchestration_id}/agents/{agent_run_id}/dialogs/child"
     return f"{prefix}.prompt.txt", f"{prefix}.reply.txt"
 
 
@@ -12423,21 +12408,6 @@ def _validate_step_result_payload(
             )
 
 
-def parse_feature_list(raw: str) -> dict[str, bool]:
-    features: dict[str, bool] = {}
-    for line in raw.splitlines():
-        parts = line.strip().split()
-        if len(parts) < 3:
-            continue
-        enabled = parts[-1].lower()
-        if enabled not in {"true", "false"}:
-            continue
-        feature_name = parts[0].strip()
-        if feature_name:
-            features[feature_name] = enabled == "true"
-    return features
-
-
 def _probe_existing_directory_writable(path: Path) -> tuple[bool, str]:
     if not path.exists():
         return False, f"{path} does not exist"
@@ -13465,15 +13435,14 @@ def _probe_codex_backend(
     backend_token: str,
     command: str | Sequence[str],
     runner: Callable[..., subprocess.CompletedProcess[str]],
-) -> tuple[list[dict[str, Any]], dict[str, bool], bool, str]:
-    """Run the codex backend probe and return (checks, features, multi_agent_enabled, agent_version)."""
+) -> tuple[list[dict[str, Any]], str]:
+    """Run the codex backend probe and return (checks, agent_version)."""
     command_argv = (
         list(command) if not isinstance(command, str) else shlex.split(command)
     )
     if not command_argv:
         raise ValueError("codex command must be non-empty")
     version_proc = runner([*command_argv, "--version"], text=True, capture_output=True, check=False)
-    features_proc = runner([*command_argv, "features", "list"], text=True, capture_output=True, check=False)
     try:
         exec_help_proc = runner(
             [*command_argv, "exec", "--help"], text=True, capture_output=True, check=False
@@ -13490,13 +13459,6 @@ def _probe_codex_backend(
         resume_help_proc = subprocess.CompletedProcess(
             [*command_argv, "exec", "resume", "--help"], 1, "", str(exc)
         )
-    features: dict[str, bool] = {}
-    features_list_available = features_proc.returncode == 0
-    multi_agent_enabled = False
-    if features_proc.returncode == 0:
-        features = parse_feature_list(features_proc.stdout)
-        multi_agent_enabled = features.get("multi_agent") is True
-    features_list_detail = features_proc.stdout.strip() or features_proc.stderr.strip()
     exec_help_text = (exec_help_proc.stdout or "") + "\n" + (exec_help_proc.stderr or "")
     exec_help_detail = exec_help_text.strip() or f"exit={exec_help_proc.returncode}"
     resume_help_text = (resume_help_proc.stdout or "") + "\n" + (resume_help_proc.stderr or "")
@@ -13506,16 +13468,6 @@ def _probe_codex_backend(
             "name": f"{backend_token}_version_available",
             "pass": version_proc.returncode == 0,
             "detail": version_proc.stdout.strip() or version_proc.stderr.strip(),
-        },
-        {
-            "name": f"{backend_token}_features_list_available",
-            "pass": features_list_available,
-            "detail": features_list_detail,
-        },
-        {
-            "name": "multi_agent_enabled",
-            "pass": multi_agent_enabled,
-            "detail": f"multi_agent={features.get('multi_agent')}",
         },
         {
             "name": "codex_exec_json_streaming",
@@ -13570,7 +13522,7 @@ def _probe_codex_backend(
             "detail": f"exec: {exec_help_detail}\nexec resume: {resume_help_detail}",
         },
     ]
-    return checks, features, multi_agent_enabled, version_proc.stdout.strip()
+    return checks, version_proc.stdout.strip()
 
 
 def _pass_values_by_check_name(checks: list[dict[str, Any]]) -> dict[str, Any]:
@@ -13585,31 +13537,14 @@ def _pass_values_by_check_name(checks: list[dict[str, Any]]) -> dict[str, Any]:
     return by_name
 
 
-def _can_launch_from_help_fallback_checks(
-    backend_token: str, checks: list[dict[str, Any]]
-) -> bool:
-    """For claude. Even without `features list`, treat it as launchable if `--help` passes."""
-    passes = _pass_values_by_check_name(checks)
-    version_ok = passes.get(f"{backend_token}_version_available") is True
-    features_list_ok = passes.get(f"{backend_token}_features_list_available") is True
-    help_pass = passes.get(f"{backend_token}_help_probe_available")
-    multi_ok = passes.get("multi_agent_enabled") is True
-    # The leaf prompt reaches the CLI only over stdin, so a build that stopped accepting it
-    # there could not be launched at all. Gated, not advisory, for the same reason
-    # `codex_prompt_stdin` gates the codex side.
-    stdin_ok = passes.get(f"{backend_token}_prompt_stdin") is True
-    # When `pass` is None, --help was not run (multi_agent already determined by features list).
-    # In that case, delegate to `features_list_ok` and do not silently treat `None` as False-equivalent.
-    help_confirms_launch = help_pass is True
-    return version_ok and multi_ok and stdin_ok and (features_list_ok or help_confirms_launch)
-
-
 def _all_strict_boolean_probe_checks_pass(checks: list[dict[str, Any]]) -> bool:
-    """For codex etc. The `pass` key is required. A check with value None is excluded from evaluation as an unrun probe.
+    """The probe-time gate on both backends. The `pass` key is required, an explicit False
+    `pass` is a failure, at least one non-None `pass` must exist, and all of those must be True.
 
-    An explicit False `pass` is a failure. At least 1 non-None `pass` must exist,
-    and all of them must be True. Even if a check column from the help fallback is mistakenly passed,
-    do not silently fail on only `pass: None`.
+    A check with `pass: None` is excluded as an unrun probe, so "a check added to a prober
+    later gates by default" holds for a boolean `pass` only. No prober emits `None` since the
+    claude skipped features-list row went (issue #447); one that did would not gate here, and
+    would gate on the stored document only if its backend's required set names it.
     """
     evaluated_any = False
     for item in checks:
@@ -13636,21 +13571,12 @@ def _probe_claude_backend(
     backend_token: str,
     command: str | Sequence[str],
     runner: Callable[..., subprocess.CompletedProcess[str]],
-) -> tuple[list[dict[str, Any]], dict[str, bool], bool, str]:
-    """A probe specific to the claude backend.
+) -> tuple[list[dict[str, Any]], str]:
+    """A probe specific to the claude backend; returns (checks, agent_version).
 
-    `claude features list` is a subcommand that does not exist in the Claude Code CLI,
-    and running it makes claude return its chat response as-is to stdout (exit 0).
-    This response mixes into `features_list_available.detail` and contaminates preflight.json
-    (observed in orch_20260610T130256Z_ebe96a51).
-
-    Fix: on the claude backend, do not run `features list` and treat it as advisory,
-    and use the `--help` liveness probe for the best-effort detection of multi_agent.
-    Because Claude Code's child agent is launched not by a CLI subcommand but by the `Agent` tool,
-    no `agents` subcommand appears in the `--help` output (the old docstring's claim is wrong).
-    This probe requires (a) `--help` to exit 0 and (b) stdout to return help text,
-    preventing a false-pass of an empty-output binary impersonating `claude`. The authoritative gate of `multi_agent`
-    remains on the launch-time live preflight side of `record_launch`.
+    `claude features list` is not a CLI subcommand (claude answers it as a chat prompt), so it
+    is not run. The `--help` probe requires (a) exit 0 and (b) help text on stdout, so an
+    empty-output binary named `claude` does not pass.
     """
     # SPLIT, like the codex prober and like `Conductor._provider_command_base`: a configured
     # command may carry flags (`mywrap --flag`), and the leaf is launched with it split. Passing
@@ -13661,15 +13587,6 @@ def _probe_claude_backend(
         raise ValueError("claude command must be non-empty")
     version_proc = runner([*command_argv, "--version"], text=True, capture_output=True,
                           check=False)
-    # Skip `features list` for claude: the subcommand does not exist in Claude Code CLI
-    # and would result in a full chat session response being captured as the probe output,
-    # contaminating preflight.json with assistant text.  Mark as advisory (pass=None).
-    features_list_pass: bool | None = None
-    features_list_detail = (
-        "skipped for claude backend: 'claude features list' is not a structured CLI "
-        "subcommand; Claude Code responds with a chat reply which is not machine-parseable. "
-        "multi_agent detection uses --help probe instead."
-    )
 
     # The leaf prompt travels on stdin, not argv (a single argv element is capped at
     # 128 KiB and a node's prompt exceeds it), and the claude contract is the ABSENCE of a
@@ -13686,11 +13603,8 @@ def _probe_claude_backend(
     # P2-C: require BOTH exit 0 AND non-empty help stdout.  Exit-code alone is a
     # weak proxy — any binary named `claude` that exits 0 (even with no output)
     # would otherwise pass.  Requiring help text on stdout rules out broken or
-    # substitute binaries.  This is still a best-effort liveness signal; the
-    # authoritative multi_agent gate is the launch-time live preflight.
-    multi_agent_enabled = help_proc.returncode == 0 and bool(help_stdout)
-    features: dict[str, bool] = {"multi_agent": multi_agent_enabled}
-    help_probe_pass = multi_agent_enabled
+    # substitute binaries.
+    help_probe_pass = help_proc.returncode == 0 and bool(help_stdout)
     help_detail = help_stdout or help_proc.stderr.strip()
     help_probe_detail = help_detail if help_detail else "(no stdout/stderr from --help)"
 
@@ -13699,11 +13613,6 @@ def _probe_claude_backend(
             "name": f"{backend_token}_version_available",
             "pass": version_proc.returncode == 0,
             "detail": version_proc.stdout.strip() or version_proc.stderr.strip(),
-        },
-        {
-            "name": f"{backend_token}_features_list_available",
-            "pass": features_list_pass,
-            "detail": features_list_detail,
         },
         {
             "name": f"{backend_token}_help_probe_available",
@@ -13722,20 +13631,15 @@ def _probe_claude_backend(
                      and "through stdin" in stdin_probe_text),
             "detail": stdin_probe_text.strip() or f"exit={stdin_probe_proc.returncode}",
         },
-        {
-            "name": "multi_agent_enabled",
-            "pass": multi_agent_enabled,
-            "detail": f"multi_agent={features.get('multi_agent')}",
-        },
     ]
-    return checks, features, multi_agent_enabled, version_proc.stdout.strip()
+    return checks, version_proc.stdout.strip()
 
 
 _BACKEND_PROBERS: dict[
     str,
     Callable[
         [str, str, Callable[..., subprocess.CompletedProcess[str]]],
-        tuple[list[dict[str, Any]], dict[str, bool], bool, str],
+        tuple[list[dict[str, Any]], str],
     ],
 ] = {
     "codex": _probe_codex_backend,
@@ -13941,26 +13845,18 @@ def probe_execution_platform(
         break
 
     prober = _BACKEND_PROBERS[backend_token]
-    checks, features, multi_agent_enabled, agent_version = prober(backend_token, command, runner)
+    checks, agent_version = prober(backend_token, command, runner)
 
-    if backend_token == "claude":
-        # What a claude leaf needs of its host is now only that the CLI is there, answers
-        # `--version`, and can start: a pure leaf loads no settings layer (`--safe-mode`), is
-        # launched with no MCP configuration and no tools, and runs no hook. The three probes
-        # that stood here — the committed leaf configuration, the MCP registry, and the live
-        # tool-roster measurement of issue #71 — each measured a surface the agentic leaf had
-        # and this one does not (Z4, issue #171).
-        can_launch_agents = _can_launch_from_help_fallback_checks(backend_token, checks)
-    else:
-        # Codex's internal multi_agent feature is diagnostic only: the conductor
-        # launches independent CLI processes and does not use Codex subagents. Every
-        # OTHER probe check gates — an allowlist here would silently make a check
-        # added to `_probe_codex_backend` later non-gating, so the advisory set is
-        # named instead and anything new fails closed by default.
-        can_launch_agents = _all_strict_boolean_probe_checks_pass(
-            [item for item in checks
-             if not (isinstance(item, dict) and item.get("name") in CODEX_ADVISORY_ONLY_CHECKS)]
-        )
+    # Every probe check gates, on both backends — a check added to a prober later fails
+    # closed by default rather than silently becoming non-gating.
+    # What a claude leaf needs of its host is only that the CLI is there, answers
+    # `--version` and `--help`, and takes its prompt on stdin: a pure leaf loads no settings
+    # layer (`--safe-mode`), is launched with no MCP configuration and no tools, and runs no
+    # hook. The three probes that stood here — the committed leaf configuration, the MCP
+    # registry, and the live tool-roster measurement of issue #71 — each measured a surface
+    # the agentic leaf had and this one does not (Z4, issue #171).
+    can_launch_agents = _all_strict_boolean_probe_checks_pass(checks)
+    if backend_token == "codex":
         # The codex hooks FEATURE check, and the committed-hook-file check beside it, went
         # with the leaf's hook layer in Z4 (issue #171). A pure codex leaf is confined by the
         # read-only bwrap profile plus `--sandbox read-only` / `sandbox_mode="read-only"`;
@@ -13986,7 +13882,6 @@ def probe_execution_platform(
         "backend": backend_token,
         "probe_command": command,
         "agent_version": agent_version,
-        "feature_states": features,
         "checks": checks,
         "sandbox_runtime": "bwrap",
         "sandbox_enforced": sandbox_enforced,
@@ -14682,23 +14577,17 @@ def record_launch(
 
     request_ref, response_ref = _launch_refs(orchestration_id, child_agent_run_id)
     prompt_ref, reply_ref = _launch_dialog_refs(orchestration_id, child_agent_run_id)
-    child_request_ref, child_response_ref = _child_launch_refs(orchestration_id, child_agent_run_id)
-    child_prompt_ref, child_reply_ref = _child_dialog_refs(orchestration_id, child_agent_run_id)
+    # The `agents/<arid>/dialogs/child.{request,response,prompt,reply}` mirrors of the four
+    # `launches/` files, and the `child_launch_*_ref` fields naming them, went in issue #447
+    # (D3): nothing read them, and `child.reply.txt` was not even a mirror — `record_reply_text`
+    # rewrites only the `launches/` copy. `launches/` is the one launch record.
     request_payload.setdefault("launch_prompt_ref", prompt_ref)
-    request_payload.setdefault("child_launch_request_ref", child_request_ref)
-    request_payload.setdefault("child_launch_prompt_ref", child_prompt_ref)
     response_payload.setdefault("launch_reply_ref", reply_ref)
-    response_payload.setdefault("child_launch_response_ref", child_response_ref)
-    response_payload.setdefault("child_launch_reply_ref", child_reply_ref)
 
     request_path = launches_root / f"{child_agent_run_id}.request.json"
     response_path = launches_root / f"{child_agent_run_id}.response.json"
     prompt_path = launches_root / f"{child_agent_run_id}.prompt.txt"
     reply_path = launches_root / f"{child_agent_run_id}.reply.txt"
-    child_request_path = child_dialog_root / "child.request.json"
-    child_response_path = child_dialog_root / "child.response.json"
-    child_prompt_path = child_dialog_root / "child.prompt.txt"
-    child_reply_path = child_dialog_root / "child.reply.txt"
 
     graph_path = root / "agent_graph.json"
     graph = _load_graph(graph_path)
@@ -14718,10 +14607,6 @@ def record_launch(
         "launch_response_ref": response_ref,
         "launch_prompt_ref": prompt_ref,
         "launch_reply_ref": reply_ref,
-        "child_launch_request_ref": child_request_ref,
-        "child_launch_response_ref": child_response_ref,
-        "child_launch_prompt_ref": child_prompt_ref,
-        "child_launch_reply_ref": child_reply_ref,
         # The exact prompt text record-launch rendered and wrote to
         # launches/<child_arid>.prompt.txt. Returned so the orchestration agent
         # can pass it verbatim to the child leaf WITHOUT reading the template
@@ -15058,10 +14943,6 @@ def record_launch(
     _write_json(response_path, response_payload)
     _write_text(prompt_path, prompt_text)
     _write_text(reply_path, reply_text)
-    _write_json(child_request_path, request_payload)
-    _write_json(child_response_path, response_payload)
-    _write_text(child_prompt_path, prompt_text)
-    _write_text(child_reply_path, reply_text)
     if isinstance(nk, str) and nk.strip() and isinstance(st, str) and st.strip():
         step_tok = st.strip().lower()
         _transition_node_step_phase_state(

@@ -33,6 +33,7 @@ from typing import ClassVar
 import tools.llm_config as lc
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
+from tools.tests.orchestration_fixtures import claude_launch_checks
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.test_build_runtime import _load_module
 from tools.tests.test_orchestration_runtime import (
@@ -942,9 +943,8 @@ def _seed_launchable(repo_root: Path, orchestration_id: str) -> None:
             "status": "pass", "backend": "claude", "sandbox_runtime": "bwrap",
             "sandbox_enforced": True, "can_launch_step_agents": True,
             "can_launch_substep_agents": True,
-            "feature_states": {"multi_agent": True},
             "checks": [
-                {"name": "multi_agent_enabled", "pass": True},
+                *claude_launch_checks(),
                 {"name": "sandbox_bwrap_available", "pass": True},
                 {"name": "sandbox_bwrap_userns", "pass": True},
             ],

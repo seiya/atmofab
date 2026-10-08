@@ -7392,34 +7392,12 @@ def _validate_orchestration_hierarchy(
                         violations.append(
                             f"{preflight_path}:can_launch_substep_agents must be true"
                         )
-                    feature_states = preflight.get("feature_states")
-                    if not isinstance(feature_states, dict):
-                        violations.append(
-                            f"{preflight_path}:feature_states must be object"
-                        )
-                    elif feature_states.get("multi_agent") is not True:
-                        violations.append(
-                            f"{preflight_path}:feature_states.multi_agent must be true"
-                        )
-
-                    checks = preflight.get("checks")
-                    if not isinstance(checks, list):
+                    # The per-backend capability checks are not re-read here: `write_preflight`
+                    # refuses a document that claims launchability while any required check
+                    # is missing (`_preflight_launch_refusals`). The `multi_agent` requirement
+                    # that stood here went in issue #447 (D1).
+                    if not isinstance(preflight.get("checks"), list):
                         violations.append(f"{preflight_path}:checks must be list")
-                    else:
-                        multi_agent_check_pass = None
-                        for item in checks:
-                            if not isinstance(item, dict):
-                                continue
-                            if item.get("name") != "multi_agent_enabled":
-                                continue
-                            pass_value = item.get("pass")
-                            if isinstance(pass_value, bool):
-                                multi_agent_check_pass = pass_value
-                                break
-                        if multi_agent_check_pass is not True:
-                            violations.append(
-                                f"{preflight_path}:checks.multi_agent_enabled.pass must be true"
-                            )
 
         if meta_path.exists():
             try:
@@ -7963,28 +7941,9 @@ def _validate_orchestration_hierarchy(
                                         violations.append(
                                             f"{response_path}: launch_reply must not be generic launched-only text"
                                         )
-
-                                    child_response_path = (
-                                        workspace_path.parent
-                                        / expected_agent_prefix
-                                        / "child.response.json"
-                                    )
-                                    if not child_response_path.exists():
-                                        violations.append(
-                                            f"{child_response_path}: missing"
-                                        )
-                                    else:
-                                        try:
-                                            child_response_payload = _read_json(child_response_path)
-                                        except json.JSONDecodeError:
-                                            violations.append(
-                                                f"{child_response_path}: launch response must be valid json object"
-                                            )
-                                        else:
-                                            if child_response_payload != response_payload:
-                                                violations.append(
-                                                    f"{child_response_path}: must equal launches response payload"
-                                                )
+                                    # The `agents/<arid>/dialogs/child.response.json`
+                                    # mirror this block required to equal the response went
+                                    # in issue #447 (D3): the launches response IS the record.
 
                     context_id = item.get("context_id")
                     if isinstance(context_id, str) and _is_sequential_agent_token(context_id):

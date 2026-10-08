@@ -17,13 +17,13 @@ Out of scope, each with its owner named rather than restated here:
 - Running a trial, and recovering from a failure — `docs/RUNBOOK.md`.
 
 ## Fresh-machine setup
-A fresh clone needs the host tools and the operator's own CLI state. Every file that decides what a leaf loads FROM THIS REPOSITORY is committed; what is left in a home directory is the backend CLI's own state, and it is not nothing. Two members of it reach past holding credentials. The Codex CLI's `hooks` feature flag is what `docs/RUNBOOK.md` §0-3 gates on, so a machine without it cannot start a run. The leaf-`LLM` configuration is untracked by design, and it is authoritative for a leaf's model **when it declares one**; when it does not, the CLI's own default decides — and for a `pure` claude leaf, which is launched with no private configuration directory, that default can come from the operator's own settings.
+A fresh clone needs the host tools and the operator's own CLI state. Every file that decides what a leaf loads FROM THIS REPOSITORY is committed; what is left in a home directory is the backend CLI's own state, and it is not nothing. One member of it reaches past holding credentials. The leaf-`LLM` configuration is untracked by design, and it is authoritative for a leaf's model **when it declares one**; when it does not, the CLI's own default decides — and for a `pure` claude leaf, which is launched with no private configuration directory, that default can come from the operator's own settings.
 
 | step | requirement | canonical source |
 |---|---|---|
 | 1 | Host CLI tools, Python packages, and the target `spec`'s toolchain and `static lint` tool | `docs/RUNBOOK.md` §0-1 |
 | 2 | Claude backend: what the preflight probes of the Claude CLI check | `docs/RUNBOOK.md` §0-2 |
-| 3 | Codex backend: the CLI feature flag, the credential, the writable state home | `docs/RUNBOOK.md` §0-3 |
+| 3 | Codex backend: the CLI capabilities the probe checks, the credential, the writable state home | `docs/RUNBOOK.md` §0-3 |
 | 4 | The leaf-`LLM` configuration file, created by copying a sample | `docs/RUNBOOK.md` §1-3, `README.md` §"Running a workflow" |
 | 5 | The sandbox runtime | `docs/BWRAP_ENABLEMENT.md` |
 | 6 | **To run the TEST SUITE** — every `static lint` tool, not only the one this tree's nodes select | this section, below |

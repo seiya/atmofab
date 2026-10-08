@@ -140,6 +140,8 @@ _SPEC_PATH_BY_NODE_KEY = {
 _NON_BUILDER_KEYS = {
     "launch_prompt_full",
     "launch_prompt_ref",
+    # record-launch stopped adding these with the `dialogs/child.*` mirrors (issue #447, D3);
+    # the captured requests predate that and still carry them.
     "child_launch_request_ref",
     "child_launch_prompt_ref",
     "sandbox_profile_ref",
@@ -9906,7 +9908,10 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertNotEqual(proc.returncode, 0)
         self.assertIn("codex thread registration failed", proc.stderr)
 
-    def test_codex_thread_registration_updates_both_response_mirrors(self) -> None:
+    def test_codex_thread_registration_updates_the_response_and_the_index(self) -> None:
+        """The launch response and the session index are the transaction's two targets. The
+        `dialogs/child.response.json` mirror was a third until issue #447 (D3); a past
+        orchestration that still has one keeps it untouched."""
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             orchestration_dir = repo / "workspace" / "orchestrations" / "o"
@@ -9924,8 +9929,8 @@ class LeafSpawnTest(unittest.TestCase):
                 json.dumps(request), encoding="utf-8")
             (launch_dir / "A.response.json").write_text(
                 json.dumps(provisional_response), encoding="utf-8")
-            (dialogs_dir / "child.response.json").write_text(
-                json.dumps(provisional_response), encoding="utf-8")
+            past_mirror = dialogs_dir / "child.response.json"
+            past_mirror.write_text(json.dumps(provisional_response), encoding="utf-8")
 
             c = self._c(
                 repo_root=repo, orchestration_id="o", backend="codex",
@@ -9934,11 +9939,10 @@ class LeafSpawnTest(unittest.TestCase):
 
             launch_response = json.loads(
                 (launch_dir / "A.response.json").read_text(encoding="utf-8"))
-            child_response = json.loads(
-                (dialogs_dir / "child.response.json").read_text(encoding="utf-8"))
             session_index = json.loads(
                 (orchestration_dir / "session_run_index.json").read_text(encoding="utf-8"))
-            self.assertEqual(child_response, launch_response)
+            self.assertEqual(json.loads(past_mirror.read_text(encoding="utf-8")),
+                             provisional_response)
             self.assertEqual(launch_response["agent_session_id"], "thread-1")
             self.assertEqual(launch_response["session_id"], "thread-1")
             self.assertEqual(session_index["entries"][0]["agent_session_id"], "thread-1")
@@ -9981,8 +9985,6 @@ class LeafSpawnTest(unittest.TestCase):
                     json.dumps(request), encoding="utf-8")
                 (launch_dir / "A.response.json").write_text(
                     json.dumps(provisional_response), encoding="utf-8")
-                (dialogs_dir / "child.response.json").write_text(
-                    json.dumps(provisional_response), encoding="utf-8")
                 c = self._c(
                     repo_root=repo, orchestration_id="o", backend="codex",
                     agent_model="gpt-5.6-sol")
@@ -10013,8 +10015,6 @@ class LeafSpawnTest(unittest.TestCase):
                     launch_dir / f"{arid}.request.json", request)
                 wc_runtime._write_json(
                     launch_dir / f"{arid}.response.json", response)
-                wc_runtime._write_json(
-                    dialogs_dir / "child.response.json", response)
 
             barrier = threading.Barrier(2)
             errors: list[BaseException] = []
@@ -10055,9 +10055,7 @@ class LeafSpawnTest(unittest.TestCase):
             repo = Path(tmp)
             orchestration_dir = repo / "workspace" / "orchestrations" / "o"
             launch_dir = orchestration_dir / "launches"
-            dialogs_dir = orchestration_dir / "agents" / "A" / "dialogs"
             launch_dir.mkdir(parents=True)
-            dialogs_dir.mkdir(parents=True)
             request = {"agent_role": "substep", "context_id": "ctx"}
             provisional_response = {
                 "agent_session_id": "A",
@@ -10067,45 +10065,39 @@ class LeafSpawnTest(unittest.TestCase):
             wc_runtime._write_json(launch_dir / "A.request.json", request)
             wc_runtime._write_json(
                 launch_dir / "A.response.json", provisional_response)
-            wc_runtime._write_json(
-                dialogs_dir / "child.response.json", provisional_response)
 
             c = self._c(
                 repo_root=repo, orchestration_id="o", backend="codex",
                 agent_model="gpt-5.6-sol")
-            child_response_path = dialogs_dir / "child.response.json"
+            index_path = orchestration_dir / "session_run_index.json"
             real_replace = wc_runtime.os.replace
             failed = False
 
             def _fail_second_commit(src, dst):  # type: ignore[no-untyped-def]
                 nonlocal failed
-                if Path(dst) == child_response_path and not failed:
+                if Path(dst) == index_path and not failed:
                     failed = True
-                    raise OSError(5, "injected second mirror failure")
+                    raise OSError(5, "injected second target failure")
                 return real_replace(src, dst)
 
             with mock.patch.object(
                 wc_runtime.os, "replace", side_effect=_fail_second_commit
             ):
-                with self.assertRaisesRegex(OSError, "injected second mirror failure"):
+                with self.assertRaisesRegex(OSError, "injected second target failure"):
                     c._register_codex_thread("A", "thread-1")
 
+            self.assertTrue(failed)
             launch_response = json.loads(
                 (launch_dir / "A.response.json").read_text(encoding="utf-8"))
-            child_response = json.loads(
-                child_response_path.read_text(encoding="utf-8"))
             self.assertEqual(launch_response, provisional_response)
-            self.assertEqual(child_response, provisional_response)
-            self.assertFalse((orchestration_dir / "session_run_index.json").exists())
+            self.assertFalse(index_path.exists())
 
     def test_codex_thread_registration_recovers_pending_rollback_on_restart(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             orchestration_dir = repo / "workspace" / "orchestrations" / "o"
             launch_dir = orchestration_dir / "launches"
-            dialogs_dir = orchestration_dir / "agents" / "A" / "dialogs"
             launch_dir.mkdir(parents=True)
-            dialogs_dir.mkdir(parents=True)
             request = {"agent_role": "substep", "context_id": "ctx"}
             provisional_response = {
                 "agent_session_id": "A",
@@ -10113,10 +10105,9 @@ class LeafSpawnTest(unittest.TestCase):
                 "backend": "codex",
             }
             response_path = launch_dir / "A.response.json"
-            child_response_path = dialogs_dir / "child.response.json"
+            index_path = orchestration_dir / "session_run_index.json"
             wc_runtime._write_json(launch_dir / "A.request.json", request)
             wc_runtime._write_json(response_path, provisional_response)
-            wc_runtime._write_json(child_response_path, provisional_response)
 
             c = self._c(
                 repo_root=repo, orchestration_id="o", backend="codex",
@@ -10127,9 +10118,9 @@ class LeafSpawnTest(unittest.TestCase):
 
             def _fail_commit_and_rollback(src, dst):  # type: ignore[no-untyped-def]
                 nonlocal failed_commit, failed_rollback
-                if Path(dst) == child_response_path and not failed_commit:
+                if Path(dst) == index_path and not failed_commit:
                     failed_commit = True
-                    raise OSError(5, "injected child commit failure")
+                    raise OSError(5, "injected index commit failure")
                 if (
                     Path(dst) == response_path
                     and failed_commit
@@ -10151,10 +10142,7 @@ class LeafSpawnTest(unittest.TestCase):
                 json.loads(response_path.read_text(encoding="utf-8"))["session_id"],
                 "thread-1",
             )
-            self.assertEqual(
-                json.loads(child_response_path.read_text(encoding="utf-8"))["session_id"],
-                "A",
-            )
+            self.assertFalse(index_path.exists())
             self.assertEqual(
                 len(list(orchestration_dir.glob(
                     ".json_transactions/*/journal.json"
@@ -10173,13 +10161,64 @@ class LeafSpawnTest(unittest.TestCase):
                 json.loads(response_path.read_text(encoding="utf-8")),
                 provisional_response,
             )
-            self.assertEqual(
-                json.loads(child_response_path.read_text(encoding="utf-8")),
-                provisional_response,
-            )
+            self.assertFalse(index_path.exists())
             self.assertFalse(
                 list(orchestration_dir.glob(".json_transactions/*/journal.json"))
             )
+
+    def test_codex_thread_recovery_refuses_a_three_target_journal(self) -> None:
+        """A journal written before issue #447 (D3) named three targets (the response, the
+        `dialogs/child.response.json` mirror, the index). Replaying it onto today's two would
+        restore the wrong backup to the wrong file, so recovery refuses it by name."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orchestration_dir = repo / "workspace" / "orchestrations" / "o"
+            tx_dir = (orchestration_dir / ".json_transactions"
+                      / "0123456789abcdef0123456789abcdef")
+            tx_dir.mkdir(parents=True)
+            (orchestration_dir / "launches").mkdir()
+            (tx_dir / "journal.json").write_text(json.dumps({
+                "version": 1, "kind": "codex_thread_registration", "agent_run_id": "A",
+                "old_exists": [False, False, False], "old_sha256": [None, None, None],
+            }), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "invalid json transaction metadata"):
+                wc_runtime._recover_json_transactions(orchestration_dir)
+            # Control: the same journal with two entries recovers.
+            (tx_dir / "journal.json").write_text(json.dumps({
+                "version": 1, "kind": "codex_thread_registration", "agent_run_id": "A",
+                "old_exists": [False, False], "old_sha256": [None, None],
+            }), encoding="utf-8")
+            wc_runtime._recover_json_transactions(orchestration_dir)
+            self.assertFalse(tx_dir.exists())
+
+    def test_codex_thread_recovery_restores_every_target_from_its_backup(self) -> None:
+        """A crash after BOTH renames leaves a journal whose backups are the only copy of the
+        prior launch response and session index; recovery puts each back, the index (target 1)
+        as well as the response (target 0)."""
+        import hashlib
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orchestration_dir = repo / "workspace" / "orchestrations" / "o"
+            (orchestration_dir / "launches").mkdir(parents=True)
+            response_path, index_path = wc_runtime._codex_registration_transaction_targets(
+                orchestration_dir, "A")
+            old_bodies = [b'{"session_id": "A"}\n', b'{"entries": []}\n']
+            response_path.write_bytes(b'{"session_id": "thread-1"}\n')
+            index_path.write_bytes(b'{"entries": [{"agent_run_id": "A"}]}\n')
+            tx_dir = (orchestration_dir / ".json_transactions"
+                      / "0123456789abcdef0123456789abcdef")
+            tx_dir.mkdir(parents=True)
+            for idx, body in enumerate(old_bodies):
+                (tx_dir / f"{idx}.old").write_bytes(body)
+            (tx_dir / "journal.json").write_text(json.dumps({
+                "version": 1, "kind": "codex_thread_registration", "agent_run_id": "A",
+                "old_exists": [True, True],
+                "old_sha256": [hashlib.sha256(b).hexdigest() for b in old_bodies],
+            }), encoding="utf-8")
+            wc_runtime._recover_json_transactions(orchestration_dir)
+            self.assertEqual(response_path.read_bytes(), old_bodies[0])
+            self.assertEqual(index_path.read_bytes(), old_bodies[1])
+            self.assertFalse(tx_dir.exists())
 
     def test_codex_thread_recovery_removes_prejournal_staging(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -23484,14 +23523,6 @@ class LeafUsageRecordingTests(unittest.TestCase):
         c = self._conductor(
             wc.ProcResult(0, "done", "", usage={"input_tokens": 10, "output_tokens": 20}),
             backend="codex")
-        # The subject here is usage NORMALIZATION, and reaching it means getting past the codex
-        # hooks-feature certification, which shells out to `codex features list`. On a machine
-        # with no `codex` on PATH that fails closed — so before this patch the row passed only
-        # because the developer happened to have the CLI installed, which CI measured on its
-        # first runs (`codex features list failed: [Errno 2] No such file or directory: 'codex'`).
-        # Patched to CERTIFIED rather than opted out with
-        # `ATMOFAB_REQUIRE_CODEX_HOOKS_FEATURE=0`, because the opt-out is a different behaviour
-        # (recorded, not fail-closed) and this row should traverse the path a real launch takes.
         c.run_substep(self._refs(), "compile", "verify")
         usage = self._row(c)["usage"]
         self.assertEqual(usage["total_tokens"], 30)
