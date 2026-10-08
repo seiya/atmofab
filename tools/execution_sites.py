@@ -43,7 +43,6 @@ from typing import Any
 
 import yaml
 
-from tools import build_runtime
 from tools.backends import registry
 from tools.derivation import canonical_json_bytes, sha256_hex
 from tools.host_execution import LOCAL_SITE, declares_launcher
@@ -140,7 +139,14 @@ _NoDuplicateKeyLoader.add_constructor(
 
 def _shell_active_chars() -> frozenset[str]:
     """The build-runtime library's set of characters a shell acts on, read from the library so
-    the two refusals cannot drift."""
+    the two refusals cannot drift.
+
+    Imported here rather than at module level: `tools/run_workflow.py` imports this module at
+    startup, before it redirects `sys.pycache_prefix`, and the library composes its backend
+    tables at import — a module-level import made every startup pay for them and compiled their
+    bytecode into the source tree (found in review of issue #444)."""
+    from tools import build_runtime
+
     return frozenset(build_runtime._SHELL_ACTIVE_CHARS)
 
 
