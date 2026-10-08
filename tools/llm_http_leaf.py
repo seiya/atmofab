@@ -663,7 +663,7 @@ def _anthropic_request(
     url = entry.base_url.rstrip("/") + "/v1/messages"
     payload: dict[str, Any] = {
         "model": entry.model,
-        # The system channel is the same fixed prompt the CLI pure leaf gets via
+        # The system channel is the same fixed prompt the claude CLI pure leaf gets via
         # `--system-prompt`. On this transport the model's total input is a function of the
         # host-assembled body alone (A2); on the CLI transport it is not — the CLI adds its own
         # text (`docs/ORCHESTRATION.md` §pure-function leaf; issue #454).

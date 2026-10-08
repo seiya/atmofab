@@ -158,10 +158,11 @@ def pure_leaf_flags() -> list[str]:
                             plugins, MCP servers, custom commands/agents, and crucially the
                             configured HOOKS (the `UserPromptSubmit`
                             hook would otherwise fire on the `-p` prompt and inject context
-                            or run side effects). This is what makes the context CLOSED (A2):
-                            without it, `claude -p` loads `CLAUDE.md` and runs the configured
-                            hooks, so the "pure function" would still receive ambient
-                            instructions. It disables customizations, not settings (that
+                            or run side effects). This closes the customization half of
+                            the context (A2): without it, `claude -p` loads `CLAUDE.md` and
+                            runs the configured hooks. The text the CLI itself adds is not a
+                            customization and stays (`docs/ORCHESTRATION.md` §pure-function
+                            leaf, "What the model receives, per transport"). It disables customizations, not settings (that
                             is `--restricted`'s half). Auth works normally — so subscription
                             billing is preserved
                             (this is why `--safe-mode`, not `--bare`, which forces API-key auth

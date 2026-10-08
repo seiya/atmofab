@@ -52,8 +52,9 @@ class PureLeafFlagsTest(unittest.TestCase):
 
     def test_context_closing_flags_present(self):
         # --safe-mode disables CLAUDE.md + the repo's UserPromptSubmit hook; --system-prompt
-        # replaces the default system prompt (dropping its per-machine dynamic sections).
-        # A regression that drops either re-opens ambient / host-varying input.
+        # replaces the default system prompt (taking its per-machine dynamic sections out of
+        # the system prompt; the CLI still adds an environment block of its own, issue #454).
+        # A regression that drops either re-opens ambient input.
         # --restricted keeps the operator's settings files out (issue #453): dropping it
         # hands an unpinned leaf's model and endpoint back to `~/.claude/settings.json`.
         flags = pl.pure_leaf_flags()
