@@ -16499,8 +16499,8 @@ class RecordTimeoutTests(unittest.TestCase):
             )
 
     def test_record_timeout_force_reason_bypasses_marker_for_wedged_child(self) -> None:
-        """Adv-26: when a child wedges before parent observes any return,
-        deactivate-child is never reached and the normal flow deadlocks. The
+        """Adv-26: with the active-child markers still present (deactivate-child not
+        run, or refused because the Claude pointer names another child), the
         --force-reason escape clears the markers and finalizes the run, with
         forced=True + forced_reason recorded in the payload for audit."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -16556,6 +16556,28 @@ class RecordTimeoutTests(unittest.TestCase):
                 agent_run_id=arid,
                 reason="legitimate timeout after deactivate",
             )
+            self.assertEqual(result.get("status"), "timeout")
+
+    def test_finalize_after_a_manual_deactivate_names_the_remedy_that_converges(self) -> None:
+        """An operator who ran `deactivate-child` by hand (RUNBOOK substep-timeout recovery,
+        step 1) and then reaches for `finalize-child` is refused: the marker is gone. The
+        refusal must name that state and the remedy, and the remedy must work as printed."""
+        from tools.orchestration_runtime import deactivate_child_agent, finalize_child
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            arid = self._setup_substep_launch(repo_root)
+            deactivate_child_agent(repo_root=repo_root, orchestration_id="orch_to_001",
+                                   child_run_id=arid)
+            with self.assertRaises(ValueError) as cm:
+                finalize_child(
+                    repo_root=repo_root, orchestration_id="orch_to_001", agent_run_id=arid,
+                    reply_text="status: fail\noutput_refs:\n- (none)\nrationale: t",
+                    agent_run_payload={"agent_run_id": arid, "status": "fail"})
+            message = str(cm.exception)
+            self.assertIn("deactivate-child", message)
+            self.assertIn(f"record-timeout --agent-run-id {arid}", message)
+            result = record_timeout(repo_root=repo_root, orchestration_id="orch_to_001",
+                                    agent_run_id=arid, reason="released by hand")
             self.assertEqual(result.get("status"), "timeout")
 
     def test_record_timeout_cli_dispatch(self) -> None:

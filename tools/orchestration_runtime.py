@@ -15750,7 +15750,10 @@ def finalize_child(
     if not _active_child_marker_path(repo_root, orchestration_id, arid).is_file():
         raise ValueError(
             f"finalize-child: no active_children/{arid}.txt marker — the run was never "
-            f"launched or is already finalized. Nothing was written."
+            f"launched, is already finalized, or was released by a manual "
+            f"`deactivate-child`. Nothing was written. A run released by hand and not yet "
+            f"finalized is terminalized with `record-timeout --agent-run-id {arid} "
+            f"--reason <text>`."
         )
     deactivation = deactivate_child_agent(
         repo_root,
