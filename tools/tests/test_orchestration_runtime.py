@@ -1478,6 +1478,29 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         self.assertFalse(result["can_launch_step_agents"])
         self.assertFalse(result["can_launch_substep_agents"])
 
+    def test_an_unwritable_codex_home_blocks_the_codex_launch(self) -> None:
+        """`codex_home_writable` is appended after the prober runs, so it reaches the probe-time
+        gate through its own conjunct rather than through `_all_strict_boolean_probe_checks_pass`
+        over the prober's checks. Control: the same probe with a writable home launches."""
+        from tools import orchestration_runtime as ort
+
+        def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            if cmd[-1] == "--version":
+                return _FakeCompletedProcess(0, stdout="codex 1.0.0")
+            if cmd[-2:] == ["exec", "--help"]:
+                return _FakeCompletedProcess(0, stdout=_CODEX_EXEC_HELP)
+            if cmd[-3:] == ["exec", "resume", "--help"]:
+                return _FakeCompletedProcess(0, stdout=_CODEX_EXEC_RESUME_HELP)
+            raise AssertionError(cmd)
+
+        for writable in (True, False):
+            with self.subTest(writable=writable), mock.patch.object(
+                    ort, "_probe_codex_home_writable",
+                    return_value={"name": "codex_home_writable", "pass": writable}):
+                result = ort.probe_execution_platform(
+                    backend="codex", agent_command="codex", runner=runner)
+            self.assertIs(result["can_launch_step_agents"], writable, result["checks"])
+
     def test_all_strict_boolean_probe_checks_pass_skips_none_pass(self) -> None:
         """A check with `pass: None` is treated as unrun, and it passes if all others are True."""
         from tools.orchestration_runtime import _all_strict_boolean_probe_checks_pass

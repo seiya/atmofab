@@ -10191,6 +10191,35 @@ class LeafSpawnTest(unittest.TestCase):
             wc_runtime._recover_json_transactions(orchestration_dir)
             self.assertFalse(tx_dir.exists())
 
+    def test_codex_thread_recovery_restores_every_target_from_its_backup(self) -> None:
+        """A crash after BOTH renames leaves a journal whose backups are the only copy of the
+        prior launch response and session index; recovery puts each back, the index (target 1)
+        as well as the response (target 0)."""
+        import hashlib
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            orchestration_dir = repo / "workspace" / "orchestrations" / "o"
+            (orchestration_dir / "launches").mkdir(parents=True)
+            response_path, index_path = wc_runtime._codex_registration_transaction_targets(
+                orchestration_dir, "A")
+            old_bodies = [b'{"session_id": "A"}\n', b'{"entries": []}\n']
+            response_path.write_bytes(b'{"session_id": "thread-1"}\n')
+            index_path.write_bytes(b'{"entries": [{"agent_run_id": "A"}]}\n')
+            tx_dir = (orchestration_dir / ".json_transactions"
+                      / "0123456789abcdef0123456789abcdef")
+            tx_dir.mkdir(parents=True)
+            for idx, body in enumerate(old_bodies):
+                (tx_dir / f"{idx}.old").write_bytes(body)
+            (tx_dir / "journal.json").write_text(json.dumps({
+                "version": 1, "kind": "codex_thread_registration", "agent_run_id": "A",
+                "old_exists": [True, True],
+                "old_sha256": [hashlib.sha256(b).hexdigest() for b in old_bodies],
+            }), encoding="utf-8")
+            wc_runtime._recover_json_transactions(orchestration_dir)
+            self.assertEqual(response_path.read_bytes(), old_bodies[0])
+            self.assertEqual(index_path.read_bytes(), old_bodies[1])
+            self.assertFalse(tx_dir.exists())
+
     def test_codex_thread_recovery_removes_prejournal_staging(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
