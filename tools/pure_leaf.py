@@ -621,9 +621,9 @@ def judge_repair_text(review: Any) -> str | None:
     `verify_repair_text`'s twin for the judge (issue #455): `_read_repair_findings` reads it at
     the conduct reopen point, so a revocation the diagnostician's directive causes carries the
     judge's findings as `last_fail_reason` and the re-derived producer gets them as
-    `repair_findings`. One line per finding in the review's order,
+    `repair_findings`. One entry per finding in the review's order, each on a new line,
     `[<attribution>/<confidence>] <description> (evidence: <ref>, <ref>)`, the description
-    stripped and nothing capped or deduplicated. The input is a file read back from disk, so
+    stripped (a newline inside it is kept) and nothing capped or deduplicated. The input is a file read back from disk, so
     anything that is not a `fail` review with at least one object finding gives `None` (the
     repair then falls back to the full prompt) rather than raising."""
     if not isinstance(review, dict) or review.get("decision") != "fail":
