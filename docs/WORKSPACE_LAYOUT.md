@@ -227,7 +227,7 @@ than a redirect, and `output_manifest_write_guard` as what refused the alternati
 and PR-2 of the same issue deleted the output manifest that declared the root along with the
 `run-gate` subcommand that left a result copy in it. A `pure-function leaf` writes no file at
 all, temporary or otherwise: it returns one JSON document the host writes from, and it runs
-under a read-only sandbox in which this root is not bound writable.
+under a sandbox that binds this root writable (one of its two scratch roots) but gives it no write tool there (a claude leaf has no tools; a codex leaf runs under `--sandbox read-only`).
 
 What uses the root is the CONDUCTOR's own deterministic substeps, in its own process: the
 out-of-source build directory `Build` writes objects to, and the run and quality-check output

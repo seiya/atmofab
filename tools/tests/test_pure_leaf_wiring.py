@@ -3210,7 +3210,7 @@ class PureRecordLaunchTests(unittest.TestCase):
                 self.assertEqual(profile.get("write_roots"), [])
                 # NO claude private home, and that is the pure branch's own rule rather than
                 # an omission: a pure claude leaf takes `--safe-mode` (no customizations, no
-                # tools, no hooks), so there is nothing left for a private home to keep out.
+                # tools, no hooks). The operator's settings still reach it (issue #453).
                 # This is a real posture CHANGE for this leaf — it was the one claude leaf that
                 # re-derived a private home for itself — and what it changes to is what every
                 # other pure leaf already has.

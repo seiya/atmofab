@@ -194,7 +194,7 @@ When launching a retry to `Compile`, the `orchestration agent` must satisfy the 
 - The re-submitted `Compile` **makes explicit the section of `spec.ir.yaml` to be fixed as the `restart` scope**, and records `validate_feedback:<finding_id>` in `ir_meta.json.last_fail_reason` (or, for a pure judge's finding, which carries no `finding_id`, `validate_feedback:` with the finding's description text).
 
 ### Handling of Spec retry
-A retry to `Spec` is not automated in the core workflow (because `controlled_spec.md` needs to be updated by hand). On `attribution=spec` the conductor stops with `fail_closed`; the finding itself stays in `semantic_review.json`, and on the `dev` path `tools/run_workflow.py` writes `failure_analysis.json`.
+A retry to `Spec` is not automated in the core workflow (because `controlled_spec.md` needs to be updated by hand). On a `physics_fail` with `attribution=spec` the conductor stops with `fail_closed` (any other class with `attribution=spec` is unrouted and escalates — `VALIDATE_JUDGE_ROUTING`); the finding itself stays in `semantic_review.json`, and on the `dev` path `tools/run_workflow.py` writes `failure_analysis.json`.
 
 ## Design trade-offs
 - The reason for placing `execute` and `judge` as substeps of the same phase: "execution → pass/fail judgment" is essentially a single integrated task, and splitting them into separate phases would make the `judge` input always depend on the latest `execute` result, weakening the meaning of the phase boundary. Integrating into Validate simplifies the judgment path and makes the judgment artifacts self-contained under `run_id`.

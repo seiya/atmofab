@@ -1944,7 +1944,7 @@ def build_launch_request(
 # `--safe-mode` disables customizations, not settings, and the leaf's `HOME` is the
 # operator's (`LEAF_ENV_ALLOWLIST`), so the operator's `~/.claude` settings decide it where
 # they name a model, and the CLI's own default only where they do not (measured on CLI
-# 2.1.294, issue #446; `orchestration_runtime.default_agent_model_for_backend` is the one statement of the order). 128,000 is the ceiling of the Opus 4.8 /
+# 2.1.294, issues #446 and #453; `orchestration_runtime.default_agent_model_for_backend` is the one statement of it). 128,000 is the ceiling of the Opus 4.8 /
 # Sonnet 5 tier; a model whose output limit is lower (Haiku 4.5 caps at 64,000) rejects this
 # value, and rejects it on EVERY launch: `API Error: 400 {"type":"invalid_request_error",
 # "message":"max_tokens: 128000 > 64000 ..."}`. That failure is deliberately classified
@@ -3878,9 +3878,8 @@ class Conductor:
         been expired/GC'd by Claude Code).
 
         THE HOME THIS LAUNCH WILL USE, and only that one. `--resume` is served from the
-        launching process's `CLAUDE_CONFIG_DIR`, and a pure leaf sets none: `--safe-mode`
-        disables the customizations a private home once existed to keep out, so
-        `record_launch` prepares no private home for it, and its `--session-id` transcript is written to — and served from — the operator's
+        launching process's `CLAUDE_CONFIG_DIR`, and a pure leaf sets none: `record_launch`
+        prepares no private home for it (issue #453 asks whether it should), and its `--session-id` transcript is written to — and served from — the operator's
         `~/.claude/projects`. MEASURED: the real `pure_leaf_flags()` set plus `--session-id`
         does write `<config-home>/projects/<slug>/<sid>.jsonl`.
 
@@ -4052,7 +4051,7 @@ class Conductor:
             # the repo's long-standing rule (see LEAF_MAX_OUTPUT_TOKENS) and it is what keeps
             # every pre-issue-#28 launch byte-identical. The unpinned case is decided by the
             # operator's `~/.claude` settings where they name a model, and by the CLI's own
-            # default otherwise (`default_agent_model_for_backend` states the order).
+            # default otherwise (`default_agent_model_for_backend` states what was measured).
             if entry.model_declared and entry.model.strip():
                 flags += ["--model", entry.model.strip()]
             # Reasoning effort has no "unpinned alias" story the way the model does — there is

@@ -14976,7 +14976,7 @@ class RecordTimeoutTests(unittest.TestCase):
 
     def test_record_launch_prepares_no_claude_home_for_any_launch(self) -> None:
         """Z4 (issue #171): the private CLAUDE_CONFIG_DIR existed for the AGENTIC leaf, to
-        keep the operator's customizations out. With that leaf retired, NO launch prepares one
+        keep the operator's configuration out. With that leaf retired, NO launch prepares one
         — not the pure leaf (`--safe-mode`, no tools, no hooks) and not the deterministic
         in-process substep, which spawns no process at all.
 

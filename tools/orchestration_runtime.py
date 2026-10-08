@@ -4950,8 +4950,8 @@ def _clear_stale_active_child_markers(
     """Clear a stale active_child window left by a host that died mid-launch.
 
     When the host process exits while a child launch is in flight (interrupted /
-    hung child, or a token-limit kill), no live orchestration agent runs
-    deactivate-child / record-timeout, so `active_child_agent_run_id.txt` and the
+    hung child, or a token-limit kill), no live host is left to finalize the child, and
+    nobody has yet run deactivate-child / record-timeout by hand, so `active_child_agent_run_id.txt` and the
     `active_children/<arid>.txt` markers persist. The Claude-backend sequential
     check in `record_launch` then rejects the next launch, permanently wedging the
     documented recovery (`launch_incomplete_active_child` / `llm_launch_interrupted`).
@@ -7293,8 +7293,9 @@ def _allowed_output_paths_for_launch(
 # Integrity-protected audit logs written exclusively by the build-runtime library as evidence
 # of tool execution. `validate_pipeline_semantics.py` reads these files and
 # trusts their JSONL records (e.g. `tool_name`, `ok`, `command`) as the source
-# of truth that a build-runtime entry point actually ran. No leaf holds a write tool, so the
-# library is their only writer; canonical placements are computed by
+# of truth that a build-runtime entry point actually ran. Their canonical placements lie
+# outside every read-write bind of a leaf's sandbox profile, so the library is their only
+# writer; the placements are computed by
 # `_canonical_command_log_paths()` so the validators trust only those.
 #
 # Protection is scoped to canonical placements only — a non-canonical file
@@ -7499,7 +7500,7 @@ def _runtime_ro_bind_paths() -> list[str]:
 # one the configuration surface already follows: what the leaf gets is what this file
 # names, and a name absent here is absent from the child. What this closes is the PROCESS
 # environment only: a claude leaf's `HOME` is the operator's, and an `env` block in the
-# settings file under it sets both names again (measured, issue #446; issue #453).
+# settings file under it sets both names again (measured; issue #453).
 #
 # Division of labour, stated once. The conductor's `_child_env` is the single AUTHOR of
 # a leaf's environment (it calls `leaf_env_from` and adds the per-run values); the bwrap
@@ -10861,17 +10862,23 @@ def default_agent_model_for_backend(backend: str) -> str:
     replaces it after the fact from the leaf's own result envelope (`_agent_run_json`),
     which is the only reading the row can rely on.
 
-    HOW THE CLI RESOLVES AN UNPINNED CLAUDE LEAF — the one statement of it; other sites
-    point here (measured on CLI 2.1.294, issue #446, with the exact `pure_leaf_flags()`
-    set against a loopback endpoint that stored the request). `--safe-mode` disables
-    customizations, not settings, and the leaf's `HOME` is the operator's (`HOME` is on
-    `LEAF_ENV_ALLOWLIST`), so the settings under the operator's `~/.claude` take part.
-    In order: `--model` (passed only for a model the configuration file declares); else
-    an `ANTHROPIC_MODEL` in that settings file's `env` block; else its `model` key; else
-    the CLI's own default. `ANTHROPIC_MODEL` in the operator's PROCESS environment takes
-    no part — the allowlist excludes it — but the settings `env` block is a second
-    environment channel the allowlist does not close (it carries `ANTHROPIC_BASE_URL`
-    as well; issue #453).
+    WHAT DECIDES A CLAUDE LEAF'S MODEL — the one statement of it; other sites point here.
+    `--safe-mode` disables customizations, not settings, and the leaf's `HOME` is the
+    operator's (`HOME` is on `LEAF_ENV_ALLOWLIST`), so the operator's
+    `~/.claude/settings.json` applies to the leaf, its `env` block included. That `env`
+    block is a second environment channel the allowlist does not close (it carries
+    `ANTHROPIC_BASE_URL` too); `ANTHROPIC_MODEL` in the operator's PROCESS environment takes
+    no part. Measured on CLI 2.1.294 with the exact `pure_leaf_flags()` set against a
+    loopback endpoint that stored the request (issue #446 comment 6053241634 for the `model`
+    key; issue #453 comments for the `env` block and the alias remap):
+      - no `--model`, a settings `model` key       -> that key's model;
+      - the same plus `env.ANTHROPIC_MODEL`        -> the env value;
+      - `--model <alias>` (e.g. `opus`)            -> beats both, BUT an
+        `env.ANTHROPIC_DEFAULT_OPUS_MODEL` remaps the alias itself, pinned or not;
+      - `--model <full model id>`                  -> that id, unaffected by the remap;
+      - no settings file                           -> the CLI's own default.
+    These are measured cases, not a complete list of what the CLI reads (admin policy
+    settings, for one, were not measured). Whether to close the channel is issue #453.
 
     It still deliberately does NOT read the operator's `~/.claude`
     (`resolve_claude_model_alias`, which serves the orchestration row instead): the stamp
@@ -14722,8 +14729,8 @@ def record_launch(
             #
             # `record_agent_run`'s terminal check requires `sandbox_runtime == "bwrap"` for a
             # non-HTTP row, so it takes this as its second exemption. Stamped on the RESPONSE,
-            # like the HTTP one and for the same reason: the response is host-authored and a
-            # leaf writes no file, so the exemption cannot be claimed by a leaf.
+            # like the HTTP one and for the same reason: the response is host-authored and
+            # outside every read-write bind of a leaf's sandbox, so a leaf cannot claim it.
             request_payload.setdefault("leaf_transport", "in_process")
             response_payload.setdefault("leaf_transport", "in_process")
             response_payload.setdefault("sandbox_runtime", "none")
@@ -14761,10 +14768,11 @@ def record_launch(
                     response_payload["codex_workflow_home"] = codex_isolation["home"]
                     response_payload["codex_lineage_id"] = codex_isolation["lineage_id"]
                 # NO claude private home. Issue #63 prepared one for the AGENTIC leaf to keep
-                # the operator's customizations out; Z4 (issue #171) retired that leaf, and a
-                # pure claude leaf takes `--safe-mode` — no customizations, no tools, no hooks —
-                # so there is nothing left for a private home to keep out. (Settings keys such
-                # as `model` still reach it from the operator's home; issue #446.)
+                # the operator's configuration out; Z4 (issue #171) retired that leaf, and a
+                # pure claude leaf takes `--safe-mode` — no customizations, no tools, no hooks.
+                # What a private home also kept out — the operator's settings, `model` and
+                # `env` block included — now reaches the leaf (`default_agent_model_for_backend`);
+                # whether to close that is issue #453.
                 profile_kwargs: dict[str, Any] = {}
                 if codex_isolation is not None:
                     profile_kwargs = codex_isolation_profile_kwargs(codex_isolation)
@@ -15394,7 +15402,7 @@ def record_agent_run(
                 # `record_launch` records `leaf_transport: "http"` with no profile. The
                 # sandbox block below asserts a profile that, for such a launch, correctly does
                 # not exist. The exemption is granted on the LAUNCH RESPONSE — host-authored,
-                # and no leaf writes any file — and only when it names a genuine HTTP
+                # and outside every read-write bind of a leaf's sandbox — and only when it names a genuine HTTP
                 # provider token, so a leaf cannot claim it. Everything else about the terminal
                 # payload, including the unauthorized-write check below, still applies.
                 _launch_backend = launch_response_payload.get("backend")
