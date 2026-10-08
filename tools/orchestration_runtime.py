@@ -13538,11 +13538,13 @@ def _pass_values_by_check_name(checks: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def _all_strict_boolean_probe_checks_pass(checks: list[dict[str, Any]]) -> bool:
-    """For codex etc. The `pass` key is required. A check with value None is excluded from evaluation as an unrun probe.
+    """The probe-time gate on both backends. The `pass` key is required, an explicit False
+    `pass` is a failure, at least one non-None `pass` must exist, and all of those must be True.
 
-    An explicit False `pass` is a failure. At least 1 non-None `pass` must exist,
-    and all of them must be True. Even if a check column from the help fallback is mistakenly passed,
-    do not silently fail on only `pass: None`.
+    A check with `pass: None` is excluded as an unrun probe, so "a check added to a prober
+    later gates by default" holds for a boolean `pass` only. No prober emits `None` since the
+    claude skipped features-list row went (issue #447); one that did would not gate here, and
+    would gate on the stored document only if its backend's required set names it.
     """
     evaluated_any = False
     for item in checks:

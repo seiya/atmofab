@@ -1483,6 +1483,35 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         self.assertFalse(result["can_launch_step_agents"])
         self.assertFalse(result["can_launch_substep_agents"])
 
+    def test_unlisted_failing_claude_check_still_blocks_launch(self) -> None:
+        """The claude twin of the codex row above (issue #447): the claude probe-time gate is
+        every emitted check, not `CLAUDE_REQUIRED_LAUNCH_CHECKS`, so a check added to
+        `_probe_claude_backend` later fails closed before anyone adds it to the set."""
+        from tools import orchestration_runtime as ort
+
+        def runner(cmd, **kwargs):  # type: ignore[no-untyped-def]
+            if cmd[-1] == "--version":
+                return _FakeCompletedProcess(0, stdout="2.1.0 (Claude Code)\n")
+            if cmd[-1] == "--help":
+                return _FakeCompletedProcess(0, stdout="Usage: claude [options]\n")
+            if cmd[-1] == "-p":
+                return _FakeCompletedProcess(1, stderr=_CLAUDE_EMPTY_PROMPT_REFUSAL)
+            raise AssertionError(cmd)
+
+        original = ort._probe_claude_backend
+
+        def _with_future_check(backend_token, command, run):  # type: ignore[no-untyped-def]
+            checks, version = original(backend_token, command, run)
+            checks.append({"name": "claude_future_capability", "pass": False})
+            return checks, version
+
+        self.assertNotIn("claude_future_capability", CLAUDE_REQUIRED_LAUNCH_CHECKS)
+        for prober, launchable in ((original, True), (_with_future_check, False)):
+            with self.subTest(future=prober is _with_future_check), patch.dict(
+                    ort._BACKEND_PROBERS, {"claude": prober}):
+                result = ort.probe_execution_platform(backend="claude", runner=runner)
+            self.assertIs(result["can_launch_step_agents"], launchable, result["checks"])
+
     def test_an_unwritable_codex_home_blocks_the_codex_launch(self) -> None:
         """`codex_home_writable` is appended after the prober runs, so it reaches the probe-time
         gate through its own conjunct rather than through `_all_strict_boolean_probe_checks_pass`

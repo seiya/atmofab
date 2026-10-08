@@ -243,7 +243,8 @@ When any leaf runs on the `claude_cli` provider (the copied `llm_claude.example.
 `_probe_claude_backend` emits — `claude_version_available`, `claude_help_probe_available` and
 `claude_prompt_stdin` (the prompt arrives on stdin, never as an argv element) — plus the three
 `sandbox_bwrap_*` checks every backend needs. Authentication is NOT probed: a CLI that is on
-`PATH` and answers `--version` passes preflight and fails at the first billed launch instead.
+`PATH`, answers `--version` and `--help`, and refuses an empty `-p` naming stdin passes
+preflight and fails at the first billed launch instead.
 
 Everything else this section required went with the agentic leaf in Z4
 ([issue #171](https://github.com/seiya/atmofab/issues/171)), and each is named here because an
@@ -265,7 +266,12 @@ operator who set it up will find it no longer checked:
 [issue #447](https://github.com/seiya/atmofab/issues/447) (D1): the conductor launches each leaf
 as its own CLI process and never uses a platform's own subagents. On claude the check was
 `--help` answering, which `claude_help_probe_available` records and now gates by name; the
-skipped `claude_features_list_available` row went with it.
+skipped `claude_features_list_available` row went with it. The recorded document is now held
+to every member of `CLAUDE_REQUIRED_LAUNCH_CHECKS`, so a claude `preflight.json` written
+before `claude_prompt_stdin` existed (orchestrations from 2026-07-23 to 2026-08-02 on the
+machine this was measured on) is refused by every command that reads the stored document —
+`revoke-artifact`, `reset-phase`, `check-phase-certified`, `set-status pass`. Re-run that
+orchestration's preflight first: `--resume` does it before anything else reads the document.
 
 ## 0-3. Codex backend preflight requirements (operator setup)
 
