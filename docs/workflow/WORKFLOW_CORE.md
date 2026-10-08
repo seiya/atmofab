@@ -29,7 +29,7 @@ This document defines the workflow's phase sequence, inter-phase input/output co
   - `Generate` has the 3 substeps `generate`, `gate`, and `verify` — `gate` is a deterministic conductor-run substep (no leaf) between `generate` and `verify` that runs three checks: a lint check, a syntax check (the build-runtime `run_syntax_check` compiler front-end gate, the target language's mandatory syntax-only stage), and a static check (`validate_workspace_root` then `validate_pipeline_semantics --stage post_generate`, run only when the lint and syntax checks both pass); a lint, syntax, or static finding in the node's own source warm-resumes `generate` (a syntax finding the staged dependency closure causes instead fails closed — the leaf cannot write it), so the LLM `verify` is reached only on a deterministically-clean source.
   - `Validate` has the 4 substeps `pre_judge` / `execute` / `judge` / `post_judge`. The `--stage pre_judge` gate (orchestration-record integrity + the cross-pipeline dependency DAG) is conductor-run as two deterministic substeps wrapping the LLM `judge`, not a `judge`-leaf responsibility: the deterministic `pre_judge` substep (index 0) is the pre-spawn dependency-DAG readiness check (a not-yet-built+validated `dependency_graph.json` sidecar's `all_nodes` closure fails the phase `fail_closed` before execute/judge run, authoring `pre_judge_meta.json`), and the deterministic `post_judge` substep (index 3) runs the `--stage pre_judge` validator after the judge returns — answering its four dedicated exit codes (3 `static_frontend_unavailable`, 4 `stale_dependency_ir`, 5 `host_authored_artifact_violation`, 6 `device_kernels_absent`) as `fail_closed` BEFORE classifying any violation, since none is repairable by a re-authored `semantic_review.json` — and records the verdict + a severity `disposition` in `post_judge_meta.json` — so the LLM `judge` launches no validator gate at all. Since `Z3` ([issue #169](https://github.com/seiya/atmofab/issues/169)) it holds no tools either: it is a `pure-function leaf` returning `{decision, findings, notes}`, and the host writes `semantic_review.json` from that. (Naming caution: the `post_judge` substep runs the validator stage literally named `pre_judge`.) A `post_judge` violation in a judge-authored deliverable is classified **recoverable** and terminalizes `fail_closed`: the conductor used to warm-resume the judge to re-author it, and issue #176 deleted that mini-loop (no run reached it, and under the pure judge `semantic_review.json` is HOST-authored, so a re-run reproduces the violation). An orchestration-record/DAG **integrity** violation (and any `pre_judge` `fail`) is a non-physics integrity blocker terminalized `fail_closed`; an **unknown** violation routes to the unified escalate LLM in prod (fail_closed in dev) — G5.
   - `Build` is a single step that has no standard substep.
-- `stage` is used only as existing field names such as `generated_by_stage`, `<stage>_meta.json`, and `write_scope_baseline.json.stage`. It must not be used as a synonym for `phase` or `step` in the body text.
+- `stage` is used only as existing field names such as `generated_by_stage` and `<stage>_meta.json`. It must not be used as a synonym for `phase` or `step` in the body text.
 
 ## Workflow overview
 ### phase sequence
@@ -68,11 +68,11 @@ This document defines the workflow's phase sequence, inter-phase input/output co
 17. Across different `pipeline_id`, the artifact body must not be reused by changing only the `id`-family metadata. When detected, treat it as `copy_based_artifact_reuse` and mark it `invalid`.
 18. A violation of these norms is a workflow specification violation, and marks the relevant `pipeline` `invalid`.
 19. All phases of the core workflow must not write outside of `workspace/`. The exception for the optional flow (`Promote`) is reserved by the `promote` write roots in `tools/orchestration_runtime.py` and is defined with that flow when it is designed (`docs/design/simplification_program.md` §Premise statements).
-20. Before all phases start, capture a `baseline` of the file set under the repository root, and perform a diff comparison before the relevant phase completes.
-21. The diff comparison must detect an `add` / `modify` / `delete` outside of `workspace/` as a violation.
+20. Rule 19 is held by the launch shape, not detected after the fact: a `pure-function leaf` holds no write authority (it returns one document, and a CLI leaf's sandbox binds no repository path), and the host writes every artifact. No phase captures a write baseline and no diff is taken (`docs/ORCHESTRATION.md` §baseline diff contract on re-submission; the repository-wide baseline went with issue #445).
+21. (Retired with rule 20's diff, issue #445; the number is kept so later rules keep theirs.)
 22. When `python` execution is used in the workflow path, a setting in which `__pycache__` is not generated outside of `workspace/` is required. Use `PYTHONDONTWRITEBYTECODE=1` or `PYTHONPYCACHEPREFIX=workspace/.pycache/<pipeline_id>/`.
-23. A phase that detected a write-scope violation is `fail`, and a downstream phase must not start. The violation content must be recorded in metadata under `workspace/`.
-24. A `pipeline` that detected a write-scope violation is `invalid`. The same trial must not continue without resolving the violation state.
+23. (Retired with rule 20's diff, issue #445.)
+24. (Retired with rule 20's diff, issue #445.)
 25. The workflow's hierarchical execution contract, and the requirements of `preflight`, `agent_runs.jsonl`, `agent_graph.json`, and `step_result.json` must be applied using `ORCHESTRATION.md` as the canonical source.
 26. The canonical entrypoint for starting the workflow is `python3 tools/run_workflow.py <spec_ref> <until_phase> --target <target_id> [--llm-config <path>]`. `<until_phase>` specifies one of `compile` / `generate` / `build` / `validate`; `--target` names the target profile (`spec/targets/<target_id>.yaml`), required while more than one is declared; `--llm-config` selects the LLM of each phase / `substep` from a configuration file (default `./llm.yaml`, created by copying a sample from `docs/examples/`), and a `codex_cli` entry additionally requires an explicit `model:`. The configuration file is the only thing that says what a leaf launches.
 27. When `preflight` is `fail`, the `orchestration agent` must not launch a child `agent`. The workflow must stop with `fail`.
@@ -240,14 +240,6 @@ workspace/
 - When the code hash of `source/<source_id>/src/` generated under different `node_key` matches, except for a file explicitly stated as a common library, it must be marked `copy_based_artifact_reuse` and `invalid`.
 - Before the completion declaration of a workflow execution, the `workspace/ir` / `workspace/pipelines` artifacts of the target dependency `DAG` must not be deleted.
 
-#### Write-scope guard
-- At the start of each phase, save `write_scope_baseline.json` under `workspace/`, and fix the `baseline` to be compared.
-- `write_scope_baseline.json` must hold at least `stage`, `node_key`, `pipeline_id`, `captured_at`, `tracked_diff`, and `untracked_files`.
-- Before each phase completes, compute the diff against `write_scope_baseline.json`, and must judge a change outside of `workspace/` as a `write_scope_violation`.
-- When no violation is detected, `write_scope_check.status=pass` must be recorded in the phase metadata.
-- When a violation is detected, output `write_scope_violation.json` under `workspace/`, and must record `violation_paths`, `stage`, `node_key`, `pipeline_id`, and `detected_at`.
-- When a `write_scope_violation` is detected, the relevant phase is `fail`, and the `aggregate_verdict` finalization of the relevant `pipeline` is forbidden.
-
 ## Per-phase input/output contract list
 In this section, the input of each phase is described separately as `execution input` and `verification input`. When the two roles overlap, the same artifact may be listed in both.
 
@@ -307,7 +299,6 @@ The contract details per phase use the files under [phases/](phases/) as the can
 - The workflow completion condition is that, for the `all_nodes` set of the `dependency_graph.json` sidecar, `workspace/ir/<node_key_safe>/<ir_id>/` and `workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>/` exist, and the `node_key` and `dependency_ref` of `lineage.json` match.
 - The workflow completion declaration is permitted only when the `dependency workflow` coverage check, the `trial_meta` integrity check, and the non-detection of `copy_based_artifact_reuse` are simultaneously satisfied.
 - The workflow completion declaration is permitted only when, simultaneously, there is no embedding of a dependency `node` implementation in the `src/` of an upper `node`.
-- The workflow completion declaration is permitted only when, simultaneously, no `write_scope_violation` is detected in all phases.
 - `CI` treats the execution result of `python3 tools/validate_workspace_root.py` and `python3 tools/validate_pipeline_semantics.py` (`--stage full` or omitted) as a `pass` condition.
 
 ## Reference documents

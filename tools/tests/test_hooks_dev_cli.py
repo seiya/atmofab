@@ -45,16 +45,57 @@ class DevCliRefusesTheTwoOperatorSafetyCommands(unittest.TestCase):
         self.assertEqual(json.loads(out)["decision"], "block")
         self.assertIn("git reset --hard is forbidden", err)
 
-    def test_verify_bypass_flag_is_refused_in_dev_mode(self) -> None:
-        code, _out, err = _run("claude", "PreToolUse", "python3 tools/x.py --force-pass")
-        self.assertEqual(code, 2)
-        self.assertIn("--force-pass", err)
+    def test_each_verify_bypass_flag_on_the_validator_is_refused(self) -> None:
+        """One row per flag, so a flag dropped from the tuple fails by name. The exported
+        `ATMOFAB_WORKFLOW_EXEC_MODE` that used to exempt a command is set here and changes
+        nothing (issue #445 deleted that branch)."""
+        from tools.hooks.operator_safety import VERIFY_BYPASS_TOKENS
+        self.assertEqual(VERIFY_BYPASS_TOKENS,
+                         ("--allow-missing-orchestration", "--allow-missing-llm-review"))
+        for flag in VERIFY_BYPASS_TOKENS:
+            for env in ({}, {"ATMOFAB_WORKFLOW_EXEC_MODE": "workflow"}):
+                with self.subTest(flag=flag, env=env):
+                    code, _out, err = _run(
+                        "claude", "PreToolUse",
+                        f"python3 tools/validate_pipeline_semantics.py --legacy-mode {flag}",
+                        extra_env=env)
+                    self.assertEqual(code, 2)
+                    self.assertIn(flag, err)
+        code, _out, err = _run(
+            "claude", "PreToolUse",
+            "python3 -m tools.Validate_Pipeline_Semantics --ALLOW-MISSING-LLM-REVIEW")
+        self.assertEqual(code, 2, "the match is case-insensitive on both halves")
 
-    def test_verify_bypass_flag_is_not_refused_outside_dev_mode(self) -> None:
-        code, _out, _err = _run(
-            "claude", "PreToolUse", "python3 tools/x.py --force-pass",
-            extra_env={"ATMOFAB_WORKFLOW_EXEC_MODE": "workflow"})
-        self.assertEqual(code, 0)
+    def test_a_flag_without_the_validator_or_the_validator_without_a_flag_passes(self) -> None:
+        """The conjunction, each half alone. A grep for the flag text and an echo of a
+        document quoting it name no validator; a flag on another program is not a bypass of
+        anything; the validator without a flag is its ordinary run."""
+        for command in (
+            'grep -rn -- "--allow-missing-llm-review" docs/',
+            "echo 'the --allow-missing-orchestration flag requires --legacy-mode'",
+            "python3 tools/other_tool.py --allow-missing-orchestration",
+            "python3 tools/validate_pipeline_semantics.py --stage full",
+        ):
+            with self.subTest(command=command):
+                code, out, err = _run("claude", "PreToolUse", command)
+                self.assertEqual((code, out, err), (0, "", ""))
+
+    def test_the_refused_flags_are_the_validators_waivers(self) -> None:
+        """Set identity with what the validator's parser defines, read by `ast`: a flag it
+        stops accepting must leave the hook, and a waiver it adds must arrive in it. The
+        sample is every `--allow-missing-*` option, the family both members belong to."""
+        from tools.hooks import operator_safety
+
+        tree = ast.parse((REPO_ROOT / "tools" / f"{operator_safety.VERIFY_BYPASS_SCRIPT}.py")
+                         .read_text(encoding="utf-8"))
+        defined = {
+            node.args[0].value for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "add_argument" and node.args
+            and isinstance(node.args[0], ast.Constant)
+            and str(node.args[0].value).startswith("--allow-missing-")
+        }
+        self.assertEqual(defined, set(operator_safety.VERIFY_BYPASS_TOKENS))
 
 
 class DevCliRefusesASleepBasedWait(unittest.TestCase):
@@ -339,6 +380,20 @@ class DevCliWrapperCommandsExecute(unittest.TestCase):
                         found.append((rel, event, hook["command"]))
         return found
 
+    def test_every_source_registers_commands_and_each_names_the_dev_entrypoint(self) -> None:
+        """Per SOURCE, and over every event rather than only the command-carrying ones the
+        rows below execute: an empty `hooks` object is what a bad edit to one file produces,
+        and the rows below would then skip that file silently. Moved here from
+        `test_orchestration_runtime.DevHookSourcesNameOnlyTheDevEntrypointTests` (issue
+        #445), whose third row pinned the absence of the deleted `leaf_config/` tree."""
+        commands = self._dev_commands()
+        for rel in (".claude/settings.json", ".codex/hooks.json"):
+            with self.subTest(source=rel):
+                mine = [command for source, _event, command in commands if source == rel]
+                self.assertTrue(mine, f"{rel} registers no hook command")
+                for command in mine:
+                    self.assertIn("tools.hooks.dev_cli", command)
+
     def test_every_committed_dev_wrapper_refuses_through_a_real_shell(self) -> None:
         commands = self._dev_commands()
         self.assertTrue(commands, "no dev wrapper command found to execute")
@@ -442,9 +497,11 @@ class DevCliImportBoundary(unittest.TestCase):
         computable and the shared side no longer exists to check.
 
         What is checked instead is the pair the convention now covers, named explicitly because
-        nothing derives it any more: `dev_session_hygiene` is DEV-only and carries the prefix,
-        `operator_safety` is deliberately applied from both the DEV hook and (while a leaf hook
-        existed) the leaf one, and must not. Adding a third rule module fails the equality.
+        nothing derives it any more: `dev_session_hygiene` guards the agent session itself and
+        carries the prefix; `operator_safety` was applied from both the DEV hook and (while a leaf
+        hook existed) the leaf one, and is named for its subject — the operator's checkout,
+        whoever issues the command — so it does not. Only `dev_cli` imports either today.
+        Adding a third rule module fails the equality.
         """
         self.assertEqual(
             _dev_cli_repo_imports(),
@@ -455,8 +512,8 @@ class DevCliImportBoundary(unittest.TestCase):
             Path("tools/hooks/dev_session_hygiene.py").name.startswith("dev_"))
         self.assertFalse(
             Path("tools/hooks/operator_safety.py").name.startswith("dev_"),
-            "operator_safety binds more than the DEV session, so a `dev_` prefix would "
-            "misstate its audience")
+            "operator_safety is named for its subject (the operator's checkout), not for "
+            "the session that applies it")
 
     def test_the_rule_modules_import_only_stdlib(self) -> None:
         """Every module `dev_cli` imports carries the same obligation, or the boundary is

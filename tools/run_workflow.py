@@ -2505,14 +2505,11 @@ def _run_main(
     # base_env's PYTHONDONTWRITEBYTECODE (set below) cannot do this
     # job: it governs SUBPROCESSES only, and sys.dont_write_bytecode is fixed at interpreter start.
     #
-    # The prefix is a LITERAL on purpose: importing orchestration_runtime here to read its
-    # _HOST_PYCACHE_REDIRECT_PREFIX would itself compile that ~20k-line module and write
-    # tools/__pycache__/orchestration_runtime.*.pyc into the source tree BEFORE this redirect is
-    # active (it is not yet in sys.modules at this point — validate_pipeline_semantics
-    # deliberately does not import it, and _default_claude_agent_model runs much later). The
-    # literal is drift-guarded against that constant by
-    # test_orchestration_runtime.HostPycacheRedirectExemptionTest, the same test-pin technique
-    # validate_workspace_root's allowlist entry uses to avoid the identical heavy import.
+    # The root is spelled once, as a literal in `_validated_pycache_redirect_root`, and not
+    # read from orchestration_runtime: importing that ~20k-line module here would compile it
+    # into tools/__pycache__/ BEFORE this redirect is active. validate_workspace_root's
+    # allowlist entry is drift-guarded against the literal by
+    # test_orchestration_runtime.HostPycacheRedirectRootTest.
     # This attribute is process-global; `main()` (the wrapper above) saves and restores it so an
     # in-process caller does not inherit this run's redirect.
     #

@@ -1271,7 +1271,11 @@ PINNED_VERDICT: dict[str, str] = {
     # Round 1: the module docstring says the array-valued `expr` refusal names the rank where
     # `_scalar` names the shape (it had claimed the evaluator's wording for all three).
     # Round 3: the docstring names what the gate adds to those messages.
-    "verdict-9": "bfb50946de87f542065ddf7f7f0e866b1d6dbb67c7e4f7f9cacc8e31b01a9b0b",
+    "verdict-9@7ec49b5c": "bfb50946de87f542065ddf7f7f0e866b1d6dbb67c7e4f7f9cacc8e31b01a9b0b",
+    # Re-pinned (issue #445), behaviour-preserving: `tools/primary_evidence.py` loses
+    # `_REDUCTIONS`, a module constant nothing read (the evaluator dispatches each reduction by
+    # name in `_call`). No record's value moves. The shipped digest stays pinned.
+    "verdict-9": "3553630cb67af5d397f8f89db68bf1de07949cec298ebc69fbe9e30ec6b6391b",
 }
 
 

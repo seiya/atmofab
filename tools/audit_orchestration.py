@@ -57,17 +57,6 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     from tools.target_profile import is_target_id, pipeline_ref_for
 
 
-def _load_jsonl(path: Path) -> list[dict[str, Any]]:
-    """Load records, ignoring malformed lines.
-
-    Use `_load_jsonl_with_errors` when caller needs visibility into parse
-    failures. This wrapper preserves the simple records-only interface for
-    callers that don't need integrity reporting.
-    """
-    records, _errors = _load_jsonl_with_errors(path)
-    return records
-
-
 def _load_jsonl_with_errors(path: Path) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """Load records AND return a list of parse errors for integrity reporting.
 

@@ -133,10 +133,10 @@
       "make-control-file": 3
     },
     "tools/orchestration_runtime.py": {
-      "fortran": 9,
+      "fortran": 8,
       "fortran-subroutine": 5,
       "fortran-suffix": 10,
-      "make-control-file": 8
+      "make-control-file": 6
     },
     "tools/pure_leaf.py": {
       "fortran": 1
@@ -160,11 +160,11 @@
     },
     "tools/workflow_conductor.py": {
       "compiler-driver": 5,
-      "fortran": 26,
+      "fortran": 25,
       "fortran-implicit-none": 1,
       "fortran-kind": 1,
       "fortran-suffix": 22,
-      "make-control-file": 65,
+      "make-control-file": 62,
       "make-variable": 10
     }
   }

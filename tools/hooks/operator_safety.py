@@ -16,45 +16,43 @@ the operator out of the very session they are editing in. It has happened once
 
 The rule text is defined ONCE, here; `dev_cli` encodes the decision itself.
 
-**Known over-refusal, and it fires in ordinary use.** The match is a substring of the
-whole command, so a command that merely CONTAINS the text is refused too — a commit
-message that quotes the rule, a heredoc that writes documentation about it, a grep for
-it. Measured 2026-08-26: the commit that introduced this module was refused by it. The
-leaf path had blanking machinery (`_strip_quoted_strings`, heredoc blanking) and was
-measured NOT to apply it to these two policies either — a quoted echo and a heredoc body
-both reached rc 2 there — so this was never a cost the dev entrypoint paid for its import
-boundary; it is one rule matching raw text. That leaf path is deleted (Z4, issue #171)
-and this is now the only path. It stands because the failure direction is refusal rather
-than a missed one and the operator can rephrase.
+**Both rules match raw text, with no shell parsing.** The hard-reset rule matches a
+substring of the whole command, so a command that merely CONTAINS the text is refused too —
+a commit message that quotes the rule, a heredoc that writes documentation about it, a grep
+for it. Measured 2026-08-26: the commit that introduced this module was refused by it. It
+stands because the failure direction is refusal rather than a missed one and the operator
+can rephrase. The verify-bypass rule is narrower since issue #445: it refuses only a command
+that names the validator that defines the flags AND carries one of them, so a grep for a
+flag or an echo of a document quoting one passes, and so does a command naming one of them
+for another program.
+
+**What the verify-bypass rule does not see, and why that is accepted.** A `python3 -c` that
+imports the validator and calls it with a bypass argument names no script file and no flag
+spelling; a shell variable holding the script name hides it the same way. Both pass. The
+rule guards the operator's own development session against an accidental bypass, and
+`AGENTS.md` §Development premises puts a defense against the operator outside the defended
+set — no workflow leaf issues a command at all.
 """
 
 from __future__ import annotations
 
 from typing import Any
 
-# Verify-bypass flags. `ATMOFAB_WORKFLOW_EXEC_MODE` unset means dev, which is the
-# operator's ordinary case and the one this refusal is for.
+# The validator whose flags these are, and the flags themselves — exactly the two
+# `tools/validate_pipeline_semantics.py`'s argument parser defines that waive a verify
+# requirement. A flag no tool accepts is not listed: refusing it guards nothing.
+VERIFY_BYPASS_SCRIPT = "validate_pipeline_semantics"
 VERIFY_BYPASS_TOKENS: tuple[str, ...] = (
     "--allow-missing-orchestration",
     "--allow-missing-llm-review",
-    "--allow-soft-fail",
-    "--allow-soft-verify",
-    "--ignore-verify-fail",
-    "--force-pass",
 )
 
 
-def operator_safety_violation(
-    command: str,
-    *,
-    workflow_exec_mode: str | None,
-) -> tuple[str, dict[str, Any]] | None:
+def operator_safety_violation(command: str) -> tuple[str, dict[str, Any]] | None:
     """Return `(reason, audit_detail)` for a refused command, or None.
 
-    `workflow_exec_mode` is the raw `ATMOFAB_WORKFLOW_EXEC_MODE` value (None when
-    unset). Callers pass it in rather than reading the environment here, so the rule
-    stays a pure function of its inputs and a test can drive both modes without
-    patching a process.
+    A pure function of its argument, so a test drives every branch without patching a
+    process.
     """
     if not command:
         return None
@@ -66,16 +64,14 @@ def operator_safety_violation(
             {"policy": "forbid_git_reset_hard", "command": command},
         )
 
-    mode = (workflow_exec_mode or "dev").strip().lower()
-    if mode == "dev":
+    if VERIFY_BYPASS_SCRIPT in lowered:
         matched = [token for token in VERIFY_BYPASS_TOKENS if token in lowered]
         if matched:
             return (
-                "blocked by common hook policy: dev mode forbids verify bypass flags: "
-                + ", ".join(matched),
+                "blocked by common hook policy: the verify bypass flags of "
+                f"{VERIFY_BYPASS_SCRIPT} are forbidden: " + ", ".join(matched),
                 {
-                    "policy": "forbid_verify_bypass_flags_in_dev_mode",
-                    "workflow_mode": mode,
+                    "policy": "forbid_verify_bypass_flags",
                     "command": command,
                     "matched_tokens": matched,
                 },

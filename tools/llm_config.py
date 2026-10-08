@@ -158,10 +158,6 @@ PROVIDER_BACKEND_TOKENS: Mapping[str, str] = {
     "anthropic_api": "anthropic_api",
 }
 
-# The reverse map, for reading a recorded backend token back to its provider.
-BACKEND_TOKEN_PROVIDERS: Mapping[str, str] = {v: k for k, v in PROVIDER_BACKEND_TOKENS.items()}
-
-
 # --- mirror tables (guarded copies) --------------------------------------------------
 
 # The five substeps that run as an LLM leaf, ALL of which run as pure leaves (Z4, issue #171 —

@@ -136,18 +136,17 @@ python3 -m pytest tools/tests/ -q -m "not slow"
 opt-out because nothing else runs the full set: deselecting it by default would leave the
 leaf deadline / abandon / teardown guards executed by nobody.
 
-The two review instruments under `.claude/skills/` — `atmofab-review-loop/scripts/mutation_check.py`
-and `atmofab-enforcement-change/scripts/measure_claude_tool.py` — carry their tests beside them in
-`scripts/tests/`. Each instrument's own skill states the command that runs its tests
-(`.claude/skills/atmofab-review-loop/SKILL.md` and
-`.claude/skills/atmofab-enforcement-change/SKILL.md`), because no command in this section
-collects them — measured at `8b9e38a`: `pytest tools/tests/`, a bare `pytest` and `pytest .`
-each collect 6105, and the two directories hold 70 tests between them.
+The review instrument under `.claude/skills/` — `atmofab-review-loop/scripts/mutation_check.py` —
+carries its tests beside it in `scripts/tests/`. Its skill states the command that runs them
+(`.claude/skills/atmofab-review-loop/SKILL.md`), because no command in this section collects
+them — measured at the issue #445 branch: `pytest tools/tests/` and a bare `pytest` each collect
+6268, and that directory holds 52 tests. (A second instrument, `measure_claude_tool.py`, went
+with the leaf tools it measured in issue #445.)
 
-**Those two commands get none of the guards `tools/tests/conftest.py` installs** for the suite's
+**That command gets none of the guards `tools/tests/conftest.py` installs** for the suite's
 own directory: not the environment strip, not the private-root redirect, not
 the secret-root refusal, and `--keep-operator-env` is an unrecognized argument there. Nothing
-is known to bite — neither instrument test nor either script reads an `ATMOFAB_*` name,
+is known to bite — neither the instrument's tests nor the script read an `ATMOFAB_*` name,
 `CODEX_HOME` or `CLAUDE_CONFIG_DIR` — and no `conftest.py` is placed beside them, so an
 instrument test that ever does need a guard has to say so itself.
 
