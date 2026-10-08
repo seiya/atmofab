@@ -75,7 +75,7 @@ python3 tools/run_workflow.py spec/problem/dynamics/advection_diffusion/advdiff1
 
 ## Build runtime
 
-The conductor calls the build-runtime library `tools/build_runtime.py` in-process for every `compile`, `run`, `quality check`, `static lint`, and `syntax check`; no leaf calls it, and one-off `gcc` / `clang` / `gfortran` builds are forbidden. The five entry points (`tool_compile_project`, `tool_run_program`, `tool_run_quality_checks`, `tool_run_linter`, `tool_run_syntax_check`), the validation each applies, and the `command_log.jsonl` record each writes are specified in `docs/BUILD_RUNTIME.md`.
+The conductor calls the build-runtime library `tools/build_runtime.py` in-process for every `compile`, `run`, `quality check`, `static lint`, and `syntax check`; no leaf calls it, and one-off `gcc` / `clang` / `gfortran` builds are forbidden. Its entry points, the validation each applies, and the `command_log.jsonl` record each writes are specified in `docs/BUILD_RUNTIME.md`.
 
 ## Artifacts
 

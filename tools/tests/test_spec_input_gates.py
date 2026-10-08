@@ -101,9 +101,9 @@ class CaseIdTokenGrammarTest(unittest.TestCase):
             self.assertIsNone(CASE_ID_TOKEN_RE.match(bad), bad)
 
     def test_a_leading_dash_is_refused_because_it_reaches_an_argv(self) -> None:
-        # The build-runtime MCP server refuses a leading `-` in a `--cases` value. Accepting one
-        # here would pass Compile and Build and fail only at Validate.execute, on an id no gate
-        # had objected to.
+        # A case id reaches the runner's argv, where a word opening with `-` is an option's
+        # spelling, and nothing downstream refuses one (`spec_input_gates` says why); this is
+        # the one place it is refused.
         self.assertIsNone(CASE_ID_TOKEN_RE.match("-base"))
         self.assertIsNotNone(CASE_ID_TOKEN_RE.match("base-1"))
 

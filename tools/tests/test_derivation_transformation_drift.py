@@ -890,7 +890,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "404222cc18702e9f6ff9d708bb8a94e2ca3fd63a840a3827ef1504b2d5dba9f1",
+    "build-2": "4ba48dd98634f7851c4ff052945dd4feaf45c7490427c3ac54be785978ba5c9a",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build
@@ -942,7 +942,8 @@ PINNED_BUILD: dict[str, str] = {
     # (row labels renamed `build_runtime.*`); `_build_inproc` imports it as `from
     # tools.build_runtime import` and stops passing the unread `repo_root` key;
     # `tool_compile_project` drops the retired-argument refusal (no caller sends one); the rest is
-    # comments and `remote_execution`'s import. The build command and the `command_log.jsonl` entry
+    # docstrings (`build_command` among them), comments, and `remote_execution` calling the library
+    # through a module import instead of a `sys.path` loader. The build command and the `command_log.jsonl` entry
     # are byte-identical (measured on a make project at both revisions, timing fields aside).
     # (Measured by diffing the tuple against origin/main ef28faa1's.) The digest `build-2` shipped
     # with at ef28faa1:
@@ -1064,7 +1065,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # longer copies it. (Measured by diffing `execute_tuple()` against origin/main dd5bbcb8's:
     # the `Conductor._author_snapshot_schema` row and no other.) The digest `execute-8` shipped
     # with at dd5bbcb8 is kept below.
-    "execute-8": "d2de7aadefbd4e397d9f93f67f953e0394c94e8b6e61139d51f037e07a252922",
+    "execute-8": "069da8155c9b74c2c071d59de8d11ca6ff8edf8f628f61f5f04713b5313572e1",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -1149,7 +1150,8 @@ PINNED_EXECUTE: dict[str, str] = {
     "execute-8@2e04c2c3": "0012a7a9ab3bbb200b40a047f470602ebc9874b3b897f5db85301878036268ab",
     # Re-pinned (issue #444), behaviour-preserving: as `build-2`'s: the library move, the import
     # line and the unread `repo_root` key in `_execute_inproc`, the retired-argument refusal gone
-    # from `tool_run_program` / `tool_run_quality_checks`, docstrings. (Measured by diffing the
+    # from `tool_run_program` / `tool_run_quality_checks`, `remote_execution`'s module import,
+    # docstrings (`quality_check_command` among them). (Measured by diffing the
     # tuple against origin/main ef28faa1's.) The digest `execute-8` shipped with at ef28faa1:
     "execute-8@ef28faa1": "5fb6403d122596bed8e02ed4529a9dfd12b32edf18799da3c58db77e6fff621e",
 }

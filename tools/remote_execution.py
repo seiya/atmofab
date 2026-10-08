@@ -4,7 +4,7 @@ reached over ssh (issues #293, #333).
 
 The local path runs each command through the build-runtime library (`tools/build_runtime.py`)
 in this process (`tool_run_program`, `tool_run_quality_checks`), and the library writes one
-`command_log.jsonl` entry per command. Nothing of this checkout runs at a remote site: the host
+`command_log.jsonl` entry per command. No Python of this checkout runs at a remote site: the host
 stages the files a job needs, renders
 ONE POSIX `sh` job script that runs the commands in order, runs it with one ssh call, copies the
 job directory back with scp, and then writes the same log entries itself — through the library's

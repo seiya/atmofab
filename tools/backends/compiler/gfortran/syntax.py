@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """The `gfortran` syntax-only adapter the `Generate.gate` syntax stage runs (issue #289, R4-b).
 
-It moved here from `tools/build_runtime.py`, which now reaches it through
+It moved here from the build-runtime module (then `mcp_servers/build_runtime_server.py`, now
+`tools/build_runtime.py`), which reaches it through
 `registry.capability_module("compiler", "gfortran", "syntax_check")` and keeps only what is
 neutral: the scratch directory, the source-name rule, the run and its command log.
 

@@ -230,7 +230,7 @@ where it runs as it is, and `--gpu` adds the `gpu` class's device probe. It writ
 
 | requirement | where it is checked |
 |---|---|
-| the agent CLI the leaf-`LLM` configuration names and the CLI checks preflight probes for it | §0-2 (Claude) / §0-3 (Codex) |
+| the agent CLI the leaf-`LLM` configuration names, and what the preflight probes of that CLI check | §0-2 (Claude) / §0-3 (Codex) |
 | the CLI or API credentials of every provider that configuration names | `preflight.json#providers` |
 | the sandbox runtime `bwrap` | `docs/BWRAP_ENABLEMENT.md` |
 
@@ -873,7 +873,7 @@ Invoking `record-agent-run` twice with the **same `agent_run_id`** raises `Value
 
 **Recovery procedure**
 
-1. Number a new `agent_run_id` with `python3 tools/new_agent_run_id.py`.
+1. Number a new `agent_run_id` with `python3 tools/new_agent_run_id.py`. (The project allow list stopped pre-approving this command and `python3 tools/orchestration_runtime.py …` in issue #444 — the grants served the retired orchestration agent — so an interactive session asks once for each.)
 2. Newly reserve `ir_id` / `pipeline_id` with `python3 tools/orchestration_runtime.py reserve-phase-root --repo-root . --orchestration-id <oid> --node-key <node_key> --step <compile|generate> --reserved-id <new_id> --reserved-by-agent-run-id <new_arid>`, adding `--target <target_id>` for `--step generate` (a pipeline is reserved for one target; it is refused for `compile`) (when the old `agent_run_id` already reserved, confirm with the operator whether the reservation can be reused).
 3. Re-run the legitimate sequence `record-launch` → leaf launch → `finalize-child` (the single call that performs `record-child-return` → `deactivate-child` → `record-reply` → `record-agent-run`) with the new `agent_run_id`. Under conductor orchestration this sequence is normally re-driven by `--resume` (§3-1); the manual subcommand path below remains available for edge recovery.
 4. To terminate the orchestration itself, call `set-status --status fail_closed --reason-code <code> --reason-detail <detail>`. Because `set-status` automatically terminates the orchestration row of `agent_runs.jsonl` in-place, do not update it manually.

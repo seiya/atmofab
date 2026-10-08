@@ -22,7 +22,7 @@ A fresh clone needs the host tools and the operator's own CLI state. Every file 
 | step | requirement | canonical source |
 |---|---|---|
 | 1 | Host CLI tools, Python packages, and the target `spec`'s toolchain and `static lint` tool | `docs/RUNBOOK.md` §0-1 |
-| 2 | Claude backend: the CLI checks preflight probes | `docs/RUNBOOK.md` §0-2 |
+| 2 | Claude backend: what the preflight probes of the Claude CLI check | `docs/RUNBOOK.md` §0-2 |
 | 3 | Codex backend: the CLI feature flag, the credential, the writable state home | `docs/RUNBOOK.md` §0-3 |
 | 4 | The leaf-`LLM` configuration file, created by copying a sample | `docs/RUNBOOK.md` §1-3, `README.md` §"Running a workflow" |
 | 5 | The sandbox runtime | `docs/BWRAP_ENABLEMENT.md` |
