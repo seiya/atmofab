@@ -917,15 +917,15 @@ PINNED: dict[str, str] = {
     # pure-71 (issue #442): the Fortran binding's §5 gains a last bullet — no derived type that
     # contains itself through allocatable components, directly (array or scalar) or through
     # another type; the GNU Fortran release the `fortran` targets build with double-frees the
-    # direct form when a populated node is copied or appended and hangs compiling the indirect
-    # one, and no gate reads for either. Represent a tree as a flat array of nodes holding integer
+    # direct form when a populated node is copied or appended and never finishes compiling the
+    # indirect one, and no gate reads for either. Represent a tree as a flat array of nodes holding integer
     # child indices. The harness producer is the only leaf that receives §5. Re-pinned in place
     # during the review loop (not shipped). Measured by diffing
     # this tuple against origin/main 8a6bc0e1's: the `fortran`
     # `checks_contract_gate_guards_section` moved and no other member. Witness:
     # orch_20261007T141634Z_85026fe2 (codex, `harness_fortran_cpu_mpi`, `fortran_cpu_mpi`,
     # `validate.execute` rc=134 on every rank, in the self-test's JSON parser).
-    "pure-71": "4bcfd41789fbce1e2d1441c3ac14db01fed8465f43e16eae4d0002cf201239bd",
+    "pure-71": "c1ac93fbdf09683e00fe629e5df63946d440c85e9fd103050f233da3d0bcd3ad",
 }
 
 

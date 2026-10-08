@@ -222,11 +222,12 @@ node's self-test).
   Build all accept, and the GNU Fortran release the `fortran` targets build with mishandles
   it: copying or appending a node whose own children are populated (an array constructor
   and `allocate` + `move_alloc` alike) frees the same memory twice, and the program aborts
-  (`double free detected`), faults (SIGSEGV) or hangs. The same holds through another type
-  (`node` holds `holder`, `holder` holds `node`), where the compiler itself hangs. No gate
-  reads for either, so the fault surfaces at `Validate.execute` or as a gate timeout, and
-  the run restarts `Generate` without the cause. Represent a tree — a parsed document, a
-  nested structure — as a flat array of nodes indexed by integers, each node holding the
-  indices of its children rather than the children, or consume the input without building
-  a tree. A type none of whose allocatable components leads back to itself (a
-  deferred-length character, a `real(dp)` array, an integer index array) is unaffected.
+  (`double free detected`), faults (SIGSEGV) or hangs. The ban covers a cycle through another
+  type as well (`node` holds `holder`, `holder` holds an allocatable `node`): on that form the
+  compiler itself never finishes, allocating memory without bound. No gate reads for either
+  form; the direct one surfaces at `Validate.execute`, where the run restarts `Generate`
+  without the cause. Represent a tree — a parsed document, a nested structure — as a flat
+  array of nodes indexed by integers, each node holding the indices of its children rather
+  than the children, or consume the input without building a tree. A type that no chain of
+  components leads back to (a deferred-length character, a `real(dp)` array, an integer
+  index array, a component of another non-recursive type) is unaffected.
