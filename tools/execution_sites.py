@@ -185,8 +185,8 @@ def _string(value: Any, where: str) -> str:
 
 
 def _remote_safe(value: str, where: str, *, spaces: bool, quoted: bool = False) -> str:
-    """Refuse a value a remote shell would act on or misread: a character in the library's
-    shell-active set unless the value reaches the shell `quoted` (a directive word), anything
+    """Refuse a value a remote shell would act on or misread: a character in
+    `_SHELL_ACTIVE_CHARS` unless the value reaches the shell `quoted` (a directive word), anything
     that is not printable ASCII (a NUL ends an argv element, a non-breaking space reads as a
     space to a person and not to a shell), and a plain space where `spaces` is False (it is
     admissible inside a directive, never in a host or a path)."""

@@ -596,9 +596,12 @@ class CallerEnvTests(unittest.TestCase):
         self.assertEqual(run_command.call_args.kwargs["env"], payload)
 
     def test_the_library_adds_its_own_pythonpath_for_the_pytest_preset(self) -> None:
+        # A caller's PYTHONPATH is replaced, not kept (the comment at the addition says so).
         with self._spy_run_command() as run_command:
             self.mod.tool_run_quality_checks(
-                {"project_dir": str(self.project_dir), "preset": "pytest"})
+                {"project_dir": str(self.project_dir), "preset": "pytest",
+                 "env": {"PYTHONPATH": "/caller/path"}})
+        self.assertNotIn("/caller/path", run_command.call_args.kwargs["env"]["PYTHONPATH"])
         # project_dir goes first; anything after it is this library's own inherited
         # PYTHONPATH, which varies with how the suite was started.
         self.assertEqual(
