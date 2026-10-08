@@ -666,7 +666,7 @@ def _anthropic_request(
         # The system channel is the same fixed prompt the CLI pure leaf gets via
         # `--system-prompt`. On this transport the model's total input is a function of the
         # host-assembled body alone (A2); on the CLI transport it is not — the CLI adds its own
-        # text (`pure_leaf.PURE_SYSTEM_PROMPT`; issue #454).
+        # text (`docs/ORCHESTRATION.md` §pure-function leaf; issue #454).
         "system": PURE_SYSTEM_PROMPT,
         "messages": list(messages),
         # Required by this API, unlike OpenAI's, where it is optional.
