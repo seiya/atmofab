@@ -3711,7 +3711,11 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         """A child referenced by a step_result.json but missing its agent_runs row is
         durable corruption / lost provenance, NOT an abandoned launch. Its edge must
         be KEPT so _validate_orchestration_completion_for_pass still rejects it — the
-        prune must not hide it (Codex P2 scope)."""
+        prune must not hide it (Codex P2 scope).
+
+        The child WAS launched (`launches/<arid>.request.json`), so the never-launched
+        clause cannot be what keeps its edge: the step_result read of
+        `_protected_child_arids` is."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             oid = "orch_resume_keep_corrupt"
@@ -3721,6 +3725,9 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 (root / "orchestration_meta.json").read_text(encoding="utf-8")
             )["orchestration_agent_run_id"]
             completed_child = "completed-but-no-row"
+            (root / "launches").mkdir(exist_ok=True)
+            (root / "launches" / f"{completed_child}.request.json").write_text(
+                "{}", encoding="utf-8")
             # A step_result vouches for the child as completed, but there is NO
             # agent_runs row for it (corruption).
             sr_dir = root / "steps" / "component__x__0.1.0" / "compile" / "step-exec"
