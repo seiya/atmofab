@@ -7521,7 +7521,7 @@ LEAF_ENV_ALLOWLIST: dict[str, str] = {
         "the CLI's own fallbacks, and for a claude leaf its settings: `--safe-mode` "
         "disables customizations but not settings, so the operator's `~/.claude` "
         "settings (their `env` block and `model` key) decide an unpinned leaf's model "
-        "(`default_agent_model_for_backend`; issue #446). A codex leaf's home arrives "
+        "(`default_agent_model_for_backend`; issues #446, #453). A codex leaf's home arrives "
         "as CODEX_HOME."
     ),
     "LANG": (
@@ -10686,7 +10686,7 @@ def resume_orchestration(
         # (idempotent — the helper no-ops once the row is already `running`).
         _reset_orchestration_run_row_to_running(repo_root, orchestration_id)
         # A host that died mid-launch leaves the active_child window open (no live
-        # agent ran deactivate-child / record-timeout). The terminal status proves
+        # host finalized the child, and nobody ran deactivate-child / record-timeout). The terminal status proves
         # no child is actually running, so clear the stale markers here — otherwise
         # the resumed agent's first record-launch hits the Claude-backend sequential
         # check and is rejected, permanently wedging recovery for
