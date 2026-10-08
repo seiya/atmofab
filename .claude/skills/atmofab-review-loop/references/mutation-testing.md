@@ -744,7 +744,7 @@ module and bound the new object as `tools.build_runtime`; on exit `patch.dict` r
 dict entry but not the package attribute. The full suite under `-n 24` was green (the rows that
 cared ran in other workers). `scripts/mutation_check.py`'s baseline, which runs the `--test-cmd`
 serially, went red on `test_execution_sites::test_the_shell_active_set_is_the_librarys_own`: it
-patched `_SHELL_ACTIVE_CHARS` on the object `from tools import build_runtime` returned, while
+patched `_SHELL_ACTIVE_CHARS` (the library's then; `tools/execution_sites.py`'s own since issue #457) on the object `from tools import build_runtime` returned, while
 `tools.execution_sites` read the object it had imported before the pop. Fixed (ea14dccf) by
 patching the package attribute too; round 2 then found the row raised `AttributeError` when no
 earlier row had imported the module, so the module is imported before it is patched

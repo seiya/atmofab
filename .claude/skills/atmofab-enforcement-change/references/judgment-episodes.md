@@ -581,4 +581,44 @@ lazily imported modules. The suite, the drift pins and the hunk sweep were all g
 was a correct import of a correct module, and only a cross-revision comparison of WHEN it ran
 shows the difference. Fixed in 9494a549 by importing inside `_shell_active_chars` again;
 `host_prerequisites` and `remote_execution` stayed module-level because nothing imports them at
-startup (checked the same way).
+startup (checked the same way). Issue #457 later moved the set into `tools/execution_sites.py`
+itself, so that module no longer imports the library at all.
+
+## Rule 1-b: a decision table with no producer (issue #455 / PR #460, 2026-10-08)
+
+`VALIDATE_JUDGE_ROUTING` routed a `Validate.judge` fail by the verdict's failure class and the
+finding's attribution, and its non-`pass` rows were what three phase contracts described. The
+judge is launched only after a clean execute verdict, so `failure_class` is `pass` whenever a
+judge runs: the other rows were reachable from test fixtures alone. The evidence the deletion
+shipped on was two driven rows — a `physics_fail` and a `structural_violation` verdict each fail
+the execute substep through the real `_execute_inproc`, and `run_phase` records no judge launch
+after an execute fail — and the claim was written as "no in-tree producer", because what a run of
+the table would leave (a `judge_<class>_<attribution>` reason) is a value no run could produce.
+**The tell for this shape: a table keyed on a field whose producer runs BEFORE the gate that
+launches the table's reader, and filters that field to one value.** Every row but that value's is
+documentation of a route the system cannot take, and the contracts citing those rows were false
+the same way.
+
+## Rule 1-e then 1-b: a defense whose every caller composes constants (issue #457 / PR #461, 2026-10-08)
+
+The build-runtime library refused execution-redirecting `env` names, switch-shaped `target` /
+`extra_args`, and shell-active characters in a value. After Z4 no leaf reaches the library, and a
+trace of every call site found the conductor composing each value from host constants — with one
+exception, the IR's case ids in the quality check's `CASES`, which the Compile leaf authors and
+`CASE_ID_TOKEN_RE` bounds before any build. Scope was decided by rule 1-e (a leaf gains nothing),
+deletion by rule 1-b (no in-tree caller composes a refusable value; a refusal raised before
+`_run_command` left no record, so "never reached" was not claimable). Two things the loop found
+that the plan had not: **the deleted layer was the SECOND guard on `CASES`, and the first one
+became the only one with no per-character pin** — widening `CASE_ID_TOKEN_RE` to admit ``;$`()|``
+was green on every suite file until round 1 added the pin; and **the document written for the
+deletion said "a leaf reaches none of these arguments"**, which the trace itself contradicted, and
+which survived two rounds. When you delete a second guard, pin the first for what the second
+used to catch, and write the trace's exceptions into the prose rather than its conclusion. The
+operator-only consequence (a checkout path holding `;` now fails as a Generate-routed
+`compile_error` instead of a transport `fail_closed`) was documented rather than closed, as the
+plan decided.
+
+Separately, and environment-shaped rather than a rule: the session's auto-mode permission
+classifier refused the deletion edit itself as "Security Weaken", and then a read of the file
+being edited, even after the operator approved in chat. It went through only after the operator
+left auto mode. Plan a defense deletion for a session that is not in auto mode.
