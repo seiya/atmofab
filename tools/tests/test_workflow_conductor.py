@@ -3460,8 +3460,11 @@ class ConductRoutingTest(unittest.TestCase):
 
     def _build_failure_conduct(self, category: str, mode: str = "prod"):
         """Build fails once with `category`, classified by the real `classify_build_failure`
-        (so the reason is the one the route emits); `_read_repair_findings` is stubbed to
-        record when, and over which binary, it ran."""
+        (so the reason is the one the route emits). The failed attempt's `binary_meta.json` is
+        written where that attempt's build writes it — under the binary id the REAL
+        `_ensure_fresh_producer_id` gave it — and the REAL `_read_repair_findings` reads it;
+        the wrapper only records when, and over which binary, it ran. Returns the binary ids
+        each Build attempt was given, in order."""
         c = self._conductor()
         c.workflow_mode = mode
         c._claude_session_resumable = lambda s, **kw: True  # type: ignore[assignment]
@@ -3475,29 +3478,51 @@ class ConductRoutingTest(unittest.TestCase):
 
         c.status_fn = status_fn
         c.decision_fn = lambda phase, outcomes: wc.classify_build_failure(category)
-        seen: list[tuple[int, str | None, str | None, str | None]] = []
+        build_ids: list[str] = []
+        real_rotate = c._ensure_fresh_producer_id
 
-        def fake_findings(refs, reason, phase=None):
+        def rotate_then_record(refs, phase):
+            real_rotate(refs, phase)
+            if phase != "build":
+                return
+            build_ids.append(refs.binary_id)
+            if len(build_ids) == 1:  # the attempt that fails writes its record
+                meta_path = c.repo_root / refs.binary_dir() / "binary_meta.json"
+                meta_path.parent.mkdir(parents=True, exist_ok=True)
+                self.addCleanup(shutil.rmtree, meta_path.parent, True)
+                meta_path.write_text(json.dumps(
+                    {"verification_status": "fail", "failure_category": category,
+                     "failure_excerpt": "src/model.f90:12:3: Error: Syntax error"}),
+                    encoding="utf-8")
+
+        c._ensure_fresh_producer_id = rotate_then_record  # type: ignore[assignment]
+        refs = self._refs()
+        seen: list[tuple[int, str | None, str | None, str | None]] = []
+        real_reader = c._read_repair_findings
+
+        def recording_reader(refs, reason, phase=None):
             seen.append((len([s for s, _ in c.calls if s == "revoke-artifact"]),
                          refs.binary_id, reason, phase))
-            return "src/model.f90:12:3: Error: Syntax error"
+            return real_reader(refs, reason, phase)
 
-        c._read_repair_findings = fake_findings  # type: ignore[assignment]
-        refs = self._refs()
+        c._read_repair_findings = recording_reader  # type: ignore[assignment]
         status = c.conduct(refs, "build")
         gen_launches = [cap["--request-json"] for s, cap in c.calls
                         if s == "record-launch"
                         and cap.get("--request-json", {}).get("step") == "generate"
                         and cap["--request-json"].get("substep") == "generate"]
-        return c, status, seen, gen_launches
+        return c, status, seen, gen_launches, build_ids
 
     def test_build_compile_error_warm_reopens_generate_cross_phase(self) -> None:
         # Issue #464: a Build `compile_error` revokes Generate with a WARM reuse repair carrying
         # the compiler's excerpt, read BEFORE the revocation while refs still names the FAILED
         # binary (its id rotates only at the next run_phase(build) entry).
-        c, status, seen, gen_launches = self._build_failure_conduct("compile_error")
+        c, status, seen, gen_launches, build_ids = self._build_failure_conduct("compile_error")
         self.assertEqual(status, "pass")
-        self.assertEqual(seen, [(0, "bin_1_001", "build_compile_error", "build")])
+        # The read names the FAILED attempt's binary, and the retry's Build got a fresh one.
+        self.assertEqual(len(build_ids), 2)
+        self.assertNotEqual(build_ids[0], build_ids[1])
+        self.assertEqual(seen, [(0, build_ids[0], "build_compile_error", "build")])
         revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
         self.assertEqual(len(revokes), 1)
         self.assertEqual(revokes[0]["--step"], "generate")
@@ -3512,13 +3537,17 @@ class ConductRoutingTest(unittest.TestCase):
         self.assertTrue(gen_launches[1]["warm_resume"])
 
     def test_build_make_error_restarts_generate_cold(self) -> None:
-        # `make_error` routes `restart`: the retry is a cold launch, not a warm resume.
-        # `_repair_payload` still attaches the excerpt to the request; the producer loop reads
-        # its seed only under `reuse`, which is why phase_03_build.md §On-failure says a
-        # restart carries nothing.
-        c, status, seen, gen_launches = self._build_failure_conduct("make_error")
+        # `make_error` routes `restart`: the conductor's repair payload names `restart` and the
+        # retry is not a warm resume. (The fake producer passes that payload through as its
+        # request; the real loop records `none` and renders no excerpt — witnessed by
+        # test_pure_leaf_producer's `test_a_build_restart_carries_no_findings_...`.) The
+        # revocation still records the excerpt for the operator.
+        c, status, seen, gen_launches, build_ids = self._build_failure_conduct("make_error")
         self.assertEqual(status, "pass")
-        self.assertEqual(seen, [(0, "bin_1_001", "build_make_error", "build")])
+        self.assertEqual(seen, [(0, build_ids[0], "build_make_error", "build")])
+        revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+        self.assertEqual(revokes[0]["--last-fail-reason"],
+                         "src/model.f90:12:3: Error: Syntax error")
         self.assertEqual(len(gen_launches), 2)
         self.assertEqual(gen_launches[1]["repair_strategy"], "restart")
         self.assertFalse(gen_launches[1].get("warm_resume"))
@@ -3527,9 +3556,10 @@ class ConductRoutingTest(unittest.TestCase):
         # dev does not retry in-run (`dev_phase_rollback`), but the findings are still read
         # before the single revocation of Generate, so the excerpt lands on the revocation
         # record the operator's cold --resume seeds its repair from.
-        c, status, seen, gen_launches = self._build_failure_conduct("compile_error", "dev")
+        c, status, seen, gen_launches, build_ids = self._build_failure_conduct(
+            "compile_error", "dev")
         self.assertEqual(status, "fail_closed")
-        self.assertEqual(seen, [(0, "bin_1_001", "build_compile_error", "build")])
+        self.assertEqual(seen, [(0, build_ids[0], "build_compile_error", "build")])
         revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
         self.assertEqual(len(revokes), 1)
         self.assertEqual(revokes[0]["--step"], "generate")
