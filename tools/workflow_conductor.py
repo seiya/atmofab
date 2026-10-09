@@ -10492,7 +10492,7 @@ class Conductor:
                     f"generate.gate syntax check: cannot stage dependency modules for build_system="
                     f"{tc['build_system']!r}, language={language!r}: staging needs a "
                     f"host-authored control file on both axes ({missing}); the "
-                    f"syntax gate would misdiagnose an unresolved `use <dep>_model` as a "
+                    f"syntax gate would misdiagnose an unresolved dependency module as a "
                     f"content error and loop — fail closed (this node is unbuildable anyway)")
             dep_files = [p for p in deps_dir.iterdir() if p.is_file()]
 
