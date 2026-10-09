@@ -21062,6 +21062,10 @@ class DeterministicSyntaxTest(unittest.TestCase):
             msg = str(ctx.exception)
             self.assertIn("re-certify", msg)          # cause 1: a defective dependency
             self.assertIn("toolchain.standard", msg)  # cause 2: this node's standard
+            # Build compiles the closure under the target's declared standard, named by its
+            # profile field rather than by one compiler's flag (issue #469).
+            self.assertIn("under the same toolchain.standard", msg)
+            self.assertNotIn("-std", msg.split("Staged:")[0])
             self.assertIn(self.DEP_REF, msg)          # what was staged
             self.assertIn("not in the selected standard", msg)  # the diagnostics decide
 
