@@ -21,8 +21,8 @@ from typing import ClassVar
 from unittest import mock
 
 from tools import codegen_bundle as cb
-from tools.backends import registry as backend_registry
 from tools import workflow_conductor as wc
+from tools.backends import registry as backend_registry
 from tools.tests.llm_samples import sample_config_with as _cfg
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 
@@ -1318,6 +1318,7 @@ class HostGivenNamesAreTheLanguagesTest(unittest.TestCase):
 
     def test_the_staged_source_and_the_m3c_names_follow_the_language(self) -> None:
         from unittest import mock
+
         from tools.backends.language.fortran import bundle
         with mock.patch.object(bundle, "model_basename", lambda sid: f"{sid}_model.zz"), \
                 mock.patch.object(bundle, "checks_basename", lambda sid: f"{sid}_checks.zz"):
@@ -3409,6 +3410,7 @@ class PureStateBindingLayerTests(unittest.TestCase):
         entries, so the distributed-metadata half sees which variables are arrays."""
         from types import SimpleNamespace
         from unittest import mock
+
         from tools import workflow_conductor as wc
         with tempfile.TemporaryDirectory() as t:
             root = Path(t)

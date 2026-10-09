@@ -5922,7 +5922,7 @@ class Conductor:
             by_sid.setdefault(spec_id_of(nk), []).append(nk)
         clashes = {sid: nks for sid, nks in by_sid.items() if len(nks) > 1}
         if clashes:
-            model_source = self._language_facts().model_basename(sorted(clashes)[0])
+            model_source = self._language_facts().model_basename(min(clashes))
             raise RuntimeError(
                 f"dependency closure for {refs.node_key} has spec_id basename collisions "
                 f"{clashes}: the Model B staged source (`{model_source}`), its object rule in "
