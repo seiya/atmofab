@@ -20576,33 +20576,44 @@ class DeterministicSyntaxTest(unittest.TestCase):
     def test_gate_syntax_check_staging_refusal_names_the_axis_that_lacks_control_file(
             self) -> None:
         # Issue #469: the refusal names the (build_system, language) pair and carries the
-        # registry's own reason for the axis that does not declare `control_file`, rather than
-        # a "make+fortran only" sentence spelled here.
+        # registry's own reason for EACH axis that does not declare `control_file`, rather than
+        # a "make+fortran only" sentence spelled here. The live registry has no language without
+        # `control_file` that also reaches this gate, so the second half drives a stub reason.
         import tempfile
         from unittest import mock
-        with tempfile.TemporaryDirectory() as td:
-            repo = Path(td)
-            refs = self._refs()
-            self._seed(repo, refs)
-            c = self._conductor(repo)
-            toolchain = dict(c._read_toolchain(refs), build_system="cmake")
-            with mock.patch.object(c, "_read_toolchain", return_value=toolchain), \
-                    mock.patch.object(c, "_stage_dependency_sources", return_value=[]), \
-                    mock.patch.object(c, "_dependency_closure_nodes",
-                                      return_value=["component/dep@0.1.0"]):
-                with self._patch_syntax(lambda args: {"ok": True, "skipped": False}):
-                    with self.assertRaises(RuntimeError) as ctx:
-                        c._gate_syntax_check(refs, "child-1")
-        msg = str(ctx.exception)
-        reason = wc.backend_registry.missing_capability_reason(
-            "build_system", "cmake", "control_file")
-        self.assertTrue(reason)
-        self.assertIn(reason, msg)
-        self.assertIn(f"language={toolchain['language']!r}", msg)
-        self.assertIsNone(wc.backend_registry.missing_capability_reason(
-            "language", toolchain["language"], "control_file"))
-        self.assertNotIn("make+fortran", msg)
-        self.assertNotIn("use <", msg)
+        reason = wc.backend_registry.missing_capability_reason
+
+        def stub(axis: str, value: str, capability: str) -> str | None:
+            return f"<{axis} {value} lacks {capability}>"
+
+        for missing, expected in (
+                (reason, [reason("build_system", "cmake", "control_file")]),
+                (stub, ["<build_system cmake lacks control_file>",
+                        "<language {language} lacks control_file>"])):
+            with self.subTest(missing=missing.__name__), \
+                    tempfile.TemporaryDirectory() as td:
+                repo = Path(td)
+                refs = self._refs()
+                self._seed(repo, refs)
+                c = self._conductor(repo)
+                toolchain = dict(c._read_toolchain(refs), build_system="cmake")
+                with mock.patch.object(c, "_read_toolchain", return_value=toolchain), \
+                        mock.patch.object(c, "_stage_dependency_sources", return_value=[]), \
+                        mock.patch.object(c, "_dependency_closure_nodes",
+                                          return_value=["component/dep@0.1.0"]), \
+                        mock.patch.object(wc.backend_registry, "missing_capability_reason",
+                                          side_effect=missing), \
+                        self._patch_syntax(lambda args: {"ok": True, "skipped": False}), \
+                        self.assertRaises(RuntimeError) as ctx:
+                    c._gate_syntax_check(refs, "child-1")
+                msg = str(ctx.exception)
+                for part in expected:
+                    part = part.format(language=toolchain["language"])
+                    self.assertTrue(part)
+                    self.assertIn(part, msg)
+                self.assertIn(f"language={toolchain['language']!r}", msg)
+                self.assertNotIn("make+fortran", msg)
+                self.assertNotIn("use <", msg)
 
     DEP_REF = "workspace/pipelines/component__dep__0.1.0/p_1/source/s_1/src/dep_model.f90"
 
