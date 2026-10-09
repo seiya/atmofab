@@ -1687,6 +1687,25 @@ class StreamBoundsAndEvidenceTests(unittest.TestCase):
         threading.Thread(target=_serve, daemon=True).start()
         return f"http://127.0.0.1:{srv.getsockname()[1]}/v1"
 
+    def test_a_server_silent_past_the_deadline_is_the_deadline_on_both_paths(self) -> None:
+        """A buffered endpoint writes nothing — headers included — until the whole answer
+        exists, so its deadline fires inside `urlopen`, not in the bounded body read. #467's
+        round-1 review measured that reported as `network error: TimeoutError: timed out` —
+        tagged retryable, contradicting the record that a deadline is terminal. It is the
+        deadline's report now, on both paths, and the conductor leaves it untagged. Driven over
+        a real socket: which call the timeout surfaces from is the whole point."""
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                base = self._serve_raw(b"", stall=True)
+                started = time.monotonic()
+                out = hl.run_pure_http_leaf(
+                    _entry(base_url=base, stream=stream), [{"role": "user", "content": "P"}],
+                    timeout_s=0.5)
+                self.assertGreaterEqual(time.monotonic() - started, 0.5)
+                self.assertEqual(out.transport_error, "response_deadline_exceeded")
+                self.assertIsNone(wc._leaf_infra_error(
+                    wc.ProcResult(1, "", out.transport_error)))
+
     def test_a_chunked_stream_cut_mid_body_is_classified_as_a_transport_flake(self) -> None:
         """`Transfer-Encoding: chunked` is the dominant encoding for streaming, and a connection
         cut mid-chunk does NOT reach a clean EOF — `http.client` raises `IncompleteRead`, whose
