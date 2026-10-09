@@ -767,9 +767,9 @@ class ForbiddenCommandTest(unittest.TestCase):
         names from) refuses rather than narrowing the reserved set."""
         rec = backend_registry.Backend(
             "build_system", "zz_bs", None, core_provides=frozenset({"control_file"}))
-        with mock.patch.dict(backend_registry._BACKENDS, {("build_system", "zz_bs"): rec}):
-            with self.assertRaises(backend_registry.BackendNotExtracted):
-                cb._reserved_logical_filenames()
+        with mock.patch.dict(backend_registry._BACKENDS, {("build_system", "zz_bs"): rec}), \
+                self.assertRaises(backend_registry.BackendNotExtracted):
+            cb._reserved_logical_filenames()
 
     def test_no_reserved_name_is_a_language_source_name(self) -> None:
         """The two clauses do not overlap: no language's source extension is empty, and no

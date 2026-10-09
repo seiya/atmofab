@@ -186,9 +186,9 @@ def _language_identifier_re(language: str) -> re.Pattern[str] | None:
 # positives.
 def _reserved_logical_filenames() -> frozenset[str]:
     names: set[str] = set()
-    # Every DECLARED record, not `implemented_backend_ids`: a record that declares
-    # `control_file` with no extracted package (`core_provides`) raises `BackendNotExtracted`
-    # here, at import, rather than leaving its names out of the set.
+    # A record that declares `control_file` with no extracted package (`core_provides`) makes
+    # `capability_module` raise `BackendNotExtracted` here, at import: a named refusal, never
+    # a set with that build system's names left out.
     for build_system in backend_registry.backend_ids("build_system"):
         if backend_registry.provides("build_system", build_system, "control_file"):
             names.update(backend_registry.capability_module(
@@ -201,9 +201,10 @@ def _reserved_logical_filenames() -> frozenset[str]:
 #: and a build tool may read a leaf-authored name ahead of it. The set is every registered
 #: build system's, not the target's alone — a leaf gains nothing from authoring any of them,
 #: and refusing all is cheaper than knowing which build system is in play at schema time.
-#: Derived like `LANGUAGE_EXTENSION_ALLOWLIST`, so registering a build system widens it. Most
-#: of these names are also refused by the extension allowlist; this clause is kept because it
-#: does not depend on a language's `SOURCE_EXTENSIONS` excluding them, and it names the defect.
+#: Derived like `LANGUAGE_EXTENSION_ALLOWLIST`, so registering a build system widens it. Today
+#: every one of these names is also refused by the extension allowlist (none carries an
+#: extension); this clause is kept because it does not depend on a language's
+#: `SOURCE_EXTENSIONS` excluding them, and it names the defect.
 RESERVED_LOGICAL_FILENAMES: frozenset[str] = _reserved_logical_filenames()
 
 # Every grammar pattern anchors the whole string with `^` … `(?![\s\S])`, not `^` … `$`.
