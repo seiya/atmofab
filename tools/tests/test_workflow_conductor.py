@@ -15463,8 +15463,10 @@ class WriteMakefileTest(unittest.TestCase):
                 {"node_key": "component/top@0.1.0", "topo_level": 1},
             ], transitive_deps=[])
             c = self._conductor(repo)
-            with self.assertRaisesRegex(RuntimeError, "spec_id basename collision"):
+            with self.assertRaisesRegex(RuntimeError, "spec_id basename collision") as ctx:
                 c._dependency_closure_nodes(refs)
+            # The staged source is named by the target language's backend (issue #469).
+            self.assertIn(f"(`{c._language_facts().model_basename('foo')}`)", str(ctx.exception))
             # both named consumers inherit the guard at the shared chokepoint
             with self.assertRaisesRegex(RuntimeError, "spec_id basename collision"):
                 c._dependency_closure(refs)
@@ -18845,6 +18847,14 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(meta["status"], "fail")
             self.assertEqual(meta["failure_category"], "quality_check_mismatch")
             self.assertIn("[execute fail]", meta["failure_excerpt"])
+            # The cause line names the target's control file and preset, and the binding
+            # document, from the build-system backend (issue #469), not make's spellings.
+            from tools.backends.build_system.make import control_file, execute
+            cause = meta["failure_excerpt"].split("[execute fail: quality_check]")[1]
+            self.assertIn(f"the {execute.QUALITY_CHECK_PRESET} re-run", cause)
+            self.assertIn(f"the {control_file.CONTROL_FILE_BASENAME} quality-check target", cause)
+            self.assertIn("with `--cases`", cause)
+            self.assertIn("docs/backends/build_system/make/CONTROL_FILE.md §2", cause)
 
     def test_execute_inproc_stamps_the_repo_revision(self) -> None:
         """B4: the revision that produced this run's evidence is recorded beside the excerpt, so
