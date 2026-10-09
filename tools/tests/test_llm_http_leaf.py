@@ -435,6 +435,24 @@ class ErrorTaxonomyTests(unittest.TestCase):
                 self.assertEqual(tag[0], "llm_transport_flake")
                 self.assertIn(tag[0], wc._RETRYABLE_LEAF_INFRA_TAGS)
 
+    def test_a_wrapped_deadline_timeout_is_the_deadline(self) -> None:
+        """`urlopen` wraps a timeout during CONNECT (or a stalled TLS handshake) in `URLError`,
+        where the timeout is `.reason`. At the deadline that is the same event as the bare
+        `TimeoutError` from `getresponse()`, so it gets the deadline's untagged report; before
+        the deadline both keep the transport report (the row above). The opener waits out the
+        deadline on an Event rather than a real dead host, which no fixture can rely on."""
+        import threading
+
+        def _stalled_connect(*_a, **_k):
+            threading.Event().wait(0.3)
+            raise urllib.error.URLError(TimeoutError("timed out"))
+        for stream in (False, True):
+            with self.subTest(stream=stream):
+                out = hl.run_pure_http_leaf(
+                    _entry(stream=stream), [{"role": "user", "content": "P"}],
+                    opener=_stalled_connect, timeout_s=0.1)
+                self.assertEqual(out.transport_error, "response_deadline_exceeded")
+
     def test_deadline_and_oversize_are_terminal_by_design(self) -> None:
         """Neither is retried, and the classifier is pinned NOT to tag them (#467). The expired
         deadline is the request's own cap — the HTTP leaf's `leaf_timeout` — and a re-launch
