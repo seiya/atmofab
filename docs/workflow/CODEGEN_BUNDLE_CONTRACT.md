@@ -51,8 +51,8 @@ optimization boundary.
   document. The schema is the
   declarative copy of the field grammar a draft-07 pattern can carry; the module is the
   enforcement point and additionally holds the rules a pattern cannot express — the
-  reserved build filenames, the forbidden build/script extensions, the language extension
-  allowlist, the capability vocabulary, and every cross-field invariant. Validation itself
+  reserved build filenames, the language extension allowlist (which is also what refuses a
+  build/script file), the capability vocabulary, and every cross-field invariant. Validation itself
   reads only the module constants, so a missing or unreadable schema file cannot fail-open
   a running gate; the unit suite enforces that the two copies agree.
 - Out of scope: how a bundle is requested from a model (the pure-leaf launch prompt,
@@ -239,11 +239,14 @@ within the bundle. The rules (canonical implementation:
   `a//b.<ext>`, a trailing `/`, and the empty string.
 - Relative and confined: no leading `/`, and no `.` / `..` segment anywhere.
 - Each segment matches `[A-Za-z0-9_][A-Za-z0-9_.-]*`.
-- The extension is one allowed for the file's `language` (`LANGUAGE_EXTENSION_ALLOWLIST`,
-  read from each language backend's `bundle_facts.SOURCE_EXTENSIONS`).
-- The basename is not a reserved build filename (`RESERVED_LOGICAL_FILENAMES` in
-  `tools/codegen_bundle.py` is the set): a bundle file is never a build control file. The
-  extension is not a build/script extension (`.sh`, `.bash`, `.mk`, `.cmake`, `.py`).
+- The basename is no registered build system's control-file name
+  (`RESERVED_LOGICAL_FILENAMES` in `tools/codegen_bundle.py`, the union of each `build_system`
+  backend's `CONTROL_FILE_BASENAMES`; for `make`, `docs/backends/build_system/make/CONTROL_FILE.md`):
+  the host authors the control file, and a bundle file is never one.
+- Otherwise, the extension is one allowed for the file's `language`
+  (`LANGUAGE_EXTENSION_ALLOWLIST`, read from each language backend's
+  `bundle_facts.SOURCE_EXTENSIONS`). This is also the rule that refuses a build or script
+  file: an extension that is not the language's source extension is refused, whatever it is.
 - Paths are unique **after case folding**, so a bundle cannot depend on a
   case-sensitive filesystem to keep `A.<ext>` and `a.<ext>` apart.
 - Two paths that derive the same object name are not refused by these rules: the object

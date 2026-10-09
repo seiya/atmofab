@@ -15463,8 +15463,10 @@ class WriteMakefileTest(unittest.TestCase):
                 {"node_key": "component/top@0.1.0", "topo_level": 1},
             ], transitive_deps=[])
             c = self._conductor(repo)
-            with self.assertRaisesRegex(RuntimeError, "spec_id basename collision"):
+            with self.assertRaisesRegex(RuntimeError, "spec_id basename collision") as ctx:
                 c._dependency_closure_nodes(refs)
+            # The staged source is named by the target language's backend (issue #469).
+            self.assertIn(f"(`{c._language_facts().model_basename('foo')}`)", str(ctx.exception))
             # both named consumers inherit the guard at the shared chokepoint
             with self.assertRaisesRegex(RuntimeError, "spec_id basename collision"):
                 c._dependency_closure(refs)
@@ -18845,6 +18847,14 @@ class DeterministicBuildTest(unittest.TestCase):
             self.assertEqual(meta["status"], "fail")
             self.assertEqual(meta["failure_category"], "quality_check_mismatch")
             self.assertIn("[execute fail]", meta["failure_excerpt"])
+            # The cause line names the target's control file and preset, and the binding
+            # document, from the build-system backend (issue #469), not make's spellings.
+            from tools.backends.build_system.make import control_file, execute
+            cause = meta["failure_excerpt"].split("[execute fail: quality_check]")[1]
+            self.assertIn(f"the {execute.QUALITY_CHECK_PRESET} re-run", cause)
+            self.assertIn(f"the {control_file.CONTROL_FILE_BASENAME} quality-check target", cause)
+            self.assertIn("`<binary> --cases <spec> <case_id>...`", cause)
+            self.assertIn("docs/backends/build_system/make/CONTROL_FILE.md §2", cause)
 
     def test_execute_inproc_stamps_the_repo_revision(self) -> None:
         """B4: the revision that produced this run's evidence is recorded beside the excerpt, so
@@ -20563,6 +20573,48 @@ class DeterministicSyntaxTest(unittest.TestCase):
                     with self.assertRaises(RuntimeError):
                         c._gate_syntax_check(refs, "child-1")
 
+    def test_gate_syntax_check_staging_refusal_names_the_axis_that_lacks_control_file(
+            self) -> None:
+        # Issue #469: the refusal names the (build_system, language) pair and carries the
+        # registry's own reason for EACH axis that does not declare `control_file`, rather than
+        # a "make+fortran only" sentence spelled here. The live registry has no language without
+        # `control_file` that also reaches this gate, so the second half drives a stub reason.
+        import tempfile
+        from unittest import mock
+        reason = wc.backend_registry.missing_capability_reason
+
+        def stub(axis: str, value: str, capability: str) -> str | None:
+            return f"<{axis} {value} lacks {capability}>"
+
+        for missing, expected in (
+                (reason, [reason("build_system", "cmake", "control_file")]),
+                (stub, ["<build_system cmake lacks control_file>",
+                        "<language {language} lacks control_file>"])):
+            with self.subTest(missing=missing.__name__), \
+                    tempfile.TemporaryDirectory() as td:
+                repo = Path(td)
+                refs = self._refs()
+                self._seed(repo, refs)
+                c = self._conductor(repo)
+                toolchain = dict(c._read_toolchain(refs), build_system="cmake")
+                with mock.patch.object(c, "_read_toolchain", return_value=toolchain), \
+                        mock.patch.object(c, "_stage_dependency_sources", return_value=[]), \
+                        mock.patch.object(c, "_dependency_closure_nodes",
+                                          return_value=["component/dep@0.1.0"]), \
+                        mock.patch.object(wc.backend_registry, "missing_capability_reason",
+                                          side_effect=missing), \
+                        self._patch_syntax(lambda args: {"ok": True, "skipped": False}), \
+                        self.assertRaises(RuntimeError) as ctx:
+                    c._gate_syntax_check(refs, "child-1")
+                msg = str(ctx.exception)
+                for part in expected:
+                    part = part.format(language=toolchain["language"])
+                    self.assertTrue(part)
+                    self.assertIn(part, msg)
+                self.assertIn(f"language={toolchain['language']!r}", msg)
+                self.assertNotIn("make+fortran", msg)
+                self.assertNotIn("use <", msg)
+
     DEP_REF = "workspace/pipelines/component__dep__0.1.0/p_1/source/s_1/src/dep_model.f90"
 
     #: What a dependency attribution probe compiles: the staged closure alone. A row that
@@ -21062,6 +21114,10 @@ class DeterministicSyntaxTest(unittest.TestCase):
             msg = str(ctx.exception)
             self.assertIn("re-certify", msg)          # cause 1: a defective dependency
             self.assertIn("toolchain.standard", msg)  # cause 2: this node's standard
+            # Build compiles the closure under the target's declared standard, named by its
+            # profile field rather than by one compiler's flag (issue #469).
+            self.assertIn("under the same toolchain.standard", msg)
+            self.assertNotIn("-std", msg.split("Staged:")[0])
             self.assertIn(self.DEP_REF, msg)          # what was staged
             self.assertIn("not in the selected standard", msg)  # the diagnostics decide
 

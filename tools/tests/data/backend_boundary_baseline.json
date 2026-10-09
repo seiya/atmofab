@@ -122,10 +122,10 @@
     },
     "tools/codegen_bundle.py": {
       "compiler-driver": 2,
-      "fortran": 14,
+      "fortran": 13,
       "fortran-subroutine": 6,
       "fortran-suffix": 1,
-      "make-control-file": 5
+      "make-control-file": 2
     },
     "tools/dependency_graph.py": {
       "make-control-file": 3
@@ -157,13 +157,13 @@
       "parallel-directive": 1
     },
     "tools/workflow_conductor.py": {
-      "compiler-driver": 5,
-      "fortran": 25,
+      "compiler-driver": 3,
+      "fortran": 19,
       "fortran-implicit-none": 1,
       "fortran-kind": 1,
-      "fortran-suffix": 22,
-      "make-control-file": 62,
-      "make-variable": 10
+      "fortran-suffix": 17,
+      "make-control-file": 57,
+      "make-variable": 9
     }
   }
 }

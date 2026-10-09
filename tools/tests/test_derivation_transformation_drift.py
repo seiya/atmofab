@@ -842,12 +842,18 @@ PINNED_RENDER: dict[str, str] = {
     # render-9 (issue #437): the rendered cuda_cpp runner drops the trailing blanks of each
     # status `checks_compute` returns before it fills the harness check record, so a padded
     # "na  " never reaches the harness writer from a physics node.
-    "render-9": "085095e71a92c9d5aa5fafd4e5ebdd7830af76f05d0908f5fca4909f6d1458ad",
+    "render-9": "a175345a2eb32c20da23c8a45bc0b3ad9309273438839825d14005b4915d99ff",
     # Re-pinned (issue #444), behaviour-preserving: two comments moved: `parallel/mpi/wrapper.py`
     # and `language/fortran/bundle.py` cite `tools/build_runtime.py` instead of
     # `mcp_servers/build_runtime_server.py`; nothing rendered moved. (Measured by diffing the tuple
     # against origin/main ef28faa1's.) The digest `render-9` shipped with at ef28faa1:
     "render-9@ef28faa1": "7d8a56413fd63d105b977996ce8a9db00a347c7caf687d1e6657a44119e956d9",
+    # Re-pinned (issue #469), behaviour-preserving: `make/control_file.py` gains
+    # `CONTROL_FILE_BASENAMES`, the names `make` reads without `-f`, which `codegen_bundle`
+    # derives its reserved bundle basenames from; nothing it renders moved. (Measured by diffing
+    # `render_tuple()` against origin/main cb3da418's: that row and no other.) The digest
+    # `render-9` shipped with at cb3da418:
+    "render-9@cb3da418": "085095e71a92c9d5aa5fafd4e5ebdd7830af76f05d0908f5fca4909f6d1458ad",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -901,7 +907,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "4a1391a7fde53a8f635e1b45b1be948872576001c6390a6d11f39cce751f2a5e",
+    "build-2": "6ab2137e8a06756cd4a464474f3c70d096ca5b67aa86dfc2b51fb6e94df962d0",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build
@@ -977,6 +983,12 @@ PINNED_BUILD: dict[str, str] = {
     # origin/main 01970646's: that row and no other.) The digest `build-2` shipped with at
     # 01970646:
     "build-2@01970646": "48f39285564b16bbcf9e0ba7683330152d45c9b870feb05c597bbbf8c48f0bc7",
+    # Re-pinned (issue #469), behaviour-preserving: `make/control_file.py` gains
+    # `CONTROL_FILE_BASENAMES` (read by `codegen_bundle`'s reserved basenames only); the build
+    # command and its record are unchanged. (Measured by diffing `build_tuple()` against
+    # origin/main cb3da418's: that row and no other.) The digest `build-2` shipped with at
+    # cb3da418:
+    "build-2@cb3da418": "4a1391a7fde53a8f635e1b45b1be948872576001c6390a6d11f39cce751f2a5e",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -1094,7 +1106,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # longer copies it. (Measured by diffing `execute_tuple()` against origin/main dd5bbcb8's:
     # the `Conductor._author_snapshot_schema` row and no other.) The digest `execute-8` shipped
     # with at dd5bbcb8 is kept below.
-    "execute-8": "41f91e600bc6d362177325f639ad15107107bbb2274bb856bb32999eca8b74e5",
+    "execute-8": "2006092142e7b93ec637d4c5589ba5b2f9aac95bad8565525cf02f1708bc9dce",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -1200,6 +1212,17 @@ PINNED_EXECUTE: dict[str, str] = {
     # against origin/main 8f8f0298's: the `Conductor._author_quality_check` row and no other.)
     # The digest `execute-8` shipped with at 8f8f0298:
     "execute-8@8f8f0298": "0e61c90960c5568a4fd5a2eefed86693c250ff0b47d289289f23722cb1a3d4d0",
+    # Re-pinned (issue #469), behaviour-preserving: `Conductor._execute_inproc`'s cause line for
+    # a quality-check re-run that emitted no verdict names the control file and its preset from
+    # the build system's backend instead of spelling `make`'s, and states the runner argv as
+    # `<binary> --cases <spec> <case_id>...` rather than in make variables. Only a FAILED
+    # execute's stderr changes, and a failed record is never reused; a passing run's record is
+    # byte-identical. That stderr is also the `quality_check_mismatch` excerpt the warm Generate
+    # repair receives as its findings (`_read_repair_findings`), so the line a repair leaf reads
+    # changed with it.
+    # (Measured by diffing `execute_tuple()` against origin/main cb3da418's: that row and no
+    # other.) The digest `execute-8` shipped with at cb3da418:
+    "execute-8@cb3da418": "41f91e600bc6d362177325f639ad15107107bbb2274bb856bb32999eca8b74e5",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

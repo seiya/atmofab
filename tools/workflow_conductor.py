@@ -5434,7 +5434,7 @@ class Conductor:
         `standard`, `build_system`, `compiler` (the profile's OPTIONAL pin, `""` when it pins
         none — the language's `default_compiler` is then used) and `backend` (the
         parallel backend). ONE read, so the control-file FC/FFLAGS derivation, the lint preset
-        pick and the syntax gate's std/openmp flags cannot diverge from each other.
+        pick and the syntax gate's standard and parallel backend cannot diverge from each other.
 
         Read off the target profile (issue #284), not the IR: until R4-a PR-2 this was the
         IR's `impl_defaults.toolchain` / `target.backend`, with a default filled in for every
@@ -5890,10 +5890,10 @@ class Conductor:
         the shallower ones `use`, compile first). Reading the sidecar's `all_nodes` directly
         replaces the old union of the IR's `direct_deps[]` + `transitive_deps[]` (the derived
         graph no longer lives in the IR). The node_keys carry the resolved `@<version>`, so the
-        staging path (`_stage_dependency_sources`) and the Makefile object names
+        staging path (`_stage_dependency_sources`) and the control file's object names
         (`_dependency_closure` -> spec_ids) derive from a single ordered list and cannot disagree
         on which dep / which version. The spec_id basenames must nonetheless be unique across the
-        closure (the staged `<spec_id>_model.f90` / object rules are keyed on the bare spec_id);
+        closure (the staged model source and its object rule are keyed on the bare spec_id);
         a same-spec_id clash (diamond) raises here (L6)."""
         from tools.orchestration_runtime import pipeline_closure_nodes
         from tools.target_profile import TargetProfileError
@@ -5908,13 +5908,13 @@ class Conductor:
             raise RuntimeError(
                 f"dependency closure of {refs.node_key}: the harness of target "
                 f"{self.target.target_id} does not resolve ({exc.detail})") from exc
-        # L6 guard: the Model B staged source basename (`<spec_id>_model.f90`) and the
-        # Makefile object rules (`$(OBJDIR)/<spec_id>_model.o`) are keyed on the bare
-        # spec_id (kind/@version dropped), and the dep's generated source declares a Fortran
-        # `module <spec_id>_model`. Two distinct closure node_keys sharing a spec_id (a
+        # L6 guard: the Model B staged source basename (the target language's
+        # `model_basename(<spec_id>)`), its object rule in the control file, and the module
+        # the dep's generated source publishes are all keyed on the bare spec_id
+        # (kind/@version dropped). Two distinct closure node_keys sharing a spec_id (a
         # diamond: `component/foo@1.0.0` + `component/foo@2.0.0`, or `component/foo` +
         # `model/foo`) would silently clobber each other (last-write-wins stage + duplicate
-        # `.o` rules + a duplicate module). Version-qualifying the basename alone would not
+        # object rules + a duplicate module). Version-qualifying the basename alone would not
         # fix the module-name clash, so fail closed with an actionable cause until proper
         # multi-version support (module renaming) lands.
         by_sid: dict[str, list[str]] = {}
@@ -5922,10 +5922,11 @@ class Conductor:
             by_sid.setdefault(spec_id_of(nk), []).append(nk)
         clashes = {sid: nks for sid, nks in by_sid.items() if len(nks) > 1}
         if clashes:
+            model_source = self._language_facts().model_basename(min(clashes))
             raise RuntimeError(
                 f"dependency closure for {refs.node_key} has spec_id basename collisions "
-                f"{clashes}: the Model B staged source `<spec_id>_model.f90` and Makefile "
-                f"`<spec_id>_model.o`/`module <spec_id>_model` are keyed on the bare spec_id, "
+                f"{clashes}: the Model B staged source (`{model_source}`), its object rule in "
+                f"the control file and the module it publishes are keyed on the bare spec_id, "
                 f"so two deps sharing a spec_id (differing version/kind) would clobber each "
                 f"other. Version-qualify the object/staged/module basenames before allowing "
                 f"multi-version/diamond closures (deterministic_followups.md L6).")
@@ -10459,30 +10460,39 @@ class Conductor:
                 f"({'/'.join(suffixes)}) to syntax-check"
             )
         else:
-            # Resolve + stage the dependency-closure `<dep>_model.f90` ONCE into a shared
+            # Resolve + stage the dependency closure's model sources ONCE into a shared
             # cache dir (not per compiler — the resolved source set is identical across
-            # stages; only the per-compiler `.mods` must stay isolated). `<dep>_model.f90`
-            # sources the node `use`s must be present or gfortran reports "Cannot open
-            # module file", which the syntax gate would misdiagnose as a content error.
-            #   * make+fortran: staging copies each certified dep model, or RAISES (a clean
-            #     transport fail_closed) if a dep is not yet certified — the same
+            # stages; only each compiler's scratch directory must stay isolated). The dep
+            # model sources the node references must be present or the compiler reports an
+            # unresolved module, which the syntax gate would misdiagnose as a content error.
+            #   * the host authors the control file (both the build system and the language
+            #     declare `control_file`): staging copies each certified dep model, or RAISES
+            #     (a clean transport fail_closed) if a dep is not yet certified — the same
             #     `--with-deps` precondition Build enforces (`_stage_dependency_sources`).
-            #   * non-make fortran with dependencies: the conductor does not own that node's
-            #     Makefile, so staging is a no-op and the gate cannot resolve `use
-            #     <dep>_model`. Running gfortran anyway would misclassify the unresolved
-            #     module as a content `syntax_error` and warm-resume generate.generate in a
-            #     futile loop (the regenerated source references the same real module). Fail
-            #     closed cleanly instead — such a node is unbuildable regardless (Build's
+            #   * otherwise, with dependencies: the conductor does not own that node's control
+            #     file, so staging is a no-op and the gate cannot resolve the dep's module.
+            #     Running the compiler anyway would misclassify the unresolved module as a
+            #     content `syntax_error` and warm-resume generate.generate in a futile loop
+            #     (the regenerated source references the same real module). Fail closed
+            #     cleanly instead — such a node is unbuildable regardless (Build's
             #     `_require_build_execute` rejects a build system it does not drive).
             deps_dir = (self.repo_root / "workspace" / "tmp" / child_arid
                         / "syntax" / "_deps")
             deps_dir.mkdir(parents=True, exist_ok=True)
             staged_deps = self._stage_dependency_sources(refs, deps_dir, phase="generate")
             if not staged_deps and self._dependency_closure_nodes(refs):
+                missing = "; ".join(
+                    reason for reason in (
+                        backend_registry.missing_capability_reason(
+                            "build_system", tc["build_system"], "control_file"),
+                        backend_registry.missing_capability_reason(
+                            "language", language, "control_file"))
+                    if reason) or "the host does not author this node's control file"
                 raise RuntimeError(
                     f"generate.gate syntax check: cannot stage dependency modules for build_system="
-                    f"{tc['build_system']!r} (only make+fortran staging is supported); the "
-                    f"syntax gate would misdiagnose an unresolved `use <dep>_model` as a "
+                    f"{tc['build_system']!r}, language={language!r}: staging needs a "
+                    f"host-authored control file on both axes ({missing}); the "
+                    f"syntax gate would misdiagnose an unresolved dependency module as a "
                     f"content error and loop — fail closed (this node is unbuildable anyway)")
             dep_files = [p for p in deps_dir.iterdir() if p.is_file()]
 
@@ -10811,7 +10821,7 @@ class Conductor:
                                 f"target's declared standard rejects a sound closure, in which "
                                 f"case fix toolchain.standard in spec/targets/"
                                 f"{self.target.target_id}.yaml (Build would compile the same "
-                                f"closure under the same -std). The diagnostics below say which. "
+                                f"closure under the same toolchain.standard). The diagnostics below say which. "
                                 f"Staged: "
                                 f"{', '.join(b['model_source_ref'] for b in staged_deps)}\n"
                                 + "\n".join(probe_excerpt.splitlines()[-40:]))
@@ -11659,18 +11669,21 @@ class Conductor:
             block = "\n[execute fail]\n" + gate.stdout + gate.stderr
             if snapshot_gap:
                 block += "\n" + snapshot_gap
-            # Actionable cause when the make-test candidate emitted no diagnostics/verdict:
-            # the `test` target must invoke the runner with `--cases $(SPEC) $(CASES)` (the
-            # runner requires `--cases` and aborts without it). run_program's diagnostics
-            # being present while the candidate's is absent isolates the test-target form as
-            # the cause rather than a buggy runner.
+            # Actionable cause when the quality-check candidate emitted no diagnostics/verdict:
+            # the control file's quality-check target must invoke the runner with `--cases`
+            # (the runner requires it and aborts without it). run_program's diagnostics being
+            # present while the candidate's is absent isolates the target's form as the cause
+            # rather than a buggy runner. The binding is the build system's control-file
+            # document, §2.
             if qc_status != "pass" and not qc_diag.get("verdict") and run_diag.get("verdict"):
                 block += (
-                    "\n[execute fail: quality_check] the make-test re-run emitted no "
-                    "diagnostics.json/verdict while run_program's is present — the Makefile "
-                    "`test`/`check` target must invoke the runner with `--cases $(SPEC) "
-                    "$(CASES)` (the runner requires `--cases`); see "
-                    "docs/workflow/RUNNER_OUTPUT_CONTRACT.md §5 / phase_04_validate.md §4-1.")
+                    f"\n[execute fail: quality_check] the {execute.QUALITY_CHECK_PRESET} re-run "
+                    f"emitted no diagnostics.json/verdict while run_program's is present — the "
+                    f"{self._control_file_basename(refs)} quality-check target must invoke the "
+                    f"runner with the argv run_program uses, `<binary> --cases <spec> "
+                    f"<case_id>...` (the runner requires `--cases`); the binding is "
+                    f"docs/backends/build_system/{build_system}/CONTROL_FILE.md §2, and see "
+                    f"docs/workflow/RUNNER_OUTPUT_CONTRACT.md §5 / phase_04_validate.md §4-1.")
             stderr += block
             # Classify the structural failure for classify_failure's execute branch (B1): the
             # category selects a route out of VALIDATE_EXECUTE_FAILURE_ROUTING (or, for the

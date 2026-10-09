@@ -117,9 +117,9 @@ LANGUAGES: tuple[str, ...] = tuple(
     lang for lang in backend_registry.implemented_backend_ids("language")
     if _language_bundle(lang) is not None
 )
-#: Per language, the source extensions its bundle files may carry. The rule that a bundle file
-#: is source and never a build/script file is neutral (`RESERVED_LOGICAL_FILENAMES` /
-#: `FORBIDDEN_EXTENSIONS` below); WHICH extensions are that language's source is not.
+#: Per language, the source extensions its bundle files may carry. This allowlist IS the rule
+#: that a bundle file is source and never a build/script file: an extension outside the file's
+#: language's `SOURCE_EXTENSIONS` is refused, whatever it is (`logical_path_violations`).
 LANGUAGE_EXTENSION_ALLOWLIST: dict[str, tuple[str, ...]] = {
     lang: tuple(_language_bundle(lang).SOURCE_EXTENSIONS) for lang in LANGUAGES
 }
@@ -179,13 +179,33 @@ def _language_identifier_re(language: str) -> re.Pattern[str] | None:
     return None if facts is None else re.compile(facts.IDENTIFIER_PATTERN)
 
 # The no-arbitrary-command rule is structural: the schema is closed (no field a command
-# could travel in), these path rules reject build/script files, and the derived build
-# graph has no command slot. `files[].content` is NEVER scanned for shell-looking
-# strings — a Fortran source legitimately holds string literals, so a content scan buys
-# no guarantee and produces false positives.
-RESERVED_LOGICAL_FILENAMES: frozenset[str] = frozenset(
-    {"Makefile", "makefile", "GNUmakefile", "CMakeLists.txt", "configure"})
-FORBIDDEN_EXTENSIONS: frozenset[str] = frozenset({".sh", ".bash", ".mk", ".cmake", ".py"})
+# could travel in), the path rules reject build/script files (the language extension
+# allowlist above, and the reserved basenames below), and the derived build graph has no
+# command slot. `files[].content` is NEVER scanned for shell-looking strings — a source file
+# legitimately holds string literals, so a content scan buys no guarantee and produces false
+# positives.
+def _reserved_logical_filenames() -> frozenset[str]:
+    names: set[str] = set()
+    # A record that declares `control_file` with no extracted package (`core_provides`) makes
+    # `capability_module` raise `BackendNotExtracted` here, at import: a named refusal, never
+    # a set with that build system's names left out.
+    for build_system in backend_registry.backend_ids("build_system"):
+        if backend_registry.provides("build_system", build_system, "control_file"):
+            names.update(backend_registry.capability_module(
+                "build_system", build_system, "control_file").CONTROL_FILE_BASENAMES)
+    return frozenset(names)
+
+
+#: Every control-file name a registered build system reads (each `control_file` backend's
+#: `CONTROL_FILE_BASENAMES`), refused as a bundle basename: the host authors the control file,
+#: and a build tool may read a leaf-authored name ahead of it. The set is every registered
+#: build system's, not the target's alone — a leaf gains nothing from authoring any of them,
+#: and refusing all is cheaper than knowing which build system is in play at schema time.
+#: Derived like `LANGUAGE_EXTENSION_ALLOWLIST`, so registering a build system widens it. Today
+#: every one of these names is also refused by the extension allowlist (none carries an
+#: extension); this clause is kept because it does not depend on a language's
+#: `SOURCE_EXTENSIONS` excluding them, and it names the defect.
+RESERVED_LOGICAL_FILENAMES: frozenset[str] = _reserved_logical_filenames()
 
 # Every grammar pattern anchors the whole string with `^` … `(?![\s\S])`, not `^` … `$`.
 # `$` is not portable across the pattern's consumers: under Python `re` (the canonical
@@ -555,16 +575,11 @@ def logical_path_violations(path: Any, *, language: Any) -> list[str]:
     _, extension = posixpath.splitext(basename)
     allowed = LANGUAGE_EXTENSION_ALLOWLIST.get(language) if isinstance(language, str) else None
     # One clause per defect (the meta_contracts rule): a reserved build filename is not
-    # ALSO reported as a wrong extension, and a forbidden extension is not ALSO reported
-    # as an unallowed one.
+    # ALSO reported as a wrong extension.
     if basename in RESERVED_LOGICAL_FILENAMES:
         violations.append(
             f"logical_path basename {basename!r} is a reserved build filename "
             "(the bundle carries no build files)")
-    elif extension in FORBIDDEN_EXTENSIONS:
-        violations.append(
-            f"logical_path extension {extension!r} is a build/script extension "
-            "(the bundle carries no build or shell commands)")
     elif allowed is None:
         violations.append(f"logical_path has no extension allowlist for language {language!r}")
     elif extension not in allowed:
