@@ -16830,6 +16830,39 @@ class DeterministicBuildTest(unittest.TestCase):
         self.assertIn("does not build in its source tree", str(caught.exception))
         self.assertEqual(seen, [])
 
+    def test_build_inproc_records_the_compiler_s_last_50_lines_as_the_excerpt(self) -> None:
+        """Issue #464: `binary_meta.json#failure_excerpt` is what a `reuse` Generate retry
+        receives, so its bound is part of the repair contract: the LAST 50 lines of the
+        compiler's stderr, the tail where the decisive error sits."""
+        import tempfile
+        from unittest import mock
+        build_runtime = _build_runtime()
+        lines = [f"src/spec_x_model.f90:{i}:1: Error: line {i}" for i in range(1, 81)]
+        self.assertGreater(len(lines), 50)
+
+        with tempfile.TemporaryDirectory() as td:
+            repo = Path(td)
+            c = _TargetedConductor(repo_root=repo, orchestration_id="t",
+                             orchestration_agent_run_id="x", llm_config=_cfg("claude"), env={})
+            refs = wc.NodeRefs(target_id=_TARGET_ID,
+                node_key="component/spec_x@0.1.0", spec_path="spec/component/spec_x",
+                ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
+            (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
+            (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
+
+            def fake_compile(args):
+                return {"ok": False, "return_code": 2, "command_id": "cid",
+                        "stderr": "\n".join(lines)}
+
+            with mock.patch.object(build_runtime, "tool_compile_project", fake_compile):
+                out = c._build_inproc(refs, "child-1")
+
+            self.assertEqual(out["returncode"], 0)
+            meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
+            self.assertEqual(meta["verification_status"], "fail")
+            self.assertEqual(meta["failure_excerpt"], "\n".join(lines[-50:]))
+            self.assertNotIn("failure_source_refs", meta)
+
     def test_build_inproc_payload_reaches_the_real_build_runtime_entry_point(self) -> None:
         """The conductor's own compile payload crosses the real `tool_compile_project` —
         its type rules and the argv it composes.

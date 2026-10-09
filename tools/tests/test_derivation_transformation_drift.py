@@ -971,8 +971,9 @@ PINNED_BUILD: dict[str, str] = {
     # `binary_meta.json#failure_source_refs` (read by nothing) and no longer calls the deleted
     # `_extract_failure_source_refs`. The Generate repair now carries `failure_excerpt` through
     # `_read_repair_findings`, which is not a tuple member. Only a FAILED build's record changes,
-    # and a failed record is never reused (the `build-2@3b1e8f73` ground); a passing build's
-    # invocation, binary and record are unchanged. (Measured by diffing `build_tuple()` against
+    # and a failed record is never reused (the `build-2@3b1e8f73` ground). A passing build's
+    # invocation and binary are unchanged; its record loses the always-empty
+    # `"failure_source_refs": []` key, which nothing reads. (Measured by diffing `build_tuple()` against
     # origin/main 01970646's: that row and no other.) The digest `build-2` shipped with at
     # 01970646:
     "build-2@01970646": "48f39285564b16bbcf9e0ba7683330152d45c9b870feb05c597bbbf8c48f0bc7",
