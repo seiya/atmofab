@@ -1355,13 +1355,20 @@ class PureProducerSubstepTests(unittest.TestCase):
         frame later inside `record_launch`, escaping `run_substep` and aborting the conductor
         with no outcome row. Driven through the production loop so the recovery branch is what
         is observed, not the builder's raise alone."""
-        for rel_of, marker in (
-                (lambda refs: f"{refs.ir_ref}/spec.ir.yaml", "pure_ir_document_missing"),
-                (lambda refs: f"{refs.spec_path}/tests.md", "pure_tests_document_missing")):
-            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as tmp:
+        for rel_of, marker, empty in (
+                (lambda refs: f"{refs.ir_ref}/spec.ir.yaml", "pure_ir_document_missing", False),
+                (lambda refs: f"{refs.spec_path}/tests.md", "pure_tests_document_missing", False),
+                # Present but whitespace-only: refused by the launch validator like "", so the
+                # same recorded outcome is owed.
+                (lambda refs: f"{refs.spec_path}/tests.md", "pure_tests_document_missing", True)):
+            with self.subTest(marker=marker, empty=empty), tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
                 refs = _write_node(repo)
-                (repo / rel_of(refs)).unlink()
+                target = repo / rel_of(refs)
+                if empty:
+                    target.write_text("\n  \n", encoding="utf-8")   # a truncated write
+                else:
+                    target.unlink()
                 c = _conductor(repo)
                 c.envelopes = [_envelope(_valid_bundle())]
                 events: list = []

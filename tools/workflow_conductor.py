@@ -6576,10 +6576,12 @@ class Conductor:
         `RuntimeError` would escape `run_substep` and abort the conductor. An empty string
         therefore never ships a prompt with a blank contract, example or schema section; it
         turns a named, resumable failure into a crash. `UnicodeError` is caught alongside
-        `OSError` because a decode error is a `ValueError`, not an `OSError`."""
+        `OSError` because a decode error is a `ValueError`, not an `OSError`. A file that
+        reads as whitespace only (a truncated write) raises too, under the same name, because
+        the launch validator refuses it exactly as it refuses `""` (issue #467)."""
         path = self.repo_root / rel
         try:
-            return path.read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8")
         except (OSError, UnicodeError) as exc:
             # The BASENAME leads and the directory trails, on a repo-relative path. The operator
             # meets this string in `phase_state.json#reason_detail`, which is capped at 200
@@ -6589,11 +6591,17 @@ class Conductor:
             # what survives is which file, then as much of where as fits. The whole string is on
             # the `pure_context_assembly_failed` event, whose own cap
             # (`_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS`) is set wide enough to keep it — the
-            # GENERATE pair's raises still put an absolute path last and are longer, which is
-            # what that cap is sized for and what `docs/RUNBOOK.md` warns about.
+            # GENERATE pair's repository-document raises still put an absolute path last and
+            # are longer, which is what that cap is sized for and what `docs/RUNBOOK.md` warns
+            # about.
             raise RuntimeError(
                 f"pure_{name}_document_missing: {Path(rel).name} "
                 f"(under {Path(rel).parent}/): {type(exc).__name__}") from exc
+        if not text.strip():
+            raise RuntimeError(
+                f"pure_{name}_document_missing: {Path(rel).name} "
+                f"(under {Path(rel).parent}/): empty")
+        return text
 
     def _pure_profile_spec_document(self, refs: NodeRefs) -> str:
         """The controlled spec of each `profile` this node ADOPTS, or the host's fixed sentence

@@ -176,7 +176,8 @@ class PureVerifyContextTests(unittest.TestCase):
 
     def test_each_unreadable_node_artifact_raises_its_named_document(self) -> None:
         """Issue #467: the builder-level rows for the four node artifacts, plus one undecodable
-        bundle — `UnicodeError` takes the same named path as a missing file."""
+        bundle — `UnicodeError` takes the same named path as a missing file — and one
+        whitespace-only IR."""
         rows = (
             (lambda r: f"{r.spec_path}/controlled_spec.md",
              "pure_controlled_spec_document_missing"),
@@ -200,6 +201,16 @@ class PureVerifyContextTests(unittest.TestCase):
                 _conductor(repo)._build_pure_verify_context(refs)
             self.assertIn("pure_bundle_document_missing", str(cm.exception))
             self.assertIn("UnicodeDecodeError", str(cm.exception))
+        # ...and a whitespace-only one (a truncated write): the launch validator refuses it
+        # exactly as it refuses "", one frame too late, so it raises here too.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo)
+            (repo / refs.ir_ref / "spec.ir.yaml").write_text(" \n\t\n", encoding="utf-8")
+            with self.assertRaises(RuntimeError) as cm:
+                _conductor(repo)._build_pure_verify_context(refs)
+            self.assertIn("pure_ir_document_missing", str(cm.exception))
+            self.assertTrue(str(cm.exception).endswith(": empty"), str(cm.exception))
 
     def test_non_utf8_checks_contract_raises_the_named_contract(self) -> None:
         # UnicodeDecodeError is a ValueError, not an OSError: catching OSError alone would let it
