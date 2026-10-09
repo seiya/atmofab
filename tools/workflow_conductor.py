@@ -6092,24 +6092,14 @@ class Conductor:
         (which names the runner actually imports) exact by construction. `run_phase` renders it
         before any generate substep runs, so it is always on disk here."""
         from tools.codegen_bundle import harness_capability_manifest_document_for
-        ir_text = ""
-        ir_path = self.repo_root / refs.ir_ref / "spec.ir.yaml"
-        try:
-            ir_text = ir_path.read_text(encoding="utf-8")
-        except OSError:
-            ir_text = ""
-        tests_text = ""
-        try:
-            tests_text = (self.repo_root / refs.spec_path / "tests.md").read_text(encoding="utf-8")
-        except OSError:
-            tests_text = ""
-        # A missing runner RAISES rather than degrading to "" the way ir/tests do above.
+        ir_text = self._pure_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir")
+        tests_text = self._pure_node_document(f"{refs.spec_path}/tests.md", "tests")
+        # The runner RAISES on an unreadable file, as the ir/tests reads above do.
         # MEASURED in review (issue #169): a blank value does NOT reach the leaf — `_validate_pure_launch_request_payload` counts a whitespace-only `pure_context` value as missing and raises — so what degrading buys is a refusal one frame later, out of `record_launch`, escaping the loop's named `pure_context_assembly_failed` branch and aborting the conductor. The reason recorded here until then —
         # that the blank would reach the leaf and ship a prompt with an empty ABI section — was
-        # false, for this site and for every other pure pair. The disposition is right either
-        # way; the caller converts this into a fail_closed transport outcome (no leaf spawned),
-        # and it is the four ir/tests DEGRADATIONS above whose recorded rationale this
-        # measurement actually invalidates (TODO.md residual).
+        # false, for this site and for every other pure pair. The caller converts the raise
+        # into a fail_closed transport outcome (no leaf spawned). The ir/tests reads degraded to
+        # `""` under that same false rationale until issue #467 closed them.
         runner_path = self.repo_root / refs.source_dir() / "src" / self._runner_basename(refs)
         try:
             runner_text = runner_path.read_text(encoding="utf-8")
@@ -6179,20 +6169,14 @@ class Conductor:
 
         Same reads and the same dispositions as the m3c producer otherwise: the harness manifest
         (its OWN, see `_pure_harness_node_key`), the target profile
-        (`_pure_target_profile_document`), the lowered IR and the tests. Both repository documents RAISE on an unreadable or unsliceable file the
-        way the m3c producer's runner does — the caller converts it into a
-        `pure_context_assembly_failed` fail_closed transport outcome, with no leaf spawned."""
+        (`_pure_target_profile_document`), the lowered IR and the tests. Every read RAISES on an
+        unreadable file (and both repository documents on an unsliceable one) the way the m3c
+        producer's do — the caller converts it into a `pure_context_assembly_failed` fail_closed
+        transport outcome, with no leaf spawned."""
         from tools.codegen_bundle import harness_capability_manifest_document_for
         from tools.orchestration_runtime import RUNNER_OUTPUT_CONTRACT_REF
-        ir_path = self.repo_root / refs.ir_ref / "spec.ir.yaml"
-        try:
-            ir_text = ir_path.read_text(encoding="utf-8")
-        except OSError:
-            ir_text = ""
-        try:
-            tests_text = (self.repo_root / refs.spec_path / "tests.md").read_text(encoding="utf-8")
-        except OSError:
-            tests_text = ""
+        ir_text = self._pure_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir")
+        tests_text = self._pure_node_document(f"{refs.spec_path}/tests.md", "tests")
         contract_path = self.repo_root / RUNNER_OUTPUT_CONTRACT_REF
         try:
             contract_text = contract_path.read_text(encoding="utf-8")
@@ -6557,11 +6541,10 @@ class Conductor:
         "This node adopts no profile.")
 
     def _pure_node_document(self, rel: str, name: str) -> str:
-        """A NODE artifact of the compile context, or RAISE.
+        """A NODE artifact of any pure context, or RAISE.
 
-        The generate producer degrades its ir/tests reads to `""` (a residual `TODO.md` records).
-        The compile builders do NOT, and the reason is that the degradation is not a degradation:
-        every key these builders return is declared in `PURE_CONTEXT_REQUIRED_KEYS`, and
+        A degradation to `""` would not be a degradation: every key the pure builders return is
+        declared in `PURE_CONTEXT_REQUIRED_KEYS`, and
         `_validate_pure_launch_request_payload` refuses an empty declared key — inside
         `record_launch`, whose `runtime` helper raises `RuntimeError` on a non-zero exit, from a
         call the pure loop does NOT guard. So an empty value here does not ship a blind prompt;
@@ -6570,18 +6553,19 @@ class Conductor:
         the same refusal one frame earlier, where the caller can recover it.
 
         (An absent `controlled_spec.md` / `tests.md` / `deps.yaml` is not a shape a run reaches
-        anyway — spec-input gates all three before any phase runs — so this is the fail-closed
-        disposition for a corrupted checkout, not a live route.)"""
+        anyway — spec-input gates all three before any phase runs — so for those this is the
+        fail-closed disposition for a corrupted checkout, not a live route. `spec.ir.yaml` and
+        `codegen_bundle.json` are RUN OUTPUTS, and a corrupted or half-written run directory is a
+        live route to them; that is why the generate builders read them here too, issue #467.)"""
         return self._pure_repo_document(rel, name)
 
     def _pure_repo_document(self, rel: str, name: str) -> str:
-        """A repository document inlined VERBATIM into a pure compile context, or RAISE.
+        """A repository document inlined VERBATIM into a pure context, or RAISE.
 
         Every read of the compile context comes through here or through `_pure_node_document`,
         which delegates to it — so this is the ONE disposition, and the sentence that used to
         contrast it with a node artifact's `""` degradation is gone rather than corrected: that
-        contrast stopped being true the moment the node artifacts started raising too, and it is
-        the generate producer (`_build_pure_context`) that still degrades, not anything here.
+        contrast stopped being true the moment the node artifacts started raising too.
 
         Raising is what makes the failure RECOVERABLE, and the alternative is not a blank
         prompt: every key this function feeds is a DECLARED one (set identity is pinned by
@@ -6672,8 +6656,8 @@ class Conductor:
         string the renderer data-fences.
 
         EVERY read here RAISES on a missing or undecodable file — the three NODE artifacts
-        through `_pure_node_document` (whose docstring says why they do NOT keep the generate
-        producer's `""` degradation), the repository documents through `_pure_repo_document`,
+        through `_pure_node_document` (whose docstring says why none of them degrades to `""`),
+        the repository documents through `_pure_repo_document`,
         and the two derivations below on their own terms. The caller converts any of them into a
         `pure_context_assembly_failed` fail_closed transport outcome with no leaf spawned: a spec
         document, a repository document and a host-derived sidecar are all things a producer
@@ -7987,13 +7971,18 @@ class Conductor:
         module's callbacks against its own guess at what the runner does with each result, and
         failed a bundle that followed the contract verbatim. §5 is excluded because it is the
         deterministic legality/gate section the template already tells the reviewer not to
-        re-check. Two fail-closed dispositions differ here on purpose:
-          * the four NODE artifacts keep the `""` degradation (the same deliberate design as the
-            producer's ir/tests reads) — see TODO.md item on the residual;
-          * the contract slice RAISES (`UnicodeError` included, since a decode error is a
-            ValueError and not an OSError). Not for the reason recorded here until issue #169's
-            review measured it: a blank value does NOT reach the leaf — `_validate_pure_launch_request_payload` counts a whitespace-only `pure_context` value as missing and raises — so what degrading buys is a refusal one frame later, out of `record_launch`, escaping the loop's named `pure_context_assembly_failed` branch and aborting the conductor. The caller converts it into a
-            `pure_context_assembly_failed` fail_closed transport outcome; no leaf is spawned.
+        re-check.
+
+        Every document here has ONE fail-closed disposition: an unreadable file RAISES
+        (`UnicodeError` included, since a decode error is a ValueError and not an OSError) —
+        the four NODE artifacts through `_pure_node_document` since issue #467, the contract
+        slice and the rubric below — and the caller converts it into a
+        `pure_context_assembly_failed` fail_closed transport outcome; no leaf is spawned. Not for
+        the reason recorded here until issue #169's review measured it: a blank value does NOT
+        reach the leaf — `_validate_pure_launch_request_payload` counts a whitespace-only
+        `pure_context` value as missing and raises — so what degrading buys is a refusal one
+        frame later, out of `record_launch`, escaping the loop's named
+        `pure_context_assembly_failed` branch and aborting the conductor.
 
         The SIXTH document is the `#### Severity of a finding` subsection of
         `docs/workflow/phases/phase_02_generate.md` §2-2, sliced by
@@ -8007,11 +7996,6 @@ class Conductor:
         so the reviewer reads the same document the phase contract names."""
         from tools.orchestration_runtime import (CHECKS_MODULE_CONTRACT_REF,
                                                  WORKFLOW_PHASE_DOC_BY_STEP)
-        def _read(rel: str) -> str:
-            try:
-                return (self.repo_root / rel).read_text(encoding="utf-8")
-            except OSError:
-                return ""
         contract_path = self.repo_root / CHECKS_MODULE_CONTRACT_REF
         try:
             contract_text = contract_path.read_text(encoding="utf-8")
@@ -8047,15 +8031,17 @@ class Conductor:
             raise RuntimeError(
                 f"pure_severity_rubric_document_unsliceable: {phase_doc_path}: {exc}") from exc
         return {
-            "controlled_spec_document": _read(f"{refs.spec_path}/controlled_spec.md"),
-            "tests_document": _read(f"{refs.spec_path}/tests.md"),
-            "ir_document": _read(f"{refs.ir_ref}/spec.ir.yaml"),
+            "controlled_spec_document": self._pure_node_document(
+                f"{refs.spec_path}/controlled_spec.md", "controlled_spec"),
+            "tests_document": self._pure_node_document(f"{refs.spec_path}/tests.md", "tests"),
+            "ir_document": self._pure_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir"),
             # The target the source was generated for (issue #284): G6 / H9 judge the bundle's
             # `target_lowering_plan` and the source against it — the producer's own document.
             "target_profile": self._pure_target_profile_document(),
             "checks_module_contract_document": contract_abi,
             "severity_rubric_document": severity_rubric,
-            "bundle_document": _read(f"{refs.source_dir()}/codegen_bundle.json"),
+            "bundle_document": self._pure_node_document(
+                f"{refs.source_dir()}/codegen_bundle.json", "bundle"),
         }
 
     def _build_pure_harness_verify_context(self, refs: NodeRefs) -> dict[str, str]:
@@ -8063,8 +8049,8 @@ class Conductor:
 
         The four node artifacts are the m3c reviewer's (`_build_pure_verify_context`) — the
         human-authored behavioral contract it verifies against, the tests, the IR, and the bundle
-        under review — with the same `""` degradation. The severity rubric is the same slice, and
-        raises for the same reason.
+        under review — and every one raises, as the m3c reviewer's do. The severity rubric is the
+        same slice, and raises for the same reason.
 
         What differs is the fifth document. The m3c reviewer receives the checks-module ABI,
         because the bundle it reviews carries a checks module; a harness bundle carries an
@@ -8073,12 +8059,6 @@ class Conductor:
         than by the reviewer's recollection of it."""
         from tools.orchestration_runtime import (RUNNER_OUTPUT_CONTRACT_REF,
                                                  WORKFLOW_PHASE_DOC_BY_STEP)
-
-        def _read(rel: str) -> str:
-            try:
-                return (self.repo_root / rel).read_text(encoding="utf-8")
-            except OSError:
-                return ""
         contract_path = self.repo_root / RUNNER_OUTPUT_CONTRACT_REF
         try:
             contract_text = contract_path.read_text(encoding="utf-8")
@@ -8097,16 +8077,18 @@ class Conductor:
             raise RuntimeError(
                 f"pure_severity_rubric_document_unsliceable: {phase_doc_path}: {exc}") from exc
         return {
-            "controlled_spec_document": _read(f"{refs.spec_path}/controlled_spec.md"),
-            "tests_document": _read(f"{refs.spec_path}/tests.md"),
-            "ir_document": _read(f"{refs.ir_ref}/spec.ir.yaml"),
+            "controlled_spec_document": self._pure_node_document(
+                f"{refs.spec_path}/controlled_spec.md", "controlled_spec"),
+            "tests_document": self._pure_node_document(f"{refs.spec_path}/tests.md", "tests"),
+            "ir_document": self._pure_node_document(f"{refs.ir_ref}/spec.ir.yaml", "ir"),
             # The target the source was generated for (issue #284): G6 / H9 judge the bundle's
             # `target_lowering_plan` and the source against it — the producer's own document.
             "target_profile": self._pure_target_profile_document(),
             "runner_output_contract_document": self._runner_output_contract_with_binding(
                 contract_text),
             "severity_rubric_document": severity_rubric,
-            "bundle_document": _read(f"{refs.source_dir()}/codegen_bundle.json"),
+            "bundle_document": self._pure_node_document(
+                f"{refs.source_dir()}/codegen_bundle.json", "bundle"),
         }
 
     #: The `validate.judge` documents that are a FILE, keyed by the pure-context slot name.
@@ -8161,8 +8143,8 @@ class Conductor:
         `pre_judge_meta.json` — a readiness status the conductor has already gated on, from which
         the judge gains nothing.
 
-        EVERY read RAISES. The reviewer's `generate.verify` sibling degrades four node artifacts
-        to `""` (a recorded residual), and that disposition must not travel here: each document
+        EVERY read RAISES, as the `generate.verify` sibling's four node artifacts do since issue
+        #467 (they degraded to `""` until then). No degradation may travel here: each document
         below is evidence the judge weighs, and a judge that cannot see `diagnostics.json` has no
         basis for `pass` and would be answering about the absence. The REASON given here was
         wrong until a review round measured it — a blank value does NOT reach the leaf, because

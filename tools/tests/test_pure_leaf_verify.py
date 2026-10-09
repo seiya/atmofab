@@ -163,7 +163,7 @@ class PureVerifyContextTests(unittest.TestCase):
                 self.assertNotIn(absent, doc)
 
     def test_missing_checks_contract_raises_the_named_contract(self) -> None:
-        # NOT the swallow-to-"" idiom the four node artifacts use. Measured in issue #169's
+        # Raises, as the four node artifacts do since issue #467. Measured in issue #169's
         # review: a whitespace-only `pure_context` value never reaches the leaf — the launch
         # validator counts it missing and raises — so degrading only defers the refusal one
         # frame, into `record_launch`, where it escapes the loop's named branch.
@@ -173,6 +173,33 @@ class PureVerifyContextTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as cm:
                 _conductor(repo)._build_pure_verify_context(refs)
             self.assertIn("pure_checks_contract_document_missing", str(cm.exception))
+
+    def test_each_unreadable_node_artifact_raises_its_named_document(self) -> None:
+        """Issue #467: the builder-level rows for the four node artifacts, plus one undecodable
+        bundle — `UnicodeError` takes the same named path as a missing file."""
+        rows = (
+            (lambda r: f"{r.spec_path}/controlled_spec.md",
+             "pure_controlled_spec_document_missing"),
+            (lambda r: f"{r.spec_path}/tests.md", "pure_tests_document_missing"),
+            (lambda r: f"{r.ir_ref}/spec.ir.yaml", "pure_ir_document_missing"),
+            (lambda r: f"{r.source_dir()}/codegen_bundle.json", "pure_bundle_document_missing"),
+        )
+        for rel_of, marker in rows:
+            with self.subTest(marker=marker), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                refs = _verify_node(repo)
+                (repo / rel_of(refs)).unlink()
+                with self.assertRaises(RuntimeError) as cm:
+                    _conductor(repo)._build_pure_verify_context(refs)
+                self.assertIn(marker, str(cm.exception))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo)
+            (repo / refs.source_dir() / "codegen_bundle.json").write_bytes(b"\xff\xfe")
+            with self.assertRaises(RuntimeError) as cm:
+                _conductor(repo)._build_pure_verify_context(refs)
+            self.assertIn("pure_bundle_document_missing", str(cm.exception))
+            self.assertIn("UnicodeDecodeError", str(cm.exception))
 
     def test_non_utf8_checks_contract_raises_the_named_contract(self) -> None:
         # UnicodeDecodeError is a ValueError, not an OSError: catching OSError alone would let it
@@ -570,11 +597,14 @@ class SeverityRubricSlicerTests(unittest.TestCase):
 # ======================================================================================
 class PureVerifySubstepTests(unittest.TestCase):
     def _run(self, envelopes, *, cls=_PureFakeConductor, stage_checks_contract=True,
-             stage_phase_02=True, llm_config=None):
+             stage_phase_02=True, llm_config=None, unlink=None):
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
         refs = _verify_node(repo, stage_checks_contract=stage_checks_contract,
                             stage_phase_02=stage_phase_02)
+        if unlink is not None:
+            # A repo-relative path, computed from the node's refs, removed after staging.
+            (repo / unlink(refs)).unlink()
         (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
         c = cls(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
                 llm_config=llm_config if llm_config is not None else _cfg("claude"), env={})
@@ -642,6 +672,37 @@ class PureVerifySubstepTests(unittest.TestCase):
         events = [e for e in c.events if e["event"] == "pure_context_assembly_failed"]
         self.assertEqual(len(events), 1, c.events)
         self.assertIn("pure_severity_rubric_document_missing", events[0]["detail"])
+
+    def test_a_missing_node_artifact_is_the_same_recorded_fail_closed_outcome(self) -> None:
+        """Issue #467: the four node artifacts degraded to `""`, and the blank was refused one
+        frame later inside `record_launch`, escaping `run_substep` and aborting the conductor
+        with no outcome row. Each is now the same recorded outcome as a missing contract."""
+        rows = (
+            (lambda r: f"{r.source_dir()}/codegen_bundle.json", "pure_bundle_document_missing"),
+            (lambda r: f"{r.spec_path}/controlled_spec.md",
+             "pure_controlled_spec_document_missing"),
+            (lambda r: f"{r.ir_ref}/spec.ir.yaml", "pure_ir_document_missing"),
+            (lambda r: f"{r.spec_path}/tests.md", "pure_tests_document_missing"),
+        )
+        for rel_of, marker in rows:
+            with self.subTest(marker=marker):
+                c, refs, oc = self._run([_envelope(_verdict("pass"))], unlink=rel_of)
+                try:
+                    self.assertEqual(oc.status, "fail")
+                    self.assertEqual(oc.leaf_returncode, 1)
+                    self.assertEqual(oc.infra_error[0], "pure_context_assembly_failed")
+                    self.assertIn(marker, oc.infra_error[1])
+                    self.assertEqual(oc.output_refs, [])
+                    self.assertEqual(getattr(c, "_spawn", 0), 0)  # no leaf was billed
+                    base = c.repo_root / refs.source_dir()
+                    self.assertFalse((base / "source_meta.json").exists())
+                    self.assertFalse((base / "verdict_meta.json").exists())
+                    events = [e for e in c.events
+                              if e["event"] == "pure_context_assembly_failed"]
+                    self.assertEqual(len(events), 1, c.events)
+                    self.assertIn(marker, events[0]["detail"])
+                finally:
+                    self._tmp.cleanup()
 
     def test_the_reviewer_loop_takes_its_launch_instant_from_the_filesystem(self) -> None:
         """Mirror of the producer's #113 pin — one witness per OCCURRENCE, not per rule.
@@ -1667,8 +1728,8 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
                 if sub == "record-launch"][-1]
 
     def test_every_repository_document_of_this_context_fails_CLOSED(self) -> None:
-        """One row per repository document the harness reviewer's context reads, each REMOVING
-        that document and requiring the failure to name it.
+        """One row per document the harness reviewer's context reads — repository document or
+        node artifact — each REMOVING that document and requiring the failure to name it.
 
         A round-3 census found the severity rubric's two raises here vacuous while the same
         mutation on the m3c twin was killed — a fail-closed guard copied into the new shape with
@@ -1683,6 +1744,11 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         cases = {
             "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": "pure_runner_output_contract_document_missing",
             "docs/workflow/phases/phase_02_generate.md": "pure_severity_rubric_document_missing",
+            # The node artifacts raise too since issue #467 (they degraded to "" before).
+            f"{self.refs.spec_path}/controlled_spec.md": "pure_controlled_spec_document_missing",
+            f"{self.refs.spec_path}/tests.md": "pure_tests_document_missing",
+            f"{self.refs.ir_ref}/spec.ir.yaml": "pure_ir_document_missing",
+            f"{self.refs.source_dir()}/codegen_bundle.json": "pure_bundle_document_missing",
         }
         for rel, reason in cases.items():
             with self.subTest(document=rel):
@@ -1706,21 +1772,33 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
             self.assertIn("pure_severity_rubric_document_unsliceable", str(caught.exception))
         finally:
             phase_doc.write_text(body, encoding="utf-8")
-        # The two rows above cover the RAISING documents; the rest of the context is node
-        # artifacts, which degrade to "" by the same deliberate design as the m3c reviewer's.
+        # The rows above cover every document of the context; none degrades to "" (issue #467).
         # Set identity against the builder's own output, so a document added later is either
         # given a row above or shows up here. (An earlier form subtracted the reason STRINGS
-        # from a set of context KEYS — a no-op term a round-4 reviewer spotted; the two sets
-        # are named explicitly now.)
+        # from a set of context KEYS — a no-op term a round-4 reviewer spotted; the sets are
+        # named explicitly now.)
         ctx = self.c._build_pure_harness_verify_context(self.refs)
-        degrading = {"controlled_spec_document", "tests_document", "ir_document",
-                     "bundle_document"}
-        raising = {"runner_output_contract_document", "severity_rubric_document"}
+        raising = {"runner_output_contract_document", "severity_rubric_document",
+                   "controlled_spec_document", "tests_document", "ir_document",
+                   "bundle_document"}
         # Host data, read off the run's own loaded profile (issue #284): nothing to be missing.
         host = {"target_profile"}
-        self.assertEqual(set(ctx), degrading | raising | host)
+        self.assertEqual(set(ctx), raising | host)
         self.assertEqual(json.loads(ctx["target_profile"]), self.c.target.doc)
         self.assertEqual(len(cases), len(raising))
+
+    def test_a_missing_node_artifact_is_a_recorded_fail_closed_outcome(self) -> None:
+        """Issue #467, driven through the production loop for this shape too: the bundle under
+        review gone, a recorded `pure_context_assembly_failed`, no `record-launch`."""
+        (self.repo / self.refs.source_dir() / "codegen_bundle.json").unlink()
+        self.c.envelopes = [_envelope(_verdict("pass"))]
+        oc = self.c._run_pure_verify_substep(self.refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(oc.infra_error[0], "pure_context_assembly_failed")
+        self.assertIn("pure_bundle_document_missing", oc.infra_error[1])
+        self.assertEqual(getattr(self.c, "_spawn", 0), 0)
+        self.assertEqual([sub for sub, _ in getattr(self.c, "calls", [])
+                          if sub == "record-launch"], [])
 
     def test_the_verify_seam_wires_the_harness_shape_through(self) -> None:
         self.c.envelopes = [_envelope(_verdict("pass"))]
