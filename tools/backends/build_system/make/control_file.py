@@ -39,6 +39,13 @@ from tools.backends.build_system.make.gates import (  # noqa: F401  (re-export)
 #: The control file `make` reads, relative to the source directory it is run in.
 CONTROL_FILE_BASENAME = "Makefile"
 
+#: Every control-file name `make` reads when run without `-f`, in its search order. The host
+#: authors `CONTROL_FILE_BASENAME` after the bundle files are written, and `make` would read a
+#: leaf-authored `GNUmakefile` or `makefile` AHEAD of it, so a bundle may author none of the
+#: three (`codegen_bundle.RESERVED_LOGICAL_FILENAMES` is the union of this tuple over every
+#: build system that declares `control_file`).
+CONTROL_FILE_BASENAMES: tuple[str, ...] = ("GNUmakefile", "makefile", "Makefile")
+
 #: `make` builds in the source tree it is run in (`compile_project` / `run_quality_checks` take
 #: `project_dir=<pipeline>/source/<source_id>/src/`), so its command logs land beside the control
 #: file — the one cross-phase log placement the runtime grants

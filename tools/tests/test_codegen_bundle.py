@@ -21,6 +21,7 @@ from typing import ClassVar
 from unittest import mock
 
 from tools import codegen_bundle as cb
+from tools.backends import registry as backend_registry
 from tools import workflow_conductor as wc
 from tools.tests.llm_samples import sample_config_with as _cfg
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
@@ -729,17 +730,60 @@ class CompileAfterTest(unittest.TestCase):
 class ForbiddenCommandTest(unittest.TestCase):
     """Acceptance 5: the bundle has no build authority — enforced structurally."""
 
-    def test_reserved_build_filenames_are_rejected(self) -> None:
-        for name in ("Makefile", "makefile", "GNUmakefile", "CMakeLists.txt", "configure"):
-            with self.subTest(name=name):
-                violations = cb.logical_path_violations(name, language="fortran")
-                self.assertTrue(any("reserved build filename" in v for v in violations), name)
+    @staticmethod
+    def _control_file_backends() -> list:
+        return [
+            backend_registry.capability_module("build_system", b, "control_file")
+            for b in backend_registry.backend_ids("build_system")
+            if backend_registry.provides("build_system", b, "control_file")]
 
-    def test_script_extensions_are_rejected(self) -> None:
-        for name in ("build.sh", "build.bash", "rules.mk", "toolchain.cmake", "setup.py"):
-            with self.subTest(name=name):
-                violations = cb.logical_path_violations(name, language="fortran")
-                self.assertTrue(any("build/script extension" in v for v in violations), name)
+    def test_reserved_build_filenames_are_rejected(self) -> None:
+        """Every control-file name of every registered `control_file` backend, at the root and
+        below it, for every bundle language — read from each backend, not from
+        `RESERVED_LOGICAL_FILENAMES`, so a narrowed union is red here."""
+        names = [n for m in self._control_file_backends() for n in m.CONTROL_FILE_BASENAMES]
+        self.assertIn("GNUmakefile", names)
+        for language in cb.LANGUAGES:
+            for name in names + [f"sub/{n}" for n in names]:
+                with self.subTest(language=language, name=name):
+                    violations = cb.logical_path_violations(name, language=language)
+                    self.assertTrue(
+                        any("reserved build filename" in v for v in violations), violations)
+
+    def test_reserved_set_is_the_union_of_the_control_file_backends(self) -> None:
+        """Set identity with the registered backends, and never empty: the make record dropping
+        `control_file` must not read as "nothing reserved" (the allowlist would still refuse
+        `Makefile`, but this says so rather than relying on it)."""
+        backends = self._control_file_backends()
+        self.assertTrue(backends)
+        self.assertEqual(
+            cb.RESERVED_LOGICAL_FILENAMES,
+            frozenset(n for m in backends for n in m.CONTROL_FILE_BASENAMES))
+        for module in backends:
+            self.assertIn(module.CONTROL_FILE_BASENAME, cb.RESERVED_LOGICAL_FILENAMES)
+
+    def test_no_reserved_name_is_a_language_source_name(self) -> None:
+        """The two clauses do not overlap: no language's source extension is empty, and no
+        reserved name carries one, so the reserved clause never shadows a legal source file."""
+        for language in cb.LANGUAGES:
+            extensions = cb.LANGUAGE_EXTENSION_ALLOWLIST[language]
+            self.assertTrue(extensions, language)
+            for extension in extensions:
+                self.assertTrue(extension, language)
+                for name in cb.RESERVED_LOGICAL_FILENAMES:
+                    self.assertFalse(name.endswith(extension), (language, name, extension))
+
+    def test_build_and_script_files_are_refused_by_the_extension_allowlist(self) -> None:
+        """Issue #469: `FORBIDDEN_EXTENSIONS` was deleted; the language allowlist is what
+        refuses a build/script file. One row per deleted name or extension, for every bundle
+        language — the rule-1-b record of that deletion as a test."""
+        for language in cb.LANGUAGES:
+            for name in ("build.sh", "build.bash", "rules.mk", "toolchain.cmake", "setup.py",
+                         "CMakeLists.txt", "configure"):
+                with self.subTest(language=language, name=name):
+                    violations = cb.logical_path_violations(name, language=language)
+                    self.assertEqual(len(violations), 1, violations)
+                    self.assertIn("must be one of", violations[0])
 
     def test_a_non_fortran_extension_is_rejected(self) -> None:
         violations = cb.logical_path_violations("adv1d_model.c", language="fortran")

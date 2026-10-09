@@ -53,7 +53,7 @@
         ],
         "properties": {
           "logical_path": {
-            "description": "Path relative to the assembled source root: normalized, POSIX-separated, confined (no leading '/', no '.'/'..' segment), unique within the bundle after case folding, with a language-allowed extension and no reserved build filename. The full rule set is tools/codegen_bundle.py:logical_path_violations; this pattern bears the per-segment grammar only.",
+            "description": "Path relative to the assembled source root: normalized, POSIX-separated, confined (no leading '/', no '.'/'..' segment), unique within the bundle after case folding, with a language-allowed extension (the rule that refuses a build/script file) and no registered build system's control-file name. The full rule set is tools/codegen_bundle.py:logical_path_violations; this pattern bears the per-segment grammar only.",
             "type": "string",
             "minLength": 1,
             "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*(?:/[A-Za-z0-9_][A-Za-z0-9_.-]*)*(?![\\s\\S])",
@@ -258,7 +258,7 @@
     {"note": "an entrypoint may not be defined in a private (helper / internal_module) file, nor in the runner", "kind": "operation", "defined_in": "adv1d_limiter.f90"},
     {"note": "a capability name outside CAPABILITY_VOCABULARY", "capability_requirements": ["gpu_magic@1"]}
   ],
-  "x-forbidden-examples-note": "This schema rejects on its own: the closed-key entries (an unknown top-level or per-object key), the unknown role, and — through the whole-path logical_path pattern — every traversal, separator, and normalization example ('../escape.f90', '/abs.f90', 'a/../b.f90', 'a//b.f90', 'dir\\win.f90', './x.f90'). The canonical validator tools/codegen_bundle.py:validate_bundle rejects the rest, because no draft-07 pattern can carry them: the reserved build filenames ('Makefile'), the build/script extensions ('build.sh'), the per-language extension allowlist, the case-folded duplicate path ('A.f90' beside 'a.f90'), the closed capability vocabulary ('gpu_magic@1' matches the token pattern), and every cross-field invariant (entrypoint privacy and attribution, member coverage, the residency-capability coupling, object-name uniqueness). A consumer that applies this schema with a generic JSON Schema library obtains the field grammar only and must still call the canonical validator.",
+  "x-forbidden-examples-note": "This schema rejects on its own: the closed-key entries (an unknown top-level or per-object key), the unknown role, and — through the whole-path logical_path pattern — every traversal, separator, and normalization example ('../escape.f90', '/abs.f90', 'a/../b.f90', 'a//b.f90', 'dir\\win.f90', './x.f90'). The canonical validator tools/codegen_bundle.py:validate_bundle rejects the rest, because no draft-07 pattern can carry them: the reserved build filenames ('Makefile'), the per-language extension allowlist (which also refuses a build/script file, 'build.sh'), the case-folded duplicate path ('A.f90' beside 'a.f90'), the closed capability vocabulary ('gpu_magic@1' matches the token pattern), and every cross-field invariant (entrypoint privacy and attribution, member coverage, the residency-capability coupling, object-name uniqueness). A consumer that applies this schema with a generic JSON Schema library obtains the field grammar only and must still call the canonical validator.",
   "x-canonical-validator": "tools/codegen_bundle.py:validate_bundle",
   "x-canonical-doc": "docs/workflow/CODEGEN_BUNDLE_CONTRACT.md"
 }

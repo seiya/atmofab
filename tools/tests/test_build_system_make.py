@@ -40,6 +40,13 @@ class BuildExecuteDeclarationTests(unittest.TestCase):
         self.assertIn(execute.QUALITY_CHECK_PRESET, execute.QUALITY_CHECK_COMMANDS)
         self.assertEqual(execute.QUALITY_CHECK_PRESET, "make_test")
 
+    def test_the_control_file_names_are_the_ones_make_reads(self) -> None:
+        # GNU make reads the first of these it finds when run without `-f`; the host authors
+        # `CONTROL_FILE_BASENAME`, and `codegen_bundle` refuses all three as bundle basenames.
+        self.assertEqual(control_file.CONTROL_FILE_BASENAMES,
+                         ("GNUmakefile", "makefile", "Makefile"))
+        self.assertIn(control_file.CONTROL_FILE_BASENAME, control_file.CONTROL_FILE_BASENAMES)
+
     def test_build_argv_and_overrides(self) -> None:
         self.assertEqual(execute.build_argv(None, 4, []), ["make", "-j4"])
         self.assertEqual(execute.build_argv("all", 2, ["A=1", "B=2"]),
