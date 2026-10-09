@@ -250,7 +250,7 @@
     {"note": "non-POSIX separator", "logical_path": "dir\\win.f90"},
     {"note": "unnormalized current-directory prefix", "logical_path": "./x.f90"},
     {"note": "reserved build filename", "logical_path": "Makefile"},
-    {"note": "build script extension", "logical_path": "build.sh"},
+    {"note": "build script (not the language's source extension)", "logical_path": "build.sh"},
     {"note": "case-folded duplicate of a.f90", "logical_path": "A.f90"},
     {"note": "no build/script role exists", "role": "script"},
     {"note": "the bundle carries no commands; the object is closed", "build_commands": ["gfortran -c x.f90"]},
