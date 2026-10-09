@@ -2516,13 +2516,14 @@ class ToolAdapterTests(unittest.TestCase):
 
     def test_syntax_adapter_argv(self) -> None:
         self.assertEqual(
-            ["nvcc", "-std=c++17", "-arch=sm_90", "-Xcompiler", "-fsyntax-only", "-odir", ".mods",
-             "-rdc=true", "-c", "a.cu"],
-            nvcc_syntax.argv(standard="c++17", scratch_dir=".mods", openmp=True, promotions=(),
+            ["nvcc", "-std=c++17", "-arch=sm_90", "-Xcompiler", "-fsyntax-only", "-odir",
+             ".syntax_check", "-rdc=true", "-c", "a.cu"],
+            nvcc_syntax.argv(standard="c++17", scratch_dir=".syntax_check",
+                             parallel_backend="openmp", promotions=(),
                              architecture="sm_90", sources=["a.cu"]))
         self.assertNotIn("-arch=None", nvcc_syntax.argv(
-            standard="c++17", scratch_dir=".m", openmp=False, promotions=(), architecture=None,
-            sources=[]))
+            standard="c++17", scratch_dir=".m", parallel_backend=None, promotions=(),
+            architecture=None, sources=[]))
         self.assertEqual("cuda_cpp", nvcc_syntax.LANGUAGE)
         with tempfile.TemporaryDirectory() as tmp:
             for name in ("b.cu", "a.cu", "c.txt"):
@@ -2545,8 +2546,8 @@ class ToolAdapterTests(unittest.TestCase):
         self.assertIn("-rdc=true", cpp_control_file.rules(
             standard="c++17", parallel_backend="cuda")["flags"].split())
         self.assertIn("-rdc=true", nvcc_syntax.argv(
-            standard="c++17", scratch_dir=".m", openmp=False, promotions=(), architecture=None,
-            sources=["a.cu"]))
+            standard="c++17", scratch_dir=".m", parallel_backend=None, promotions=(),
+            architecture=None, sources=["a.cu"]))
         self.assertIn("-rdc=true", nvcc_lint.CHECK_FLAGS)
         self.assertIn("-rdc=true", nvcc_lint.self_check_argv("/x"))
 
@@ -3138,7 +3139,7 @@ class RealDriverTests(unittest.TestCase):
             lint = run(list(nvcc_lint.source_argv(["./c_model.cu", "./p.cu"])))
             self.assertEqual(0, lint.returncode, lint.stderr[-2000:])
             (d / ".m").mkdir()
-            syntax = run(nvcc_syntax.argv(standard="c++17", scratch_dir=".m", openmp=False,
+            syntax = run(nvcc_syntax.argv(standard="c++17", scratch_dir=".m", parallel_backend=None,
                                           promotions=(), architecture=None,
                                           sources=["c_model.cu", "p.cu"]))
             self.assertEqual(0, syntax.returncode, syntax.stderr[-2000:])
@@ -3161,7 +3162,7 @@ class RealDriverTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             (Path(tmp) / nvcc_syntax.CANARY_FILENAME).write_text(nvcc_syntax.CANARY_SOURCE)
             (Path(tmp) / ".m").mkdir()
-            argv = nvcc_syntax.argv(standard="c++17", scratch_dir=".m", openmp=False,
+            argv = nvcc_syntax.argv(standard="c++17", scratch_dir=".m", parallel_backend=None,
                                     promotions=(), architecture="sm_90",
                                     sources=[nvcc_syntax.CANARY_FILENAME])
             self.assertEqual(0, subprocess.run(argv, cwd=tmp, capture_output=True, check=False).returncode)

@@ -14,7 +14,6 @@ import re
 import shutil
 import subprocess
 import tempfile
-import textwrap
 import typing
 import unittest
 from pathlib import Path
@@ -94,16 +93,23 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
         # line is the one the gate has always run.
         adapter = _gfortran_syntax()
         promotions = tuple(_fortran_syntax().PROMOTED_WARNINGS)
-        argv = adapter.argv(standard="f2008", scratch_dir=".mods", openmp=False,
+        argv = adapter.argv(standard="f2008", scratch_dir=".syntax_check", parallel_backend=None,
                             promotions=promotions, architecture=None,
                             sources=["a.f90", "b.f90"])
         self.assertEqual(
             argv,
             ["gfortran", "-fsyntax-only", "-std=f2008",
              "-Werror=unused-dummy-argument", "-Werror=unused-variable", "-Werror=ampersand",
-             "-J", ".mods", "-I", ".mods",
+             "-J", ".syntax_check", "-I", ".syntax_check",
              "a.f90", "b.f90"])
-        argv = adapter.argv(standard="f2018", scratch_dir=".mods", openmp=True,
+        # `-fopenmp` follows the parallel backend's NAME (issue #469), as Build's flags do; a
+        # backend that is not OpenMP adds nothing, MPI included.
+        for backend in ("none", "mpi", "cuda", None):
+            with self.subTest(parallel_backend=backend):
+                self.assertNotIn("-fopenmp", adapter.argv(
+                    standard="f2008", scratch_dir=".syntax_check", parallel_backend=backend,
+                    promotions=promotions, architecture=None, sources=["a.f90"]))
+        argv = adapter.argv(standard="f2018", scratch_dir=".syntax_check", parallel_backend="openmp",
                             promotions=promotions, architecture="x86_64", sources=["x.f90"])
         self.assertIn("-fopenmp", argv)
         self.assertIn("-std=f2018", argv)
@@ -248,7 +254,8 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
         with mock.patch.object(self.mod.shutil, "which", return_value="/usr/bin/gfortran"), \
                 mock.patch.object(self.mod.subprocess, "run", return_value=fake) as run_mock:
             result = self.mod.tool_run_syntax_check(
-                {"project_dir": str(d), "compiler": "gfortran", "std": "f2008", "openmp": True})
+                {"project_dir": str(d), "compiler": "gfortran", "std": "f2008",
+                 "parallel_backend": "openmp"})
         # first call = the syntax check itself; a later call probes --version
         argv = run_mock.call_args_list[0].args[0]
         self.assertEqual(argv[:3], ["gfortran", "-fsyntax-only", "-std=f2008"])
@@ -267,7 +274,10 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
         self.assertEqual(entry["tool_name"], "run_syntax_check")
         self.assertEqual(entry["ok"], True)
         # scratch mod dir is created inside project_dir, isolated per call
-        self.assertTrue((d / ".mods").is_dir())
+        self.assertTrue((d / ".syntax_check").is_dir())
+        # The result names the backend it was handed, not a boolean derived from one.
+        self.assertEqual(result["parallel_backend"], "openmp")
+        self.assertNotIn("openmp", result)
 
     def _argv0_for(self, **extra: object) -> tuple[str, list[str], list[str]]:
         """The syntax stage's argv and the programs it asked `which` for, for a gfortran stage
@@ -541,6 +551,8 @@ class CallerEnvTests(unittest.TestCase):
             args["build_system"] = "make"
         if tool == "run_linter":
             args["preset"] = "fortitude"
+        if tool == "run_quality_checks":
+            args["preset"] = "make_test"
         if tool == "run_syntax_check":
             args.update(compiler="gfortran", std="f2008")
         return args
@@ -897,79 +909,54 @@ class BuildCommandTests(unittest.TestCase):
 
     @classmethod
     def _marker_table(cls) -> list[tuple[str, str]]:
-        """The `(marker, build system)` table `_recommended_build_system` walks, read with `ast`.
+        """The `(marker, build system)` table `_recommended_build_system` walks, by CALLING the
+        function that composes it (`_build_system_markers`).
 
-        A REGEX over the source found the entries only while they were formatted one per line.
-        Measured in round 1: splitting a single entry across two lines — `("CMakeLists.txt",\n
-        "cmake"),`, which any reformatting produces — made `cmake` vanish from both sweeps that
-        read this table, with the whole class green and the subtest count silently dropping. A
-        sweep that shrinks without saying so is worse than no sweep, because the count is what a
-        reader takes as evidence.
-
-        `ast` reads the literal the interpreter reads, so formatting cannot move it. The exact
-        count is asserted by the callers against `_MARKER_COUNT` below rather than by a floor: the
-        first version's floor was `>= 10` for an eleven-entry table, so losing exactly one entry —
-        the failure that actually happened — was invisible.
-        """
-        import inspect
-        return cls._read_marker_table(inspect.getsource(cls.mod._recommended_build_system))
-
-    @staticmethod
-    def _read_marker_table(source: str) -> list[tuple[str, str]]:
-        """The pure half, so the probe below can drive THIS function on a synthetic input."""
-        import ast
-        for node in ast.walk(ast.parse(textwrap.dedent(source))):
-            if not isinstance(node, ast.Assign):
-                continue
-            if not any(getattr(target, "id", None) == "checks" for target in node.targets):
-                continue
-            table = node.value
-            if not isinstance(table, ast.List):
-                # AssertionError, not TypeError: this is a check on the SHAPE of the code being
-                # read, reported to whoever changed it, not a type contract of this function.
-                raise AssertionError(  # noqa: TRY004
-                    "the marker table is no longer a list literal")
-            return [(entry.elts[0].value, entry.elts[1].value) for entry in table.elts]
-        raise AssertionError(
-            "`checks` is no longer assigned a list literal in _recommended_build_system; this "
-            "reader cannot find the marker table it sweeps")
+        Until issue #469 the table was a list literal inside `_recommended_build_system` and was
+        read with `ast` (a regex had lost an entry split across two lines). The `make` rows are
+        now derived from that backend's `CONTROL_FILE_BASENAMES`, so there is no literal to read:
+        the composed table is the one the detection walks. The exact count is still asserted by
+        the callers against `_MARKER_COUNT`, so a derivation that narrows is a failure rather
+        than a quieter sweep."""
+        return list(cls.mod._build_system_markers())
 
     #: How many markers the table must have, so a sweep that reads fewer is a failure rather than
     #: a quieter run. Derived once here and checked by every row that walks the table.
-    _MARKER_COUNT = 11
+    _MARKER_COUNT = 12
 
     def test_the_marker_table_reader_finds_every_entry(self) -> None:
-        """The self-test for the reader, and the whole reason it is `ast` and not a regex.
-
-        Both directions: the count is exact, and the reader survives a reformatting that the
-        regex did not. The second half is driven on a synthetic function rather than by editing
-        the real one.
-        """
+        """The count is exact, and every build system the table can name is one `build_command`
+        runs. (The `ast`-reader self-test this row carried until issue #469 went with the list
+        literal it read.)"""
         self.assertEqual(len(self._marker_table()), self._MARKER_COUNT)
-        reformatted = textwrap.dedent('''
-            def f(project_dir, language):
-                checks = [
-                    ("Makefile", "make"),
-                    ("CMakeLists.txt",
-                     "cmake"),  # split across two lines, with a comment
-                ]
-            ''')
-        # DRIVES the real reader. The first version of this row re-implemented the `ast` walk
-        # inline, so replacing `_marker_table`'s body with the old regex left the whole file
-        # green — measured in round 2, and it is the same sin this branch had already fixed in
-        # the sibling boundary check one PR earlier.
-        self.assertEqual(
-            self._read_marker_table(reformatted),
-            [("Makefile", "make"), ("CMakeLists.txt", "cmake")])
-        self.assertEqual(
-            len(re.findall(r'\("([^"]+)", "([^"]+)"\),', reformatted)), 1,
-            "the regex this reader replaced would still find only one of the two entries; if "
-            "that stops being true the reason for using ast has changed")
         accepted = self._accepted_build_systems()
         self.assertEqual(accepted, set(self._BASE_ARGV))
         self.assertNotIn(
             "definitely-not-a-build-system", accepted,
             "the acceptance probe calls something that is not a build system a build system")
+
+    def test_the_make_rows_are_the_names_make_reads(self) -> None:
+        """The derived half of the table: one row per member of the `make` backend's
+        `CONTROL_FILE_BASENAMES`, in that order, ahead of every unowned row. Witnessed by a
+        registry whose `make` record declares no `control_file`: the rows go, rather than a
+        spelled copy answering for them."""
+        from tools.backends.build_system.make import control_file
+        table = self._marker_table()
+        make_rows = [(m, b) for m, b in table if b == "make"]
+        self.assertEqual(make_rows, [(n, "make") for n in control_file.CONTROL_FILE_BASENAMES])
+        self.assertEqual(table[:len(make_rows)], make_rows)
+        registry = self.mod._backend_registry()
+        real_get = registry.get
+
+        def without_control_file(axis: str, value: str) -> object:
+            record = real_get(axis, value)
+            if axis == "build_system" and value == "make":
+                return mock.Mock(backend_provides=tuple(
+                    c for c in record.backend_provides if c != "control_file"))
+            return record
+
+        with mock.patch.object(registry, "get", side_effect=without_control_file):
+            self.assertNotIn("make", {b for _m, b in self.mod._build_system_markers()})
 
     #: Which marker file means which build system. THE THIRD self-comparison on this branch, and
     #: the one two rounds of fixes did not reach: every row that walked the marker table took its
@@ -982,6 +969,7 @@ class BuildCommandTests(unittest.TestCase):
     #: Written out, because the association IS the knowledge and there is nowhere else to derive
     #: it from. Adding a marker means adding a row, which is the point.
     _MARKER_MEANS: typing.ClassVar[dict[str, str]] = {
+        "GNUmakefile": "make",
         "Makefile": "make",
         "makefile": "make",
         "CMakeLists.txt": "cmake",
@@ -1016,7 +1004,7 @@ class BuildCommandTests(unittest.TestCase):
         self.assertEqual(len(markers), self._MARKER_COUNT)
         for marker, expected in markers:
             with self.subTest(marker=marker):
-                answer = self.mod._recommended_build_system(self._dir_with(marker), "fortran")
+                answer = self.mod._recommended_build_system(self._dir_with(marker))
                 self.assertEqual(answer["build_system"], expected)
                 self.assertIn(marker, answer["reason"])
 
@@ -1024,20 +1012,54 @@ class BuildCommandTests(unittest.TestCase):
         """A directory carrying two markers has one answer, and which one is a property of the
         table's ORDER. Recorded because a reorder is silent otherwise."""
         answer = self.mod._recommended_build_system(
-            self._dir_with("Makefile", "CMakeLists.txt"), "fortran")
+            self._dir_with("Makefile", "CMakeLists.txt"))
         self.assertEqual(answer["build_system"], "make")
 
-    def test_an_unmarked_directory_defaults_to_make_and_says_which_default(self) -> None:
-        """Two different defaults with two different reasons, and the reason is the only thing
-        that tells them apart — an assertion on `build_system` alone cannot, since both are
-        `make`."""
+    def test_an_unmarked_directory_is_refused_and_says_to_pass_build_system(self) -> None:
+        """No marker is a refusal, not a default (issue #469): until then an unmarked directory
+        answered `make` under two reasons, one for a compiled language and one for any other.
+        Driven through `tool_compile_project` as well, the entry point a caller omitting
+        `build_system` reaches, so a default restored in either place is red."""
         empty = self._dir_with()
-        family = self.mod._recommended_build_system(empty, "fortran")
-        self.assertEqual(family["build_system"], "make")
-        self.assertIn("compiled language", family["reason"])
-        other = self.mod._recommended_build_system(empty, "haskell")
-        self.assertEqual(other["build_system"], "make")
-        self.assertEqual(other["reason"], "fallback default")
+        with self.assertRaisesRegex(ValueError, r"no build-system marker found .*pass build_system"):
+            self.mod._recommended_build_system(empty)
+        with mock.patch.object(self.mod, "_run_command") as run, \
+                self.assertRaisesRegex(ValueError, r"pass build_system"):
+            self.mod.tool_compile_project({"project_dir": empty, "language": "fortran"})
+        run.assert_not_called()
+
+    def test_known_build_systems_is_the_domain_build_command_answers(self) -> None:
+        """The dependency-aware rule's domain is exactly what `build_command` runs: the reason it
+        may be one list rather than two (issue #469 replaced the second copy). Both directions,
+        against the acceptance probe rather than against `_UNOWNED_BUILD_SYSTEMS`, which is the
+        list under test."""
+        self.assertEqual(set(self.mod.known_build_systems()), self._accepted_build_systems())
+        with mock.patch.object(self.mod, "_run_command") as run, \
+                self.assertRaisesRegex(ValueError, "dependency-aware build tool"):
+            self.mod.tool_compile_project({
+                "project_dir": self._dir_with(), "build_system": "scons"})
+        run.assert_not_called()
+
+    def test_a_compiled_language_is_held_to_the_named_build_systems(self) -> None:
+        """`AGENTS.md`'s policy: a compiled language builds only through make / cmake / meson /
+        ninja. A build system the library runs but outside that set is refused for `fortran`,
+        and the refusal names the set without naming a default (issue #469 dropped "make is the
+        default."); each member is accepted."""
+        with mock.patch.object(self.mod, "_run_command") as run, \
+                self.assertRaisesRegex(ValueError, "compiled language") as ctx:
+            self.mod.tool_compile_project({
+                "project_dir": self._dir_with(), "language": "fortran", "build_system": "cargo"})
+        run.assert_not_called()
+        self.assertIn("cmake/make/meson/ninja", str(ctx.exception))
+        self.assertNotIn("default", str(ctx.exception))
+        for build_system in ("make", "cmake", "meson", "ninja"):
+            with self.subTest(build_system=build_system), \
+                    mock.patch.object(self.mod, "_run_command",
+                                      return_value={"ok": True}) as run:
+                self.mod.tool_compile_project({
+                    "project_dir": self._dir_with(), "language": "fortran",
+                    "build_system": build_system})
+                run.assert_called_once()
 
     #: Build systems whose EXECUTABLE is not their id. The one piece of knowledge this row holds,
     #: and it is held here because `build_command` is the only other place it exists — comparing
@@ -1105,7 +1127,7 @@ class BuildCommandTests(unittest.TestCase):
             "different sets; a new adapter needs a row saying what it runs")
 
     def test_the_make_argv_is_the_documented_shape(self) -> None:
-        """`make` is the default this repository actually runs, so its argv is pinned exactly —
+        """`make` is the build system every target served today runs, so its argv is pinned exactly —
         the jobs flag glued to `-j`, the target after it, extra arguments last."""
         self.assertEqual(self.mod.build_command("make", None, 4, []), ["make", "-j4"])
         self.assertEqual(self.mod.build_command("make", "all", 2, []), ["make", "-j2", "all"])
@@ -1181,6 +1203,8 @@ class ArgumentContractTests(unittest.TestCase):
             args["build_system"] = "make"
         if tool == "run_linter":
             args["preset"] = "fortitude"
+        if tool == "run_quality_checks":
+            args["preset"] = "make_test"
         if tool == "run_syntax_check":
             args.update(compiler="gfortran", std="f2008")
         return args
@@ -1217,15 +1241,19 @@ class ArgumentContractTests(unittest.TestCase):
                     getattr(self.mod, f"tool_{tool}")(args)
 
     def test_the_required_set_is_what_the_entry_point_refuses_without(self) -> None:
-        """Driven, for the two entry points whose required set issue #289 widened: dropping
-        any required argument is a refusal naming it, and a call with all of them reaches the
-        tool. The only row observing `run_linter`'s refusal of a missing `preset`."""
+        """Driven, for the entry points whose required set issue #289 and issue #469 widened:
+        dropping any required argument is a refusal naming it, and a call with all of them
+        reaches the tool. The only row observing `run_linter`'s and `run_quality_checks`'
+        refusal of a missing `preset`, and `compile_project`'s of a missing `build_system` over
+        a directory with no marker (where both had a default until issue #469)."""
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         (d / "a.f90").write_text("program p\nend program p\n", encoding="utf-8")
         full = {
             "run_syntax_check": {"project_dir": str(d), "compiler": "gfortran", "std": "f2008"},
             "run_linter": {"project_dir": str(d), "preset": "fortitude"},
+            "run_quality_checks": {"project_dir": str(d), "preset": "make_test"},
+            "compile_project": {"project_dir": str(d), "build_system": "make"},
         }
         for tool, args in full.items():
             with self.subTest(tool=tool):

@@ -764,7 +764,7 @@ shallow_water2d_runner.o: shallow_water2d_runner.f90 shallow_water2d_model.mod
                     "gfortran", "-fsyntax-only", "-std=f2008",
                     "-Werror=unused-dummy-argument", "-Werror=unused-variable",
                     "-Werror=ampersand",
-                    "-J", ".mods", "-I", ".mods",
+                    "-J", ".syntax_check", "-I", ".syntax_check",
                     "shallow_water2d_model.f90", "shallow_water2d_runner.f90",
                 ],
                 "ok": True,

@@ -122,19 +122,11 @@ def _is_compiled_language(language: str) -> bool:
     return bool(_backend_registry().is_compiled_language((language or "").strip().lower()))
 
 
-DEPENDENCY_AWARE_BUILD_SYSTEMS = {
-    "make",
-    "cmake",
-    "meson",
-    "ninja",
-    "cargo",
-    "go",
-    "gradle",
-    "maven",
-    "npm",
-    "pnpm",
-    "poetry",
-}
+#: The build systems a compiled language may build through: those that track dependencies
+#: between compiled sources (`AGENTS.md` §Build-runtime execution rules names this set). A
+#: named policy, not a fact of one backend; which build system a target uses is its profile's
+#: `toolchain.build_system`, so nothing here is a default.
+COMPILED_LANGUAGE_BUILD_SYSTEMS = frozenset({"make", "cmake", "meson", "ninja"})
 
 
 def _trim(text: str, limit: int) -> str:
@@ -307,40 +299,54 @@ def _run_command(
         return result
 
 
-def _recommended_build_system(project_dir: str, language: str) -> dict[str, str]:
-    root = Path(project_dir)
-    lang = (language or "").strip().lower()
+#: The marker files of the build systems no backend owns yet, in detection order, each mapped
+#: to the build system it names. A backend that lands for one of them takes its row: a build
+#: system with an extracted `control_file` answers from its own `CONTROL_FILE_BASENAMES`
+#: (`_build_system_markers`). These rows stay here by issue #424's decision 2 (2026-10-06).
+_UNOWNED_BUILD_SYSTEM_MARKERS: tuple[tuple[str, str], ...] = (
+    ("CMakeLists.txt", "cmake"),
+    ("meson.build", "meson"),
+    ("build.ninja", "ninja"),
+    ("Cargo.toml", "cargo"),
+    ("go.mod", "go"),
+    ("pom.xml", "maven"),
+    ("build.gradle", "gradle"),
+    ("package.json", "npm"),
+    ("pyproject.toml", "poetry"),
+)
 
-    checks = [
-        ("Makefile", "make"),
-        ("makefile", "make"),
-        ("CMakeLists.txt", "cmake"),
-        ("meson.build", "meson"),
-        ("build.ninja", "ninja"),
-        ("Cargo.toml", "cargo"),
-        ("go.mod", "go"),
-        ("pom.xml", "maven"),
-        ("build.gradle", "gradle"),
-        ("package.json", "npm"),
-        ("pyproject.toml", "poetry"),
-    ]
-    for marker, build_system in checks:
+
+def _build_system_markers() -> tuple[tuple[str, str], ...]:
+    """Every `(marker file, build system)` row the detection reads: first, for each
+    `build_system` record that carries `control_file` in its package, one row per member of
+    its `CONTROL_FILE_BASENAMES` (the names that build system itself reads, issue #469); then
+    the unowned rows above. A record declaring `control_file` with no extracted package makes
+    `capability_module` raise here — a named refusal, never a table with that build system's
+    names left out."""
+    registry = _backend_registry()
+    rows: list[tuple[str, str]] = []
+    for build_system in registry.backend_ids("build_system"):
+        if "control_file" in registry.get("build_system", build_system).backend_provides:
+            module = registry.capability_module("build_system", build_system, "control_file")
+            rows.extend((name, build_system) for name in module.CONTROL_FILE_BASENAMES)
+    return tuple(rows) + _UNOWNED_BUILD_SYSTEM_MARKERS
+
+
+def _recommended_build_system(project_dir: str) -> dict[str, str]:
+    """The build system whose marker file `project_dir` carries, for a caller that names none.
+
+    No marker is a refusal, not a default (issue #469): which build system a target builds
+    through is its profile's `toolchain.build_system`, and the conductor always passes it, so a
+    default here could only be one build system's name answering for every target."""
+    root = Path(project_dir)
+    for marker, build_system in _build_system_markers():
         if (root / marker).exists():
             return {
                 "build_system": build_system,
                 "reason": f"{marker} was detected",
             }
-
-    if _is_compiled_language(lang):
-        return {
-            "build_system": "make",
-            "reason": "for a compiled language, make is the default standard build tool",
-        }
-
-    return {
-        "build_system": "make",
-        "reason": "fallback default",
-    }
+    raise ValueError(
+        f"no build-system marker found under {project_dir}; pass build_system")
 
 
 #: The bound `compile_project` applies when its caller names none. Module-level for a build at a
@@ -430,6 +436,25 @@ def build_command(
     raise ValueError(f"unsupported build_system: {build_system}")
 
 
+#: The build systems `build_command`'s own rows run (those no backend owns yet). Held equal to
+#: those rows by `test_known_build_systems_is_the_domain_build_command_answers`.
+_UNOWNED_BUILD_SYSTEMS: tuple[str, ...] = (
+    "cmake", "meson", "ninja", "cargo", "go", "maven", "gradle", "npm", "pnpm", "poetry",
+)
+
+
+def known_build_systems() -> frozenset[str]:
+    """Every build system `compile_project` runs: the unowned rows of `build_command` and each
+    `build_system` record that carries `build_execute` in its package — exactly the values
+    `build_command` answers without raising, so the dependency-aware rule is that domain and
+    not a second list beside it (issue #469). Each is a standard build tool that tracks
+    dependencies; an arbitrary command is not among them."""
+    registry = _backend_registry()
+    extracted = {b for b in registry.backend_ids("build_system")
+                 if "build_execute" in registry.get("build_system", b).backend_provides}
+    return frozenset(_UNOWNED_BUILD_SYSTEMS) | extracted
+
+
 def build_system_executable(build_system: str) -> str:
     """The host executable `build_system` builds through.
 
@@ -467,21 +492,17 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     if build_system:
         build_system = str(build_system).strip().lower()
     else:
-        build_system = _recommended_build_system(project_dir, language)["build_system"]
+        build_system = _recommended_build_system(project_dir)["build_system"]
 
-    if build_system not in DEPENDENCY_AWARE_BUILD_SYSTEMS:
+    if build_system not in known_build_systems():
         raise ValueError(
-            "build_system must be a standard dependency-aware build tool"
+            "build_system must be a standard dependency-aware build tool the library can run"
         )
-    if _is_compiled_language(str(language or "")) and build_system not in {
-        "make",
-        "cmake",
-        "meson",
-        "ninja",
-    }:
+    if (_is_compiled_language(str(language or ""))
+            and build_system not in COMPILED_LANGUAGE_BUILD_SYSTEMS):
         raise ValueError(
-            "for a compiled language, use make/cmake/meson/ninja. make is the default."
-        )
+            "for a compiled language, use "
+            f"{'/'.join(sorted(COMPILED_LANGUAGE_BUILD_SYSTEMS))}")
 
     command = build_command(build_system, target, jobs, extra_args)
     result = _run_command(
@@ -596,7 +617,11 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
-    preset = str(args.get("preset", "make_test"))
+    # Required: which preset runs is the target's build system's (the conductor always passes
+    # it), and a default would be one build system's preset answering for every target.
+    preset = args.get("preset")
+    if not isinstance(preset, str) or not preset:
+        raise ValueError("preset is required")
 
     if "command" in args:
         raise ValueError("run_quality_checks does not allow custom command; use preset")
@@ -861,7 +886,7 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
 # interface. Module files are compiler-/version-specific formats: every call gets its own
 # scratch dir and must never share Build's object directory.
 
-_SYNTAX_SCRATCH_DIR_NAME = ".mods"
+_SYNTAX_SCRATCH_DIR_NAME = ".syntax_check"
 
 
 def syntax_check_compilers() -> tuple[str, ...]:
@@ -984,7 +1009,6 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
             raise ValueError(f"run_syntax_check requires a non-empty string {required!r}")
     compiler = str(args["compiler"]).strip().lower()
     std = str(args["std"]).strip().lower()
-    openmp = bool(args.get("openmp", False))
     architecture = args.get("architecture")
     if architecture is not None and not isinstance(architecture, str):
         raise ValueError("architecture must be a string")
@@ -1047,7 +1071,7 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
         run_env = {str(k): str(v) for k, v in env.items()}
 
     command = adapter.argv(
-        standard=std, scratch_dir=_SYNTAX_SCRATCH_DIR_NAME, openmp=openmp,
+        standard=std, scratch_dir=_SYNTAX_SCRATCH_DIR_NAME, parallel_backend=parallel_backend,
         promotions=tuple(language.PROMOTED_WARNINGS), architecture=architecture,
         sources=ordered_sources)
     if wrapper is not None:
@@ -1070,6 +1094,6 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
             tuple(adapter.VERSION_ARGV) if wrapper is None
             else tuple(wrapper.wrap(adapter.VERSION_ARGV))),
         "std": std,
-        "openmp": openmp,
+        "parallel_backend": parallel_backend,
         "skipped": False,
     }

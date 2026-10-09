@@ -907,7 +907,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "6ab2137e8a06756cd4a464474f3c70d096ca5b67aa86dfc2b51fb6e94df962d0",
+    "build-2": "2c96eb723548b2212ee6a840e3300cd03f09bce8e634a73100ddfa55fa5eab96",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build
@@ -989,6 +989,15 @@ PINNED_BUILD: dict[str, str] = {
     # origin/main cb3da418's: that row and no other.) The digest `build-2` shipped with at
     # cb3da418:
     "build-2@cb3da418": "4a1391a7fde53a8f635e1b45b1be948872576001c6390a6d11f39cce751f2a5e",
+    # Re-pinned (issue #469, PR-2), behaviour-preserving: `tool_compile_project` refuses a call
+    # that names no `build_system` over a directory with no marker instead of defaulting to
+    # `make`, reads the dependency-aware domain from `known_build_systems()` (the values
+    # `build_command` answers) instead of a second list, and its compiled-language refusal
+    # loses "make is the default.". The conductor passes `build_system` on every build, so no
+    # run reaches the deleted default; the command and record of a build it runs are unchanged.
+    # (Measured by diffing `build_tuple()` against origin/main f4158bfa's: that row and no
+    # other.) The digest `build-2` shipped with at f4158bfa:
+    "build-2@f4158bfa": "6ab2137e8a06756cd4a464474f3c70d096ca5b67aa86dfc2b51fb6e94df962d0",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -1106,7 +1115,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # longer copies it. (Measured by diffing `execute_tuple()` against origin/main dd5bbcb8's:
     # the `Conductor._author_snapshot_schema` row and no other.) The digest `execute-8` shipped
     # with at dd5bbcb8 is kept below.
-    "execute-8": "2006092142e7b93ec637d4c5589ba5b2f9aac95bad8565525cf02f1708bc9dce",
+    "execute-8": "2da291789bbf24b25baeeb1b0c776ba6c937977859ac1927a6683db159465e3d",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -1223,6 +1232,12 @@ PINNED_EXECUTE: dict[str, str] = {
     # (Measured by diffing `execute_tuple()` against origin/main cb3da418's: that row and no
     # other.) The digest `execute-8` shipped with at cb3da418:
     "execute-8@cb3da418": "41f91e600bc6d362177325f639ad15107107bbb2274bb856bb32999eca8b74e5",
+    # Re-pinned (issue #469, PR-2), behaviour-preserving: `tool_run_quality_checks` requires
+    # `preset` instead of defaulting to `make_test`. The conductor passes it on every quality
+    # check, so no run reaches the deleted default; the preset table's digest is unchanged.
+    # (Measured by diffing `execute_tuple()` against origin/main f4158bfa's: that row and no
+    # other.) The digest `execute-8` shipped with at f4158bfa:
+    "execute-8@f4158bfa": "2006092142e7b93ec637d4c5589ba5b2f9aac95bad8565525cf02f1708bc9dce",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
