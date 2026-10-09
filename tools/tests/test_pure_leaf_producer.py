@@ -2158,6 +2158,27 @@ class PureProducerExemplarTests(unittest.TestCase):
         if hasattr(self, "_tmp"):
             self._tmp.cleanup()
 
+    def test_a_build_restart_carries_no_findings_and_a_build_reuse_does(self) -> None:
+        """Issue #464: a Build failure's route reaches Generate with the compiler's excerpt in
+        `repair_findings` whatever the strategy (`_repair_payload` attaches it). The producer
+        loop reads that seed only under `reuse`, so a `restart` (make_error,
+        validate_post_build_violation) renders the launch template with no excerpt, as
+        phase_03_build.md §On-failure states. The `reuse` twin is the control: the same
+        excerpt does reach its prompt, so the absence above is not the render dropping it."""
+        excerpt = "src/spec_x_model.f90:5:7:\nError: Syntax error in expression at (1)"
+        for strategy, carried in (("restart", False), ("reuse", True)):
+            with self.subTest(strategy=strategy):
+                c, oc = self._run(
+                    [_envelope(_valid_bundle())],
+                    repair={"issue_severity": "major", "repair_strategy": strategy,
+                            "repair_target_agent_run_id": "prior-arid",
+                            "repair_reason": f"build_{'make' if strategy == 'restart' else 'compile'}_error",
+                            "repair_findings": excerpt})
+                self.assertEqual(oc.status, "pass")
+                self.assertEqual(excerpt in c.prompts[0], carried)
+                self.assertEqual("repair_findings" in c.requests[0], carried)
+                self.tearDown()
+
     def test_cold_pure_launch_renders_exemplar_in_prompt(self) -> None:
         c, oc = self._run([_envelope(_valid_bundle())])
         self.assertEqual(oc.status, "pass")

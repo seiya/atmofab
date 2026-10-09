@@ -901,7 +901,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "48f39285564b16bbcf9e0ba7683330152d45c9b870feb05c597bbbf8c48f0bc7",
+    "build-2": "4a1391a7fde53a8f635e1b45b1be948872576001c6390a6d11f39cce751f2a5e",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build
@@ -967,6 +967,16 @@ PINNED_BUILD: dict[str, str] = {
     # every build that ran before runs the same argv and writes the same record. (Measured by diffing `build_tuple()` against origin/main 93a9e683's: those three
     # rows and no other.) The digest `build-2` shipped with at 93a9e683:
     "build-2@93a9e683": "4ba48dd98634f7851c4ff052945dd4feaf45c7490427c3ac54be785978ba5c9a",
+    # Re-pinned by issue #464: `Conductor._build_inproc` stops writing
+    # `binary_meta.json#failure_source_refs` (read by nothing) and no longer calls the deleted
+    # `_extract_failure_source_refs`. The Generate repair now carries `failure_excerpt` through
+    # `_read_repair_findings`, which is not a tuple member. Only a FAILED build's record changes,
+    # and a failed record is never reused (the `build-2@3b1e8f73` ground). A passing build's
+    # invocation and binary are unchanged; its record loses the always-empty
+    # `"failure_source_refs": []` key, which nothing reads. (Measured by diffing `build_tuple()` against
+    # origin/main 01970646's: that row and no other.) The digest `build-2` shipped with at
+    # 01970646:
+    "build-2@01970646": "48f39285564b16bbcf9e0ba7683330152d45c9b870feb05c597bbbf8c48f0bc7",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",

@@ -875,6 +875,50 @@ class ReuseResumeAndFindingsTest(unittest.TestCase):
                 self.assertIsNone(c._read_repair_findings(refs, reason, "validate"), reason)
 
 
+    def test_read_repair_findings_reads_build_excerpt(self) -> None:
+        # Issue #464: a routed Build failure keeps its excerpt (the compiler's / linker's /
+        # make's tail, or the post_build gate's) in the FAILED binary's binary_meta.json.
+        # Matched on the category suffix against BUILD_FAILURE_ROUTING, so the two escalate
+        # reasons `classify_build_failure` emits pick nothing up.
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0",
+                               spec_path="spec/component/spec_x",
+                               ir_id="x_1", pipeline_id="x_1", source_id="src_1",
+                               binary_id="bin_1")
+            bin_dir = repo / refs.binary_dir()
+            bin_dir.mkdir(parents=True)
+            excerpt = "src/model.f90:12:3:\n\n   12 |   x = y +\n      |   1\nError: Syntax error"
+            (bin_dir / "binary_meta.json").write_text(
+                json.dumps({"verification_status": "fail", "failure_category": "compile_error",
+                            "failure_excerpt": excerpt}),
+                encoding="utf-8")
+            c = _FakeConductor(repo_root=repo, orchestration_id="o",
+                               orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={})
+            for category in ("compile_error", "link_error", "make_error",
+                             "validate_post_build_violation"):
+                reason = wc.classify_build_failure(category).reason
+                self.assertEqual(reason, f"build_{category}")
+                self.assertEqual(c._read_repair_findings(refs, reason, "build"), excerpt, reason)
+            # The escalate reasons, and a bare prefix, read nothing.
+            for reason in (wc.classify_build_failure(None).reason,
+                           wc.classify_build_failure("foo").reason, "build_fail"):
+                self.assertIsNone(c._read_repair_findings(refs, reason, "build"), reason)
+            self.assertEqual(wc.classify_build_failure("foo").reason,
+                             "build_unknown_category:foo")
+            # A fresh binary id (no meta yet) -> None.
+            fresh = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/spec_x@0.1.0",
+                                spec_path="spec/component/spec_x",
+                                ir_id="x_1", pipeline_id="x_1", source_id="src_1",
+                                binary_id="bin_2")
+            self.assertIsNone(c._read_repair_findings(fresh, "build_compile_error", "build"))
+            # An empty excerpt -> None (the repair falls back to the full prompt).
+            (bin_dir / "binary_meta.json").write_text(
+                json.dumps({"failure_category": "compile_error", "failure_excerpt": "  "}),
+                encoding="utf-8")
+            self.assertIsNone(c._read_repair_findings(refs, "build_compile_error", "build"))
+
+
 class NodeRefsTest(unittest.TestCase):
     def test_safe_and_spec_id(self) -> None:
         refs = wc.NodeRefs(target_id=_TARGET_ID, node_key="component/dynamics_advdiff_flux_1d_upwind_center2@0.1.0",
@@ -3413,6 +3457,118 @@ class ConductRoutingTest(unittest.TestCase):
         # reuse + findings + a resumable producer session -> the slim warm-resume repair turn.
         self.assertTrue(gen_launches[1]["warm_resume"])
         self.assertEqual(gen_launches[1]["skill_must_read_refs"], "")
+
+    def _build_failure_conduct(self, category: str, mode: str = "prod"):
+        """Build fails once with `category`, classified by the real `classify_build_failure`
+        (so the reason is the one the route emits). The failed attempt's `binary_meta.json` is
+        written where that attempt's build writes it — under the binary id the REAL
+        `_ensure_fresh_producer_id` gave it — and the REAL `_read_repair_findings` reads it;
+        the wrapper only records when, and over which binary, it ran. Returns the binary ids
+        each Build attempt was given, in order."""
+        c = self._conductor()
+        c.workflow_mode = mode
+        c._claude_session_resumable = lambda s, **kw: True  # type: ignore[assignment]
+        state = {"build_failed": False}
+
+        def status_fn(phase, substep, n):
+            if phase == "build" and not state["build_failed"]:
+                state["build_failed"] = True
+                return "fail"
+            return "pass"
+
+        c.status_fn = status_fn
+        c.decision_fn = lambda phase, outcomes: wc.classify_build_failure(category)
+        build_ids: list[str] = []
+        real_rotate = c._ensure_fresh_producer_id
+
+        def rotate_then_record(refs, phase):
+            real_rotate(refs, phase)
+            if phase != "build":
+                return
+            build_ids.append(refs.binary_id)
+            if len(build_ids) == 1:  # the attempt that fails writes its record
+                meta_path = c.repo_root / refs.binary_dir() / "binary_meta.json"
+                meta_path.parent.mkdir(parents=True, exist_ok=True)
+                self.addCleanup(shutil.rmtree, meta_path.parent, True)
+                meta_path.write_text(json.dumps(
+                    {"verification_status": "fail", "failure_category": category,
+                     "failure_excerpt": "src/model.f90:12:3: Error: Syntax error"}),
+                    encoding="utf-8")
+
+        c._ensure_fresh_producer_id = rotate_then_record  # type: ignore[assignment]
+        refs = self._refs()
+        seen: list[tuple[int, str | None, str | None, str | None]] = []
+        real_reader = c._read_repair_findings
+
+        def recording_reader(refs, reason, phase=None):
+            seen.append((len([s for s, _ in c.calls if s == "revoke-artifact"]),
+                         refs.binary_id, reason, phase))
+            return real_reader(refs, reason, phase)
+
+        c._read_repair_findings = recording_reader  # type: ignore[assignment]
+        status = c.conduct(refs, "build")
+        gen_launches = [cap["--request-json"] for s, cap in c.calls
+                        if s == "record-launch"
+                        and cap.get("--request-json", {}).get("step") == "generate"
+                        and cap["--request-json"].get("substep") == "generate"]
+        return c, status, seen, gen_launches, build_ids
+
+    def test_build_compile_error_warm_reopens_generate_cross_phase(self) -> None:
+        # Issue #464: a Build `compile_error` revokes Generate with a WARM reuse repair carrying
+        # the compiler's excerpt, read BEFORE the revocation while refs still names the FAILED
+        # binary (its id rotates only at the next run_phase(build) entry).
+        c, status, seen, gen_launches, build_ids = self._build_failure_conduct("compile_error")
+        self.assertEqual(status, "pass")
+        # The read names the FAILED attempt's binary, and the retry's Build got a fresh one.
+        self.assertEqual(len(build_ids), 2)
+        self.assertNotEqual(build_ids[0], build_ids[1])
+        self.assertEqual(seen, [(0, build_ids[0], "build_compile_error", "build")])
+        revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+        self.assertEqual(len(revokes), 1)
+        self.assertEqual(revokes[0]["--step"], "generate")
+        self.assertEqual(revokes[0]["--reason"], "build_compile_error")
+        self.assertEqual(revokes[0]["--last-fail-reason"],
+                         "src/model.f90:12:3: Error: Syntax error")
+        self.assertEqual(len(gen_launches), 2)
+        self.assertNotIn("repair_findings", gen_launches[0])
+        self.assertEqual(gen_launches[1]["repair_strategy"], "reuse")
+        self.assertEqual(gen_launches[1]["repair_findings"],
+                         "src/model.f90:12:3: Error: Syntax error")
+        self.assertTrue(gen_launches[1]["warm_resume"])
+
+    def test_build_make_error_restarts_generate_cold(self) -> None:
+        # `make_error` routes `restart`: the conductor's repair payload names `restart` and the
+        # retry is not a warm resume. (The fake producer passes that payload through as its
+        # request; the real loop records `none` and renders no excerpt — witnessed by
+        # test_pure_leaf_producer's `test_a_build_restart_carries_no_findings_...`.) The
+        # revocation still records the excerpt for the operator.
+        c, status, seen, gen_launches, build_ids = self._build_failure_conduct("make_error")
+        self.assertEqual(status, "pass")
+        self.assertEqual(seen, [(0, build_ids[0], "build_make_error", "build")])
+        revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+        self.assertEqual(revokes[0]["--last-fail-reason"],
+                         "src/model.f90:12:3: Error: Syntax error")
+        self.assertEqual(len(gen_launches), 2)
+        self.assertEqual(gen_launches[1]["repair_strategy"], "restart")
+        self.assertFalse(gen_launches[1].get("warm_resume"))
+
+    def test_dev_build_compile_error_records_the_excerpt_and_fails_closed(self) -> None:
+        # dev does not retry in-run (`dev_phase_rollback`), but the findings are still read
+        # before the single revocation of Generate, so the excerpt lands on the revocation
+        # record the operator's cold --resume seeds its repair from.
+        c, status, seen, gen_launches, build_ids = self._build_failure_conduct(
+            "compile_error", "dev")
+        self.assertEqual(status, "fail_closed")
+        self.assertEqual(seen, [(0, build_ids[0], "build_compile_error", "build")])
+        revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
+        self.assertEqual(len(revokes), 1)
+        self.assertEqual(revokes[0]["--step"], "generate")
+        self.assertEqual(revokes[0]["--last-fail-reason"],
+                         "src/model.f90:12:3: Error: Syntax error")
+        self.assertEqual(len(gen_launches), 1)
+        ss = [cap for s, cap in c.calls if s == "set-status"][-1]
+        self.assertEqual(ss["--reason-code"], "dev_phase_rollback")
+        self.assertEqual(ss["--reason-detail"], "build_compile_error")
 
     def test_dev_structural_execute_failure_fails_closed_with_category_detail(self) -> None:
         # F1 is unchanged by B1: dev still fail_closes the cross-phase rollback rather than
@@ -16625,7 +16781,6 @@ class DeterministicBuildTest(unittest.TestCase):
             meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
             self.assertEqual(meta["verification_status"], "fail")
             self.assertEqual(meta["failure_category"], "make_error")
-            self.assertTrue(meta["failure_source_refs"][0].endswith("/Makefile"))
 
     def _binary_missing_build(self, repo: Path, compile_spy=None) -> tuple[wc.NodeRefs, dict]:
         """A Build whose compile reports success and leaves no binary; returns the refs and the
@@ -16669,7 +16824,6 @@ class DeterministicBuildTest(unittest.TestCase):
         self.assertEqual(args["extra_args"][1], "ZZ_EXE=spec_x_runner")
         self.assertEqual(meta["failure_category"], "zz_category")
         self.assertTrue(meta["failure_excerpt"].endswith("; zz rule"), meta["failure_excerpt"])
-        self.assertEqual(meta["failure_source_refs"], [f"{refs.source_dir()}/src/ZZcontrol"])
 
     def test_the_control_file_basename_is_the_build_system_s(self) -> None:
         """`_control_file_basename` asks the target build system's `control_file` backend
@@ -16706,44 +16860,15 @@ class DeterministicBuildTest(unittest.TestCase):
         self.assertIn("does not build in its source tree", str(caught.exception))
         self.assertEqual(seen, [])
 
-    def test_failure_source_refs_take_the_language_s_staged_suffixes(self) -> None:
-        """Attribution matches a token that ENDS in one of the node language's
-        `STAGED_SUFFIXES` (issue #424). The literal alternation it replaced cut `p_model.cu` to
-        a `src/p_model.c` nobody authored and `a_model.f03` to `.f`."""
-        from tools.backends import registry as backend_registry
-
-        def staged(language: str) -> tuple[str, ...]:
-            return tuple(backend_registry.capability_module(
-                "language", language, "syntax_promotions").STAGED_SUFFIXES)
-
-        extract = wc.Conductor._extract_failure_source_refs
-        fortran, cuda = staged("fortran"), staged("cuda_cpp")
-        cu_err = "src/p_model.cu(12): error: identifier undefined"
-        self.assertEqual(extract(cu_err, "S", fortran), [])
-        self.assertEqual(extract(cu_err, "S", cuda), ["S/p_model.cu"])
-        self.assertEqual(extract("x.cuh:3: warning", "S", cuda), ["S/x.cuh"])
-        self.assertEqual(extract("a_model.f03:7:3: Error", "S", fortran),
-                         ["S/a_model.f03"])
-        # The suffixes are literal (escaped): `.` in `.f90` is not "any character".
-        self.assertEqual(extract("a_modelxf90:1: Error", "S", fortran), [])
-        # Case-insensitive, as the literal list it replaced was.
-        self.assertEqual(extract("P_MODEL.CU(4): error", "S", cuda), ["S/P_MODEL.CU"])
-        # A sentence-final period still ends the token; a further suffix does not.
-        self.assertEqual(extract("Error in b.f90. See c.f90.o", "S", fortran), ["S/b.f90"])
-        # Link-error residue: an object name maps back to a source only through the build
-        # system's object naming, which this helper does not hold.
-        self.assertEqual(extract("nvlink error : Undefined reference in 'p.o'", "S", cuda),
-                         [])
-        with self.assertRaises(ValueError):
-            extract(cu_err, "S", ())
-
-    def test_build_inproc_attributes_a_cuda_failure_to_the_cu_source(self) -> None:
-        """Through `_build_inproc` on a `cuda_cpp` toolchain: a failed compile naming
-        `p_model.cu` and `p_model.cuh` records both, i.e. the call site hands the helper the
-        node language's whole staged suffix set rather than a literal list (issue #424)."""
+    def test_build_inproc_records_the_compiler_s_last_50_lines_as_the_excerpt(self) -> None:
+        """Issue #464: `binary_meta.json#failure_excerpt` is what a `reuse` Generate retry
+        receives, so its bound is part of the repair contract: the LAST 50 lines of the
+        compiler's stderr, the tail where the decisive error sits."""
         import tempfile
         from unittest import mock
         build_runtime = _build_runtime()
+        lines = [f"src/spec_x_model.f90:{i}:1: Error: line {i}" for i in range(1, 81)]
+        self.assertGreater(len(lines), 50)
 
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)
@@ -16754,26 +16879,19 @@ class DeterministicBuildTest(unittest.TestCase):
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
-            real_tc = c._read_toolchain(refs)
 
             def fake_compile(args):
                 return {"ok": False, "return_code": 2, "command_id": "cid",
-                        "stderr": "src/p_model.cu(12): error: identifier \"q\" is undefined\n"
-                                  "src/p_model.cuh(4): error: expected a \";\""}
+                        "stderr": "\n".join(lines)}
 
-            with mock.patch.object(build_runtime, "tool_compile_project", fake_compile), \
-                    mock.patch.object(c, "_read_toolchain",
-                                      return_value={**real_tc, "language": "cuda_cpp"}):
+            with mock.patch.object(build_runtime, "tool_compile_project", fake_compile):
                 out = c._build_inproc(refs, "child-1")
 
             self.assertEqual(out["returncode"], 0)
             meta = json.loads((repo / refs.binary_dir() / "binary_meta.json").read_text())
             self.assertEqual(meta["verification_status"], "fail")
-            # Both staged suffixes, the header's included: the call site hands the helper the
-            # whole `STAGED_SUFFIXES`, not the translation-unit subset.
-            self.assertEqual(meta["failure_source_refs"],
-                             [f"{refs.source_dir()}/src/p_model.cu",
-                              f"{refs.source_dir()}/src/p_model.cuh"])
+            self.assertEqual(meta["failure_excerpt"], "\n".join(lines[-50:]))
+            self.assertNotIn("failure_source_refs", meta)
 
     def test_build_inproc_payload_reaches_the_real_build_runtime_entry_point(self) -> None:
         """The conductor's own compile payload crosses the real `tool_compile_project` —
