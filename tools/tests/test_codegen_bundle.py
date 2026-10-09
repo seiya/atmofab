@@ -762,6 +762,15 @@ class ForbiddenCommandTest(unittest.TestCase):
         for module in backends:
             self.assertIn(module.CONTROL_FILE_BASENAME, cb.RESERVED_LOGICAL_FILENAMES)
 
+    def test_a_declared_but_unextracted_control_file_fails_closed(self) -> None:
+        """A build-system record declaring `control_file` in the neutral core (no package to read
+        names from) refuses rather than narrowing the reserved set."""
+        rec = backend_registry.Backend(
+            "build_system", "zz_bs", None, core_provides=frozenset({"control_file"}))
+        with mock.patch.dict(backend_registry._BACKENDS, {("build_system", "zz_bs"): rec}):
+            with self.assertRaises(backend_registry.BackendNotExtracted):
+                cb._reserved_logical_filenames()
+
     def test_no_reserved_name_is_a_language_source_name(self) -> None:
         """The two clauses do not overlap: no language's source extension is empty, and no
         reserved name carries one, so the reserved clause never shadows a legal source file."""

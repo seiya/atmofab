@@ -186,6 +186,9 @@ def _language_identifier_re(language: str) -> re.Pattern[str] | None:
 # positives.
 def _reserved_logical_filenames() -> frozenset[str]:
     names: set[str] = set()
+    # Every DECLARED record, not `implemented_backend_ids`: a record that declares
+    # `control_file` with no extracted package (`core_provides`) raises `BackendNotExtracted`
+    # here, at import, rather than leaving its names out of the set.
     for build_system in backend_registry.backend_ids("build_system"):
         if backend_registry.provides("build_system", build_system, "control_file"):
             names.update(backend_registry.capability_module(
