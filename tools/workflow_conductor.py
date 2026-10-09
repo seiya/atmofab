@@ -11680,7 +11680,8 @@ class Conductor:
                     f"\n[execute fail: quality_check] the {execute.QUALITY_CHECK_PRESET} re-run "
                     f"emitted no diagnostics.json/verdict while run_program's is present — the "
                     f"{self._control_file_basename(refs)} quality-check target must invoke the "
-                    f"runner with `--cases` (the runner requires it); the binding is "
+                    f"runner with the argv run_program uses, `<binary> --cases <spec> "
+                    f"<case_id>...` (the runner requires `--cases`); the binding is "
                     f"docs/backends/build_system/{build_system}/CONTROL_FILE.md §2, and see "
                     f"docs/workflow/RUNNER_OUTPUT_CONTRACT.md §5 / phase_04_validate.md §4-1.")
             stderr += block

@@ -1106,7 +1106,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # longer copies it. (Measured by diffing `execute_tuple()` against origin/main dd5bbcb8's:
     # the `Conductor._author_snapshot_schema` row and no other.) The digest `execute-8` shipped
     # with at dd5bbcb8 is kept below.
-    "execute-8": "0286ba402b1169612433344eff5fd11d66e095bfe87130914741d40a94ec4d85",
+    "execute-8": "2006092142e7b93ec637d4c5589ba5b2f9aac95bad8565525cf02f1708bc9dce",
     # ...and the digest `execute-8` SHIPPED with (origin/main b37ce9a6), kept so a later version
     # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`), as the pure
     # prompt contract's `pure-50@3c117410` entry does.
@@ -1214,8 +1214,12 @@ PINNED_EXECUTE: dict[str, str] = {
     "execute-8@8f8f0298": "0e61c90960c5568a4fd5a2eefed86693c250ff0b47d289289f23722cb1a3d4d0",
     # Re-pinned (issue #469), behaviour-preserving: `Conductor._execute_inproc`'s cause line for
     # a quality-check re-run that emitted no verdict names the control file and its preset from
-    # the build system's backend instead of spelling `make`'s. Only a FAILED execute's stderr
-    # changes, and a failed record is never reused; a passing run's record is byte-identical.
+    # the build system's backend instead of spelling `make`'s, and states the runner argv as
+    # `<binary> --cases <spec> <case_id>...` rather than in make variables. Only a FAILED
+    # execute's stderr changes, and a failed record is never reused; a passing run's record is
+    # byte-identical. That stderr is also the `quality_check_mismatch` excerpt the warm Generate
+    # repair receives as its findings (`_read_repair_findings`), so the line a repair leaf reads
+    # changed with it.
     # (Measured by diffing `execute_tuple()` against origin/main cb3da418's: that row and no
     # other.) The digest `execute-8` shipped with at cb3da418:
     "execute-8@cb3da418": "41f91e600bc6d362177325f639ad15107107bbb2274bb856bb32999eca8b74e5",

@@ -18853,7 +18853,7 @@ class DeterministicBuildTest(unittest.TestCase):
             cause = meta["failure_excerpt"].split("[execute fail: quality_check]")[1]
             self.assertIn(f"the {execute.QUALITY_CHECK_PRESET} re-run", cause)
             self.assertIn(f"the {control_file.CONTROL_FILE_BASENAME} quality-check target", cause)
-            self.assertIn("with `--cases`", cause)
+            self.assertIn("`<binary> --cases <spec> <case_id>...`", cause)
             self.assertIn("docs/backends/build_system/make/CONTROL_FILE.md §2", cause)
 
     def test_execute_inproc_stamps_the_repo_revision(self) -> None:
