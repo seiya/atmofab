@@ -819,7 +819,7 @@ class PureContextRunnerInjectionTests(unittest.TestCase):
             self.assertIn("pure_runner_document_missing", str(cm.exception))
 
     def test_missing_runner_raises_rather_than_shipping_a_blank_abi(self) -> None:
-        # NOT the swallow-to-"" idiom ir/tests use. Measured in issue #169's review: a
+        # Raises, as the ir/tests reads do since issue #467. Measured in issue #169's review: a
         # whitespace-only `pure_context` value never reaches the leaf — the launch
         # validator counts it missing and raises — so degrading only defers the refusal
         # one frame, into `record_launch`, where it escapes the loop's named branch.
@@ -1349,6 +1349,44 @@ class PureProducerSubstepTests(unittest.TestCase):
         self.assertEqual(len(rows), 1, events)
         self.assertEqual(rows[0]["node_key"], refs.node_key)
         self.assertIn("pure_runner_document_missing", rows[0]["detail"])
+
+    def test_a_missing_node_artifact_fails_closed_before_any_leaf_spawn(self) -> None:
+        """Issue #467: the IR and tests reads degraded to `""`, and the blank was refused one
+        frame later inside `record_launch`, escaping `run_substep` and aborting the conductor
+        with no outcome row. Driven through the production loop so the recovery branch is what
+        is observed, not the builder's raise alone."""
+        for rel_of, marker, empty in (
+                (lambda refs: f"{refs.ir_ref}/spec.ir.yaml", "pure_ir_document_missing", False),
+                (lambda refs: f"{refs.spec_path}/tests.md", "pure_tests_document_missing", False),
+                # Present but whitespace-only: refused by the launch validator like "", so the
+                # same recorded outcome is owed.
+                (lambda refs: f"{refs.spec_path}/tests.md", "pure_tests_document_missing", True)):
+            with self.subTest(marker=marker, empty=empty), tempfile.TemporaryDirectory() as tmp:
+                repo = Path(tmp)
+                refs = _write_node(repo)
+                target = repo / rel_of(refs)
+                if empty:
+                    target.write_text("\n  \n", encoding="utf-8")   # a truncated write
+                else:
+                    target.unlink()
+                c = _conductor(repo)
+                c.envelopes = [_envelope(_valid_bundle())]
+                events: list = []
+                _real_emit = c.emit
+                def _emit(event, _sink=events, _real=_real_emit, **fields):  # type: ignore[no-untyped-def]
+                    _sink.append({"event": event, **fields})
+                    _real(event, **fields)
+                c.emit = _emit  # type: ignore[assignment,method-assign]
+                oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+                self.assertEqual(oc.status, "fail")
+                self.assertEqual(oc.leaf_returncode, 1)
+                self.assertEqual(oc.infra_error[0], "pure_context_assembly_failed")
+                self.assertIn(marker, oc.infra_error[1])
+                self.assertEqual(getattr(c, "_spawn", 0), 0)
+                self.assertEqual([sub for sub, _ in getattr(c, "calls", []) if sub == "record-launch"], [])
+                rows = [e for e in events if e["event"] == "pure_context_assembly_failed"]
+                self.assertEqual(len(rows), 1, events)
+                self.assertIn(marker, rows[0]["detail"])
 
     def test_pass_after_repair_vouches_only_the_surviving_attempt(self) -> None:
         # A repaired pass leaves the earlier (finalized) attempt un-vouched. It used to be
@@ -3062,6 +3100,19 @@ class PureHarnessProducerEndToEndTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
+    def test_a_missing_ir_fails_closed_before_any_leaf_spawn(self) -> None:
+        """Issue #467, the harness producer's twin of the m3c row: a recorded
+        `pure_context_assembly_failed` outcome, no `record-launch`, no exception out."""
+        (self.repo / self.refs.ir_ref / "spec.ir.yaml").unlink()
+        self.c.envelopes = [_envelope(_harness_bundle())]
+        oc = self.c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(oc.infra_error[0], "pure_context_assembly_failed")
+        self.assertIn("pure_ir_document_missing", oc.infra_error[1])
+        self.assertEqual(getattr(self.c, "_spawn", 0), 0)
+        self.assertEqual([sub for sub, _ in getattr(self.c, "calls", [])
+                          if sub == "record-launch"], [])
+
     def test_one_accepted_turn_writes_the_declared_sources_and_the_control_file(self) -> None:
         self.c.envelopes = [_envelope(_harness_bundle())]
         oc = self.c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
@@ -3138,6 +3189,11 @@ class PureHarnessShapeTests(unittest.TestCase):
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(real_root / rel, dest)
         self.refs = _write_harness_node(self.repo)
+        # The reviewer's context reads the producer's bundle, and an absent one RAISES since
+        # issue #467, so the fixture stages it the way `PureHarnessVerifyWiringTests` does.
+        src = self.repo / self.refs.source_dir()
+        src.mkdir(parents=True, exist_ok=True)
+        (src / "codegen_bundle.json").write_text(json.dumps(_harness_bundle()), encoding="utf-8")
         self.c = _conductor(self.repo)
 
     def tearDown(self) -> None:
@@ -3320,6 +3376,33 @@ class PureHarnessShapeTests(unittest.TestCase):
         with self.assertRaises(RuntimeError) as caught2:
             self.c._build_pure_harness_verify_context(self.refs)
         self.assertIn("pure_runner_output_contract_document_missing", str(caught2.exception))
+
+    def test_both_contexts_raise_when_a_node_artifact_is_unreadable(self) -> None:
+        """Issue #467: every node artifact either harness context reads RAISES the named
+        `pure_<key stem>_document_missing`, which the caller converts into a recorded
+        `pure_context_assembly_failed`. Until then all four degraded to `""`."""
+        rows = (
+            (f"{self.refs.ir_ref}/spec.ir.yaml", "pure_ir_document_missing",
+             (self.c._build_pure_harness_context, self.c._build_pure_harness_verify_context)),
+            (f"{self.refs.spec_path}/tests.md", "pure_tests_document_missing",
+             (self.c._build_pure_harness_context, self.c._build_pure_harness_verify_context)),
+            (f"{self.refs.spec_path}/controlled_spec.md", "pure_controlled_spec_document_missing",
+             (self.c._build_pure_harness_verify_context,)),
+            (f"{self.refs.source_dir()}/codegen_bundle.json", "pure_bundle_document_missing",
+             (self.c._build_pure_harness_verify_context,)),
+        )
+        for rel, marker, builders in rows:
+            target = self.repo / rel
+            body = target.read_bytes()
+            target.unlink()
+            try:
+                for build in builders:
+                    with self.subTest(document=rel, builder=build.__name__):
+                        with self.assertRaises(RuntimeError) as caught:
+                            build(self.refs)
+                        self.assertIn(marker, str(caught.exception))
+            finally:
+                target.write_bytes(body)
 
     def test_the_verify_context_carries_the_output_contract_not_the_checks_abi(self) -> None:
         ctx = self.c._build_pure_harness_verify_context(self.refs)

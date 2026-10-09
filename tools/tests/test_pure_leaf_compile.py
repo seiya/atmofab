@@ -222,7 +222,8 @@ class PureCompileContextTests(_Fixture):
             set(ort.PURE_CONTEXT_REQUIRED_KEYS[("compile", "verify")]))
 
     def test_a_missing_node_artifact_fails_closed_before_any_launch(self) -> None:
-        """NOT the generate producer's `""` degradation, and the difference is the point.
+        """NOT a `""` degradation (the generate builders had one until issue #467), and the
+        difference is the point.
 
         Every key these builders return is declared in `PURE_CONTEXT_REQUIRED_KEYS`, and
         `_validate_pure_launch_request_payload` refuses an empty declared key — inside

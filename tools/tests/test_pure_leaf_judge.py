@@ -242,7 +242,8 @@ class PureJudgeContextTests(_Fixture):
 
     def test_every_missing_document_raises(self) -> None:
         """The judge's disposition, and the one thing that must not be copied from its
-        `generate.verify` sibling, which degrades a missing node artifact to `""`.
+        `generate.verify` sibling as it stood until issue #467, which degraded a missing node
+        artifact to `""`.
 
         NOT because a blank value would reach the leaf — it would not, and an earlier version of
         this docstring said so wrongly, which is the same false sentence round 2 corrected in

@@ -248,6 +248,20 @@ def _iter_bounded(response: Any, deadline: float,
         yield chunk, None
 
 
+def _is_deadline_timeout(exc: BaseException, deadline: float) -> bool:
+    """True when `exc` is a socket timeout that fired at or past the request's own deadline.
+
+    `_iter_bounded` reports that event as `response_deadline_exceeded` once a body is being
+    read. Before the response HEADERS arrive it surfaces from `urlopen` instead — bare from
+    `getresponse()`, wrapped in `URLError` from connect — and that is the ordinary shape of a
+    deadline on a buffered endpoint, which writes nothing until the whole answer exists
+    (measured in #467's review: a server silent past `timeout_s` reported `TimeoutError: timed
+    out`). Both are the same event, so both get the deadline's report, which the conductor
+    deliberately does not retry; a timeout before the deadline keeps its transport report."""
+    reason = exc.reason if isinstance(exc, urllib.error.URLError) else exc
+    return isinstance(reason, TimeoutError) and time.monotonic() >= deadline
+
+
 def _read_bounded(response: Any, deadline: float,
                   max_bytes: int = _MAX_RESPONSE_BYTES) -> "tuple[bytes | None, str | None]":
     """The whole body, or `(None, error)`. A thin fold over `_iter_bounded`, so the deadline and
@@ -495,9 +509,12 @@ def _post_json(
         detail, message = _http_error_report(exc, deadline, secret)
         return None, detail, message
     except Exception as exc:                    # noqa: BLE001 - DNS/TLS/timeout/socket
+        if _is_deadline_timeout(exc, deadline):
+            return None, "", "response_deadline_exceeded"
         # The exception's own text can carry the URL, which an operator may have embedded a
-        # credential in; redact for the same reason as the body.
-        return None, "", _redact(f"{type(exc).__name__}: {exc}", secret)
+        # credential in; redact for the same reason as the body. Prefixed for the classifier
+        # (`_TRANSPORT_FAILED`), as the streaming path's exception branch is.
+        return None, "", _redact(f"{_TRANSPORT_FAILED}: {type(exc).__name__}: {exc}", secret)
     text = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
     # Parse the ORIGINAL, return the REDACTED copy. Redacting first would mutate the provider's
     # document before it is read: a local endpoint whose key is a short word (`test`, `local`,
@@ -559,7 +576,10 @@ def _post_stream(
         detail, message = _http_error_report(exc, deadline, secret)
         return None, detail, message
     except Exception as exc:                    # noqa: BLE001 - DNS/TLS/timeout/socket
-        # PREFIXED, unlike the buffered path's bare `TypeName: text`. This is the ordinary way a
+        if _is_deadline_timeout(exc, deadline):
+            return frames, _redact(_decode(received), secret), "response_deadline_exceeded"
+        # PREFIXED, as the buffered path's exception branch is (`_TRANSPORT_FAILED`); this one
+        # says `stream interrupted` because that is what happened. This is the ordinary way a
         # severed stream surfaces: on `Transfer-Encoding: chunked` — the dominant encoding for
         # streaming — a connection cut mid-body raises `IncompleteRead` rather than reaching a
         # clean EOF, and `IncompleteRead(0 bytes read)` matches no classifier pattern at all.
@@ -799,6 +819,15 @@ def _read_anthropic_response(doc: Mapping[str, Any]) -> "tuple[str, str, dict, b
 # aborted)\b`. `stream error: ...` would NOT: that alternative requires the phrase to end the
 # line, so any detail after it matches nothing.
 _STREAM_INTERRUPTED = "stream interrupted"
+
+# What a transport exception on the buffered (`stream: false`) path is reported as — DNS, TLS,
+# connect, a socket timeout before the request's deadline, a connection cut before or during
+# the body (a timeout at the deadline is `response_deadline_exceeded`, `_is_deadline_timeout`). The prefix exists for the
+# same classifier: `network error` matches the transport-flake alternative `\bnetwork (?:error|is
+# unreachable)\b`. The bare `TypeName: text` it replaces (`TimeoutError: timed out`, `URLError:
+# <urlopen error [Errno -3] ...>`) matched nothing, so the same DNS failure before any byte was
+# re-launched under `stream: true` and failed the run closed under `stream: false` (#467).
+_TRANSPORT_FAILED = "network error"
 
 
 def _read_openai_stream(
