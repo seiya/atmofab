@@ -496,8 +496,9 @@ def _post_json(
         return None, detail, message
     except Exception as exc:                    # noqa: BLE001 - DNS/TLS/timeout/socket
         # The exception's own text can carry the URL, which an operator may have embedded a
-        # credential in; redact for the same reason as the body.
-        return None, "", _redact(f"{type(exc).__name__}: {exc}", secret)
+        # credential in; redact for the same reason as the body. Prefixed for the classifier
+        # (`_TRANSPORT_FAILED`), as the streaming path's exception branch is.
+        return None, "", _redact(f"{_TRANSPORT_FAILED}: {type(exc).__name__}: {exc}", secret)
     text = raw.decode("utf-8", "replace") if isinstance(raw, (bytes, bytearray)) else str(raw)
     # Parse the ORIGINAL, return the REDACTED copy. Redacting first would mutate the provider's
     # document before it is read: a local endpoint whose key is a short word (`test`, `local`,
@@ -559,7 +560,8 @@ def _post_stream(
         detail, message = _http_error_report(exc, deadline, secret)
         return None, detail, message
     except Exception as exc:                    # noqa: BLE001 - DNS/TLS/timeout/socket
-        # PREFIXED, unlike the buffered path's bare `TypeName: text`. This is the ordinary way a
+        # PREFIXED, as the buffered path's exception branch is (`_TRANSPORT_FAILED`); this one
+        # says `stream interrupted` because that is what happened. This is the ordinary way a
         # severed stream surfaces: on `Transfer-Encoding: chunked` — the dominant encoding for
         # streaming — a connection cut mid-body raises `IncompleteRead` rather than reaching a
         # clean EOF, and `IncompleteRead(0 bytes read)` matches no classifier pattern at all.
@@ -799,6 +801,14 @@ def _read_anthropic_response(doc: Mapping[str, Any]) -> "tuple[str, str, dict, b
 # aborted)\b`. `stream error: ...` would NOT: that alternative requires the phrase to end the
 # line, so any detail after it matches nothing.
 _STREAM_INTERRUPTED = "stream interrupted"
+
+# What a transport exception on the buffered (`stream: false`) path is reported as — DNS, TLS,
+# connect, socket timeout, a connection cut before or during the body. The prefix exists for the
+# same classifier: `network error` matches the transport-flake alternative `\bnetwork (?:error|is
+# unreachable)\b`. The bare `TypeName: text` it replaces (`TimeoutError: timed out`, `URLError:
+# <urlopen error [Errno -3] ...>`) matched nothing, so the same DNS failure before any byte was
+# re-launched under `stream: true` and failed the run closed under `stream: false` (#467).
+_TRANSPORT_FAILED = "network error"
 
 
 def _read_openai_stream(

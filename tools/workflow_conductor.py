@@ -3312,6 +3312,12 @@ _LEAF_INFRA_ERROR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 #     for a `verify` death in Compile/Generate on an unmoved repo revision.)
 #   - an UNCLASSIFIABLE nonzero exit (crash, OOM, hook denial) is deterministic: retrying it just
 #     hides the same failure behind 3x the wall-clock.
+#   - two HTTP-leaf transport reports match no pattern above BY DESIGN, both produced by
+#     `tools/llm_http_leaf._iter_bounded`: `response_deadline_exceeded` is the HTTP leaf's
+#     `leaf_timeout` — the request's own `timeout_s` is spent, and a re-launch stakes another full
+#     `timeout_s` (`TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS`, below, declines that first re-launch
+#     only for a `timeout_s` above it) — and
+#     `response_too_large` reproduces for the same request.
 _RETRYABLE_LEAF_INFRA_TAGS = frozenset({
     "llm_transport_flake", "llm_overloaded", "llm_rate_limit"})
 MAX_LEAF_TRANSIENT_RETRIES = 2  # => at most 3 launches of the same substep

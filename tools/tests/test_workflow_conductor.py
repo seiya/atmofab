@@ -4850,6 +4850,31 @@ class TransportFailureTest(unittest.TestCase):
                 self.assertTrue(got[1], "the evidence line must be non-empty")
         self.assertIn("llm_transport_flake", wc._RETRYABLE_LEAF_INFRA_TAGS)
 
+    def test_the_buffered_http_transport_report_is_tagged_by_its_prefix_alone(self) -> None:
+        """#467: the buffered HTTP leaf's transport exceptions are retryable because the
+        TRANSPORT prefixes them (`tools/llm_http_leaf._TRANSPORT_FAILED`), not because this
+        classifier learned urllib's exception vocabulary. The negatives are that record: the
+        UNPREFIXED spellings stay untagged, as does the numerics prose the same words occur in."""
+        from tools import llm_http_leaf as hl
+        prefix = hl._TRANSPORT_FAILED
+        for text in (
+                f"{prefix}: TimeoutError: timed out",
+                f"{prefix}: URLError: <urlopen error [Errno -3] Temporary failure in name "
+                f"resolution>",
+                f"{prefix}: URLError: <urlopen error timed out>",
+                f"{prefix}: RemoteDisconnected: Remote end closed connection without response",
+                f"{prefix}: IncompleteRead: IncompleteRead(0 bytes read)"):
+            with self.subTest(text=text):
+                got = wc._classify_leaf_infra_error(text)
+                self.assertIsNotNone(got, f"expected a tag for {text!r}")
+                self.assertEqual(got[0], "llm_transport_flake")
+        for text in ("TimeoutError: timed out",
+                     "URLError: <urlopen error timed out>",
+                     "the solver timed out after 500 iterations",
+                     "the DNS probe in the model's init timed out"):
+            with self.subTest(text=text):
+                self.assertIsNone(wc._classify_leaf_infra_error(text), text)
+
     def test_classify_leaf_infra_error_transport_does_not_fire_on_numerics_prose(self) -> None:
         """A false transport tag is not a cosmetic mislabel: it ARMS A RETRY, so a deterministic
         failure (a crash, a hook denial, a compiler error) would be re-run three times and cost

@@ -16,9 +16,11 @@ never appears in anything this module returns.
 
 from __future__ import annotations
 
+import http.client
 import io
 import json
 import pathlib
+import socket
 import tempfile
 import time
 import unittest
@@ -395,6 +397,55 @@ class ErrorTaxonomyTests(unittest.TestCase):
         def _slow(*_a, **_k):
             raise TimeoutError("timed out")
         self.assertIn("TimeoutError", self._error(_slow))
+
+    def test_every_buffered_transport_exception_is_classified_by_the_conductor(self) -> None:
+        """The buffered twin of `test_every_stream_failure_string_is_classified_by_the_conductor`.
+        Until #467 this path reported an exception as the bare `TypeName: text`, which matched
+        no classifier pattern, so the same DNS failure was re-launched under `stream: true` and
+        failed the run closed under `stream: false`. Each exception is raised where production
+        raises it: from `urlopen` (before any byte) or from the body read inside the same `try`
+        (`IncompleteRead` from `read1`, through `_read_bounded`)."""
+        class _SeveredBody(_FakeResponse):
+            def read1(self, _n=-1):
+                raise http.client.IncompleteRead(b"")
+
+        def _raising(exc):
+            def _open(*_a, **_k):
+                raise exc
+            return _open
+
+        cases = [
+            (TimeoutError("timed out"), "TimeoutError"),
+            (urllib.error.URLError(socket.gaierror(-3, "Temporary failure in name resolution")),
+             "URLError"),
+            (urllib.error.URLError(TimeoutError("timed out")), "URLError"),
+            (http.client.RemoteDisconnected("Remote end closed connection without response"),
+             "RemoteDisconnected"),
+            (ConnectionResetError(104, "Connection reset by peer"), "ConnectionResetError"),
+        ]
+        openers = [(_raising(exc), name) for exc, name in cases]
+        openers.append((lambda *_a, **_k: _SeveredBody(b""), "IncompleteRead"))
+        for opener, name in openers:
+            with self.subTest(exception=name):
+                message = self._error(opener)
+                self.assertTrue(message.startswith(hl._TRANSPORT_FAILED + ": "), message)
+                self.assertIn(name, message)
+                tag = wc._leaf_infra_error(wc.ProcResult(1, "", message))
+                self.assertIsNotNone(tag, msg=f"matched no pattern at all: {message}")
+                self.assertEqual(tag[0], "llm_transport_flake")
+                self.assertIn(tag[0], wc._RETRYABLE_LEAF_INFRA_TAGS)
+
+    def test_deadline_and_oversize_are_terminal_by_design(self) -> None:
+        """Neither is retried, and the classifier is pinned NOT to tag them (#467). The expired
+        deadline is the request's own cap — the HTTP leaf's `leaf_timeout` — and a re-launch
+        stakes another full `timeout_s` on a request that already consumed one; an oversized
+        body reproduces for the same request. (`response_not_json`, `response_not_an_object`,
+        `response_not_an_event_stream` and `empty_response` are terminal for the same reason —
+        deterministic for the request — and are not re-pinned here.)"""
+        for message in ("response_deadline_exceeded",
+                        f"response_too_large: over {hl._MAX_RESPONSE_BYTES} bytes"):
+            with self.subTest(message=message):
+                self.assertIsNone(wc._leaf_infra_error(wc.ProcResult(1, "", message)))
 
     def test_http_error_status_is_a_transport_error_here(self) -> None:
         """Unlike preflight's reachability probe: there the question is "is anything there",
