@@ -3312,9 +3312,10 @@ _LEAF_INFRA_ERROR_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
 #     for a `verify` death in Compile/Generate on an unmoved repo revision.)
 #   - an UNCLASSIFIABLE nonzero exit (crash, OOM, hook denial) is deterministic: retrying it just
 #     hides the same failure behind 3x the wall-clock.
-#   - two HTTP-leaf transport reports match no pattern above BY DESIGN, both produced by
-#     `tools/llm_http_leaf._iter_bounded` (the deadline also by `_is_deadline_timeout`, for one
-#     that expires before the response headers arrive). `response_deadline_exceeded` is the
+#   - two HTTP-leaf transport reports match no pattern above BY DESIGN, both produced in
+#     `tools/llm_http_leaf` (the deadline by `_iter_bounded` during the body, and by the post
+#     paths' exception branches through `_is_deadline_timeout` before the response headers
+#     arrive; the size cap by `_iter_bounded`). `response_deadline_exceeded` is the
 #     HTTP leaf's `leaf_timeout`: the request's own `timeout_s` is spent, and a re-launch stakes
 #     another full `timeout_s` (`TRANSIENT_RETRY_WALL_CLOCK_BUDGET_SECONDS`, below, declines
 #     that first re-launch only for a `timeout_s` above it). `response_too_large` reproduces
@@ -8408,10 +8409,8 @@ class Conductor:
         self.reset_http_history(phase, substep)
         # Assembling the reviewer's context RAISES on any document it cannot read, and WHICH
         # documents those are belongs to the `spec`'s builder, not to this loop: the generate
-        # reviewer reads four node artifacts and two host-owned repository documents
-        # (`pure_checks_contract_document_*` for CHECKS_MODULE_CONTRACT.md,
-        # `pure_severity_rubric_document_*` for phase_02_generate.md), the compile reviewer
-        # reads five node artifacts and three repository documents. Each builder's own docstring is the list; a list here went stale
+        # reviewer reads node artifacts and repository documents, the compile reviewer five
+        # node artifacts and three repository documents. Each builder's own docstring is the list; a list here went stale
         # the moment a second builder existed. run_substep's callers must
         # never see an exception — recover it as the same fail_closed transport outcome the
         # producer's `_build_pure_context` failure produces. A repository document the leaf cannot

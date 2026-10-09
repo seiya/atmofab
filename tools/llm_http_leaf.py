@@ -821,7 +821,8 @@ def _read_anthropic_response(doc: Mapping[str, Any]) -> "tuple[str, str, dict, b
 _STREAM_INTERRUPTED = "stream interrupted"
 
 # What a transport exception on the buffered (`stream: false`) path is reported as — DNS, TLS,
-# connect, socket timeout, a connection cut before or during the body. The prefix exists for the
+# connect, a socket timeout before the request's deadline, a connection cut before or during
+# the body (a timeout at the deadline is `response_deadline_exceeded`, `_is_deadline_timeout`). The prefix exists for the
 # same classifier: `network error` matches the transport-flake alternative `\bnetwork (?:error|is
 # unreachable)\b`. The bare `TypeName: text` it replaces (`TimeoutError: timed out`, `URLError:
 # <urlopen error [Errno -3] ...>`) matched nothing, so the same DNS failure before any byte was
