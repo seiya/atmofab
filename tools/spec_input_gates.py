@@ -21,17 +21,18 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from tools.backends import registry
+
+
 def max_spec_id_len() -> int:
     """The longest a `spec_id` may be: the minimum of every declared language's `SPEC_ID_MAX`.
 
     The generated per-node symbols derive from a spec_id by appending a short role suffix, and
     each language bounds how long an identifier may be; its `bundle_facts` module states the
     spec_id bound that leaves room for its suffixes. A spec_id names one node for every target,
-    so the gate takes the strictest language's answer. The registry is imported HERE, not at
-    module level: a language package imports this module (through `tools.runner_ir`), so a
-    module-level import is a cycle, and it would also load every language package at startup."""
-    from tools.backends import registry
-
+    so the gate takes the strictest language's answer. Read per call: the registry loads a
+    language package only when `capability_module` is asked, so importing this module loads
+    none."""
     bounds = [
         registry.capability_module("language", lang, "bundle_facts").SPEC_ID_MAX
         for lang in registry.backend_ids("language")
