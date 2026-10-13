@@ -5,7 +5,7 @@ The `bundle_facts` capability. The bundle contract itself (`tools/codegen_bundle
 neutral: it validates roles, logical paths, entrypoints and the build order without knowing any
 language. The facts it applies are Fortran's, and they used to sit in that neutral module as
 per-language lookup tables — the `language` axis half of the migration ledger's `codegen_bundle`
-area (`TODO.md`, `docs/BACKEND_BOUNDARY.md`). Since issue #289 (R4-b PR-2) this module also
+area (issue #469, `docs/BACKEND_BOUNDARY.md`). Since issue #289 (R4-b PR-2) this module also
 carries the names the host gives this language's files and the compiler it defaults to. They are
 read through `registry.capability_module("language", <id>, "bundle_facts")`.
 

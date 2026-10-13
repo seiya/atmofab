@@ -410,8 +410,8 @@ def _version_gated_capability_modules(item: HostExecutable):
     The protocol is two names — `version_argv` and `unsupported_version_reason` — mandatory for
     every `_VERSION_GATED_CAPABILITIES` member a record implements in its own package.
 
-    A capability still inlined in the neutral core declares no package and is not reached here;
-    its version, if it ever needs one, is that area's to add when it migrates.
+    A capability the neutral core implements (`core_provides`) declares no package and is not
+    reached here; its version, if it ever needs one, is added when it moves into a package.
     """
     from tools.backends import registry as backend_registry
 

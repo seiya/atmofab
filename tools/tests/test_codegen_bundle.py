@@ -903,7 +903,7 @@ class FieldGrammarTest(unittest.TestCase):
     def test_a_declared_but_unextracted_language_does_not_reach_load(self) -> None:
         """`_language_bundle` asks EXTRACTION, and that choice had no witness.
 
-        A declared-but-unextracted language is the state the migration ledger calls normal, and
+        A declared-but-unextracted language was the state the migration treated as normal, and
         `registry.load` raises on it. Asking membership instead — the mutation that survived the
         full suite — makes `import tools.codegen_bundle` die with `BackendNotExtracted` the day
         such a language is registered, which is the import-time blast radius this module removed

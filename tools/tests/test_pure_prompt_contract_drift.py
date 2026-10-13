@@ -926,6 +926,14 @@ PINNED: dict[str, str] = {
     # orch_20261007T141634Z_85026fe2 (codex, `harness_fortran_cpu_mpi`, `fortran_cpu_mpi`,
     # `validate.execute` rc=134 on every rank, in the self-test's JSON parser).
     "pure-71": "7cc1230e5f4a290e5d9b938d15408abac499d5f7dc932144a9fdff943cfc89d8",
+    # pure-72 (issue #469 PR-5): `RUNNER_OUTPUT_CONTRACT.md` §5's relative-output-path bullet
+    # cites the build system's control-file document (`CONTROL_FILE.md` §2) where it cited "the
+    # Makefile contract in `phase_02_generate.md`", a section that moved to the `make` backend in
+    # issue #289. The file is digested whole, so this one line moves the tuple; the runner
+    # contract is unchanged. The same PR's edit to `phase_02_generate.md` G4 (the unused-dummy
+    # binding no longer spelled in Fortran) is outside the hashed severity-rubric slice and moved
+    # nothing (measured: the drift test passed with that edit alone).
+    "pure-72": "8b15cdb49fa364a7d874ad86a2207cd0ab0d85007285a7bc71c35cc1b6b1c4c3",
 }
 
 

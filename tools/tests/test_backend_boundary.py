@@ -124,8 +124,8 @@ REGISTRY_MODULES = frozenset({"tools.backends", "tools.backends.registry"})
 #
 # The scope is `docs/BACKEND_BOUNDARY.md`'s scope, and `_EXCLUDED_PREFIXES` is that document's
 # exclusion list — no more. Two files that might be expected here are simply never globbed rather
-# than excluded: this instrument's own baseline (under `tools/tests/`) and `TODO.md`, which holds
-# the migration ledger and would otherwise count the debt it describes.
+# than excluded: this instrument's own baseline (under `tools/tests/`) and `TODO.md`, which records
+# backend facts as history and would otherwise count the spellings it describes.
 #
 # Every glob is RECURSIVE. The first version scanned `docs/*.md` plus `docs/workflow/**` only,
 # which made a move into any new `docs/<subdir>/` indistinguishable from a migration into a
@@ -189,8 +189,9 @@ _SCANNED_GLOBS = (
 _UNSCANNED_ROOT_FILES: dict[str, str] = {
     "TODO.md": (
         "a work ledger that RECORDS backend facts as history — measured spellings, past "
-        "diagnoses, the migration ledger itself. It names technology for the same reason "
-        "`docs/design/` does, and §Scope excludes that for the same stated reason. Scanning it "
+        "diagnoses, the migration ledger it held until issue #469. It names technology for "
+        "the same reason `docs/design/` does, and §Scope excludes that for the same stated "
+        "reason. Scanning it "
         "would put its recorded history into the growth bound and make every entry about a "
         "backend a ratchet event. The size of that history moves with the file and is not "
         "part of this reason: 631 token occurrences at `f88ad94`, 205 after issue #181 moved "
@@ -299,11 +300,11 @@ _TOKEN_CLASSES: dict[str, str] = {
     # redundant, and a probe for `clang++ -c` was being killed by its sibling.
     "compiler-driver": r"\bgfortran\b|\bflang\b|\bg\+\+|\bgcc\b|\bclang\b",
     "compiler-syntax-only": r"-fsyntax-only",
-    # linter. One class per registered linter, because the migration ledger is per (axis, value)
+    # linter. One class per registered linter, because extraction is per (axis, value)
     # and a single `linter-*` class would let a count fall in one backend while it rose in
     # another. Each is a bare name: what these count is the NAME, which the neutral core may use
-    # as a preset key — the knowledge is what moved (TODO.md records that the counts do not fall
-    # to zero for that reason).
+    # as a preset key — the knowledge is what moved, so the counts do not fall to zero for that
+    # reason (issue #424 PR-3).
     "linter-fortitude": r"fortitude",
     "linter-cppcheck": r"\bcppcheck\b",
     "linter-ruff": r"\bruff\b",
@@ -364,8 +365,8 @@ def _module_prefix(dotted: str, root: Path | None = None) -> str:
     spellings.
 
     THE FLOOR IS THE POINT. Collapsing by existence alone made the pin blind to exactly the
-    crossings the migration ledger is about: `tools.backends.build_system.make` has no directory
-    yet, so every prefix down to `tools.backends` was tried and that one EXISTS — and it is in
+    crossings the migration was about: `tools.backends.build_system.make` had no directory
+    then, so every prefix down to `tools.backends` was tried and that one EXISTS — and it is in
     `REGISTRY_MODULES`, so the crossing was filtered out as if it were a registry call. Verified:
     a neutral module importing `tools.backends.build_system.make` passed the whole suite. The four
     unextracted axes were the blind set. A name under the backend package therefore never
@@ -605,10 +606,9 @@ GROWTH_MESSAGE = (
 
 STALE_MESSAGE = (
     "the baseline is looser than the tree, which is what a migration looks like, and it is the "
-    "opposite finding from growth: growth is withdrawn, staleness is what the ledger records. " +
-    _REMEDY_CLAUSE + " A migration updates the measured debt in TODO.md in the same pull "
-    "request, so the ledger and the baseline cannot disagree and the ratchet keeps "
-    "tightening.")
+    "opposite finding from growth: growth is withdrawn, staleness is what the pull request "
+    "records. " + _REMEDY_CLAUSE + " The per-file drop is stated in that pull request or on its "
+    "issue, so the record and the baseline cannot disagree and the ratchet keeps tightening.")
 
 
 def grown_entries(baseline: dict[str, dict[str, int]],
@@ -635,7 +635,7 @@ def stale_entries(baseline: dict[str, dict[str, int]],
 
     A ceiling that is never lowered stops being a ratchet: a file that shed backend spelling — or
     left the scanned set entirely — must lower its recorded count in the same commit, so the debt
-    figure in TODO.md and the baseline cannot disagree. `scanned` decides which of the two causes
+    figure its pull request states and the baseline cannot disagree. `scanned` decides which of the two causes
     an absent file gets named (`_absent_cause`).
     """
     stale: list[str] = []
@@ -767,7 +767,8 @@ class BaselineComparisonTests(unittest.TestCase):
             # from the measurement while still IN the scanned set. This is the file that observes
             # `_check_baseline` handing the real scanned set to `stale_entries` — with `scanned`
             # degenerate the message names a scope change that did not happen, which is defect
-            # (aa) in TODO.md's ledger, and every other row here passes with it broken.
+            # (aa) in the migration ledger TODO.md held until issue #469, and every other row here
+            # passes with it broken.
             (tmp / "docs" / "quiet.md").write_text("no sampled spelling here\n", encoding="utf-8")
             baseline_path = tmp / "baseline.json"
             baseline_path.write_text(json.dumps({"token_counts": {
@@ -1432,7 +1433,7 @@ class ScannedSetTests(unittest.TestCase):
             )
             found = {p.relative_to(tmp).as_posix() for p in neutral_core_files(tmp)}
         # `skills/<skill>/backends/<axis>/<id>.md` is the placement table's fourth backend
-        # location and is NOT scanned — the ledger's `skills` migration moves knowledge there,
+        # location and is NOT scanned — a `skills` migration moves knowledge there,
         # and a check that counted it as neutral core would report a correct migration as growth
         # and leave the area's "counts drop" acceptance unreachable.
         self.assertEqual(
@@ -1888,9 +1889,8 @@ class RegistryConsistencyTests(unittest.TestCase):
 
     def test_membership_and_usability_are_different_questions(self) -> None:
         # The defect this pins: guarding a hard-coded Fortran renderer on MEMBERSHIP meant that
-        # declaring a second `language` member with `module=None` — the state most records are
-        # in, and the state the ledger says is normal — silently stopped the signature gates
-        # refusing. Asked of the registry rather than of a literal id list, so adding a backend
+        # declaring a second `language` member with `module=None` — the state most records were
+        # in when this was written — silently stopped the signature gates refusing. Asked of the registry rather than of a literal id list, so adding a backend
         # cannot make this test vacuous.
         for axis in registry.AXES:
             for backend_id in registry.backend_ids(axis):
@@ -1904,8 +1904,35 @@ class RegistryConsistencyTests(unittest.TestCase):
                     self.assertIsNotNone(
                         reason, f"{axis}/{backend_id} is unextracted but reads as usable")
                     self.assertIn("not extracted", reason)
+                    # The refusal names what is missing — a backend package — and no longer
+                    # points at a migration item: the records reaching this branch today are the
+                    # deliberately neutral ones, and the item closed with issue #469.
+                    self.assertIn("no backend package", reason)
+                    self.assertNotIn("TODO.md", reason)
+                    # Only for a record that declares a core job: a member registered with no
+                    # capability at all is a legitimate declaration (docs/BACKEND_BOUNDARY.md
+                    # §Design Policy), and its message says nothing implements it.
+                    if backend.core_provides:
+                        self.assertIn("its job is done by the neutral core", reason)
                     with self.assertRaises(registry.BackendNotExtracted):
                         registry.require_available(axis, backend_id)
+
+    def test_an_unextracted_record_with_no_core_job_is_not_said_to_have_one(self) -> None:
+        # The fail-closed default for a new member — `module=None` and no capability — shares
+        # the unextracted branch with the deliberately neutral records, and the refusal must not
+        # tell the operator the neutral core does a job nothing does.
+        bare = registry.Backend("parallel", "zz_bare", None)
+        with mock.patch.dict(registry._BACKENDS, {("parallel", "zz_bare"): bare}):
+            reason = registry.unavailable_reason("parallel", "zz_bare")
+        self.assertIsNotNone(reason)
+        self.assertIn("nothing in this repository implements it", reason)
+        self.assertNotIn("done by the neutral core", reason)
+
+    def test_the_stale_finding_does_not_send_the_reader_to_a_todo_ledger(self) -> None:
+        # The migration ledger left TODO.md with issue #469; the remedy says where the per-file
+        # drop is recorded now.
+        self.assertNotIn("TODO.md", STALE_MESSAGE)
+        self.assertIn("pull request or on its issue", STALE_MESSAGE)
 
     def test_the_signature_gates_ask_for_usability_not_membership(self) -> None:
         # Reading the module text, because the failure being prevented is a call to the WRONG
@@ -2276,7 +2303,7 @@ class RegistryConsistencyTests(unittest.TestCase):
         # asks the third of the target's parallel backend.
         #
         # The rest are declaration-only TODAY: they are how their records answer `implemented`,
-        # and they gain a dispatch when their ledger area lands.
+        # and they gain a dispatch when one is extracted.
         declaration_only = set(registry.CAPABILITIES) - dispatched
         asked: set[str] = set()
         registry_path = Path(registry.__file__).resolve()
@@ -2680,7 +2707,7 @@ class RegistryConsistencyTests(unittest.TestCase):
 class CapabilityOwnershipTests(unittest.TestCase):
     """The two capability sets, and the dispatch that reaches the second one.
 
-    `core_provides` says a job is still inlined in the neutral core; `backend_provides` says the
+    `core_provides` says the neutral core does a job; `backend_provides` says the
     record's own package does it. Every guard below was reverted and measured: without it the
     suite stays green while the registry can describe a state that cannot exist, or hand a seam a
     backend that never claimed the work.
@@ -2743,7 +2770,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
         # that is declared true and unreachable at the same time.
         # The capability is SYNTHESISED — declared, of this axis, and deliberately absent from
         # `CAPABILITY_MODULE_ATTR` — rather than borrowed from the live table. Every live
-        # capability without a row is one the ledger intends to migrate, and migrating it would
+        # capability without a row is one a later change may extract, and extracting it would
         # turn this probe into a false failure whose message ("UnsupportedBackend not raised")
         # names nothing for the author who tripped it.
         record = registry.Backend(
@@ -3441,7 +3468,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
         # `Backend.implemented` reads `provided`, and reverting it to `module is not None`
         # survives — every live record with a capability also has a module or lacks both. The
         # separating shape is a record with a capability and NO module, which is the honest
-        # state of a value whose code is still inlined in the neutral core.
+        # state of a value whose job the neutral core does.
         record = registry.Backend(
             "linter", "zz_inlined_only", None, core_provides=frozenset({"lint"}))
         with self._patched(record):
@@ -3607,7 +3634,7 @@ def _print_what_is_about_to_be_blessed(root: Path | None = None,
     # staleness is what a migration looks like — and the two entry lines are the same shape, so
     # one flat list said nothing about which answer each row wants. Separate headings, and no claim
     # that this output IS the check: `--check-baseline` is a separate invocation with its own
-    # exit code, and the ledger procedure records that one.
+    # exit code, and the pull request records that one.
     print(f"{WRITE_FLAG} is about to bless {len(grown)} grown and {len(stale)} stale entries. "
           f"Each is a judgement by docs/BACKEND_BOUNDARY.md §Decision Criteria; this listing is "
           f"a disclosure, not a substitute for {CHECK_FLAG} and its exit code:")

@@ -14,10 +14,13 @@ It does NOT enforce that the neutral core goes through it — nothing at import 
 `tools/tests/test_backend_boundary.py` ratchet, and the two work as a pair: this module says
 where the knowledge belongs, the ratchet says the neutral core is not accumulating more of it.
 
-`extracted=False` is the honest state of an axis whose knowledge is still inlined in the
-neutral core. It is not a stub and not a plan — it is a member whose module is `None`, so
-`load()` raises instead of returning something that pretends to work. The migration ledger in
-`TODO.md` is what turns those into `True`.
+`extracted=False` is the state of a record whose job the neutral core does itself. Every such
+record today is deliberately neutral rather than a debt — `linter/mixed` is a composite of other
+presets, and `parallel/none`, `hardware/cpu` and `scheduler/none` name the absence of a
+technology — so there is no technology knowledge for a package to hold (the migration that
+extracted every other record closed with issue #469). It is not a stub and not a plan — it is a
+member whose module is `None`, so `load()` raises instead of returning something that pretends
+to work.
 
 FOUR QUESTIONS, and a caller must ask the one it means. They are deliberately separate
 functions rather than one with a flag, because the flag was the bug: a single function answered
@@ -44,11 +47,11 @@ declared per record: a `cmake` backend that does not declare `control_file` gets
 is the documented leaf-authored path, not a silent misrender.
 
 WHERE the implementation lives is a SECOND question, and the two sets answer it separately.
-`core_provides` is the job still inlined in the neutral core — the debt the migration ledger in
-`TODO.md` is paying down. `backend_provides` is the job the record's own package implements, and
+`core_provides` is the job the neutral core does itself — today only for the deliberately
+neutral records above. `backend_provides` is the job the record's own package implements, and
 `capability_module` is the only way to reach it: it refuses a value that has not declared the
 job, so a dispatch can never load a backend that did not say it does the work. When an area of
-the ledger lands, its capability moves from the first set to the second and the dispatch site
+technology's knowledge is extracted, its capability moves from the first set to the second and the dispatch site
 starts routing through `capability_module`. `provides` is the union, so the authorship answer —
 which is not about where the code sits — does not move with it.
 
@@ -70,7 +73,12 @@ class UnsupportedBackend(LookupError):
 
 
 class BackendNotExtracted(NotImplementedError):
-    """The backend is implemented, but its code has not moved out of the neutral core yet."""
+    """No backend package answers this question for the value.
+
+    Raised when the record has no package (its job, if any, is the neutral core's), when its
+    package does not declare the capability asked for, or when a declared capability's
+    submodule is missing — `capability_module` names which.
+    """
 
 
 class BackendFrontendUnavailable(RuntimeError):
@@ -397,19 +405,19 @@ class Backend(NamedTuple):
 
     axis: str
     backend_id: str
-    #: Dotted module path of the backend package, or ``None`` while its knowledge is still
-    #: inlined in the neutral core (see the migration ledger in ``TODO.md``).
+    #: Dotted module path of the backend package, or ``None`` for a deliberately neutral value
+    #: whose job the neutral core does itself (see the module docstring).
     module: str | None
-    #: The `CAPABILITIES` still carried for this value by code INLINED IN THE NEUTRAL CORE.
+    #: The `CAPABILITIES` carried for this value by code IN THE NEUTRAL CORE.
     #: Empty means nothing inlined does this value's work — which, for a record with
     #: `module=None`, is the honest state of a value that was registered and implemented
     #: nowhere. That state must not be mistaken for a runnable one, which is why it is a
     #: declared set rather than something inferred from `module`.
     core_provides: frozenset[str] = frozenset()
     #: The `CAPABILITIES` this record's OWN backend package implements. The same jobs, moved:
-    #: as an area of the migration ledger lands, its capability moves from `core_provides` to
+    #: as a technology's knowledge is extracted, its capability moves from `core_provides` to
     #: here and the dispatch site starts reaching it through `capability_module` instead of
-    #: running its own inlined writer. A capability may not appear in both sets — one job, one
+    #: running its own writer. A capability may not appear in both sets — one job, one
     #: owner — and declaring one here requires a `module` to hold it.
     backend_provides: frozenset[str] = frozenset()
 
@@ -720,7 +728,7 @@ def provides(axis: str, backend_id: str, capability: str) -> bool:
     The question a host-authorship dispatch has: does the HOST do this job for this node, or does
     it fall to a leaf. Deliberately blind to whether the implementation has been extracted into
     the backend package yet (`core_provides | backend_provides`), because that is a migration
-    state and the authorship answer must not change when an area of the ledger lands.
+    state and the authorship answer must not change when a capability is extracted.
     A value with no record — unknown, or an open-vocabulary token — answers False, so the
     dispatch declines rather than writing something for a value it knows nothing about.
 
@@ -900,8 +908,9 @@ def unimplemented_reason(axis: str, backend_id: str) -> str | None:
     neutral core, which is what a declared capability asserts. This is the
     question a NODE-ACCEPTANCE gate has: may a run carry
     this axis value at all. `unavailable_reason` is not that question — it refuses every value
-    whose backend has not been extracted yet, which today is most of them, so a gate asking it
-    would reject every node this repository can actually build.
+    whose backend has no package — the deliberately neutral ones, among them `hardware/cpu`, which
+    every CPU target carries — so a gate asking it would
+    reject nodes this repository can actually build.
 
     `unsupported_reason` is not that question either, and the difference is the whole point of
     this function. Membership answers `None` for a value that was added to `_BACKENDS` and has
@@ -934,8 +943,8 @@ def unavailable_reason(axis: str, backend_id: str) -> str | None:
 
     This is the question a caller that is about to run backend code has — a signature renderer,
     a source scanner, a control-file writer. Neither other question is that one: `unsupported_reason`
-    answers `None` for a declared-but-unextracted member, whose code by definition still sits
-    in the neutral core behind a hard-coded import of some OTHER backend, and
+    answers `None` for a declared-but-unextracted member, whose code by definition sits in the
+    neutral core rather than in a package this caller could load, and
     `unimplemented_reason` answers `None` for it too — it says the value RUNS, not that it runs
     through a backend package. A gate that guarded a
     Fortran-only renderer on either of them would let a `cpp` node through and pin its
@@ -952,10 +961,14 @@ def unavailable_reason(axis: str, backend_id: str) -> str | None:
         return _no_record_reason(axis, backend_id)
     if backend.extracted:
         return None
+    # Two states share `module=None`, and the message must not call the second the first: a
+    # record whose job the neutral core does (`core_provides`), and the fail-closed default of a
+    # member registered with nothing at all.
+    where = ("its job is done by the neutral core" if backend.core_provides
+             else "nothing in this repository implements it")
     return (
-        f"the {axis} backend '{backend.backend_id}' is declared but not extracted: its "
-        f"knowledge still sits in the neutral core, so nothing can run it (migration ledger: "
-        f"TODO.md, rule: docs/BACKEND_BOUNDARY.md)"
+        f"the {axis} backend '{backend.backend_id}' is declared but not extracted: {where}, "
+        f"so it has no backend package to run (rule: docs/BACKEND_BOUNDARY.md)"
     )
 
 
@@ -995,7 +1008,7 @@ def load(axis: str, backend_id: str) -> ModuleType:
     """Import and return the backend package.
 
     `UnsupportedBackend` when the axis value is not a member; `BackendNotExtracted` when it is a
-    member (or an open-vocabulary value) whose knowledge still lives in the neutral core. The
+    member (or an open-vocabulary value) with no backend package. The
     classification is `require_available`'s rather than this function's own, so the same input
     cannot be one kind of failure here and another kind there — it was, for one review round.
     """

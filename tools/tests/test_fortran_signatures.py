@@ -591,8 +591,8 @@ class FortranStanzaParserTests(unittest.TestCase):
         # `bind(c)`, `public, bind(c)` — each of which is a legal type header the pattern silently
         # refuses (no stanza, no error). An earlier version of this comment named `extends` as the
         # only such input, which a reviewer measured false. None of those forms appears in the
-        # corpus today; pinning the class here would freeze the refusal, so the ledger records it
-        # for the language area instead.
+        # corpus today; pinning the class here would freeze the refusal, so TODO.md's
+        # `_TYPE_HEADER_RE` entry records it instead.
         block = ("type :: hx__outer\n"
                  "  type(hx__inner), allocatable :: parts(:)\n"
                  "  integer :: n\n"
@@ -1560,8 +1560,8 @@ class NoImportCycleWithTheValidatorTest(unittest.TestCase):
     What it guards against is the state these modules were in until the §5.1 line and stanza layer
     moved here: `signatures` imported `_fortran_logical_lines`, `_normalize_fortran_line` and
     `_parse_interface_stanzas` out of the validator, so the Fortran backend reached into the
-    neutral core for its own subject matter (TODO.md's blocking sub-item). Nothing observed that:
-    the import worked and the suite was green.
+    neutral core for its own subject matter (the migration's blocking sub-item, issue #469).
+    Nothing observed that: the import worked and the suite was green.
 
     FOUR checks, because no subset of them covers the property:
 
@@ -1749,7 +1749,7 @@ class NoImportCycleWithTheValidatorTest(unittest.TestCase):
 
     #: A backend package with the shapes that matter: a root, a helper reached by an ABSOLUTE
     #: import, a helper reached by a RELATIVE one, a module no root reaches, and a second axis
-    #: standing in for the migration ledger's next area.
+    #: standing in for a later extraction.
     _SYNTHETIC = {
         "tools/validate_pipeline_semantics.py": (
             "from tools.backends.language.fortran import lines as fortran_lines\n"),

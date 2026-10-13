@@ -430,7 +430,10 @@ def target_harness_entries(target: TargetProfile | None,
 #: What `Generate` asks of the target LANGUAGE for every node kind: `bundle_facts` (the bundle
 #: contract's file facts and the host-given names), `syntax_promotions` (the syntax stage),
 #: `prompt_fragments` (the generate prompts' rules and the runner-output binding) and
-#: `checks_abi` (the checks-module binding and the gate guards), and `control_file` (the language
+#: `checks_abi` (the checks-module binding and the gate guards), `source_reading` (the gates'
+#: reader of a generated source), `signatures` (the `controlled_spec` §5.1 signature gates and the
+#: dependency-interface extraction),
+#: and `control_file` (the language
 #: half of the build control file the host authors for every node: a `harness` bundle has no shape
 #: without it — R4-b PR-4's round 3 moved it here from the non-`infrastructure` list, where a
 #: language declaring it for no node passed launch and stopped mid-`Generate`). A capability the

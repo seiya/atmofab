@@ -174,8 +174,8 @@ after this document wherever this document is inlined whole.
   backend declares `COMPILED`), the `runner` must not launch an external interpreter
   (`python` / `bash` / `sh` / `node`).
 - The `runner` writes its output paths **relatively** so a `cd $(RUNDIR)` in the
-  `make test`/`check` target redirects them under the run dir (see the Makefile
-  contract in `phase_02_generate.md`).
+  `make test`/`check` target redirects them under the run dir (see the build
+  system's control-file document, `docs/backends/build_system/<id>/CONTROL_FILE.md` §2).
 - The `runner` is **always** invoked with `--cases <spec.ir.yaml> <case_id>...`:
   by `run_program` directly and by the `make test`/`check` target (which forwards
   the same argv, so the re-run's `diagnostics.json` equals `run_program`'s). It

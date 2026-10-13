@@ -261,7 +261,7 @@ def fortran_logical_line_texts(text: str) -> list[str]:
 
     It lives beside the scanner it adapts rather than in its caller: as a private helper in the
     validator it was one of the three Fortran helpers `backends.language.fortran.signatures` had to
-    import back out of the neutral core (TODO.md's blocking sub-item)."""
+    import back out of the neutral core (the migration's blocking sub-item, issue #469)."""
     return [joined for _lineno, joined in fortran_logical_lines(text)]
 
 

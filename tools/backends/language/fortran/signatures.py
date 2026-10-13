@@ -72,7 +72,7 @@ from tools.structured_signatures import validate_symbol as _validate_symbol
 #
 # This layer used to live in ``tools/validate_pipeline_semantics.py``, and this module imported it
 # back out of the neutral core — a backend reaching into the neutral core for its own subject
-# matter (`docs/BACKEND_BOUNDARY.md`, the blocking sub-item of TODO.md's validator area). The
+# matter (`docs/BACKEND_BOUNDARY.md`, the blocking sub-item of the migration's validator area, issue #469). The
 # gates that consume it are neutral and reach it here, through the language backend.
 
 _IFACE_PROC_START = re.compile(
