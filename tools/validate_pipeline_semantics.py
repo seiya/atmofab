@@ -9705,8 +9705,8 @@ def _validate_ir_module_parameters_against_section51(
 
     def _norm(value: Any) -> str:
         # Case-fold (a VALUE is a neutral token or a number, not an identifier of any language, so
-        # the neutral `float64` == `FLOAT64` whatever the target) and remove ALL whitespace, matching the Generate.static source pin (`stanza_atoms` strips
-        # every space). Applied to BOTH sides of the compare below (the IR value and the raw §5.1
+        # the neutral `float64` == `FLOAT64` whatever the target) and remove ALL whitespace,
+        # matching the Generate.static source pin (`stanza_atoms` strips every space). Applied to BOTH sides of the compare below (the IR value and the raw §5.1
         # value). The fold cannot make two DIFFERENT ABI values compare equal: the IR side is
         # validated by `_require_neutral_parameter_value` (via `_validate_module_parameter`) to be a
         # number or a `float64`/`float32` token — no internal whitespace, expression, or character

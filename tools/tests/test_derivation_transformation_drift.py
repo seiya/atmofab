@@ -619,8 +619,8 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # each rendering language's case rule (copy the §5.1 spelling), and the dependency-operations
     # bullet says the subset is by exact spelling — the gates that now say so refuse a case-only
     # variant. Measured by running `_validate_published_surface` and
-    # `_validate_component_dep_operations_membership` over all 360 certified IRs under
-    # workspace/ir at this branch and at origin/main c2b012e9: the two revisions report the
+    # `_validate_component_dep_operations_membership` over all 360 IRs under workspace/ir (258
+    # of them `verification_status: pass`) at this branch and at origin/main c2b012e9: the two revisions report the
     # identical violation set for every one of them, so no certified IR is newly refused and a
     # bump would re-derive every node's Compile for an IR the leaves already authored to the
     # tightened rule. The V8 signatures bullet also stops saying the comparison is "case-folded":
