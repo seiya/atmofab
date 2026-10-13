@@ -14,7 +14,7 @@ from contextvars import ContextVar
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable, Iterator, Mapping
+from typing import Any, Callable, Iterable, Iterator, Mapping
 
 try:
     # The registry is the ONLY way this module reaches a language or build-system backend
@@ -2494,7 +2494,8 @@ def _validate_generate_outputs_for_generation(
     # L1b: a component node's generated model must publish EXACTLY its IR public_api op NAMES
     # (inert on a legacy IR that carries no public_api pin; no-op for non-component nodes).
     _validate_component_generated_surface(
-        repo_root, execution, model_files, violations, source_reading=source_reading
+        repo_root, execution, model_files, violations, source_reading=source_reading,
+        identifier_key=bundle.identifier_key,
     )
     # Issue #22: a presence floor for the target-lowering rule — an OpenMP-on-CPU Fortran target
     # whose bundle's lowering plan names OpenMP, with counted `do` loops and zero `!$omp`
@@ -2512,6 +2513,7 @@ def _validate_component_generated_surface(
     violations: list[str],
     *,
     source_reading: Any,
+    identifier_key: Callable[[str], str],
 ) -> None:
     """L1b deterministic generated-source gate (``component`` nodes with a pinned public_api):
     the generated model source must publish EXACTLY the ``<spec_id>__`` public subroutine set the
@@ -2525,7 +2527,10 @@ def _validate_component_generated_surface(
 
     Inert (skip) when the IR carries NO ``public_api`` (a legacy pre-L1 certified IR — nothing to
     pin against; L4 guards that resume path). No-op for a non-component node, an unresolvable IR,
-    or a missing model (already flagged upstream)."""
+    or a missing model (already flagged upstream).
+
+    Names are compared under the target language's case rule (`identifier_key`, its
+    `bundle_facts.identifier_key`): two spellings it calls one name are one operation."""
     ir_dir = _ir_dir_for_execution(repo_root, execution)
     if ir_dir is None:
         return
@@ -2564,13 +2569,13 @@ def _validate_component_generated_surface(
     combined = "\n".join(
         f.read_text(encoding="utf-8", errors="ignore") for f in model_files)
     generated = source_reading.published_subroutines(combined, spec_id)
-    gen_cf = {g.casefold() for g in generated}
-    pub_cf = {p.casefold() for p in published}
+    gen_keys = {identifier_key(g) for g in generated}
+    pub_keys = {identifier_key(p) for p in published}
     target = model_files[0]
     # The remedies name how the language declares a procedure, so its reader states them.
-    for missing in sorted(p for p in published if p.casefold() not in gen_cf):
+    for missing in sorted(p for p in published if identifier_key(p) not in gen_keys):
         violations.append(f"{target}: {source_reading.published_operation_missing(missing)}")
-    for extra in sorted(g for g in generated if g.casefold() not in pub_cf):
+    for extra in sorted(g for g in generated if identifier_key(g) not in pub_keys):
         violations.append(
             f"{target}: {source_reading.published_operation_extra(spec_id, extra)}")
 
@@ -8760,11 +8765,13 @@ def _validate_component_dep_operations_membership(
             # to the dependency's §5 for an empty surface; a genuinely wrong call is still caught
             # downstream at Generate.
             continue
-        # Fortran symbols are case-INsensitive, so compare casefolded (matching the L1b/L1c
-        # sibling gates and the `use`/`call` the linker resolves): a case-variant of a real
-        # published name links fine and must not be a false reject.
-        published_cf = {p.casefold() for p in published}
-        unknown = [d for d in declared if d.casefold() not in published_cf]
+        # EXACT, not under a language's case rule: this gate runs target-free (`Compile.static`),
+        # so no language is in scope, and the neutral layer takes the answer EVERY declared
+        # language would give — a name is accepted only if each would resolve it, which in a
+        # case-sensitive one means the published spelling. A case-variant is therefore refused
+        # here, as an IR the leaf repairs by copying the spelling, rather than passing to a link
+        # failure on the target that resolves names exactly.
+        unknown = [d for d in declared if d not in published]
         if unknown:
             catalog = ", ".join(sorted(published)) or "(none)"
             violations.append(
@@ -9384,10 +9391,13 @@ def _validate_published_surface(
         # Through `_language_module`, so a declared package that cannot be loaded lands as a
         # violation rather than an exception that discards the sibling gates' findings.
         signatures = _language_module(language, "signatures", derived_path, language_violations)
-        if signatures is not None:
+        bundle = (_language_module(language, "bundle_facts", derived_path, language_violations)
+                  if signatures is not None else None)
+        if signatures is not None and bundle is not None:
             _pin_public_api_against_section51(
                 derived_path, kind, cs_ref, cs_path, spec_ops, spec_types, public_api,
-                language_violations, signatures=signatures)
+                language_violations, signatures=signatures,
+                identifier_key=bundle.identifier_key)
         violations.extend(
             v for v in language_violations if v not in reported_by_earlier_language)
         reported_by_earlier_language.update(language_violations)
@@ -9416,9 +9426,10 @@ def _pin_public_api_against_section51(
     violations: list[str],
     *,
     signatures: Any,
+    identifier_key: Callable[[str], str],
 ) -> None:
     """The §5.1 half of `_validate_published_surface`, in ONE language's currency
-    (``signatures``, that language's `signatures` module)."""
+    (``signatures``, that language's `signatures` module; ``identifier_key``, its case rule)."""
     op_stanzas, type_stanzas, proto_stanzas, iface_err = (
         _parse_canonical_interface_from_controlled_spec(cs_path, signatures))
     if iface_err:
@@ -9452,7 +9463,8 @@ def _pin_public_api_against_section51(
         derived_path, kind, public_api, op_stanzas, type_stanzas, violations,
         iface_stanzas=proto_stanzas, signatures=signatures)
     _validate_ir_module_parameters_against_section51(
-        derived_path, kind, public_api, cs_path, violations, signatures=signatures)
+        derived_path, kind, public_api, cs_path, violations, signatures=signatures,
+        identifier_key=identifier_key)
 
 
 def _validate_ir_signatures_against_section51(
@@ -9661,6 +9673,7 @@ def _validate_ir_module_parameters_against_section51(
     violations: list[str],
     *,
     signatures: Any,
+    identifier_key: Callable[[str], str],
 ) -> None:
     """Pin the IR's ``public_api.module_parameters`` == the controlled_spec §5.1 module-level
     parameters (``dp = float64`` / ``case_id_len = 64``), by name AND value. These are part of the
@@ -9670,11 +9683,15 @@ def _validate_ir_module_parameters_against_section51(
     drift (or a fail-closed Generate.static miss) in the generated model, so it is a Compile fail to
     Compile.generate.
 
-    Validation (fail-closed): each §5.1 entry is ``{name, base?, value}``. Names are compared
-    case-insensitively (Fortran identifiers are), so ``dp``/``DP`` are the same parameter. A §5.1
-    that declares the same module-parameter name twice (even case-only) is itself a violation (it
-    cannot be pinned coherently, and the un-deduped Generate.static source pin would demand
-    contradictory declarations). If §5.1 declares zero module parameters, an absent IR
+    Validation (fail-closed): each §5.1 entry is ``{name, base?, value}``. A §5.1 name is matched
+    to an IR name under the language's case rule (``identifier_key``, its
+    `bundle_facts.identifier_key`): in a case-insensitive language ``dp``/``DP`` are one
+    parameter, in a case-sensitive one they are two and ``DP`` against ``dp`` is a drift. A
+    DUPLICATE is refused case-insensitively in every language — the rule every declared language
+    agrees on, since a case-insensitive one cannot declare both: a §5.1 (or an IR) that declares
+    the same module-parameter name twice, even case-only, is itself a violation (it cannot be
+    pinned coherently, and the un-deduped Generate.static source pin would demand contradictory
+    declarations). If §5.1 declares zero module parameters, an absent IR
     ``module_parameters`` key passes; otherwise it is a violation.
     A present-but-non-list key fail-closes (mirrors ``load_structured_signatures``' present-but-null
     rule). Each IR entry must be a well-formed module parameter (``_validate_module_parameter``);
@@ -9687,9 +9704,9 @@ def _validate_ir_module_parameters_against_section51(
     _validate_module_parameter = signatures.validate_module_parameter
 
     def _norm(value: Any) -> str:
-        # Case-fold (Fortran identifiers are case-insensitive, so the neutral `float64` == `FLOAT64`)
-        # and remove ALL whitespace, matching the Generate.static source pin (`stanza_atoms` strips
-        # every space). Applied to BOTH sides of the compare below (the IR value and the raw §5.1
+        # Case-fold (a VALUE is a neutral token or a number, not an identifier of any language, so
+        # the neutral `float64` == `FLOAT64` whatever the target) and remove ALL whitespace,
+        # matching the Generate.static source pin (`stanza_atoms` strips every space). Applied to BOTH sides of the compare below (the IR value and the raw §5.1
         # value). The fold cannot make two DIFFERENT ABI values compare equal: the IR side is
         # validated by `_require_neutral_parameter_value` (via `_validate_module_parameter`) to be a
         # number or a `float64`/`float32` token — no internal whitespace, expression, or character
@@ -9699,15 +9716,18 @@ def _validate_ir_module_parameters_against_section51(
         # the render-check (`_parse_canonical_interface_from_controlled_spec`) that also renders §5.1.
         return "".join(str(value).split()).lower()
 
-    def _norm_name(name: str) -> str:
-        # Fortran identifiers are case-insensitive, so `dp` and `DP` are the SAME module parameter.
-        # Compare and dedupe on the case-folded name so a case-only "duplicate" (§5.1 declaring both
-        # `dp` and `DP` with diverging values) cannot slip a contradictory declaration past this gate
-        # into an unsatisfiable Generate.static pin, and a case-only §5.1↔IR name variant is not a
-        # false drift.
-        return name.strip().lower()
+    def _dupe_key(name: str) -> str:
+        # Dedupe on the case-folded name in EVERY language (the docstring's strictest rule), so a
+        # case-only "duplicate" (§5.1 declaring both `dp` and `DP` with diverging values) cannot
+        # slip a contradictory declaration past this gate into an unsatisfiable Generate.static
+        # pin, and a case-sensitive target's IR cannot carry `dp` and `DP` as two parameters.
+        return name.strip().casefold()
 
-    # Build the §5.1 name->value map (keyed by case-folded name), but FAIL CLOSED on a duplicate name
+    def _norm_name(name: str) -> str:
+        # The §5.1↔IR MATCH key: the language's own case rule.
+        return identifier_key(name.strip())
+
+    # Build the §5.1 name->value map (keyed by the language's key), but FAIL CLOSED on a duplicate name
     # rather than collapsing it (a plain dict comprehension keeps the last value). A repeated §5.1
     # module parameter cannot be pinned coherently: an identical duplicate would be accepted against a
     # single IR/source declaration, and a differing duplicate (`dp = float64` and `dp = float32`, or
@@ -9718,13 +9738,14 @@ def _validate_ir_module_parameters_against_section51(
     # struct validator's one name space refuses a duplicate there and returns, so this check is
     # defense in depth that no row reaches through a caller today.
     spec_params: dict[str, Any] = {}
+    spec_seen: set[str] = set()
     spec_dupe_names: list[str] = []
     for mp in _section51_module_parameters(cs_path, signatures):
-        name = _norm_name(mp["name"])
-        if name in spec_params:
-            spec_dupe_names.append(name)
+        if _dupe_key(mp["name"]) in spec_seen:
+            spec_dupe_names.append(_dupe_key(mp["name"]))
         else:
-            spec_params[name] = mp["value"]
+            spec_seen.add(_dupe_key(mp["name"]))
+            spec_params[_norm_name(mp["name"])] = mp["value"]
     for name in sorted(set(spec_dupe_names)):
         violations.append(
             f"{cs_path}: §5.1 declares module parameter '{name}' more than once (case-insensitively) "
@@ -9750,19 +9771,20 @@ def _validate_ir_module_parameters_against_section51(
         return
 
     ir_params: dict[str, Any] = {}
+    ir_seen: set[str] = set()
     for idx, entry in enumerate(mps_raw):
         try:
             _validate_module_parameter(entry, f"public_api.module_parameters[{idx}]")
         except SignatureParseError as exc:
             violations.append(f"{derived_path}:{exc}")
             continue
-        name = _norm_name(entry["name"])
-        if name in ir_params:
+        if _dupe_key(entry["name"]) in ir_seen:
             violations.append(
-                f"{derived_path}:public_api.module_parameters declares parameter '{name}' more "
-                "than once (case-insensitively)")
+                f"{derived_path}:public_api.module_parameters declares parameter "
+                f"'{_dupe_key(entry['name'])}' more than once (case-insensitively)")
             continue
-        ir_params[name] = entry["value"]
+        ir_seen.add(_dupe_key(entry["name"]))
+        ir_params[_norm_name(entry["name"])] = entry["value"]
 
     for missing in sorted(set(spec_params) - set(ir_params)):
         violations.append(
@@ -9926,8 +9948,9 @@ def _validate_generated_signatures(
 ) -> None:
     """Deterministic signature gate at ``Generate.static``, for every `spec_kind` that publishes an
     EXACT surface (`_EXACT_PUBLISHED_SURFACE_KINDS`): the generated model source must publish every
-    §5.1 canonical signature verbatim (normalized: comments stripped, ``&`` continuations joined,
-    case-folded, whitespace-insensitive).
+    §5.1 canonical signature verbatim (normalized by the target language's `signatures` backend:
+    comments stripped, whitespace-insensitive, and names compared as that language compares
+    them).
 
     The Compile-stage ``_validate_published_surface`` pins the published *names* and pins the IR's
     ``signatures`` / ``module_parameters`` == §5.1. This gate pins the *generated source*: each
@@ -10033,9 +10056,17 @@ def _validate_generated_signatures(
     # marker" while the marker still carried the decision.
     pub = ir.get("public_api")
     stale_ir_violations: list[str] = []
+    # The parameter NAMES are matched under the target language's case rule, a `bundle_facts`
+    # fact; asked here, where it is first read, so a language whose renderer refuses §5.1 is
+    # reported for that first.
+    bundle = _language_module(
+        language, "bundle_facts", f"{loc}: this {ir_kind} node's signatures cannot be pinned",
+        violations)
+    if bundle is None:
+        return
     _validate_ir_module_parameters_against_section51(
         ir_path, ir_kind, pub if isinstance(pub, dict) else {}, cs_path, stale_ir_violations,
-        signatures=signatures)
+        signatures=signatures, identifier_key=bundle.identifier_key)
     # SIGNATURES take the same guard, and issue #153 PR-2 is why. A `component` IR certified before
     # PR-2 carries no `public_api.signatures` at all — the key was FORBIDDEN then — so on a
     # `--resume` into Generate, where Compile.static does not re-run, the leaf has no signatures to

@@ -13,8 +13,10 @@ vocabulary are two answers to "is this §5.1 well formed" the moment they drift,
 target-free Compile gate renders every §5.1 in every language that declares `signatures`.
 
 The vocabulary is written to be satisfiable in EVERY implemented target language, so where the
-languages differ the strictest one's rule is the vocabulary's: names are compared
-case-insensitively and a rank is bounded by the smallest maximum rank. A renderer may refuse more
+languages differ the strictest one's rule is the vocabulary's: a COLLISION between two names is
+decided case-insensitively (a name every language would call a duplicate is refused), a REFERENCE
+from one name to another resolves only by the exact spelling (a name every language would resolve),
+and a rank is bounded by the smallest maximum rank. A renderer may refuse more
 (a name that is a reserved word of its language), and says so in its own module.
 
 Stdlib only, plus PyYAML for the loader (imported where it is used).
@@ -414,7 +416,10 @@ def validate_struct(struct: dict[str, Any]) -> None:
     Beyond each entry's own shape: no two published names collide (case-insensitively — see
     `_NameScope`), across module parameters, types, prototypes and procedures alike; and the
     struct-level rules for ``interfaces[]``: every ``spec.interface`` reference resolves to an
-    entry, and every entry is referenced by at least one argument. A single-symbol render
+    entry by its EXACT spelling (the strictest language's rule, module docstring — a
+    case-sensitive renderer names the declared spelling, so a case-variant would render a
+    reference to a type that does not exist), and every entry is referenced by at least one
+    argument. A single-symbol render
     (a backend's ``render_symbol``) cannot see the other entries, so these rules live here and
     nowhere else. The collisions INSIDE one procedure or type are its own validator's."""
     for i, mp in enumerate(struct.get("module_parameters") or []):
@@ -432,21 +437,20 @@ def validate_struct(struct: dict[str, Any]) -> None:
         for i, entry in enumerate(struct.get(key) or []):
             module_scope.claim(entry["name"], f"{key}[{i}].name")
     # Reference integrity.
-    iface_names = {
-        iface["name"].lower(): iface["name"] for iface in struct.get("interfaces") or []}
+    iface_names = [iface["name"] for iface in struct.get("interfaces") or []]
     referenced: set[str] = set()
     for i, proc in enumerate(struct.get("procedures") or []):
         for j, arg in enumerate(proc.get("args") or []):
             spec = arg["spec"]
             if spec.get("type") != "procedure":
                 continue
-            ref = spec["interface"].lower()
+            ref = spec["interface"]
             if ref not in iface_names:
                 raise SignatureParseError(
-                    f"procedures[{i}].args[{j}].spec.interface '{spec['interface']}' does not name "
-                    f"an entry of interfaces[] (declared: {sorted(iface_names.values())})")
+                    f"procedures[{i}].args[{j}].spec.interface '{ref}' does not name an entry "
+                    f"of interfaces[] by its exact spelling (declared: {sorted(iface_names)})")
             referenced.add(ref)
-    unreferenced = sorted(iface_names[k] for k in iface_names if k not in referenced)
+    unreferenced = sorted(name for name in iface_names if name not in referenced)
     if unreferenced:
         raise SignatureParseError(
             f"interfaces[] entries {unreferenced} are referenced by no procedure argument (an "

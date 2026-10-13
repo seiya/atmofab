@@ -180,13 +180,17 @@ can name one.
 `modules` is the non-empty list of modules the file defines — the language's unit of
 publication (a language backend's binding says what a module is in that language:
 `docs/backends/language/<language>/BUNDLE_BINDING.md`). A module name is unique across the whole
-bundle (compared case-insensitively). In a language whose publication unit can be reopened, a
+bundle, compared under the case rule of the language of the file that declares it
+(`bundle_facts.identifier_key`: a case-insensitive language calls `Foo` and `foo` one module, a
+case-sensitive one two); between files of two languages, a pair EITHER language calls one name
+collides. In a language whose publication unit can be reopened, a
 file that opens another file's module only to declare into it does not list that module; the
 file whose definitions it holds does (the binding states the case). This list is
 what ties an `entrypoints[].module` or a `state_bindings[].module` to the file that owns it —
 and, through the file's `member_node_key`, to a member: without it, an attribution that names
 the member's own file in `defined_in` could still route the rendered `use <module>, only:
-<symbol>` to another member's export. The host reads `modules` to build the `use`-graph; it
+<symbol>` to another member's export. Each such `module` is matched against a file's `modules`
+under that file's language's case rule. The host reads `modules` to build the `use`-graph; it
 never parses the source.
 
 ### Roles
@@ -277,7 +281,8 @@ source; the bundle declares them, and `derive_build_graph` topologically sorts b
 
 `language` is a language whose backend declares `bundle_facts` (`codegen_bundle.LANGUAGES`,
 derived from the registry). The schema's `language` enum names the same set and is extended with
-it; the facts themselves — extensions, identifier grammar, compiler-driver families, the names
+it; the facts themselves — extensions, identifier grammar and case rule, compiler-driver
+families, the names
 the host gives the language's files — are the backend's (`bundle_facts`), and a language's
 binding of this contract is `docs/backends/language/<language>/BUNDLE_BINDING.md`.
 
@@ -314,9 +319,8 @@ declares it.
   one that `defined_in` declares in its `modules`. Both together stop an entrypoint that names
   the member's own file in `defined_in` while `module`/`symbol` route the rendered `use` to
   another member's export.
-- **Symbol uniqueness**: a symbol is published at most once **per module**, compared
-  case-insensitively (stricter than a case-sensitive language needs, exactly what a
-  case-insensitive one does). A symbol is module-qualified, so
+- **Symbol uniqueness**: a symbol is published at most once **per module**, both compared
+  under the case rule of the language of the `defined_in` file. A symbol is module-qualified, so
   each member's checks module legitimately exports the same fixed ABI name (`case_run`,
   `get_time`) — `a_checks::case_run` and `b_checks::case_run` are distinct procedures. Only the
   same name in the same module is an unlinkable duplicate.
@@ -327,7 +331,8 @@ declares it.
   entrypoints — the checks surface is a fixed ABI.
 - **Published-surface invariant (L1c, `component` members)**: when the member's certified IR
   pins its published operation names in `public_api.published_operations`, that member's
-  `operation` entrypoint `symbol` set must equal that name set (casefold) — a member with a
+  `operation` entrypoint `symbol` set must equal that name set, compared under the target
+  language's case rule — a member with a
   published op but no matching entrypoint, or an entrypoint symbol absent from the pinned
   surface, is rejected (`bundle_published_surface_mismatch`). The host passes the pinned names
   to `pure_bundle_contract_violation` as `ir_published_operations` (single-sourced via

@@ -121,7 +121,7 @@
     },
     "tools/codegen_bundle.py": {
       "compiler-driver": 2,
-      "fortran": 13,
+      "fortran": 12,
       "fortran-subroutine": 6,
       "fortran-suffix": 1,
       "make-control-file": 2
@@ -149,7 +149,7 @@
     },
     "tools/validate_pipeline_semantics.py": {
       "compiler-driver": 1,
-      "fortran": 13,
+      "fortran": 9,
       "fortran-subroutine": 4,
       "fortran-suffix": 4,
       "make-control-file": 2,

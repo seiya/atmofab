@@ -32,6 +32,15 @@ IDENTIFIER_MAX = 1024
 #: every name the host derives starts with the spec_id.
 IDENTIFIER_PATTERN = rf"^[A-Za-z][A-Za-z0-9_]{{0,{IDENTIFIER_MAX - 1}}}(?![\s\S])"
 
+def identifier_key(name: str) -> str:
+    """The key two identifiers of this language are compared by: equal keys name one entity.
+
+    C++ identifiers are case-sensitive (`docs/backends/language/cuda_cpp/BUNDLE_BINDING.md` §1
+    Identifiers; the §5.1 pin compares the same way, `signatures.py`), so `ADV1D_MODEL` and
+    `adv1d_model` are two namespaces and the key is the name itself."""
+    return name
+
+
 #: The compiler the host uses for this language when the target profile pins no
 #: `toolchain.compiler` — both the build compiler and the mandatory `Generate.gate` syntax stage,
 #: which must be one value (the Fortran backend's `DEFAULT_COMPILER` comment gives the reason).

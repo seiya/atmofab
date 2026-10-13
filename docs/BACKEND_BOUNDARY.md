@@ -177,8 +177,9 @@ together with the bundle's `target_lowering_plan.parallelization`.
     run of it reaches `Build` only where a site executes it — the binary is built at the site that
     runs it (issue #333).
   - The per-language tables in `tools/codegen_bundle.py` are gone: `LANGUAGES`, the extension
-    allowlist, the compiler-driver families, the identifier grammar and the names the host gives
-    a language's files are the language backend's `bundle_facts`, reached through
+    allowlist, the compiler-driver families, the identifier grammar, the identifier case rule
+    (`identifier_key`, issue #469) and the names the host gives a language's files are the
+    language backend's `bundle_facts`, reached through
     `capability_module`. The identifier check is per-file-language: the schema-level pattern is
     the union of the bundle languages' grammars and a cross-field layer holds each identifier to
     its own file's language (issue #289). The bundle SCHEMA (`spec/schema/generate/`) still

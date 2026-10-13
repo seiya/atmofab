@@ -987,6 +987,10 @@ class FieldGrammarTest(unittest.TestCase):
             IDENTIFIER_MAX = 31
             IDENTIFIER_PATTERN = r"^_[a-z0-9_]{0,30}(?![\s\S])"   # must START with `_`
 
+            @staticmethod
+            def identifier_key(name: str) -> str:
+                return name
+
         real = cb._language_bundle
 
         def _two_languages(language: str):
@@ -1005,16 +1009,20 @@ class FieldGrammarTest(unittest.TestCase):
             self.assertTrue(union.fullmatch("abc"))      # only fortran admits it
             self.assertTrue(union.fullmatch("_abc"))     # only zzlang admits it
             self.assertFalse(union.fullmatch("1abc"))    # neither does
-            files = [{"logical_path": "m.f90", "language": "fortran", "modules": ["_bad"]},
-                     {"logical_path": "m.zz", "language": "zzlang", "modules": ["_ok", "bad"]}]
+            files = [{"logical_path": "m.f90", "language": "fortran", "modules": ["_bad"],
+                      "role": "checks", "member_node_key": "n"},
+                     {"logical_path": "m.zz", "language": "zzlang", "modules": ["_ok", "bad"],
+                      "role": "checks", "member_node_key": "n"}]
             # The entrypoints are listed in the OPPOSITE order to their files: an owner resolved
             # by any position — the first file (round 2, #289) or the file at the entrypoint's
             # own index (round 3) — holds one of them to the other file's grammar.
             entrypoints = [{"symbol": "_zz", "module": "_ok", "defined_in": "m.zz"},
                            {"symbol": "_sym", "module": "_ok", "defined_in": "m.f90"}]
-            owner = {"_ok": files[1]}
-            bindings = [{"state_variable": "q", "storage_symbol": "q", "module": "_ok"}]
-            found = cb._identifier_language_violations(files, entrypoints, bindings, owner)
+            # The binding's owner is the member's checks-role file that defines `_ok`: the
+            # second, although the first is a checks-role file of the same member too.
+            bindings = [{"state_variable": "q", "storage_symbol": "q", "module": "_ok",
+                         "node_key": "n"}]
+            found = cb._identifier_language_violations(files, entrypoints, bindings)
             self.assertEqual(sorted(v.split(" ", 1)[0] for v in found), [
                 "entrypoints[1].module", "entrypoints[1].symbol", "files[0].modules[0]",
                 "files[1].modules[1]", "state_bindings[0].state_variable",
@@ -3677,13 +3685,14 @@ class BundleShapeAdmissibilityTest(unittest.TestCase):
         doc["entrypoints"][0]["defined_in"] = "harness_fortran_cpu_model.zz"
         self.assertIsNone(
             cb.harness_bundle_shape_violation(doc, "harness_fortran_cpu",
-                                              "harness_fortran_cpu_runner.zz"))
+                                              "harness_fortran_cpu_runner.zz",
+                                              language="fortran"))
         # ...and the message it produces for a wrong name carries that extension too.
         wrong = copy.deepcopy(doc)
         _find(wrong["files"], "harness_fortran_cpu_model.zz")["logical_path"] = "other.zz"
         wrong["entrypoints"][0]["defined_in"] = "other.zz"
         clause = cb.harness_bundle_shape_violation(
-            wrong, "harness_fortran_cpu", "harness_fortran_cpu_runner.zz")
+            wrong, "harness_fortran_cpu", "harness_fortran_cpu_runner.zz", language="fortran")
         self.assertIn("harness_fortran_cpu_model.zz", clause)
         self.assertNotIn(".f90", clause)
 
@@ -3749,6 +3758,209 @@ class BundleShapeAdmissibilityTest(unittest.TestCase):
         # layer stopped being component-only when `L1C_PUBLISHED_SURFACE_SPEC_KINDS` widened.
         self.assertIn(HARNESS, result[1])
         self.assertNotIn("component", result[1])
+
+
+def _as_language(doc: dict, language: str) -> dict:
+    """`doc` with every file declared in `language` and named with its extension: the fixture
+    shapes above, written for Fortran, in another language's terms."""
+    ext = cb.language_facts(language).HOST_SOURCE_EXTENSION
+    doc = copy.deepcopy(doc)
+
+    def rename(path):
+        return path.rsplit(".", 1)[0] + ext if isinstance(path, str) else path
+
+    for entry in doc["files"]:
+        entry["language"] = language
+        entry["logical_path"] = rename(entry["logical_path"])
+        if isinstance(entry.get("compile_after"), list):
+            entry["compile_after"] = [rename(p) for p in entry["compile_after"]]
+    for entry in doc.get("entrypoints") or []:
+        entry["defined_in"] = rename(entry["defined_in"])
+    return doc
+
+
+class IdentifierKeyIsTheLanguagesTest(unittest.TestCase):
+    """Issue #469 PR-3: whether two identifiers name one entity is the declaring language's case
+    rule (`bundle_facts.identifier_key`), not a fold the neutral contract applies for every
+    language. Each row drives one site twice — Fortran (case-insensitive: one entity) and CUDA
+    C++ (case-sensitive: two) — so a site that folds regardless, or compares exactly regardless,
+    fails one half."""
+
+    LANGS = ("fortran", "cuda_cpp")
+    #: Whether the language calls two case-variants one identifier.
+    FOLDS = {"fortran": True, "cuda_cpp": False}
+
+    def test_the_two_languages_declare_opposite_rules(self) -> None:
+        for lang in self.LANGS:
+            with self.subTest(lang=lang):
+                key = cb.language_facts(lang).identifier_key
+                self.assertEqual(key("ADV1D_MODEL") == key("adv1d_model"), self.FOLDS[lang])
+
+    def test_module_uniqueness(self) -> None:
+        for lang in self.LANGS:
+            with self.subTest(lang=lang):
+                doc = _minimal_bundle()
+                doc["files"].append(
+                    _file("adv1d_helper.f90", "helper", ADV, modules=["ADV1D_MODEL"]))
+                found = any("is already defined by another file" in v
+                            for v in cb.validate_bundle(_as_language(doc, lang)))
+                self.assertEqual(found, self.FOLDS[lang])
+
+    def test_module_uniqueness_across_languages_takes_either_rule(self) -> None:
+        """Two files of different languages: a pair EITHER language calls one name is refused,
+        whichever file comes first (the comparison is not the first file's rule alone)."""
+        for first, second in (("fortran", "cuda_cpp"), ("cuda_cpp", "fortran")):
+            with self.subTest(first=first):
+                doc = _minimal_bundle()
+                extra = _file("adv1d_helper.f90", "helper", ADV, modules=["ADV1D_MODEL"])
+                doc = _as_language(doc, first)
+                extra = _as_language({"files": [extra]}, second)["files"][0]
+                doc["files"].append(extra)
+                self.assertTrue(any("is already defined by another file" in v
+                                    for v in cb.bundle_invariant_violations(doc)))
+
+    def test_module_symbol_uniqueness(self) -> None:
+        for lang in self.LANGS:
+            with self.subTest(lang=lang):
+                doc = _minimal_bundle()
+                doc["entrypoints"] += [
+                    {"symbol": "case_run", "module": "adv1d_checks", "kind": "checks_interface",
+                     "node_key": ADV, "defined_in": "adv1d_checks.f90"},
+                    {"symbol": "CASE_RUN", "module": "adv1d_checks", "kind": "checks_interface",
+                     "node_key": ADV, "defined_in": "adv1d_checks.f90"},
+                ]
+                found = any("published more than once by module" in v
+                            for v in cb.validate_bundle(_as_language(doc, lang)))
+                self.assertEqual(found, self.FOLDS[lang])
+
+    def test_entrypoint_module_is_one_its_file_defines(self) -> None:
+        for lang in self.LANGS:
+            with self.subTest(lang=lang):
+                doc = _minimal_bundle()
+                doc["entrypoints"][0]["module"] = "ADV1D_MODEL"
+                found = any("is not defined by" in v
+                            for v in cb.validate_bundle(_as_language(doc, lang)))
+                self.assertEqual(found, not self.FOLDS[lang])
+
+    def test_binding_module_resolves_under_the_owning_file_s_rule(self) -> None:
+        for lang in self.LANGS:
+            with self.subTest(lang=lang):
+                doc = _minimal_bundle()
+                doc["state_bindings"][0]["module"] = "ADV1D_CHECKS"
+                found = any("must be defined by a checks-role file owned by member" in v
+                            for v in cb.validate_bundle(_as_language(doc, lang)))
+                self.assertEqual(found, not self.FOLDS[lang])
+
+    def test_a_binding_naming_another_member_s_checks_module_is_refused(self) -> None:
+        """The lookup starts from the binding's MEMBER (`_binding_owner`): a case-variant of the
+        OTHER member's checks module resolves to that member's file in a folding language, and
+        must still be refused, as the exact spelling is."""
+        for lang in self.LANGS:
+            for module in ("adv1d_checks", "adv_flux_checks", "ADV_FLUX_CHECKS"):
+                with self.subTest(lang=lang, module=module):
+                    doc = _multi_node_bundle()
+                    self.assertEqual(_find(doc["files"], "adv_flux_checks.f90")["modules"],
+                                     ["adv_flux_checks"])
+                    doc["state_bindings"] = [
+                        {"node_key": ADV, "state_variable": "q", "storage_symbol": "q",
+                         "module": module, "capture": "harness_registration",
+                         "capability": "state_registration@1"}]
+                    doc["capability_requirements"] = [
+                        t for t in doc["capability_requirements"]
+                        if not t.startswith("state_registration")] + ["state_registration@1"]
+                    violations = cb.validate_bundle(_as_language(doc, lang))
+                    # The member's own module is the control: the refusal is about the owner.
+                    self.assertEqual(
+                        any("must be defined by a checks-role file owned by member" in v
+                            for v in violations),
+                        module != "adv1d_checks", violations)
+
+    def test_registered_storage_uniqueness(self) -> None:
+        for lang in self.LANGS:
+            with self.subTest(lang=lang):
+                doc = _minimal_bundle()
+                doc["state_bindings"].append(
+                    {"node_key": ADV, "state_variable": "r", "storage_symbol": "Q",
+                     "module": "adv1d_checks", "capture": "harness_registration",
+                     "capability": "state_registration@1"})
+                found = any("is already registered" in v
+                            for v in cb.validate_bundle(_as_language(doc, lang)))
+                self.assertEqual(found, self.FOLDS[lang])
+
+    def test_staged_dependency_module_collision_is_the_target_language_s(self) -> None:
+        for lang in self.LANGS:
+            with self.subTest(lang=lang):
+                doc = _minimal_bundle()
+                doc["files"].append(
+                    _file("adv1d_extra.f90", "helper", ADV, modules=["DIFFUSE_MODEL"]))
+                doc = _as_language(doc, lang)
+                self.assertEqual(cb.validate_bundle(doc), [])
+                build = lambda: cb.derive_build_graph(  # noqa: E731
+                    doc, dependency_closure=("component/diffuse@0.1.0",),
+                    toolchain={"build_system": "make", "language": lang})
+                if self.FOLDS[lang]:
+                    with self.assertRaisesRegex(RuntimeError, "module name collision"):
+                        build()
+                else:
+                    self.assertIn(
+                        "staged:" + cb.language_facts(lang).model_basename("diffuse"),
+                        [u["source"] for u in build()["compile_units"]])
+
+    def test_m3c_model_module_name(self) -> None:
+        for lang in self.LANGS:
+            with self.subTest(lang=lang):
+                doc = _as_language(_minimal_bundle(), lang)
+                _find(doc["files"], cb.language_facts(lang).model_basename("adv1d"))[
+                    "modules"] = ["ADV1D_MODEL"]
+                clause = cb.m3c_literal_name_violation(doc, "adv1d", language=lang)
+                self.assertEqual(clause is not None, not self.FOLDS[lang], clause)
+
+    def test_harness_model_module_name(self) -> None:
+        for lang in self.LANGS:
+            with self.subTest(lang=lang):
+                doc = BundleShapeAdmissibilityTest()._harness_doc()
+                model = _find(doc["files"], "harness_fortran_cpu_model.f90")
+                model["modules"] = ["Harness_Fortran_CPU_Model"]
+                clause = cb.harness_bundle_shape_violation(
+                    doc, "harness_fortran_cpu", "harness_fortran_cpu_runner.f90", language=lang)
+                self.assertEqual(clause is not None, not self.FOLDS[lang], clause)
+
+    def test_state_binding_convention(self) -> None:
+        base = {"capture": cb.STATE_BINDING_CAPTURE, "capability": cb.STATE_REGISTRATION_TOKEN}
+        for lang in self.LANGS:
+            for field, binding in (
+                    ("module", {"state_variable": "q", "storage_symbol": "q",
+                                "module": "ADV1D_CHECKS"}),
+                    ("storage_symbol", {"state_variable": "q", "storage_symbol": "Q",
+                                        "module": "adv1d_checks"})):
+                with self.subTest(lang=lang, field=field):
+                    clause = cb._m3c_state_binding_mismatch(
+                        [{**base, **binding}], ["q"], "adv1d", language=lang)
+                    self.assertEqual(clause is not None, not self.FOLDS[lang], clause)
+                    if clause is not None:
+                        self.assertIn(f"state_bindings[0].{field} must", clause)
+
+    def test_published_surface_is_compared_under_the_target_language(self) -> None:
+        """L1c. The layers before it are held to the Fortran fixture's own language; only the
+        target `language` the surface comparison reads is varied."""
+        pin = PurePublishedSurfacePinTests()
+        doc = pin._bundle(pin._NK, ["BX__Compute_Flux"])
+        for lang in self.LANGS:
+            with self.subTest(lang=lang), \
+                    mock.patch.object(cb, "m3c_literal_name_violation", return_value=None), \
+                    mock.patch.object(cb, "m3c_checks_abi_violation", return_value=None), \
+                    mock.patch.object(cb, "_m3c_state_binding_mismatch", return_value=None):
+                result = cb.pure_bundle_contract_violation(
+                    doc, node_key=pin._NK, spec_id="bx", shape="m3c", language=lang,
+                    runner_basename="bx_runner.f90", ir_snapshot_variables=["q"],
+                    harness_provided={"sync_single_case@1", "state_registration@1"},
+                    build_graph=lambda d: None, ir_published_operations=["bx__compute_flux"])
+                if self.FOLDS[lang]:
+                    self.assertIsNone(result)
+                else:
+                    self.assertEqual(result[0], "bundle_published_surface_mismatch")
+                    self.assertIn("bx__compute_flux", result[1])
+                    self.assertIn("BX__Compute_Flux", result[1])
 
 
 if __name__ == "__main__":
