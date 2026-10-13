@@ -611,7 +611,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # lines keep their instruction (the producer authors the IR from the finding text and
     # returns `last_fail_reason: null`; the reviewer judges on the merits). A bump would
     # re-derive every node's Compile for an IR authored to the same rules.
-    "compile-docs-13": "1cea359d6717d085c79431096de5c5c71f424b4958b0f80beab3ed625749df65",
+    "compile-docs-13": "1a0faa43c123b0b228f67226a23034ba1141a5179e9a6df4105161bda6b0f020",
     # ...and the digest `compile-docs-13` SHIPPED with (origin/main b9a2a615), kept so a later
     # version returning to those bytes collides (`test_no_empty_bump_or_silent_revert`).
     "compile-docs-13@b9a2a615": "6dc0a6af22e9a4bce122425315e233ead04b835a1e7cb431f1e02218c99aaa70",
@@ -629,6 +629,12 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # so that sentence corrects a statement and moves no gate. The digest `compile-docs-13`
     # shipped with at c2b012e9:
     "compile-docs-13@c2b012e9": "5d4c5f299a75f456cc1ffd55ca987096f225ab7360fd5c19f7fa068da979b1f6",
+    # Re-pinned (issue #469, PR-4), behaviour-preserving: the node-identity bullet says the
+    # `spec_id` bound of 55 is the minimum of the declared language backends' `SPEC_ID_MAX`
+    # (the spec-input gate now asks them instead of spelling the number); the bound is 55 at
+    # both revisions, so no IR is authored differently. The digest `compile-docs-13` shipped
+    # with at 84cd9a41:
+    "compile-docs-13@84cd9a41": "1cea359d6717d085c79431096de5c5c71f424b4958b0f80beab3ed625749df65",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -860,7 +866,7 @@ PINNED_RENDER: dict[str, str] = {
     # render-9 (issue #437): the rendered cuda_cpp runner drops the trailing blanks of each
     # status `checks_compute` returns before it fills the harness check record, so a padded
     # "na  " never reaches the harness writer from a physics node.
-    "render-9": "01e4d562a59c46173661817abb4800a6351365b94cdca6c4e9e5a579ca93a13c",
+    "render-9": "787bc235e2831b2311e8e34b2844adf34dc91b0d93c79eb0cb079726abaaadb0",
     # Re-pinned (issue #444), behaviour-preserving: two comments moved: `parallel/mpi/wrapper.py`
     # and `language/fortran/bundle.py` cite `tools/build_runtime.py` instead of
     # `mcp_servers/build_runtime_server.py`; nothing rendered moved. (Measured by diffing the tuple
@@ -881,6 +887,12 @@ PINNED_RENDER: dict[str, str] = {
     # `render_tuple()` against origin/main c2b012e9's: those three rows and no other.) The
     # digest `render-9` shipped with at c2b012e9:
     "render-9@c2b012e9": "a175345a2eb32c20da23c8a45bc0b3ad9309273438839825d14005b4915d99ff",
+    # Re-pinned (issue #469, PR-4), behaviour-preserving: both languages' `bundle.py` gain
+    # `SPEC_ID_MAX` (the derivation the runners carried), and both `runner.py` read it as
+    # `MAX_SPEC_ID_LEN` — 55 and 1016 at both revisions, so no runner renders differently.
+    # (Measured by diffing `render_tuple()` against origin/main 84cd9a41's: those four rows and
+    # no other.) The digest `render-9` shipped with at 84cd9a41:
+    "render-9@84cd9a41": "01e4d562a59c46173661817abb4800a6351365b94cdca6c4e9e5a579ca93a13c",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -934,7 +946,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "e8d42fc79126f8066dadfb7535e895e57d51e69ae2b692298dcaa665cefeab54",
+    "build-2": "8569e4f261029d575fc46fd2e426e2eac2e3231d718c724892c7881f7f29f1c3",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build
@@ -1033,6 +1045,11 @@ PINNED_BUILD: dict[str, str] = {
     # and its record are unchanged. (Measured by diffing `build_tuple()` against origin/main
     # c2b012e9's: those two rows and no other.) The digest `build-2` shipped with at c2b012e9:
     "build-2@c2b012e9": "b6737b6ee4c78cf5d778d2cb715b0e10d6fab880e3a5455dd88bf029ec05715a",
+    # Re-pinned (issue #469, PR-4), behaviour-preserving: the Fortran `bundle.py` gains
+    # `SPEC_ID_MAX`, which no build reads. (Measured by diffing `build_tuple()` against
+    # origin/main 84cd9a41's: that row and no other.) The digest `build-2` shipped with at
+    # 84cd9a41:
+    "build-2@84cd9a41": "e8d42fc79126f8066dadfb7535e895e57d51e69ae2b692298dcaa665cefeab54",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",

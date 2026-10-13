@@ -79,6 +79,16 @@ MEASURED_PACKAGE_VERSIONS: dict[str, str] = {
     "tree-sitter-fortran": "0.6.0",
 }
 
+#: The Python modules this front end imports, as (import name, pip distribution name) pairs.
+#: `tools/run_workflow.py` refuses a launch for a target in this language when one cannot be found
+#: (`tools/host_prerequisites.required_python_modules`, through the `source_reading` module),
+#: because the import is lazy (`_load_parser`) and would otherwise first fail at the first
+#: `Generate.gate` of a billed run. Checked by IMPORT name; the message carries the distribution.
+REQUIRED_PYTHON_MODULES: tuple[tuple[str, str], ...] = (
+    ("tree_sitter", "tree-sitter"),
+    ("tree_sitter_fortran", "tree-sitter-fortran"),
+)
+
 FORTRAN_STRUCTURE_UNAVAILABLE_MARKER = "[fortran-structure-unavailable]"
 
 #: The node types tree-sitter-fortran gives a procedure DEFINITION, mapped to this module's kind.

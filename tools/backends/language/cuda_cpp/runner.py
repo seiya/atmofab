@@ -91,9 +91,9 @@ CHECK_STATUS_WIDTH = 4
 #: `render_runner`).
 CASE_ID_LEN = runner_ir.CASE_ID_LEN
 
-#: The bound on a spec_id, derived as the Fortran backend derives its own: the longest name
-#: generated from a spec_id appends a 7-character role suffix, plus one character of margin.
-MAX_SPEC_ID_LEN = bundle.IDENTIFIER_MAX - len("_runner") - 1
+#: The bound on a spec_id is the language's (`bundle.SPEC_ID_MAX`); the render-time check below is
+#: the backstop to the neutral spec-input gate.
+MAX_SPEC_ID_LEN = bundle.SPEC_ID_MAX
 
 #: Names a snapshot variable may not take although they are identifiers: the two namespaces the
 #: checks header names inside `<spec_id>_checks` (a variable of that name declared there hides the

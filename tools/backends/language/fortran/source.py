@@ -34,6 +34,10 @@ from tools.backends.language.fortran.bundle import IDENTIFIER_MAX
 
 IDENTIFIER_PATTERN = re.compile(r"[a-z_][a-z0-9_]*")
 
+#: The Python modules a launch for a target in this language must find (the structure front end's;
+#: `tools/host_prerequisites.required_python_modules` reads this member of `source_reading`).
+REQUIRED_PYTHON_MODULES: tuple[tuple[str, str], ...] = fortran_structure.REQUIRED_PYTHON_MODULES
+
 
 
 KEYWORDS = {

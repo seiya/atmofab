@@ -2543,7 +2543,7 @@ class RegistryConsistencyTests(unittest.TestCase):
         "bundle_facts": ("SOURCE_EXTENSIONS", "COMPILER_SELECTOR_FAMILIES", "IDENTIFIER_MAX",
                          "IDENTIFIER_PATTERN", "DEFAULT_COMPILER", "MANDATORY_SYNTAX_COMPILER",
                          "COMPILED", "model_basename", "checks_basename", "runner_basename",
-                         "identifier_key"),
+                         "identifier_key", "SPEC_ID_MAX"),
         "syntax_promotions": ("SOURCE_SUFFIXES", "PROMOTED_WARNINGS", "compile_order"),
         "prompt_fragments": ("fragments", "runner_output_document",
                              "EXEMPLAR_GATE_DRIFT_NOTE"),
@@ -2573,7 +2573,9 @@ class RegistryConsistencyTests(unittest.TestCase):
             "published_operation_missing", "published_operation_extra",
             # Issue #314: the checks-reach gate. Load-bearing: the neutral caller does not wrap
             # content calls, so a language lacking it raises and discards every sibling finding.
-            "checks_model_reach_violations"),
+            "checks_model_reach_violations",
+            # Issue #469 PR-4: the Python modules a launch for this language must find.
+            "REQUIRED_PYTHON_MODULES"),
         "signatures": (
             "LANGUAGE_DISPLAY_NAME", "SignatureParseError", "load_structured_signatures",
             "render_signatures", "render_symbol", "render_interface", "render_module_parameter",

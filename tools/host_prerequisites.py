@@ -1,10 +1,10 @@
 """What the HOST must have installed before a run's first leaf is launched.
 
 A prerequisite whose absence terminalizes a run is checked at launch. This repository has
-re-derived that rule three times — `tools/run_workflow.py`'s `REQUIRED_CLI_TOOLS` and
-`REQUIRED_PYTHON_MODULES` comments state it, and `TODO.md` records a third member of the class
-still open. What was missing is a place that enumerates the LAST family: the executables the
-run's own axis selection implies — the `static lint` tool of the node's language, its build
+re-derived that rule more than once — `tools/run_workflow.py`'s `REQUIRED_CLI_TOOLS` and
+`REQUIRED_PYTHON_MODULES` comments state it. What this module enumerates is the family that
+depends on the run's own axis selection: the Python modules its language's source reader
+imports (`required_python_modules`, issue #469), and the executables that selection implies — the `static lint` tool of the node's language, its build
 system, and its compiler. Without this, an absent linter first surfaces at `Generate.gate`, after
 `Compile` and `Generate.generate` have already been billed; an absent compiler lands in the same
 place one check later (the gate turns a skipped mandatory syntax stage into a fail_closed), and an
@@ -474,6 +474,23 @@ def unsupported_host_tool_versions(
                                     version_text, reason)
                 )
     return tuple(found)
+
+
+def required_python_modules(selection: dict[str, str]) -> tuple[tuple[str, str], ...]:
+    """The (import name, distribution name) pairs the selection's language reader imports.
+
+    The language backend's `source_reading` module declares them (`REQUIRED_PYTHON_MODULES`, an
+    empty tuple for a reader that imports none); read through the registry, so this file names no
+    package. Asked after the target is resolved, so a run for one language does not require
+    another language's packages."""
+    from tools.backends import registry as backend_registry
+
+    language = selection["language"]
+    _require_implemented("language", language)
+    return tuple(
+        (str(module_name), str(distribution))
+        for module_name, distribution in backend_registry.capability_module(
+            "language", language, "source_reading").REQUIRED_PYTHON_MODULES)
 
 
 def missing_host_executables(

@@ -14587,16 +14587,13 @@ def resolve_node(repo_root: Path, spec_ref: str) -> tuple[str, str]:
     spec_dir = ref.parent if ref.name in _SPEC_REF_FILE_NAMES else ref
     spec_id = spec_dir.name
     # M3d spec-input gates: bound both node-IDENTITY preconditions before any phase runs.
-    # (1) spec_id length. A spec_id over MAX_SPEC_ID_LEN is a node-IDENTITY defect (the
-    # compile.static hoist excludes it because a re-author cannot shorten a spec_id) that
-    # would otherwise fail-close at conductor render time on a harness-backed node — a
-    # workflow-kill. This is the canonical capture point (see
+    # (1) spec_id length. A spec_id over `spec_input_gates.max_spec_id_len()` is a
+    # node-IDENTITY defect (the compile.static hoist excludes it because a re-author cannot
+    # shorten a spec_id) that would otherwise fail-close at conductor render time on a
+    # harness-backed node — a workflow-kill. This is the canonical capture point (see
     # spec_input_gates.spec_id_length_violation). Deliberately spec-input (pre-IR), so it is
-    # language/phase-agnostic: the 55-char bound reflects the identifier limit of the ONLY
-    # current language backend, where every >55 spec_id is doomed regardless of phase.
-    # It also rejects a >55 spec on a Compile-only run — acceptable while every backend is
-    # fortran. When a backend with a different identifier limit is added, move the bound to
-    # a language-aware point.
+    # phase-agnostic: the bound is the strictest declared language's, because a spec_id names
+    # the node for every target it may be built for.
     # (2) no `infrastructure` dependency declared (see
     # spec_input_gates.infra_dep_declared_violation): the harness is the target's (issue #284).
     # Same rationale: a re-author cannot repair a node's dependency declaration.

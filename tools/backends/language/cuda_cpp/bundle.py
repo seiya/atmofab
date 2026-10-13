@@ -32,6 +32,11 @@ IDENTIFIER_MAX = 1024
 #: every name the host derives starts with the spec_id.
 IDENTIFIER_PATTERN = rf"^[A-Za-z][A-Za-z0-9_]{{0,{IDENTIFIER_MAX - 1}}}(?![\s\S])"
 
+#: The bound on a spec_id, derived as the Fortran backend derives its own: the longest name
+#: generated from a spec_id appends a 7-character role suffix (`_runner` / `_checks`), plus one
+#: character of margin. The neutral spec-input gate takes the minimum over declared languages.
+SPEC_ID_MAX = IDENTIFIER_MAX - len("_runner") - 1
+
 def identifier_key(name: str) -> str:
     """The key two identifiers of this language are compared by: equal keys name one entity.
 

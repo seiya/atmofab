@@ -2,8 +2,8 @@
 """Unit tests for tools/spec_input_gates — the node-IDENTITY preconditions checked pre-IR.
 
 These gates run before any phase, on the `spec_ref`s a closure resolves, so they hold no
-implementation-language knowledge. `test_fortran_runner` pins `MAX_SPEC_ID_LEN` against the
-language backend's own identifier limit, which is where the number comes from.
+implementation-language knowledge. The spec_id bound is asked of every declared language
+backend (`max_spec_id_len`); each backend's own tests pin how its `SPEC_ID_MAX` derives.
 """
 
 from __future__ import annotations
@@ -12,14 +12,74 @@ import unittest
 
 from tools.spec_input_gates import (
     CASE_ID_TOKEN_RE,
-    MAX_SPEC_ID_LEN,
     infra_dep_declared_violation,
+    max_spec_id_len,
     spec_id_length_violation,
 )
 
+MAX_SPEC_ID_LEN = max_spec_id_len()
+
+
+class MaxSpecIdLenTest(unittest.TestCase):
+    """`max_spec_id_len` is the minimum of the declared languages' `SPEC_ID_MAX`, read per call."""
+
+    @staticmethod
+    def _bundles() -> dict[str, object]:
+        from tools.backends import registry
+        return {lang: registry.capability_module("language", lang, "bundle_facts")
+                for lang in registry.backend_ids("language")
+                if registry.provides("language", lang, "bundle_facts")}
+
+    def test_the_bound_is_the_minimum_over_declared_languages(self) -> None:
+        bundles = self._bundles()
+        self.assertGreaterEqual(len(bundles), 2, bundles)
+        self.assertEqual(min(b.SPEC_ID_MAX for b in bundles.values()), max_spec_id_len())
+
+    def test_the_bound_follows_each_language(self) -> None:
+        """Moving ONE language's value below the others moves the gate, for every language —
+        a literal, a fixed language, or a `max` in place of the `min` each fails a row."""
+        from unittest import mock
+        bundles = self._bundles()
+        floor = min(b.SPEC_ID_MAX for b in bundles.values())
+        for lang, bundle in bundles.items():
+            with self.subTest(language=lang), mock.patch.object(bundle, "SPEC_ID_MAX", floor - 9):
+                self.assertEqual(floor - 9, max_spec_id_len())
+                msg = spec_id_length_violation("q" * (floor - 8))
+                self.assertIsNotNone(msg)
+                self.assertIn(f">{floor - 9}", msg)
+        self.assertEqual(floor, max_spec_id_len())
+
+    def test_a_language_without_bundle_facts_is_not_asked(self) -> None:
+        """A declared language that does not provide `bundle_facts` states no bound and is
+        skipped, rather than raising `capability_module`'s refusal for every launch."""
+        from unittest import mock
+
+        from tools.backends import registry
+        real_provides = registry.provides
+        langs = registry.backend_ids("language")
+        loosest = max(langs, key=lambda lang: registry.capability_module(
+            "language", lang, "bundle_facts").SPEC_ID_MAX)
+        others = [lang for lang in langs if lang != loosest]
+        floor_without = self._bundles()[loosest].SPEC_ID_MAX
+        # Withdraw bundle_facts from every language but the loosest: only it may answer.
+        with mock.patch.object(
+                registry, "provides",
+                side_effect=lambda axis, bid, cap: False
+                if (axis, cap) == ("language", "bundle_facts") and bid in others
+                else real_provides(axis, bid, cap)):
+            self.assertEqual(floor_without, max_spec_id_len())
+
+    def test_no_language_is_a_refusal_not_an_unbounded_gate(self) -> None:
+        from unittest import mock
+
+        from tools.backends import registry
+        with mock.patch.object(registry, "backend_ids", return_value=()):
+            with self.assertRaises(RuntimeError):
+                max_spec_id_len()
+
 
 class SpecIdLengthGateTest(unittest.TestCase):
-    """M3d spec-input gate: `spec_id_length_violation` bounds spec_id ≤ MAX_SPEC_ID_LEN.
+    """M3d spec-input gate: `spec_id_length_violation` bounds spec_id ≤ max_spec_id_len().
     This is the canonical capture point for the one node-IDENTITY render precondition the
     compile.static hoist excludes (a re-author cannot shorten a spec_id); the conductor's
     resolve_node calls it so a too-long spec_id fails before any phase, not at render-kill."""

@@ -7711,10 +7711,11 @@ class NodeAllocationTest(unittest.TestCase):
             wc.resolve_node(REPO_ROOT, "spec/component/does/not/exist_spec_zzz")
 
     def test_resolve_node_rejects_overlong_spec_id(self) -> None:
-        # M3d spec-input gate: a spec_id over MAX_SPEC_ID_LEN is rejected before the
+        # M3d spec-input gate: a spec_id over max_spec_id_len() is rejected before the
         # catalog lookup (the length check precedes _read_yaml), so this needs no real
         # spec on disk — the message names spec-input and the char count.
-        from tools.spec_input_gates import MAX_SPEC_ID_LEN
+        from tools.spec_input_gates import max_spec_id_len
+        MAX_SPEC_ID_LEN = max_spec_id_len()
         overlong = "component/dynamics/" + "z" * (MAX_SPEC_ID_LEN + 3)
         with self.assertRaises(ValueError) as ctx:
             wc.resolve_node(REPO_ROOT, "spec/" + overlong)

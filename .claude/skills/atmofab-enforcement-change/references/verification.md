@@ -599,8 +599,9 @@ section:**
   token; the prohibition is on a file extension, keyword, grammar, compiler argument, lint rule
   id, directive spelling, control-file syntax, naming convention or diagnostic format.
 - **A genuine addition → withdraw it, do not regenerate.** A RUNBOOK recovery entry spelled two
-  parser distribution names that `run_workflow.py`'s `REQUIRED_PYTHON_MODULES` already owns and
-  prints. Pointing at the refusal was both the neutral spelling and the better instruction — one
+  parser distribution names that `run_workflow.py`'s `REQUIRED_PYTHON_MODULES` then owned and
+  printed (since issue #469 the language backend's `source_reading.REQUIRED_PYTHON_MODULES` owns
+  them; the launch refusal still prints them). Pointing at the refusal was both the neutral spelling and the better instruction — one
   owner, no copy to go stale.
 - **Do NOT rename an identifier to get under the counter.** A reviewer will observe that some of
   the growth was "avoidable by spelling" (a local alias bound once instead of a long name imported
