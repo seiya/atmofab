@@ -19355,6 +19355,28 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             self.assertTrue(any("module_parameters[1].name 'DP' collides with" in v
                                 for v in violations), violations)
 
+    def test_a_case_only_duplicate_is_refused_under_a_case_sensitive_key_too(self) -> None:
+        """The duplicate rule is the strictest language's (issue #469 PR-3): with a key that
+        calls `dp` and `DP` two names, a §5.1 or an IR declaring both is still a duplicate, not
+        two parameters. Driven on the function with the case-sensitive key, the §5.1 half by
+        patching the reader (the struct validator refuses that §5.1 before any caller gets
+        here, so no caller reaches the §5.1 half — it is defense in depth)."""
+        from tools.backends.language.cuda_cpp import bundle as cuda_bundle
+        two = [{"name": "dp", "base": "integer", "value": "float64"},
+               {"name": "DP", "base": "integer", "value": "float64"}]
+        one = two[:1]
+        for side, spec_params, ir_params, expected in (
+                ("spec", two, one, "§5.1 declares module parameter 'dp' more than once"),
+                ("ir", one, two, "declares parameter 'dp' more than once (case-insensitively)")):
+            with self.subTest(side=side), unittest.mock.patch.object(
+                    vps, "_section51_module_parameters", return_value=spec_params):
+                violations: list[str] = []
+                vps._validate_ir_module_parameters_against_section51(
+                    Path("ir.yaml"), "infrastructure", {"module_parameters": ir_params},
+                    Path("cs.md"), violations, signatures=fortran_signatures,
+                    identifier_key=cuda_bundle.identifier_key)
+                self.assertTrue(any(expected in v for v in violations), violations)
+
     def test_module_parameters_case_only_name_variant_is_the_language_s_call(self) -> None:
         """§5.1 declares `dp`, the IR transcribes it as `DP` (same value). Whether that is one
         parameter is the language's case rule (`bundle_facts.identifier_key`, issue #469 PR-3):
