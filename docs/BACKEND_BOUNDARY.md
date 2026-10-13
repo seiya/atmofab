@@ -92,7 +92,7 @@ Out of scope, each for a stated reason:
   | Question | `None` / `True` when | Asked by |
   | --- | --- | --- |
   | `unsupported_reason` | the value is a declared member | naming, and building a refusal message |
-  | `unimplemented_reason` | it is declared **and** something implements it, extracted or still inlined | a gate deciding whether a run may carry the value at all |
+  | `unimplemented_reason` | it is declared **and** something implements it, in its package or in the neutral core | a gate deciding whether a run may carry the value at all |
   | `provides(axis, value, capability)` | **this repository** does that named job for the value, wherever the code lives | a host-authorship dispatch, deciding whether the job is the host's or a leaf's |
   | `unavailable_reason` | it is declared **and** extracted | code about to call into the backend package |
 
@@ -119,8 +119,9 @@ Out of scope, each for a stated reason:
   `target_lowering_plan.parallelization`, is an open-valued object). For such
   an axis the registry lists the members that have code; membership answers permissively and
   usability still refuses.
-- A record with `module=None` has its job done by the neutral core. Every such record today is
-  deliberately neutral — `linter/mixed` is a composite of other presets, and `parallel/none`,
+- A record with `module=None` and a `core_provides` entry has its job done by the neutral core
+  (one with neither is the bare declaration above, which nothing implements). Every such record
+  today is deliberately neutral — `linter/mixed` is a composite of other presets, and `parallel/none`,
   `hardware/cpu` and `scheduler/none` name the absence of a technology — so there is no
   technology knowledge for a package to hold. `registry.load` raises for it. A new TECHNOLOGY
   value is not registered this way: it enters with its package (§Operations Rules). The

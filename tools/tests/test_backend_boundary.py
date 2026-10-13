@@ -365,8 +365,8 @@ def _module_prefix(dotted: str, root: Path | None = None) -> str:
     spellings.
 
     THE FLOOR IS THE POINT. Collapsing by existence alone made the pin blind to exactly the
-    crossings the migration ledger is about: `tools.backends.build_system.make` has no directory
-    yet, so every prefix down to `tools.backends` was tried and that one EXISTS — and it is in
+    crossings the migration was about: `tools.backends.build_system.make` had no directory
+    then, so every prefix down to `tools.backends` was tried and that one EXISTS — and it is in
     `REGISTRY_MODULES`, so the crossing was filtered out as if it were a registry call. Verified:
     a neutral module importing `tools.backends.build_system.make` passed the whole suite. The four
     unextracted axes were the blind set. A name under the backend package therefore never
@@ -2707,7 +2707,7 @@ class RegistryConsistencyTests(unittest.TestCase):
 class CapabilityOwnershipTests(unittest.TestCase):
     """The two capability sets, and the dispatch that reaches the second one.
 
-    `core_provides` says a job is still inlined in the neutral core; `backend_provides` says the
+    `core_provides` says the neutral core does a job; `backend_provides` says the
     record's own package does it. Every guard below was reverted and measured: without it the
     suite stays green while the registry can describe a state that cannot exist, or hand a seam a
     backend that never claimed the work.
@@ -3468,7 +3468,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
         # `Backend.implemented` reads `provided`, and reverting it to `module is not None`
         # survives — every live record with a capability also has a module or lacks both. The
         # separating shape is a record with a capability and NO module, which is the honest
-        # state of a value whose code is still inlined in the neutral core.
+        # state of a value whose job the neutral core does.
         record = registry.Backend(
             "linter", "zz_inlined_only", None, core_provides=frozenset({"lint"}))
         with self._patched(record):

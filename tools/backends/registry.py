@@ -73,7 +73,12 @@ class UnsupportedBackend(LookupError):
 
 
 class BackendNotExtracted(NotImplementedError):
-    """The value has no backend package to answer with: its job, if any, is the neutral core's."""
+    """No backend package answers this question for the value.
+
+    Raised when the record has no package (its job, if any, is the neutral core's), when its
+    package does not declare the capability asked for, or when a declared capability's
+    submodule is missing — `capability_module` names which.
+    """
 
 
 class BackendFrontendUnavailable(RuntimeError):
@@ -903,8 +908,8 @@ def unimplemented_reason(axis: str, backend_id: str) -> str | None:
     neutral core, which is what a declared capability asserts. This is the
     question a NODE-ACCEPTANCE gate has: may a run carry
     this axis value at all. `unavailable_reason` is not that question — it refuses every value
-    whose backend has no package — the deliberately neutral ones, among them `hardware/cpu` and
-    `scheduler/none`, which every CPU target with no scheduler carries — so a gate asking it would
+    whose backend has no package — the deliberately neutral ones, among them `hardware/cpu`, which
+    every CPU target carries — so a gate asking it would
     reject nodes this repository can actually build.
 
     `unsupported_reason` is not that question either, and the difference is the whole point of

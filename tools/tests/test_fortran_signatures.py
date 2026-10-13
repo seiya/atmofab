@@ -1749,7 +1749,7 @@ class NoImportCycleWithTheValidatorTest(unittest.TestCase):
 
     #: A backend package with the shapes that matter: a root, a helper reached by an ABSOLUTE
     #: import, a helper reached by a RELATIVE one, a module no root reaches, and a second axis
-    #: standing in for the migration ledger's next area.
+    #: standing in for a later extraction.
     _SYNTHETIC = {
         "tools/validate_pipeline_semantics.py": (
             "from tools.backends.language.fortran import lines as fortran_lines\n"),
