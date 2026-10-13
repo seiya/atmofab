@@ -243,11 +243,13 @@ node's self-test).
   (`trim(src(j)%id)`, `src(j)%id // ''`) is correct, and so is appending the element itself
   (`[acc, src(j)]`); the array constructor is not the trigger (a scalar
   `one = t(src(j)%id, 'pass')` is empty too). No gate reads for it: the defect surfaces where
-  the runner's output is checked at `Validate.execute` (a fold keyed on the emptied ids
-  collapses to one `""` entry, which the post-execute check refuses). Copy such a component
-  through a local variable or an expression, or assign the new element's components one by one
-  with the subscript an integer variable or arithmetic on one (`k = size(acc)`, then
-  `acc(k)%id = src(j)%id`), rather than through the constructor: on the same release, assigning
-  a deferred-length component through a subscript that calls `size`, `min` or `max` (the forms
-  measured) faults at run time (SIGSEGV) or leaves the component unallocated or empty,
-  depending on the program.
+  the runner's output is checked at `Validate.execute` (every folded id is `""`, so the
+  output's checks reduce to one `""` entry, which the post-execute check refuses). Copy such a
+  component through a local DEFERRED-LENGTH variable or an expression, or assign the new
+  element's components one by one with the subscript an integer variable or arithmetic on one
+  (`k = size(acc)`, then `acc(k)%id = src(j)%id`), rather than through the constructor. A
+  fixed-length local is not a substitute: `t(trim(key), 'pass')` with `character(len=32) :: key`
+  gives `id` length 32 at `-O2`, the trimmed text padded with NUL bytes; `trim(key) // ''` and
+  `key(1:len_trim(key))` are correct. On the same release, assigning a deferred-length
+  component through a subscript that calls `size`, `min` or `max` (the forms measured) faults
+  at run time (SIGSEGV) or leaves the component unallocated or empty, depending on the program.

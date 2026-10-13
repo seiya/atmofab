@@ -944,8 +944,10 @@ PINNED: dict[str, str] = {
     # orch_20261013T082603Z_14368a80 (codex, `harness_fortran_cpu`, `fortran_cpu`,
     # `validate.execute` post-execute refusal, `checks` = `{"": …}`). Re-pinned in place during
     # the review loop (not shipped): the remedy names an integer-variable subscript, since a
-    # subscript calling `size`, `min` or `max` faults or empties the component on that release.
-    "pure-73": "af19dbeda46956e61800a3ef0a93a419ede99aee38fc92e76de2d702075ea5ed",
+    # subscript calling `size`, `min` or `max` faults or empties the component on that release,
+    # and the copy goes through a DEFERRED-length local (a fixed-length one under `trim` comes
+    # out NUL-padded at -O2).
+    "pure-73": "6c178e923c1aec4c11666792c03483061e28148f04cdfeb6fb3729e27e9e3e80",
 }
 
 

@@ -21269,7 +21269,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Raised 14000->15500 (issue #442): §5 gains the recursive-allocatable-component bullet,
         # the harness producer's only statement of it. Measured 15344.
         # Raised 15500->17500 (issue #477): §5 gains the deferred-length-component constructor
-        # bullet, the harness producer's only statement of it. Measured 17018.
+        # bullet, the harness producer's only statement of it. Measured 17277.
         "docs/backends/language/fortran/CHECKS_ABI.md": 17500,
         # Raised 4800->5900 (issue #315): §1 and §2 name the non-finite tokens and the
         # `ieee_arithmetic` branch, and `jnum` gains it. Measured 5727; 5742 after the
