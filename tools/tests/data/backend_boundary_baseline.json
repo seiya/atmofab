@@ -76,9 +76,6 @@
     "docs/workflow/COMMAND_LOG_PLACEMENT.md": {
       "make-control-file": 1
     },
-    "docs/workflow/RUNNER_OUTPUT_CONTRACT.md": {
-      "make-control-file": 1
-    },
     "docs/workflow/WORKFLOW_CORE.md": {
       "fortran": 2
     },

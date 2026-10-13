@@ -65,11 +65,11 @@ of them all.
   `project_dir` is `source/<source_id>/src/` inside the checkout, so a file at the repository root
   would reach it with nothing written near the sources at all.
 * An in-source `# noqa` comment suppresses whatever it names. The leaf authors the source — but
-  only in the world this preset becomes reachable in: measured against
-  the leaf write policy's `_ALLOWED_BYPRODUCT_EXTENSIONS`, a leaf could not write a `.py` file
-  today at all, so this closure is a future-leaf-side one rather than a reachable `leaf shortcut`.
-  Registering a `python` language backend is what makes it reachable, and it would have to widen
-  that frozenset to do so.
+  only in the world this preset becomes reachable in: `codegen_bundle.logical_path_violations`
+  refuses a bundle path whose extension is not one of the target language's `SOURCE_EXTENSIONS`,
+  and no registered language declares `.py`, so a leaf cannot author a `.py` file today at all
+  and this closure is a future-leaf-side one rather than a reachable `leaf shortcut`. Registering
+  a `python` language backend is what makes it reachable, by declaring that extension.
   Measured: `# noqa: F401` on one import takes five findings to four. That is a `leaf shortcut` in
   the plain sense — the shortest route from a failing gate to a reported-done substep runs through
   one comment — and `--ignore-noqa` closes it. This repository takes the same position for every

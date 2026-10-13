@@ -605,10 +605,9 @@ GROWTH_MESSAGE = (
 
 STALE_MESSAGE = (
     "the baseline is looser than the tree, which is what a migration looks like, and it is the "
-    "opposite finding from growth: growth is withdrawn, staleness is what the ledger records. " +
-    _REMEDY_CLAUSE + " A migration updates the measured debt in TODO.md in the same pull "
-    "request, so the ledger and the baseline cannot disagree and the ratchet keeps "
-    "tightening.")
+    "opposite finding from growth: growth is withdrawn, staleness is what the pull request "
+    "records. " + _REMEDY_CLAUSE + " The per-file drop is stated in that pull request or on its "
+    "issue, so the record and the baseline cannot disagree and the ratchet keeps tightening.")
 
 
 def grown_entries(baseline: dict[str, dict[str, int]],
@@ -635,7 +634,7 @@ def stale_entries(baseline: dict[str, dict[str, int]],
 
     A ceiling that is never lowered stops being a ratchet: a file that shed backend spelling — or
     left the scanned set entirely — must lower its recorded count in the same commit, so the debt
-    figure in TODO.md and the baseline cannot disagree. `scanned` decides which of the two causes
+    figure its pull request states and the baseline cannot disagree. `scanned` decides which of the two causes
     an absent file gets named (`_absent_cause`).
     """
     stale: list[str] = []

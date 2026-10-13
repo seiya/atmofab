@@ -866,7 +866,7 @@ PINNED_RENDER: dict[str, str] = {
     # render-9 (issue #437): the rendered cuda_cpp runner drops the trailing blanks of each
     # status `checks_compute` returns before it fills the harness check record, so a padded
     # "na  " never reaches the harness writer from a physics node.
-    "render-9": "787bc235e2831b2311e8e34b2844adf34dc91b0d93c79eb0cb079726abaaadb0",
+    "render-9": "ab5f0bbb63ed5ea1a2837dce1519bfd9e47e9db94100dd36b91b8198eee6391f",
     # Re-pinned (issue #444), behaviour-preserving: two comments moved: `parallel/mpi/wrapper.py`
     # and `language/fortran/bundle.py` cite `tools/build_runtime.py` instead of
     # `mcp_servers/build_runtime_server.py`; nothing rendered moved. (Measured by diffing the tuple
@@ -893,6 +893,11 @@ PINNED_RENDER: dict[str, str] = {
     # (Measured by diffing `render_tuple()` against origin/main 84cd9a41's: those four rows and
     # no other.) The digest `render-9` shipped with at 84cd9a41:
     "render-9@84cd9a41": "01e4d562a59c46173661817abb4800a6351365b94cdca6c4e9e5a579ca93a13c",
+    # Re-pinned (issue #469, PR-5), behaviour-preserving: three Fortran backend comments
+    # (`bundle.py`, `lines.py`, `signatures.py`) cite issue #469 instead of the `TODO.md` item it
+    # closed; no code moved. (Measured by diffing `render_tuple()` against origin/main
+    # 3502ee67's: those three rows and no other.) The digest `render-9` shipped with at 3502ee67:
+    "render-9@3502ee67": "787bc235e2831b2311e8e34b2844adf34dc91b0d93c79eb0cb079726abaaadb0",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -946,7 +951,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "8569e4f261029d575fc46fd2e426e2eac2e3231d718c724892c7881f7f29f1c3",
+    "build-2": "0c46f46b2434ec8f33b0ec597e2ae5e06a267cb63a6b5719b4a4bc9489ff1345",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build
@@ -1050,6 +1055,11 @@ PINNED_BUILD: dict[str, str] = {
     # origin/main 84cd9a41's: that row and no other.) The digest `build-2` shipped with at
     # 84cd9a41:
     "build-2@84cd9a41": "e8d42fc79126f8066dadfb7535e895e57d51e69ae2b692298dcaa665cefeab54",
+    # Re-pinned (issue #469, PR-5), behaviour-preserving: a comment in the Fortran `bundle.py`
+    # cites issue #469 instead of the `TODO.md` item it closed. (Measured by diffing
+    # `build_tuple()` against origin/main 3502ee67's: that row and no other.) The digest
+    # `build-2` shipped with at 3502ee67:
+    "build-2@3502ee67": "8569e4f261029d575fc46fd2e426e2eac2e3231d718c724892c7881f7f29f1c3",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",

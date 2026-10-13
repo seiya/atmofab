@@ -106,11 +106,11 @@ Out of scope, each for a stated reason:
   route a second backend's nodes into the wrong writer — a worse failure than the hard-coded pair
   it replaced. Declaring a capability asserts the code exists NOW.
 - **WHERE that code lives is a second question, and the record answers it separately.**
-  `core_provides` is the job still inlined in the neutral core — the debt the ledger is paying
-  down. `backend_provides` is the job the record's own package implements, reached only through
+  `core_provides` is the job the neutral core does itself — today only for deliberately neutral
+  records, below. `backend_provides` is the job the record's own package implements, reached only through
   `registry.capability_module`, which refuses a value that has not declared the job and a package
   that does not carry what its record claims. A capability may not appear in both sets: one job,
-  one owner. When the ledger area that owns a capability lands, the capability moves from the
+  one owner. When a technology's knowledge is extracted, its capability moves from the
   first set to the second and its dispatch site starts routing through `capability_module`.
   `provides` is the union, so the authorship answer — which is not a question about where the
   code sits — does not move with it, and no node changes hands on the migration commit.
@@ -119,9 +119,13 @@ Out of scope, each for a stated reason:
   `target_lowering_plan.parallelization`, is an open-valued object). For such
   an axis the registry lists the members that have code; membership answers permissively and
   usability still refuses.
-- A backend that is declared but whose knowledge has not been extracted yet is recorded with
-  `module=None` in the registry, and its migration is an entry in the ledger in `TODO.md`.
-  `registry.load` raises for it. This state is a debt record, not a supported configuration.
+- A record with `module=None` has its job done by the neutral core. Every such record today is
+  deliberately neutral — `linter/mixed` is a composite of other presets, and `parallel/none`,
+  `hardware/cpu` and `scheduler/none` name the absence of a technology — so there is no
+  technology knowledge for a package to hold. `registry.load` raises for it. A new TECHNOLOGY
+  value is not registered this way: it enters with its package (§Operations Rules). The
+  migration that extracted every technology record closed with
+  [issue #469](https://github.com/seiya/atmofab/issues/469).
 
 ## Placement rules
 | Artifact | Neutral location | Backend location |
@@ -292,8 +296,8 @@ together with the bundle's `target_lowering_plan.parallelization`.
   a migration cannot absorb a new bypass.
 - **Changing a rule stated here** requires washing every document that cites it. The citations are
   found with `grep -rn "BACKEND_BOUNDARY" docs skills tools *.md` from the repository
-  root — the root `*.md` is load-bearing, since `TODO.md` carries the migration ledger and its
-  measured figures, and `README.md` indexes this document.
+  root — the root `*.md` is load-bearing, since `TODO.md` may carry an open item that cites it,
+  and `README.md` indexes this document.
 
 ## Decision Criteria
 A fragment of the neutral core is a violation when either test holds.
@@ -352,6 +356,9 @@ that skipped the check still puts the material in front of whoever typed it. Tha
 disclosure and not a substitute for `--check-baseline`, which is a separate invocation with its
 own exit code.
 
-The current baseline is not zero. The per-area migration plan that reduces it is the ledger in
-`TODO.md`; the measured debt at the time this rule was written is recorded in
+The current baseline is not zero, and it is not expected to reach zero: what it still counts is
+naming — citation paths, axis values, examples marked as a binding — which this document permits
+(§Decision Criteria). The per-area migration that removed the live knowledge is recorded on
+[issue #469](https://github.com/seiya/atmofab/issues/469), which closed it; the measured debt at
+the time this rule was written is recorded in
 [a comment on the ratchet's issue](https://github.com/seiya/atmofab/issues/182#issuecomment-5559624872).

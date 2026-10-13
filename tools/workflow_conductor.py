@@ -7051,8 +7051,8 @@ class Conductor:
         from the bundle's declared roles when there is a bundle — each `files[]` entry is written
         to `src/<logical_path>`, which is what makes the join below correct — and from the
         conductor's own two basename helpers otherwise. Never from a spelling invented here: the
-        `docs/BACKEND_BOUNDARY.md` ledger records those basenames as pre-existing debt, and a
-        third copy would add to it.
+        basenames are the language's `bundle_facts`, and a third copy would be language knowledge
+        in the neutral core (`docs/BACKEND_BOUNDARY.md`).
 
         `raw_refs` is empty when the run produced no `raw/` at all. That is left to fail at the
         gate, which requires a non-empty list — deliberately, because a node certified on no
