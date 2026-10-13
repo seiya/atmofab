@@ -29,7 +29,8 @@ a module name:
 * `structure` — the tree-sitter-fortran structural front end the model gates read through.
 * `structure_differential` — a developer harness that diffs `structure` against a flang oracle.
 
-`docs/BACKEND_BOUNDARY.md` states which capabilities are still inlined in the neutral core.
+`tools/backends/registry.py` declares which capabilities this package implements
+(`backend_provides`).
 """
 
 from tools.backends.language.fortran import bundle as bundle  # noqa: F401  (re-export)

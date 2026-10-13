@@ -1930,7 +1930,7 @@ def harness_bundle_shape_violation(doc: Mapping[str, Any], spec_id: str,
     `checks`-role file. Every literal name comes from the caller's own spelling of them —
     `runner_basename` is passed in, the model basename takes its extension from it, and the
     module name is that basename's stem — so this layer adds no second place that says what a
-    node's files are called (`docs/BACKEND_BOUNDARY.md` ledger).
+    node's files are called (`docs/BACKEND_BOUNDARY.md`).
 
     Why the names are pinned at all, when no host-rendered glue `use`s them here: the build
     control file's binary name is derived from `spec_id` by the host (`_resolve_exe_name`), Build

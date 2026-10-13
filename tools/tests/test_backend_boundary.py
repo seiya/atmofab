@@ -124,8 +124,8 @@ REGISTRY_MODULES = frozenset({"tools.backends", "tools.backends.registry"})
 #
 # The scope is `docs/BACKEND_BOUNDARY.md`'s scope, and `_EXCLUDED_PREFIXES` is that document's
 # exclusion list — no more. Two files that might be expected here are simply never globbed rather
-# than excluded: this instrument's own baseline (under `tools/tests/`) and `TODO.md`, which holds
-# the migration ledger and would otherwise count the debt it describes.
+# than excluded: this instrument's own baseline (under `tools/tests/`) and `TODO.md`, which records
+# backend facts as history and would otherwise count the spellings it describes.
 #
 # Every glob is RECURSIVE. The first version scanned `docs/*.md` plus `docs/workflow/**` only,
 # which made a move into any new `docs/<subdir>/` indistinguishable from a migration into a
@@ -189,8 +189,9 @@ _SCANNED_GLOBS = (
 _UNSCANNED_ROOT_FILES: dict[str, str] = {
     "TODO.md": (
         "a work ledger that RECORDS backend facts as history — measured spellings, past "
-        "diagnoses, the migration ledger itself. It names technology for the same reason "
-        "`docs/design/` does, and §Scope excludes that for the same stated reason. Scanning it "
+        "diagnoses, the migration ledger it held until issue #469. It names technology for "
+        "the same reason `docs/design/` does, and §Scope excludes that for the same stated "
+        "reason. Scanning it "
         "would put its recorded history into the growth bound and make every entry about a "
         "backend a ratchet event. The size of that history moves with the file and is not "
         "part of this reason: 631 token occurrences at `f88ad94`, 205 after issue #181 moved "
@@ -302,8 +303,8 @@ _TOKEN_CLASSES: dict[str, str] = {
     # linter. One class per registered linter, because the migration ledger is per (axis, value)
     # and a single `linter-*` class would let a count fall in one backend while it rose in
     # another. Each is a bare name: what these count is the NAME, which the neutral core may use
-    # as a preset key — the knowledge is what moved (TODO.md records that the counts do not fall
-    # to zero for that reason).
+    # as a preset key — the knowledge is what moved, so the counts do not fall to zero for that
+    # reason (issue #424 PR-3).
     "linter-fortitude": r"fortitude",
     "linter-cppcheck": r"\bcppcheck\b",
     "linter-ruff": r"\bruff\b",
@@ -766,7 +767,8 @@ class BaselineComparisonTests(unittest.TestCase):
             # from the measurement while still IN the scanned set. This is the file that observes
             # `_check_baseline` handing the real scanned set to `stale_entries` — with `scanned`
             # degenerate the message names a scope change that did not happen, which is defect
-            # (aa) in TODO.md's ledger, and every other row here passes with it broken.
+            # (aa) in the migration ledger TODO.md held until issue #469, and every other row here
+            # passes with it broken.
             (tmp / "docs" / "quiet.md").write_text("no sampled spelling here\n", encoding="utf-8")
             baseline_path = tmp / "baseline.json"
             baseline_path.write_text(json.dumps({"token_counts": {
@@ -2279,7 +2281,7 @@ class RegistryConsistencyTests(unittest.TestCase):
         # asks the third of the target's parallel backend.
         #
         # The rest are declaration-only TODAY: they are how their records answer `implemented`,
-        # and they gain a dispatch when their ledger area lands.
+        # and they gain a dispatch when one is extracted.
         declaration_only = set(registry.CAPABILITIES) - dispatched
         asked: set[str] = set()
         registry_path = Path(registry.__file__).resolve()
@@ -2746,7 +2748,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
         # that is declared true and unreachable at the same time.
         # The capability is SYNTHESISED — declared, of this axis, and deliberately absent from
         # `CAPABILITY_MODULE_ATTR` — rather than borrowed from the live table. Every live
-        # capability without a row is one the ledger intends to migrate, and migrating it would
+        # capability without a row is one a later change may extract, and extracting it would
         # turn this probe into a false failure whose message ("UnsupportedBackend not raised")
         # names nothing for the author who tripped it.
         record = registry.Backend(

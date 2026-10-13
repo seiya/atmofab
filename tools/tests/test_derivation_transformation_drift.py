@@ -866,7 +866,7 @@ PINNED_RENDER: dict[str, str] = {
     # render-9 (issue #437): the rendered cuda_cpp runner drops the trailing blanks of each
     # status `checks_compute` returns before it fills the harness check record, so a padded
     # "na  " never reaches the harness writer from a physics node.
-    "render-9": "ab5f0bbb63ed5ea1a2837dce1519bfd9e47e9db94100dd36b91b8198eee6391f",
+    "render-9": "9eb1dcaf07f462a7016968eca34aa98619bb41788157f659a25a8a0bde0fae09",
     # Re-pinned (issue #444), behaviour-preserving: two comments moved: `parallel/mpi/wrapper.py`
     # and `language/fortran/bundle.py` cite `tools/build_runtime.py` instead of
     # `mcp_servers/build_runtime_server.py`; nothing rendered moved. (Measured by diffing the tuple
@@ -895,8 +895,11 @@ PINNED_RENDER: dict[str, str] = {
     "render-9@84cd9a41": "01e4d562a59c46173661817abb4800a6351365b94cdca6c4e9e5a579ca93a13c",
     # Re-pinned (issue #469, PR-5), behaviour-preserving: three Fortran backend comments
     # (`bundle.py`, `lines.py`, `signatures.py`) cite issue #469 instead of the `TODO.md` item it
-    # closed; no code moved. (Measured by diffing `render_tuple()` against origin/main
-    # 3502ee67's: those three rows and no other.) The digest `render-9` shipped with at 3502ee67:
+    # closed, and the package docstring (`__init__.py`) cites the registry's `backend_provides`
+    # instead of a `BACKEND_BOUNDARY.md` statement about still-inlined capabilities; no code moved.
+    # Re-pinned in place during the review loop (not shipped). (Measured by diffing
+    # `render_tuple()` against origin/main 3502ee67's: those four rows and no other.) The digest
+    # `render-9` shipped with at 3502ee67:
     "render-9@3502ee67": "787bc235e2831b2311e8e34b2844adf34dc91b0d93c79eb0cb079726abaaadb0",
 }
 PINNED_BUILD: dict[str, str] = {

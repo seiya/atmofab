@@ -723,7 +723,7 @@ def provides(axis: str, backend_id: str, capability: str) -> bool:
     The question a host-authorship dispatch has: does the HOST do this job for this node, or does
     it fall to a leaf. Deliberately blind to whether the implementation has been extracted into
     the backend package yet (`core_provides | backend_provides`), because that is a migration
-    state and the authorship answer must not change when an area of the ledger lands.
+    state and the authorship answer must not change when a capability is extracted.
     A value with no record — unknown, or an open-vocabulary token — answers False, so the
     dispatch declines rather than writing something for a value it knows nothing about.
 

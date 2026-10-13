@@ -1560,8 +1560,8 @@ class NoImportCycleWithTheValidatorTest(unittest.TestCase):
     What it guards against is the state these modules were in until the §5.1 line and stanza layer
     moved here: `signatures` imported `_fortran_logical_lines`, `_normalize_fortran_line` and
     `_parse_interface_stanzas` out of the validator, so the Fortran backend reached into the
-    neutral core for its own subject matter (TODO.md's blocking sub-item). Nothing observed that:
-    the import worked and the suite was green.
+    neutral core for its own subject matter (the migration's blocking sub-item, issue #469).
+    Nothing observed that: the import worked and the suite was green.
 
     FOUR checks, because no subset of them covers the property:
 
