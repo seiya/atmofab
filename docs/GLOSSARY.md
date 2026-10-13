@@ -181,7 +181,7 @@ Note:
 
 ## 8. Build runtime
 - **build-runtime library**: `tools/build_runtime.py`, which the conductor calls in-process to execute `compile` / `run` / `quality check` / `static lint` / `syntax check` and to record each command in `command_log.jsonl`. `docs/BUILD_RUNTIME.md` is canonical for it. It was an `MCP` (Model Context Protocol) server until [issue #444](https://github.com/seiya/atmofab/issues/444) deleted the protocol layer.
-- The `compile` of a compiled language (its language backend declares `COMPILED`, `registry.is_compiled_language`) is executed via a standard build tool that can handle dependencies (default `make`).
+- The `compile` of a compiled language (its language backend declares `COMPILED`, `registry.is_compiled_language`) is executed via a standard build tool that can handle dependencies (the one the target profile's `toolchain.build_system` names).
 
 ## 9. Automatic Differentiation (AD)
 - A technique for mechanically obtaining derivatives (`JVP` / `VJP` / `gradient`) for a discretely implemented computation graph.
