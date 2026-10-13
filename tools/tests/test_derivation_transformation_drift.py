@@ -611,7 +611,7 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # lines keep their instruction (the producer authors the IR from the finding text and
     # returns `last_fail_reason: null`; the reviewer judges on the merits). A bump would
     # re-derive every node's Compile for an IR authored to the same rules.
-    "compile-docs-13": "99b4b6fecefb2defbcb06e365c45e843a48209a2ef740803f885aa308ad920dd",
+    "compile-docs-13": "1cea359d6717d085c79431096de5c5c71f424b4958b0f80beab3ed625749df65",
     # ...and the digest `compile-docs-13` SHIPPED with (origin/main b9a2a615), kept so a later
     # version returning to those bytes collides (`test_no_empty_bump_or_silent_revert`).
     "compile-docs-13@b9a2a615": "6dc0a6af22e9a4bce122425315e233ead04b835a1e7cb431f1e02218c99aaa70",
@@ -623,7 +623,11 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # workspace/ir at this branch and at origin/main c2b012e9: the two revisions report the
     # identical violation set for every one of them, so no certified IR is newly refused and a
     # bump would re-derive every node's Compile for an IR the leaves already authored to the
-    # tightened rule. The digest `compile-docs-13` shipped with at c2b012e9:
+    # tightened rule. The V8 signatures bullet also stops saying the comparison is "case-folded":
+    # false since the CUDA C++ backend joined the languages Compile renders in (an upper-cased
+    # argument name passes the Fortran currency alone and fails the pin at c2b012e9 and here),
+    # so that sentence corrects a statement and moves no gate. The digest `compile-docs-13`
+    # shipped with at c2b012e9:
     "compile-docs-13@c2b012e9": "5d4c5f299a75f456cc1ffd55ca987096f225ab7360fd5c19f7fa068da979b1f6",
 }
 PINNED_RENDER: dict[str, str] = {

@@ -9727,7 +9727,7 @@ def _validate_ir_module_parameters_against_section51(
         # The §5.1↔IR MATCH key: the language's own case rule.
         return identifier_key(name.strip())
 
-    # Build the §5.1 name->value map (keyed by case-folded name), but FAIL CLOSED on a duplicate name
+    # Build the §5.1 name->value map (keyed by the language's key), but FAIL CLOSED on a duplicate name
     # rather than collapsing it (a plain dict comprehension keeps the last value). A repeated §5.1
     # module parameter cannot be pinned coherently: an identical duplicate would be accepted against a
     # single IR/source declaration, and a differing duplicate (`dp = float64` and `dp = float32`, or
