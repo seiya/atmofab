@@ -1264,7 +1264,7 @@ _COMMAND_LOG_BASENAME: str = "command_log.jsonl"
 def _canonical_command_log_refs_for_lint(meta_path: Path, repo_root: Path) -> set[str]:
     """Canonical command_log_ref placements for `source_meta.json` lint validation.
 
-    Only one canonical placement: sibling under `<gen_dir>/src/`. A child agent
+    Only one canonical placement: sibling under `source/<source_id>/src/`. A child agent
     that writes a forged command_log.jsonl elsewhere and points the
     `lint evidence run_linter[].command_log_ref` at it should be rejected.
     """
@@ -4099,7 +4099,7 @@ def _validate_generate_syntax_command_logs(
             )
             continue
 
-        # Same canonical placement as the lint records: <gen_dir>/src/command_log.jsonl.
+        # Same canonical placement as the lint records: source/<source_id>/src/command_log.jsonl.
         command = _verify_command_log_record(
             repo_root, meta_path, f"syntax evidence stages[{idx}]",
             command_id.strip(), log_ref.strip(), "run_syntax_check", violations)

@@ -102,7 +102,7 @@ minor that NARROWS — the `capture` enum loses `checks_getter` and `state_bindi
 required on the `m3c` shape — so a 1.1.0 document of the old shape is a same-major document
 this validator reads and refuses on its content, which is what "backward only, by design"
 means for a retirement: nothing is relaxed to keep the old shape passing. The declarative
-schema's `bundle_schema_version` pattern pins the supported major (`^1\.[0-9]+\.[0-9]+$`), so a
+schema's `bundle_schema_version` pattern pins the supported major (`^1\.[0-9]+\.[0-9]+(?![\s\S])`), so a
 schema-only consumer (structured generation) rejects an incompatible major at the schema
 boundary rather than admitting it to fail later at `validate_bundle`.
 
@@ -389,7 +389,7 @@ driven.
 ## Harness capability ABI
 
 `HARNESS_CAPABILITY_ABI_VERSION = 1`. A capability token is
-`^[a-z][a-z0-9_]*@[0-9]+$`: a name from the closed `CAPABILITY_VOCABULARY` and an
+`^[a-z][a-z0-9_]*@[0-9]+(?![\s\S])`: a name from the closed `CAPABILITY_VOCABULARY` and an
 integer version. The version is part of the token, not a range.
 
 | capability | meaning |

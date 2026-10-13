@@ -6742,7 +6742,7 @@ def _allowed_output_paths_for_launch(
             dir_path = path.rstrip("/")
             if step_token == "generate":
                 if generate_prefix and dir_path.startswith(generate_prefix):
-                    # Allow only <gen_id>/src and its subdirectories; the generate root itself is forbidden
+                    # Allow only <source_id>/src and its subdirectories; the source root itself is forbidden
                     tail = dir_path[len(generate_prefix):]
                     parts = [seg for seg in tail.split("/") if seg]
                     if len(parts) >= 2 and parts[1] == "src":

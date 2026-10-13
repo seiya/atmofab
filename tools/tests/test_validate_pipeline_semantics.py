@@ -680,8 +680,8 @@ def _create_minimal_execution_tree(
     )
 
     command_id = "cmd_run_001"
-    # Plant a build directory + binary so trial_meta.source_build_id resolves
-    # under <pipeline>/build/<id>/bin/ and run_program executable validation
+    # Plant a build directory + binary so trial_meta.source_binary_id resolves
+    # under <pipeline>/binary/<id>/bin/ and run_program executable validation
     # binds to the declared build.
     build_id_for_fixture = "bin_20260415_001"
     build_bin_dir = pipeline_dir / "binary" / build_id_for_fixture / "bin"
@@ -8583,7 +8583,7 @@ end program shallow_water2d_runner
             trial_meta_path = node_dir / "trial_meta.json"
             trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
             # run_quality_checks canonical placement: cross-phase under
-            # generate/<gen>/src/command_log.jsonl. Append to the existing
+            # source/<source_id>/src/command_log.jsonl. Append to the existing
             # canonical log written by the fixture.
             qc_log_ref = (
                 "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/"
@@ -12898,10 +12898,10 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
         """Defense against forged build-runtime execution evidence at non-canonical paths.
 
         A child agent that writes a forged command_log.jsonl at a non-
-        canonical placement (e.g. <gen>/src/notes/command_log.jsonl) and
+        canonical placement (e.g. <source_id>/src/notes/command_log.jsonl) and
         points lint_command_ref.run_linter[].command_log_ref at it must be
         rejected by the post_generate validator. The canonical placement is
-        <gen>/src/command_log.jsonl (sibling of model/runner sources).
+        <source_id>/src/command_log.jsonl (sibling of model/runner sources).
         """
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -13134,7 +13134,7 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
             )
 
     def test_trial_meta_requires_source_build_id(self) -> None:
-        """source_build_id binds run_program to the specific build whose
+        """source_binary_id binds run_program to the specific build whose
         binary the execute used. Omission must be rejected.
         """
         with tempfile.TemporaryDirectory() as tmp:
@@ -13203,7 +13203,7 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
 
     def test_run_program_rejects_executable_outside_source_build_id(self) -> None:
         """The matched run_program record's executable must resolve under
-        `<pipeline>/build/<source_build_id>/bin/`. A trial_meta that claims
+        `<pipeline>/binary/<source_binary_id>/bin/`. A trial_meta that claims
         provenance for build A but executes a sibling build B's binary must
         be rejected.
         """
@@ -13232,7 +13232,7 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
             sibling_build.mkdir(parents=True, exist_ok=True)
             (sibling_build / "simulate").write_text("sibling\n", encoding="utf-8")
             # Rewrite the log record's cwd to point at the sibling bin/, but
-            # leave trial_meta.source_build_id pointing at the (declared)
+            # leave trial_meta.source_binary_id pointing at the (declared)
             # canonical fixture build.
             log_path = node_dir / "command_log.jsonl"
             recs = [
@@ -14232,7 +14232,7 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
         return meta_path
 
     def _seed_syntax_command_log(self, repo_root: Path, records: list[dict]) -> str:
-        """Write records into the canonical <gen>/src/command_log.jsonl and return its
+        """Write records into the canonical <source_id>/src/command_log.jsonl and return its
         repo-relative ref."""
         log_rel = "workspace/pipelines/p/pid/source/src_x/src/command_log.jsonl"
         log_path = repo_root / log_rel
