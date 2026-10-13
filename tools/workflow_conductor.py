@@ -10560,7 +10560,6 @@ class Conductor:
                     return tool_run_syntax_check({
                         "compiler": compiler,
                         "std": tc["standard"],
-                        "openmp": tc["backend"] == "openmp",
                         "architecture": architecture,
                         "parallel_backend": tc["backend"],
                         "project_dir": str(sub_dir),
@@ -10574,7 +10573,6 @@ class Conductor:
                     result = tool_run_syntax_check({
                         "compiler": compiler,
                         "std": tc["standard"],
-                        "openmp": tc["backend"] == "openmp",
                         "architecture": architecture,
                         "parallel_backend": tc["backend"],
                         "project_dir": str(stage_dir),

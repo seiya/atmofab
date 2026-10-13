@@ -444,7 +444,8 @@ import from the checkout root (the MCP layer and its `mcp_call.py` client were d
 #444; there is no server process to go through).
 
 ```bash
-# `compiler` / `std` (run_syntax_check) and `preset` (run_linter) are required since issue #289
+# `compiler` / `std` (run_syntax_check) and `preset` (run_linter) are required since issue #289,
+# and `preset` (run_quality_checks) since issue #469
 python3 -c 'import json; from tools.build_runtime import tool_run_syntax_check as f; print(json.dumps(f({"project_dir": "<abs>", "compiler": "gfortran", "std": "f2008"}), indent=1))'
 python3 -c 'import json; from tools.build_runtime import tool_run_linter as f; print(json.dumps(f({"project_dir": "<abs>", "preset": "fortitude"}), indent=1))'
 ```

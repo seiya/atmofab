@@ -41,15 +41,15 @@ CANARY_FILENAME = "atmofab_syntax_canary.cu"
 STANDARD_SPELLING_EXAMPLE = "`c++17`, not `17`"
 
 
-def argv(*, standard: str, scratch_dir: str, openmp: bool, promotions: tuple[str, ...],
-         architecture: str | None, sources: list[str]) -> list[str]:
+def argv(*, standard: str, scratch_dir: str, parallel_backend: str | None,
+         promotions: tuple[str, ...], architecture: str | None, sources: list[str]) -> list[str]:
     """The syntax-only command line.
 
     `architecture` is the target profile's `hardware.architecture`, passed as `-arch=`; `None`
-    leaves the driver's default. `openmp` is ACCEPTED AND NOT READ: a CUDA target's parallel
-    model is not OpenMP, and the argument exists for the adapters it applies to. The sources stay
-    last."""
-    del openmp  # accepted, not read (see the docstring)
+    leaves the driver's default. `parallel_backend` is ACCEPTED AND NOT READ: no parallel backend a
+    CUDA target declares adds a switch to this front end, and the argument exists for the
+    adapters it applies to. The sources stay last."""
+    del parallel_backend  # accepted, not read (see the docstring)
     command = [EXECUTABLE, f"-std={standard}"]
     if architecture:
         command.append(f"-arch={architecture}")

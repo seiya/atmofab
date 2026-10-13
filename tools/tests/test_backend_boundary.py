@@ -74,6 +74,7 @@ from __future__ import annotations
 
 import ast
 import contextlib
+import inspect
 import io
 import json
 import re
@@ -2511,7 +2512,8 @@ class RegistryConsistencyTests(unittest.TestCase):
         down nowhere, and an adapter missing `STANDARD_SPELLING_EXAMPLE` would pass every row and
         turn the canary's fail_closed remedy into an AttributeError). Asked of every compiler
         that declares the capability, and the language it names must declare
-        `syntax_promotions`."""
+        `syntax_promotions`. `argv`'s keyword set is pinned too, so a third adapter cannot keep
+        the `openmp` flag issue #469 replaced."""
         required = ("EXECUTABLE", "LANGUAGE", "VERSION_ARGV", "CANARY_SOURCE",
                     "CANARY_FILENAME", "STANDARD_SPELLING_EXAMPLE", "argv")
         compilers = [c for c in registry.backend_ids("compiler")
@@ -2526,6 +2528,12 @@ class RegistryConsistencyTests(unittest.TestCase):
                 facts = registry.capability_module("language", module.LANGUAGE,
                                                    "syntax_promotions")
                 self.assertTrue(module.CANARY_FILENAME.endswith(tuple(facts.SOURCE_SUFFIXES)))
+                # The keyword set `run_syntax_check` calls `argv` with (issue #469: the target's
+                # `parallel_backend` by name, not an `openmp` boolean the core derived from it).
+                self.assertEqual(
+                    set(inspect.signature(module.argv).parameters),
+                    {"standard", "scratch_dir", "parallel_backend", "promotions",
+                     "architecture", "sources"})
 
     #: What each LANGUAGE capability's readers take off its module (issue #289, R4-b PR-2;
     #: round 3 found `prompt_fragments.runner_output_document` stated nowhere and checked by

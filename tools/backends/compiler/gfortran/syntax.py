@@ -45,20 +45,25 @@ CANARY_FILENAME = "atmofab_syntax_canary.f90"
 STANDARD_SPELLING_EXAMPLE = "`f2008`, not `2008`"
 
 
-def argv(*, standard: str, scratch_dir: str, openmp: bool, promotions: tuple[str, ...],
-         architecture: str | None, sources: list[str]) -> list[str]:
+def argv(*, standard: str, scratch_dir: str, parallel_backend: str | None,
+         promotions: tuple[str, ...], architecture: str | None, sources: list[str]) -> list[str]:
     """The syntax-only command line.
 
     `scratch_dir` receives the module files the front end writes even under `-fsyntax-only`
     (and reads back, so a same-invocation `use` resolves); every call gets its own and never
     shares Build's object directory. `architecture` is ACCEPTED AND NOT READ: a CPU Fortran
     front end has no device architecture to be told, and the argument exists for the adapters
-    that do. `promotions` come first after the mode flags; the sources stay last so the compiler
-    reads them after the module-directory flags.
+    that do. `parallel_backend` is the target's `parallel.backend` value: `-fopenmp` is the OpenMP
+    backend's switch for this driver, appended when the value is exactly `openmp` — the same
+    comparison `tools/backends/language/fortran/control_file.flags` makes for Build, so the two
+    stages cannot disagree on one value (the profile loader admits lowercase tokens only, and
+    `run_syntax_check` normalises a direct caller's spelling before calling this). `promotions`
+    come first after the mode flags; the sources stay last so the compiler reads them after the
+    module-directory flags.
     """
     del architecture  # accepted, not read (see the docstring)
     command = [EXECUTABLE, "-fsyntax-only", f"-std={standard}", *promotions,
                "-J", scratch_dir, "-I", scratch_dir]
-    if openmp:
+    if parallel_backend == "openmp":
         command.append("-fopenmp")
     return command + list(sources)

@@ -117,8 +117,7 @@
       "fortran-module-file": 1,
       "linter-cppcheck": 2,
       "linter-fortitude": 1,
-      "linter-ruff": 1,
-      "make-control-file": 2
+      "linter-ruff": 1
     },
     "tools/codegen_bundle.py": {
       "compiler-driver": 2,

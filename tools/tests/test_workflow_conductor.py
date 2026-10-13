@@ -19923,7 +19923,10 @@ class DeterministicSyntaxTest(unittest.TestCase):
             self.assertEqual(out["status"], "pass")
             self.assertEqual(seen_args[0]["compiler"], "gfortran")
             self.assertEqual(seen_args[0]["std"], "f2008")
-            self.assertTrue(seen_args[0]["openmp"])  # target.backend: openmp
+            # target.backend: openmp — handed through by name; the adapter decides what it
+            # means, so no derived boolean travels beside it (issue #469).
+            self.assertEqual(seen_args[0]["parallel_backend"], "openmp")
+            self.assertNotIn("openmp", seen_args[0])
             # staging dir is a per-compiler throwaway under workspace/tmp, never src/
             self.assertIn("workspace/tmp/child-1/syntax/gfortran", seen_args[0]["project_dir"])
             # the log still lands at the canonical <src>/command_log.jsonl placement
