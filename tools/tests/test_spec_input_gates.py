@@ -49,6 +49,26 @@ class MaxSpecIdLenTest(unittest.TestCase):
                 self.assertIn(f">{floor - 9}", msg)
         self.assertEqual(floor, max_spec_id_len())
 
+    def test_a_language_without_bundle_facts_is_not_asked(self) -> None:
+        """A declared language that does not provide `bundle_facts` states no bound and is
+        skipped, rather than raising `capability_module`'s refusal for every launch."""
+        from unittest import mock
+
+        from tools.backends import registry
+        real_provides = registry.provides
+        langs = registry.backend_ids("language")
+        loosest = max(langs, key=lambda lang: registry.capability_module(
+            "language", lang, "bundle_facts").SPEC_ID_MAX)
+        others = [lang for lang in langs if lang != loosest]
+        floor_without = self._bundles()[loosest].SPEC_ID_MAX
+        # Withdraw bundle_facts from every language but the loosest: only it may answer.
+        with mock.patch.object(
+                registry, "provides",
+                side_effect=lambda axis, bid, cap: False
+                if (axis, cap) == ("language", "bundle_facts") and bid in others
+                else real_provides(axis, bid, cap)):
+            self.assertEqual(floor_without, max_spec_id_len())
+
     def test_no_language_is_a_refusal_not_an_unbounded_gate(self) -> None:
         from unittest import mock
 
