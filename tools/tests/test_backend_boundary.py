@@ -1887,9 +1887,8 @@ class RegistryConsistencyTests(unittest.TestCase):
 
     def test_membership_and_usability_are_different_questions(self) -> None:
         # The defect this pins: guarding a hard-coded Fortran renderer on MEMBERSHIP meant that
-        # declaring a second `language` member with `module=None` — the state most records are
-        # in, and the state the ledger says is normal — silently stopped the signature gates
-        # refusing. Asked of the registry rather than of a literal id list, so adding a backend
+        # declaring a second `language` member with `module=None` — the state most records were
+        # in when this was written — silently stopped the signature gates refusing. Asked of the registry rather than of a literal id list, so adding a backend
         # cannot make this test vacuous.
         for axis in registry.AXES:
             for backend_id in registry.backend_ids(axis):
@@ -1903,6 +1902,11 @@ class RegistryConsistencyTests(unittest.TestCase):
                     self.assertIsNotNone(
                         reason, f"{axis}/{backend_id} is unextracted but reads as usable")
                     self.assertIn("not extracted", reason)
+                    # The refusal names what is missing — a backend package — and no longer
+                    # points at a migration item: the records reaching this branch today are the
+                    # deliberately neutral ones, and the item closed with issue #469.
+                    self.assertIn("no backend package", reason)
+                    self.assertNotIn("TODO.md", reason)
                     with self.assertRaises(registry.BackendNotExtracted):
                         registry.require_available(axis, backend_id)
 
