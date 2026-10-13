@@ -392,9 +392,10 @@ sources still passed.
   in the reviewer instructions through the final round** (not once), (c) if over-refusals persist
   after two rewrites, conclude **the rule is not an invariant** and change its shape, (d) **build
   probes from the project's own "what we do next", not from imagination** — in PR #68, widening the
-  scan to the whole backend directory refused **the very area the migration ledger names as
+  scan to the whole backend directory refused **the very area the migration ledger then named as
   next** (`build_system/make`),
-  and a reviewer produced it just by reading the ledger. Implementing the next TODO / plan item is
+  and a reviewer produced it just by reading the ledger (the `TODO.md` item it lived in closed with
+  issue #469). Implementing the next TODO / plan item is
   the cheapest over-refusal probe there is (PR #67 landed on "a census that constrains nobody's
   registration" = moving the target from a rule to **checking the declaration**)
 - **A fifth countermeasure, and the one that actually worked: when you add a FLOOR, default to

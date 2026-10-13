@@ -8,8 +8,9 @@ read the second paragraph before quoting any figure from it.
 **When the gate reads the source text rather than the meaning of an input (validators and
 parsers), the surface is a different one.** The exec/env/argv surface (`SKILL.md` §1) is where a
 caller's values reach a command — since issue #457 the build-runtime library checks only their
-TYPES, so that inventory is of the code that composes them — and it barely applies to the Fortran-reading gates in
-`validate_pipeline_semantics.py`. What you inventory there is **the spelling variation the
+TYPES, so that inventory is of the code that composes them — and it barely applies to the Fortran-reading gates (the `fortran` backend's `source_reading`,
+`tools/backends/language/fortran/`, which `validate_pipeline_semantics.py` reaches through the
+registry). What you inventory there is **the spelling variation the
 language permits**:
 
 - **Keywords are not reserved words.** A variable may be named `module` / `parameter` /
@@ -28,9 +29,12 @@ language permits**:
   that start with a keyword; take every identifier that appears in them to the safe side
 
 This checklist names concrete spellings of one target language, which is knowledge
-`docs/BACKEND_BOUNDARY.md` keeps out of the neutral core. It is here because the gates it warns
-about are in `validate_pipeline_semantics.py`, and it goes when the source-reading area on the
-TODO ledger goes. Two things about that are worth stating rather than implying. Nothing measures
+`docs/BACKEND_BOUNDARY.md` keeps out of the neutral core. It was written while the gates it warns
+about sat in `validate_pipeline_semantics.py`, with the promise that it would go when the
+source-reading area of the `TODO.md` migration ledger closed. That area closed (issue #289) and the
+whole migration with [issue #469](https://github.com/seiya/atmofab/issues/469), and the checklist
+stays: it is a review checklist for whoever changes the `fortran` reader, not code the neutral
+core runs, and its natural home if it is ever moved is `docs/backends/language/fortran/`. Two things about that are worth stating rather than implying. Nothing measures
 this file: `.claude/skills/**` matches none of the scanner's globs, so the ratchet that bounds this
 kind of growth elsewhere does not read it at all. And the debt is **new to the repository**, since
 until 2026-08-19 these files lived in one operator's home directory. Most of it is not in this

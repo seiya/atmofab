@@ -127,6 +127,15 @@ baseline exits 2 (`--skip-baseline` removes the check — write down why).
 change with no revertible hunk. 2 = the run itself cannot be trusted (red baseline, baseline
 `--timeout`, unresolvable range, `--repo` that is not one, `TMPDIR=` with several jobs).
 
+**Never wrap the script in `timeout` or pipe it into `tail`; run it in the background with its
+output redirected to a file, and read the exit code the script itself returned.** Issue #469
+PR-5 ran `timeout 900 python3 …/mutation_check.py … | tail -30`: the kill came mid-sweep, the
+pipeline's status was `tail`'s 0, the output was empty, and 15 worktrees stayed registered under
+`~/.cache/mutation-check/` (removed by hand with `git worktree remove --force`). A whole-suite
+`--test-cmd` over 15 hunks took 939 s at `--jobs 20`, so a foreground bound shorter than the run
+is the expected case, not an accident. After any interrupted run, `git worktree list` before the
+next one.
+
 The rules, one line each; `references/mutation-testing.md` has the episode and the reasoning for
 when a rule does not obviously apply:
 
