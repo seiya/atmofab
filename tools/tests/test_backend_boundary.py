@@ -1909,8 +1909,26 @@ class RegistryConsistencyTests(unittest.TestCase):
                     # deliberately neutral ones, and the item closed with issue #469.
                     self.assertIn("no backend package", reason)
                     self.assertNotIn("TODO.md", reason)
+                    self.assertIn("its job is done by the neutral core", reason)
                     with self.assertRaises(registry.BackendNotExtracted):
                         registry.require_available(axis, backend_id)
+
+    def test_an_unextracted_record_with_no_core_job_is_not_said_to_have_one(self) -> None:
+        # The fail-closed default for a new member — `module=None` and no capability — shares
+        # the unextracted branch with the deliberately neutral records, and the refusal must not
+        # tell the operator the neutral core does a job nothing does.
+        bare = registry.Backend("parallel", "zz_bare", None)
+        with mock.patch.dict(registry._BACKENDS, {("parallel", "zz_bare"): bare}):
+            reason = registry.unavailable_reason("parallel", "zz_bare")
+        self.assertIsNotNone(reason)
+        self.assertIn("nothing in this repository implements it", reason)
+        self.assertNotIn("done by the neutral core", reason)
+
+    def test_the_stale_finding_does_not_send_the_reader_to_a_todo_ledger(self) -> None:
+        # The migration ledger left TODO.md with issue #469; the remedy says where the per-file
+        # drop is recorded now.
+        self.assertNotIn("TODO.md", STALE_MESSAGE)
+        self.assertIn("pull request or on its issue", STALE_MESSAGE)
 
     def test_the_signature_gates_ask_for_usability_not_membership(self) -> None:
         # Reading the module text, because the failure being prevented is a call to the WRONG
