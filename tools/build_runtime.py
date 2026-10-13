@@ -1016,6 +1016,11 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     if parallel_backend is not None and (
             not isinstance(parallel_backend, str) or not parallel_backend.strip()):
         raise ValueError("parallel_backend must be a non-empty string")
+    if parallel_backend is not None:
+        # Normalised ONCE, as `compiler` and `std` are, and the normalised value is what every
+        # reader below gets: the wrapper choice and the adapter's own switch must not read one
+        # value two ways (round 3, issue #469: a direct `OpenMP` chose no `-fopenmp`).
+        parallel_backend = parallel_backend.strip().lower()
 
     adapter = syntax_adapter(compiler)
     wrapper = syntax_compiler_wrapper(parallel_backend, compiler)

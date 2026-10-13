@@ -278,6 +278,15 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
         # The result names the backend it was handed, not a boolean derived from one.
         self.assertEqual(result["parallel_backend"], "openmp")
         self.assertNotIn("openmp", result)
+        # One reading of the value for every reader (round 3): a direct caller's spelling is
+        # normalised as `compiler` and `std` are, so the adapter's switch follows it too.
+        with mock.patch.object(self.mod.shutil, "which", return_value="/usr/bin/gfortran"), \
+                mock.patch.object(self.mod.subprocess, "run", return_value=fake) as run_mock:
+            result = self.mod.tool_run_syntax_check(
+                {"project_dir": str(d), "compiler": "gfortran", "std": "f2008",
+                 "parallel_backend": " OpenMP "})
+        self.assertIn("-fopenmp", run_mock.call_args_list[0].args[0])
+        self.assertEqual(result["parallel_backend"], "openmp")
 
     def _argv0_for(self, **extra: object) -> tuple[str, list[str], list[str]]:
         """The syntax stage's argv and the programs it asked `which` for, for a gfortran stage

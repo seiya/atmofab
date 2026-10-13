@@ -56,9 +56,9 @@ def argv(*, standard: str, scratch_dir: str, parallel_backend: str | None,
     that do. `parallel_backend` is the target's `parallel.backend` value: `-fopenmp` is the OpenMP
     backend's switch for this driver, appended when the value is exactly `openmp` — the same
     comparison `tools/backends/language/fortran/control_file.flags` makes for Build, so the two
-    stages cannot disagree on one value (the profile loader admits lowercase tokens only).
-    `promotions` come first
-    after the mode flags; the sources stay last so the compiler reads them after the
+    stages cannot disagree on one value (the profile loader admits lowercase tokens only, and
+    `run_syntax_check` normalises a direct caller's spelling before calling this). `promotions`
+    come first after the mode flags; the sources stay last so the compiler reads them after the
     module-directory flags.
     """
     del architecture  # accepted, not read (see the docstring)
