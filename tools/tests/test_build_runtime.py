@@ -1008,6 +1008,32 @@ class BuildCommandTests(unittest.TestCase):
                 self.assertEqual(answer["build_system"], expected)
                 self.assertIn(marker, answer["reason"])
 
+    def test_the_detection_walks_the_composed_table(self) -> None:
+        """`_recommended_build_system` answers from `_build_system_markers`, the table every
+        other row here reads — not from a table of its own. Until issue #469 the rows read the
+        literal inside the function, so the two could not differ; now they are two functions,
+        and a detection that prepended or substituted rows was green (round 3). Driven with a
+        sentinel table: the answer follows it, and over a directory matching none of it the
+        names probed are exactly the table's, in its order — so a row the detection adds of its
+        own is a probe this row sees, whatever file it names."""
+        sentinel = (("SENTINEL_A", "sentinel_a"), ("SENTINEL_B", "sentinel_b"))
+        with mock.patch.object(self.mod, "_build_system_markers", return_value=sentinel):
+            answer = self.mod._recommended_build_system(self._dir_with("SENTINEL_B"))
+            self.assertEqual(answer["build_system"], "sentinel_b")
+            probed: list[str] = []
+            real_exists = Path.exists
+
+            def recording_exists(path: Path, *a: object, **k: object) -> bool:
+                probed.append(path.name)
+                return real_exists(path, *a, **k)
+
+            empty = self._dir_with()
+            with mock.patch.object(Path, "exists", autospec=True,
+                                   side_effect=recording_exists), \
+                    self.assertRaisesRegex(ValueError, "no build-system marker"):
+                self.mod._recommended_build_system(empty)
+        self.assertEqual(probed, ["SENTINEL_A", "SENTINEL_B"])
+
     def test_the_first_matching_marker_wins(self) -> None:
         """A directory carrying two markers has one answer, and which one is a property of the
         table's ORDER. Recorded because a reorder is silent otherwise."""
@@ -1266,8 +1292,9 @@ class ArgumentContractTests(unittest.TestCase):
         """Driven, for the entry points whose required set issue #289 and issue #469 widened:
         dropping any required argument is a refusal naming it, and a call with all of them
         reaches the tool. The only row observing `run_linter`'s and `run_quality_checks`'
-        refusal of a missing `preset`, and `compile_project`'s of a missing `build_system` over
-        a directory with no marker (where both had a default until issue #469)."""
+        refusal of a missing `preset` (the second had a default until issue #469);
+        `compile_project`'s refusal of a missing `build_system` over a directory with no marker
+        is observed here and by `test_an_unmarked_directory_is_refused_and_says_to_pass_build_system`."""
         d = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, d, ignore_errors=True)
         (d / "a.f90").write_text("program p\nend program p\n", encoding="utf-8")
