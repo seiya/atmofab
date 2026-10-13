@@ -73,7 +73,7 @@ class UnsupportedBackend(LookupError):
 
 
 class BackendNotExtracted(NotImplementedError):
-    """The backend is implemented, but its code has not moved out of the neutral core yet."""
+    """The value has no backend package to answer with: its job, if any, is the neutral core's."""
 
 
 class BackendFrontendUnavailable(RuntimeError):

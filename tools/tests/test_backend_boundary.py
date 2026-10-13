@@ -300,7 +300,7 @@ _TOKEN_CLASSES: dict[str, str] = {
     # redundant, and a probe for `clang++ -c` was being killed by its sibling.
     "compiler-driver": r"\bgfortran\b|\bflang\b|\bg\+\+|\bgcc\b|\bclang\b",
     "compiler-syntax-only": r"-fsyntax-only",
-    # linter. One class per registered linter, because the migration ledger is per (axis, value)
+    # linter. One class per registered linter, because extraction is per (axis, value)
     # and a single `linter-*` class would let a count fall in one backend while it rose in
     # another. Each is a bare name: what these count is the NAME, which the neutral core may use
     # as a preset key — the knowledge is what moved, so the counts do not fall to zero for that
@@ -1433,7 +1433,7 @@ class ScannedSetTests(unittest.TestCase):
             )
             found = {p.relative_to(tmp).as_posix() for p in neutral_core_files(tmp)}
         # `skills/<skill>/backends/<axis>/<id>.md` is the placement table's fourth backend
-        # location and is NOT scanned — the ledger's `skills` migration moves knowledge there,
+        # location and is NOT scanned — a `skills` migration moves knowledge there,
         # and a check that counted it as neutral core would report a correct migration as growth
         # and leave the area's "counts drop" acceptance unreachable.
         self.assertEqual(
@@ -3634,7 +3634,7 @@ def _print_what_is_about_to_be_blessed(root: Path | None = None,
     # staleness is what a migration looks like — and the two entry lines are the same shape, so
     # one flat list said nothing about which answer each row wants. Separate headings, and no claim
     # that this output IS the check: `--check-baseline` is a separate invocation with its own
-    # exit code, and the ledger procedure records that one.
+    # exit code, and the pull request records that one.
     print(f"{WRITE_FLAG} is about to bless {len(grown)} grown and {len(stale)} stale entries. "
           f"Each is a judgement by docs/BACKEND_BOUNDARY.md §Decision Criteria; this listing is "
           f"a disclosure, not a substitute for {CHECK_FLAG} and its exit code:")

@@ -591,8 +591,8 @@ class FortranStanzaParserTests(unittest.TestCase):
         # `bind(c)`, `public, bind(c)` — each of which is a legal type header the pattern silently
         # refuses (no stanza, no error). An earlier version of this comment named `extends` as the
         # only such input, which a reviewer measured false. None of those forms appears in the
-        # corpus today; pinning the class here would freeze the refusal, so the ledger records it
-        # for the language area instead.
+        # corpus today; pinning the class here would freeze the refusal, so TODO.md's
+        # `_TYPE_HEADER_RE` entry records it instead.
         block = ("type :: hx__outer\n"
                  "  type(hx__inner), allocatable :: parts(:)\n"
                  "  integer :: n\n"
