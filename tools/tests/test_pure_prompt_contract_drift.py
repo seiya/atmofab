@@ -934,6 +934,16 @@ PINNED: dict[str, str] = {
     # binding no longer spelled in Fortran) is outside the hashed severity-rubric slice and moved
     # nothing (measured: the drift test passed with that edit alone).
     "pure-72": "8b15cdb49fa364a7d874ad86a2207cd0ab0d85007285a7bc71c35cc1b6b1c4c3",
+    # pure-73 (issue #477): the Fortran binding's §5 gains a last bullet — a structure
+    # constructor is not given another object's deferred-length character component; the GNU
+    # Fortran release the `fortran` targets build with gives that component an empty value in the
+    # new object, and no gate reads for it. Copy it through a local variable, an expression or
+    # per-component assignment. The harness producer is the only leaf that receives §5. Measured
+    # by diffing this tuple against origin/main b05b4ee2's: the `fortran`
+    # `checks_contract_gate_guards_section` moved and no other member. Witness:
+    # orch_20261013T082603Z_14368a80 (codex, `harness_fortran_cpu`, `fortran_cpu`,
+    # `validate.execute` post-execute refusal, `checks` = `{"": …}`).
+    "pure-73": "69ebca45890edcae90bf4f3225b42045709ad6d1b773654f2dd4d2bd320562ec",
 }
 
 
