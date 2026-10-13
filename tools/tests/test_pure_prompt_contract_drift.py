@@ -935,7 +935,7 @@ PINNED: dict[str, str] = {
     # nothing (measured: the drift test passed with that edit alone).
     "pure-72": "8b15cdb49fa364a7d874ad86a2207cd0ab0d85007285a7bc71c35cc1b6b1c4c3",
     # pure-73 (issue #477): the Fortran binding's §5 gains a last bullet — a structure
-    # constructor is not given another object's deferred-length character component; the GNU
+    # constructor is not given a deferred-length character component of any object; the GNU
     # Fortran release the `fortran` targets build with gives that component an empty value in the
     # new object, and no gate reads for it. Copy it through a local variable, an expression or
     # per-component assignment. The harness producer is the only leaf that receives §5. Measured
@@ -944,8 +944,8 @@ PINNED: dict[str, str] = {
     # orch_20261013T082603Z_14368a80 (codex, `harness_fortran_cpu`, `fortran_cpu`,
     # `validate.execute` post-execute refusal, `checks` = `{"": …}`). Re-pinned in place during
     # the review loop (not shipped): the remedy names an integer-variable subscript, since a
-    # subscript calling `size` faults on the same release.
-    "pure-73": "853457f50a7d63b147527c0e3fbcc1b972530b7d0c58f53d7df53ee577814856",
+    # subscript calling `size`, `min` or `max` faults or empties the component on that release.
+    "pure-73": "af19dbeda46956e61800a3ef0a93a419ede99aee38fc92e76de2d702075ea5ed",
 }
 
 

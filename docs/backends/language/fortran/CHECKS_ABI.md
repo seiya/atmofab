@@ -234,18 +234,20 @@ node's self-test).
   `pointer` component of the type's own type.
 - **A structure constructor is not given a deferred-length character component.** Inside
   `type :: t` with `character(len=:), allocatable :: id`, the constructor `t(src(j)%id, 'pass')`
-  — its value for `id` being a component reference of the same kind, from a scalar, an array
-  element, or the object being assigned (`x = t(x%id, 'fail')`) — is conforming f2008 that the
-  `Generate.gate` syntax check, the lint check and Build all accept, and the GNU Fortran release
-  the `fortran` targets build with gives `id` an EMPTY value (length 0) in the new object, at
-  every optimization level. The same constructor given a literal, a local deferred-length
-  variable the component was assigned to, or an expression (`trim(src(j)%id)`,
-  `src(j)%id // ''`) is correct, and so is appending the element itself (`[acc, src(j)]`); the
-  array constructor is not the trigger (a scalar `one = t(src(j)%id, 'pass')` is empty too). No
-  gate reads for it: the defect surfaces where the runner's output is checked at
-  `Validate.execute` (a fold keyed on the emptied ids collapses to one `""` entry, which the
-  post-execute check refuses). Copy such a component through a local variable or an expression,
-  or assign the new element's components one by one with the subscript held in an integer
-  variable (`k = size(acc)`, then `acc(k)%id = src(j)%id`), rather than through the
-  constructor: on the same release, assigning a deferred-length component through a subscript
-  that calls `size` (`acc(size(acc))%id = src(j)%id`) faults at run time (SIGSEGV).
+  — its value for `id` being a deferred-length character component of any object: a scalar of
+  this type or another, an array element, or the object being assigned (`x = t(x%id, 'fail')`)
+  — is conforming f2008 that the `Generate.gate` syntax check, the lint check and Build all
+  accept, and the GNU Fortran release the `fortran` targets build with gives `id` an EMPTY value
+  (length 0) in the new object, at every optimization level. The same constructor given a
+  literal, a local deferred-length variable the component was assigned to, or an expression
+  (`trim(src(j)%id)`, `src(j)%id // ''`) is correct, and so is appending the element itself
+  (`[acc, src(j)]`); the array constructor is not the trigger (a scalar
+  `one = t(src(j)%id, 'pass')` is empty too). No gate reads for it: the defect surfaces where
+  the runner's output is checked at `Validate.execute` (a fold keyed on the emptied ids
+  collapses to one `""` entry, which the post-execute check refuses). Copy such a component
+  through a local variable or an expression, or assign the new element's components one by one
+  with the subscript an integer variable or arithmetic on one (`k = size(acc)`, then
+  `acc(k)%id = src(j)%id`), rather than through the constructor: on the same release, assigning
+  a deferred-length component through a subscript that calls `size`, `min` or `max` (the forms
+  measured) faults at run time (SIGSEGV) or leaves the component unallocated or empty,
+  depending on the program.
