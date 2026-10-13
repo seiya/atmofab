@@ -1034,6 +1034,28 @@ class BuildCommandTests(unittest.TestCase):
         against the acceptance probe rather than against `_UNOWNED_BUILD_SYSTEMS`, which is the
         list under test."""
         self.assertEqual(set(self.mod.known_build_systems()), self._accepted_build_systems())
+        # The registry half, which `make` alone exercises today (round 1: replacing the query
+        # with `| {"make"}` survived): a second build system whose record carries
+        # `build_execute` joins the domain, and one that does not stays out.
+        registry = self.mod._backend_registry()
+        real_ids, real_get = registry.backend_ids, registry.get
+
+        def ids(axis: str) -> tuple[str, ...]:
+            extra = ("synthbuild", "synthplain") if axis == "build_system" else ()
+            return tuple(real_ids(axis)) + extra
+
+        def get(axis: str, value: str) -> object:
+            if axis == "build_system" and value == "synthbuild":
+                return mock.Mock(backend_provides=("build_execute",))
+            if axis == "build_system" and value == "synthplain":
+                return mock.Mock(backend_provides=("control_file",))
+            return real_get(axis, value)
+
+        with mock.patch.object(registry, "backend_ids", side_effect=ids), \
+                mock.patch.object(registry, "get", side_effect=get):
+            known = self.mod.known_build_systems()
+        self.assertIn("synthbuild", known)
+        self.assertNotIn("synthplain", known)
         with mock.patch.object(self.mod, "_run_command") as run, \
                 self.assertRaisesRegex(ValueError, "dependency-aware build tool"):
             self.mod.tool_compile_project({
