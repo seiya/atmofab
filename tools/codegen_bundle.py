@@ -187,7 +187,8 @@ def _bundle_identifier_pattern() -> str:
     Each member must be a whole-string pattern in the portable form (`^` BODY `(?![\\s\\S])`),
     and the union keeps that form with the anchors OUTSIDE the alternation,
     `^(?:BODY1|BODY2)(?![\\s\\S])`: every schema pattern is held to it
-    (`test_every_schema_pattern_uses_the_portable_anchor`), and the first version of this
+    (`tools/tests/test_doc_sync.py`
+    `test_every_schema_pattern_uses_the_portable_anchor`), and the first version of this
     function, which alternated the whole members, failed that the day a second language was
     registered (issue #289, R4-b PR-4). A member in another form is refused rather than
     alternated, because stripping anchors it does not have would widen it."""

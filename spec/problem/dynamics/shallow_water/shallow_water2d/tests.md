@@ -332,5 +332,5 @@ The normaliser of `h` is $N_h=\max(\max_{i,j}|h_{i,j}|,\ \max_{i,j}|h^{ref}_{i,j
 - `summary.json` requires the counts of `pass`, `fail`, `xfail`, and `skipped`.
 
 ### 8-2. Traceability records
-- The `test_profile_id` and `test_profile_version` of this document must be recorded in `case.resolved.yaml` and `trial_meta.json`.
+- The `test_profile_id` and `test_profile_version` of this document must be recorded under each case's `inputs` in `spec.ir.yaml` and in `trial_meta.json`.
 - The judgment conditions of this document must be mappable to the evaluation basis of `verdict.json`.

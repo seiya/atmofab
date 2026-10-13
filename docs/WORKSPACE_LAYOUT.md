@@ -62,13 +62,13 @@ workspace/
 │       │                                            next attempt writes to the same path)
 │       │
 │       ├── reservations/
-│       │   └── <node_key_safe>/<step>/<reserved_id>.json (reserve-phase-root)
+│       │   └── <node_key_safe>/<step>.json        (reserve-phase-root)
 │       │
 │       ├── active_children/
-│       │   └── <agent_run_id>                     (marker at record-launch; deleted by deactivate-child)
+│       │   └── <agent_run_id>.txt                 (marker at record-launch; deleted by deactivate-child)
 │       │
 │       ├── cleanup_committed/
-│       │   └── <agent_run_id>                     (the cleanup-completion marker of record-timeout etc.)
+│       │   └── <agent_run_id>.json                (the cleanup-completion marker of record-timeout etc.)
 │       │
 │       └── violations/                          (created only when one occurs — nothing
 │           └── <id>.json                            pre-creates it since issue #171 PR-2.

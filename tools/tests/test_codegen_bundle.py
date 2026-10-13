@@ -1994,31 +1994,6 @@ class ContractPlumbingTest(unittest.TestCase):
                 self.assertTrue(pattern.startswith("^"))
                 self.assertTrue(pattern.endswith(r"(?![\s\S])"))
 
-    def test_every_schema_pattern_uses_the_portable_anchor(self) -> None:
-        # A lint over EVERY `pattern` in both schemas (not a hardcoded list), so a future
-        # author who adds a pattern anchored with `$` / `\A` / `\Z` is caught at PR time.
-        def patterns(node: object):
-            if isinstance(node, dict):
-                if isinstance(node.get("pattern"), str):
-                    yield node["pattern"]
-                for value in node.values():
-                    yield from patterns(value)
-            elif isinstance(node, list):
-                for item in node:
-                    yield from patterns(item)
-
-        found = 0
-        for schema in (self.schema, self.capability_schema):
-            for pattern in patterns(schema):
-                found += 1
-                with self.subTest(pattern=pattern):
-                    self.assertNotIn("$", pattern)
-                    self.assertNotIn(r"\A", pattern)
-                    self.assertNotIn(r"\Z", pattern)
-                    self.assertTrue(pattern.startswith("^") and pattern.endswith(r"(?![\s\S])"),
-                                    f"{pattern!r} must anchor with '^' … '(?![\\s\\S])'")
-        self.assertGreaterEqual(found, 8)  # the walk actually reached the patterns
-
     def test_node_key_pattern_agrees_with_the_workflow_parser(self) -> None:
         # The codegen node_key grammar must match the repository's canonical parser
         # tools/orchestration_runtime.py:_parse_node_key_strict, or a bundle the workflow

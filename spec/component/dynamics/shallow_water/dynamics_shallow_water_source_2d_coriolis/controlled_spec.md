@@ -110,7 +110,7 @@ procedures:
 Forbid evaluating `f` from a profile or parameters inside this `component` (it receives values only). Forbid an implicit or semi-implicit treatment of the Coriolis term (a rotation of the velocity by the time step): the operation returns the explicit source at the supplied state, and the time treatment is the time-update `component`'s. Forbid a source contribution to the `h` component.
 
 ## 7. Traceability
-Require recording the adoption result in `component_catalog.yaml` and `case.resolved.yaml`.
+Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
 
 ## 8. tests reference
 The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_coriolis/tests.md`, with `test_profile_version` of `0.2.0`.

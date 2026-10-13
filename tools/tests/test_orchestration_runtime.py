@@ -3095,7 +3095,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
 
     def test_build_launch_accepts_cross_phase_log_for_make_build(self) -> None:
         """In-source Make builds (Fortran/C family) run compile_project with
-        project_dir=<gen>/src/, so the command log lands in the generate
+        project_dir=<source_id>/src/, so the command log lands in the generate
         tree. The build launch must auto-inject the cross-phase canonical
         placement when source_id is provided.
         """
@@ -5011,7 +5011,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 )
 
     def test_execute_launch_requires_source_build_id_for_in_phase_log_only(self) -> None:
-        """source_build_id is required for ALL execute launches, not only
+        """source_binary_id is required for ALL execute launches, not only
         cross-phase quality_check authorization. An execute that uses only
         in-phase logging must still be bound to a specific build to prevent
         attributing evidence to an arbitrary build that happens to record a
@@ -5091,7 +5091,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         "dependency_ref": _FIX_DEP_REF,
                         "run_id": run_id,
                         "source_id": real_gen,
-                        # No source_build_id, no cross-phase log declared.
+                        # No source_binary_id, no cross-phase log declared.
                         "skill_name": "workflow-validate-execute",
                         "skill_ref": "skills/workflow-validate-execute/SKILL.md",
                         "skill_must_read_refs": "",
@@ -5342,7 +5342,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             run_id = "run_20260510_002"
             node_safe = "problem__shallow_water2d__0.3.0"
             # Plant a build_meta that records the forged gen so the
-            # mandatory source_build_id lineage check passes; the cross-phase
+            # mandatory source_binary_id lineage check passes; the cross-phase
             # source_meta absence then triggers the unknown-source
             # rejection in the cross-phase loop.
             build_dir = repo_root / f"{_FIX_PIPE_REF}/binary/bin_20260201_002"

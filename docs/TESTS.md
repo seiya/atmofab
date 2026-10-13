@@ -69,7 +69,7 @@ with each `<status>` one of `pass`, `fail`, `na`. The Compile gate parses every 
 - When a `Controlled Spec` change affects the judgment conditions, update `tests.md` in the same change.
 - For `xfail`, define `xfail_condition` and `pass_when` simultaneously.
 - When changing a threshold, state the affected `test_id`.
-- Judge pass/fail including dependencies not in `tests.md` but in `dependency.resolved.yaml` and `aggregate_verdict.json`.
+- Judge pass/fail including dependencies not in `tests.md` but in the `dependency` section of `spec.ir.yaml` and `aggregate_verdict.json`.
 
 ## Decision Criteria
 - The test input and pass/fail judgment can be restored from the document alone.

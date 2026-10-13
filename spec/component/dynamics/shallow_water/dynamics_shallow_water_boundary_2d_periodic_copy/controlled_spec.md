@@ -95,7 +95,7 @@ procedures:
 Forbid automatic fallback to a non-periodic boundary.
 
 ## 7. Traceability
-Require recording the adoption result in `component_catalog.yaml` and `case.resolved.yaml`.
+Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
 
 ## 8. tests reference
 The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_boundary_2d_periodic_copy/tests.md`, with `test_profile_version` of `0.2.0`.
