@@ -8,7 +8,7 @@ Each test guards one class of documentation drift found by the 2026-08-10 audit
    `validate_bundle` accepts.
 2. Every whole-string `pattern` under `spec/schema/` uses the portable anchor that
    `spec/schema/SCHEMA.md` requires.
-3. No document a reader or a leaf is shown names a retired artifact.
+3. No document a reader or a leaf is shown names a retired artifact or a retired path token.
 """
 
 from __future__ import annotations
@@ -81,9 +81,10 @@ _EXPECTED_PATTERN_COUNT = 18
 
 
 def anchor_problem(pattern: str) -> str | None:
-    """Why `pattern` breaks the whole-string anchor rule of `spec/schema/SCHEMA.md`, or None."""
+    """Why `pattern` breaks the whole-string anchor rule of `spec/schema/SCHEMA.md`, or None.
+    An escaped `\\$` is a literal dollar, not an anchor, and is allowed."""
     for token in ("$", r"\A", r"\Z"):
-        if token in pattern:
+        if token in pattern.replace("\\\\", "").replace("\\$", ""):
             return f"contains {token!r}"
     if not (pattern.startswith("^") and pattern.endswith(r"(?![\s\S])")):
         return "must anchor with '^' … '(?![\\s\\S])'"
@@ -93,8 +94,10 @@ def anchor_problem(pattern: str) -> str | None:
 class SchemaAnchorTest(unittest.TestCase):
     def test_the_anchor_rule_on_synthetic_patterns(self) -> None:
         self.assertIsNone(anchor_problem(r"^[a-z]+(?![\s\S])"))
+        self.assertIsNone(anchor_problem(r"^\$[a-z]+(?![\s\S])"))  # a literal dollar
         # The token probes keep both ends right, so only the token clause can refuse them.
         for bad in (r"^[a-z]+$", r"^[a-z]+", r"[a-z]+(?![\s\S])", r"^[a-z]+$(?![\s\S])",
+                    r"^[a-z]+\\$(?![\s\S])",  # an escaped backslash, then the anchor
                     r"^\A[a-z]+(?![\s\S])", r"^[a-z]+\Z(?![\s\S])"):
             with self.subTest(pattern=bad):
                 self.assertIsNotNone(anchor_problem(bad))
@@ -118,19 +121,34 @@ class SchemaAnchorTest(unittest.TestCase):
                     exempt_seen[(rel, holder)] = pattern
                     continue
                 with self.subTest(schema=rel, holder=holder, pattern=pattern):
-                    self.assertIsNone(anchor_problem(pattern),
-                                      f"{rel}{holder}: {pattern!r} (spec/schema/SCHEMA.md)")
-            self.assertGreaterEqual(per_file, 1, f"the walk reached no pattern in {rel}")
+                    self.assertIsNone(
+                        anchor_problem(pattern),
+                        f"{rel}{holder}: {pattern!r} (spec/schema/SCHEMA.md). A pattern that is "
+                        "deliberately not whole-string goes in _ANCHOR_EXEMPT with its reason.")
             found += per_file
-        self.assertEqual(found, _EXPECTED_PATTERN_COUNT)
+        # No per-file floor: a schema with no pattern (enum-only) is legitimate.
+        self.assertEqual(found, _EXPECTED_PATTERN_COUNT,
+                         "the number of `pattern` values under spec/schema changed; after "
+                         "checking the walk reached every schema, update _EXPECTED_PATTERN_COUNT")
         # The exemption names a pattern that still exists, spelled as exempted.
         self.assertEqual(exempt_seen, _ANCHOR_EXEMPT)
 
 
-#: Artifacts the workflow no longer writes. A document that names one points a reader (or a leaf
-#: whose prompt quotes it) at a file that does not exist; where each one's content went is in the
-#: failure message of `test_no_document_names_a_retired_artifact`.
-RETIRED_ARTIFACT_NAMES: tuple[str, ...] = ("dependency.resolved.yaml", "case.resolved.yaml")
+#: Retired artifact names and path tokens, each with what replaced it. A document that names one
+#: points a reader (or a leaf whose prompt quotes it) at a file or path that does not exist.
+RETIRED_NAMES: dict[str, str] = {
+    "dependency.resolved.yaml": "the conductor-authored `<ir_ref>/dependency_graph.json` "
+                                "(`all_nodes`)",
+    "case.resolved.yaml": "each case's `inputs` in `spec.ir.yaml`, recorded per run in "
+                          "`trial_meta.json`",
+    "/generate/<": "`<pipeline_ref>/source/<source_id>/`",
+    "<gen>": "`<source_id>`",
+    "<gen_id>": "`<source_id>`",
+    "<gen_dir>": "`<pipeline_ref>/source/<source_id>`",
+    "<other_gen>": "`<other_source_id>`",
+    "<exec_id>": "`runs/<run_id>`",
+    "source_build_id": "`source_binary_id` under `<pipeline_ref>/binary/<binary_id>/`",
+}
 
 #: The roots read, and the suffixes read under each. `docs/` and `spec/` are what a reader is
 #: shown, `tools/prompt_templates/` what a leaf is shown. `TODO.md` is outside on purpose: its job
@@ -141,7 +159,7 @@ _RETIRED_NAME_SUFFIXES: tuple[str, ...] = (".md", ".yaml", ".json", ".txt")
 
 def retired_name_occurrences(root: Path) -> list[str]:
     """`rel:lineno: name` for every line under the read roots of `root` that names a retired
-    artifact. Taking a `root` is what lets a synthetic tree drive it: with no offender in this
+    artifact or path token. Taking a `root` is what lets a synthetic tree drive it: with no offender in this
     repository, a guard that only runs here passes whether or not it looks at anything."""
     offenders: list[str] = []
     for top in _RETIRED_NAME_ROOTS:
@@ -154,7 +172,7 @@ def retired_name_occurrences(root: Path) -> list[str]:
             rel = path.relative_to(root).as_posix()
             for lineno, line in enumerate(
                     path.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
-                for name in RETIRED_ARTIFACT_NAMES:
+                for name in RETIRED_NAMES:
                     if name in line:
                         offenders.append(f"{rel}:{lineno}: {name}")
     return offenders
@@ -165,10 +183,10 @@ class RetiredArtifactNameTest(unittest.TestCase):
         offenders = retired_name_occurrences(REPO_ROOT)
         self.assertEqual(
             offenders, [],
-            "a document names a retired artifact. `dependency.resolved.yaml`'s node set is the "
-            "conductor-authored `<ir_ref>/dependency_graph.json` (`all_nodes`); "
-            "`case.resolved.yaml`'s case inputs are each case's `inputs` in `spec.ir.yaml`, "
-            "recorded per run in `trial_meta.json`:\n" + "\n".join(offenders))
+            "a document names a retired artifact or path token:\n" + "\n".join(offenders)
+            + "\nWhat replaced each:\n"
+            + "\n".join(f"  {name} -> {where}" for name, where in RETIRED_NAMES.items())
+            + "\nA history note names what it retired in the issue or PR, not under docs/.")
 
     def test_the_walker_reads_every_root_and_suffix_it_claims(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -178,8 +196,11 @@ class RetiredArtifactNameTest(unittest.TestCase):
             # the constant shrinks with it, and dropping a root, a suffix or a name would pass.
             for top in ("docs", "spec", "tools/prompt_templates"):
                 for suffix in (".md", ".yaml", ".json", ".txt"):
-                    for name in ("dependency.resolved.yaml", "case.resolved.yaml"):
-                        rel = f"{top}/nested/{name.split('.')[0]}{suffix}"
+                    for index, name in enumerate((
+                            "dependency.resolved.yaml", "case.resolved.yaml", "/generate/<",
+                            "<gen>", "<gen_id>", "<gen_dir>", "<other_gen>", "<exec_id>",
+                            "source_build_id")):
+                        rel = f"{top}/nested/n{index}{suffix}"
                         path = root / rel
                         path.parent.mkdir(parents=True, exist_ok=True)
                         path.write_text(f"intro\nsee `{name}` here\n", encoding="utf-8")
