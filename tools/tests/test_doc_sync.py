@@ -13,14 +13,18 @@ Each test guards one class of documentation drift found by the 2026-08-10 audit
 
 from __future__ import annotations
 
+import io
 import json
 import re
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from typing import Iterator
 
 from tools import codegen_bundle as cb
+from tools.orchestration_runtime import main as orchestration_runtime_main
+from tools.tests.test_cli_reference_sync import _enumerate_argparse_subcommands
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -150,9 +154,11 @@ RETIRED_NAMES: dict[str, str] = {
     "source_build_id": "`source_binary_id` under `<pipeline_ref>/binary/<binary_id>/`",
 }
 
-#: The roots read, and the suffixes read under each. `docs/` and `spec/` are what a reader is
-#: shown, `tools/prompt_templates/` what a leaf is shown. `TODO.md` is outside on purpose: its job
-#: is to name the next open drift.
+#: The roots read, and the suffixes read under each. `docs/` is what a reader is shown, `spec/`
+#: what a reader and (inlined) a leaf are shown, `tools/prompt_templates/` what a leaf is shown.
+#: Python sources are not read: the CLI help is checked through `--help` below, and a validator
+#: message is pinned by its own row. `TODO.md` is outside on purpose: its job is to name the next
+#: open drift.
 _RETIRED_NAME_ROOTS: tuple[str, ...] = ("docs", "spec", "tools/prompt_templates")
 _RETIRED_NAME_SUFFIXES: tuple[str, ...] = (".md", ".yaml", ".json", ".txt")
 
@@ -187,6 +193,24 @@ class RetiredArtifactNameTest(unittest.TestCase):
             + "\nWhat replaced each:\n"
             + "\n".join(f"  {name} -> {where}" for name, where in RETIRED_NAMES.items())
             + "\nA history note names what it retired in the issue or PR, not under docs/.")
+
+    def test_no_cli_help_names_a_retired_token(self) -> None:
+        # An operator reads `orchestration_runtime <sub> --help`; the record-launch help carried
+        # `source_build_id` and `<gen>` until issue #479.
+        subcommands = sorted(_enumerate_argparse_subcommands())
+        self.assertIn("record-launch", subcommands)
+        offenders: list[str] = []
+        for sub in subcommands:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                try:
+                    orchestration_runtime_main([sub, "--help"])
+                except SystemExit:
+                    pass
+            text = buf.getvalue()
+            self.assertIn("usage:", text, f"no help captured for {sub}")
+            offenders += [f"{sub}: {name}" for name in RETIRED_NAMES if name in text]
+        self.assertEqual(offenders, [], "a CLI help names a retired token: " + ", ".join(offenders))
 
     def test_the_walker_reads_every_root_and_suffix_it_claims(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
