@@ -241,6 +241,10 @@ def build_tuple() -> dict[str, str]:
         "build_runtime.default_build_jobs": _source_digest(server.default_build_jobs),
         "build_runtime.COMPILE_PROJECT_TIMEOUT_SEC":
             str(server.COMPILE_PROJECT_TIMEOUT_SEC),
+        # Which build systems a compiled language may build through (issue #469 moved the set
+        # out of `tool_compile_project`'s body, which this tuple hashes, into a constant).
+        "build_runtime.COMPILED_LANGUAGE_BUILD_SYSTEMS":
+            ",".join(sorted(server.COMPILED_LANGUAGE_BUILD_SYSTEMS)),
         "Conductor._build_inproc": _source_digest(wc.Conductor._build_inproc),
         # Where it builds (issue #333): the remote executor a build at a site runs through, the
         # launch seam its site refusal and the local platform record come from, the site
@@ -907,7 +911,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "2c96eb723548b2212ee6a840e3300cd03f09bce8e634a73100ddfa55fa5eab96",
+    "build-2": "b6737b6ee4c78cf5d778d2cb715b0e10d6fab880e3a5455dd88bf029ec05715a",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build
@@ -995,8 +999,10 @@ PINNED_BUILD: dict[str, str] = {
     # `build_command` answers) instead of a second list, and its compiled-language refusal
     # loses "make is the default.". The conductor passes `build_system` on every build, so no
     # run reaches the deleted default; the command and record of a build it runs are unchanged.
-    # (Measured by diffing `build_tuple()` against origin/main f4158bfa's: that row and no
-    # other.) The digest `build-2` shipped with at f4158bfa:
+    # The compiled-language set moved out of that body into `COMPILED_LANGUAGE_BUILD_SYSTEMS`,
+    # so the tuple gains a row for it (same four members). (Measured by diffing `build_tuple()`
+    # against origin/main f4158bfa's: that row changed, that row added, and no other.) The
+    # digest `build-2` shipped with at f4158bfa:
     "build-2@f4158bfa": "6ab2137e8a06756cd4a464474f3c70d096ca5b67aa86dfc2b51fb6e94df962d0",
 }
 PINNED_EXECUTE: dict[str, str] = {
