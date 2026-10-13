@@ -4304,6 +4304,42 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(code, 2)
             self.assertFalse(observed_calls)
 
+    def test_main_fails_fast_when_a_neutral_python_package_is_missing(self) -> None:
+        """The FIRST `missing_required_python_modules` site: a package every run needs whatever
+        its target (`REQUIRED_PYTHON_MODULES`, the verdict path's), refused before target
+        resolution — so a spec_ref that resolves to nothing is still refused for it, and the
+        runtime is never reached. Until issue #469 the row below reached this site by hiding a
+        language package; it now reaches the second one, so this site needs its own row.
+        The hidden module is read from the tuple, not spelled here."""
+        import importlib.util as importlib_util
+
+        self.assertTrue(run_workflow.REQUIRED_PYTHON_MODULES)
+        hidden_module, hidden_distribution = run_workflow.REQUIRED_PYTHON_MODULES[0]
+        real_find_spec = importlib_util.find_spec
+        observed_calls: list[list[str]] = []
+
+        def fake_runtime(repo_root, env, args):  # type: ignore[no-untyped-def]
+            observed_calls.append(list(args))
+            raise AssertionError("orchestration_runtime must not be invoked")
+
+        buf = io.StringIO()
+        with mock.patch.object(importlib_util, "find_spec",
+                               side_effect=lambda name, *a, **k: None if name == hidden_module
+                               else real_find_spec(name, *a, **k)), \
+                mock.patch.object(run_workflow, "_runtime_command", fake_runtime), \
+                redirect_stdout(buf):
+            code = run_workflow.main(["spec/problem/dummy.md", "Compile",
+                                      "--stdout-format", "jsonl"])
+        self.assertEqual(code, 2)
+        self.assertFalse(observed_calls)
+        payload = json.loads(buf.getvalue().strip())
+        self.assertEqual(payload.get("reason"), "missing_required_python_modules")
+        self.assertEqual(payload.get("missing"), [hidden_distribution])
+        self.assertEqual(payload.get("required"),
+                         [d for _m, d in run_workflow.REQUIRED_PYTHON_MODULES])
+        self.assertNotIn("language", payload)
+        self.assertIn("pip install -r requirements.txt", payload.get("detail", ""))
+
     def test_main_fails_fast_when_a_required_python_package_is_missing(self) -> None:
         """The same guarantee as the CLI-tool check below, for the packages the runtime imports
         MID-RUN. Without this the run does not fail at launch: it fails at the first `Generate`
