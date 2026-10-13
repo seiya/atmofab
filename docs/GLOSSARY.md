@@ -92,7 +92,7 @@ This document aggregates the terms referenced by other documents in one place, s
 - **aggregate_verdict.json**: The aggregated pass/fail judgment including the relevant `node` and its transitive dependency `node`.
 - **summary.json**: The aggregation of the whole `run`. It must hold `self_summary` and `dependency_summary`.
 - **dependency_summary**: The dependency-aggregation counts. It holds `total`, `pass`, `xfail`, `fail`, and `blocked`.
-- **dependency workflow coverage check**: A verification that confirms the `node_key` set of `dependency.resolved.yaml` and the `node` set of `workspace/ir` / `workspace/pipelines` match one-to-one.
+- **dependency workflow coverage check**: The verification that the conductor-authored `dependency_graph.json` sidecar and the `workspace/ir` / `workspace/pipelines` node sets agree one-to-one; `docs/workflow/WORKFLOW_CORE.md` §Dependency workflow coverage check is canonical for the two set equalities.
 - **dependency implementation encapsulation**: A boundary rule that does not copy, relocate, or redefine the implementation body of a dependency `node` under the depending `node`'s `source/<source_id>/src/`. The depending `node` may hold only calls to the published `operation` of the dependency `node`, or to a shared `library`.
 - **blocked_reason**: The direct reason a `node` ended in `blocked`. It records the `fail` / `blocked` of the dependency `node` in an identifiable way.
 - **blocking_direct_deps**: The array of immediate dependency `node_key` that caused the `blocked`.

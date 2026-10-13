@@ -145,7 +145,7 @@ procedures:
 Forbid replacing the `MC` limiter by another limiter (`minmod`, `van Leer`, `superbee`) or by the unlimited central difference, and forbid omitting the limiter. Forbid using a slope other than the cell's own on either of its faces (a slope taken from a neighbouring cell, or a slope evaluated from different inputs on the two faces of one cell; evaluating the same function of the same three cell values once per face is the same slope). Forbid reading a cell of `U_in` outside the padded columns $ng-1..ng+nx+2$ and the padded rows $ng-1..ng+ny+2$ of §2, and forbid re-deriving or overwriting a ghost value of `U_in` in place of the value the caller filled. Forbid dividing the slope by a grid spacing.
 
 ## 7. Traceability
-Require recording the adoption result in `component_catalog.yaml` and `case.resolved.yaml`.
+Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
 
 ## 8. tests reference
 The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_reconstruction_2d_muscl_mc/tests.md`, with `test_profile_version` of `0.2.0`.

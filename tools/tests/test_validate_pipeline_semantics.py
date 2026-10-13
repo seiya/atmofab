@@ -13163,7 +13163,7 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
             _write_json(trial_meta_path, trial_meta)
             violations = validate(repo_root=repo_root, workspace_root="workspace")
             self.assertTrue(
-                any("source_build_id is required" in v for v in violations),
+                any("source_binary_id is required" in v for v in violations),
                 violations,
             )
 

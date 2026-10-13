@@ -65,7 +65,7 @@ from tools.build_runtime import tool_run_program
 tool_run_program({
     "project_dir": "/path/to/project",
     "command_log_path": "logs/run_commands.jsonl",
-    "command": ["./bin/simulate", "--case", "case.resolved.yaml"],
+    "command": ["./bin/simulate", "--cases", "spec.ir.yaml", "<case_id>"],
     "env": {"OMP_NUM_THREADS": "8", "OMP_THREAD_LIMIT": "8"},
     "timeout_sec": 1800,
 })
@@ -77,7 +77,7 @@ tool_run_program({
 from tools.build_runtime import tool_run_linter
 
 tool_run_linter({
-    "project_dir": "/path/to/workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>/generate/<generation_id>/src",
+    "project_dir": "/path/to/workspace/pipelines/<node_key_safe>/<target_id>/<pipeline_id>/source/<source_id>/src",
     "command_log_path": "command_log.jsonl",
     "preset": "fortitude",
     "timeout_sec": 1800,

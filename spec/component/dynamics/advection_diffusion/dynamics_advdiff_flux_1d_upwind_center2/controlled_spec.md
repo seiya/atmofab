@@ -117,7 +117,7 @@ procedures:
 The discretization order must not be changed automatically. Forbid implicit completion of undefined input.
 
 ## 7. Traceability
-This `operation_id` requires registration in `component_catalog.yaml`. `case.resolved.yaml` requires recording the adopted `component_id@version`.
+This `operation_id` requires registration in `component_catalog.yaml`. The adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`) records the adopted `component_id@version`, written by the host.
 
 ## 8. tests reference
 The corresponding `tests.md` is `spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2/tests.md`, with `test_profile_version` of `0.3.0`.

@@ -9,19 +9,19 @@
       "title": "scalar literal",
       "x-shape-form": "scalar",
       "description": "The literal token 'scalar' (case-insensitive). Use for 0-dimensional / single-value temporaries.",
-      "pattern": "^[Ss][Cc][Aa][Ll][Aa][Rr]$"
+      "pattern": "^[Ss][Cc][Aa][Ll][Aa][Rr](?![\\s\\S])"
     },
     {
       "title": "bracket list form",
       "x-shape-form": "list",
       "description": "Comma-separated dimensions enclosed in square brackets. Each dimension token must be either an integer literal (\\d+) or an identifier-style symbol ([A-Za-z_][A-Za-z0-9_]*). Function-call notation, parens, and other punctuation inside dimension tokens are forbidden. Example: [3], [nx, ny], [Nz, Nx, Ny].",
-      "pattern": "^\\[\\s*(?:[0-9]+|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*,\\s*(?:[0-9]+|[A-Za-z_][A-Za-z0-9_]*))*\\s*\\]$"
+      "pattern": "^\\[\\s*(?:[0-9]+|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*,\\s*(?:[0-9]+|[A-Za-z_][A-Za-z0-9_]*))*\\s*\\](?![\\s\\S])"
     },
     {
       "title": "paren tuple form",
       "x-shape-form": "tuple",
       "description": "Comma-separated dimensions enclosed in parentheses. Each dimension token must be either an integer literal (\\d+) or an identifier-style symbol ([A-Za-z_][A-Za-z0-9_]*). Function-call notation, parens, and other punctuation inside dimension tokens are forbidden. Example: (d1,d2), (nx, ny, nz).",
-      "pattern": "^\\(\\s*(?:[0-9]+|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*,\\s*(?:[0-9]+|[A-Za-z_][A-Za-z0-9_]*))*\\s*\\)$"
+      "pattern": "^\\(\\s*(?:[0-9]+|[A-Za-z_][A-Za-z0-9_]*)(?:\\s*,\\s*(?:[0-9]+|[A-Za-z_][A-Za-z0-9_]*))*\\s*\\)(?![\\s\\S])"
     }
   ],
   "examples": [

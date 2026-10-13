@@ -1344,7 +1344,7 @@ def _validate_trial_meta(repo_root: Path, execution: NodeExecution, violations: 
             "trusted source for cross-phase quality_check provenance and "
             "the gate for strict source_command_ref validation)."
         )
-    # `source_build_id` binds run_program evidence to the specific build whose
+    # `source_binary_id` binds run_program evidence to the specific build whose
     # binary this execute used. Without it, a trial_meta could attribute its
     # results to one build while having actually executed a sibling build's
     # binary (mixed-build attribution).
@@ -1352,7 +1352,7 @@ def _validate_trial_meta(repo_root: Path, execution: NodeExecution, violations: 
     _trial_source_build_id: str | None = None
     if not isinstance(_src_build_raw, str) or not _src_build_raw.strip():
         violations.append(
-            f"{trial_meta_path}:source_build_id is required (binds "
+            f"{trial_meta_path}:source_binary_id is required (binds "
             "run_program evidence to the specific build whose binary the "
             "execute run consumed)."
         )
@@ -1367,7 +1367,7 @@ def _validate_trial_meta(repo_root: Path, execution: NodeExecution, violations: 
         )
         if not _build_bin.is_dir():
             violations.append(
-                f"{trial_meta_path}:source_build_id={_trial_source_build_id!r} "
+                f"{trial_meta_path}:source_binary_id={_trial_source_build_id!r} "
                 f"does not resolve to an existing build bin directory "
                 f"({_build_bin!s})."
             )
@@ -6328,7 +6328,7 @@ def _validate_run_program_inputs(
     canonical_run_program_ref = _canonical_log_ref_for_run_program(
         trial_meta_path, repo_root
     )
-    # Bind run_program executable to trial_meta's source_build_id. The matched
+    # Bind run_program executable to trial_meta's source_binary_id. The matched
     # record's executable — the argument after the recorded launch prefix — must
     # resolve, absolute or against the record's `cwd`, under
     # `<pipeline>/binary/<source_binary_id>/bin/`. Otherwise an execute
@@ -6440,16 +6440,16 @@ def _validate_run_program_inputs(
         if not isinstance(command, list):
             continue
 
-        has_case_resolved = any(
+        has_ir_spec = any(
             isinstance(arg, str) and arg.endswith("spec.ir.yaml")
             for arg in command
         )
-        if not has_case_resolved:
+        if not has_ir_spec:
             violations.append(
                 f"{trial_meta_path}:run_program command_id={command_id} must include spec.ir.yaml"
             )
 
-        # Bind to source_build_id: the executed binary must live under the
+        # Bind to source_binary_id: the executed binary must live under the
         # declared build's bin/ directory. Resolve via the matched record's
         # `cwd` (project_dir) or the executable's absolute path; the executable is the
         # argument after the recorded launch prefix (issue #307). A relative one
@@ -6494,7 +6494,7 @@ def _validate_run_program_inputs(
                 violations.append(
                     f"{trial_meta_path}:run_program command_id={command_id} "
                     f"executable {executable!r} (cwd={cwd_val!r}) must "
-                    f"resolve under source_build_id={_trial_source_build_id!r}"
+                    f"resolve under source_binary_id={_trial_source_build_id!r}"
                     f"'s bin directory ({_build_bin_abs!s}). Mixed-build "
                     f"attribution is not permitted."
                 )

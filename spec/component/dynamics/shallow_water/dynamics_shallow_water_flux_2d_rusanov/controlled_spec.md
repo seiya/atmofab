@@ -142,7 +142,7 @@ procedures:
 Forbid reconstructing, limiting, or otherwise modifying the supplied interface states before the flux is evaluated, and forbid evaluating the flux at a state other than the two supplied. Forbid replacing the Rusanov wave speed of §3 by another estimate.
 
 ## 7. Traceability
-Require recording the adoption result in `component_catalog.yaml` and `case.resolved.yaml`.
+Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
 
 ## 8. tests reference
 The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_flux_2d_rusanov/tests.md`, with `test_profile_version` of `0.2.0`.

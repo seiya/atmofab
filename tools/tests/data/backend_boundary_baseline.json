@@ -68,9 +68,9 @@
       "fortran": 1
     },
     "docs/workflow/CODEGEN_BUNDLE_CONTRACT.md": {
-      "fortran": 13,
+      "fortran": 14,
       "fortran-kind": 1,
-      "fortran-suffix": 2,
+      "fortran-suffix": 3,
       "make-control-file": 5
     },
     "docs/workflow/COMMAND_LOG_PLACEMENT.md": {

@@ -234,7 +234,7 @@ procedures:
 Forbid evaluating the forcing from the state of the run (the forcing is a function of position and time; a term read from `h`, `hu` or `hv` is forbidden). Forbid evaluating it at a time other than the one supplied: the caller passes the time of the stage state the forcing is added to, and the operation uses that value alone. Forbid re-deriving the background inside this `component` — the row-wise values are received, not computed from a profile or its parameters — and forbid differencing a received array in place of the supplied derivative. Forbid changing the form of the low (its Gaussian shape, its periodic argument, its translation at the constant speed `c_tr`) and forbid reducing a residual of §3 by a cancellation the prescribed flow satisfies.
 
 ## 7. Traceability
-Require recording the adoption result in `component_catalog.yaml` and `case.resolved.yaml`.
+Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
 
 ## 8. tests reference
 The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_tc4_forcing/tests.md`, with `test_profile_version` of `0.2.0`.

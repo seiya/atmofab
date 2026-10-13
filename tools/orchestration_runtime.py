@@ -6801,7 +6801,7 @@ def _allowed_output_paths_for_launch(
             return False
         if step_token == "build":
             # Cross-phase exception: in-source Make builds for Fortran/C
-            # family run compile_project with project_dir=<gen>/src/, so the
+            # family run compile_project with project_dir=<source_id>/src/, so the
             # command log lands under the generate tree. Strict bind to
             # request.source_id (record_launch verifies pass-state).
             if generate_prefix and path.startswith(generate_prefix):
@@ -7140,7 +7140,7 @@ def _allowed_output_paths_for_launch(
             # Canonical build-runtime-owned command logs are pre-validated against
             # canonical phase placements (including legitimate cross-phase
             # placements like Execute's run_quality_checks log under
-            # generate/<gen>/src/).
+            # source/<source_id>/src/).
             if not _matches_phase_contract(path):
                 raise ValueError(
                     f"allowed_output_paths[{idx}] is outside phase contract outputs for step={step_token!r}: {path!r}"
@@ -14463,7 +14463,7 @@ def record_launch(
         (repo_root / "workspace" / "tmp" / child_agent_run_id).mkdir(parents=True, exist_ok=True)
         # Execute step lineage bind (mandatory for ALL execute launches, not
         # only when cross-phase quality_check log is authorized): every
-        # execute run must declare `source_build_id` in the launch request,
+        # execute run must declare `source_binary_id` in the launch request,
         # and the referenced build's `binary_meta.json` must record
         # `source_source_id` matching the request's `source_id`.
         # Without this binding, an execute could run binaries from build A
@@ -14540,9 +14540,9 @@ def record_launch(
             request_payload, allowed_output_paths, repo_root=repo_root
         )
         # Validate cross-phase canonical placements:
-        #   - Execute → generate/<gen>/ for run_quality_checks
-        #   - Build → generate/<gen>/ for in-source compile_project
-        #     (Make for Fortran/C-family runs project_dir=<gen>/src/)
+        #   - Execute → source/<source_id>/ for run_quality_checks
+        #   - Build → source/<source_id>/ for in-source compile_project
+        #     (Make for Fortran/C-family runs project_dir=<source_id>/src/)
         # The `source_id` from the request payload is otherwise free-form
         # and could authorize writes to an unrelated generation's audit log
         # under the same pipeline. Require the referenced generate run to
@@ -14609,7 +14609,7 @@ def record_launch(
                         "contaminate provenance files trusted by later "
                         "validators."
                     )
-                # NOTE: execute step source_build_id / source_id lineage
+                # NOTE: execute step source_binary_id / source_id lineage
                 # bind is enforced unconditionally above (see "Execute step
                 # lineage bind" block before canonical_audit_logs). The
                 # cross-phase loop here only handles existence + pass-state
@@ -16974,16 +16974,16 @@ def main(argv: list[str] | None = None) -> int:
         "it named a leaf's Edit/Write grant, and no leaf holds either tool. "
         "ir_id/pipeline_id format: <slug>_<YYYYMMDD>_<seq3> where slug uses hyphens only "
         "(e.g. 'flux-rsn-p0_20260425_001'; underscores in slug are invalid). "
-        "Execute step extra-required fields: run_id (single exec_id pinned for this launch), "
-        "source_id (the gen_id whose <gen>/src/ run_quality_checks uses; record_launch verifies "
-        "verification_status=pass), and source_build_id (the binary_id whose binary execute uses; "
-        "record_launch reads <pipeline>/build/<source_build_id>/binary_meta.json and verifies "
+        "Execute step extra-required fields: run_id, "
+        "source_id (the source whose <source_id>/src/ run_quality_checks uses; record_launch verifies "
+        "verification_status=pass), and source_binary_id (the binary_id whose binary execute uses; "
+        "record_launch reads <pipeline_ref>/binary/<source_binary_id>/binary_meta.json and verifies "
         "source_source_id == request.source_id to prevent mixed-build forge). "
-        "Cross-phase command log auto-inject (`<gen>/src/command_log.jsonl`) only fires when "
+        "Cross-phase command log auto-inject (`<source_id>/src/command_log.jsonl`) only fires when "
         "the target profile of the request's pipeline_ref records `toolchain.build_system: make` (in-source builds). "
-        "Generate substep extra-required: source_id matches the listed paths' single <gen_id>. "
+        "Generate substep extra-required: source_id matches the listed paths' single <source_id>. "
         "Build step listed paths must use a single <binary_id>; cross-phase Make builds also accept "
-        "source_id-derived `<gen>/src/command_log.jsonl` placement."
+        "source_id-derived `<source_id>/src/command_log.jsonl` placement."
     )
     _RECORD_LAUNCH_RESPONSE_HELP = (
         "JSON object with child agent response. For Claude Code backend use: "
