@@ -4402,6 +4402,8 @@ class RunWorkflowTests(unittest.TestCase):
         detail = payload.get("detail", "")
         self.assertIn(hidden_distribution, detail,
                       "the message no longer names the missing distribution")
+        # The human-format line is this detail: it must say which language needs the packages.
+        self.assertIn(repr(_TP_RW.toolchain["language"]), detail)
         # The REMEDY, and it is the half that was wrong. This message is the only install
         # instruction most operators meet, so a by-name remedy here contradicts
         # `docs/RUNBOOK.md` §0-1 ("Install from the file, not from the names") at exactly the
