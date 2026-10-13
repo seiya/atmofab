@@ -9948,8 +9948,9 @@ def _validate_generated_signatures(
 ) -> None:
     """Deterministic signature gate at ``Generate.static``, for every `spec_kind` that publishes an
     EXACT surface (`_EXACT_PUBLISHED_SURFACE_KINDS`): the generated model source must publish every
-    §5.1 canonical signature verbatim (normalized: comments stripped, ``&`` continuations joined,
-    case-folded, whitespace-insensitive).
+    §5.1 canonical signature verbatim (normalized by the target language's `signatures` backend:
+    comments stripped, whitespace-insensitive, and names compared as that language compares
+    them).
 
     The Compile-stage ``_validate_published_surface`` pins the published *names* and pins the IR's
     ``signatures`` / ``module_parameters`` == §5.1. This gate pins the *generated source*: each
