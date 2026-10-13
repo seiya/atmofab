@@ -1909,7 +1909,11 @@ class RegistryConsistencyTests(unittest.TestCase):
                     # deliberately neutral ones, and the item closed with issue #469.
                     self.assertIn("no backend package", reason)
                     self.assertNotIn("TODO.md", reason)
-                    self.assertIn("its job is done by the neutral core", reason)
+                    # Only for a record that declares a core job: a member registered with no
+                    # capability at all is a legitimate declaration (docs/BACKEND_BOUNDARY.md
+                    # §Design Policy), and its message says nothing implements it.
+                    if backend.core_provides:
+                        self.assertIn("its job is done by the neutral core", reason)
                     with self.assertRaises(registry.BackendNotExtracted):
                         registry.require_available(axis, backend_id)
 
