@@ -3043,6 +3043,51 @@ class IdentifierBoundStatementTests(unittest.TestCase):
                       "an implemented language backend declares", text)
 
 
+    def test_the_spec_id_bound_is_this_language_s_and_the_renderer_reads_it(self) -> None:
+        """`SPEC_ID_MAX` leaves room for the 7-character role suffixes plus one of margin, and the
+        render-time backstop is the same value (a copy would drift from the spec-input gate)."""
+        import subprocess
+        import sys
+
+        from tools.backends.language.cuda_cpp import bundle as cpp_bundle
+        from tools.backends.language.cuda_cpp import runner as cpp_runner
+        self.assertEqual(cpp_bundle.IDENTIFIER_MAX - len("_runner") - 1, cpp_bundle.SPEC_ID_MAX)
+        self.assertEqual(cpp_bundle.SPEC_ID_MAX, cpp_runner.MAX_SPEC_ID_LEN)
+        # The derivation, observed by moving the limit: execute `bundle.py` with its
+        # `IDENTIFIER_MAX` assignment's VALUE replaced; a restated `SPEC_ID_MAX` does not follow.
+        import ast
+        tree = ast.parse(Path(cpp_bundle.__file__).read_text(encoding="utf-8"))
+        hits = 0
+        for node in tree.body:
+            targets = (node.targets if isinstance(node, ast.Assign)
+                       else [node.target] if isinstance(node, ast.AnnAssign) else [])
+            if any(isinstance(t, ast.Name) and t.id == "IDENTIFIER_MAX" for t in targets):
+                node.value = ast.Constant(cpp_bundle.IDENTIFIER_MAX - 100)
+                hits += 1
+        self.assertEqual(1, hits)
+        namespace: dict[str, object] = {"__name__": "_moved_bundle"}
+        exec(compile(ast.fix_missing_locations(tree), cpp_bundle.__file__, "exec"), namespace)
+        self.assertEqual(cpp_bundle.IDENTIFIER_MAX - 100 - len("_runner") - 1,
+                         namespace["SPEC_ID_MAX"])
+        # Observed by MOVING the bundle value (a restated literal is equal today): re-import the
+        # renderer in a subprocess with `SPEC_ID_MAX` patched; an in-process reload would rebind
+        # the module the rest of this file holds.
+        moved = cpp_bundle.SPEC_ID_MAX - 17
+        probe = (
+            "import importlib, sys\n"
+            "from unittest import mock\n"
+            "from tools.backends.language.cuda_cpp import bundle\n"
+            "del sys.modules['tools.backends.language.cuda_cpp.runner']\n"
+            f"with mock.patch.object(bundle, 'SPEC_ID_MAX', {moved}):\n"
+            "    runner = importlib.import_module('tools.backends.language.cuda_cpp.runner')\n"
+            "    print(runner.MAX_SPEC_ID_LEN)\n"
+        )
+        out = subprocess.run([sys.executable, "-c", probe], cwd=str(REPO_ROOT),
+                             capture_output=True, text=True)
+        self.assertEqual(0, out.returncode, out.stderr)
+        self.assertEqual(str(moved), out.stdout.strip())
+
+
 class MakeGateTests(unittest.TestCase):
     """The make backend's two readings of a language that leaves no module artifact."""
 

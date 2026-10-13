@@ -55,6 +55,11 @@ MODULE_SOURCE_SUFFIXES: tuple[str, ...] = (".cu",)
 #: taken for one.
 MODULE_ARTIFACT_SUFFIX: str | None = None
 
+#: NONE: this reader is regular expressions over the masked source and imports no third-party
+#: module, so a launch for a target in this language requires no Python package of its own
+#: (`tools/host_prerequisites.required_python_modules`).
+REQUIRED_PYTHON_MODULES: tuple[tuple[str, str], ...] = ()
+
 
 def source_module_deps(src_files: list[Path]) -> dict[str, set[str]]:
     """The object-level dependency edges between `src_files`, by stem: NONE. A source reaches

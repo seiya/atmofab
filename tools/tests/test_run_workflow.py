@@ -4308,20 +4308,27 @@ class RunWorkflowTests(unittest.TestCase):
         """The same guarantee as the CLI-tool check below, for the packages the runtime imports
         MID-RUN. Without this the run does not fail at launch: it fails at the first `Generate`
         node's gate, after lint and syntax have passed, in a billed run, and terminalizes —
-        because an absent Fortran structure front end is fail-closed by design. The failure is
-        correct and the timing is not. This check was written when nothing in the repository
-        installed these packages at all (Codex review); `requirements.txt` now declares them, and
-        the check stays because a declaration is not an installation — a host that never ran
+        because an absent structure front end is fail-closed by design. The failure is correct
+        and the timing is not. This check was written when nothing in the repository installed
+        these packages at all (Codex review); `requirements.txt` now declares them, and the check
+        stays because a declaration is not an installation — a host that never ran
         `pip install -r requirements.txt` reaches exactly the state above.
 
-        The message must carry the DISTRIBUTION names, since `tree_sitter_fortran` is not what an
-        operator types into pip."""
+        The package is the resolved target's LANGUAGE backend's (issue #469), so it is checked
+        after target resolution; the hidden module is read from that backend, not spelled here.
+        The message must carry the DISTRIBUTION name, which is what an operator types into pip."""
         import importlib.util as importlib_util
 
+        from tools.host_prerequisites import (required_python_modules,
+                                              resolve_launch_axis_selection)
+
+        language_modules = required_python_modules(resolve_launch_axis_selection(_TP_RW))
+        self.assertTrue(language_modules, "the default target's language declares no module")
+        hidden_module, hidden_distribution = language_modules[-1]
         real_find_spec = importlib_util.find_spec
 
         def fake_find_spec(name, *args, **kwargs):  # type: ignore[no-untyped-def]
-            if name == "tree_sitter_fortran":
+            if name == hidden_module:
                 return None
             return real_find_spec(name, *args, **kwargs)
 
@@ -4336,12 +4343,13 @@ class RunWorkflowTests(unittest.TestCase):
         run_workflow._runtime_command = fake_runtime  # type: ignore[assignment]
         try:
             buf = io.StringIO()
-            with redirect_stdout(buf):
+            with tempfile.TemporaryDirectory() as tmp, redirect_stdout(buf):
                 code = run_workflow.main([
-                    "spec/problem/dummy.md",
-                    "Compile",
+                    *_seed_launch_repo(Path(tmp)),
                     "--stdout-format",
                     "jsonl",
+                    "--target",
+                    _TARGET_ID,
                 ])
         finally:
             importlib_util.find_spec = real_find_spec  # type: ignore[assignment]
@@ -4352,10 +4360,11 @@ class RunWorkflowTests(unittest.TestCase):
         payload = json.loads(buf.getvalue().strip())
         self.assertEqual(payload.get("status"), "fail")
         self.assertEqual(payload.get("reason"), "missing_required_python_modules")
-        self.assertEqual(payload.get("missing"), ["tree-sitter-fortran"])
-        self.assertIn("tree-sitter", payload.get("required", []))
+        self.assertEqual(payload.get("missing"), [hidden_distribution])
+        self.assertEqual(payload.get("required"), [d for _m, d in language_modules])
+        self.assertEqual(payload.get("language"), _TP_RW.toolchain["language"])
         detail = payload.get("detail", "")
-        self.assertIn("tree-sitter-fortran", detail,
+        self.assertIn(hidden_distribution, detail,
                       "the message no longer names the missing distribution")
         # The REMEDY, and it is the half that was wrong. This message is the only install
         # instruction most operators meet, so a by-name remedy here contradicts
@@ -5206,8 +5215,9 @@ class DependencyClosureTests(unittest.TestCase):
     def test_overlong_spec_id_dependency_fails_closed(self) -> None:
         # M3d closure-build gate: an over-length dependency spec_id is rejected at closure
         # resolution — before any node runs and before an already-ready dep is skipped, so
-        # it cannot slip the per-node resolve_node gate. Mirrors spec_input_gates.MAX_SPEC_ID_LEN.
-        from tools.spec_input_gates import MAX_SPEC_ID_LEN
+        # it cannot slip the per-node resolve_node gate. Mirrors spec_input_gates.max_spec_id_len.
+        from tools.spec_input_gates import max_spec_id_len
+        MAX_SPEC_ID_LEN = max_spec_id_len()
         long_id = "d" * (MAX_SPEC_ID_LEN + 6)
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -8466,7 +8476,10 @@ class StartupEnvelopeStdoutFormatTests(unittest.TestCase):
         # 16 -> 17: issue #293's execution-site refusal — one site, the event built by
         # `_sites_rejection`, whose docstring lists the reasons it carries.
         # 17 -> 18: issue #316's parallel-toolchain refusal (`parallel_toolchain_unusable`).
-        self.assertEqual(len(helper_calls), 18)
+        # 18 -> 19: issue #469's second `missing_required_python_modules` site — the packages
+        # the RESOLVED target's language backend declares, checked after target resolution (the
+        # first site keeps the neutral packages every run needs).
+        self.assertEqual(len(helper_calls), 19)
         # Every one of them is handed the parsed flag — a hardcoded "jsonl"/"human" at any
         # site would silently pin that site to one format.
         for call in helper_calls:
@@ -10420,6 +10433,81 @@ class TargetProfileLaunchTests(unittest.TestCase):
             self.assertEqual(refusal["reason"], "missing_required_host_tools")
             self.assertEqual(refusal["missing"], [hidden])
             self.assertEqual(refusal["required"], required)
+
+    def test_a_target_s_python_modules_are_its_language_s(self) -> None:
+        """Issue #469 (PR-4): the language packages a launch requires are the RESOLVED target's.
+        A GPU profile of another language than the default is launched with every module the
+        default target's language declares hidden from the interpreter, and gets past the module
+        check (to the host probes, which are recorded rather than answered); the default target
+        is refused for the same hidden set. Nothing between the check and the resolution is
+        mocked. Each language's set is read from its backend, so this row spells no package."""
+        import importlib.util as importlib_util
+
+        import yaml
+
+        from tools.host_prerequisites import (required_python_modules,
+                                              resolve_launch_axis_selection)
+        from tools.target_profile import load_target_profile
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed(repo_root)
+            path = _seed_target_profile_into(repo_root, target_id="t_g",
+                                             harness_id="harness_a", hardware={"class": "gpu"})
+            gpu = yaml.safe_load(REPO_ROOT.joinpath("spec", "targets", "cpp_gpu.yaml")
+                                 .read_text(encoding="utf-8"))
+            doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+            doc["toolchain"], doc["parallel"] = gpu["toolchain"], gpu["parallel"]
+            path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
+            (repo_root / "sites.yaml").write_text(
+                "sites_version: 1\nsites:\n  local:\n    executes: [cpu, gpu]\n",
+                encoding="utf-8")
+            default_modules = {m for m, _d in
+                               required_python_modules(resolve_launch_axis_selection(_TP_RW))}
+            gpu_modules = {m for m, _d in required_python_modules(resolve_launch_axis_selection(
+                load_target_profile(repo_root, "t_g")))}
+            self.assertTrue(default_modules)
+            hidden = default_modules - gpu_modules
+            self.assertTrue(hidden, "the two languages declare the same modules; no witness")
+            harness = repo_root / "spec" / "infrastructure" / "harness_a"
+            harness.mkdir(parents=True, exist_ok=True)
+            (harness / "controlled_spec.md").write_text("spec\n", encoding="utf-8")
+            (harness / "deps.yaml").write_text("nodes: []\n", encoding="utf-8")
+            real_find_spec = importlib_util.find_spec
+
+            def launch(target_id: str) -> tuple[int, list[str], list[dict]]:
+                asked: list[str] = []
+                buf = io.StringIO()
+                with _real_target_resolution(), mock.patch.object(
+                        importlib_util, "find_spec",
+                        side_effect=lambda name, *a, **k: None if name in hidden
+                        else real_find_spec(name, *a, **k)), \
+                        mock.patch.object(run_workflow, "_check_required_host_tools",
+                                          side_effect=lambda p: asked.append(p.target_id) or []), \
+                        mock.patch.object(run_workflow, "_check_host_tool_versions",
+                                          return_value=[]), \
+                        mock.patch.object(run_workflow, "_run_with_dependency_closure",
+                                          return_value=0), \
+                        mock.patch.object(run_workflow, "_run_node", return_value=0), \
+                        redirect_stdout(buf):
+                    code = run_workflow.main(
+                        ["spec/infrastructure/harness_a", "build", "--repo-root", str(repo_root),
+                         "--no-run-conductor", "--target", target_id,
+                         "--stdout-format", "jsonl"])
+                events = [json.loads(line) for line in buf.getvalue().splitlines()
+                          if line.strip().startswith("{")]
+                return code, asked, events
+
+            code, asked, events = launch("t_g")
+            self.assertEqual(code, 0, events)
+            self.assertEqual(asked, ["t_g"])
+            code, asked, events = launch("t_a")
+            self.assertEqual(code, 2)
+            self.assertEqual(asked, [], "refused before the host probes")
+            self.assertEqual(events[-1]["reason"], "missing_required_python_modules")
+            self.assertEqual(events[-1]["language"], _TP_RW.toolchain["language"])
+            self.assertEqual(sorted(events[-1]["missing"]), sorted(
+                d for m, d in required_python_modules(resolve_launch_axis_selection(_TP_RW))
+                if m in hidden))
 
     def test_run_node_handed_no_target_resolves_the_default(self) -> None:
         """The fallback for a caller that resolved nothing: the default target — which, with

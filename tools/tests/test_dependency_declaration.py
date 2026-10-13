@@ -5,8 +5,9 @@ to add one is the same reason `test_host_prerequisites.py` gives for its own pro
 declaration asserts nothing on its own authority. Every name and every version range below is
 compared against a source that already decides the question —
 
-  * `tools/run_workflow.py:REQUIRED_PYTHON_MODULES` — the launch probe that refuses a host
-    missing a mid-run import, by distribution name;
+  * `tools/run_workflow.py:REQUIRED_PYTHON_MODULES` and each language backend's
+    `source_reading.REQUIRED_PYTHON_MODULES` (`_launch_probed_modules`) — the launch probe that
+    refuses a host missing a mid-run import, by distribution name;
   * the package table in `docs/RUNBOOK.md` §0-1 — the operator-facing list, which is WIDER than
     the tuple (`PyYAML` is deliberately absent from the tuple: it is imported at module top and
     already fails legibly at launch, so it carries no reason code);
@@ -623,6 +624,21 @@ class _RunbookReaderMixin:
 
 
 
+def _launch_probed_modules() -> tuple[tuple[str, str], ...]:
+    """Every (import name, distribution) a launch can refuse a host for: the neutral tuple
+    `tools/run_workflow.py` checks for every run, and each declared language backend's
+    `source_reading.REQUIRED_PYTHON_MODULES`, checked for a target in that language (issue #469).
+    """
+    from tools.backends import registry
+
+    found = list(run_workflow.REQUIRED_PYTHON_MODULES)
+    for language in registry.backend_ids("language"):
+        if registry.provides("language", language, "source_reading"):
+            found += registry.capability_module(
+                "language", language, "source_reading").REQUIRED_PYTHON_MODULES
+    return tuple(dict.fromkeys(found))
+
+
 class RuntimeRequirementsTests(_RunbookReaderMixin, unittest.TestCase):
     """`requirements.txt` against the two authorities that already decide what a host needs."""
 
@@ -639,12 +655,13 @@ class RuntimeRequirementsTests(_RunbookReaderMixin, unittest.TestCase):
     def test_every_module_the_launch_probe_refuses_a_host_for_is_declared(self) -> None:
         """The narrower authority, checked separately because it NAMES the missing member.
 
-        `REQUIRED_PYTHON_MODULES` is a subset of the table; a distribution the probe refuses a
-        host for and this file does not install is a machine that passes `pip install -r` and then
+        `REQUIRED_PYTHON_MODULES` and every language backend's own tuple (`_launch_probed_modules`)
+        are a subset of the table; a distribution the probe refuses a host for and this file does
+        not install is a machine that passes `pip install -r` and then
         fails at launch.
         """
         declared = set(_parsed(REPO_ROOT / "requirements.txt"))
-        for import_name, distribution in run_workflow.REQUIRED_PYTHON_MODULES:
+        for import_name, distribution in _launch_probed_modules():
             self.assertIn(
                 _canonical(distribution), declared,
                 f"tools/run_workflow.py refuses a host missing {import_name!r} (distribution "
@@ -687,7 +704,7 @@ class RuntimeRequirementsTests(_RunbookReaderMixin, unittest.TestCase):
         `docs/RUNBOOK.md` §0-1 short by one, and an operator who follows it gets refused at launch.
         """
         table = self._packages_in_table(self._runbook())
-        for import_name, distribution in run_workflow.REQUIRED_PYTHON_MODULES:
+        for import_name, distribution in _launch_probed_modules():
             self.assertIn(
                 _canonical(distribution), table,
                 f"tools/run_workflow.py refuses a host missing {import_name!r} (distribution "
@@ -821,6 +838,38 @@ class RuntimeRequirementsTests(_RunbookReaderMixin, unittest.TestCase):
         with self.assertRaises(AssertionError) as caught:
             self._packages_in_table("# Runbook\n\nno table here\n")
         self.assertIn("no longer carries the Python package table", str(caught.exception))
+
+
+class LanguageModuleDeclarationTests(unittest.TestCase):
+    """Each language backend's `REQUIRED_PYTHON_MODULES` is exactly what its package imports.
+
+    Derived from the code: every `import X` / `from X import` anywhere in
+    `tools/backends/language/<id>/` (function-level imports included — the structure front end
+    imports lazily), minus the standard library and this repository. A module the package imports
+    and does not declare is a launch that starts and then fails mid-run for a target in that
+    language; one it declares and does not import refuses a host for nothing (issue #469)."""
+
+    def test_each_language_declares_the_third_party_modules_its_package_imports(self) -> None:
+        import ast
+        stdlib = set(sys.stdlib_module_names)
+        languages = [lang for lang in backend_registry.backend_ids("language")
+                     if backend_registry.provides("language", lang, "source_reading")]
+        self.assertGreaterEqual(len(languages), 2, languages)
+        for language in languages:
+            with self.subTest(language=language):
+                found: set[str] = set()
+                package = REPO_ROOT / "tools" / "backends" / "language" / language
+                for path in sorted(package.rglob("*.py")):
+                    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+                        if isinstance(node, ast.Import):
+                            found |= {alias.name.split(".")[0] for alias in node.names}
+                        elif (isinstance(node, ast.ImportFrom) and node.module
+                              and node.level == 0):
+                            found.add(node.module.split(".")[0])
+                third_party = {m for m in found if m not in stdlib and m != "tools"}
+                declared = {m for m, _d in backend_registry.capability_module(
+                    "language", language, "source_reading").REQUIRED_PYTHON_MODULES}
+                self.assertEqual(declared, third_party)
 
 
 class MeasuredVersionTests(_RunbookReaderMixin, unittest.TestCase):

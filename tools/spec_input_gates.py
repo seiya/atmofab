@@ -5,10 +5,10 @@ These gates are neutral policy. They read a spec's identity (`spec_id`, `spec_ki
 declared dependency counts) and the tokens that reach a process argv, and they say whether the
 node may enter the workflow at all. None of them holds implementation-language knowledge: the
 one bound that *derives* from a language — how long a spec_id may be before the names generated
-from it breach that language's identifier limit — is carried here as a neutral number and
-pinned against the language backend's own limit by a test, because this gate runs BEFORE an IR
-exists (`run_workflow._resolve_closure` applies it to the `spec_ref`s in `deps.yaml` /
-`spec_catalog.yaml`), so there is no language to ask the registry about.
+from it breach that language's identifier limit — is asked of EVERY declared language backend
+and the strictest answer taken (`max_spec_id_len`): the gate judges a node's identity, which
+every target the node may later be built for shares, so the bound is the one no declared
+language would refuse.
 
 What makes these SPEC-INPUT rather than compile gates: each one is a defect of the node's
 identity, which a Compile re-author cannot repair. Routing an unrepairable defect into a
@@ -21,13 +21,27 @@ from __future__ import annotations
 import re
 from typing import Any
 
-# The longest a `spec_id` may be. The generated per-node symbols derive from it by appending a
-# short role suffix, and the implementation language bounds how long an identifier may be — so
-# this is that bound minus the longest suffix. It is spelled here as a NEUTRAL number rather
-# than asked of the language backend: this gate runs pre-IR, where no toolchain has been
-# resolved, so there is no axis value to ask about. `test_fortran_runner` pins the number
-# against the language backend's identifier limit so the two cannot drift.
-MAX_SPEC_ID_LEN = 55
+def max_spec_id_len() -> int:
+    """The longest a `spec_id` may be: the minimum of every declared language's `SPEC_ID_MAX`.
+
+    The generated per-node symbols derive from a spec_id by appending a short role suffix, and
+    each language bounds how long an identifier may be; its `bundle_facts` module states the
+    spec_id bound that leaves room for its suffixes. A spec_id names one node for every target,
+    so the gate takes the strictest language's answer. The registry is imported HERE, not at
+    module level: a language package imports this module (through `tools.runner_ir`), so a
+    module-level import is a cycle, and it would also load every language package at startup."""
+    from tools.backends import registry
+
+    bounds = [
+        registry.capability_module("language", lang, "bundle_facts").SPEC_ID_MAX
+        for lang in registry.backend_ids("language")
+        if registry.provides("language", lang, "bundle_facts")
+    ]
+    if not bounds:
+        raise RuntimeError(
+            "no declared language backend provides bundle_facts, so no spec_id bound exists; "
+            "see tools/backends/registry.py")
+    return min(bounds)
 
 # The character grammar a case_id must obey. The runner harness builds each per-case snapshot
 # path by concatenating the runtime case_id — `raw/state_snapshots/<case_id>.json` — so a
@@ -62,7 +76,7 @@ M3C_SPEC_KINDS: tuple[str, ...] = ("component", "problem")
 def spec_id_length_violation(spec_id: Any) -> str | None:
     """Spec-input bound on spec_id length — the M3d mass-opt-in prerequisite gate.
 
-    Returns an actionable violation message when ``spec_id`` exceeds ``MAX_SPEC_ID_LEN``, else
+    Returns an actionable violation message when ``spec_id`` exceeds ``max_spec_id_len()``, else
     ``None``. The per-node symbols generated from a spec_id append a role suffix to it, so an
     over-long spec_id breaches the implementation language's identifier limit; on a
     harness-backed M3c node the host-rendered runner additionally fail-closes at render time (a
@@ -72,12 +86,13 @@ def spec_id_length_violation(spec_id: Any) -> str | None:
     here — before any phase runs — turns an unrepairable late render-kill into an early, clear
     rejection. The renderer keeps the same bound as a defense-in-depth backstop."""
     sid = spec_id.strip() if isinstance(spec_id, str) else ""
-    if len(sid) > MAX_SPEC_ID_LEN:
+    bound = max_spec_id_len()
+    if len(sid) > bound:
         return (
-            f"spec_id {sid!r} is {len(sid)} chars (>{MAX_SPEC_ID_LEN}); the per-node symbols "
+            f"spec_id {sid!r} is {len(sid)} chars (>{bound}); the per-node symbols "
             f"derived from it would breach the implementation language's identifier limit "
             f"(and fail-close a harness-backed node's host-render). Rename the spec to "
-            f"≤{MAX_SPEC_ID_LEN} chars.")
+            f"≤{bound} chars.")
     return None
 
 

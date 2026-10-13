@@ -130,14 +130,9 @@ CHECK_STATUS_WIDTH = 4
 # against the certified harness source, so the two cannot drift.
 CASE_ID_LEN = runner_ir.CASE_ID_LEN
 
-# The bound on a spec_id, DERIVED rather than restated: the longest name generated from a
-# spec_id appends a 7-character role suffix (`_runner` / `_checks`), and `bundle.IDENTIFIER_MAX`
-# is this language's identifier limit — the one place that number is spelled for this backend.
-# The extra character is margin. `tools/spec_input_gates.MAX_SPEC_ID_LEN` carries the same bound
-# as a pre-IR spec-input precondition (it runs before any language is resolved, so it cannot ask
-# for this one); `test_fortran_runner` pins the two equal so they cannot drift, and the render
-# time check below stays as the backstop.
-MAX_SPEC_ID_LEN = bundle.IDENTIFIER_MAX - len("_runner") - 1
+# The bound on a spec_id is the language's (`bundle.SPEC_ID_MAX`, where its derivation is
+# stated); the render-time check below is the backstop to the neutral spec-input gate.
+MAX_SPEC_ID_LEN = bundle.SPEC_ID_MAX
 
 
 def max_rendered_line() -> int:

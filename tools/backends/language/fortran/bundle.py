@@ -44,6 +44,14 @@ IDENTIFIER_MAX = 63
 #: character follows" and is identical in both.
 IDENTIFIER_PATTERN = rf"^[A-Za-z][A-Za-z0-9_]{{0,{IDENTIFIER_MAX - 1}}}(?![\s\S])"
 
+#: The bound on a spec_id, DERIVED rather than restated: the longest name generated from a
+#: spec_id appends a 7-character role suffix (`_runner` / `_checks`), and `IDENTIFIER_MAX` is this
+#: language's identifier limit — the one place that number is spelled for this backend. The extra
+#: character is margin. The neutral spec-input gate takes the minimum of every declared
+#: language's value (`tools/spec_input_gates.max_spec_id_len`), and the runner's render-time check
+#: reads this one as the backstop.
+SPEC_ID_MAX = IDENTIFIER_MAX - len("_runner") - 1
+
 def identifier_key(name: str) -> str:
     """The key two identifiers of this language are compared by: equal keys name one entity.
 

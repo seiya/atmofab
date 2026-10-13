@@ -1131,77 +1131,86 @@ class IrContentViolationsTest(unittest.TestCase):
 
 
 class SpecIdBoundAgreementTest(unittest.TestCase):
-    """The neutral spec-input bound and this backend's render-time bound are one number.
+    """This backend's spec_id bound: derived from its identifier limit, read by its renderer.
 
-    `tools/spec_input_gates.MAX_SPEC_ID_LEN` cannot ask a backend for it — the gate runs on a
-    `spec_ref` before any IR exists, so no language has been resolved — so the number is spelled
-    on both sides. That is the pattern the ledger already accepts for a pre-IR bound, and it is
-    only safe with this comparison: without it, raising the identifier limit in the backend would
-    silently leave the spec-input gate rejecting spec_ids the renderer would now accept, and
-    lowering it would let an unrenderable spec_id through to a render-time workflow-kill."""
+    The number lives in `bundle.SPEC_ID_MAX`, the `bundle_facts` member the neutral spec-input
+    gate takes the minimum over (`tools/spec_input_gates.max_spec_id_len`, pinned in
+    `test_spec_input_gates`). The renderer's render-time check is the backstop and must read the
+    same value: a copy would let the gate admit a spec_id the renderer then kills, or refuse one
+    it would accept."""
 
     def test_the_backend_bound_derives_from_the_language_identifier_limit(self) -> None:
         from tools.backends.language.fortran import bundle
-        from tools.backends.language.fortran.runner import MAX_SPEC_ID_LEN as BACKEND_BOUND
         # The longest generated name appends a 7-character role suffix; the extra character is
-        # the declared margin. Restating `55` here would be a third copy of the same number.
-        self.assertEqual(bundle.IDENTIFIER_MAX - len("_runner") - 1, BACKEND_BOUND)
+        # the declared margin. Pinned to 55 as the value the documents state for this backend.
+        self.assertEqual(55, bundle.SPEC_ID_MAX)
+        self.assertEqual(bundle.IDENTIFIER_MAX - len("_runner") - 1, bundle.SPEC_ID_MAX)
         for suffix in ("_runner", "_checks", "_model"):
-            self.assertLessEqual(BACKEND_BOUND + len(suffix), bundle.IDENTIFIER_MAX)
+            self.assertLessEqual(bundle.SPEC_ID_MAX + len(suffix), bundle.IDENTIFIER_MAX)
 
     def test_the_bound_tracks_the_language_identifier_limit(self) -> None:
         """The DERIVATION, observed by moving the thing it derives from.
 
         Replacing the derivation with today's literal is behaviourally identical at the current
-        limit, so every value comparison in this class survives it. What the derivation buys is
-        the future change: raise the language's identifier limit and the bound must move, or a
-        spec_id one character too long renders symbols that breach it.
+        limit, so every value comparison in this class survives it. Earlier forms of this row
+        read the source for a spelling and over-rejected legitimate work, so the row moves the
+        limit instead: the module is executed with its `IDENTIFIER_MAX` assignment's VALUE
+        replaced, and `SPEC_ID_MAX` must follow. Every spelling that derives passes, a restated
+        literal fails, and no spelling of the derivation is named."""
+        import ast
 
-        The first two instruments for this read the SOURCE and pinned a spelling. Both
-        over-rejected — the first refused `from ...bundle import IDENTIFIER_MAX`, the second
-        refused the annotated assignment and then, once widened, accepted a locally restated
-        `IDENTIFIER_MAX = 63` (the extra copy of that number the ledger forbids). A rule that has
-        to be rewritten twice and still rejects legitimate work is the wrong FORM, not the wrong
-        wording. So: move the limit and re-import. Every spelling that derives passes, every
-        spelling that restates fails, and no spelling is named.
-        """
+        from tools.backends.language.fortran import bundle
+
+        moved = bundle.IDENTIFIER_MAX - 23
+        tree = ast.parse(Path(bundle.__file__).read_text(encoding="utf-8"))
+        hits = 0
+        for node in tree.body:
+            targets = (node.targets if isinstance(node, ast.Assign)
+                       else [node.target] if isinstance(node, ast.AnnAssign) else [])
+            if any(isinstance(t, ast.Name) and t.id == "IDENTIFIER_MAX" for t in targets):
+                node.value = ast.Constant(moved)
+                hits += 1
+        self.assertEqual(1, hits, "IDENTIFIER_MAX is not assigned exactly once in bundle.py")
+        namespace: dict[str, object] = {"__name__": "_moved_bundle"}
+        exec(compile(ast.fix_missing_locations(tree), bundle.__file__, "exec"), namespace)
+        self.assertEqual(
+            moved - len("_runner") - 1, namespace["SPEC_ID_MAX"],
+            "the backend's spec_id bound did not move with the language identifier limit: it is "
+            "restated rather than derived, and a literal does not move")
+
+    def test_the_renderer_reads_the_backend_bound(self) -> None:
+        """The render-time backstop reads `bundle.SPEC_ID_MAX`, observed by moving it.
+
+        In a SUBPROCESS, not with an in-process reload: reloading the emitter rebinds the module
+        every other test in this file holds a reference to (measured: an earlier form failed 12
+        tests). The emitter is already in `sys.modules` once `bundle` is reachable — the package
+        `__init__` re-exports it — so it is dropped first, or the probe reports the unpatched
+        bound and passes for no reason."""
         import subprocess
         import sys
 
         from tools.backends.language.fortran import bundle
 
-        moved = bundle.IDENTIFIER_MAX - 23
-        # In a SUBPROCESS, not with an in-process reload: reloading the emitter rebinds the
-        # module every other test in this file holds a reference to, and getting the restore
-        # even slightly wrong leaves the rest of the suite measuring a bound that is not the
-        # real one. Measured — the first attempt did exactly that and failed 12 tests.
-        # The emitter is already in `sys.modules` by the time the limit can be patched — the
-        # package `__init__` re-exports it, and reaching `bundle` imports the package. Dropping
-        # it first is what makes the re-import read the patched value; without that the probe
-        # reports the unpatched bound and the test passes for no reason.
+        moved = bundle.SPEC_ID_MAX - 17
         probe = (
             "import importlib, sys\n"
             "from unittest import mock\n"
             "from tools.backends.language.fortran import bundle\n"
             "del sys.modules['tools.backends.language.fortran.runner']\n"
-            f"with mock.patch.object(bundle, 'IDENTIFIER_MAX', {moved}):\n"
+            f"with mock.patch.object(bundle, 'SPEC_ID_MAX', {moved}):\n"
             "    runner = importlib.import_module("
             "'tools.backends.language.fortran.runner')\n"
             "    print(runner.MAX_SPEC_ID_LEN)\n"
+            "    try:\n"
+            f"        runner._check_identifier_lengths('s' * {moved + 1}, 'h')\n"
+            "    except runner.RenderError:\n"
+            "        print('refused')\n"
         )
         out = subprocess.run(
             [sys.executable, "-c", probe], cwd=str(Path(__file__).resolve().parents[2]),
             capture_output=True, text=True)
         self.assertEqual(0, out.returncode, out.stderr)
-        self.assertEqual(
-            moved - len("_runner") - 1, int(out.stdout.strip()),
-            "the backend's spec_id bound did not move with the language identifier limit: it is "
-            "restated rather than derived, and a literal does not move")
-
-    def test_the_spec_input_gate_carries_the_same_bound(self) -> None:
-        from tools.backends.language.fortran.runner import MAX_SPEC_ID_LEN as BACKEND_BOUND
-        from tools.spec_input_gates import MAX_SPEC_ID_LEN as NEUTRAL_BOUND
-        self.assertEqual(BACKEND_BOUND, NEUTRAL_BOUND)
+        self.assertEqual([str(moved), "refused"], out.stdout.split())
 
 
 class DerivedNameLengthTest(unittest.TestCase):

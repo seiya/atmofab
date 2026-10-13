@@ -109,20 +109,19 @@ PHASE_ORDER = ["Compile", "Generate", "Build", "Validate"]
 REQUIRED_CLI_TOOLS = ("python3", "jq", "git")
 
 # Python packages the workflow runtime imports mid-run, checked here for the same reason as the
-# CLI tools above: without them the run does not fail at launch, it fails at the first `Generate`
-# node's `Generate.gate` static check — after lint and syntax have already passed, in a BILLED
-# run — and terminalizes, because an absent Fortran structure front end is fail-closed by design
-# (`tools/backends/language/fortran/structure.py`). The failure is correct and the timing is not: nothing in this
+# CLI tools above: without them the run does not fail at launch, it fails mid-run — in a BILLED
+# run — and terminalizes. The failure is correct and the timing is not: nothing in this
 # repository installs these, so a machine that satisfies the RUNBOOK today does not have them.
 #
-# Checked by IMPORT NAME, not by distribution name: the distributions are `tree-sitter`,
-# `tree-sitter-fortran` and `numpy`, which is what the operator types, so the message carries them.
+# This tuple is the NEUTRAL half, needed whatever the target: `tools/primary_evidence.py` (Z6,
+# issue #255) — `Validate.execute` imports it to value the IR's primary predicates. The packages
+# a target's LANGUAGE needs (its source reader's, which `Generate.gate` imports) are the language
+# backend's to declare and are checked once the target is resolved
+# (`tools/host_prerequisites.required_python_modules`, issue #469).
+#
+# Checked by IMPORT NAME, not by distribution name: the distribution is what the operator types,
+# so the message carries it.
 REQUIRED_PYTHON_MODULES: tuple[tuple[str, str], ...] = (
-    ("tree_sitter", "tree-sitter"),
-    ("tree_sitter_fortran", "tree-sitter-fortran"),
-    # `tools/primary_evidence.py` (Z6, issue #255): `Validate.execute` imports it to value the
-    # IR's primary predicates, so a host without numpy would fail closed at the first verdict
-    # of a billed run; refused at launch instead, like the two above.
     ("numpy", "numpy"),
 )
 
@@ -162,6 +161,13 @@ def _host_probe_selection(target_profile: TargetProfile) -> dict[str, str]:
     from tools.host_prerequisites import resolve_launch_axis_selection
 
     return resolve_launch_axis_selection(target_profile)
+
+
+def _target_python_modules(target_profile: TargetProfile) -> tuple[tuple[str, str], ...]:
+    """The Python modules the resolved target's language backend declares (issue #469)."""
+    from tools.host_prerequisites import required_python_modules
+
+    return required_python_modules(_host_probe_selection(target_profile))
 
 
 def _check_required_host_tools(target_profile: TargetProfile) -> list[str]:
@@ -307,8 +313,11 @@ def _check_host_tool_versions(target_profile: TargetProfile) -> list[Any]:
     return list(unsupported_host_tool_versions(_host_probe_selection(target_profile)))
 
 
-def _check_required_python_modules() -> list[str]:
-    """The distribution names of any `REQUIRED_PYTHON_MODULES` this interpreter cannot import.
+def _check_required_python_modules(
+    modules: tuple[tuple[str, str], ...] = REQUIRED_PYTHON_MODULES,
+) -> list[str]:
+    """The distribution names of any of `modules` (default: the neutral `REQUIRED_PYTHON_MODULES`)
+    this interpreter cannot import.
 
     `find_spec` rather than an import: this runs before anything else and must not execute a
     third-party module's top level to answer a question about its presence.
@@ -316,7 +325,7 @@ def _check_required_python_modules() -> list[str]:
     import importlib.util
 
     missing: list[str] = []
-    for module_name, distribution in REQUIRED_PYTHON_MODULES:
+    for module_name, distribution in modules:
         try:
             found = importlib.util.find_spec(module_name) is not None
         except (ImportError, ValueError):
@@ -2914,6 +2923,30 @@ def _run_main(
             args.stdout_format,
         )
         return 2
+    # The Python modules the resolved target's language reads its sources with, checked after the
+    # gate passed the target (a run for one language does not require another's packages) and
+    # before any orchestration state is touched. The neutral modules were checked above.
+    target_modules = _target_python_modules(target_profile)
+    missing_target_modules = _check_required_python_modules(target_modules)
+    if missing_target_modules:
+        _emit_unlogged_event(
+            {
+                "status": "fail",
+                "reason": "missing_required_python_modules",
+                # Installed from the FILE, as the neutral refusal above says why.
+                "detail": (
+                    f"missing python packages: {','.join(missing_target_modules)} (required by "
+                    f"toolchain.language={target_profile.toolchain['language']!r}) — install "
+                    f"with: pip install -r requirements.txt"
+                ),
+                "missing": missing_target_modules,
+                "required": [distribution for _module, distribution in target_modules],
+                "language": str(target_profile.toolchain["language"]),
+                "docs_ref": "docs/RUNBOOK.md#0-1",
+            },
+            args.stdout_format,
+        )
+        return 2
     # The host tools the resolved target builds with, probed after the gate passed it (see
     # `_host_probe_selection`) and still before any orchestration state is touched.
     missing_host_tools = _check_required_host_tools(target_profile)
@@ -4360,7 +4393,7 @@ def _resolve_dependency_closure(
         function ALSO applies the two spec-input identity gates to every visited
         spec — the target included, since it is on no edge — because a dependency
         that is already ready is skipped before it ever reaches `resolve_node`:
-        `spec_id_too_long` (spec_input_gates.MAX_SPEC_ID_LEN) and
+        `spec_id_too_long` (spec_input_gates.max_spec_id_len) and
         `infrastructure_dependency_declared_in_deps` (no spec declares an `infrastructure`
         dependency: the harness is the target's, issue #284). A `spec_id` the catalog
         registers under several kinds is reported as `spec_catalog_corrupt` — see
@@ -4481,7 +4514,7 @@ def _resolve_dependency_closure(
         # dependency is skipped before it reaches `_run_node` → resolve_node — so gating
         # only there could let an over-length ready dep slip past. Checking every visited
         # spec (target + all deps) here is the closure-level mirror of resolve_node's bound
-        # (spec_input_gates.MAX_SPEC_ID_LEN). A >55 node cannot certify (so cannot be
+        # (spec_input_gates.max_spec_id_len). An over-length node cannot certify (so cannot be
         # ready), but this makes the canonical capture point robust regardless.
         _sid_violation = spec_id_length_violation(Path(spec_ref).name)
         if _sid_violation:
