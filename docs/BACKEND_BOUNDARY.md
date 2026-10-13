@@ -222,8 +222,8 @@ together with the bundle's `target_lowering_plan.parallelization`.
     guidance by `signatures`, the exemplar's gate-drift caveat and the neutral templates'
     language-shaped clauses by `prompt_fragments`. A target-free remedy (Compile's) names no
     language's statements. R4-b PR-4 cleared the leftovers a `cuda_cpp` leaf would read (the Compile
-    phase contract's statement spellings, the `harness` template's import keyword); what remains is listed in
-    `TODO.md` (the prompt-templates row).
+    phase contract's statement spellings, the `harness` template's import keyword); the two residues of that
+    change are `TODO.md`'s "Residues of the `cuda_cpp` physics change (R4-b PR-6)" entry.
   - **A language may omit `runner_render` alone.** The registry allows it, and a language that
     does runs only its `infrastructure` harness — whose leaf authors the model and the runner,
     while the host authors the build control file (and, for `cuda_cpp`, the published-surface
