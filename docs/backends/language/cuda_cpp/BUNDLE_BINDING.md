@@ -44,9 +44,11 @@
   `<spec_id>_runner.cu` (`model_basename` / `header.basename` / `checks_basename` /
   `runner_basename`).
 - **Identifiers.** An identifier is 1-1024 characters starting with a letter
-  (`IDENTIFIER_MAX`, `IDENTIFIER_PATTERN`). C++ identifiers are case-sensitive, and the §5.1 pin
-  compares case-sensitively; the neutral vocabulary is compared case-insensitively for another
-  reason (`tools/structured_signatures.py`).
+  (`IDENTIFIER_MAX`, `IDENTIFIER_PATTERN`). C++ identifiers are case-sensitive, so
+  `identifier_key` is the name itself: the contract compares a CUDA C++ file's namespaces,
+  symbols and bound storage names exactly, and the §5.1 pin compares case-sensitively. The
+  neutral vocabulary refuses two names that differ only in case for another reason — the rule
+  every language agrees on (`tools/structured_signatures.py`).
 
 ## 2. The §5.1 lowering
 

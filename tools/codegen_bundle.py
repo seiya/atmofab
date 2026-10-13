@@ -107,6 +107,39 @@ def language_facts(language: Any) -> Any:
     return facts
 
 
+def _identifier_key(language: Any, name: str) -> str:
+    """`name`'s comparison key under `language`'s case rule (`bundle_facts.identifier_key`).
+
+    Two identifiers of one language name one entity exactly when their keys are equal: a
+    case-insensitive language folds, a case-sensitive one does not, and this module knows
+    neither. Every caller holds a language the schema layer has admitted (a file's own) or the
+    target language the host resolved, so a language with no facts raises (`language_facts`)."""
+    return language_facts(language).identifier_key(name)
+
+
+def _file_defines_module(entry: Mapping[str, Any], module: str) -> bool:
+    """Whether the bundle file `entry` lists `module`, compared under the FILE's language."""
+    language = entry.get("language")
+    key = _identifier_key(language, module)
+    return any(isinstance(m, str) and _identifier_key(language, m) == key
+               for m in (entry.get("modules") or []))
+
+
+def _binding_owner(files: Sequence[Mapping[str, Any]], node_key: Any,
+                   module: Any) -> Mapping[str, Any] | None:
+    """The checks-role file owned by member `node_key` that defines a binding's `module`, or None.
+
+    The owner a binding must name is "a checks-role file owned by THIS member", so the lookup
+    starts from the member rather than from the module: such a file is not unique (a bundle may
+    carry other checks-role files), and each is asked under its own language's case rule. A
+    `module` no such file defines resolves to None, which the caller reports."""
+    if not isinstance(module, str):
+        return None
+    return next((entry for entry in files
+                 if entry.get("role") == "checks" and entry.get("member_node_key") == node_key
+                 and _file_defines_module(entry, module)), None)
+
+
 #: The languages a bundle may declare: those with a language backend that declares
 #: `bundle_facts`. Derived, so registering a backend is what widens it — this module does not
 #: keep a second list of the implemented set (docs/BACKEND_BOUNDARY.md).
@@ -947,26 +980,30 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
         if isinstance(entry.get("logical_path"), str)
     }
 
-    # module -> defining file. A module name identifies one publishing unit across the build,
-    # so a name defined by two files is a violation — and the map below, which ties an
-    # entrypoint's / binding's `module` to the file (and thus member) that owns it, would be
-    # ambiguous without it. Compared case-folded: stricter than a case-sensitive language needs,
-    # and exactly what a case-insensitive one does.
-    module_owner: dict[str, Mapping[str, Any]] = {}
+    # A module name identifies one publishing unit across the build, so a name defined by two
+    # files is a violation — and the resolution of an entrypoint's / binding's `module` to the
+    # file (and thus member) that owns it would be ambiguous without it. Two names are one
+    # module when the declaring file's language says so (`_identifier_key`); across two files
+    # of DIFFERENT languages, when EITHER says so — conservative, since the two name spaces
+    # never meet in one build unit, and a bundle mixing languages is refused nothing it needs.
+    defined_modules: list[tuple[str, Any]] = []
     for index, entry in enumerate(files):
         modules = entry.get("modules")
         if not isinstance(modules, list):
             continue
+        language = entry.get("language")
         for module in modules:
             if not isinstance(module, str):
                 continue
-            folded = module.casefold()
-            if folded in module_owner:
+            if any(_identifier_key(language, module) == _identifier_key(language, other)
+                   or _identifier_key(other_language, module)
+                   == _identifier_key(other_language, other)
+                   for other, other_language in defined_modules):
                 violations.append(
                     f"files[{index}].modules {module!r} is already defined by another file "
                     "(a module name is unique across the build)")
             else:
-                module_owner[folded] = entry
+                defined_modules.append((module, language))
 
     # compile_after: explicit inter-file compile-order edges. Each must resolve to another
     # bundle file, must not name itself, and the whole edge set must be acyclic — otherwise
@@ -1015,24 +1052,27 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
         if node_key not in member_set:
             violations.append(
                 f"{prefix}node_key {node_key!r} is not a member of optimization_unit")
-        # Uniqueness is scoped to `(module, symbol)`, case-folded (Fortran is case-insensitive
-        # in both). A symbol is module-qualified, so each member's checks module legitimately
-        # exports the same fixed ABI name (`case_run`, `get_time`): `a_checks::case_run` and
-        # `b_checks::case_run` are distinct procedures. Only the SAME name in the SAME module is
-        # an unlinkable duplicate.
-        symbol = entry.get("symbol")
-        module = entry.get("module")
-        symbol_key = (module.casefold() if isinstance(module, str) else module,
-                      symbol.casefold() if isinstance(symbol, str) else symbol)
-        if symbol_key in seen_symbols:
-            violations.append(
-                f"{prefix}symbol {symbol!r} is published more than once by module {module!r}")
-        seen_symbols.add(symbol_key)
         defined_in = entry.get("defined_in")
         target = files_by_path.get(defined_in)
         if target is None:
             violations.append(f"{prefix}defined_in {defined_in!r} does not name a files[] entry")
             continue
+        # Uniqueness is scoped to `(module, symbol)`, both keyed by the case rule of the
+        # language of the file that defines them (`_identifier_key`). A symbol is
+        # module-qualified, so each member's checks module legitimately exports the same fixed
+        # ABI name (`case_run`, `get_time`): `a_checks::case_run` and `b_checks::case_run` are
+        # distinct procedures. Only the SAME name in the SAME module is an unlinkable duplicate.
+        # An entrypoint whose `defined_in` does not resolve is reported above and keyed by
+        # nothing: it has no language to compare under.
+        symbol = entry.get("symbol")
+        module = entry.get("module")
+        language = target.get("language")
+        symbol_key = (_identifier_key(language, module) if isinstance(module, str) else module,
+                      _identifier_key(language, symbol) if isinstance(symbol, str) else symbol)
+        if symbol_key in seen_symbols:
+            violations.append(
+                f"{prefix}symbol {symbol!r} is published more than once by module {module!r}")
+        seen_symbols.add(symbol_key)
         role = target.get("role")
         if role not in ROLE_FOR_ENTRYPOINT_KIND.values():
             violations.append(
@@ -1053,11 +1093,9 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
         # `module` must be one the `defined_in` file actually defines — otherwise `defined_in`
         # could point at the member's own file (passing the ownership check) while `module` /
         # `symbol` route the rendered `use <module>, only: <symbol>` to another member's export.
-        module = entry.get("module")
         target_modules = target.get("modules")
         if (isinstance(module, str) and isinstance(target_modules, list)
-                and module.casefold() not in {m.casefold() for m in target_modules
-                                              if isinstance(m, str)}):
+                and not _file_defines_module(target, module)):
             violations.append(
                 f"{prefix}module {module!r} is not defined by {defined_in!r} "
                 f"(its modules are {target_modules})")
@@ -1171,9 +1209,8 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
         # wrong member's state. (Reported only for a member node — a non-member node_key is
         # already flagged above.)
         module = entry.get("module")
-        owner = module_owner.get(module.casefold()) if isinstance(module, str) else None
-        if node_is_member and (owner is None or owner.get("role") != "checks"
-                               or owner.get("member_node_key") != node_key):
+        owner = _binding_owner(files, node_key, module)
+        if node_is_member and owner is None:
             violations.append(
                 f"{prefix}module {module!r} must be defined by a checks-role file owned by "
                 f"member {node_key!r} (it publishes {entry.get('storage_symbol')!r})")
@@ -1189,7 +1226,14 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
             module_val = module if isinstance(module, str) else ""
             storage = entry.get("storage_symbol")
             storage_val = storage if isinstance(storage, str) else ""
-            storage_key = (module_val.casefold(), storage_val.casefold())
+            # Keyed by the owning file's case rule; a binding with no owner is reported above,
+            # and is keyed case-folded so it still collides with every spelling any language
+            # would call the same storage.
+            if owner is not None:
+                storage_key = (_identifier_key(owner.get("language"), module_val),
+                               _identifier_key(owner.get("language"), storage_val))
+            else:
+                storage_key = (module_val.casefold(), storage_val.casefold())
             if storage_key in seen_registration_storage:
                 violations.append(
                     f"{prefix}storage target {module_val}::{storage_val} is already registered "
@@ -1215,20 +1259,20 @@ def bundle_invariant_violations(doc: Mapping[str, Any]) -> list[str]:
             violations.append(
                 f"capability_requirements declares {token} but no state_bindings[] entry "
                 "captures through 'harness_registration' with it")
-    violations += _identifier_language_violations(files, entrypoints, bindings, module_owner)
+    violations += _identifier_language_violations(files, entrypoints, bindings)
     return violations
 
 
 def _identifier_language_violations(files: Sequence[Mapping[str, Any]],
                                     entrypoints: Sequence[Mapping[str, Any]],
-                                    bindings: Sequence[Mapping[str, Any]],
-                                    module_owner: Mapping[str, Mapping[str, Any]]) -> list[str]:
+                                    bindings: Sequence[Mapping[str, Any]]) -> list[str]:
     """Each identifier held to the grammar of the language of the FILE that declares it.
 
     The schema layer admits the union of the bundle languages' grammars
     (`_bundle_identifier_pattern`) because it cannot know which file an entrypoint belongs to;
     this layer can. A file's `modules` are its own; an entrypoint's `symbol` / `module` belong
-    to its `defined_in` file; a binding's names belong to the file that defines its `module`.
+    to its `defined_in` file; a binding's names belong to the checks-role file of its member
+    that defines its `module` (`_binding_owner`).
     An identifier whose file does not resolve is left to the invariants that report the
     unresolved reference. It is what stops one language's identifiers being validated against
     another's grammar (issue #289, R4-b PR-2), and since the second language joined (R4-b PR-4)
@@ -1254,8 +1298,7 @@ def _identifier_language_violations(files: Sequence[Mapping[str, Any]],
         for key in ("symbol", "module"):
             out += check(entry.get(key), owner.get("language"), f"entrypoints[{index}].{key}")
     for index, entry in enumerate(bindings):
-        module = entry.get("module")
-        owner = module_owner.get(module.casefold()) if isinstance(module, str) else None
+        owner = _binding_owner(files, entry.get("node_key"), entry.get("module"))
         if owner is None:
             continue
         for key in ("state_variable", "storage_symbol", "module"):
@@ -1620,6 +1663,9 @@ def derive_build_graph(doc: Mapping[str, Any], *,
     # capture that the M3c shape's refusal of a `runner`-role file exists to deny. Since
     # v1.1.0 a bundle CAN carry a runner, but only on a node the host renders no glue for
     # (`host_glue_sources` empty); on a node where both exist this raise is what stops them.
+    # Case-folded whatever the language: an object name is a FILE name, and two that differ only
+    # in case are one file on a case-insensitive filesystem (a filesystem rule, not an
+    # identifier one — `_identifier_key` does not apply).
     folded = [obj.casefold() for obj in objects]
     duplicates = sorted({obj for obj, key in zip(objects, folded) if folded.count(key) > 1})
     if duplicates:
@@ -1633,11 +1679,15 @@ def derive_build_graph(doc: Mapping[str, Any], *,
     # module even when the OBJECT names differ, and two definitions of one module name the same
     # publishing unit twice (a compiled module interface is written per module name, so the
     # second overwrites the dependency's). `validate_bundle` checks module uniqueness only
-    # WITHIN the bundle; the closure's module names are a host input.
-    staged_modules = {f"{spec_id}_model".casefold(): f"{spec_id}_model" for spec_id in staged}
+    # WITHIN the bundle; the closure's module names are a host input. Compared under the
+    # target language's case rule — the language the staged sources are named in, and the one
+    # whose build would hold both definitions.
+    staged_modules = ({facts.identifier_key(f"{spec_id}_model") for spec_id in staged}
+                      if facts is not None else set())
     module_clashes = sorted({
         module for entry in files for module in (entry.get("modules") or [])
-        if isinstance(module, str) and module.casefold() in staged_modules})
+        if isinstance(module, str) and facts is not None
+        and facts.identifier_key(module) in staged_modules})
     if module_clashes:
         raise RuntimeError(
             f"build graph module name collision {module_clashes}: a bundle file declares a "
@@ -1687,8 +1737,8 @@ def m3c_literal_name_violation(doc: Mapping[str, Any], spec_id: str, *,
         # (`_validate_checks_source_files`). Casefolding here accepted a mixed-case checks file
         # — which lints and compiles fine where `use` resolves by module name and never by
         # filename — and then `Generate.gate` static check rejected it on the name, reopening
-        # the phase. The module comparison below stays casefolded: a module name is compared
-        # the way the bundle's module map compares it.
+        # the phase. The module comparison below is under `language`'s case rule: the runner
+        # rendered in that language imports the module by that name.
         match = next((e for e in candidates
                       if str(e.get("logical_path", "")) == want_path), None)
         if match is None:
@@ -1696,8 +1746,9 @@ def m3c_literal_name_violation(doc: Mapping[str, Any], spec_id: str, *,
                     f"runner imports module {want_module!r} by fixed name, and the deterministic "
                     f"gate opens that filename verbatim); got "
                     f"{[e.get('logical_path') for e in candidates]}")
-        modules = {str(m).casefold() for m in (match.get("modules") or []) if isinstance(m, str)}
-        if want_module.casefold() not in modules:
+        modules = {facts.identifier_key(m) for m in (match.get("modules") or [])
+                   if isinstance(m, str)}
+        if facts.identifier_key(want_module) not in modules:
             return (f"{want_path} must declare module {want_module!r} (the host-rendered "
                     f"runner imports it); its modules are {sorted(match.get('modules') or [])}")
     return None
@@ -1865,7 +1916,7 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str, *,
 
 
 def harness_bundle_shape_violation(doc: Mapping[str, Any], spec_id: str,
-                                   runner_basename: str) -> str | None:
+                                   runner_basename: str, *, language: str) -> str | None:
     """The file-shape constraint on a HARNESS bundle (v1.1.0), or None.
 
     The harness shape is the second admissible pure-producer shape (issue #169). Unlike M3c —
@@ -1918,15 +1969,13 @@ def harness_bundle_shape_violation(doc: Mapping[str, Any], spec_id: str,
                     f"name from the spec_id); got {paths}")
         if role != "model":
             continue
-        # The module comparison is casefolded, for the mirror-image reason the path one is not:
-        # a MODULE name is an identifier of the declared language, and in the languages this
-        # contract admits an identifier is case-insensitive — two spellings that differ only in
-        # case are one module. (`m3c_literal_name_violation` splits the two the same way, and
-        # says so in the language's own terms; this layer states it neutrally because it is new
-        # neutral-core text and `docs/BACKEND_BOUNDARY.md` counts what a new file adds.)
-        modules = {str(m).casefold() for m in (entries[0].get("modules") or [])
-                   if isinstance(m, str)}
-        if model_stem.casefold() not in modules:
+        # The module comparison is under `language`'s case rule, for the mirror-image reason
+        # the path one is exact: a MODULE name is an identifier, and a consumer rendered in the
+        # target language imports it as that language resolves names (`_identifier_key`).
+        # (`m3c_literal_name_violation` splits the two the same way.)
+        key = language_facts(language).identifier_key
+        modules = {key(m) for m in (entries[0].get("modules") or []) if isinstance(m, str)}
+        if key(model_stem) not in modules:
             return (f"{want_path} must declare module {model_stem!r} — a consumer of this node "
                     f"imports it by that name, DERIVED from the spec_id rather than read from "
                     f"this bundle; its modules are {sorted(entries[0].get('modules') or [])}")
@@ -2061,6 +2110,12 @@ def _m3c_state_binding_mismatch(
                     f"({exc!r})")
 
     want_module = f"{spec_id}_checks"
+
+    # The runner rendered in `language` imports the storage by name, so a binding's module and
+    # storage are compared under that language's case rule (`_identifier_key`).
+    def key(name: str) -> str:
+        return _identifier_key(language, name)
+
     for idx, b in enumerate(bindings):
         prefix = f"state_bindings[{idx}]"
         sv = str(b.get("state_variable"))
@@ -2071,11 +2126,11 @@ def _m3c_state_binding_mismatch(
             return (f"{prefix}.capability must be {STATE_REGISTRATION_TOKEN!r}; got "
                     f"{b.get('capability')!r}")
         module = b.get("module")
-        if not isinstance(module, str) or module.casefold() != want_module.casefold():
+        if not isinstance(module, str) or key(module) != key(want_module):
             return (f"{prefix}.module must be {want_module!r} — "
                     f"{reason(state_binding_module_reason, want_module)}; got {module!r}")
         storage = b.get("storage_symbol")
-        if not isinstance(storage, str) or storage.casefold() != sv.casefold():
+        if not isinstance(storage, str) or key(storage) != key(sv):
             return (f"{prefix}.storage_symbol must equal its state_variable {sv!r} — "
                     f"{reason(state_binding_storage_reason, sv)}; got {storage!r}")
     return None
@@ -2161,7 +2216,7 @@ def pure_bundle_contract_violation(
     `ir_published_operations` (L1c) is the IR's `public_api.published_operations` name
     list (`None` = a legacy IR with no public_api pin → the surface layer is inert); when present
     and the node's `spec_kind` is one of `L1C_PUBLISHED_SURFACE_SPEC_KINDS`, the bundle's `operation` entrypoint
-    symbols for this member must equal that set (casefold), so the bundle entrypoints cannot drift
+    symbols for this member must equal that set (under `language`'s case rule), so the bundle entrypoints cannot drift
     from the pinned published surface. `build_graph(doc)` performs the caller's `derive_build_graph`
     assembly. (The former
     diagnostics-contract check-id literal-presence layer is gone: pure-8's runner-driven per-id
@@ -2229,7 +2284,8 @@ def pure_bundle_contract_violation(
         if mismatch is not None:
             return ("bundle_state_binding_mismatch", mismatch)
     if shape == "harness":
-        shape_violation = harness_bundle_shape_violation(doc, spec_id, runner_basename)
+        shape_violation = harness_bundle_shape_violation(doc, spec_id, runner_basename,
+                                                         language=language)
         if shape_violation is not None:
             return ("bundle_shape_unsupported", shape_violation)
     else:
@@ -2242,7 +2298,7 @@ def pure_bundle_contract_violation(
         if abi_violation is not None:
             return ("bundle_checks_abi_violation", abi_violation)
     # L1c: a component's `operation` entrypoint symbols must equal its IR public_api published
-    # surface (casefold). Inert when `ir_published_operations` is None (legacy IR / non-component)
+    # surface (under the target language's case rule). Inert when `ir_published_operations` is None (legacy IR / non-component)
     # — the single-source pin against the certified IR, checked identically by both callers.
     if (ir_published_operations is not None
             and node_key.split("/", 1)[0] in L1C_PUBLISHED_SURFACE_SPEC_KINDS):
@@ -2257,10 +2313,12 @@ def pure_bundle_contract_violation(
             and e.get("node_key") == node_key
             and isinstance(e.get("symbol"), str) and e["symbol"].strip()
         }
-        pub_cf = {p.casefold() for p in published}
-        sym_cf = {s.casefold() for s in entry_syms}
-        missing = sorted(p for p in published if p.casefold() not in sym_cf)
-        extra = sorted(s for s in entry_syms if s.casefold() not in pub_cf)
+        # Compared under the target language's case rule: a consumer rendered in it names the
+        # operation by the IR's published spelling.
+        pub_keys = {_identifier_key(language, p) for p in published}
+        sym_keys = {_identifier_key(language, s) for s in entry_syms}
+        missing = sorted(p for p in published if _identifier_key(language, p) not in sym_keys)
+        extra = sorted(s for s in entry_syms if _identifier_key(language, s) not in pub_keys)
         if missing or extra:
             parts = []
             if missing:

@@ -200,8 +200,9 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
     "bundle_facts": (
         ("language",),
         "The `CodegenBundle` contract has this value's file facts to apply (source extensions, "
-        "the identifier grammar, compiler-driver families), and the host knows the compiler it "
-        "defaults to for it — which is also the syntax stage `Generate.gate` must pass.",
+        "the identifier grammar and case rule, compiler-driver families), and the host knows "
+        "the compiler it defaults to for it — which is also the syntax stage `Generate.gate` "
+        "must pass.",
     ),
     "checks_abi": (
         ("language",),

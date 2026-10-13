@@ -44,6 +44,16 @@ IDENTIFIER_MAX = 63
 #: character follows" and is identical in both.
 IDENTIFIER_PATTERN = rf"^[A-Za-z][A-Za-z0-9_]{{0,{IDENTIFIER_MAX - 1}}}(?![\s\S])"
 
+def identifier_key(name: str) -> str:
+    """The key two identifiers of this language are compared by: equal keys name one entity.
+
+    Fortran names are case-insensitive (`docs/backends/language/fortran/BUNDLE_BINDING.md` §1
+    `modules`, §2 Case), so `ADV1D_MODEL` and `adv1d_model` are one module and the key is the
+    case-folded name. The bundle contract compares a module, an entrypoint symbol and a bound
+    storage name by this key wherever the declaring file's language is in scope."""
+    return name.casefold()
+
+
 #: The compiler the host uses for this language when the target profile pins no
 #: `toolchain.compiler`. It is BOTH the compiler the build control file pins and the mandatory
 #: `Generate.gate` syntax stage, and it has to be one value for the two: the syntax gate

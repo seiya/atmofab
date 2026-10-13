@@ -1189,6 +1189,18 @@ class ProcedureTypedArgumentTest(unittest.TestCase):
         s = self._struct(); s["procedures"][0]["args"][1]["spec"]["interface"] = "nope"
         self._assert_raises(s, "does not name an entry of interfaces")
 
+    def test_a_case_variant_interface_reference_fails_closed(self) -> None:
+        """A reference resolves by the EXACT declared spelling (issue #469 PR-3): the §5.1 form
+        is neutral, so it takes the rule every language agrees on, and a case-sensitive renderer
+        would name a type that does not exist. The message names the declared spelling to copy.
+        A Fortran rendering would have accepted the variant, so the rule is not Fortran's."""
+        s = self._struct()
+        declared = s["procedures"][0]["args"][1]["spec"]["interface"]
+        s["procedures"][0]["args"][1]["spec"]["interface"] = declared.upper()
+        self._assert_raises(
+            s, rf"'{declared.upper()}' does not name an entry of interfaces\[\] by its exact "
+               rf"spelling \(declared: \['{declared}'\]\)")
+
     def test_unreferenced_interface_fails_closed(self) -> None:
         s = self._struct()
         s["interfaces"].append({"kind": "subroutine", "name": "unused_iface", "args": [], "result": None})

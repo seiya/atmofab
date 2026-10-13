@@ -2542,7 +2542,8 @@ class RegistryConsistencyTests(unittest.TestCase):
     _LANGUAGE_CAPABILITY_CONTRACT: ClassVar[dict[str, tuple[str, ...]]] = {
         "bundle_facts": ("SOURCE_EXTENSIONS", "COMPILER_SELECTOR_FAMILIES", "IDENTIFIER_MAX",
                          "IDENTIFIER_PATTERN", "DEFAULT_COMPILER", "MANDATORY_SYNTAX_COMPILER",
-                         "COMPILED", "model_basename", "checks_basename", "runner_basename"),
+                         "COMPILED", "model_basename", "checks_basename", "runner_basename",
+                         "identifier_key"),
         "syntax_promotions": ("SOURCE_SUFFIXES", "PROMOTED_WARNINGS", "compile_order"),
         "prompt_fragments": ("fragments", "runner_output_document",
                              "EXEMPLAR_GATE_DRIFT_NOTE"),
@@ -3075,6 +3076,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
         other.bundle.SOURCE_EXTENSIONS = (".zz",)
         other.bundle.IDENTIFIER_MAX = 63
         other.bundle.IDENTIFIER_PATTERN = r"^[A-Za-z][A-Za-z0-9_]{0,62}(?![\s\S])"
+        other.bundle.identifier_key = str.casefold
         # The checks gate names and reads the checks source through the language too (issue
         # #289, R4-b PR-3); this language borrows Fortran's reader, and names its checks source
         # as the fixture below writes it, so the gate reaches the ABI question this row is about.

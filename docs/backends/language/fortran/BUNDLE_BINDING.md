@@ -15,8 +15,8 @@
   and walks at any depth so that a nested source is refused rather than skipped: the derived
   Makefile would compile and link it as an object the stage never checked (issue #420).
 - **`modules`.** A module is a Fortran `module`. One compiled `.mod` file is written per module
-  name, and Fortran names are case-insensitive, so the contract's case-folded module-name
-  uniqueness is exactly the language's own rule.
+  name, and Fortran names are case-insensitive, so two module names differing only in case are
+  one module under this language's `identifier_key` (§2 Case).
 - **Privacy.** A `helper` / `internal_module` role is private by declaration; a Fortran
   `private` statement does not make a file private in the contract's sense, and a private file
   is not reachable from the model: a staged dependency is `<spec_id>_model.f90` alone
@@ -30,8 +30,9 @@
 - **Identifiers.** An identifier is 1-63 characters, starting with a letter (`IDENTIFIER_MAX`,
   `IDENTIFIER_PATTERN`, the f2008/f2018 limit), so a symbol over the bound cannot pass the
   mandatory `Generate.gate` syntax check.
-- **Case.** Fortran is case-insensitive in module and symbol names, which is why the contract
-  compares both case-folded.
+- **Case.** Fortran is case-insensitive in module and symbol names, so `identifier_key` is the
+  case-folded name, and the contract compares a Fortran file's modules, symbols and bound
+  storage names, and the names a Fortran target's runner or consumer imports, under it.
 - **Imports.** The host renders an entrypoint's or a binding's import as
   `use <module>, only: <symbol>` (for a bound state variable, `use <spec_id>_checks, only:
   sb_<name> => <name>` — `docs/backends/language/fortran/CHECKS_ABI.md` §1-b).

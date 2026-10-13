@@ -318,7 +318,8 @@ def _fortran_named_bundle_facts(name: str):
     module = types.ModuleType(name)
     for attr in ("model_basename", "checks_basename", "runner_basename", "DEFAULT_COMPILER",
                  "MANDATORY_SYNTAX_COMPILER", "SOURCE_EXTENSIONS", "IDENTIFIER_MAX",
-                 "IDENTIFIER_PATTERN", "COMPILER_SELECTOR_FAMILIES", "COMPILED"):
+                 "IDENTIFIER_PATTERN", "COMPILER_SELECTOR_FAMILIES", "COMPILED",
+                 "identifier_key"):
         setattr(module, attr, getattr(fortran_bundle, attr))
     return module
 

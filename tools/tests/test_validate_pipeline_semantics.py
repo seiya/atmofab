@@ -129,7 +129,8 @@ def _model_files_in_src_dir(src_dir, execution):
 
 def _validate_component_generated_surface(repo_root, execution, model_files, violations):
     vps._validate_component_generated_surface(
-        repo_root, execution, model_files, violations, source_reading=fortran_source)
+        repo_root, execution, model_files, violations, source_reading=fortran_source,
+        identifier_key=fortran_bundle.identifier_key)
 
 
 def _validate_runner_source_files(execution, runner_files, violations, known_case_ids=None):
@@ -19031,8 +19032,12 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             pkg = types.ModuleType("zz_sig_twin")
             if twin_signatures is not None:
                 pkg.signatures = twin_signatures
+            # The pin compares names under the language's case rule, which is a `bundle_facts`
+            # fact (issue #469 PR-3); the twin borrows Fortran's, so its findings stay identical.
+            pkg.bundle = fortran_bundle
             record = backend_registry.Backend(
-                "language", "zz_twin", "zz_sig_twin", backend_provides=frozenset({"signatures"}))
+                "language", "zz_twin", "zz_sig_twin",
+                backend_provides=frozenset({"signatures", "bundle_facts"}))
             with tempfile.TemporaryDirectory() as tmp, \
                     unittest.mock.patch.dict(sys.modules, {"zz_sig_twin": pkg}), \
                     unittest.mock.patch.dict(backend_registry._BACKENDS,
@@ -19350,16 +19355,32 @@ class InfrastructurePublicApiGateTests(unittest.TestCase):
             self.assertTrue(any("module_parameters[1].name 'DP' collides with" in v
                                 for v in violations), violations)
 
-    def test_module_parameters_case_only_name_variant_passes(self) -> None:
-        # §5.1 declares `dp`, the IR transcribes it as `DP` (same Fortran symbol, same value) — a
-        # case-sensitive name comparison would false-reject it as omit+extra; case-folding accepts it.
-        with tempfile.TemporaryDirectory() as tmp:
-            api = self._full_api()
-            api["module_parameters"][0]["name"] = "DP"  # §5.1 has "dp"; same symbol
-            ir_dir = self._seed(Path(tmp), public_api=api)
-            violations: list[str] = []
-            _validate_published_surface(Path(tmp), ir_dir, violations)
-            self.assertEqual(violations, [])
+    def test_module_parameters_case_only_name_variant_is_the_language_s_call(self) -> None:
+        """§5.1 declares `dp`, the IR transcribes it as `DP` (same value). Whether that is one
+        parameter is the language's case rule (`bundle_facts.identifier_key`, issue #469 PR-3):
+        in the Fortran currency alone it passes (one symbol), in the CUDA C++ currency alone it
+        is omit + extra (two identifiers). The target-free Compile pin runs EVERY currency, so
+        there the case-sensitive one refuses it — the leaf copies the §5.1 spelling."""
+        def run(languages: list[str] | None) -> list[str]:
+            with tempfile.TemporaryDirectory() as tmp:
+                api = self._full_api()
+                api["module_parameters"][0]["name"] = "DP"  # §5.1 has "dp"
+                ir_dir = self._seed(Path(tmp), public_api=api)
+                violations: list[str] = []
+                if languages is None:
+                    _validate_published_surface(Path(tmp), ir_dir, violations)
+                else:
+                    with unittest.mock.patch.object(
+                            vps, "_compile_signature_languages", return_value=languages):
+                        _validate_published_surface(Path(tmp), ir_dir, violations)
+                return [v.split(":", 1)[1] if ":" in v else v for v in violations]
+
+        self.assertEqual(run(["fortran"]), [])
+        drift = [
+            "public_api.module_parameters omits controlled_spec §5.1 module parameter 'dp'",
+            "public_api.module_parameters declares parameter 'DP' absent from controlled_spec §5.1"]
+        self.assertEqual(sorted(run(["cuda_cpp"])), sorted(drift))
+        self.assertEqual(sorted(run(None)), sorted(drift))
 
     def test_module_parameters_fortran_expression_value_rejected(self) -> None:
         # The Fortran-expression pass-through (`selected_real_kind(15, 307)`) was removed: a neutral
@@ -24218,14 +24239,18 @@ class ComponentDepOperationsMembershipGateTests(unittest.TestCase):
         v = self._run([self._DEP], self._surface([], source="ir_public_api"))
         self.assertEqual(v, [])
 
-    def test_casefold_membership(self) -> None:
-        # Fortran is case-insensitive: a case-variant of a real published name links fine and
-        # must NOT be a false reject.
+    def test_membership_is_exact(self) -> None:
+        """Target-free, so no language's case rule is in scope (issue #469 PR-3): a name is
+        accepted only if every declared language would resolve it, and a case-sensitive one
+        resolves the published spelling only. A case-variant is refused here, naming the
+        published spelling to copy, rather than passing to a link failure on such a target."""
         v = self._run(
             [{"node_key": "component/dep_base@0.1.0", "kind": "component",
               "operations": ["dep_base__Scale"]}],
             self._surface(["dep_base__scale"]))
-        self.assertEqual(v, [])
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("['dep_base__Scale'] that are NOT in its published surface", v[0])
+        self.assertIn("are exactly: [dep_base__scale]", v[0])
 
 
 class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
@@ -24236,7 +24261,8 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
     def _run(self, *, public_api: object, model_text: str,
              spec_kind: str = "component",
              node_key: str = "component/dep_base@0.1.0",
-             source_reading: object = None) -> list[str]:
+             source_reading: object = None,
+             identifier_key: object = None) -> list[str]:
         with tempfile.TemporaryDirectory() as t:
             repo_root = Path(t)
             ir_ref = "workspace/ir/component__dep_base__0.1.0/ir_20260601_001"
@@ -24258,11 +24284,13 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
             model.write_text(model_text, encoding="utf-8")
             execution = vps._stub_execution(pipeline_dir, node_key)
             v: list[str] = []
-            if source_reading is None:
+            if source_reading is None and identifier_key is None:
                 _validate_component_generated_surface(repo_root, execution, [model], v)
             else:
                 vps._validate_component_generated_surface(
-                    repo_root, execution, [model], v, source_reading=source_reading)
+                    repo_root, execution, [model], v,
+                    source_reading=source_reading or fortran_source,
+                    identifier_key=identifier_key or fortran_bundle.identifier_key)
             return v
 
     def test_the_remedies_are_the_source_reader_s_words(self) -> None:
@@ -24290,6 +24318,21 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
         self.assertEqual(
             self._run(public_api={"published_operations": [
                 {"operation_id": "dep_base__scale"}]}, model_text=self._GOOD_MODEL), [])
+
+    def test_names_are_compared_under_the_language_s_case_rule(self) -> None:
+        """Issue #469 PR-3: the generated `dep_base__Scale` against the published
+        `dep_base__scale` is one operation under a case-insensitive language's key and a
+        missing + an extra one under a case-sensitive language's. The source READER is held
+        fixed; only the key the caller supplies varies."""
+        from tools.backends.language.cuda_cpp import bundle as cuda_bundle
+        model = self._GOOD_MODEL.replace("dep_base__scale", "dep_base__Scale")
+        api = {"published_operations": [{"operation_id": "dep_base__scale"}]}
+        self.assertEqual(self._run(public_api=api, model_text=model,
+                                   identifier_key=fortran_bundle.identifier_key), [])
+        v = self._run(public_api=api, model_text=model, identifier_key=cuda_bundle.identifier_key)
+        self.assertEqual(len(v), 2, v)
+        self.assertTrue(any("dep_base__scale" in x for x in v), v)
+        self.assertTrue(any("dep_base__Scale" in x for x in v), v)
 
     def test_a_prefixed_prototype_is_not_an_extra_published_operation(self) -> None:
         # Issue #266: the published operation takes a procedure whose prototype the model
