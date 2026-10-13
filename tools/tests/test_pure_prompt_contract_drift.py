@@ -942,8 +942,10 @@ PINNED: dict[str, str] = {
     # by diffing this tuple against origin/main b05b4ee2's: the `fortran`
     # `checks_contract_gate_guards_section` moved and no other member. Witness:
     # orch_20261013T082603Z_14368a80 (codex, `harness_fortran_cpu`, `fortran_cpu`,
-    # `validate.execute` post-execute refusal, `checks` = `{"": …}`).
-    "pure-73": "69ebca45890edcae90bf4f3225b42045709ad6d1b773654f2dd4d2bd320562ec",
+    # `validate.execute` post-execute refusal, `checks` = `{"": …}`). Re-pinned in place during
+    # the review loop (not shipped): the remedy names an integer-variable subscript, since a
+    # subscript calling `size` faults on the same release.
+    "pure-73": "853457f50a7d63b147527c0e3fbcc1b972530b7d0c58f53d7df53ee577814856",
 }
 
 

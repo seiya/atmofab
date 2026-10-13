@@ -232,17 +232,20 @@ node's self-test).
   components leads back to (a deferred-length character, a `real(dp)` array, an integer
   index array, a component of another non-recursive type) is unaffected, and so is a
   `pointer` component of the type's own type.
-- **A structure constructor is not given another object's deferred-length character
-  component.** Inside `type :: t` with `character(len=:), allocatable :: id`, the constructor
-  `t(src(j)%id, 'pass')` — its value for `id` being a component reference of the same kind,
-  from a scalar or an array element — is conforming f2008 that the `Generate.gate` syntax
-  check, the lint check and Build all accept, and the GNU Fortran release the `fortran`
-  targets build with gives `id` an EMPTY value (length 0) in the new object, at every
-  optimisation level. The same constructor given a literal, a local deferred-length variable
-  the component was assigned to, or an expression (`trim(src(j)%id)`, `src(j)%id // ''`) is
-  correct, and so is appending the element itself (`[acc, src(j)]`); the array constructor is
-  not the trigger (a scalar `one = t(src(j)%id, 'pass')` is empty too). No gate reads for it:
-  the defect surfaces where the runner's output is checked at `Validate.execute` (a fold keyed
-  on the emptied ids collapses to one `""` entry, which the post-execute check refuses). Copy
-  such a component through a local variable or an expression, or assign the new element's
-  components one by one (`acc(k)%id = src(j)%id`), rather than through the constructor.
+- **A structure constructor is not given a deferred-length character component.** Inside
+  `type :: t` with `character(len=:), allocatable :: id`, the constructor `t(src(j)%id, 'pass')`
+  — its value for `id` being a component reference of the same kind, from a scalar, an array
+  element, or the object being assigned (`x = t(x%id, 'fail')`) — is conforming f2008 that the
+  `Generate.gate` syntax check, the lint check and Build all accept, and the GNU Fortran release
+  the `fortran` targets build with gives `id` an EMPTY value (length 0) in the new object, at
+  every optimization level. The same constructor given a literal, a local deferred-length
+  variable the component was assigned to, or an expression (`trim(src(j)%id)`,
+  `src(j)%id // ''`) is correct, and so is appending the element itself (`[acc, src(j)]`); the
+  array constructor is not the trigger (a scalar `one = t(src(j)%id, 'pass')` is empty too). No
+  gate reads for it: the defect surfaces where the runner's output is checked at
+  `Validate.execute` (a fold keyed on the emptied ids collapses to one `""` entry, which the
+  post-execute check refuses). Copy such a component through a local variable or an expression,
+  or assign the new element's components one by one with the subscript held in an integer
+  variable (`k = size(acc)`, then `acc(k)%id = src(j)%id`), rather than through the
+  constructor: on the same release, assigning a deferred-length component through a subscript
+  that calls `size` (`acc(size(acc))%id = src(j)%id`) faults at run time (SIGSEGV).
