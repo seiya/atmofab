@@ -13167,6 +13167,40 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
                 violations,
             )
 
+    def test_trial_meta_source_binary_id_must_name_an_existing_build(self) -> None:
+        """A recorded source_binary_id with no `binary/<id>/bin/` is rejected, and the
+        violation names the key trial_meta actually carries."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            _create_minimal_execution_tree(
+                repo_root,
+                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text="module m\nimplicit none\nend module m\n",
+                runner_text="program r\nimplicit none\nend program r\n",
+                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+            )
+            node_dir = (
+                repo_root
+                / "workspace"
+                / "pipelines"
+                / "problem__shallow_water2d__0.3.0" / _TARGET_ID
+                / "shallow-water2d_20260415_001"
+                / "runs"
+                / "run_test_001"
+                / "problem__shallow_water2d__0.3.0"
+            )
+            trial_meta_path = node_dir / "trial_meta.json"
+            trial_meta = json.loads(trial_meta_path.read_text(encoding="utf-8"))
+            trial_meta["source_binary_id"] = "build_absent_999"
+            _write_json(trial_meta_path, trial_meta)
+            violations = validate(repo_root=repo_root, workspace_root="workspace")
+            self.assertTrue(
+                any("source_binary_id='build_absent_999' does not resolve to an existing build"
+                    in v for v in violations),
+                violations,
+            )
+
     def test_run_program_rejects_executable_outside_source_build_id(self) -> None:
         """The matched run_program record's executable must resolve under
         `<pipeline>/build/<source_build_id>/bin/`. A trial_meta that claims
@@ -13214,7 +13248,7 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
             violations = validate(repo_root=repo_root, workspace_root="workspace")
             self.assertTrue(
                 any(
-                    "executable" in v and "must resolve under" in v
+                    "executable" in v and "must resolve under source_binary_id=" in v
                     for v in violations
                 ),
                 violations,
