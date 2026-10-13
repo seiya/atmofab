@@ -28,18 +28,30 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 _JSON_FENCE_RE = re.compile(r"(?ms)^```json[ \t]*\n(.*?)^```[ \t]*$")
 
 
+def the_json_example(text: str) -> str:
+    """The body of the one ```json fence in `text`. Exactly one: a second example would go
+    unchecked, and none means the fence spelling changed and the caller would check nothing."""
+    fences = _JSON_FENCE_RE.findall(text)
+    if len(fences) != 1:
+        raise ValueError(f"expected exactly one ```json fence, found {len(fences)}")
+    return fences[0]
+
+
 class BundleExampleTest(unittest.TestCase):
     def test_the_contract_example_is_a_valid_bundle(self) -> None:
         doc_path = REPO_ROOT / "docs" / "workflow" / "CODEGEN_BUNDLE_CONTRACT.md"
-        fences = _JSON_FENCE_RE.findall(doc_path.read_text(encoding="utf-8"))
-        # Exactly one: a second example would go unchecked by the index below, and zero means
-        # the fence spelling changed and this test would check nothing.
-        self.assertEqual(len(fences), 1, f"expected one ```json fence in {doc_path}")
-        bundle = json.loads(fences[0])
+        bundle = json.loads(the_json_example(doc_path.read_text(encoding="utf-8")))
         violations = cb.validate_bundle(bundle)
         self.assertEqual(violations, [],
                          "the bundle example in CODEGEN_BUNDLE_CONTRACT.md is rejected by "
                          f"validate_bundle: {violations}")
+
+    def test_the_example_extractor_counts_json_fences_only(self) -> None:
+        one = 'x\n```json\n{"a": 1}\n```\n```\nuntagged\n```\n```python\np\n```\n'
+        self.assertEqual(the_json_example(one), '{"a": 1}\n')
+        for text in ("```\n{}\n```\n", one + '```json\n{"b": 2}\n```\n'):
+            with self.subTest(text=text), self.assertRaises(ValueError):
+                the_json_example(text)
 
 
 def _schema_patterns(node: object, path: str = "") -> Iterator[tuple[str, str]]:
@@ -68,7 +80,25 @@ _ANCHOR_EXEMPT: dict[tuple[str, str], str] = {
 _EXPECTED_PATTERN_COUNT = 18
 
 
+def anchor_problem(pattern: str) -> str | None:
+    """Why `pattern` breaks the whole-string anchor rule of `spec/schema/SCHEMA.md`, or None."""
+    for token in ("$", r"\A", r"\Z"):
+        if token in pattern:
+            return f"contains {token!r}"
+    if not (pattern.startswith("^") and pattern.endswith(r"(?![\s\S])")):
+        return "must anchor with '^' … '(?![\\s\\S])'"
+    return None
+
+
 class SchemaAnchorTest(unittest.TestCase):
+    def test_the_anchor_rule_on_synthetic_patterns(self) -> None:
+        self.assertIsNone(anchor_problem(r"^[a-z]+(?![\s\S])"))
+        # The token probes keep both ends right, so only the token clause can refuse them.
+        for bad in (r"^[a-z]+$", r"^[a-z]+", r"[a-z]+(?![\s\S])", r"^[a-z]+$(?![\s\S])",
+                    r"^\A[a-z]+(?![\s\S])", r"^[a-z]+\Z(?![\s\S])"):
+            with self.subTest(pattern=bad):
+                self.assertIsNotNone(anchor_problem(bad))
+
     def test_every_schema_pattern_uses_the_portable_anchor(self) -> None:
         # `^` … `(?![\s\S])`, not `^` … `$`: under Python regex `$` also matches before a
         # trailing newline (the jsonschema library applies the pattern with re.search), while
@@ -88,12 +118,8 @@ class SchemaAnchorTest(unittest.TestCase):
                     exempt_seen[(rel, holder)] = pattern
                     continue
                 with self.subTest(schema=rel, holder=holder, pattern=pattern):
-                    self.assertNotIn("$", pattern)
-                    self.assertNotIn(r"\A", pattern)
-                    self.assertNotIn(r"\Z", pattern)
-                    self.assertTrue(pattern.startswith("^") and pattern.endswith(r"(?![\s\S])"),
-                                    f"{rel}{holder}: {pattern!r} must anchor with "
-                                    "'^' … '(?![\\s\\S])' (spec/schema/SCHEMA.md)")
+                    self.assertIsNone(anchor_problem(pattern),
+                                      f"{rel}{holder}: {pattern!r} (spec/schema/SCHEMA.md)")
             self.assertGreaterEqual(per_file, 1, f"the walk reached no pattern in {rel}")
             found += per_file
         self.assertEqual(found, _EXPECTED_PATTERN_COUNT)
@@ -148,9 +174,11 @@ class RetiredArtifactNameTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             planted: set[str] = set()
-            for top in _RETIRED_NAME_ROOTS:
-                for suffix in _RETIRED_NAME_SUFFIXES:
-                    for name in RETIRED_ARTIFACT_NAMES:
+            # Spelled out rather than read from the module constants: a family generated from
+            # the constant shrinks with it, and dropping a root, a suffix or a name would pass.
+            for top in ("docs", "spec", "tools/prompt_templates"):
+                for suffix in (".md", ".yaml", ".json", ".txt"):
+                    for name in ("dependency.resolved.yaml", "case.resolved.yaml"):
                         rel = f"{top}/nested/{name.split('.')[0]}{suffix}"
                         path = root / rel
                         path.parent.mkdir(parents=True, exist_ok=True)
