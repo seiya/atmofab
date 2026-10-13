@@ -19961,6 +19961,25 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
             (tmp / "workspace" / "ir" / "x" / "spec.ir.yaml").unlink()
             self.assertEqual(self._run(ex, tmp), [])
 
+    def test_the_stale_ir_guard_matches_names_under_the_target_language_s_key(self) -> None:
+        """Issue #469 PR-3 (a round-1 survivor): an IR transcribing §5.1's `dp` as `DP` is one
+        parameter to a Fortran target and a stale IR to a CUDA C++ one, because the guard takes
+        the TARGET's `bundle_facts.identifier_key` — not a fold of its own."""
+        import tempfile
+        for language, stale in (("fortran", False), ("cuda_cpp", True)):
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as t:
+                tmp = Path(t)
+                ex = self._seed(tmp, source=self._GOOD_SOURCE, language=language)
+                ir_path = tmp / "workspace" / "ir" / "x" / "spec.ir.yaml"
+                ir = json.loads(ir_path.read_text(encoding="utf-8"))
+                self.assertEqual(ir["public_api"]["module_parameters"][0]["name"], "dp")
+                ir["public_api"]["module_parameters"][0]["name"] = "DP"
+                ir_path.write_text(json.dumps(ir), encoding="utf-8")
+                violations = self._run(ex, tmp)
+                self.assertEqual(
+                    any(isinstance(v, vps.StaleDependencyIRViolation) for v in violations),
+                    stale, violations)
+
     def test_the_stale_ir_guard_covers_signatures_not_only_module_parameters(self) -> None:
         """m3 from round 1: GREEN over the whole tree, on the branch's own HEADLINE claim.
 
@@ -24340,6 +24359,43 @@ class ComponentGeneratedSurfaceGateTests(unittest.TestCase):
         self.assertEqual(
             self._run(public_api={"published_operations": [
                 {"operation_id": "dep_base__scale"}]}, model_text=self._GOOD_MODEL), [])
+
+    def test_the_caller_hands_the_target_language_s_key(self) -> None:
+        """WIRING (issue #469 PR-3, a round-1 survivor): the Generate.static caller passes the
+        TARGET language's `bundle_facts.identifier_key`, not a fold of its own. Driven through
+        `_validate_generate_outputs_for_generation` once per real language, spying on the gate
+        and requiring the key it receives to answer as that language does."""
+        from tools.tests.target_fixtures import install_target_profile, profile_with
+        for language, folds in (("fortran", True), ("cuda_cpp", False)):
+            with self.subTest(language=language), tempfile.TemporaryDirectory() as t:
+                repo_root = Path(t)
+                ir_ref = "workspace/ir/component__dep_base__0.1.0/ir_20260601_001"
+                ir_dir = repo_root / ir_ref
+                ir_dir.mkdir(parents=True)
+                (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump({
+                    "meta": {"spec_kind": "component", "spec_id": "dep_base"},
+                    "public_api": {"published_operations": [
+                        {"operation_id": "dep_base__scale"}]}}), encoding="utf-8")
+                install_target_profile(
+                    repo_root, profile_with(toolchain={"language": language}))
+                pipeline_dir = (repo_root / "workspace/pipelines/component__dep_base__0.1.0"
+                                / _TARGET_ID / "p1")
+                src_dir = pipeline_dir / "source" / "src_20260601_001" / "src"
+                src_dir.mkdir(parents=True)
+                (pipeline_dir / "lineage.json").write_text(
+                    json.dumps({"node_key": "component/dep_base@0.1.0", "ir_ref": ir_ref}),
+                    encoding="utf-8")
+                facts = backend_registry.capability_module("language", language, "bundle_facts")
+                (src_dir / facts.model_basename("dep_base")).write_text(
+                    self._GOOD_MODEL, encoding="utf-8")
+                execution = vps._stub_execution(pipeline_dir, "component/dep_base@0.1.0")
+                with unittest.mock.patch.object(
+                        vps, "_validate_component_generated_surface", autospec=True) as spy:
+                    vps._validate_generate_outputs_for_generation(
+                        repo_root, execution, "src_20260601_001", [])
+                self.assertEqual(spy.call_count, 1)
+                key = spy.call_args.kwargs["identifier_key"]
+                self.assertEqual(key("DEP_BASE__SCALE") == key("dep_base__scale"), folds)
 
     def test_names_are_compared_under_the_language_s_case_rule(self) -> None:
         """Issue #469 PR-3: the generated `dep_base__Scale` against the published
