@@ -5395,7 +5395,9 @@ class Conductor:
     def _write_dependency_surface(self, refs: NodeRefs) -> list[dict[str, Any]]:
         """Author `<ir_ref>/dependency_surface.json` host-side at Compile start: for each COMPONENT
         direct dependency, its published operation NAME surface (`published_operations` + a `source`
-        tag), resolved from the dep's certified IR public_api (the L1 pin) else its certified source.
+        tag), resolved from the dep's certified IR public_api (the L1 pin), and — for a resolved
+        dependency — that IR's `module_parameters` / `interfaces` / `signatures` verbatim under
+        `public_api` (issue #486), which the producer is shown and the reviewer reads in the file.
 
         The consumer IR does not exist yet at compile start, so the direct-dep set is read from the
         just-authored `dependency_graph.json` (a pure function of deps.yaml + spec_catalog.yaml),
