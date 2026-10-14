@@ -590,7 +590,7 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
                 self.assertIn("deterministic", message)
                 self.assertIn("leaf_mode", message)
 
-    def test_the_refusal_lands_before_the_running_row_is_durable(self) -> None:
+    def test_the_request_side_refuses_a_neither_shape_request(self) -> None:
         """The request-side statement of the two-shapes rule, driven on the validator itself.
 
         `_validate_launch_request_payload` refuses a neither-shape request before the prompt is
@@ -623,8 +623,9 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
         Each arm asserts its refusal MESSAGE, so an arm that refuses earlier for another reason
         fails rather than passing vacuously. The controls run first and must leave every
         record the arms assert absent, which is what shows the absence assertions can see
-        them. The last row interrupts the launch-file writes themselves: the block must come
-        after them, so an interrupted write leaves none of the three either."""
+        them, and they also pin the values the moved block writes. The last row interrupts the
+        LAST launch-file write (`reply.txt`): the block must come after all four, so an
+        interrupted write leaves none of the three either."""
         from unittest import mock
 
         from tools.pure_leaf import PURE_PROMPT_SENTINEL
@@ -667,6 +668,19 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
                 self.assertEqual(records(repo_root, oid, arid),
                                  dict.fromkeys(("row", "edge", "hook", "launches", "marker",
                                                 "claude_marker"), True))
+                root = repo_root / "workspace" / "orchestrations" / oid
+                (row,) = [e for e in ort._read_session_run_index(repo_root, oid)["entries"]
+                          if e.get("agent_run_id") == arid]
+                self.assertEqual((row.get("agent_session_id"), row.get("agent_role"),
+                                  row.get("status")), (arid, "substep", "running"))
+                self.assertIn({"parent_agent_run_id": "orch_run_to_001",
+                               "child_agent_run_id": arid, "relation_type": "launch"},
+                              ort._load_graph(root / "agent_graph.json")["edges"])
+                hooks = [json.loads(line) for line in ort._hooks_log_path(repo_root, oid)
+                         .read_text(encoding="utf-8").splitlines() if line.strip()]
+                self.assertIn("allow", [h.get("status") for h in hooks
+                                        if h.get("hook") == "pre_agent_launch"
+                                        and h.get("child_agent_run_id") == arid])
 
         neither = dict(pure)
         for key in ("leaf_mode", "pure_context", "deterministic"):
@@ -717,18 +731,30 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
                                  dict.fromkeys(("row", "edge", "hook", "launches", "marker",
                                                 "claude_marker"), False))
 
-        # The crash window: the launch files are interrupted after `request.json` and
-        # `response.json`. Those two may exist; none of the three bookkeeping records may.
+        # The crash window: the LAST launch-file write (`reply.txt`) fails, so the other three
+        # exist — asserted, so the row cannot go vacuous by failing earlier — and none of the
+        # three bookkeeping records may.
+        real_write_text = ort._write_text
+
+        def fail_on_reply(path: Path, text: str) -> None:
+            if path.name.endswith(".reply.txt"):
+                raise OSError("disk")
+            real_write_text(path, text)
+
         with self.subTest(arm="interrupted launch-file write"), \
                 tempfile.TemporaryDirectory() as tmp:
             repo_root, oid, arid = Path(tmp), "orch_to_001", det["agent_run_id"]
             _seed_launchable(repo_root, oid)
-            with mock.patch.object(ort, "_write_text", side_effect=OSError("disk")), \
+            with mock.patch.object(ort, "_write_text", side_effect=fail_on_reply), \
                     self.assertRaisesRegex(OSError, "disk"):
                 ort.record_launch(repo_root=repo_root, orchestration_id=oid,
                                   parent_agent_run_id="orch_run_to_001",
                                   child_agent_run_id=arid, request_payload=dict(det),
                                   response_payload=response(arid))
+            launches = repo_root / "workspace" / "orchestrations" / oid / "launches"
+            self.assertEqual(sorted(p.name for p in launches.glob(f"{arid}.*")),
+                             sorted(f"{arid}.{s}" for s in
+                                    ("request.json", "response.json", "prompt.txt")))
             seen = records(repo_root, oid, arid)
             self.assertEqual({k: seen[k] for k in ("row", "edge", "hook")},
                              dict.fromkeys(("row", "edge", "hook"), False))
