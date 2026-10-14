@@ -16,7 +16,7 @@ Review checklist: apply EVERY verification item of the phase contract inlined be
 **IR under review (the producer's output — judge it, do not re-author it):**
 <ir_document>
 
-**Published dependency surface (host-resolved: the operation names each component dependency actually publishes):**
+**Published dependency surface (host-resolved from each component dependency's certified IR: the operation names it publishes, and its `public_api` — `signatures`, `interfaces` (named procedure prototypes) and `module_parameters` — copied verbatim. Where the controlled spec passes a procedure of this node to a dependency's procedure-typed argument, the `interfaces` entry here is the prototype the step defining that procedure must state its arguments by, as the phase contract's V4c-iii item says):**
 <dependency_surface_document>
 
 **Phase contract (the canonical schema, verification items, and severity rubric of this phase, inlined in full):**
