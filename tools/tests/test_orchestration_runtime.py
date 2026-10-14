@@ -12946,7 +12946,7 @@ class DependencyFactsRenderTests(unittest.TestCase):
         self.assertIn("component/bnd@0.1.0", block)
         self.assertIn("surface unresolved", block)
 
-    _RK_PUBLIC_API = {
+    _RK_PUBLIC_API: ClassVar[dict] = {
         "module_parameters": [{"name": "dp", "value": "float64"}],
         "interfaces": [{"name": "rk_rhs", "signature": {
             "kind": "subroutine", "name": "rk_rhs", "args": [
@@ -14109,14 +14109,14 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
     `module_parameters` / `interfaces` / `signatures` verbatim (issue #486), for the
     compile.generate `dependency_surface.json` sidecar."""
 
-    _RHS_IFACE = {"name": "dep_base_rhs", "signature": {
+    _RHS_IFACE: ClassVar[dict] = {"name": "dep_base_rhs", "signature": {
         "kind": "subroutine", "name": "dep_base_rhs", "args": [
             {"name": "n", "rank": 0, "intent": "in", "spec": {"type": "integer"}},
             {"name": "u", "rank": 1, "intent": "in", "dims": ["n"],
              "spec": {"type": "real", "kind": "dp"}},
             {"name": "dudt", "rank": 1, "intent": "out", "dims": ["n"],
              "spec": {"type": "real", "kind": "dp"}}]}}
-    _ADVANCE_SIG = {"symbol": "dep_base__advance", "signature": {
+    _ADVANCE_SIG: ClassVar[dict] = {"symbol": "dep_base__advance", "signature": {
         "kind": "subroutine", "name": "dep_base__advance", "args": [
             {"name": "rhs", "rank": 0,
              "spec": {"type": "procedure", "interface": "dep_base_rhs"}}]}}
