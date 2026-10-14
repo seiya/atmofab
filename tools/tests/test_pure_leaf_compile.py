@@ -145,7 +145,11 @@ def _write_compile_node(repo: Path, *, kind: str = "component", profile: bool = 
         encoding="utf-8")
     (ir_dir / "dependency_surface.json").write_text(
         json.dumps([{"node_key": node, "published_operations": [f"{spec_id}__apply"],
-                     "source": "ir_public_api"}], indent=2),
+                     "source": "ir_public_api",
+                     # Issue #486: a resolved entry carries the dep IR's ABI keys.
+                     "public_api": {"interfaces": [{"name": f"{spec_id}_rhs", "signature": {
+                         "kind": "subroutine", "name": f"{spec_id}_rhs", "args": []}}]}}],
+                   indent=2),
         encoding="utf-8")
     if stage_ir:
         (ir_dir / "spec.ir.yaml").write_text(yaml.safe_dump(_valid_ir(kind), sort_keys=False),
@@ -455,6 +459,8 @@ class PureCompileContextTests(_Fixture):
         ctx = c._build_pure_compile_verify_context(self.refs)
         self.assertIn("schema_version", ctx["ir_document"])
         self.assertIn(f"{_SPEC_ID}__apply", ctx["dependency_surface_document"])
+        # The reviewer reads the file verbatim, so the prototype the producer is shown reaches it.
+        self.assertIn(f'"name": "{_SPEC_ID}_rhs"', ctx["dependency_surface_document"])
 
     #: The V3 coverage rule as both compile leaves read it (issue #386). A `problem` `tests.md`
     #: names no `checks.<id>` key in its Diagnostics contract and writes each judgment as test

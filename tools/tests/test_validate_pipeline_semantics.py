@@ -24275,6 +24275,25 @@ class ComponentDepOperationsMembershipGateTests(unittest.TestCase):
     def test_no_sidecar_inert(self) -> None:
         self.assertEqual(self._run([self._DEP]), [])
 
+    def test_public_api_block_in_a_sidecar_entry_is_not_read_by_the_gate(self) -> None:
+        # Issue #486 added the dep IR's `public_api` ABI to each resolved entry; the gate stays a
+        # names-only membership check: a malformed block neither fails a subset nor rescues a
+        # fabricated name.
+        def surface(ops: list[str], public_api: object) -> dict:
+            doc = self._surface(ops)
+            doc["dependencies"][0]["public_api"] = public_api
+            return doc
+        for pa in ("not a mapping", {"signatures": "nope", "interfaces": [None]},
+                   {"signatures": [{"symbol": "dep_base__apply"}]}):
+            with self.subTest(public_api=pa):
+                self.assertEqual(self._run([self._DEP], surface(["dep_base__scale"], pa)), [])
+                v = self._run(
+                    [{"node_key": "component/dep_base@0.1.0", "kind": "component",
+                      "operations": ["dep_base__apply"]}],
+                    surface(["dep_base__scale"], pa))
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("dep_base__apply", v[0])
+
     def test_unresolved_source_inert(self) -> None:
         v = self._run(
             [{"node_key": "component/dep_base@0.1.0", "kind": "component",
