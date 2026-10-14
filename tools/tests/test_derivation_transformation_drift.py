@@ -653,6 +653,15 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # (cross-target predicates excluded), and V3 (ii) says the gate refuses the literal spelling
     # only as the entry's sole state read.
     "compile-docs-14": "1c3dff7766b266275a37a80e0fb258e3b2d249a6bb3124141bcfac49584b3bd8",
+    # compile-docs-15 (issue #486): the dependency surface carries each component dependency's
+    # `public_api` `signatures` / `interfaces` / `module_parameters`. §I/O contract, V4c-ii's
+    # sidecar description and V8's name-half bullet say so; V4c-iii is a new reviewer item (a
+    # procedure passed to a dependency's procedure-typed argument states the listed prototype);
+    # the V4c-ii gate bullet says the gate does not read the ABI block; §On-failure says the
+    # surface is an input. A bump, not a re-pin: a leaf reading it authors under a new
+    # obligation. No gate changed, so no IR is newly refused; only `phase_contract_document`
+    # moved (the two examples are untouched).
+    "compile-docs-15": "4571c261db9eef91aea42f7cee5b34a65a7526929a1f8941d180fabee7964864",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

@@ -21792,7 +21792,13 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # its cross-target predicates; V3 (ii) says the gate refuses that spelling only as the
         # entry's sole state read): bumped 96600->96800; measured 96694 at the commit that takes
         # this bump.
-        "docs/workflow/phases/phase_01_compile.md": 96800,
+        # Bumped 96800->98000 (issue #486): the dependency surface carries each component
+        # dependency's `public_api` ABI — §I/O contract, V4c-ii's sidecar description, the V8
+        # name-half bullet and the V4c-ii gate bullet say so, V4c-iii (a procedure passed to a
+        # dependency's procedure-typed argument states the listed prototype) is new, and
+        # §On-failure says the surface is an input. Measured 97923 with `wc -c` in
+        # /home/seiya/atmofab at the commit that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 98000,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
@@ -27556,13 +27562,14 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/pure_compile_generate.txt:f97307aa854be901":
+        "tools/prompt_templates/pure_compile_generate.txt:61dcd996a8724358":
             "rule 3: read the WHOLE derived set; deps.yaml alone is rejected; the runner "
             "harness is the target's and is not in the set (issue #284, which also removed "
             "rules 5-6 and renumbered 7-9 of the same paragraph; issue #346 appended rule 8, "
             "case input routing, and left rule 3 unchanged; issue #358 rewrote rule 7's "
             "empty-`profiles` sentence; rule 3 unchanged; issue #483 extended rule 5's "
-            "primary-predicate obligations; rule 3 unchanged)",
+            "primary-predicate obligations; rule 3 unchanged; issue #486 extended rule 4 with "
+            "the catalog's published ABI; rule 3 unchanged)",
         "docs/workflow/phases/phase_01_compile.md:8669240102ee7090":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
             "infrastructure node in it (issue #284)",

@@ -3348,7 +3348,10 @@ four layers below still describe the NAME path, which PR-2 EXTENDS rather than r
 - **L2 — the consumer's Compile is shown a real catalog.** The conductor authors `<ir_ref>/dependency_surface.json` at
   compile-phase start (`_write_dependency_surface` → `_resolve_component_dep_surface`), resolving each component dep's
   published names from its certified IR public_api (else its certified source, else `unresolved`). One snapshot feeds both
-  the `compile.generate` prompt (the injected op-name catalog) and the L3 gate — TOCTOU-free.
+  the `compile.generate` prompt (the injected op-name catalog) and the L3 gate — TOCTOU-free. (The certified-source
+  fallback went with issue #284. Since issue #486 each resolved entry also carries the dep IR's `public_api`
+  `signatures` / `interfaces` / `module_parameters` verbatim, rendered into the prompt and read by `compile.verify` in the
+  file; the L3 gate still reads names only.)
 - **L3 — V4c-ii is now deterministic.** `_validate_component_dep_operations_membership` checks the authored
   `operations ⊆` the sidecar's published surface, embedding the full catalog + `source` tag in the violation (the
   slim-repair lifeline).
@@ -3593,7 +3596,19 @@ stage uses and compares the `sha256`. Four decisions worth keeping:
 - **Signatures rendered from the dependency's IR into `<dependency_facts>` as a GATE.** What Build links is the SOURCE,
   and PR-1 makes that binding durable; rendering an IR signature back into the target language needs backend dispatch
   from the runtime, which `test_backend_boundary.py` pins. It stays a WARN canary (PR-2).
-- **Duplicating the ABI into the consumer's `dependency_surface.json` sidecar.** `docs/DEVELOPMENT.md` §"Do not persist
+- **Duplicating the ABI into the consumer's `dependency_surface.json` sidecar. REVERSED by issue #486.** What
+  reversed it: `problem/shallow_water2d_channel@0.2.3` §5 passes a local `rhs` to the rk4 component's procedure-typed
+  argument and says it matches §5.1's prototype `dynamics_shallow_water_time_update_2d_rk4_rhs`; the consumer's
+  `compile.generate` prompt carried the operation NAME only, so the prototype was in no input. The codex leaf
+  (`gpt-6.1-sol`) declared `Compile fail` for its absence in 3 of 8 rolls; the Claude leaf passed 8 of 8 by inferring the
+  arguments from prose, which nothing at Compile checks. The sidecar now copies the dep IR's `signatures` / `interfaces`
+  / `module_parameters`. Why the rule below does not forbid it: the sidecar already copies `published_operations` from
+  the same IR as the snapshot of what the consumer's Compile was SHOWN, the dep IR stays the truth source, and the gate
+  that pins it (V8) stays on the dep side; under `docs/DEVELOPMENT.md` "Repair the designed route before adding a second one" the sidecar IS
+  the designed route for dependency facts into Compile, and "read or inject the authority itself" asks for the pinned
+  artifact rather than a paraphrase. Rejected with it: writing the argument list into the consumer's §5 (a second document holding the same
+  facts, no gate between the two, and a `spec_version` bump), and rendering the ABI into the prompt only (the reviewer
+  reads the sidecar verbatim, so producer and reviewer would no longer see one snapshot). The original record, kept: `docs/DEVELOPMENT.md` §"Do not persist
   a value an existing artifact already carries": the dep's certified IR is the carrier. Note the asymmetry that makes
   `closure_bindings` legitimate under the same rule — `lineage.json` also records `resolved_dependencies[]`, but it is
   a LIVE snapshot overwritten at each phase start, not a certification record, which is the same reason
