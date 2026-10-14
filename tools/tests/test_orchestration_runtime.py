@@ -21621,8 +21621,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # the commit that takes this bump. Round 1 (V3 (i)'s CFL example narrowed to a `le`
         # bound, the `xfail` guard's exceedance excluded): measured 96486, no bump. Round 2 (the
         # time variable excluded from the `required_raw_variables` clause; the negated-add form
-        # named): measured 96569, no bump.
-        "docs/workflow/phases/phase_01_compile.md": 96600,
+        # named): measured 96569, no bump. Round 3 (the clause names the test's corroborants, not
+        # its cross-target predicates; V3 (ii) says the gate refuses that spelling only as the
+        # entry's sole state read): bumped 96600->96800; measured 96694 at the commit that takes
+        # this bump.
+        "docs/workflow/phases/phase_01_compile.md": 96800,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

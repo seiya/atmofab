@@ -649,8 +649,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # Re-pinned in round 1 before shipping: V3 (i)'s CFL example is a stability bound (`le`)
     # over only the initial-state speed; an `xfail` guard's exceedance is not it. Round 2: the
     # `required_raw_variables` clause excludes the time variable, and the schema comment names
-    # the negated-add form, spelled the same.
-    "compile-docs-14": "e503038a594f3f188de7c02e74e96035c78709d44d79a8d8783be9a807dbd8dd",
+    # the negated-add form, spelled the same. Round 3: that clause names the test's corroborants
+    # (cross-target predicates excluded), and V3 (ii) says the gate refuses the literal spelling
+    # only as the entry's sole state read.
+    "compile-docs-14": "1c3dff7766b266275a37a80e0fb258e3b2d249a6bb3124141bcfac49584b3bd8",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
