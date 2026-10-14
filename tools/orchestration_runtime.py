@@ -2240,8 +2240,9 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 #               set, heights, direct/transitive split and the adopted profile set);
 #             closure[] — every closure node's certified COMPILE output hash (its IR is what
 #               the reviewer's facts come from);
-#             dependency_surface — the resolved published-operation surface of the component
-#               direct deps as the producer is shown it (`_resolve_component_dep_surface`).
+#             dependency_surface — the resolved published surface of the component direct deps
+#               (op names and each dep IR's `public_api` ABI) as the producer and the reviewer
+#               are shown it (`_resolve_component_dep_surface`).
 #             Nothing here names a target: the graph is `deps.yaml`'s alone (no harness since
 #             R4-a PR-3), and the admissible-toolchain document the producer was shown until
 #             then is gone with the IR's `impl_defaults` (issue #284).
@@ -2969,12 +2970,10 @@ def phase_derivation_inputs(
             "closure": [
                 {"node_key": nk, "ir": _dependency_output_hash(resolver, nk, "compile")}
                 for nk in closure],
-            # The published-operation surface the producer is SHOWN (`dependency_surface.json`,
-            # rendered through `<dependency_facts>`): for a dependency whose certified IR has no
-            # `public_api` it is read off the certified SOURCE, which can change while the IR
-            # stands (a Codex review found the closure's `ir` entries blind to that). Hashed as
-            # the resolved document itself — unresolved entries included — because that is what
-            # both the producer and the membership gate read.
+            # The dependency surface the producer is SHOWN (`dependency_surface.json`, rendered
+            # through `<dependency_facts>`). Hashed as the resolved document itself — operation
+            # names, `public_api` blocks and unresolved entries included — because that is what
+            # the producer, the reviewer and the membership gate read.
             "dependency_surface": _sha256_hex(_canonical_json_bytes(
                 _resolve_component_dep_surface(repo_root, node_key, graph, resolver=resolver))),
         }
@@ -3693,8 +3692,8 @@ def _resolve_component_dep_surface(
     repo_root: Path, node_key: str, graph: Any,
     *, resolver: DerivationResolver | None = None,
 ) -> list[dict[str, Any]]:
-    """Resolve, host-side at COMPILE phase start, the published operation-NAME surface of
-    each COMPONENT direct dependency of ``node_key`` (the consumer, whose own IR does not yet
+    """Resolve, host-side at COMPILE phase start, the published surface (operation names and
+    ``public_api`` ABI) of each COMPONENT direct dependency of ``node_key`` (the consumer, whose own IR does not yet
     exist), for the conductor to author into ``<ir_ref>/dependency_surface.json`` and inject
     into ``compile.generate``.
 
@@ -3709,20 +3708,23 @@ def _resolve_component_dep_surface(
     is never called (the runner harness is host-rendered). Each entry is ``{node_key,
     published_operations: [op_name, ...], source}`` where ``source`` is:
       - ``ir_public_api``   — names read from the dep's CERTIFIED IR
-        ``public_api.published_operations[].operation_id`` (the L1 name pin);
+        ``public_api.published_operations[].operation_id`` (the L1 name pin), and the entry
+        also carries ``public_api``: that IR's ``module_parameters`` / ``interfaces`` /
+        ``signatures``, verbatim, only the keys the IR has (an IR whose §5.1 declares no
+        prototype has no ``interfaces``; one with no ``signatures`` yields names only);
       - ``unresolved``      — no certified IR, or one with no ``public_api``
-        (``published_operations == []``). The ``certified_source`` fallback that read a
-        dependency's model source went with issue #284: a source is a per-target artifact,
-        and this surface is a target-free compile-key input.
+        (``published_operations == []``, no ``public_api`` key). The ``certified_source``
+        fallback that read a dependency's model source went with issue #284: a source is a
+        per-target artifact, and this surface is a target-free compile-key input.
 
-    NAMES ONLY here, and since issue #153 PR-2 that is a statement about THIS sidecar rather than
-    about the design. The clause this docstring used to carry — "the ABI stays derived from the
-    certified source at Generate, never frozen into the IR/sidecar" — described the decision PR-2
-    REVERSED: a `component`'s argument ABI is now authored into its own IR's
-    ``public_api.signatures`` and pinned == controlled_spec §5.1 at ``Compile.static``. What stays
-    true is the CONSUMER side: what a consumer is shown is still the SOURCE interface, because that
-    is what Build stages and links, and a rendered-ABI comparison is a WARN canary rather than a
-    gate. Best-effort: NEVER raises; a malformed / missing graph yields ``[]``.
+    The ``public_api`` copy is how a consumer's Compile reads the contract its controlled_spec
+    delegates to a dependency's §5.1 — a local procedure passed to a procedure-typed argument
+    takes its arguments from the named prototype in ``interfaces`` (issue #486; before it the
+    sidecar carried names only, and a leaf told to "match the prototype" was never shown it).
+    The truth source stays the dependency's IR, which its own ``Compile.static`` pins == its §5.1;
+    this is a snapshot of what the consumer's Compile was shown. Generate is unchanged: what a
+    consumer is shown THERE is still the certified SOURCE interface, because that is what Build
+    stages and links. Best-effort: NEVER raises; a malformed / missing graph yields ``[]``.
     """
     try:
         if not isinstance(graph, dict):
@@ -3770,26 +3772,33 @@ def _resolve_component_dep_surface(
             # Measured when it went (R4-a PR-2): every keyed certified component IR under
             # `workspace/ir/` carries `public_api.published_operations`, and the compile gate
             # refuses a component IR without `public_api`, so no key it fed changes.
-            names = _ir_published_operation_ids(
-                repo_root, kind, spec_id, version, resolver=resolver)
-            if names is not None:
-                entry["published_operations"] = names
+            pa = _ir_public_api(repo_root, kind, spec_id, version, resolver=resolver)
+            if pa is not None:
+                entry["published_operations"] = _published_operation_names(pa)
                 entry["source"] = "ir_public_api"
+                entry["public_api"] = {
+                    k: pa[k] for k in _SURFACE_PUBLIC_API_KEYS if k in pa}
             out.append(entry)
         return out
     except Exception:
         return []
 
 
-def _ir_published_operation_ids(
+# The dependency `public_api` keys copied into a consumer's dependency surface, in render order
+# (issue #486): `published_types` repeats the type entries of `signatures`, and `exercised_by`
+# names test ids the consumer has no use for.
+_SURFACE_PUBLIC_API_KEYS = ("module_parameters", "interfaces", "signatures")
+
+
+def _ir_public_api(
     repo_root: Path, kind: str, spec_id: str, version: str,
     *, resolver: DerivationResolver | None = None,
-) -> list[str] | None:
-    """The ``public_api.published_operations[].operation_id`` names of the CURRENT certified
-    IR for ``(kind, spec_id, version)``, or ``None`` when the IR has NO ``public_api`` block
-    (a legacy IR — the caller reports the dependency `unresolved`). A PRESENT
-    ``public_api`` with an empty/malformed ``published_operations`` yields ``[]`` (authoritative
-    empty), NOT ``None``. NEVER raises."""
+) -> dict[str, Any] | None:
+    """The ``public_api`` mapping of the CURRENT certified IR for ``(kind, spec_id, version)``,
+    or ``None`` when the IR is absent or has NO ``public_api`` block carrying a
+    ``published_operations`` key (a legacy IR — the caller reports the dependency
+    `unresolved`). A PRESENT ``published_operations`` that is empty/malformed is still a
+    ``public_api`` (authoritative empty names), NOT ``None``. NEVER raises."""
     try:
         ir_dir = _certified_ir_dir(repo_root, kind, spec_id, version, resolver=resolver)
         if ir_dir is None:
@@ -3801,16 +3810,22 @@ def _ir_published_operation_ids(
         pa = doc.get("public_api")
         if not isinstance(pa, dict) or "published_operations" not in pa:
             return None
-        pub = pa.get("published_operations")
-        names: list[str] = []
-        if isinstance(pub, list):
-            for it in pub:
-                oid = it.get("operation_id") if isinstance(it, dict) else None
-                if isinstance(oid, str) and oid.strip():
-                    names.append(oid.strip())
-        return names
+        return pa
     except Exception:
         return None
+
+
+def _published_operation_names(pa: dict[str, Any]) -> list[str]:
+    """The stripped ``published_operations[].operation_id`` strings of a ``public_api``
+    mapping; a malformed list or entry contributes nothing."""
+    pub = pa.get("published_operations")
+    names: list[str] = []
+    if isinstance(pub, list):
+        for it in pub:
+            oid = it.get("operation_id") if isinstance(it, dict) else None
+            if isinstance(oid, str) and oid.strip():
+                names.append(oid.strip())
+    return names
 
 
 def _ir_published_signature(
@@ -8976,12 +8991,13 @@ def _load_launch_prompt_templates() -> dict[str, str]:
 
 def _build_dependency_surface_facts(surface: Any) -> str:
     """Render the L2 ``compile.generate`` dependency-surface catalog: for each COMPONENT
-    dependency, its published operation NAMES (conductor-resolved into
-    ``<ir_ref>/dependency_surface.json`` at compile-phase start). Op names only — what a CONSUMER
-    is shown is the source interface, because that is what Build stages and links. Since issue #153
-    PR-2 the producing node's own IR DOES carry its argument ABI (``public_api.signatures``, pinned
-    == §5.1); an earlier version of this sentence said the ABI is "never authored into the IR",
-    which was the design PR-2 reversed.
+    dependency, its published operation NAMES and, under each resolved one, a fenced YAML block
+    of its IR ``public_api`` ``module_parameters`` / ``interfaces`` / ``signatures`` (the keys the
+    entry carries; conductor-resolved into ``<ir_ref>/dependency_surface.json`` at compile-phase
+    start). The block is what lets a consumer's IR state a local procedure it passes to a
+    dependency's procedure-typed argument by the prototype its spec delegates to (issue #486).
+    This is the COMPILE view; at Generate a consumer is still shown the certified source
+    interface (``_published_operations_lines``), because that is what Build stages and links.
 
     This is the authoring leaf's ONLY source of the real dependency op names. It must copy each
     listed name VERBATIM into that dependency's ``direct_deps[].operations``; a name NOT in this
@@ -9001,7 +9017,17 @@ def _build_dependency_surface_facts(surface: Any) -> str:
         "module_parameters (issue #153 PR-2 — a component pins its full ABI, not only names); a "
         "`profile`/`problem` node OMITS `public_api`. For a "
         "dependency shown as `unresolved` below, use the operation_id(s) that dependency's "
-        "controlled_spec §5 declares, verbatim.",
+        "controlled_spec §5 declares, verbatim. Under each resolved dependency is its published "
+        "ABI, copied verbatim from its certified IR `public_api` (the §5.1 block that "
+        "dependency's own Compile pinned): `signatures` (each published operation's argument "
+        "list, in neutral form), `interfaces` (the named procedure prototypes an argument with "
+        "`spec: {type: procedure, interface: <name>}` refers to) and `module_parameters` (the "
+        "kinds those signatures name). Where YOUR controlled_spec passes a procedure of this "
+        "node to such a procedure-typed argument, that prototype IS its argument contract: the "
+        "IR step that defines the procedure states its arguments by the prototype (type, kind, "
+        "rank, explicit shape, `intent`; the names are yours). Read them here; do not infer "
+        "them from prose, and do not declare a `Compile fail` for their absence when they are "
+        "listed here.",
     ]
     for entry in surface:
         if not isinstance(entry, dict):
@@ -9015,12 +9041,29 @@ def _build_dependency_surface_facts(surface: Any) -> str:
             [str(o).strip() for o in ops if isinstance(o, str) and o.strip()]
             if isinstance(ops, list) else []
         )
-        if source == "unresolved" or not names:
+        # The ABI block goes under every entry the reviewer's file carries it on — a resolved
+        # entry with an empty name list included — so producer and reviewer read one snapshot.
+        pa = entry.get("public_api") if source != "unresolved" else None
+        block = (
+            {k: pa[k] for k in _SURFACE_PUBLIC_API_KEYS if k in pa}
+            if isinstance(pa, dict) else {})
+        if source == "unresolved":
             lines.append(
                 f"- {node_key}: (surface unresolved — use the operation_id(s) this dependency's "
                 "controlled_spec §5 declares, verbatim)")
+        elif not names:
+            lines.append(
+                f"- {node_key}: (publishes no operation names — use the operation_id(s) this "
+                "dependency's controlled_spec §5 declares, verbatim"
+                + ("; its ABI follows)" if block else ")"))
         else:
             lines.append(f"- {node_key}: {', '.join(names)} (source: {source})")
+        if block:
+            lines.append("  ```yaml")
+            lines.extend(
+                f"  {ln}" for ln in _require_yaml().safe_dump(
+                    block, sort_keys=False, allow_unicode=True).rstrip("\n").split("\n"))
+            lines.append("  ```")
     if len(lines) == 1:
         return ""
     return "\n".join(lines)
@@ -9039,9 +9082,9 @@ def _build_dependency_facts(request_payload: dict[str, Any]) -> str:
 
     For ``compile.generate`` the block is DIFFERENT: the consumer IR does not exist yet, so there
     is no ``resolved_dependencies``. Instead the conductor injects ``dependency_surface`` — the
-    L2 published-operation NAME catalog of the node's component dependencies — and this renderer
-    formats that (op names only, an AUTHORING input: the deterministic L3 gate rejects any dep
-    ``operations`` name not in it).
+    L2 published-surface catalog of the node's component dependencies — and this renderer
+    formats that: op names (an AUTHORING input: the deterministic L3 gate rejects any dep
+    ``operations`` name not in it) and each dependency's ``public_api`` ABI block (issue #486).
 
     Returns ``""`` for deterministic requests and when no dependency facts are present
     (a leaf node, or a phase the conductor does not inject them for).

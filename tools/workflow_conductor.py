@@ -1815,11 +1815,12 @@ def build_launch_request(
     # are omitted there. The `<dependency_facts>` renderer drops them when empty.
     if resolved_dependencies and not deterministic and step in ("generate", "validate"):
         req["resolved_dependencies"] = list(resolved_dependencies)
-    # L2: the component-dep published-surface catalog (op names only), injected ONLY into the
-    # compile.generate leaf so it transcribes real dependency op names into its public_api + dep
-    # operations. Rendered through the same `<dependency_facts>` placeholder (compile branch of
-    # `_build_dependency_facts`). compile.verify sees the frozen IR, not this, so it is scoped to
-    # the authoring substep.
+    # L2: the component-dep published-surface catalog (op names, plus each dep IR's `public_api`
+    # ABI since issue #486), injected ONLY into the compile.generate leaf so it transcribes real
+    # dependency op names into its dep operations and reads the prototypes its spec delegates to.
+    # Rendered through the same `<dependency_facts>` placeholder (compile branch of
+    # `_build_dependency_facts`). compile.verify reads the same snapshot as the
+    # `dependency_surface.json` file itself (`dependency_surface_document`), not through this.
     if dependency_surface and step == "compile" and substep == "generate":
         req["dependency_surface"] = list(dependency_surface)
     # R5: a conductor-resolved certified sibling exemplar, injected ONLY for the sole authoring
@@ -5395,7 +5396,9 @@ class Conductor:
     def _write_dependency_surface(self, refs: NodeRefs) -> list[dict[str, Any]]:
         """Author `<ir_ref>/dependency_surface.json` host-side at Compile start: for each COMPONENT
         direct dependency, its published operation NAME surface (`published_operations` + a `source`
-        tag), resolved from the dep's certified IR public_api (the L1 pin) else its certified source.
+        tag), resolved from the dep's certified IR public_api (the L1 pin), and — for a resolved
+        dependency — that IR's `module_parameters` / `interfaces` / `signatures` verbatim under
+        `public_api` (issue #486), which the producer is shown and the reviewer reads in the file.
 
         The consumer IR does not exist yet at compile start, so the direct-dep set is read from the
         just-authored `dependency_graph.json` (a pure function of deps.yaml + spec_catalog.yaml),
@@ -6728,7 +6731,8 @@ class Conductor:
     def _build_pure_compile_verify_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `compile.verify` reviewer sees.
 
-        It reads the IR under review and the host-resolved published-operation surface (which the
+        It reads the IR under review and the host-resolved published surface — operation names and
+        each dependency's `public_api` ABI (which the
         producer receives through `<dependency_facts>` instead; the reviewer gets the raw sidecar
         because `build_launch_request` attaches the surface to the authoring substep only). The
         severity rubric is NOT a separate slice here: it is a subsection of the phase contract

@@ -961,6 +961,18 @@ PINNED: dict[str, str] = {
     # that leaves no state fact takes the §5 statement, (d) excludes the time variable, and the
     # closing sentence names the negated-add form, spelled the same.
     "pure-74": "9ccb55b18ffcb6cc85e0eb2f69727a597508defc420fb72cdc332cf0a71e8047",
+    # pure-75 (issue #486): the consumer's dependency surface now carries each component
+    # dependency's `public_api` `signatures` / `interfaces` / `module_parameters`. The
+    # `pure_compile_verify.txt` heading of `<dependency_surface_document>` says so and points the
+    # reviewer at the phase contract's V4c-iii (a local procedure passed to a procedure-typed
+    # argument states its arguments by the listed prototype), and `pure_compile_generate.txt`
+    # rule (4) says the catalog carries the ABI. Measured by diffing this tuple against
+    # origin/main e96ce253's: those two templates moved and no other member. No gate changed, so
+    # no IR is newly refused. Witness: issue #486 (codex `compile.generate` declared
+    # `Compile fail` in 3 of 8 rolls on `problem/shallow_water2d_channel@0.2.3` for the
+    # prototype it was never shown). Re-pinned in round 3 before shipping: the reviewer's
+    # scope sentence counts four items with no deterministic backstop (V4c-iii added).
+    "pure-75": "0864c29cc21a8ec3b5ee7f9edee58498adbc477dc3d19769252ae2d413060b66",
 }
 
 

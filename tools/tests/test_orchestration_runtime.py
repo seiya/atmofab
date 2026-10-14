@@ -12946,6 +12946,110 @@ class DependencyFactsRenderTests(unittest.TestCase):
         self.assertIn("component/bnd@0.1.0", block)
         self.assertIn("surface unresolved", block)
 
+    _RK_PUBLIC_API: ClassVar[dict] = {
+        "module_parameters": [{"name": "dp", "value": "float64"}],
+        "interfaces": [{"name": "rk_rhs", "signature": {
+            "kind": "subroutine", "name": "rk_rhs", "args": [
+                {"name": "t", "rank": 0, "intent": "in", "spec": {"type": "real", "kind": "dp"}},
+                {"name": "dUdt", "rank": 3, "intent": "out", "dims": ["ncomp", "nx", "ny"],
+                 "spec": {"type": "real", "kind": "dp"}}]}}],
+        "signatures": [{"symbol": "rk__advance", "signature": {
+            "kind": "subroutine", "name": "rk__advance", "args": [
+                {"name": "rhs", "rank": 0,
+                 "spec": {"type": "procedure", "interface": "rk_rhs"}}]}}],
+    }
+
+    @staticmethod
+    def _abi_blocks(block: str) -> list[Any]:
+        """Each fenced yaml block the catalog renders, parsed back (indent stripped)."""
+        import yaml as _yaml
+        out, cur = [], None
+        for ln in block.split("\n"):
+            if ln == "  ```yaml":
+                cur = []
+            elif ln == "  ```" and cur is not None:
+                out.append(_yaml.safe_load("\n".join(x[2:] for x in cur)))
+                cur = None
+            elif cur is not None:
+                cur.append(ln)
+        return out
+
+    def test_compile_generate_renders_the_dependency_abi_under_its_entry(self) -> None:
+        """Issue #486: a resolved entry's `public_api` is rendered, under that entry's line, as
+        a fenced YAML block that parses back to exactly the copied keys in render order — the
+        prototype a consumer's procedure must match is IN the prompt — and the heading tells the
+        leaf to read it there rather than infer it or declare a fail for its absence."""
+        from tools.orchestration_runtime import _build_dependency_facts
+
+        payload = dict(
+            self.BASE, step="compile", substep="generate",
+            dependency_surface=[
+                {"node_key": "component/rk@0.1.0", "published_operations": ["rk__advance"],
+                 "source": "ir_public_api",
+                 # A key outside the three is not rendered even if a sidecar carries it.
+                 "public_api": {"exercised_by": ["T9"], **self._RK_PUBLIC_API}},
+            ])
+        block = _build_dependency_facts(payload)
+        self.assertIn("do not infer them from prose", block)
+        self.assertIn("do not declare a `Compile fail` for their absence", block)
+        line = "- component/rk@0.1.0: rk__advance (source: ir_public_api)"
+        self.assertIn(line, block)
+        self.assertTrue(block.split(line, 1)[1].startswith("\n  ```yaml\n"))
+        [abi] = self._abi_blocks(block)
+        self.assertEqual(abi, self._RK_PUBLIC_API)
+        self.assertEqual(list(abi), ["module_parameters", "interfaces", "signatures"])
+
+    def test_compile_generate_renders_the_abi_under_a_resolved_entry_with_no_names(self) -> None:
+        # Round 1: a resolved entry whose name list is empty renders the "use §5" line, and the
+        # ABI its `public_api` carries still goes under it — the reviewer reads the same file.
+        # Round 2: that line is not labelled `unresolved`, which the heading says carries no ABI.
+        from tools.orchestration_runtime import _build_dependency_facts
+
+        payload = dict(
+            self.BASE, step="compile", substep="generate",
+            dependency_surface=[
+                {"node_key": "component/rk@0.1.0", "published_operations": [],
+                 "source": "ir_public_api", "public_api": self._RK_PUBLIC_API}])
+        block = _build_dependency_facts(payload)
+        self.assertIn("component/rk@0.1.0: (publishes no operation names", block)
+        self.assertIn("its ABI follows)", block)
+        self.assertNotIn("surface unresolved", block)
+        self.assertEqual(self._abi_blocks(block), [self._RK_PUBLIC_API])
+
+    def test_an_empty_name_entry_without_an_abi_does_not_promise_one(self) -> None:
+        # Round 3: "its ABI follows" is said only when a block follows.
+        from tools.orchestration_runtime import _build_dependency_facts
+
+        block = _build_dependency_facts(dict(
+            self.BASE, step="compile", substep="generate",
+            dependency_surface=[
+                {"node_key": "component/e@0.1.0", "published_operations": [],
+                 "source": "ir_public_api", "public_api": {}}]))
+        self.assertIn("component/e@0.1.0: (publishes no operation names", block)
+        self.assertNotIn("its ABI follows", block)
+        self.assertEqual(self._abi_blocks(block), [])
+
+    def test_compile_generate_renders_no_abi_block_for_a_names_only_entry(self) -> None:
+        # An empty / absent `public_api`, and an unresolved entry (whatever it carries), render
+        # the one line they always did.
+        from tools.orchestration_runtime import _build_dependency_facts
+
+        payload = dict(
+            self.BASE, step="compile", substep="generate",
+            dependency_surface=[
+                {"node_key": "component/a@0.1.0", "published_operations": ["a__op"],
+                 "source": "ir_public_api", "public_api": {}},
+                {"node_key": "component/b@0.1.0", "published_operations": ["b__op"],
+                 "source": "ir_public_api"},
+                {"node_key": "component/c@0.1.0", "published_operations": [],
+                 "source": "unresolved", "public_api": self._RK_PUBLIC_API},
+            ])
+        block = _build_dependency_facts(payload)
+        self.assertIn("- component/a@0.1.0: a__op (source: ir_public_api)", block)
+        self.assertIn("- component/b@0.1.0: b__op (source: ir_public_api)", block)
+        self.assertEqual(self._abi_blocks(block), [])
+        self.assertNotIn("```", block)
+
     def test_compile_generate_empty_surface_renders_nothing(self) -> None:
         from tools.orchestration_runtime import _build_dependency_facts
 
@@ -14031,8 +14135,21 @@ class ResolveDependencyFactsTests(unittest.TestCase):
 class ResolveComponentDepSurfaceTests(unittest.TestCase):
     """_resolve_component_dep_surface reads the consumer's direct COMPONENT deps from the
     conductor-authored dependency_graph (all_nodes − self − transitive) and resolves each
-    dep's published operation NAMES — from the dep IR public_api (the L1 pin), else the
-    certified source — for the compile.generate `dependency_surface.json` sidecar."""
+    dep's published operation NAMES from the dep IR public_api (the L1 pin), plus that IR's
+    `module_parameters` / `interfaces` / `signatures` verbatim (issue #486), for the
+    compile.generate `dependency_surface.json` sidecar."""
+
+    _RHS_IFACE: ClassVar[dict] = {"name": "dep_base_rhs", "signature": {
+        "kind": "subroutine", "name": "dep_base_rhs", "args": [
+            {"name": "n", "rank": 0, "intent": "in", "spec": {"type": "integer"}},
+            {"name": "u", "rank": 1, "intent": "in", "dims": ["n"],
+             "spec": {"type": "real", "kind": "dp"}},
+            {"name": "dudt", "rank": 1, "intent": "out", "dims": ["n"],
+             "spec": {"type": "real", "kind": "dp"}}]}}
+    _ADVANCE_SIG: ClassVar[dict] = {"symbol": "dep_base__advance", "signature": {
+        "kind": "subroutine", "name": "dep_base__advance", "args": [
+            {"name": "rhs", "rank": 0,
+             "spec": {"type": "procedure", "interface": "dep_base_rhs"}}]}}
 
     def _graph(self, consumer: str, all_nodes: list, transitive: list | None = None) -> dict:
         return {
@@ -14084,6 +14201,114 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
             self.assertEqual(surface[0]["source"], "ir_public_api")
             self.assertEqual(
                 surface[0]["published_operations"], ["dep_base__compute_flux"])
+            # `published_types` is not copied (it repeats `signatures`' type entries).
+            self.assertEqual(surface[0]["public_api"], {})
+
+    def test_public_api_block_mirrors_the_dep_ir_keys_present(self) -> None:
+        # The three ABI keys are copied verbatim, in render order, and ONLY those the dep IR
+        # has: a dep whose §5.1 declares no prototype has no `interfaces` key, and
+        # `published_types` / `exercised_by` never travel (issue #486).
+        from tools.orchestration_runtime import _resolve_component_dep_surface
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            full = {
+                "published_operations": [{"operation_id": "dep_base__advance"}],
+                "published_types": [{"name": "t"}],
+                "exercised_by": ["T1"],
+                "signatures": [self._ADVANCE_SIG],
+                "interfaces": [self._RHS_IFACE],
+                "module_parameters": [{"name": "dp", "value": "float64"}],
+            }
+            self._write_dep_ir(
+                repo_root, "component", "dep_base", "0.1.0", "ir_20260601_001",
+                public_api=full)
+            self._write_dep_ir(
+                repo_root, "component", "dep_plain", "0.1.0", "ir_20260601_001",
+                public_api={
+                    "published_operations": [{"operation_id": "dep_plain__op"}],
+                    "signatures": [{"symbol": "dep_plain__op", "signature": {
+                        "kind": "subroutine", "name": "dep_plain__op", "args": []}}],
+                    "module_parameters": [{"name": "dp", "value": "float32"}]})
+            graph = self._graph(
+                "problem/top@0.1.0",
+                [("problem/top@0.1.0", 1), ("component/dep_base@0.1.0", 0),
+                 ("component/dep_plain@0.1.0", 0)])
+            surface = _resolve_component_dep_surface(
+                repo_root, "problem/top@0.1.0", graph)
+            by_nk = {e["node_key"]: e for e in surface}
+            base = by_nk["component/dep_base@0.1.0"]["public_api"]
+            self.assertEqual(
+                list(base), ["module_parameters", "interfaces", "signatures"])
+            self.assertEqual(base["interfaces"], [self._RHS_IFACE])
+            self.assertEqual(base["signatures"], [self._ADVANCE_SIG])
+            self.assertEqual(base["module_parameters"], [{"name": "dp", "value": "float64"}])
+            plain = by_nk["component/dep_plain@0.1.0"]["public_api"]
+            self.assertEqual(list(plain), ["module_parameters", "signatures"])
+            self.assertEqual(
+                plain["module_parameters"], [{"name": "dp", "value": "float32"}])
+
+    def test_a_dep_ir_with_names_but_no_signatures_surfaces_names_only(self) -> None:
+        # The pre-#153-PR-2 shape: names resolved, `public_api` present and empty. Not claimed
+        # unreachable — `_certified_ir_dir` selects by the current key — but its shape is pinned.
+        from tools.orchestration_runtime import _resolve_component_dep_surface
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._write_dep_ir(
+                repo_root, "component", "dep_base", "0.1.0", "ir_20260601_001",
+                public_api={"published_operations": [{"operation_id": "dep_base__op"}]})
+            graph = self._graph(
+                "problem/top@0.1.0",
+                [("problem/top@0.1.0", 1), ("component/dep_base@0.1.0", 0)])
+            [entry] = _resolve_component_dep_surface(
+                repo_root, "problem/top@0.1.0", graph)
+            self.assertEqual(entry["source"], "ir_public_api")
+            self.assertEqual(entry["published_operations"], ["dep_base__op"])
+            self.assertEqual(entry["public_api"], {})
+
+    def test_a_public_api_without_published_operations_is_unresolved(self) -> None:
+        # `published_operations` is what makes a `public_api` authoritative: an IR whose block
+        # lacks the key (however much ABI it carries) is `unresolved` and travels no ABI — and
+        # the names that do travel are stripped, non-strings dropped. Round 1 found both
+        # mechanisms surviving their deletion.
+        from tools.orchestration_runtime import _resolve_component_dep_surface
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._write_dep_ir(
+                repo_root, "component", "dep_noops", "0.1.0", "ir_20260601_001",
+                public_api={"signatures": [self._ADVANCE_SIG], "interfaces": [self._RHS_IFACE]})
+            self._write_dep_ir(
+                repo_root, "component", "dep_pad", "0.1.0", "ir_20260601_001",
+                public_api={"published_operations": [
+                    {"operation_id": "  dep_pad__op \n"}, {"operation_id": 7}, "bare",
+                    {"operation_id": "   "}]})
+            graph = self._graph(
+                "problem/top@0.1.0",
+                [("problem/top@0.1.0", 1), ("component/dep_noops@0.1.0", 0),
+                 ("component/dep_pad@0.1.0", 0)])
+            by_nk = {e["node_key"]: e for e in _resolve_component_dep_surface(
+                repo_root, "problem/top@0.1.0", graph)}
+            noops = by_nk["component/dep_noops@0.1.0"]
+            self.assertEqual(noops["source"], "unresolved")
+            self.assertNotIn("public_api", noops)
+            self.assertEqual(
+                by_nk["component/dep_pad@0.1.0"]["published_operations"], ["dep_pad__op"])
+
+    def test_an_unresolved_entry_carries_no_public_api_key(self) -> None:
+        from tools.orchestration_runtime import _resolve_component_dep_surface
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            # One dep with a certified IR lacking `public_api`, one with no IR at all.
+            self._write_dep_ir(
+                repo_root, "component", "dep_legacy", "0.1.0", "ir_20260601_001")
+            graph = self._graph(
+                "problem/top@0.1.0",
+                [("problem/top@0.1.0", 1), ("component/dep_legacy@0.1.0", 0),
+                 ("component/dep_absent@0.1.0", 0)])
+            surface = _resolve_component_dep_surface(
+                repo_root, "problem/top@0.1.0", graph)
+            self.assertEqual([e["source"] for e in surface], ["unresolved", "unresolved"])
+            for e in surface:
+                self.assertNotIn("public_api", e)
 
     def test_a_legacy_ir_without_public_api_is_unresolved_not_read_off_its_source(self) -> None:
         # A legacy dep IR with NO public_api is `unresolved`: the certified-SOURCE fallback
@@ -21625,7 +21850,20 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # its cross-target predicates; V3 (ii) says the gate refuses that spelling only as the
         # entry's sole state read): bumped 96600->96800; measured 96694 at the commit that takes
         # this bump.
-        "docs/workflow/phases/phase_01_compile.md": 96800,
+        # Bumped 96800->98000 (issue #486): the dependency surface carries each component
+        # dependency's `public_api` ABI — §I/O contract, V4c-ii's sidecar description, the V8
+        # name-half bullet and the V4c-ii gate bullet say so, V4c-iii (a procedure passed to a
+        # dependency's procedure-typed argument states the listed prototype) is new, and
+        # §On-failure says the surface is an input. Measured 97923 with `wc -c` in
+        # /home/seiya/atmofab at the commit that takes this bump. Round 1 (V4c-iii's backstop
+        # narrowed to what the syntax probe refuses — measured with gfortran 11.4.0
+        # `-fsyntax-only`: permuted shape bounds and swapped same-typed arguments pass): bumped
+        # 98000->98200; measured 98038 at the commit that takes this bump. Round 2 (V4c-iii names
+        # constant bounds as refused, unequal extents as what exposes the rest, and the fail ban as
+        # the ABSENCE of a listed prototype): bumped 98200->98400; measured 98219 at the commit
+        # that takes this bump. Round 3 (V4c-iii counted among the items with no deterministic
+        # backstop): measured 98279, no bump.
+        "docs/workflow/phases/phase_01_compile.md": 98400,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
@@ -24629,6 +24867,40 @@ class DerivationInputsTests(unittest.TestCase):
             # The harness entry did not move: the diff is exactly dep_a's.
             self.assertEqual(before["build"]["closure"][1], after["build"]["closure"][1])
 
+    def test_a_dependencys_published_interfaces_move_the_dependency_surface_input(self) -> None:
+        """Issue #486: the surface carries each component dependency's `public_api`
+        `interfaces` / `signatures` / `module_parameters`, so a prototype that changes by one
+        argument moves `dependency_surface` — the input that hashes what the producer and the
+        reviewer are shown — and the input equals the hash of the surface that carries it."""
+        import yaml as _yaml
+
+        def pa(intent: str) -> dict:
+            return {"public_api": {
+                "published_operations": [{"operation_id": "dep_a__advance"}],
+                "interfaces": [{"name": "dep_a_rhs", "signature": {
+                    "kind": "subroutine", "name": "dep_a_rhs", "args": [
+                        {"name": "u", "rank": 0, "intent": intent,
+                         "spec": {"type": "real", "kind": "dp"}}]}}]}}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = self._seed(repo)
+            graph = json.loads((repo / refs["ir_ref"] / "dependency_graph.json")
+                               .read_text(encoding="utf-8"))
+            seen = []
+            for n, intent in enumerate(("in", "inout"), start=2):
+                certify_node(repo, "o-reir", self._DEP, through="validate",
+                             ir_id=f"dep-a_20260101_00{n}", ir_text=_yaml.safe_dump(pa(intent)))
+                [entry] = ort._resolve_component_dep_surface(repo, self._NK, graph)
+                self.assertEqual(
+                    entry["public_api"]["interfaces"][0]["signature"]["args"][0]["intent"],
+                    intent)
+                got = self._inputs(repo, refs, "compile")["dependency_surface"]
+                self.assertEqual(got, tools_derivation.sha256_hex(
+                    tools_derivation.canonical_json_bytes([entry])))
+                seen.append(got)
+            self.assertNotEqual(seen[0], seen[1])
+
     def test_a_dependencys_source_is_not_a_compile_input(self) -> None:
         """Issue #284: Compile is target-free, and a dependency's certified SOURCE is a
         per-target artifact. A `component` dependency whose certified IR has no `public_api`
@@ -27355,13 +27627,14 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/pure_compile_generate.txt:f97307aa854be901":
+        "tools/prompt_templates/pure_compile_generate.txt:61dcd996a8724358":
             "rule 3: read the WHOLE derived set; deps.yaml alone is rejected; the runner "
             "harness is the target's and is not in the set (issue #284, which also removed "
             "rules 5-6 and renumbered 7-9 of the same paragraph; issue #346 appended rule 8, "
             "case input routing, and left rule 3 unchanged; issue #358 rewrote rule 7's "
             "empty-`profiles` sentence; rule 3 unchanged; issue #483 extended rule 5's "
-            "primary-predicate obligations; rule 3 unchanged)",
+            "primary-predicate obligations; rule 3 unchanged; issue #486 extended rule 4 with "
+            "the catalog's published ABI; rule 3 unchanged)",
         "docs/workflow/phases/phase_01_compile.md:8669240102ee7090":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
             "infrastructure node in it (issue #284)",

@@ -14451,7 +14451,8 @@ class WriteDependencyGraphTest(unittest.TestCase):
 
 class WriteDependencySurfaceTest(unittest.TestCase):
     """L2: the conductor authors <ir_ref>/dependency_surface.json host-side at Compile start,
-    resolving each COMPONENT dep's published op NAMES from the dependency_graph it just wrote."""
+    resolving each COMPONENT dep's published op NAMES (and, since issue #486, its IR `public_api`
+    ABI keys) from the dependency_graph it just wrote."""
 
     def _conductor(self, repo: Path) -> _FakeConductor:
         return _FakeConductor(
@@ -14497,16 +14498,24 @@ class WriteDependencySurfaceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             self._seed(repo)
+            sig = {"symbol": "base__scale", "signature": {
+                "kind": "subroutine", "name": "base__scale", "args": [
+                    {"name": "x", "rank": 0, "intent": "inout",
+                     "spec": {"type": "real", "kind": "dp"}}]}}
+            params = [{"name": "dp", "value": "float64"}]
             self._seed_base_ir(repo, public_api={
-                "published_operations": [{"operation_id": "base__scale"}]})
+                "published_operations": [{"operation_id": "base__scale"}],
+                "signatures": [sig], "module_parameters": params})
             refs = self._refs()
             c = self._conductor(repo)
             # Real graph writer first (the fake no-ops it), then the real surface writer.
             self.assertIsNone(wc.Conductor._write_dependency_graph(c, refs))
             surface = wc.Conductor._write_dependency_surface(c, refs)
+            # Issue #486: the entry carries the dep IR's ABI keys verbatim (here no `interfaces`).
             self.assertEqual(surface, [
                 {"node_key": "component/base@0.1.0",
-                 "published_operations": ["base__scale"], "source": "ir_public_api"}])
+                 "published_operations": ["base__scale"], "source": "ir_public_api",
+                 "public_api": {"module_parameters": params, "signatures": [sig]}}])
             doc = json.loads(
                 (repo / refs.ir_ref / "dependency_surface.json").read_text(encoding="utf-8"))
             self.assertEqual(doc["consumer_node_key"], "component/top@0.1.0")

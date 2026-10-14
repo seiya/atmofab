@@ -8757,8 +8757,8 @@ def _validate_component_dep_operations_membership(
             p.strip() for p in published_raw if isinstance(p, str) and p.strip()
         }
         if not published:
-            # A resolved-but-EMPTY published surface (a degenerate component publishing nothing,
-            # or a certified source with no `<dep_spec_id>__` subroutine) cannot meaningfully
+            # A resolved-but-EMPTY published surface (a degenerate component whose IR publishes
+            # nothing — the certified-source fallback went with issue #284) cannot meaningfully
             # bound a subset — checking against it would reject EVERY authored op, a
             # non-convergent loop. Treat it like `unresolved` (inert), matching the
             # compile.generate renderer (`_build_dependency_surface_facts`), which sends the leaf

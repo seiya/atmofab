@@ -2004,11 +2004,19 @@ class PureRenderTests(unittest.TestCase):
     }
     # Both branches of `_build_dependency_surface_facts`' per-entry loop. The `unresolved` entry
     # is required by `test_every_prose_statement_of_a_pinned_builder_is_driven`; round 1 found
-    # that nothing else observed it.
+    # that nothing else observed it. The resolved entry carries a `public_api` block (issue
+    # #486) so the sweep reaches the ABI block that branch renders under it.
     _RENDER_SURFACE: ClassVar[tuple] = (
         {"node_key": "component/demo_dep_base@0.1.0", "source": "certified",
-         "published_operations": ["demo_dep_base__scale"]},
+         "published_operations": ["demo_dep_base__scale"],
+         "public_api": {"signatures": [{"symbol": "demo_dep_base__scale", "signature": {
+             "kind": "subroutine", "name": "demo_dep_base__scale", "args": [
+                 {"name": "x", "rank": 0, "intent": "inout",
+                  "spec": {"type": "real", "kind": "dp"}}]}}]}},
         {"node_key": "component/demo_dep_other@0.1.0", "source": "unresolved"},
+        # A resolved entry publishing no names (issue #486 round 2 gave it its own line).
+        {"node_key": "component/demo_dep_empty@0.1.0", "source": "ir_public_api",
+         "published_operations": []},
     )
     _RENDER_EXEMPLAR: ClassVar[dict[str, object]] = {
         "node_key": "component/demo_sibling@0.1.0",
@@ -2330,6 +2338,7 @@ class PureRenderTests(unittest.TestCase):
         "_is_pure_launch_request",           # predicate
         "_is_slim_repair_request",           # predicate
         "_dependency_signatures",            # resolves the facts' language BACKEND module
+        "_require_yaml",                     # returns the yaml MODULE (the caller emits the text)
         "_exemplar_prompt_fragments",        # resolves the request language's BACKEND module
         "_allowed_file_tool_paths_for_launch",  # returns repository PATHS
         "_agent_tmp_gate_result_dir_ref",    # returns a repository PATH
