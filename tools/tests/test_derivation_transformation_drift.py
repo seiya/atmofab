@@ -660,8 +660,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # the V4c-ii gate bullet says the gate does not read the ABI block; §On-failure says the
     # surface is an input. A bump, not a re-pin: a leaf reading it authors under a new
     # obligation. No gate changed, so no IR is newly refused; only `phase_contract_document`
-    # moved (the two examples are untouched).
-    "compile-docs-15": "4571c261db9eef91aea42f7cee5b34a65a7526929a1f8941d180fabee7964864",
+    # moved (the two examples are untouched). Re-pinned in round 1 before shipping: V4c-iii's
+    # backstop sentence says the syntax probe refuses a type / kind / rank / `intent` mismatch and
+    # not permuted shape bounds or swapped same-typed arguments.
+    "compile-docs-15": "57c9c4fabcf39b063bc1603c2e90f50865f1f13024868669fe74b966e26ae3f4",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

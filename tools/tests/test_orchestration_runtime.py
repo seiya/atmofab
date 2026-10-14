@@ -21797,8 +21797,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # name-half bullet and the V4c-ii gate bullet say so, V4c-iii (a procedure passed to a
         # dependency's procedure-typed argument states the listed prototype) is new, and
         # §On-failure says the surface is an input. Measured 97923 with `wc -c` in
-        # /home/seiya/atmofab at the commit that takes this bump.
-        "docs/workflow/phases/phase_01_compile.md": 98000,
+        # /home/seiya/atmofab at the commit that takes this bump. Round 1 (V4c-iii's backstop
+        # narrowed to what the syntax probe refuses — measured with gfortran 11.4.0
+        # `-fsyntax-only`: permuted shape bounds and swapped same-typed arguments pass): bumped
+        # 98000->98200; measured 98038 at the commit that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 98200,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

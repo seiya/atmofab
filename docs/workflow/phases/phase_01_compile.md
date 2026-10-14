@@ -471,8 +471,9 @@ cross-checks the IR's `direct_deps` against it (see below). The remaining `opera
   arguments by the sidecar's `interfaces` entry `<name>`: type, kind, rank, explicit shape and
   `intent`, in order (names are this node's). Inferring them from prose, or declaring a
   `Compile fail` for a prototype the sidecar lists, is wrong. No Compile gate: the IR has no
-  structural carrier for those arguments; the `Generate.gate` syntax probe, compiling against the
-  staged closure, refuses a mismatch (issue #486).
+  structural carrier for those arguments. The `Generate.gate` syntax probe (closure staged) refuses
+  a type / kind / rank / `intent` mismatch, not permuted shape bounds or swapped same-typed
+  arguments, which surface as wrong numbers at `Validate` (issue #486).
 
 
 #### V8. public_api surface
