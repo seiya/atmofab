@@ -9047,16 +9047,18 @@ def _build_dependency_surface_facts(surface: Any) -> str:
                 "controlled_spec §5 declares, verbatim)")
         else:
             lines.append(f"- {node_key}: {', '.join(names)} (source: {source})")
-            pa = entry.get("public_api")
-            block = (
-                {k: pa[k] for k in _SURFACE_PUBLIC_API_KEYS if k in pa}
-                if isinstance(pa, dict) else {})
-            if block:
-                lines.append("  ```yaml")
-                lines.extend(
-                    f"  {ln}" for ln in _require_yaml().safe_dump(
-                        block, sort_keys=False, allow_unicode=True).rstrip("\n").split("\n"))
-                lines.append("  ```")
+        # The ABI block goes under every entry the reviewer's file carries it on — a resolved
+        # entry with an empty name list included — so producer and reviewer read one snapshot.
+        pa = entry.get("public_api") if source != "unresolved" else None
+        block = (
+            {k: pa[k] for k in _SURFACE_PUBLIC_API_KEYS if k in pa}
+            if isinstance(pa, dict) else {})
+        if block:
+            lines.append("  ```yaml")
+            lines.extend(
+                f"  {ln}" for ln in _require_yaml().safe_dump(
+                    block, sort_keys=False, allow_unicode=True).rstrip("\n").split("\n"))
+            lines.append("  ```")
     if len(lines) == 1:
         return ""
     return "\n".join(lines)

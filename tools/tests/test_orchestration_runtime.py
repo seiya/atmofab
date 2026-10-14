@@ -12999,6 +12999,20 @@ class DependencyFactsRenderTests(unittest.TestCase):
         self.assertEqual(abi, self._RK_PUBLIC_API)
         self.assertEqual(list(abi), ["module_parameters", "interfaces", "signatures"])
 
+    def test_compile_generate_renders_the_abi_under_a_resolved_entry_with_no_names(self) -> None:
+        # Round 1: a resolved entry whose name list is empty renders the "use §5" line, and the
+        # ABI its `public_api` carries still goes under it — the reviewer reads the same file.
+        from tools.orchestration_runtime import _build_dependency_facts
+
+        payload = dict(
+            self.BASE, step="compile", substep="generate",
+            dependency_surface=[
+                {"node_key": "component/rk@0.1.0", "published_operations": [],
+                 "source": "ir_public_api", "public_api": self._RK_PUBLIC_API}])
+        block = _build_dependency_facts(payload)
+        self.assertIn("component/rk@0.1.0: (surface unresolved", block)
+        self.assertEqual(self._abi_blocks(block), [self._RK_PUBLIC_API])
+
     def test_compile_generate_renders_no_abi_block_for_a_names_only_entry(self) -> None:
         # An empty / absent `public_api`, and an unresolved entry (whatever it carries), render
         # the one line they always did.
