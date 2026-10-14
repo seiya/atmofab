@@ -144,11 +144,16 @@ def _write_compile_node(repo: Path, *, kind: str = "component", profile: bool = 
                                    "components": []}] if profile else [])}, indent=2),
         encoding="utf-8")
     (ir_dir / "dependency_surface.json").write_text(
-        json.dumps([{"node_key": node, "published_operations": [f"{spec_id}__apply"],
-                     "source": "ir_public_api",
-                     # Issue #486: a resolved entry carries the dep IR's ABI keys.
-                     "public_api": {"interfaces": [{"name": f"{spec_id}_rhs", "signature": {
-                         "kind": "subroutine", "name": f"{spec_id}_rhs", "args": []}}]}}],
+        # The document shape `_write_dependency_surface` writes (round 1 of issue #486: this was
+        # a bare list, which no conductor writes).
+        json.dumps({"generated_by": "workflow_conductor._write_dependency_surface",
+                    "consumer_node_key": node,
+                    "dependencies": [{
+                        "node_key": node, "published_operations": [f"{spec_id}__apply"],
+                        "source": "ir_public_api",
+                        # Issue #486: a resolved entry carries the dep IR's ABI keys.
+                        "public_api": {"interfaces": [{"name": f"{spec_id}_rhs", "signature": {
+                            "kind": "subroutine", "name": f"{spec_id}_rhs", "args": []}}]}}]},
                    indent=2),
         encoding="utf-8")
     if stage_ir:
