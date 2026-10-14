@@ -1815,11 +1815,12 @@ def build_launch_request(
     # are omitted there. The `<dependency_facts>` renderer drops them when empty.
     if resolved_dependencies and not deterministic and step in ("generate", "validate"):
         req["resolved_dependencies"] = list(resolved_dependencies)
-    # L2: the component-dep published-surface catalog (op names only), injected ONLY into the
-    # compile.generate leaf so it transcribes real dependency op names into its public_api + dep
-    # operations. Rendered through the same `<dependency_facts>` placeholder (compile branch of
-    # `_build_dependency_facts`). compile.verify sees the frozen IR, not this, so it is scoped to
-    # the authoring substep.
+    # L2: the component-dep published-surface catalog (op names, plus each dep IR's `public_api`
+    # ABI since issue #486), injected ONLY into the compile.generate leaf so it transcribes real
+    # dependency op names into its dep operations and reads the prototypes its spec delegates to.
+    # Rendered through the same `<dependency_facts>` placeholder (compile branch of
+    # `_build_dependency_facts`). compile.verify reads the same snapshot as the
+    # `dependency_surface.json` file itself (`dependency_surface_document`), not through this.
     if dependency_surface and step == "compile" and substep == "generate":
         req["dependency_surface"] = list(dependency_surface)
     # R5: a conductor-resolved certified sibling exemplar, injected ONLY for the sole authoring

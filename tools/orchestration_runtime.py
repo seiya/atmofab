@@ -2240,8 +2240,9 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 #               set, heights, direct/transitive split and the adopted profile set);
 #             closure[] — every closure node's certified COMPILE output hash (its IR is what
 #               the reviewer's facts come from);
-#             dependency_surface — the resolved published-operation surface of the component
-#               direct deps as the producer is shown it (`_resolve_component_dep_surface`).
+#             dependency_surface — the resolved published surface of the component direct deps
+#               (op names and each dep IR's `public_api` ABI) as the producer and the reviewer
+#               are shown it (`_resolve_component_dep_surface`).
 #             Nothing here names a target: the graph is `deps.yaml`'s alone (no harness since
 #             R4-a PR-3), and the admissible-toolchain document the producer was shown until
 #             then is gone with the IR's `impl_defaults` (issue #284).
