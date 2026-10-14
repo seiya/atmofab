@@ -379,10 +379,18 @@ def _negates(node: ast.AST, other: ast.AST) -> bool:
 
 class _ConstantByFormPruner(ast.NodeTransformer):
     """Replace, children first, every term whose value is fixed by its FORM: `X * 0` / `0 * X`
-    and `X - X` / `X + -X` / `-X + X` (structurally identical sides) by the literal 0, `X ** 0`
-    by the literal 1.
+    and `X - X` / `X + -X` / `-X + X` (structurally identical sides, after `-(-X)` is collapsed
+    to `X`) by the literal 0, `X ** 0` by the literal 1. Sides equal only after commuting or
+    re-associating, and literal arithmetic other than these forms (`0 + 0`), are not folded.
     Each is exact for every finite evaluation, and the evaluator refuses a non-finite value.
     Nothing else is folded — `0 / X`, `0 ** X` and `X / X` are not exact."""
+
+    def visit_UnaryOp(self, node: ast.UnaryOp) -> ast.AST:
+        self.generic_visit(node)
+        if isinstance(node.op, ast.USub) and isinstance(node.operand, ast.UnaryOp) \
+                and isinstance(node.operand.op, ast.USub):
+            return node.operand.operand
+        return node
 
     def visit_BinOp(self, node: ast.BinOp) -> ast.AST:
         self.generic_visit(node)
@@ -420,7 +428,8 @@ def predicate_reads_state(expr_refs: list[NameRef], bind_refs: dict[str, list[Na
 
     SYNTACTIC: the rule sees that the state is read, not that the value depends on it. The
     schema gate first prunes the terms constant by form (`effective_names`: a factor of
-    literal zero, an exponent of literal zero, a side subtracted from itself), so
+    literal zero, an exponent of literal zero, a side subtracted from itself or added to its
+    own negation), so
     `sum(final.h) * 0` is refused there (issue #483); the evaluator applies this rule to the
     raw references, and a gated IR never reaches it with such a term. Dependence in any
     other way, and whether the expression is the test's own quantity, is `Compile.verify`
@@ -1635,8 +1644,9 @@ def validate_primary_predicate_schema(
         elif parsed_all and not predicate_reads_state(effective_expr_refs, effective_bind_refs,
                                                       set(variables)):
             v.append(f"{loc}: reads no captured state variable (initial.<var> / final.<var>) "
-                     "outside a term multiplied by a literal zero, raised to a literal zero or "
-                     "subtracted from itself: the expression is constant in the captured values "
+                     "outside a term multiplied by a literal zero, raised to a literal zero, or "
+                     "subtracted from itself or added to its own negation (the same expression "
+                     "spelled the same): the expression is constant in the captured values "
                      "and corroborates nothing (a cell count is the case's inputs.<grid path>; a "
                      "quantity no captured state enters takes the tests.md §5 primary-evidence "
                      "statement, its state term included)")

@@ -1449,7 +1449,9 @@ PINNED_VERDICT: dict[str, str] = {
     # 146861b1: the `tools/primary_evidence.py` row and no other. A certified IR carrying such
     # a term is refused by the current gate before reuse (`_ir_certification`), never valued.
     # Re-pinned in round 1 before shipping: `X + -X` / `-X + X` fold too (`_negates`).
-    "verdict-9": "054ee78abf80139b282ea1bb6d38e2af2f3060d417407ecc6543bad06eb5f1e3",
+    # Round 2: `-(-X)` collapses to `X` before the comparison, and the refusal message names
+    # the negated-add form.
+    "verdict-9": "954dd3143c47cd945f7e48bbac23f859cd0257606daa226c09a2a084bae7a96b",
 }
 
 
