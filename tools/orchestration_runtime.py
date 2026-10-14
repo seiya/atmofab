@@ -10991,8 +10991,8 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
     # called this validator immediately BEFORE `_append_session_run_index_entry`, so a rejected
     # role left no orphan `running` row. Since issue #481 that holds for EVERY refusal of
     # `record_launch` by the position of its bookkeeping block, written after the launch files
-    # and after every refusal, so this check is the earliest refusal rather than the one that
-    # keeps the row honest. (2) it was
+    # and after every refusal, so this placement no longer keeps the row honest; the check
+    # simply refuses before the prompt is read. (2) it was
     # upstream of the capability, so a capability the MCP and run-gate phase gates re-checked
     # with this same predicate could not be minted from an inferred role at all — all three of
     # those went in issue #171 PR-2, and the chokepoint is now the only reader. NOT load-bearing: the position WITHIN this function. It sits
@@ -14246,8 +14246,9 @@ def record_launch(
     # driver), and within one driver the conductor issues every `record-launch` as a blocking
     # subprocess, one at a time; what this guard defends against is a conductor bug launching a
     # second claude leaf in one driver. The concurrent cases that reach the gap are operator-side
-    # (a hand-run `record-launch`, a degraded claim); `docs/RUNBOOK.md` §3-1 is canonical for
-    # what a second driver costs.
+    # (a hand-run `record-launch`, a degraded claim, two hosts with host-local homes);
+    # `docs/RUNBOOK.md` §3-1 is canonical for when the claim does not serialize drivers, and its
+    # §"Incomplete launch recovery" for what a second driver of one orchestration costs.
     if backend_token == "claude":
         active_path = _active_child_agent_run_id_path(repo_root, orchestration_id)
         if active_path.exists():
@@ -14378,7 +14379,7 @@ def record_launch(
     prompt_path = launches_root / f"{child_agent_run_id}.prompt.txt"
     reply_path = launches_root / f"{child_agent_run_id}.reply.txt"
 
-    nk =request_payload.get("node_key")
+    nk = request_payload.get("node_key")
     st = request_payload.get("step")
     out_refs: dict[str, Any] = {
         "launch_request_ref": request_ref,
