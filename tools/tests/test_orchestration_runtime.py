@@ -13002,6 +13002,7 @@ class DependencyFactsRenderTests(unittest.TestCase):
     def test_compile_generate_renders_the_abi_under_a_resolved_entry_with_no_names(self) -> None:
         # Round 1: a resolved entry whose name list is empty renders the "use §5" line, and the
         # ABI its `public_api` carries still goes under it — the reviewer reads the same file.
+        # Round 2: that line is not labelled `unresolved`, which the heading says carries no ABI.
         from tools.orchestration_runtime import _build_dependency_facts
 
         payload = dict(
@@ -13010,7 +13011,8 @@ class DependencyFactsRenderTests(unittest.TestCase):
                 {"node_key": "component/rk@0.1.0", "published_operations": [],
                  "source": "ir_public_api", "public_api": self._RK_PUBLIC_API}])
         block = _build_dependency_facts(payload)
-        self.assertIn("component/rk@0.1.0: (surface unresolved", block)
+        self.assertIn("component/rk@0.1.0: (publishes no operation names", block)
+        self.assertNotIn("surface unresolved", block)
         self.assertEqual(self._abi_blocks(block), [self._RK_PUBLIC_API])
 
     def test_compile_generate_renders_no_abi_block_for_a_names_only_entry(self) -> None:
@@ -21839,11 +21841,14 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # name-half bullet and the V4c-ii gate bullet say so, V4c-iii (a procedure passed to a
         # dependency's procedure-typed argument states the listed prototype) is new, and
         # §On-failure says the surface is an input. Measured 97923 with `wc -c` in
-        # /home/seiya/atmofab at the commit that takes this bump. Round 1 (V4c-iii's backstop
+        # /home/seiya/atmofab at the commit that takes this bump. Round 2 (V4c-iii names constant
+        # bounds as refused, unequal extents as what exposes the rest, and the fail ban as the
+        # ABSENCE of a listed prototype): bumped 98200->98400; measured 98219 at the commit that
+        # takes this bump. Round 1 (V4c-iii's backstop
         # narrowed to what the syntax probe refuses — measured with gfortran 11.4.0
         # `-fsyntax-only`: permuted shape bounds and swapped same-typed arguments pass): bumped
         # 98000->98200; measured 98038 at the commit that takes this bump.
-        "docs/workflow/phases/phase_01_compile.md": 98200,
+        "docs/workflow/phases/phase_01_compile.md": 98400,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

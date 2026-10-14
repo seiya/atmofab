@@ -662,8 +662,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # obligation. No gate changed, so no IR is newly refused; only `phase_contract_document`
     # moved (the two examples are untouched). Re-pinned in round 1 before shipping: V4c-iii's
     # backstop sentence says the syntax probe refuses a type / kind / rank / `intent` mismatch and
-    # not permuted shape bounds or swapped same-typed arguments.
-    "compile-docs-15": "57c9c4fabcf39b063bc1603c2e90f50865f1f13024868669fe74b966e26ae3f4",
+    # not permuted shape bounds or swapped same-typed arguments. Round 2: constant bounds are
+    # refused too, the rest is exposed only by a case with unequal extents, and the fail ban is
+    # for the ABSENCE of a listed prototype (a spec contradicting it is still a fail).
+    "compile-docs-15": "7cc686e2d30f2b392313b6ce270553b98c557701883ccdf7d0de18608b8c7969",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

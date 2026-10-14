@@ -470,10 +470,12 @@ cross-checks the IR's `direct_deps` against it (see below). The remaining `opera
   `{type: procedure, interface: <name>}` in the sidecar, the step defining that procedure states its
   arguments by the sidecar's `interfaces` entry `<name>`: type, kind, rank, explicit shape and
   `intent`, in order (names are this node's). Inferring them from prose, or declaring a
-  `Compile fail` for a prototype the sidecar lists, is wrong. No Compile gate: the IR has no
-  structural carrier for those arguments. The `Generate.gate` syntax probe (closure staged) refuses
-  a type / kind / rank / `intent` mismatch, not permuted shape bounds or swapped same-typed
-  arguments, which surface as wrong numbers at `Validate` (issue #486).
+  `Compile fail` for the ABSENCE of a prototype the sidecar lists, is wrong (a spec that contradicts
+  the prototype is still a fail). No Compile gate: the IR has no structural carrier for those
+  arguments. The `Generate.gate` syntax probe (closure staged) refuses what the target compiler
+  checks of a passed procedure — measured: type, kind, rank, `intent`, constant bounds — not
+  argument-expression bounds permuted or same-typed arguments swapped, which only a case with
+  unequal extents exposes at `Validate` (issue #486).
 
 
 #### V8. public_api surface
@@ -519,7 +521,7 @@ These deterministic gates run in the conductor's `Compile.static` substep (`_com
 - When the reviewed documents do not settle whether the subject is `spec.ir.yaml` or an input, the value is `minor`. When they do not settle whether `spec.ir.yaml` can serve as the base of a repair, the value is `minor`: the repair the finding calls for is a producer re-run either way, and only a subject on the input side earns `major`.
 
 ## On-failure behavior
-- When the input (`controlled_spec.md` / `tests.md` / `deps.yaml`) is insufficient, it is a `Compile fail`, and guessed completion is forbidden. The host-inlined dependency surface (each dependency's published ABI included) is an input too: declare only what it does not carry.
+- When the input (`controlled_spec.md` / `tests.md` / `deps.yaml`) is insufficient, it is a `Compile fail`, and guessed completion is forbidden. The host-inlined dependency surface (each dependency's published ABI included) is an input too: do not declare absent what it carries.
 - A self-check invariant (V1–V4, V8, V9) is `Compile.verify`'s check, not a ground to declare: `Compile.generate` authors an IR that meets it (an input that makes that impossible is the bullet above), and `Compile.verify` returns a `fail` naming the invariant ID in `last_fail_reason`, graded by §Severity of a finding.
 - The repair strategy of a retry is the conductor's choice, not the leaf's.
 

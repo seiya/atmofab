@@ -2014,6 +2014,9 @@ class PureRenderTests(unittest.TestCase):
                  {"name": "x", "rank": 0, "intent": "inout",
                   "spec": {"type": "real", "kind": "dp"}}]}}]}},
         {"node_key": "component/demo_dep_other@0.1.0", "source": "unresolved"},
+        # A resolved entry publishing no names (issue #486 round 2 gave it its own line).
+        {"node_key": "component/demo_dep_empty@0.1.0", "source": "ir_public_api",
+         "published_operations": []},
     )
     _RENDER_EXEMPLAR: ClassVar[dict[str, object]] = {
         "node_key": "component/demo_sibling@0.1.0",

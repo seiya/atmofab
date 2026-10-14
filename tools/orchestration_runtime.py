@@ -3692,8 +3692,8 @@ def _resolve_component_dep_surface(
     repo_root: Path, node_key: str, graph: Any,
     *, resolver: DerivationResolver | None = None,
 ) -> list[dict[str, Any]]:
-    """Resolve, host-side at COMPILE phase start, the published operation-NAME surface of
-    each COMPONENT direct dependency of ``node_key`` (the consumer, whose own IR does not yet
+    """Resolve, host-side at COMPILE phase start, the published surface (operation names and
+    ``public_api`` ABI) of each COMPONENT direct dependency of ``node_key`` (the consumer, whose own IR does not yet
     exist), for the conductor to author into ``<ir_ref>/dependency_surface.json`` and inject
     into ``compile.generate``.
 
@@ -9041,10 +9041,14 @@ def _build_dependency_surface_facts(surface: Any) -> str:
             [str(o).strip() for o in ops if isinstance(o, str) and o.strip()]
             if isinstance(ops, list) else []
         )
-        if source == "unresolved" or not names:
+        if source == "unresolved":
             lines.append(
                 f"- {node_key}: (surface unresolved — use the operation_id(s) this dependency's "
                 "controlled_spec §5 declares, verbatim)")
+        elif not names:
+            lines.append(
+                f"- {node_key}: (publishes no operation names — use the operation_id(s) this "
+                "dependency's controlled_spec §5 declares, verbatim; its ABI follows)")
         else:
             lines.append(f"- {node_key}: {', '.join(names)} (source: {source})")
         # The ABI block goes under every entry the reviewer's file carries it on — a resolved
@@ -9077,9 +9081,9 @@ def _build_dependency_facts(request_payload: dict[str, Any]) -> str:
 
     For ``compile.generate`` the block is DIFFERENT: the consumer IR does not exist yet, so there
     is no ``resolved_dependencies``. Instead the conductor injects ``dependency_surface`` — the
-    L2 published-operation NAME catalog of the node's component dependencies — and this renderer
-    formats that (op names only, an AUTHORING input: the deterministic L3 gate rejects any dep
-    ``operations`` name not in it).
+    L2 published-surface catalog of the node's component dependencies — and this renderer
+    formats that: op names (an AUTHORING input: the deterministic L3 gate rejects any dep
+    ``operations`` name not in it) and each dependency's ``public_api`` ABI block (issue #486).
 
     Returns ``""`` for deterministic requests and when no dependency facts are present
     (a leaf node, or a phase the conductor does not inject them for).

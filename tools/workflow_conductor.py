@@ -6731,7 +6731,8 @@ class Conductor:
     def _build_pure_compile_verify_context(self, refs: NodeRefs) -> dict[str, str]:
         """Assemble the closed context a pure `compile.verify` reviewer sees.
 
-        It reads the IR under review and the host-resolved published-operation surface (which the
+        It reads the IR under review and the host-resolved published surface — operation names and
+        each dependency's `public_api` ABI (which the
         producer receives through `<dependency_facts>` instead; the reviewer gets the raw sidecar
         because `build_launch_request` attaches the surface to the authoring substep only). The
         severity rubric is NOT a separate slice here: it is a subsection of the phase contract
