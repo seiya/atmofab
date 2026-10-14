@@ -957,8 +957,10 @@ PINNED: dict[str, str] = {
     # Measured by diffing this tuple against origin/main 146861b1's: the
     # `pure_compile_generate.txt` template moved and no other member. Re-pinned in round 1 before
     # shipping: (b)'s CFL example is a stability bound (`le`) over only the initial-state speed,
-    # and an `xfail` guard's exceedance over the initial state is not it.
-    "pure-74": "62c13792b44adf85b55ee2c2960c8603f288e4102f5385c9383f554ca80f313c",
+    # and an `xfail` guard's exceedance over the initial state is not it. Round 2: (a) a guard
+    # that leaves no state fact takes the §5 statement, (d) excludes the time variable, and the
+    # closing sentence names the negated-add form, spelled the same.
+    "pure-74": "9ccb55b18ffcb6cc85e0eb2f69727a597508defc420fb72cdc332cf0a71e8047",
 }
 
 

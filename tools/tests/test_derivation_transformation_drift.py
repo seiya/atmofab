@@ -647,8 +647,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # (`cfl_combined_max`, `mode_gain_error`, `mode_phase_error_rad`, and on `…20260925_002`
     # also `cfl_check_failed` / `guard_overall_fail`); 34 entries; no other IR changes.
     # Re-pinned in round 1 before shipping: V3 (i)'s CFL example is a stability bound (`le`)
-    # over only the initial-state speed; an `xfail` guard's exceedance is not it.
-    "compile-docs-14": "91f745c86d3bb31139eab729435e27b3a8908b95fd668e80acba8de1bce9e315",
+    # over only the initial-state speed; an `xfail` guard's exceedance is not it. Round 2: the
+    # `required_raw_variables` clause excludes the time variable, and the schema comment names
+    # the negated-add form, spelled the same.
+    "compile-docs-14": "e503038a594f3f188de7c02e74e96035c78709d44d79a8d8783be9a807dbd8dd",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
