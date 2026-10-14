@@ -13012,8 +13012,22 @@ class DependencyFactsRenderTests(unittest.TestCase):
                  "source": "ir_public_api", "public_api": self._RK_PUBLIC_API}])
         block = _build_dependency_facts(payload)
         self.assertIn("component/rk@0.1.0: (publishes no operation names", block)
+        self.assertIn("its ABI follows)", block)
         self.assertNotIn("surface unresolved", block)
         self.assertEqual(self._abi_blocks(block), [self._RK_PUBLIC_API])
+
+    def test_an_empty_name_entry_without_an_abi_does_not_promise_one(self) -> None:
+        # Round 3: "its ABI follows" is said only when a block follows.
+        from tools.orchestration_runtime import _build_dependency_facts
+
+        block = _build_dependency_facts(dict(
+            self.BASE, step="compile", substep="generate",
+            dependency_surface=[
+                {"node_key": "component/e@0.1.0", "published_operations": [],
+                 "source": "ir_public_api", "public_api": {}}]))
+        self.assertIn("component/e@0.1.0: (publishes no operation names", block)
+        self.assertNotIn("its ABI follows", block)
+        self.assertEqual(self._abi_blocks(block), [])
 
     def test_compile_generate_renders_no_abi_block_for_a_names_only_entry(self) -> None:
         # An empty / absent `public_api`, and an unresolved entry (whatever it carries), render
@@ -21841,13 +21855,14 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # name-half bullet and the V4c-ii gate bullet say so, V4c-iii (a procedure passed to a
         # dependency's procedure-typed argument states the listed prototype) is new, and
         # §On-failure says the surface is an input. Measured 97923 with `wc -c` in
-        # /home/seiya/atmofab at the commit that takes this bump. Round 2 (V4c-iii names constant
-        # bounds as refused, unequal extents as what exposes the rest, and the fail ban as the
-        # ABSENCE of a listed prototype): bumped 98200->98400; measured 98219 at the commit that
-        # takes this bump. Round 1 (V4c-iii's backstop
+        # /home/seiya/atmofab at the commit that takes this bump. Round 1 (V4c-iii's backstop
         # narrowed to what the syntax probe refuses — measured with gfortran 11.4.0
         # `-fsyntax-only`: permuted shape bounds and swapped same-typed arguments pass): bumped
-        # 98000->98200; measured 98038 at the commit that takes this bump.
+        # 98000->98200; measured 98038 at the commit that takes this bump. Round 2 (V4c-iii names
+        # constant bounds as refused, unequal extents as what exposes the rest, and the fail ban as
+        # the ABSENCE of a listed prototype): bumped 98200->98400; measured 98219 at the commit
+        # that takes this bump. Round 3 (V4c-iii counted among the items with no deterministic
+        # backstop): measured 98279, no bump.
         "docs/workflow/phases/phase_01_compile.md": 98400,
     }
 

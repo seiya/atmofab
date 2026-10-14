@@ -664,8 +664,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # backstop sentence says the syntax probe refuses a type / kind / rank / `intent` mismatch and
     # not permuted shape bounds or swapped same-typed arguments. Round 2: constant bounds are
     # refused too, the rest is exposed only by a case with unequal extents, and the fail ban is
-    # for the ABSENCE of a listed prototype (a spec contradicting it is still a fail).
-    "compile-docs-15": "7cc686e2d30f2b392313b6ce270553b98c557701883ccdf7d0de18608b8c7969",
+    # for the ABSENCE of a listed prototype (a spec contradicting it is still a fail). Round 3:
+    # the scope paragraph counts V4c-iii among the items with no deterministic backstop (four).
+    "compile-docs-15": "59442f590423e239156bd66efa011c18f76425b9cec7e77a72ce1250fadc2832",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

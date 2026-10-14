@@ -970,8 +970,9 @@ PINNED: dict[str, str] = {
     # origin/main e96ce253's: those two templates moved and no other member. No gate changed, so
     # no IR is newly refused. Witness: issue #486 (codex `compile.generate` declared
     # `Compile fail` in 3 of 8 rolls on `problem/shallow_water2d_channel@0.2.3` for the
-    # prototype it was never shown).
-    "pure-75": "2410f8751e28e58fda2ca354922b0f10cdaa78a05cf44cf4292de02b975910c8",
+    # prototype it was never shown). Re-pinned in round 3 before shipping: the reviewer's
+    # scope sentence counts four items with no deterministic backstop (V4c-iii added).
+    "pure-75": "0864c29cc21a8ec3b5ee7f9edee58498adbc477dc3d19769252ae2d413060b66",
 }
 
 

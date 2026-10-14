@@ -406,7 +406,7 @@ Only `boundary_apply` / `reconstruct` / `flux_compute` / `source_term` / `time_i
 ### 1-2. Compile.verify substep
 `Compile.verify` self-checks **only the structural invariants**. Semantic correctness is delegated to the `Validate` execution result.
 
-**The scope is V1-V4, V8 and V9, and this section is where it is stated.** All six are below. (V5-V7 checked the IR's `impl_defaults`, which the IR no longer carries — issue #284; the numbers are not reused.) Nothing narrower is the scope: no summary of this substep elsewhere in this document, and no sentence in a launch prompt, redefines it. Three of these have no deterministic backstop and are therefore the ones a skipped review actually loses — **V2**'s free-form-math completeness judgment (only its zero-signal presence floor is gated), the parts of V3 that read `tests.md` prose, and **V9**. A `pass` issued after examining a subset is a wrong verdict, not a partial one.
+**The scope is V1-V4, V8 and V9, and this section is where it is stated.** All six are below. (V5-V7 checked the IR's `impl_defaults`, which the IR no longer carries — issue #284; the numbers are not reused.) Nothing narrower is the scope: no summary of this substep elsewhere in this document, and no sentence in a launch prompt, redefines it. Four of these have no deterministic backstop and are therefore the ones a skipped review actually loses — **V2**'s free-form-math completeness judgment (only its zero-signal presence floor is gated), the parts of V3 that read `tests.md` prose, **V4c-iii** (only a later compile probe catches part of it), and **V9**. A `pass` issued after examining a subset is a wrong verdict, not a partial one.
 
 The required invariant set for the self-check (finalized as a **minimal set**):
 
