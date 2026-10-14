@@ -1144,6 +1144,8 @@ class SchemaGateTest(unittest.TestCase):
             {"expr": "sum(final.h) * -0"},
             {"expr": "sum(final.h) ** 0"},
             {"expr": "sum(final.h - final.h)"},
+            {"expr": "sum(final.h) + -sum(final.h) + 1"},
+            {"expr": "-sum(final.h) + sum(final.h) + 1"},
             {"expr": "sum(final.h) * (final.s * 0)"},
             {"bind": {"m": "sum(final.h)"}, "expr": "m * 0"},
             {"bind": {"m": "sum(final.h)"}, "expr": "(m - m) * 2"},
@@ -1166,6 +1168,8 @@ class SchemaGateTest(unittest.TestCase):
             {"expr": "sum(0 / (final.h + 1))"},
             {"expr": "sum(final.h / final.h)"},
             {"expr": "sum(final.h - initial.h)"},
+            {"expr": "sum(final.h + -initial.h)"},
+            {"expr": "sum(final.h - -final.h)"},
             {"bind": {"a": "sum(final.h)", "b": "a - a"}, "expr": "b + a"},
         ]
         for extra in accepted:
@@ -1186,6 +1190,9 @@ class SchemaGateTest(unittest.TestCase):
         self.assertEqual(names("final.h ** 0 * final.u"), ["final.u"])   # X ** 0 is 1, not 0
         self.assertEqual(names("(final.h - final.h) * final.u"), [])     # children first
         self.assertEqual(names("final.h - initial.h"), ["final.h", "initial.h"])
+        self.assertEqual(names("final.h + -final.h + initial.u"), ["initial.u"])
+        self.assertEqual(names("-final.h + final.h + initial.u"), ["initial.u"])
+        self.assertEqual(names("final.h + -initial.h"), ["final.h", "initial.h"])
         self.assertEqual(names("0 ** final.h + final.h / final.h"),
                          ["final.h", "final.h", "final.h"])
         self.assertEqual(names("final.h * 0.0001"), ["final.h"])

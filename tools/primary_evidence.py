@@ -371,9 +371,16 @@ def _is_literal_zero(node: ast.AST) -> bool:
             and isinstance(node.value, (int, float)) and node.value == 0)
 
 
+def _negates(node: ast.AST, other: ast.AST) -> bool:
+    """`node` is `-X` with `X` structurally identical to `other`."""
+    return (isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub)
+            and ast.dump(node.operand) == ast.dump(other))
+
+
 class _ConstantByFormPruner(ast.NodeTransformer):
     """Replace, children first, every term whose value is fixed by its FORM: `X * 0` / `0 * X`
-    and `X - X` (structurally identical sides) by the literal 0, `X ** 0` by the literal 1.
+    and `X - X` / `X + -X` / `-X + X` (structurally identical sides) by the literal 0, `X ** 0`
+    by the literal 1.
     Each is exact for every finite evaluation, and the evaluator refuses a non-finite value.
     Nothing else is folded — `0 / X`, `0 ** X` and `X / X` are not exact."""
 
@@ -385,6 +392,9 @@ class _ConstantByFormPruner(ast.NodeTransformer):
         if isinstance(node.op, ast.Pow) and _is_literal_zero(node.right):
             return ast.Constant(1.0)
         if isinstance(node.op, ast.Sub) and ast.dump(node.left) == ast.dump(node.right):
+            return ast.Constant(0.0)
+        if isinstance(node.op, ast.Add) and (_negates(node.left, node.right)
+                                             or _negates(node.right, node.left)):
             return ast.Constant(0.0)
         return node
 
@@ -1446,8 +1456,8 @@ def validate_primary_predicate_schema(
 
     Every parsed predicate must read this run's captured state (`predicate_reads_state`),
     and must still read it once the terms constant by form are pruned (`effective_names`,
-    issue #483): a read only inside `X * 0`, `X ** 0` or `X - X` is no read. The cross-target
-    classification keeps the raw references."""
+    issue #483): a read only inside `X * 0`, `X ** 0`, `X - X` or `X + -X` is no read. The
+    cross-target classification keeps the raw references."""
     v: list[str] = []
     if predicates is None:
         return v

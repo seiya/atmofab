@@ -1448,7 +1448,8 @@ PINNED_VERDICT: dict[str, str] = {
     # only, so no record's value moves. Measured by diffing `verdict_tuple()` against
     # 146861b1: the `tools/primary_evidence.py` row and no other. A certified IR carrying such
     # a term is refused by the current gate before reuse (`_ir_certification`), never valued.
-    "verdict-9": "72107da399732cabbef1bcde3a568c61776bc88e9481587b8596810fa7ae500c",
+    # Re-pinned in round 1 before shipping: `X + -X` / `-X + X` fold too (`_negates`).
+    "verdict-9": "054ee78abf80139b282ea1bb6d38e2af2f3060d417407ecc6543bad06eb5f1e3",
 }
 
 
