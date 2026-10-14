@@ -1134,8 +1134,8 @@ class SchemaGateTest(unittest.TestCase):
             self.assertTrue(any(f"{key} is not a primary predicate key" in m for m in out), out)
 
     def test_a_state_read_only_inside_a_term_constant_by_form_is_refused(self) -> None:
-        """Issue #483: a read inside `X * 0`, `X ** 0` or `X - X` does not enter the value, so
-        it is no read — the message keeps the "reads no captured state" prefix and names the
+        """Issue #483: a read inside `X * 0`, `X ** 0`, `X - X` or `X + -X` (after `-(-X)` is
+        collapsed) does not enter the value, so it is no read — the message keeps the "reads no captured state" prefix and names the
         forms. Pruning is children first, and a bind is pruned before `expr` reaches it."""
         form = "outside a term multiplied by a literal zero"
         refused = [
@@ -1147,6 +1147,9 @@ class SchemaGateTest(unittest.TestCase):
             {"expr": "sum(final.h) + -sum(final.h) + 1"},
             {"expr": "-sum(final.h) + sum(final.h) + 1"},
             {"expr": "sum(final.h) - -(-sum(final.h)) + 1"},
+            {"expr": "-(sum(final.h) * 0) + 1"},
+            {"expr": "sum(-(final.h * 0)) + 1"},
+            {"expr": "-(sum(final.h) - sum(final.h)) + 1"},
             {"expr": "sum(final.h) + -(-(-sum(final.h))) + 1"},
             {"expr": "sum(final.h) * (final.s * 0)"},
             {"bind": {"m": "sum(final.h)"}, "expr": "m * 0"},
