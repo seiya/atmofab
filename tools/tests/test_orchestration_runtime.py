@@ -14235,6 +14235,34 @@ class ResolveComponentDepSurfaceTests(unittest.TestCase):
             self.assertEqual(entry["published_operations"], ["dep_base__op"])
             self.assertEqual(entry["public_api"], {})
 
+    def test_a_public_api_without_published_operations_is_unresolved(self) -> None:
+        # `published_operations` is what makes a `public_api` authoritative: an IR whose block
+        # lacks the key (however much ABI it carries) is `unresolved` and travels no ABI — and
+        # the names that do travel are stripped, non-strings dropped. Round 1 found both
+        # mechanisms surviving their deletion.
+        from tools.orchestration_runtime import _resolve_component_dep_surface
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._write_dep_ir(
+                repo_root, "component", "dep_noops", "0.1.0", "ir_20260601_001",
+                public_api={"signatures": [self._ADVANCE_SIG], "interfaces": [self._RHS_IFACE]})
+            self._write_dep_ir(
+                repo_root, "component", "dep_pad", "0.1.0", "ir_20260601_001",
+                public_api={"published_operations": [
+                    {"operation_id": "  dep_pad__op \n"}, {"operation_id": 7}, "bare",
+                    {"operation_id": "   "}]})
+            graph = self._graph(
+                "problem/top@0.1.0",
+                [("problem/top@0.1.0", 1), ("component/dep_noops@0.1.0", 0),
+                 ("component/dep_pad@0.1.0", 0)])
+            by_nk = {e["node_key"]: e for e in _resolve_component_dep_surface(
+                repo_root, "problem/top@0.1.0", graph)}
+            noops = by_nk["component/dep_noops@0.1.0"]
+            self.assertEqual(noops["source"], "unresolved")
+            self.assertNotIn("public_api", noops)
+            self.assertEqual(
+                by_nk["component/dep_pad@0.1.0"]["published_operations"], ["dep_pad__op"])
+
     def test_an_unresolved_entry_carries_no_public_api_key(self) -> None:
         from tools.orchestration_runtime import _resolve_component_dep_surface
         with tempfile.TemporaryDirectory() as tmp:
