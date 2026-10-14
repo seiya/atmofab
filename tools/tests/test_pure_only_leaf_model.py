@@ -593,11 +593,12 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
     def test_the_request_side_refuses_a_neither_shape_request(self) -> None:
         """The request-side statement of the two-shapes rule, driven on the validator itself.
 
-        `_validate_launch_request_payload` refuses a neither-shape request before the prompt is
-        read. It was added (Z4 PR-2) because `record_launch` then appended the `running` row
-        between the request validator and the prompt-text one, so the prompt-text refusal left
-        an orphan row behind. Issue #481 moved every bookkeeping write after every refusal, so
-        that orphan is now prevented by placement for EVERY arm, and
+        `_validate_launch_request_payload` refuses a neither-shape request before the prompt
+        text is checked. It was added (Z4 PR-2) because `record_launch` then appended the
+        `running` row between the request validator and the prompt-text one, so the
+        prompt-text refusal left an orphan row behind. Issue #481 moved every bookkeeping write
+        after every check of the launch, so that orphan is now prevented by placement for EVERY
+        check, and
         `test_a_refused_launch_leaves_no_launch_record` pins it through `record_launch` (this
         shape is its arm 0). What this row still pins is the request-side refusal on its own:
         it is the only statement of the rule that needs no prompt."""
@@ -611,11 +612,13 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
         self.assertIn("neither deterministic nor pure", str(caught.exception))
 
     def test_a_refused_launch_leaves_no_launch_record(self) -> None:
-        """Issue #481: a refusal inside `record_launch` leaves no bookkeeping record behind.
+        """Issue #481: a launch `record_launch` refuses leaves no bookkeeping record behind.
 
         The session-index `running` row, the `pre_agent_launch` hook entry and the
         `agent_graph.json` edge are written in one block AFTER the four `launches/` files,
-        which come after every refusal. Before the move the row preceded the prompt-text
+        which come after every check of the launch. (A damaged `phase_state.json` can still
+        raise after the block; it is not a check of the launch, and the comment at the block
+        says what it leaves.) Before the move the row preceded the prompt-text
         refusals (arms 1-3) and all three preceded the late arms (4, 5); the orphan EDGE is the
         costly one, because `_prune_orphan_agent_graph_edges` keeps an edge with no
         `request.json` and the completion check then refuses `pass` on every later attempt.
@@ -657,22 +660,25 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
 
         det = _launch_request_body("substep_run_det_481", deterministic=True)
         pure = _launch_request_body("substep_run_pure_481")
-        for name, request in (("deterministic", det), ("pure", pure)):
+        for name, request in (("deterministic", {**det, "context_id": "ctx_det_481"}),
+                              ("pure", {**pure, "context_id": "ctx_pure_481"})):
             with self.subTest(control=name), tempfile.TemporaryDirectory() as tmp:
                 repo_root, oid, arid = Path(tmp), "orch_to_001", request["agent_run_id"]
                 _seed_launchable(repo_root, oid)
                 ort.record_launch(repo_root=repo_root, orchestration_id=oid,
                                   parent_agent_run_id="orch_run_to_001",
                                   child_agent_run_id=arid, request_payload=dict(request),
-                                  response_payload=response(arid))
+                                  response_payload={**response(arid),
+                                                    **_spawn_response_payload(f"sess_{arid}")})
                 self.assertEqual(records(repo_root, oid, arid),
                                  dict.fromkeys(("row", "edge", "hook", "launches", "marker",
                                                 "claude_marker"), True))
                 root = repo_root / "workspace" / "orchestrations" / oid
                 (row,) = [e for e in ort._read_session_run_index(repo_root, oid)["entries"]
                           if e.get("agent_run_id") == arid]
-                self.assertEqual((row.get("agent_session_id"), row.get("agent_role"),
-                                  row.get("status")), (arid, "substep", "running"))
+                self.assertEqual((row.get("agent_session_id"), row.get("context_id"),
+                                  row.get("agent_role"), row.get("status")),
+                                 (f"sess_{arid}", request["context_id"], "substep", "running"))
                 self.assertIn({"parent_agent_run_id": "orch_run_to_001",
                                "child_agent_run_id": arid, "relation_type": "launch"},
                               ort._load_graph(root / "agent_graph.json")["edges"])

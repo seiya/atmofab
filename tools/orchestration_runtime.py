@@ -4997,7 +4997,8 @@ def _prune_orphan_agent_graph_edges(
     """Remove agent_graph.json edges left by an ABANDONED child launch.
 
     `record_launch` writes the parent→child graph edge after the four `launches/`
-    files and after every refusal (issue #481), but BEFORE the active-child marker,
+    files, which follow every check of the launch (issue #481), but BEFORE the
+    active-child marker,
     so a launch abandoned mid-flight (the dangling-launch case) leaves an
     orphan edge with no terminal `agent_runs.jsonl` row for the child. On resume the
     agent re-launches under a fresh agent_run_id (never reusing the abandoned one),
@@ -10987,15 +10988,14 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
     # Requiring the field here, at the one place every launch passes through, is what makes
     # all of them see one value.
     #
-    # Two things about the placement were load-bearing, and one is not. (1) `record_launch`
+    # Two things about the placement USED to be load-bearing; neither is now. (1) `record_launch`
     # called this validator immediately BEFORE `_append_session_run_index_entry`, so a rejected
-    # role left no orphan `running` row. Since issue #481 that holds for EVERY refusal of
-    # `record_launch` by the position of its bookkeeping block, written after the launch files
-    # and after every refusal, so this placement no longer keeps the row honest; the check
-    # simply refuses before the prompt is read. (2) it was
+    # role left no orphan `running` row. Since issue #481 that holds for every check of the
+    # launch by the position of `record_launch`'s bookkeeping block, written after the launch
+    # files, so this placement no longer keeps the row honest. (2) it was
     # upstream of the capability, so a capability the MCP and run-gate phase gates re-checked
     # with this same predicate could not be minted from an inferred role at all — all three of
-    # those went in issue #171 PR-2, and the chokepoint is now the only reader. NOT load-bearing: the position WITHIN this function. It sits
+    # those went in issue #171 PR-2, and the chokepoint is now the only reader. Nor is the position WITHIN this function. It sits
     # after the deterministic-flag and agent_model checks purely so their existing
     # error-ordering tests keep reporting the error they were written to observe.
     #
@@ -11142,11 +11142,11 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
     # THE TWO SHAPES, refused HERE and not only at the prompt.
     # `_validate_launch_prompt_text` carries the same refusal and is the one that answers for
     # an arbitrary prompt BODY. This arm is the request-only statement of the rule: it refuses
-    # before any prompt is read, and tests pin it directly. It was added (Z4 PR-2) because
-    # `record_launch` then wrote its `running` row before the prompt-text arm, so a
+    # before the prompt text is checked, and tests pin it directly. It was added (Z4 PR-2)
+    # because `record_launch` then wrote its `running` row before the prompt-text arm, so a
     # neither-shape request left an orphan row; since issue #481 every bookkeeping write of
-    # `record_launch` follows every refusal, so that orphan is prevented by placement and this
-    # arm is no longer what prevents it. The prompt-text arm stays, because a request can
+    # `record_launch` follows every check of the launch, so that orphan is prevented by
+    # placement and this arm is no longer what prevents it. The prompt-text arm stays, because a request can
     # declare a shape its prompt does not carry.
     # The shape question is asked of ONE function, `_required_launch_prompt_markers`: an empty
     # marker set on a real step IS "neither deterministic nor pure" (its own comment says so),
@@ -14724,11 +14724,15 @@ def record_launch(
     _write_text(prompt_path, prompt_text)
     _write_text(reply_path, reply_text)
     # THE BOOKKEEPING THAT NAMES THIS LAUNCH comes after the launch record and after every
-    # refusal above (issue #481). The four `launches/` files are the launch record; the
-    # session-index row, the `pre_agent_launch` hook entry and the graph edge each name it, so
-    # by position a refused launch leaves none of them and none of them names a launch with no
-    # `request.json`. Before the move a late refusal left an edge with no request file, which
-    # `_prune_orphan_agent_graph_edges` keeps and the completion check then refuses `pass` over.
+    # check of the launch above (issue #481). The four `launches/` files are the launch record;
+    # the session-index row, the `pre_agent_launch` hook entry and the graph edge each name it,
+    # so by position a launch refused by any of those checks leaves none of them, and none of
+    # them names a launch with no `request.json`. Before the move a late refusal left an edge
+    # with no request file, which `_prune_orphan_agent_graph_edges` keeps and the completion
+    # check then refuses `pass` over. What can still raise AFTER this block is the phase-state
+    # transition below, on a `phase_state.json` that is unreadable or names another
+    # orchestration — a damaged host record, not a check of this launch. It leaves the whole
+    # launch record behind, `request.json` included, so its edge stays prunable on resume.
     _append_session_run_index_entry(
         repo_root,
         orchestration_id,
