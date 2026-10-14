@@ -635,6 +635,24 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # both revisions, so no IR is authored differently. The digest `compile-docs-13` shipped
     # with at 84cd9a41:
     "compile-docs-13@84cd9a41": "1cea359d6717d085c79431096de5c5c71f424b4958b0f80beab3ed625749df65",
+    # compile-docs-14 (issue #483): the reads-state rule in the schema block says a read only
+    # inside a term multiplied by a literal zero, raised to a literal zero or subtracted from
+    # itself is no read; the `required_raw_variables` bullet covers the state a test's own
+    # corroborant reads; V3 (i)/(ii) name the vacuous shapes the gate cannot see. A bump, not a
+    # re-pin: a leaf reading it authors under new obligations, and the gate newly refuses six
+    # IRs under workspace/ir — measured by running `validate_primary_predicate_schema` over all
+    # 305 IRs carrying `primary_predicates` at this branch and at origin/main 146861b1: coriolis
+    # 0.1.0 `…20260924_001` (`input_guard`) and advdiff1d_linear 0.3.1 `…20260925_001`, 0.4.0
+    # `…20260925_001` / `…20260925_002` / `…20260927_001`, 0.4.1 `…20260928_005`
+    # (`cfl_combined_max`, `mode_gain_error`, `mode_phase_error_rad`, and on `…20260925_002`
+    # also `cfl_check_failed` / `guard_overall_fail`); 34 entries; no other IR changes.
+    # Re-pinned in round 1 before shipping: V3 (i)'s CFL example is a stability bound (`le`)
+    # over only the initial-state speed; an `xfail` guard's exceedance is not it. Round 2: the
+    # `required_raw_variables` clause excludes the time variable, and the schema comment names
+    # the negated-add form, spelled the same. Round 3: that clause names the test's corroborants
+    # (cross-target predicates excluded), and V3 (ii) says the gate refuses the literal spelling
+    # only as the entry's sole state read.
+    "compile-docs-14": "1c3dff7766b266275a37a80e0fb258e3b2d249a6bb3124141bcfac49584b3bd8",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1424,7 +1442,20 @@ PINNED_VERDICT: dict[str, str] = {
     # Re-pinned (issue #445), behaviour-preserving: `tools/primary_evidence.py` loses
     # `_REDUCTIONS`, a module constant nothing read (the evaluator dispatches each reduction by
     # name in `_call`). No record's value moves. The shipped digest stays pinned.
-    "verdict-9": "3553630cb67af5d397f8f89db68bf1de07949cec298ebc69fbe9e30ec6b6391b",
+    "verdict-9@146861b1": "3553630cb67af5d397f8f89db68bf1de07949cec298ebc69fbe9e30ec6b6391b",
+    # Re-pinned by issue #483 (not bumped): the primary schema gate refuses a predicate whose
+    # state reads all sit inside a term constant by form (`effective_names`,
+    # `_ConstantByFormPruner`, `_is_literal_zero` added; `validate_primary_predicate_schema`
+    # calls them; docstrings state it). A `--stage compile`-only edit: the source of
+    # `evaluate_primary_predicates`, `_eval_node`, `_call`, `_shape_compatible` and `_scalar`
+    # is byte-identical to 146861b1's, and `predicate_reads_state` differs in its docstring
+    # only, so no record's value moves. Measured by diffing `verdict_tuple()` against
+    # 146861b1: the `tools/primary_evidence.py` row and no other. A certified IR carrying such
+    # a term is refused by the current gate before reuse (`_ir_certification`), never valued.
+    # Re-pinned in round 1 before shipping: `X + -X` / `-X + X` fold too (`_negates`).
+    # Round 2: `-(-X)` collapses to `X` before the comparison, and the refusal message names
+    # the negated-add form.
+    "verdict-9": "954dd3143c47cd945f7e48bbac23f859cd0257606daa226c09a2a084bae7a96b",
 }
 
 
