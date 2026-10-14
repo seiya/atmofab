@@ -37,6 +37,8 @@ from tools.tests.orchestration_fixtures import claude_launch_checks
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.test_build_runtime import _load_module
 from tools.tests.test_orchestration_runtime import (
+    _FIX_IR_REF,
+    _FIX_PIPE_REF,
     _launch_request_body,
     _mark_dependencies_ready,
     _spawn_response_payload,
@@ -588,47 +590,180 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
                 self.assertIn("deterministic", message)
                 self.assertIn("leaf_mode", message)
 
-    def test_the_refusal_lands_before_the_running_row_is_durable(self) -> None:
-        """WHERE the refusal fires, not only that it fires.
+    def test_the_request_side_refuses_a_neither_shape_request(self) -> None:
+        """The request-side statement of the two-shapes rule, driven on the validator itself.
 
-        `record_launch` calls `_validate_launch_request_payload` and only then
-        `_append_session_run_index_entry`; the prompt-text arm above runs AFTER that row is
-        written. PR-2 turned the identity floor into a refusal without moving it, so a
-        neither-shape request left a `running` row naming a launch that never happened — the
-        exact orphan the agent_role check's own comment says its placement exists to prevent.
-        The request-side arm is what closes it; this row is what keeps it closed."""
-        from tools.orchestration_runtime import (
-            _read_session_run_index,
-            _validate_launch_request_payload,
+        `_validate_launch_request_payload` refuses a neither-shape request before the prompt
+        text is checked. It was added (Z4 PR-2) because `record_launch` then appended the
+        `running` row between the request validator and the prompt-text one, so the
+        prompt-text refusal left an orphan row behind. Issue #481 moved every bookkeeping write
+        after every check of the launch, so that orphan is now prevented by placement for EVERY
+        check, and
+        `test_a_refused_launch_leaves_no_launch_record` pins it through `record_launch` (this
+        shape is its arm 0). What this row still pins is the request-side refusal on its own:
+        it is the only statement of the rule that needs no prompt."""
+        from tools.orchestration_runtime import _validate_launch_request_payload
+        payload = {**_launch_request_body("substep_run_neither_001"),
+                   "orchestration_id": "orch_neither_001"}
+        for key in ("leaf_mode", "pure_context", "deterministic"):
+            payload.pop(key, None)
+        with self.assertRaises(ValueError) as caught:
+            _validate_launch_request_payload(dict(payload))
+        self.assertIn("neither deterministic nor pure", str(caught.exception))
+
+    def test_a_refused_launch_leaves_no_launch_record(self) -> None:
+        """Issue #481: a launch `record_launch` refuses leaves no bookkeeping record behind.
+
+        The session-index `running` row, the `pre_agent_launch` hook entry and the
+        `agent_graph.json` edge are written in one block AFTER the four `launches/` files,
+        which come after every check of the launch. (A damaged `phase_state.json` can still
+        raise after the block; it is not a check of the launch, and the comment at the block
+        says what it leaves.) Before the move the row preceded the prompt-text
+        refusals (arms 1-3) and all three preceded the late arms (4, 5); the orphan EDGE is the
+        costly one, because `_prune_orphan_agent_graph_edges` keeps an edge with no
+        `request.json` and the completion check then refuses `pass` on every later attempt.
+
+        Each arm asserts its refusal MESSAGE, so an arm that refuses earlier for another reason
+        fails rather than passing vacuously. The controls run first and must leave every
+        record the arms assert absent, which is what shows the absence assertions can see
+        them, and they also pin the values the moved block writes. The last row interrupts the
+        LAST launch-file write (`reply.txt`): the block must come after all four, so an
+        interrupted write leaves none of the three either."""
+        from unittest import mock
+
+        from tools.pure_leaf import PURE_PROMPT_SENTINEL
+        from tools.tests.test_orchestration_runtime import (
+            _FIX_DEP_REF,
+            _substep_launch_prompt,
         )
-        with tempfile.TemporaryDirectory() as tmp:
-            repo_root, arid = Path(tmp), "substep_run_neither_001"
-            orchestration_id = "orch_neither_001"
-            _seed_launchable(repo_root, orchestration_id)
-            payload = {
-                **_launch_request_body(arid),
-                "orchestration_id": orchestration_id,
-                "agent_run_id": arid,
-            }
-            for key in ("leaf_mode", "pure_context", "deterministic"):
-                payload.pop(key, None)
-            with self.assertRaises(ValueError) as caught:
-                _validate_launch_request_payload(dict(payload))
-            self.assertIn("neither deterministic nor pure", str(caught.exception))
 
-            with self.assertRaises(ValueError):
-                ort.record_launch(
-                    repo_root=repo_root,
-                    orchestration_id=orchestration_id,
-                    parent_agent_run_id="orch_run_001",
-                    child_agent_run_id=arid,
-                    request_payload=dict(payload),
-                    response_payload={"agent_run_id": arid, "backend": "claude",
-                                      **_spawn_response_payload(arid)},
-                )
-            entries = _read_session_run_index(repo_root, orchestration_id).get("entries", [])
-            self.assertNotIn(arid, [e.get("agent_run_id") for e in entries],
-                             "the refused launch left a session_run_index row behind")
+        def response(arid: str) -> dict:
+            return {"agent_run_id": arid, "backend": "claude", **_spawn_response_payload(arid)}
+
+        def records(repo_root: Path, oid: str, arid: str) -> dict[str, bool]:
+            root = repo_root / "workspace" / "orchestrations" / oid
+            entries = ort._read_session_run_index(repo_root, oid).get("entries", [])
+            graph_path = root / "agent_graph.json"
+            edges = ort._load_graph(graph_path)["edges"] if graph_path.exists() else []
+            hook_path = ort._hooks_log_path(repo_root, oid)
+            hooks = ([json.loads(line) for line in hook_path.read_text(encoding="utf-8")
+                      .splitlines() if line.strip()] if hook_path.exists() else [])
+            return {
+                "row": any(e.get("agent_run_id") == arid for e in entries),
+                "edge": any(e.get("child_agent_run_id") == arid for e in edges),
+                "hook": any(h.get("hook") == "pre_agent_launch"
+                            and h.get("child_agent_run_id") == arid for h in hooks),
+                "launches": bool(list((root / "launches").glob(f"{arid}.*"))),
+                "marker": ort._active_child_marker_path(repo_root, oid, arid).exists(),
+                "claude_marker": ort._active_child_agent_run_id_path(repo_root, oid).exists(),
+            }
+
+        det = _launch_request_body("substep_run_det_481", deterministic=True)
+        pure = _launch_request_body("substep_run_pure_481")
+        for name, request in (("deterministic", {**det, "context_id": "ctx_det_481"}),
+                              ("pure", {**pure, "context_id": "ctx_pure_481"})):
+            with self.subTest(control=name), tempfile.TemporaryDirectory() as tmp:
+                repo_root, oid, arid = Path(tmp), "orch_to_001", request["agent_run_id"]
+                _seed_launchable(repo_root, oid)
+                ort.record_launch(repo_root=repo_root, orchestration_id=oid,
+                                  parent_agent_run_id="orch_run_to_001",
+                                  child_agent_run_id=arid, request_payload=dict(request),
+                                  response_payload={**response(arid),
+                                                    **_spawn_response_payload(f"sess_{arid}")})
+                self.assertEqual(records(repo_root, oid, arid),
+                                 dict.fromkeys(("row", "edge", "hook", "launches", "marker",
+                                                "claude_marker"), True))
+                root = repo_root / "workspace" / "orchestrations" / oid
+                (row,) = [e for e in ort._read_session_run_index(repo_root, oid)["entries"]
+                          if e.get("agent_run_id") == arid]
+                self.assertEqual((row.get("agent_session_id"), row.get("context_id"),
+                                  row.get("agent_role"), row.get("status")),
+                                 (f"sess_{arid}", request["context_id"], "substep", "running"))
+                self.assertIn({"parent_agent_run_id": "orch_run_to_001",
+                               "child_agent_run_id": arid, "relation_type": "launch"},
+                              ort._load_graph(root / "agent_graph.json")["edges"])
+                hooks = [json.loads(line) for line in ort._hooks_log_path(repo_root, oid)
+                         .read_text(encoding="utf-8").splitlines() if line.strip()]
+                self.assertIn("allow", [h.get("status") for h in hooks
+                                        if h.get("hook") == "pre_agent_launch"
+                                        and h.get("child_agent_run_id") == arid])
+
+        neither = dict(pure)
+        for key in ("leaf_mode", "pure_context", "deterministic"):
+            neither.pop(key, None)
+        execute_arid = "step_run_exec_no_build_id"
+        execute = {
+            "agent_model": "claude-opus-4-8", "node_key": "problem/shallow_water2d@0.3.0",
+            "step": "validate", "substep": "execute", "agent_role": "substep",
+            "orchestration_id": "orch_001", "agent_run_id": execute_arid,
+            "parent_agent_run_id": "orch_run_001", "ir_ref": _FIX_IR_REF,
+            "pipeline_ref": _FIX_PIPE_REF, "dependency_ref": _FIX_DEP_REF,
+            "run_id": "run_20260201_003", "source_id": "gen_real_001", "deterministic": True,
+            "allowed_output_paths": [(f"{_FIX_PIPE_REF}/runs/run_20260201_003/"
+                                      "problem__shallow_water2d__0.3.0/diagnostics.json")],
+            "launch_prompt_full": _substep_launch_prompt(
+                "problem/shallow_water2d@0.3.0", "validate", "execute", execute_arid),
+        }
+        # (label, oid, parent, request, child_env, exception, message)
+        arms = (
+            ("0 neither shape", "orch_to_001", "orch_run_to_001", neither, None,
+             ValueError, "neither deterministic nor pure"),
+            ("1 markers missing", "orch_to_001", "orch_run_to_001",
+             {**det, "launch_prompt_full": "an arbitrary body\n"}, None,
+             ValueError, "must preserve launch-prompt template markers"),
+            ("2 pure sentinel on a deterministic request", "orch_to_001", "orch_run_to_001",
+             {**det, "launch_prompt_full": PURE_PROMPT_SENTINEL + "\n"
+              + det["launch_prompt_full"]}, None,
+             ValueError, "does not declare leaf_mode=pure"),
+            ("3 field value disagrees", "orch_other_001", "orch_run_to_001",
+             {**det, "orchestration_id": "orch_other_001"}, None,
+             ValueError, "template field values"),
+            ("4 sandbox profile refused", "orch_to_001", "orch_run_to_001", pure,
+             {"ATMOFAB_CHILD_AGENT_RUN_ID": "not_this_arid"},
+             RuntimeError, "sandbox enforcement failed.*disagrees"),
+            ("5 validate.execute without source_binary_id", "orch_001", "orch_run_001",
+             execute, None, ValueError, "validate.execute launch requires `source_binary_id`"),
+        )
+        for label, oid, parent, request, child_env, exc, message in arms:
+            with self.subTest(arm=label), tempfile.TemporaryDirectory() as tmp:
+                repo_root, arid = Path(tmp), request["agent_run_id"]
+                _seed_launchable(repo_root, oid)
+                with self.assertRaisesRegex(exc, message):
+                    ort.record_launch(repo_root=repo_root, orchestration_id=oid,
+                                      parent_agent_run_id=parent, child_agent_run_id=arid,
+                                      request_payload=dict(request),
+                                      response_payload=response(arid), child_env=child_env)
+                self.assertEqual(records(repo_root, oid, arid),
+                                 dict.fromkeys(("row", "edge", "hook", "launches", "marker",
+                                                "claude_marker"), False))
+
+        # The crash window: the LAST launch-file write (`reply.txt`) fails, so the other three
+        # exist — asserted, so the row cannot go vacuous by failing earlier — and none of the
+        # three bookkeeping records may.
+        real_write_text = ort._write_text
+
+        def fail_on_reply(path: Path, text: str) -> None:
+            if path.name.endswith(".reply.txt"):
+                raise OSError("disk")
+            real_write_text(path, text)
+
+        with self.subTest(arm="interrupted launch-file write"), \
+                tempfile.TemporaryDirectory() as tmp:
+            repo_root, oid, arid = Path(tmp), "orch_to_001", det["agent_run_id"]
+            _seed_launchable(repo_root, oid)
+            with mock.patch.object(ort, "_write_text", side_effect=fail_on_reply), \
+                    self.assertRaisesRegex(OSError, "disk"):
+                ort.record_launch(repo_root=repo_root, orchestration_id=oid,
+                                  parent_agent_run_id="orch_run_to_001",
+                                  child_agent_run_id=arid, request_payload=dict(det),
+                                  response_payload=response(arid))
+            launches = repo_root / "workspace" / "orchestrations" / oid / "launches"
+            self.assertEqual(sorted(p.name for p in launches.glob(f"{arid}.*")),
+                             sorted(f"{arid}.{s}" for s in
+                                    ("request.json", "response.json", "prompt.txt")))
+            seen = records(repo_root, oid, arid)
+            self.assertEqual({k: seen[k] for k in ("row", "edge", "hook")},
+                             dict.fromkeys(("row", "edge", "hook"), False))
 
     def test_the_self_prompt_with_no_step_is_still_exempt(self) -> None:
         """The case the silent return was written for, and the reason it is not a refusal."""

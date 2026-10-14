@@ -4996,8 +4996,10 @@ def _prune_orphan_agent_graph_edges(
 ) -> list[str]:
     """Remove agent_graph.json edges left by an ABANDONED child launch.
 
-    `record_launch` writes the parent→child graph edge BEFORE the active-child
-    marker, so a launch abandoned mid-flight (the dangling-launch case) leaves an
+    `record_launch` writes the parent→child graph edge after the four `launches/`
+    files, which follow every check of the launch (issue #481), but BEFORE the
+    active-child marker,
+    so a launch abandoned mid-flight (the dangling-launch case) leaves an
     orphan edge with no terminal `agent_runs.jsonl` row for the child. On resume the
     agent re-launches under a fresh agent_run_id (never reusing the abandoned one),
     so that edge stays orphaned forever — and `_validate_orchestration_completion_for_pass`
@@ -10986,13 +10988,14 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
     # Requiring the field here, at the one place every launch passes through, is what makes
     # all of them see one value.
     #
-    # Two things about the placement are load-bearing, and one is not. Load-bearing:
-    # (1) `record_launch` calls this validator immediately BEFORE
-    # `_append_session_run_index_entry`, so a rejected role leaves no orphan `running` row
-    # (validating downstream instead would fire after that row is durable); (2) it was
+    # Two things about the placement USED to be load-bearing; neither is now. (1) `record_launch`
+    # called this validator immediately BEFORE `_append_session_run_index_entry`, so a rejected
+    # role left no orphan `running` row. Since issue #481 that holds for every check of the
+    # launch by the position of `record_launch`'s bookkeeping block, written after the launch
+    # files, so this placement no longer keeps the row honest. (2) it was
     # upstream of the capability, so a capability the MCP and run-gate phase gates re-checked
     # with this same predicate could not be minted from an inferred role at all — all three of
-    # those went in issue #171 PR-2, and the chokepoint is now the only reader. NOT load-bearing: the position WITHIN this function. It sits
+    # those went in issue #171 PR-2, and the chokepoint is now the only reader. Nor is the position WITHIN this function. It sits
     # after the deterministic-flag and agent_model checks purely so their existing
     # error-ordering tests keep reporting the error they were written to observe.
     #
@@ -11138,14 +11141,13 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
 
     # THE TWO SHAPES, refused HERE and not only at the prompt.
     # `_validate_launch_prompt_text` carries the same refusal and is the one that answers for
-    # an arbitrary prompt BODY; but `record_launch` calls it AFTER
-    # `_append_session_run_index_entry`, so a neither-shape request was recorded as a `running`
-    # row and only then refused — an orphan row naming a launch that never happened, which is
-    # exactly what the placement of the agent_role check three lines up exists to prevent.
-    # Same defect class as the one that comment describes, introduced by PR-2 when it turned
-    # the identity floor into a refusal without moving it. This arm reads the REQUEST only, so
-    # it is safe this early; the prompt-text arm stays, because a request can declare a shape
-    # its prompt does not carry.
+    # an arbitrary prompt BODY. This arm is the request-only statement of the rule: it refuses
+    # before the prompt text is checked, and tests pin it directly. It was added (Z4 PR-2)
+    # because `record_launch` then wrote its `running` row before the prompt-text arm, so a
+    # neither-shape request left an orphan row; since issue #481 every bookkeeping write of
+    # `record_launch` follows every check of the launch, so that orphan is prevented by
+    # placement and this arm is no longer what prevents it. The prompt-text arm stays, because a request can
+    # declare a shape its prompt does not carry.
     # The shape question is asked of ONE function, `_required_launch_prompt_markers`: an empty
     # marker set on a real step IS "neither deterministic nor pure" (its own comment says so),
     # so the two refusals cannot answer differently.
@@ -14198,7 +14200,7 @@ def record_launch(
     # pure path, but this is the authorization gate and must not be the only layer assuming the
     # other two ran: a non-pure HTTP launch would receive allowed_output_paths, file-tool pins
     # and a write-authorized capability with no sandbox at all. Raising here leaves no
-    # capability document, no manifest, no agent-graph edge and no session-index row behind.
+    # agent-graph edge and no session-index row behind.
     if backend_token in _HTTP_PROVIDER_TOKENS and not _is_pure_launch_request(request_payload):
         raise RuntimeError(
             f"record-launch: provider {backend_token!r} runs no confined child process and is "
@@ -14237,7 +14239,16 @@ def record_launch(
                 "codex_lineage_id": codex_lineage_id,
             }
 
-    # The Claude backend enforces sequential child launch via the active file.
+    # The Claude backend enforces sequential child launch via the active file. The existence
+    # check here and the marker write at the end of this function are deliberately NOT under one
+    # lock (issue #481). Serializing DRIVERS is the run's exclusive claim
+    # (`run_workflow._exclusive_claim`, `("orch", orchestration_id)` held for the life of the
+    # driver), and within one driver the conductor issues every `record-launch` as a blocking
+    # subprocess, one at a time; what this guard defends against is a conductor bug launching a
+    # second claude leaf in one driver. The concurrent cases that reach the gap are operator-side
+    # (a hand-run `record-launch`, a degraded claim, two hosts with host-local homes);
+    # `docs/RUNBOOK.md` §3-1 is canonical for when the claim does not serialize drivers, and its
+    # §"Incomplete launch recovery" for what a second driver of one orchestration costs.
     if backend_token == "claude":
         active_path = _active_child_agent_run_id_path(repo_root, orchestration_id)
         if active_path.exists():
@@ -14345,15 +14356,6 @@ def record_launch(
     launch_context_id = context_obj.strip() if isinstance(context_obj, str) and context_obj.strip() else None
 
     _validate_launch_request_payload(request_payload)
-    _append_session_run_index_entry(
-        repo_root,
-        orchestration_id,
-        agent_run_id=child_agent_run_id,
-        agent_session_id=response_agent_session_id,
-        context_id=launch_context_id,
-        agent_role=launch_role,
-        status="running",
-    )
 
     prompt_text = _extract_launch_prompt_text(request_payload)
     reply_text = _extract_launch_reply_text(response_payload)
@@ -14362,13 +14364,6 @@ def record_launch(
     if not reply_text.strip():
         raise ValueError("launch reply text must be non-empty")
     _validate_launch_prompt_text(request_payload, prompt_text)
-    _append_workflow_hook_log(
-        repo_root,
-        orchestration_id,
-        hook_name="pre_agent_launch",
-        status="allow",
-        detail={"child_agent_run_id": child_agent_run_id},
-    )
 
     request_ref, response_ref = _launch_refs(orchestration_id, child_agent_run_id)
     prompt_ref, reply_ref = _launch_dialog_refs(orchestration_id, child_agent_run_id)
@@ -14383,17 +14378,6 @@ def record_launch(
     response_path = launches_root / f"{child_agent_run_id}.response.json"
     prompt_path = launches_root / f"{child_agent_run_id}.prompt.txt"
     reply_path = launches_root / f"{child_agent_run_id}.reply.txt"
-
-    graph_path = root / "agent_graph.json"
-    graph = _load_graph(graph_path)
-    edge = {
-        "parent_agent_run_id": parent_agent_run_id,
-        "child_agent_run_id": child_agent_run_id,
-        "relation_type": relation_type,
-    }
-    if edge not in graph["edges"]:
-        graph["edges"].append(edge)
-    _write_json(graph_path, graph)
 
     nk = request_payload.get("node_key")
     st = request_payload.get("step")
@@ -14617,9 +14601,10 @@ def record_launch(
                 # log path (build step's Make-only path).
         # An HTTP pure leaf (issue #28) runs in the conductor's own process over HTTPS: there is
         # no child process to confine, no codex home to isolate, and no `backend_command` to
-        # pin. Everything ABOVE this point still runs for it — the capability, the manifest, the
-        # agent-graph edge, the session-index row — because those describe the LAUNCH, which is
-        # as real as any other. Only the process-sandbox layer is skipped, and it is marked so
+        # pin. The launch record written BELOW — the `launches/` files, the session-index row,
+        # the hook entry, the agent-graph edge — is written for it too, because those describe
+        # the LAUNCH, which is as real as any other. Only the process-sandbox layer is
+        # skipped, and it is marked so
         # the audit validators (which key on `sandbox_profile` presence) can tell a skipped
         # profile from a missing one.
         if backend_token in _HTTP_PROVIDER_TOKENS:
@@ -14662,7 +14647,7 @@ def record_launch(
                     backend_command)
                 if _backend_family == "codex":
                     # A warm launch prepared its lineage home before any durable
-                    # mutation above and is not re-prepared here (a second preparation
+                    # mutation and is not re-prepared here (a second preparation
                     # could not create anything, but it would be a second existence
                     # answer for one launch). A COLD launch starts a NEW lineage, named by
                     # the child's own id: the exclusive creation refuses a directory that
@@ -14738,6 +14723,42 @@ def record_launch(
     _write_json(response_path, response_payload)
     _write_text(prompt_path, prompt_text)
     _write_text(reply_path, reply_text)
+    # THE BOOKKEEPING THAT NAMES THIS LAUNCH comes after the launch record and after every
+    # check of the launch above (issue #481). The four `launches/` files are the launch record;
+    # the session-index row, the `pre_agent_launch` hook entry and the graph edge each name it,
+    # so by position a launch refused by any of those checks leaves none of them, and none of
+    # them names a launch with no `request.json`. Before the move a late refusal left an edge
+    # with no request file, which `_prune_orphan_agent_graph_edges` keeps and the completion
+    # check then refuses `pass` over. What can still raise AFTER this block is the phase-state
+    # transition below, on a `phase_state.json` that is unreadable or names another
+    # orchestration — a damaged host record, not a check of this launch. It leaves the whole
+    # launch record behind, `request.json` included, so its edge stays prunable on resume.
+    _append_session_run_index_entry(
+        repo_root,
+        orchestration_id,
+        agent_run_id=child_agent_run_id,
+        agent_session_id=response_agent_session_id,
+        context_id=launch_context_id,
+        agent_role=launch_role,
+        status="running",
+    )
+    _append_workflow_hook_log(
+        repo_root,
+        orchestration_id,
+        hook_name="pre_agent_launch",
+        status="allow",
+        detail={"child_agent_run_id": child_agent_run_id},
+    )
+    graph_path = root / "agent_graph.json"
+    graph = _load_graph(graph_path)
+    edge = {
+        "parent_agent_run_id": parent_agent_run_id,
+        "child_agent_run_id": child_agent_run_id,
+        "relation_type": relation_type,
+    }
+    if edge not in graph["edges"]:
+        graph["edges"].append(edge)
+    _write_json(graph_path, graph)
     if isinstance(nk, str) and nk.strip() and isinstance(st, str) and st.strip():
         step_tok = st.strip().lower()
         _transition_node_step_phase_state(
