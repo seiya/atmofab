@@ -12030,7 +12030,8 @@ end program shallow_water2d_runner
     def test_compile_gate_rejects_an_unresolvable_primary_predicate(self) -> None:
         """Each refusal class the primary gate owns, observed at the stage: an unknown capture
         variable, a bare name, a disallowed construct, a case input that is not a number in the
-        target case, an `at()` outside the target cases, and a malformed secondary `quantity`."""
+        target case, an `at()` outside the target cases, a state read only inside a term
+        constant by form (issue #483), and a malformed secondary `quantity`."""
         rows = [
             (self._primary_predicate(expr="sum(final.zeta)"), "not a snapshot schema variable"),
             (self._primary_predicate(expr="nx"), "name 'nx' is not a coordinate"),
@@ -12041,6 +12042,8 @@ end program shallow_water2d_runner
             (self._primary_predicate(test_id="t9"), "not a tests.md test_id"),
             (self._primary_predicate(expr="final.h - initial.h"),
              "evaluates to an array of rank 2, not a scalar"),
+            (self._primary_predicate(expr="sum(final.h * 0 + 1)"),
+             "outside a term multiplied by a literal zero"),
         ]
         for pred, fragment in rows:
             with self.subTest(fragment=fragment), tempfile.TemporaryDirectory() as tmp:

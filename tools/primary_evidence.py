@@ -127,6 +127,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import copy
 import json
 import math
 import sys
@@ -362,6 +363,39 @@ def expr_names(tree: ast.Expression) -> list[NameRef]:
     return refs
 
 
+def _is_literal_zero(node: ast.AST) -> bool:
+    """A numeric literal equal to zero, under any number of unary minuses (`0`, `0.0`, `-0`)."""
+    while isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+        node = node.operand
+    return (isinstance(node, ast.Constant) and not isinstance(node.value, bool)
+            and isinstance(node.value, (int, float)) and node.value == 0)
+
+
+class _ConstantByFormPruner(ast.NodeTransformer):
+    """Replace, children first, every term whose value is fixed by its FORM: `X * 0` / `0 * X`
+    and `X - X` (structurally identical sides) by the literal 0, `X ** 0` by the literal 1.
+    Each is exact for every finite evaluation, and the evaluator refuses a non-finite value.
+    Nothing else is folded — `0 / X`, `0 ** X` and `X / X` are not exact."""
+
+    def visit_BinOp(self, node: ast.BinOp) -> ast.AST:
+        self.generic_visit(node)
+        if isinstance(node.op, ast.Mult) and (_is_literal_zero(node.left)
+                                              or _is_literal_zero(node.right)):
+            return ast.Constant(0.0)
+        if isinstance(node.op, ast.Pow) and _is_literal_zero(node.right):
+            return ast.Constant(1.0)
+        if isinstance(node.op, ast.Sub) and ast.dump(node.left) == ast.dump(node.right):
+            return ast.Constant(0.0)
+        return node
+
+
+def effective_names(tree: ast.Expression) -> list[NameRef]:
+    """The name references of a parsed expression that survive pruning the terms constant by
+    form (`_ConstantByFormPruner`): a read that sits only inside such a term does not enter
+    the value. `tree` is not modified."""
+    return expr_names(_ConstantByFormPruner().visit(copy.deepcopy(tree)))
+
+
 def reads_captured_state(refs: list[NameRef], state_names: set[str]) -> bool:
     """Whether any reference reads a captured STATE variable (the time variable excluded)."""
     return any(r.kind == "capture" and r.name in state_names for r in refs)
@@ -374,10 +408,14 @@ def predicate_reads_state(expr_refs: list[NameRef], bind_refs: dict[str, list[Na
     alone, or a state read only in a bind the expression never uses — values nothing the
     kernel produced and corroborates nothing; the gate and the evaluator both refuse it.
 
-    SYNTACTIC: the rule sees that the state is read, not that the value depends on it —
-    `sum(final.h) * 0` passes it. Whether the expression is the test's own quantity is
-    `Compile.verify` V3's judgment (`phase_01_compile.md`), which has no deterministic
-    backstop; PR-3's coverage gate over `quantity` names closes omission, not vacuity."""
+    SYNTACTIC: the rule sees that the state is read, not that the value depends on it. The
+    schema gate first prunes the terms constant by form (`effective_names`: a factor of
+    literal zero, an exponent of literal zero, a side subtracted from itself), so
+    `sum(final.h) * 0` is refused there (issue #483); the evaluator applies this rule to the
+    raw references, and a gated IR never reaches it with such a term. Dependence in any
+    other way, and whether the expression is the test's own quantity, is `Compile.verify`
+    V3's judgment (`phase_01_compile.md`); PR-3's coverage gate over `quantity` names closes
+    omission, not vacuity."""
     if reads_captured_state(expr_refs, state_names):
         return True
     reached: set[str] = set()
@@ -1404,7 +1442,12 @@ def validate_primary_predicate_schema(
     in order and `expr`, refusing an operand pair of unequal rank (a coordinate has the
     state's rank), a `roll` shift count other than the array's rank or a non-scalar shift, and
     an `expr` that is not a scalar. A name or bind violation on the predicate suppresses its
-    rank check, so one defect is reported once."""
+    rank check, so one defect is reported once.
+
+    Every parsed predicate must read this run's captured state (`predicate_reads_state`),
+    and must still read it once the terms constant by form are pruned (`effective_names`,
+    issue #483): a read only inside `X * 0`, `X ** 0` or `X - X` is no read. The cross-target
+    classification keeps the raw references."""
     v: list[str] = []
     if predicates is None:
         return v
@@ -1518,6 +1561,8 @@ def validate_primary_predicate_schema(
         seen_binds: set[str] = set()
         bind_refs: dict[str, list[NameRef]] = {}
         expr_refs: list[NameRef] = []
+        effective_bind_refs: dict[str, list[NameRef]] = {}
+        effective_expr_refs: list[NameRef] = []
         parsed: list[tuple[str, str | None, ast.Expression]] = []
         parsed_all = True
         for eloc, bind_name, text in exprs:
@@ -1533,8 +1578,10 @@ def validate_primary_predicate_schema(
             parsed.append((eloc, bind_name, tree))
             if bind_name is None:
                 expr_refs = refs
+                effective_expr_refs = effective_names(tree)
             else:
                 bind_refs[bind_name] = refs
+                effective_bind_refs[bind_name] = effective_names(tree)
             for ref in refs:
                 if ref.case is not None and ref.case not in targets:
                     v.append(f"{eloc}: at({ref.case!r}) is not one of this predicate's "
@@ -1575,6 +1622,14 @@ def validate_primary_predicate_schema(
                      "expr or a bind expr reaches: a corroborant values the state the kernel "
                      "produced (a comparand.<point>.<var> is another target's state, not this "
                      "run's)")
+        elif parsed_all and not predicate_reads_state(effective_expr_refs, effective_bind_refs,
+                                                      set(variables)):
+            v.append(f"{loc}: reads no captured state variable (initial.<var> / final.<var>) "
+                     "outside a term multiplied by a literal zero, raised to a literal zero or "
+                     "subtracted from itself: the expression is constant in the captured values "
+                     "and corroborates nothing (a cell count is the case's inputs.<grid path>; a "
+                     "quantity no captured state enters takes the tests.md §5 primary-evidence "
+                     "statement, its state term included)")
     return v
 
 
@@ -1621,8 +1676,9 @@ def coverage_violations(test_predicates: Any, primary_predicates: Any) -> list[s
     rule is stated over the cases read.
 
     This compares names and cases read and nothing else: whether a same-named pair measures
-    the same quantity, and whether the primary expression can fail at all, is
-    `Compile.verify`'s judgment (V3). Malformed entries are left to the two schema gates
+    the same quantity, and whether the primary expression can fail at all beyond the
+    constant-by-form terms the primary schema gate refuses, is `Compile.verify`'s judgment
+    (V3). Malformed entries are left to the two schema gates
     that run before this one: a condition with no `quantity` is skipped here (the secondary
     schema gate refuses it), and so is a primary predicate with no `test_id` or `quantity`,
     a malformed scope or an unparsable expression (each covers nothing).

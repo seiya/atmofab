@@ -21614,7 +21614,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # that takes this bump. Round 2 (the component coordinate's `count` and `length` are both
         # the case's component count; (vi) compares values, not keys): bumped 96100->96200;
         # measured 96035 at the commit that takes this bump.
-        "docs/workflow/phases/phase_01_compile.md": 96200,
+        # Bumped 96200->96600 (issue #483): the reads-state rule in the schema block states that
+        # a read only inside a term constant by form is no read, the `required_raw_variables`
+        # bullet covers the corroborant's reads, and V3 (i)/(ii) trade the now-gated example for
+        # the shapes the gate cannot see. Measured 96399 with `wc -c` in /home/seiya/atmofab at
+        # the commit that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 96600,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
@@ -27344,12 +27349,13 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/pure_compile_generate.txt:8247632afdd9447b":
+        "tools/prompt_templates/pure_compile_generate.txt:621c1bd7b0aa9658":
             "rule 3: read the WHOLE derived set; deps.yaml alone is rejected; the runner "
             "harness is the target's and is not in the set (issue #284, which also removed "
             "rules 5-6 and renumbered 7-9 of the same paragraph; issue #346 appended rule 8, "
             "case input routing, and left rule 3 unchanged; issue #358 rewrote rule 7's "
-            "empty-`profiles` sentence; rule 3 unchanged)",
+            "empty-`profiles` sentence; rule 3 unchanged; issue #483 extended rule 5's "
+            "primary-predicate obligations; rule 3 unchanged)",
         "docs/workflow/phases/phase_01_compile.md:8669240102ee7090":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
             "infrastructure node in it (issue #284)",

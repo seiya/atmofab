@@ -948,6 +948,15 @@ PINNED: dict[str, str] = {
     # and the copy goes through a DEFERRED-length local (a fixed-length one under `trim` comes
     # out NUL-padded at -O2).
     "pure-73": "6c178e923c1aec4c11666792c03483061e28148f04cdfeb6fb3729e27e9e3e80",
+    # pure-74 (issue #483): `pure_compile_generate.txt` rule (5) gains four authoring
+    # obligations on `primary_predicates` the gate cannot see — (a) a `quantity` names the same
+    # thing on condition and corroborant, (b) a corroborant some state can fail, (c) every
+    # threshold, `op` and scope carried over unchanged, (d) the expression is the definition as
+    # written and its state reads are in `required_raw_variables` — and its closing sentence
+    # says a read only inside a term constant by form is no read (the gate now refuses it).
+    # Measured by diffing this tuple against origin/main 146861b1's: the
+    # `pure_compile_generate.txt` template moved and no other member.
+    "pure-74": "ab4063da2994c1a3fc8fae12ebb1dc81e3423bba7ac811000ad2b585fc17bbc7",
 }
 
 

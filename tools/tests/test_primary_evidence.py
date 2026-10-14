@@ -491,8 +491,10 @@ class EvaluationTest(unittest.TestCase):
             with self.subTest(pred=pred), \
                     self.assertRaisesRegex(pe.PrimaryEvidenceError, "reads no captured state"):
                 self._eval([pred])
+        # the evaluator applies the rule to the raw references, so this evaluates (to 0); the
+        # schema gate refuses it upstream since issue #483 (a read only inside `X * 0`)
         [rec] = self._eval([{**HMIN, "bind": {"a": "sum(final.h)", "b": "a * 0"}, "expr": "b"}])
-        self.assertEqual(rec["kind"], "physics")   # evaluated (to 0): the rule is syntactic
+        self.assertEqual(rec["kind"], "physics")
         for key in ("na_allowed", "expected_outcome"):
             with self.subTest(key=key), \
                     self.assertRaisesRegex(pe.PrimaryEvidenceError, f"{key} is not a primary"):
@@ -1119,9 +1121,7 @@ class SchemaGateTest(unittest.TestCase):
             with self.subTest(expr=expr):
                 out = self._v([{**HMIN, "expr": expr}])
                 self.assertTrue(any("reads no captured state" in m for m in out), out)
-        # a state read inside a bind counts only when `expr` reaches that bind (transitively);
-        # the rule is SYNTACTIC — `m * 0` passes it and is V3's to judge
-        self.assertEqual(self._v([{**HMIN, "bind": {"m": "sum(final.h)"}, "expr": "m * 0"}]), [])
+        # a state read inside a bind counts only when `expr` reaches that bind (transitively)
         self.assertEqual(self._v([{**HMIN, "bind": {"a": "sum(final.h)", "b": "a * 2"},
                                    "expr": "b"}]), [])
         out = self._v([{**HMIN, "bind": {"unused": "final.h"}, "expr": "1.0"}])
@@ -1132,6 +1132,67 @@ class SchemaGateTest(unittest.TestCase):
         for key in ("na_allowed", "expected_outcome"):
             out = self._v([{**HMIN, key: "pass"}])
             self.assertTrue(any(f"{key} is not a primary predicate key" in m for m in out), out)
+
+    def test_a_state_read_only_inside_a_term_constant_by_form_is_refused(self) -> None:
+        """Issue #483: a read inside `X * 0`, `X ** 0` or `X - X` does not enter the value, so
+        it is no read — the message keeps the "reads no captured state" prefix and names the
+        forms. Pruning is children first, and a bind is pruned before `expr` reaches it."""
+        form = "outside a term multiplied by a literal zero"
+        refused = [
+            {"expr": "sum(final.h * 0 + 1)"},
+            {"expr": "0.0 * sum(final.h) + 1"},
+            {"expr": "sum(final.h) * -0"},
+            {"expr": "sum(final.h) ** 0"},
+            {"expr": "sum(final.h - final.h)"},
+            {"expr": "sum(final.h) * (final.s * 0)"},
+            {"bind": {"m": "sum(final.h)"}, "expr": "m * 0"},
+            {"bind": {"m": "sum(final.h)"}, "expr": "(m - m) * 2"},
+            {"bind": {"a": "final.h"}, "expr": "sum((a - a) * final.h)"},
+            {"bind": {"a": "sum(final.h)", "b": "a * 0"}, "expr": "b + 1"},
+        ]
+        for extra in refused:
+            with self.subTest(**{k: str(v) for k, v in extra.items()}):
+                out = self._v([{**HMIN, **extra}])
+                self.assertEqual(len(out), 1, out)
+                self.assertIn("reads no captured state", out[0])
+                self.assertIn(form, out[0])
+        accepted = [
+            {"expr": "sum(final.h) * 0.5"},
+            {"expr": "sum(final.h) - sum(initial.h)"},
+            {"expr": "min(final.h) + 0"},
+            {"expr": "min(final.h) + 0 * sum(final.h)"},
+            {"expr": "min(final.h) + 0.0 * inputs.grid.nx"},
+            {"expr": "sum(final.h ** 0 * final.h)"},
+            {"expr": "sum(0 / (final.h + 1))"},
+            {"expr": "sum(final.h / final.h)"},
+            {"expr": "sum(final.h - initial.h)"},
+            {"bind": {"a": "sum(final.h)", "b": "a - a"}, "expr": "b + a"},
+        ]
+        for extra in accepted:
+            with self.subTest(**{k: str(v) for k, v in extra.items()}):
+                self.assertEqual(self._v([{**HMIN, **extra}]), [])
+        # an expression that reads no state at all keeps the original message
+        out = self._v([{**HMIN, "expr": "inputs.grid.nx * 0"}])
+        self.assertEqual(len(out), 1, out)
+        self.assertNotIn(form, out[0])
+
+    def test_effective_names_prunes_terms_constant_by_form(self) -> None:
+        def names(src: str) -> list[str]:
+            return [f"{r.point}.{r.name}" if r.point else r.name
+                    for r in pe.effective_names(pe.parse_expr(src))]
+        self.assertEqual(names("final.h * 0 + initial.u"), ["initial.u"])
+        self.assertEqual(names("0 * final.h"), [])
+        self.assertEqual(names("-0.0 * final.h"), [])
+        self.assertEqual(names("final.h ** 0 * final.u"), ["final.u"])   # X ** 0 is 1, not 0
+        self.assertEqual(names("(final.h - final.h) * final.u"), [])     # children first
+        self.assertEqual(names("final.h - initial.h"), ["final.h", "initial.h"])
+        self.assertEqual(names("0 ** final.h + final.h / final.h"),
+                         ["final.h", "final.h", "final.h"])
+        self.assertEqual(names("final.h * 0.0001"), ["final.h"])
+        tree = pe.parse_expr("final.h * 0")
+        pe.effective_names(tree)
+        self.assertEqual(names("final.h * 0"), [])
+        self.assertEqual([r.name for r in pe.expr_names(tree)], ["h"])   # input untouched
 
     def test_coordinates_resolve_in_every_case(self) -> None:
         coords = [{"name": "x", "axis": 0, "count": "inputs.grid.nx", "length": "inputs.grid.L_x",
