@@ -955,8 +955,10 @@ PINNED: dict[str, str] = {
     # written and its state reads are in `required_raw_variables` — and its closing sentence
     # says a read only inside a term constant by form is no read (the gate now refuses it).
     # Measured by diffing this tuple against origin/main 146861b1's: the
-    # `pure_compile_generate.txt` template moved and no other member.
-    "pure-74": "ab4063da2994c1a3fc8fae12ebb1dc81e3423bba7ac811000ad2b585fc17bbc7",
+    # `pure_compile_generate.txt` template moved and no other member. Re-pinned in round 1 before
+    # shipping: (b)'s CFL example is a stability bound (`le`) over only the initial-state speed,
+    # and an `xfail` guard's exceedance over the initial state is not it.
+    "pure-74": "62c13792b44adf85b55ee2c2960c8603f288e4102f5385c9383f554ca80f313c",
 }
 
 

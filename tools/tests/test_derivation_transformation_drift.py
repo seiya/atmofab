@@ -646,7 +646,9 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # `…20260925_001` / `…20260925_002` / `…20260927_001`, 0.4.1 `…20260928_005`
     # (`cfl_combined_max`, `mode_gain_error`, `mode_phase_error_rad`, and on `…20260925_002`
     # also `cfl_check_failed` / `guard_overall_fail`); 34 entries; no other IR changes.
-    "compile-docs-14": "03c4cda415d2ed6a76e26c352a4a26cd975023b82b1e34a818641f6d2a2b40a0",
+    # Re-pinned in round 1 before shipping: V3 (i)'s CFL example is a stability bound (`le`)
+    # over only the initial-state speed; an `xfail` guard's exceedance is not it.
+    "compile-docs-14": "91f745c86d3bb31139eab729435e27b3a8908b95fd668e80acba8de1bce9e315",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
