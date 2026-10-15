@@ -13307,9 +13307,10 @@ class SignatureDriftCanaryTests(unittest.TestCase):
     # operator's `workspace/`. It is a valuable comparison and it is not a test: `workspace/` is
     # gitignored machine-local runtime state, absent from every fresh clone, so the row failed in any
     # clean checkout — it took down the round-0 mutation sweep's own baseline, since the sweep runs in
-    # worktrees. Making it `skipTest` instead is the recorded WRONG answer in this repository:
-    # `tools/tests/test_skip_reasons_are_declared.py` exists because a calibration row pinned inside
-    # `workspace/` skipped silently for weeks while its comment called itself the real-shape line.
+    # worktrees. Making it `skipTest` instead is the recorded WRONG answer in this repository: a
+    # calibration row pinned inside `workspace/` skipped silently for weeks while its comment called
+    # itself the real-shape line, and the report check (`tools/tests/skip_probes.py`) now refuses
+    # any skip that is not a probe's.
     #
     # So the comparison stays a MEASUREMENT, taken once and recorded where a measurement belongs (the
     # `spec:` commit's message and `TODO.md`): at `2dd73cd`, every component's §5.1 agreed with its

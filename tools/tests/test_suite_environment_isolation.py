@@ -929,8 +929,7 @@ class NoShadowedTestMethodTests(unittest.TestCase):
 
     NOT repository-wide, since issue #183 moved the review instruments' tests to
     `.claude/skills/<skill>/scripts/tests/` (one instrument since issue #445). They are outside
-    this scan, and outside
-    `test_skip_reasons_are_declared.py`'s corpus for the same reason. Deliberately not widened:
+    this scan for that reason. Deliberately not widened:
     the whole point of that move is that the default run stops reading `.claude/`, and a glob
     added here would put it back. Each skill states the command that runs its own tests.
     """

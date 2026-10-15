@@ -12468,7 +12468,7 @@ end program shallow_water2d_runner
         # operator's execution workspace and is gitignored, so that made the calibration a
         # permanent silent skip (the suite's standing "1 skipped") on every fresh clone. A missing
         # fixture is now repository corruption, not an environment difference — so it fails.
-        # `test_skip_reasons_are_declared` stops that skip being re-declared; it cannot stop a
+        # The report check, `tools/tests/skip_probes.py`, refuses that skip; it cannot stop a
         # future edit from simply returning early instead, which is the same defect without a
         # skip in it. Nothing in the suite watches for that, and saying so beats implying
         # otherwise — an earlier version of this comment claimed "any route" and was wrong.
