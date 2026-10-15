@@ -108,11 +108,26 @@ def _working_pair() -> str | None:
 _PAIR = _working_pair()
 
 
-@unittest.skipUnless(_PAIR, "no MPI installation whose wrapper compiles the binding canary")
+def _require_mpi_pair() -> str:
+    """The directory `_working_pair` found, or a failure that says what to install (#498: a
+    missing dependency fails; CI installs one)."""
+    if _PAIR is None:
+        raise AssertionError(
+            "no MPI installation whose wrapper compiles the binding canary was found on PATH or "
+            f"in /usr/bin; install an MPI whose {wrapper.COMPILER_WRAPPER} compiles a program "
+            "using the binding module with this host's compiler (docs/RUNBOOK.md#0-1, "
+            "docs/backends/parallel/mpi/LAUNCHER.md §3)")
+    return _PAIR
+
+
 class RealToolchainCanaryTests(unittest.TestCase):
     """The canary sources are this package's Fortran, and nothing else compiles them: run them
     with a real installation, so a source that stops compiling (or stops printing what
     `launch_canary_problem` reads) fails here rather than refusing every launch."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        _require_mpi_pair()
 
     def test_the_launch_canary_builds_and_reads_as_one_run(self) -> None:
         import subprocess

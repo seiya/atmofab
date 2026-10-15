@@ -43,30 +43,31 @@ from tools.tests.target_fixtures import FORTRAN_CPU as _TARGET_PROFILE
 HARNESS = "harness_fortran_cpu"
 BOUNDARY_SID = "dynamics_shallow_water_boundary_2d_periodic_copy"
 
-_HAVE_GFORTRAN = shutil.which("gfortran") is not None
+
+def _require_gfortran() -> None:
+    """A missing compiler fails with what to install (#498: a test in this suite does not skip)."""
+    if shutil.which("gfortran") is None:
+        raise AssertionError("gfortran is not on PATH; install gfortran (docs/RUNBOOK.md#0-1)")
 
 
-#: The two host conditions under which the declared lint invocation cannot decide a verdict.
-#: Both are LITERAL strings because `test_skip_reasons_are_declared.py` reads them statically —
-#: a computed reason is one nobody declared, which is exactly the thing that table exists to
-#: refuse.
-_LINTER_ABSENT_SKIP = "the declared lint invocation's linter is not installed"
-_LINTER_UNMEASURED_SKIP = "the installed linter is outside the measured version range"
-
-
-def _linter_skip_reason() -> str | None:
-    """Which of the two declared skip conditions holds, or `None` when neither does.
+def _require_declared_linter() -> None:
+    """The declared lint invocation can decide a verdict on this host, or a failure that says
+    what to install.
 
     Asks the linter backend the two questions it owns — is the executable here, and is this build
-    inside the range the declared rule set was measured on — so this test skips for a reason it
-    can state rather than silently passing on a machine with no linter."""
+    inside the range the declared rule set was measured on — so the test never passes silently
+    on a machine with no linter, nor on one whose linter the rule set was not measured on."""
     from tools.backends.linter.fortitude import lint as _lint
     if shutil.which(_lint.EXECUTABLE) is None:
-        return _LINTER_ABSENT_SKIP
+        raise AssertionError(
+            f"{_lint.EXECUTABLE} is not on PATH; the workflow's lint gate cannot run and neither "
+            f"can these checks — install {_lint.SUPPORTED_VERSION_SPEC} (docs/RUNBOOK.md#0-1)")
     probe = subprocess.run(list(_lint.version_argv()), capture_output=True, text=True)
-    if _lint.unsupported_version_reason(probe.stdout or probe.stderr) is not None:
-        return _LINTER_UNMEASURED_SKIP
-    return None
+    reason = _lint.unsupported_version_reason(probe.stdout or probe.stderr)
+    if reason is not None:
+        raise AssertionError(
+            f"{_lint.EXECUTABLE} is installed but outside the range the declared rule set was "
+            f"measured on: {reason}; install {_lint.SUPPORTED_VERSION_SPEC}")
 
 
 def _boundary_ir() -> dict:
@@ -1406,8 +1407,8 @@ class FortranLiteralEscapingTest(unittest.TestCase):
         self.assertIn("%test_id = 'l0_x''wrap'", txt)
         self.assertNotIn("'l0_x'wrap'", txt)  # no broken (unescaped) literal
 
-    @unittest.skipUnless(_HAVE_GFORTRAN, "gfortran not available")
     def test_escaped_runner_compiles(self) -> None:
+        _require_gfortran()
         # An apostrophe in a test_id must produce a valid (doubled-quote) Fortran literal that
         # compiles + links against the harness/checks stubs, not a broken one. (case_ids are
         # token-gated, so the apostrophe lives on a non-path name that still flows through `_flit`.)
@@ -1745,12 +1746,13 @@ class DeclaredLintRuleHoldTest(unittest.TestCase):
     """Hold the RENDERED runner to the rule set the `Generate.gate` lint check imposes.
 
     A CLASS OF ITS OWN, because these rows render and lint and never compile: inside
-    `GfortranSmokeTest` they inherited its `skipUnless(_HAVE_GFORTRAN)` and could not run
-    on a host with a linter and no compiler — the two skip reasons they declare for
-    themselves could never fire, because the class guard won first. A review round found
-    it, and the consequence was in the commit message: "a renderer edit that introduces a
-    finding fails in an unbilled unit test rather than at a node's gate" held only where
-    gfortran happened to be installed.
+    `GfortranSmokeTest` they inherited its compiler guard (then a class-level skip) and could
+    not run on a host with a linter and no compiler — their own linter conditions could never
+    fire, because the class guard won first. A review round found it, and the consequence
+    was in the commit message: "a renderer edit that introduces a finding fails in an
+    unbilled unit test rather than at a node's gate" held only where gfortran happened to be
+    installed. Every guard here now FAILS rather than skips (#498), but they stay separate:
+    a missing compiler must not be reported as a lint finding, nor the reverse.
     """
 
     def _assert_runner_clean_under_the_declared_lint_rules(
@@ -1771,11 +1773,7 @@ class DeclaredLintRuleHoldTest(unittest.TestCase):
         copy here would be a second declaration of the rule set, and the whole point of that
         declaration is that there is one.
         """
-        reason = _linter_skip_reason()
-        if reason == _LINTER_ABSENT_SKIP:
-            self.skipTest("the declared lint invocation's linter is not installed")
-        if reason == _LINTER_UNMEASURED_SKIP:
-            self.skipTest("the installed linter is outside the measured version range")
+        _require_declared_linter()
         from tools.backends.linter.fortitude import lint as _lint
         with tempfile.TemporaryDirectory() as td:
             d = Path(td)
@@ -1793,8 +1791,11 @@ class DeclaredLintRuleHoldTest(unittest.TestCase):
             _rank34_metrics_ir(), RANK_SID)
 
 
-@unittest.skipUnless(_HAVE_GFORTRAN, "gfortran not available")
 class GfortranSmokeTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls) -> None:
+        _require_gfortran()
+
     def test_rendered_runner_compiles_and_runs(self) -> None:
         runner = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
         with tempfile.TemporaryDirectory() as td:
@@ -2277,12 +2278,12 @@ class ChecksAbiDummyDeclarationTest(unittest.TestCase):
             "    'see subroutine metric_compute(a, b, c, d, e, f)'\n  public :: note\ncontains\n",
             1), "bx"))
 
-    @unittest.skipUnless(_HAVE_GFORTRAN, "gfortran not available")
     def test_the_premise_the_compiler_does_not_see_it(self) -> None:
         """The gate exists because `-fsyntax-only` accepts the refused form against the
         rendered runner (measured, gfortran 11.4). If this row starts failing, the compiler has
         started diagnosing it and the gate is a pre-emption of the syntax check rather than the
         only deterministic reader — update `METRIC_COMPUTE_DUMMIES`' comment, not the gate."""
+        _require_gfortran()
         v = checks_abi_dummy_violation
         ir = _rank34_metrics_ir()
         runner = render_runner(ir, RANK_SID, HARNESS, target=_TARGET_PROFILE.doc)
@@ -2315,6 +2316,7 @@ DIST_HARNESS = "harness_fortran_cpu_mpi"
 DIST_SID = "prob_dist"
 # A wrapper and a launcher of one installation, found as the backend's own tests find them.
 from tools.tests.test_parallel_mpi import _PAIR as _MPI_PAIR  # noqa: E402
+from tools.tests.test_parallel_mpi import _require_mpi_pair
 
 
 def _distributed_ir() -> dict:
@@ -2555,12 +2557,15 @@ _DIST_CHECKS_STUB = textwrap.dedent(f"""\
     """)
 
 
-@unittest.skipUnless(_MPI_PAIR, "no MPI installation whose wrapper compiles the binding canary")
 class DistributedRunnerSmokeTest(unittest.TestCase):
     """The distributed runner compiled with the wrapper and run under the launcher at one and
     at four processes: the gathered arrays are the global ones either way, the replicated and
     scalar values are rank 0's, only one set of outputs is written, and the check that reduces
     over the ranks passes."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        _require_mpi_pair()
 
     def _build(self, d: Path, checks: str = _DIST_CHECKS_STUB) -> None:
         runner = render_runner(_distributed_ir(), DIST_SID, DIST_HARNESS,

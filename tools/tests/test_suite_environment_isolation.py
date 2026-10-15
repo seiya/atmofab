@@ -225,11 +225,8 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         import, so which of them are present depends on what has been collected. Running
         this file alone shows one; running the whole suite shows both.
         """
-        if "pytest" not in sys.modules:
-            # The subject is a pytest hook. Under plain `unittest` there is no conftest
-            # and nothing to observe; asserting anyway would fail for the absence of the
-            # harness rather than for a defect.
-            self.skipTest("the suite's environment guard is not installed")
+        self.assertIn("pytest", sys.modules,
+                      "the suite's environment guard is a conftest hook: run the suite under pytest")
         # Under pytest the flag is an ASSERTION, not a skip condition. Skipping on it
         # instead let "the hook never set CONFIGURED" pass as "not applicable" — measured,
         # that mutant survived a sweep by turning this test into a skip. Read from the

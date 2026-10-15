@@ -51,7 +51,6 @@ def _fortran_syntax():
     return registry.capability_module("language", "fortran", "syntax_promotions")
 
 
-_HAVE_GFORTRAN = shutil.which("gfortran") is not None
 
 
 class _StandaloneServerEnvMixin:
@@ -352,7 +351,6 @@ class RunSyntaxCheckTests(_StandaloneServerEnvMixin, unittest.TestCase):
         self.assertIn("IMPLICIT NONE with spec list", result["stderr"])
 
 
-@unittest.skipUnless(_HAVE_GFORTRAN, "gfortran not available")
 class RunSyntaxCheckGfortranSmokeTests(_StandaloneServerEnvMixin, unittest.TestCase):
     """Real-compiler smoke: the gate must catch, with the actual gfortran front-end,
     the error classes the retired post_generate text heuristics used to mimic
@@ -364,6 +362,9 @@ class RunSyntaxCheckGfortranSmokeTests(_StandaloneServerEnvMixin, unittest.TestC
 
     @classmethod
     def setUpClass(cls) -> None:
+        if shutil.which("gfortran") is None:
+            # #498: a missing dependency fails with what to install; it does not skip.
+            raise AssertionError("gfortran is not on PATH; install gfortran (docs/RUNBOOK.md#0-1)")
         cls.mod = _load_module()
 
     def _check(self, files: dict[str, str]) -> dict:

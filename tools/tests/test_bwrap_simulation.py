@@ -120,7 +120,6 @@ def _bwrap_usable() -> bool:
         return False
 
 
-@unittest.skipUnless(_bwrap_usable(), "bwrap / user namespaces not available")
 class BwrapReadonlyProfileTests(unittest.TestCase):
     """Every leaf runs under the one read-only bwrap profile (`build_readonly_bwrap_profile`)
     — no capability, no write_roots, and since issue #227 NO CHECKOUT: an empty tmpfs sits
@@ -128,6 +127,13 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
     the leaf's own `workspace/tmp/<arid>` writable, keeps the network, and leaves the host's
     copy untouched, so a pure leaf is confined with nothing to read but its launch prompt
     and nothing to attribute (FS-diff trivially empty)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not _bwrap_usable():
+            raise AssertionError(
+                "bwrap is absent or unprivileged user namespaces are disabled; see "
+                "docs/BWRAP_ENABLEMENT.md (CI lifts kernel.apparmor_restrict_unprivileged_userns)")
 
     def _leaf_script(self, arid: str, tmp_dir: str) -> str:
         return textwrap.dedent(f"""

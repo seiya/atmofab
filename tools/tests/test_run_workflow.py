@@ -1782,9 +1782,10 @@ class RunWorkflowTests(unittest.TestCase):
         silent "proceed" — the suite would go back to writing into the operator's tree
         and nothing would say so, which is the failure mode the guard exists to replace.
         """
-        if not getattr(run_workflow._start_claims_root,
-                       "_atmofab_private_root_guard_installed", False):
-            self.skipTest("the suite's operator-private-root guard is not installed")
+        self.assertTrue(
+            getattr(run_workflow._start_claims_root, "_atmofab_private_root_guard_installed", False),
+            "the suite's operator-private-root guard is a conftest fixture and is not "
+            "installed: run the suite under pytest")
         with tempfile.TemporaryDirectory() as tmp:
             env = {k: v for k, v in os.environ.items()
                    if k != run_workflow.START_CLAIMS_ROOT_ENV}
@@ -1853,11 +1854,10 @@ class RunWorkflowTests(unittest.TestCase):
         not detect": it raises, and nothing appeared in the operator's tree.
         """
         from tools.operator_private_root import operator_secret_root
-        if not getattr(run_workflow._start_claims_root,
-                       "_atmofab_private_root_guard_installed", False):
-            # The subject is a pytest fixture. Under plain `unittest` there is no guard
-            # to observe, and asserting anyway would fail for the absence of the harness.
-            self.skipTest("the suite's operator-private-root guard is not installed")
+        self.assertTrue(
+            getattr(run_workflow._start_claims_root, "_atmofab_private_root_guard_installed", False),
+            "the suite's operator-private-root guard is a conftest fixture and is not "
+            "installed: run the suite under pytest")
         real_root = operator_secret_root() / "start_claims"
         existed_before = real_root.exists()
         env = {k: v for k, v in os.environ.items()
@@ -8818,7 +8818,6 @@ class DriverLifecycleContractTests(unittest.TestCase):
         self.assertIn("_install_signal_handlers()", tail)
         self.assertLess(tail.index("_install_signal_handlers()"), tail.index("main()"))
 
-    @unittest.skipUnless(hasattr(signal, "SIGTERM"), "requires POSIX signals")
     def test_real_sigterm_exits_143_through_the_real_entry_point(self) -> None:
         # Runs `tools/run_workflow.py` as a real process and sends it a real SIGTERM,
         # so the `__main__` block itself is exercised. The unit pins above and the
@@ -9298,8 +9297,8 @@ class LlmConfigStartupTests(unittest.TestCase):
                         "sha256": lc.config_sha256(path), "overrides": {}}
             os.chmod(path, 0o000)
             try:
-                if os.access(path, os.R_OK):    # running as root: the mode does not apply
-                    self.skipTest("cannot make a file unreadable as this user")
+                self.assertFalse(os.access(path, os.R_OK), "running as root: file modes do not apply; "
+                                 "run the suite as an unprivileged user")
                 out = self._rejection(recorded, repo_root=repo_root,
                                       effective_sha256=recorded["sha256"])
             finally:

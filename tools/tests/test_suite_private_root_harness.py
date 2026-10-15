@@ -39,8 +39,9 @@ class SuiteHarnessCoversAllPrivateRootsTests(unittest.TestCase):
     """Both conftest layers, asserted directly and only where they exist."""
 
     def setUp(self) -> None:
-        if not os.environ.get("PYTEST_CURRENT_TEST"):
-            self.skipTest("the suite's operator-private-root guard is not installed")
+        self.assertTrue(os.environ.get("PYTEST_CURRENT_TEST"),
+                        "the suite's operator-private-root guard is a conftest fixture: "
+                        "run the suite under pytest")
 
     def _resolvers(self):
         return (
