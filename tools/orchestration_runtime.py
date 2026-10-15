@@ -7491,11 +7491,16 @@ CLAUDE_LEAF_ENV_EXTRAS = ("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_DISABLE_
 # (`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` / `ALL_PROXY` in both cases, `SSL_CERT_FILE`,
 # `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`) are NOT forwarded. Two reasons: a proxy URL
 # routinely carries credentials, and this list's values are persisted verbatim into
-# `sandbox_profiles/<arid>.json` and the rendered argv; and their absence fails LOUDLY at
-# egress (the leaf cannot reach the API at all) rather than silently redirecting, which is
-# the failure mode the whole closure exists to prevent. An operator on a proxied host adds
-# them here with a justification — this comment is the record that the decision was made
-# and what it costs.
+# `sandbox_profiles/<arid>.json` and the rendered argv; and their absence fails LOUDLY
+# rather than silently redirecting, which is the failure mode the whole closure exists to
+# prevent. For the proxy members that means at egress for every leaf (it cannot reach the
+# API at all) and, for an HTTP provider, already at preflight, whose reachability probe
+# takes the leaf's route (issue #83). The TLS members bind a CLI leaf only: an HTTP leaf
+# and that probe run in the conductor's own process, where OpenSSL reads `SSL_CERT_FILE` /
+# `SSL_CERT_DIR` from the process environment. An operator on a proxied host moves the
+# names from this tuple to `LEAF_ENV_ALLOWLIST` with a justification (removing them here
+# alone forwards nothing) — this comment is the record that the decision was made and what
+# it costs.
 LEAF_ENV_NAMED_EXCLUSIONS = (
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
     "http_proxy", "https_proxy", "no_proxy", "all_proxy",
@@ -13502,9 +13507,13 @@ def _probe_http_provider(
       2. `base_url` is a well-formed http(s) URL with a host.
       3. the endpoint answers at all. Any HTTP status counts as reachable — a 401 or a 404
          proves a server is there, which is what this check is for; only DNS failure, a refused
-         connection or a timeout mean "nothing is listening". The request is UNAUTHENTICATED
-         deliberately: preflight must not send the operator's key to a URL it has not yet
-         validated, and must not spend a token on a probe.
+         connection or a timeout mean "nothing is listening". The request takes the LEAF's
+         route — `llm_http_leaf._default_opener` over `leaf_env_from(os.environ)`: no proxy,
+         redirects refused and reported as their status — so what this check certifies
+         reachable is what the leaf will reach (issue #83); on a host that reaches the
+         endpoint only through a proxy it fails, naming the proxy variables. The request is
+         UNAUTHENTICATED deliberately: preflight must not send the operator's key to a URL it
+         has not yet validated, and must not spend a token on a probe.
 
     `ATMOFAB_HTTP_PREFLIGHT_SKIP_REACHABILITY=1` drops only (3), for an offline preflight."""
     import urllib.error
@@ -13548,7 +13557,18 @@ def _probe_http_provider(
             "detail": "not attempted: base_url is not well-formed",
         })
     else:
-        open_url = opener if opener is not None else urllib.request.urlopen
+        # The LEAF's route, not the process's: an HTTP leaf opens its request with
+        # `_default_opener` over the filtered environment (`workflow_conductor._child_env`
+        # starts from `leaf_env_from`), which carries no proxy family and refuses redirects.
+        # Bare `urlopen` read the operator's proxy instead, so on a proxied host this check
+        # passed through the proxy and the leaf it vouched for then could not connect
+        # (issue #83). `None` is not the same thing: `_default_opener(None)` installs
+        # urllib's environment-reading ProxyHandler (measured).
+        if opener is None:
+            # A private name, imported here by its one caller outside its module.
+            from tools.llm_http_leaf import _default_opener
+            opener = _default_opener(leaf_env_from(os.environ))
+        open_url = opener
         reachable, detail = True, "responded"
         try:
             open_url(urllib.request.Request(base_url, method="GET"),
@@ -13558,6 +13578,16 @@ def _probe_http_provider(
         except Exception as exc:               # noqa: BLE001 - DNS/TLS/refused/timeout
             reachable = False
             detail = f"{type(exc).__name__}: {exc}"
+        if not reachable:
+            # NAMES only: a proxy URL carries credentials and this payload is persisted.
+            # `NO_PROXY` names no route, so it alone cannot explain a direct failure.
+            shadowed = [name for name in LEAF_ENV_NAMED_EXCLUSIONS
+                        if name.lower().endswith("_proxy") and name.lower() != "no_proxy"
+                        and os.environ.get(name, "").strip()]
+            if shadowed:
+                detail += (f"; the probe went direct, as a leaf does — {', '.join(shadowed)} "
+                           f"{'is' if len(shadowed) == 1 else 'are'} set on this host and "
+                           "not forwarded to a leaf (LEAF_ENV_NAMED_EXCLUSIONS)")
         checks.append({
             "name": f"{token}_endpoint_reachable",
             "pass": reachable,

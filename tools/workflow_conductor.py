@@ -4187,8 +4187,10 @@ class Conductor:
         # servers this provider exists for reject outright, as a NON-retryable client error on
         # the first attempt.
         # `child_env`, not the process environment: it is what every spawned leaf receives,
-        # and it is where a run's own API key or proxy routing lives. Reading the global one
-        # would take a credential this run did not choose, or miss one it did.
+        # and it is where a run's own API key lives. Reading the global one would take a
+        # credential this run did not choose, or miss one it did. It carries no proxy family
+        # (`LEAF_ENV_NAMED_EXCLUSIONS`), so the request goes direct — the route the HTTP
+        # preflight probe takes too (issue #83).
         response = run_pure_http_leaf(entry, messages, env=child_env)
 
         # `.txt`, NOT `.json`: this is the provider's body verbatim, and the case it most
