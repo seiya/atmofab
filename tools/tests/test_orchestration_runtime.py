@@ -26632,8 +26632,9 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
         # an entry just looped less and stayed green — measured: all 11 proxy/TLS drops
         # survived it. At runtime only `_probe_http_provider` reads this constant, and only
         # to NAME a set proxy variable in a failure detail (issue #83); it is a recorded
-        # decision, not a filter input, so this test is still the only thing that can
-        # notice it shrinking.
+        # decision, not a filter input. Dropping `HTTP_PROXY` also reddens
+        # `MultiProviderPreflightTests`' proxy-only row; for every other member this test is
+        # the only thing that can notice it shrinking.
         self.assertEqual(set(ort.LEAF_ENV_NAMED_EXCLUSIONS), {
             "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
             "http_proxy", "https_proxy", "no_proxy", "all_proxy",
