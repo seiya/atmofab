@@ -10,11 +10,11 @@
 - `spec_ref.controlled_spec_path`: `spec/problem/dynamics/shallow_water/shallow_water2d/controlled_spec.md`
 
 ## 1. Test purpose
-This suite verifies, for the discrete implementation of the 2D shallow water equation including bottom topography, conservation, lake-at-rest invariance, stability under topographic forcing, agreement with the theoretical solution — bounded on both sides, since the fully fixed `p0` discretization makes it a property of the scheme — translation equivariance, a rectangular grid, on which an exchange of the two extents, the two domain lengths or the two spacings is not the identity, the step count of §3, and the `CFL` guard. The conservation judgment targets mass for all cases, and momentum for the `topography_profile=flat` cases. The judgment targets are `L0` to `L3`, and include an expected failure (`xfail`).
+This suite verifies, for the discrete implementation of the 2D shallow water equation including bottom topography, conservation, lake-at-rest invariance, stability under topographic forcing, agreement with the theoretical solution — bounded on both sides, since the fully fixed `p0` discretization makes it a property of the scheme — translation equivariance, a rectangular grid, on which an exchange of the two extents, the two domain lengths or the two spacings is not the identity, a linear wave in `y` on that grid, on which a defect confined to the `y` direction is not the identity, the step count of §3, and the `CFL` guard. The conservation judgment targets mass for all cases, and momentum for the `topography_profile=flat` cases. The judgment targets are `L0` to `L3`, and include an expected failure (`xfail`).
 
 ## 2. Input-defaulting rules
 ### 2-1. Basic constants
-- The domain lengths are `L_x=L_y=1.0` (the rectangular case of 2-5 carries `L_y=0.5`, `ny=48`).
+- The domain lengths are `L_x=L_y=1.0` (the rectangular cases of 2-5 and 2-6 carry `L_y=0.5`, `ny=48`).
 - The representative water level is `H_0=1.0`.
 - For the gravitational acceleration, use the fixed value `g=9.81` of the Controlled Spec.
 - The small amplitude is `eta0=1.0e-3`.
@@ -50,6 +50,19 @@ The bottom topography allows the following 2 kinds via `topography_profile`.
   $$
   hu=h\,u,\quad hv=h\,v
   $$
+- `linear_wave_y` is defined by the following.
+  $$
+  \eta(x,y,0)=H_0+\eta_0\sin\left(2\pi\left(\frac{y}{L_y}-\mathrm{shift\_y\_fraction}\right)\right)
+  $$
+  $$
+  h(x,y,0)=\eta(x,y,0)-z_b(x,y)
+  $$
+  $$
+  u(x,y,0)=0,\quad v(x,y,0)=\frac{\eta_0 c_0}{H_0}\sin\left(2\pi\left(\frac{y}{L_y}-\mathrm{shift\_y\_fraction}\right)\right)
+  $$
+  $$
+  hu=h\,u,\quad hv=h\,v
+  $$
 - `oblique_mode` is defined by the following.
   $$
   \eta(x,y,0)=H_0+\eta_0\sin\left(2\pi\left(\frac{x}{L_x}+\frac{y}{L_y}-\mathrm{shift\_x\_fraction}-\mathrm{shift\_y\_fraction}\right)\right)
@@ -63,16 +76,23 @@ The bottom topography allows the following 2 kinds via `topography_profile`.
   $$
 
 ### 2-4. Theoretical solution (with applicability condition)
-Only when `topography_profile=flat` and `initial_profile=linear_wave_x`, use the reference solution of the linearized shallow water equation. The reference solution is the following.
+Only when `topography_profile=flat` and `initial_profile` is `linear_wave_x` or `linear_wave_y`, use the reference solution of the linearized shallow water equation. For `linear_wave_x` the reference solution is the following.
 $$
 h_{ref}(x,t)=H_0+\eta_0\sin\left(2\pi\left(\frac{x}{L_x}-\frac{c_0 t}{L_x}-\mathrm{shift\_x\_fraction}\right)\right)
+$$
+For `linear_wave_y` the reference solution is the following.
+$$
+h_{ref}(y,t)=H_0+\eta_0\sin\left(2\pi\left(\frac{y}{L_y}-\frac{c_0 t}{L_y}-\mathrm{shift\_y\_fraction}\right)\right)
 $$
 A theoretical-agreement judgment for variables other than `h` is not required in this suite.
 
 ### 2-5. The rectangular case
-Every case of §4 but one carries $nx=ny$ and `L_x=L_y`, so an implementation that exchanges the two extents, the two domain lengths or the two spacings — an array declared `(ny, nx)`, a loop bounded by `ny` where `nx` is meant, `dx` where `dy` is meant, an `rhs` that reads its stage state as `(ncomp, ny, nx)` — gives the numbers of a correct one on those cases. `swe2d_flat_ref_n064_sx000_sy000_dts100_rect` (4-3) carries `nx=64`, `ny=48`, `L_x=1.0` and `L_y=0.5`, so $dx=1/64$ and $dy=1/96$, and no exchange within any of the three pairs is the identity on a derived quantity. The §3 procedure gives $\mathrm{n\_step}=223$ and $dt=8.969\times10^{-4}$. The wave of `linear_wave_x` is uniform in `y`, so `ny` and `L_y` enter `errors.analytic_h.l2_rel_tend` through `dt` alone: its reference value is `1.2427e-4`, measured on the reference implementation of 5-5, equal to the value of `swe2d_flat_ref_n064_sx000_sy000_dts100` (`1.2428e-4`) to four digits. Measured on the same implementation with one substitution at a time: `L_x` and `L_y` exchanged gives `1.10e-3`; `dx` and `dy` exchanged in the interface-flux difference gives `1.03e-3`; the cell centres evaluated with the spacings exchanged at setup gives `6.45e-4`; an `rhs` that reads the stage state as `(ncomp, ny, nx)` gives `7.07e-4`; an `x` loop bounded by `ny` gives `9.37e-4` (and `1.3e-4` in `mass_drift_rel`). Each lies outside the band of 5-5. `dx` and `dy` exchanged in the dt rule alone gives the reference value and the §3 step count: the rule of §3 is symmetric in the two spacings when $|u|,|v|\ll c$, so that exchange changes no judged quantity.
+Every case of §4 but two (this one and the `y`-direction case of 2-6) carries $nx=ny$ and `L_x=L_y`, so an implementation that exchanges the two extents, the two domain lengths or the two spacings — an array declared `(ny, nx)`, a loop bounded by `ny` where `nx` is meant, `dx` where `dy` is meant, an `rhs` that reads its stage state as `(ncomp, ny, nx)` — gives the numbers of a correct one on those cases. `swe2d_flat_ref_n064_sx000_sy000_dts100_rect` (4-3) carries `nx=64`, `ny=48`, `L_x=1.0` and `L_y=0.5`, so $dx=1/64$ and $dy=1/96$, and no exchange within any of the three pairs is the identity on a derived quantity. The §3 procedure gives $\mathrm{n\_step}=223$ and $dt=8.969\times10^{-4}$. The wave of `linear_wave_x` is uniform in `y`, so `ny` and `L_y` enter `errors.analytic_h.l2_rel_tend` through `dt` alone: its reference value is `1.2427e-4`, measured on the reference implementation of 5-5, equal to the value of `swe2d_flat_ref_n064_sx000_sy000_dts100` (`1.2428e-4`) to four digits. Measured on the same implementation with one substitution at a time: `L_x` and `L_y` exchanged gives `1.10e-3`; `dx` and `dy` exchanged in the interface-flux difference gives `1.03e-3`; the cell centres evaluated with the spacings exchanged at setup gives `6.45e-4`; an `rhs` that reads the stage state as `(ncomp, ny, nx)` gives `7.07e-4`; an `x` loop bounded by `ny` gives `9.37e-4` (and `1.3e-4` in `mass_drift_rel`). Each lies outside the band of 5-5. `dx` and `dy` exchanged in the dt rule alone gives the reference value and the §3 step count (and does on the `y`-direction case of 2-6): the rule of §3 is symmetric in the two spacings when $|u|,|v|\ll c$, so that exchange changes no judged quantity.
 
-### 2-6. The `CFL` guard case
+### 2-6. The `y`-direction case
+The wave of `linear_wave_x` is uniform in `y`, so the `y`-interface flux difference $G^{*}_{i,j+1/2}-G^{*}_{i,j-1/2}$ vanishes identically on it, and nothing in the `y` flux, the `y` ghost or the spacing that divides the `y` difference reaches `errors.analytic_h.l2_rel_tend`; the pair of 6-6 shares such a defect between its two runs. `swe2d_flat_ref_n064_sx000_sy000_dts100_recty` (4-3) carries the grid of 2-5 and `initial_profile=linear_wave_y`, the wave of 2-3 turned to `y`, with the reference solution of 2-4. The §3 procedure gives $\mathrm{n\_step}=223$ and $dt=8.969\times10^{-4}$, as for the case of 2-5. Its reference value of `errors.analytic_h.l2_rel_tend` is `2.8482e-4`, measured on the reference implementation of 5-5 (the wave has `48` cells per wavelength and travels `1.25` wavelengths in $t_{end}$, against `64` and `0.63` for the case of 2-5). Measured on the same implementation with one substitution at a time: the `y` flux difference divided by `dx` gives `1.17e-3`; the `y` pressure flux omitted gives `2.65e-3`; the `y` flux omitted gives `1.01e-3`, the value of a state left at its initial value; the one-call step of the Controlled Spec §5 gives `0.78` of the reference; half the steps gives `1.15e-3`. Each lies outside the band of 5-5. A `y` boundary that copies the nearest interior cell instead of the periodic image gives `2.76e-4`, inside the band, and `3.7e-7` in `momy_drift_rel`, which fails the momentum judgment. The `y` flux difference divided by `dx` gives the reference value on every other case of §4: each is square or carries the `x` wave. The `y` pressure flux omitted and the `y` flux omitted break the lake-at-rest balance of 6-3 as well (`1.2` and `2.0` in `lake_rest.max_velocity`), and the copied `y` boundary breaks the momentum and translation-equivariance judgments of 6-6 as well. The sign of the transverse momentum flux and the velocity term of the `y` wave speed move the value by less than `0.1%` at the amplitude of 2-1 and are not fixed by this case.
+
+### 2-7. The `CFL` guard case
 `swe2d_guard_n032_sx000_sy000_dts240` carries `dt_scale=2.40`, so the §3 procedure gives $\mathrm{n\_step}=38$ and $dt=5.263\times10^{-3}$, and the stability index of the Controlled Spec §5 is `1.056` at the initial state and at its maximum over the run (`cfl.max`, 5-4) — above the threshold `1.0` of the `CFL` judgment, which is what 6-7 detects. The case performs all of its §3 steps and stays wet: the depth minimum over the initial state and every committed state is the initial minimum, `0.999005`, against the positivity threshold `5.0e-2` of 5-5, measured on the reference implementation of 5-5. The wet-domain error of the Controlled Spec §5 is not reached by this case. A run of this case whose step loop stops on that error performs fewer steps: its `run.n_step` is the count of steps performed (§3), its judgment against the §3 $\mathrm{n\_step}$ in 6-7 reports `fail`, and 6-7 states what that status decides. The step count and the depth minimum stated here are properties of the fixed discretization at the case's inputs, not conditions of the `pass_when` of 6-7, which reads the `CFL` judgment alone: the `run.n_step` and depth-positivity judgments of the case are applied and their values and statuses reported (6-7).
 
 ## 3. Execution-control rules
@@ -112,6 +132,8 @@ The `sweep` and fixed values per `family` are defined below.
 - The `base_case_id` references `swe2d_flat_sym_n064_sx000_sy000_dts100`, and overrides only `shift_x_fraction=0.25` and `shift_y_fraction=0.125`.
 - Add the `case_id` `swe2d_flat_ref_n064_sx000_sy000_dts100_rect`.
 - The `base_case_id` references `swe2d_flat_ref_n064_sx000_sy000_dts100`, and overrides only `ny` to `48` and `L_y` to `0.5` (the rectangular case of 2-5; the `case_id` keeps its base's `n064` and carries the suffix `_rect`, so it sorts after its base case and before `swe2d_flat_ref_n128_sx000_sy000_dts100`).
+- Add the `case_id` `swe2d_flat_ref_n064_sx000_sy000_dts100_recty`.
+- The `base_case_id` references `swe2d_flat_ref_n064_sx000_sy000_dts100`, and overrides only `ny` to `48`, `L_y` to `0.5` and `initial_profile` to `linear_wave_y` (the `y`-direction case of 2-6 on the grid of 2-5; the `case_id` keeps its base's `n064` and carries the suffix `_recty`, so it sorts after `swe2d_flat_ref_n064_sx000_sy000_dts100_rect` and before `swe2d_flat_ref_n128_sx000_sy000_dts100`).
 
 ## 5. Diagnostics contract
 ### 5-1. Artifacts
@@ -136,7 +158,7 @@ The `sweep` and fixed values per `family` are defined below.
 
 ### 5-3. `N/A` rule
 - When a diagnostic item is incomputable or non-applicable, make the output value `null` and require `reason_na`.
-- `errors.analytic_h.l2_rel_tend` is `N/A` for anything other than `topography_profile=flat` and `initial_profile=linear_wave_x`.
+- `errors.analytic_h.l2_rel_tend` is `N/A` for anything other than `topography_profile=flat` with `initial_profile=linear_wave_x` or `linear_wave_y`.
 - `errors.symmetry_h_l2_rel` is `N/A` for anything other than a translation-pair evaluation.
 - `momx_drift_rel` and `momy_drift_rel` are `N/A` for anything other than `topography_profile=flat`.
 - `invariants.lake_rest.*` is `N/A` for anything other than `initial_profile=lake_at_rest`.
@@ -166,7 +188,7 @@ P^y=\sum_{i,j} (hv)_{i,j}\,dx\,dy
 $$
 Here $M_0$ is the initial mass.
 
-The theoretical-comparison error (`flat + linear_wave_x` only) is defined by the following.
+The theoretical-comparison error (`flat + linear_wave_x` and `flat + linear_wave_y` only) is defined by the following.
 $$
 \mathrm{analytic\_h\_l2\_rel}=
 \frac{\|h_{num}(t_{end})-h_{ref}(t_{end})\|_2}{\|h_{ref}(t_{end})\|_2}
@@ -208,8 +230,8 @@ The thresholds of `analytic_h_l2_rel` are calibrated against an independent refe
 - $\mathrm{mass\_drift\_rel} \le 1.0e{-10}$
 - $\mathrm{momx\_drift\_rel} \le 1.0e{-10}$
 - $\mathrm{momy\_drift\_rel} \le 1.0e{-10}$
-- `analytic_h_l2_rel` is judged as a two-sided band (6-2, 6-8). The Controlled Spec §5 fixes every term of the discretization (`p0` interface states, the Rusanov flux, the periodic ghost, the two-stage `SSPRK2` composition of its step 5) and §3 fixes `dt`, so the error against the linear-wave solution at $t_{end}$ is a property of the discretization — its truncation error and numerical diffusion — and not a free quantity: a value below the band is not a better scheme, it is a run that did not perform the §5 update (a state that holds the theoretical solution at $t_{end}$ without the update has zero error and passes an upper bound alone), and a value above it is a state left at its initial value (`1.304e-3` on every case of `swe2d_flat_ref`), a stopped update (half the steps gives `1.13e-3` at `nx=64`) or a wrong one. The value moves by round-off alone under a conforming implementation — the certified variants of versions `0.4.1` to `0.4.3` of this node agree to `3e-12` relative, and `dt_scale` from `0.5` to `2.0` moves it by at most `0.12%` — so the bounds are `0.9` and `1.1` times the reference value, rounded outward to two digits. The lower bound and the upper bound are two DISTINCT judged quantities of the test — each names its own `quantity` and each requires its own host-evaluated corroborant over the captured state — not two thresholds on one quantity: a corroborant that reads only the upper bound leaves the lower bound to the checks module's own report, and a state that holds the theoretical solution with a reported value inside the band would then pass. For `swe2d_flat_ref` the band is $[2.0e{-4},\ 2.5e{-4}]$ for `nx=32` (reference `2.2671e-4`), $[1.1e{-4},\ 1.4e{-4}]$ for `nx=64` (reference `1.2428e-4`), and $[5.8e{-5},\ 7.2e{-5}]$ for `nx=128` (reference `6.5158e-5`); for the rectangular case `swe2d_flat_ref_n064_sx000_sy000_dts100_rect` it is $[1.1e{-4},\ 1.4e{-4}]$ (reference `1.2427e-4`, 2-5). The one-call step $U^{n+1}=U^n+\Delta t\,L(U^n)$ (the forward-Euler step the Controlled Spec §5 step 5 excludes) gives `0.78` to `0.83` of the reference value on every case and fails the lower bound; a gravitational acceleration in error by `5%` moves the value outside the band on `nx=128` in either direction, and one in error by `1%` on no case.
-- `convergence_order` uses $p=\log(e_{coarse}/e_{fine})/\log(2)$ over `analytic_h_l2_rel`, and requires $\ge 0.80$ for both `n32_to_n64` and `n64_to_n128`. It is accumulated over the three cases of `swe2d_flat_ref` that 6-2 judges and emitted as a per-case field of the finer case of each pair; the override case `swe2d_flat_ref_n064_sx000_sy000_dts100_rect` is not a member of a refinement pair and omits the field.
+- `analytic_h_l2_rel` is judged as a two-sided band (6-2, 6-8, 6-9). The Controlled Spec §5 fixes every term of the discretization (`p0` interface states, the Rusanov flux, the periodic ghost, the two-stage `SSPRK2` composition of its step 5) and §3 fixes `dt`, so the error against the linear-wave solution at $t_{end}$ is a property of the discretization — its truncation error and numerical diffusion — and not a free quantity: a value below the band is not a better scheme, it is a run that did not perform the §5 update (a state that holds the theoretical solution at $t_{end}$ without the update has zero error and passes an upper bound alone), and a value above it is a state left at its initial value (`1.304e-3` on every case of `swe2d_flat_ref`), a stopped update (half the steps gives `1.13e-3` at `nx=64`) or a wrong one. The value moves by round-off alone under a conforming implementation — the certified variants of versions `0.4.1` to `0.4.3` of this node agree to `3e-12` relative, and `dt_scale` from `0.5` to `2.0` moves it by at most `0.12%` — so the bounds are `0.9` and `1.1` times the reference value, rounded outward to two digits. The lower bound and the upper bound are two DISTINCT judged quantities of the test — each names its own `quantity` and each requires its own host-evaluated corroborant over the captured state — not two thresholds on one quantity: a corroborant that reads only the upper bound leaves the lower bound to the checks module's own report, and a state that holds the theoretical solution with a reported value inside the band would then pass. For `swe2d_flat_ref` the band is $[2.0e{-4},\ 2.5e{-4}]$ for `nx=32` (reference `2.2671e-4`), $[1.1e{-4},\ 1.4e{-4}]$ for `nx=64` (reference `1.2428e-4`), and $[5.8e{-5},\ 7.2e{-5}]$ for `nx=128` (reference `6.5158e-5`); for the rectangular case `swe2d_flat_ref_n064_sx000_sy000_dts100_rect` it is $[1.1e{-4},\ 1.4e{-4}]$ (reference `1.2427e-4`, 2-5); for the `y`-direction case `swe2d_flat_ref_n064_sx000_sy000_dts100_recty` it is $[2.5e{-4},\ 3.2e{-4}]$ (reference `2.8482e-4`, 2-6). The one-call step $U^{n+1}=U^n+\Delta t\,L(U^n)$ (the forward-Euler step the Controlled Spec §5 step 5 excludes) gives `0.78` to `0.83` of the reference value on every case and fails the lower bound; a gravitational acceleration in error by `5%` moves the value outside the band on `nx=128` in either direction, and one in error by `1%` on no case.
+- `convergence_order` uses $p=\log(e_{coarse}/e_{fine})/\log(2)$ over `analytic_h_l2_rel`, and requires $\ge 0.80$ for both `n32_to_n64` and `n64_to_n128`. It is accumulated over the three cases of `swe2d_flat_ref` that 6-2 judges and emitted as a per-case field of the finer case of each pair; the override cases `swe2d_flat_ref_n064_sx000_sy000_dts100_rect` and `swe2d_flat_ref_n064_sx000_sy000_dts100_recty` are not members of a refinement pair and omit the field.
 - `lake_rest.max_velocity \le 1.0e{-12}`
 - `lake_rest.max_surface_deviation \le 1.0e{-12}`
 - `symmetry_h_l2_rel \le 2.0e{-11}`
@@ -326,7 +348,7 @@ The thresholds of `analytic_h_l2_rel` are calibrated against an independent refe
 - `xfail_condition`: `cfl.max > 1.0`
 - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'cfl'`
 - judgment conditions:
-  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$. `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$), and its real value and status are reported: the case performs all of its steps (2-6), and a run whose step loop stops on the wet-domain error of the Controlled Spec §5 reports the count performed and a `fail` (2-6). The `run.n_step` judgment is non-gating for this test: its status is not a condition of `pass_when`, so a `fail` on it does not change this test's outcome, which the `CFL` judgment decides.
+  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$. `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$), and its real value and status are reported: the case performs all of its steps (2-7), and a run whose step loop stops on the wet-domain error of the Controlled Spec §5 reports the count performed and a `fail` (2-7). The `run.n_step` judgment is non-gating for this test: its status is not a condition of `pass_when`, so a `fail` on it does not change this test's outcome, which the `CFL` judgment decides.
   - The depth-positivity judgment is applied and its real `extrema.h.min` value and status are reported against the threshold $\ge 5.0e{-2}$ (it is never `N/A`; the §5-3 rule does not apply to it). It is non-gating for this test: its status is not a condition of `pass_when`, so a `fail` on it does not change this test's outcome.
   - The mass-conservation judgment is not applied. The non-application basis is "because the purpose of the guard test is only the detection of a stability-condition violation".
   - The momentum-conservation judgment is not applied. The non-application basis is "because the purpose of the guard test is only the detection of a stability-condition violation".
@@ -347,6 +369,22 @@ The thresholds of `analytic_h_l2_rel` are calibrated against an independent refe
   - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
   - The momentum-conservation judgment is applied. The evaluation expressions are `momx_drift_rel` and `momy_drift_rel`, and the threshold for both is $\le 1.0e{-10}$.
   - The theoretical-comparison judgment is applied. `analytic_h_l2_rel` is judged as the two-sided band $[1.1e{-4},\ 1.4e{-4}]$ of 5-5, as two judged quantities. `convergence_order` is not judged: the case is not a member of a refinement pair.
+  - The translation-equivariance judgment is not applied. The non-application basis is "because the pair case is not run".
+  - The lake-at-rest invariance judgment is not applied. The non-application basis is "because the initial condition is not `lake_at_rest`".
+  - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
+
+### 6-9. `l1_linear_wave_y_rectangular_grid`
+- `level`: `L1`
+- `objective`: confirm, for `flat + linear_wave_y` on the rectangular grid of 2-5, conservation, depth positivity and the error against the theoretical solution at $t_{end}$; each substitution confined to the `y` direction measured in 2-6 to change `errors.analytic_h.l2_rel_tend` or `momy_drift_rel` fails a judgment of this test.
+- target cases:
+  - `swe2d_flat_ref_n064_sx000_sy000_dts100_recty`
+- `expected_outcome`: `pass`
+- judgment conditions:
+  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
+  - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 5.0e{-2}$.
+  - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
+  - The momentum-conservation judgment is applied. The evaluation expressions are `momx_drift_rel` and `momy_drift_rel`, and the threshold for both is $\le 1.0e{-10}$.
+  - The theoretical-comparison judgment is applied. `analytic_h_l2_rel` is judged as the two-sided band $[2.5e{-4},\ 3.2e{-4}]$ of 5-5, as two judged quantities. `convergence_order` is not judged: the case is not a member of a refinement pair.
   - The translation-equivariance judgment is not applied. The non-application basis is "because the pair case is not run".
   - The lake-at-rest invariance judgment is not applied. The non-application basis is "because the initial condition is not `lake_at_rest`".
   - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
