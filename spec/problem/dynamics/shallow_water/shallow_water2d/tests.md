@@ -10,7 +10,7 @@
 - `spec_ref.controlled_spec_path`: `spec/problem/dynamics/shallow_water/shallow_water2d/controlled_spec.md`
 
 ## 1. Test purpose
-This suite verifies, for the discrete implementation of the 2D shallow water equation including bottom topography, conservation, lake-at-rest invariance, stability under topographic forcing, agreement with the theoretical solution — bounded on both sides, since the fully fixed `p0` discretization makes it a property of the scheme — translation equivariance, a rectangular grid, on which an exchange of the two extents, the two domain lengths or the two spacings is not the identity, and the `CFL` guard. The conservation judgment targets mass for all cases, and momentum for the `topography_profile=flat` cases. The judgment targets are `L0` to `L3`, and include an expected failure (`xfail`).
+This suite verifies, for the discrete implementation of the 2D shallow water equation including bottom topography, conservation, lake-at-rest invariance, stability under topographic forcing, agreement with the theoretical solution — bounded on both sides, since the fully fixed `p0` discretization makes it a property of the scheme — translation equivariance, a rectangular grid, on which an exchange of the two extents, the two domain lengths or the two spacings is not the identity, the step count of §3, and the `CFL` guard. The conservation judgment targets mass for all cases, and momentum for the `topography_profile=flat` cases. The judgment targets are `L0` to `L3`, and include an expected failure (`xfail`).
 
 ## 2. Input-defaulting rules
 ### 2-1. Basic constants
@@ -72,6 +72,9 @@ A theoretical-agreement judgment for variables other than `h` is not required in
 ### 2-5. The rectangular case
 Every case of §4 but one carries $nx=ny$ and `L_x=L_y`, so an implementation that exchanges the two extents, the two domain lengths or the two spacings — an array declared `(ny, nx)`, a loop bounded by `ny` where `nx` is meant, `dx` where `dy` is meant, an `rhs` that reads its stage state as `(ncomp, ny, nx)` — gives the numbers of a correct one on those cases. `swe2d_flat_ref_n064_sx000_sy000_dts100_rect` (4-3) carries `nx=64`, `ny=48`, `L_x=1.0` and `L_y=0.5`, so $dx=1/64$ and $dy=1/96$, and no exchange within any of the three pairs is the identity on a derived quantity. The §3 procedure gives $\mathrm{n\_step}=223$ and $dt=8.969\times10^{-4}$. The wave of `linear_wave_x` is uniform in `y`, so `ny` and `L_y` enter `errors.analytic_h.l2_rel_tend` through `dt` alone: its reference value is `1.2427e-4`, measured on the reference implementation of 5-5, equal to the value of `swe2d_flat_ref_n064_sx000_sy000_dts100` (`1.2428e-4`) to four digits. Measured on the same implementation with one substitution at a time: `L_x` and `L_y` exchanged gives `1.10e-3`; `dx` and `dy` exchanged in the interface-flux difference gives `1.03e-3`; the cell centres evaluated with the spacings exchanged at setup gives `6.45e-4`; an `rhs` that reads the stage state as `(ncomp, ny, nx)` gives `7.07e-4`; an `x` loop bounded by `ny` gives `9.37e-4` (and `1.3e-4` in `mass_drift_rel`). Each lies outside the band of 5-5. `dx` and `dy` exchanged in the dt rule alone gives the reference value and the §3 step count: the rule of §3 is symmetric in the two spacings when $|u|,|v|\ll c$, so that exchange changes no judged quantity.
 
+### 2-6. The `CFL` guard case
+`swe2d_guard_n032_sx000_sy000_dts240` carries `dt_scale=2.40`, so the §3 procedure gives $\mathrm{n\_step}=38$ and $dt=5.263\times10^{-3}$, and the stability index of the Controlled Spec §5 is `1.056` at the initial state and at its maximum over the run (`cfl.max`, 5-4) — above the threshold `1.0` of the `CFL` judgment, which is what 6-7 detects. The case performs all of its §3 steps and stays wet: the depth minimum over the initial state and every committed state is the initial minimum, `0.999005`, against the positivity threshold `5.0e-2` of 5-5, measured on the reference implementation of 5-5. The wet-domain error of the Controlled Spec §5 is not reached by this case. A run of this case whose step loop stops on that error performs fewer steps: its `run.n_step` is the count of steps performed (§3), its judgment against the §3 $\mathrm{n\_step}$ in 6-7 reports `fail`, and 6-7 states what that status decides. The step count and the depth minimum stated here are properties of the fixed discretization at the case's inputs, not conditions of the `pass_when` of 6-7, which reads the `CFL` judgment alone: the `run.n_step` and depth-positivity judgments of the case are applied and their values and statuses reported (6-7).
+
 ## 3. Execution-control rules
 - $t_{start}=0.0$ and $t_{end}=0.2$.
 - `dt` is decided by the following procedure.
@@ -80,7 +83,7 @@ Every case of §4 but one carries $nx=ny$ and `L_x=L_y`, so an implementation th
   3. $\mathrm{n\_step}=\lceil (t_{end}-t_{start})/\mathrm{dt\_raw}\rceil$.
   4. $dt=(t_{end}-t_{start})/\mathrm{n\_step}$.
 - $\mathrm{cfl\_target}=0.45$.
-- The stop condition is $n=\mathrm{n\_step}$.
+- The stop condition is $n=\mathrm{n\_step}$. The number of steps performed is a state variable of the case: the state the host captures after `case_setup` and after `case_run` consists of `h`, `hu`, `hv`, `z_b` (`nx` × `ny` each) and the scalar `n_step` (`0` after setup, the count of `SSPRK2` steps of the Controlled Spec §5 step 5 performed after the run, incremented by the step loop at each step), and it is emitted as the diagnostic `run.n_step`.
 
 ## 4. Case-expansion rules
 ### 4-1. family definition
@@ -129,6 +132,7 @@ The `sweep` and fixed values per `family` are defined below.
 - `errors.symmetry_h_l2_rel`
 - `invariants.lake_rest.max_velocity`
 - `invariants.lake_rest.max_surface_deviation`
+- `run.n_step`
 
 ### 5-3. `N/A` rule
 - When a diagnostic item is incomputable or non-applicable, make the output value `null` and require `reason_na`.
@@ -136,6 +140,7 @@ The `sweep` and fixed values per `family` are defined below.
 - `errors.symmetry_h_l2_rel` is `N/A` for anything other than a translation-pair evaluation.
 - `momx_drift_rel` and `momy_drift_rel` are `N/A` for anything other than `topography_profile=flat`.
 - `invariants.lake_rest.*` is `N/A` for anything other than `initial_profile=lake_at_rest`.
+- `run.n_step` is computed for every case and is never `N/A`.
 
 ### 5-4. Definition of the metrics
 The relative mass-drift value is defined by the following.
@@ -187,6 +192,8 @@ $$
 \quad \eta=h+z_b
 $$
 
+`run.n_step` is the state variable `n_step` after the run (§3); its judged value is the $\mathrm{n\_step}$ of the §3 procedure evaluated from the case's inputs, $\lceil (t_{end}-t_{start})/\mathrm{dt\_raw}\rceil$ with $\mathrm{dt\_raw}$ from the initial state.
+
 `cross_target_state_agreement` compares this target's numerical solution with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment). For each of the state variables `h`, `hu`, and `hv` at $t_{end}$ of a case, with $q$ that variable and $q^{ref}$ the same variable at $t_{end}$ of the same case in the other variant,
 $$
 \mathrm{cross\_target\_state\_agreement}=\frac{\max_{i,j} |q_{i,j}-q^{ref}_{i,j}|}{N_q}
@@ -196,7 +203,7 @@ The normaliser of `h` is $N_h=\max(\max_{i,j}|h_{i,j}|,\ \max_{i,j}|h^{ref}_{i,j
 ### 5-5. Default thresholds
 The thresholds of `analytic_h_l2_rel` are calibrated against an independent reference implementation of the Controlled Spec §5 scheme (issue #491, calibration comment), which reproduces the values of the certified variants of versions `0.4.1` to `0.4.3` of this node to five digits.
 
-- $\mathrm{cfl.max} \le 1.0$
+- $\mathrm{cfl.max} \le 1.0$, and `run.n_step` equals the §3 $\mathrm{n\_step}$ of the case (an integer; judged as $|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$)
 - $h_{min} \ge 5.0e{-2}$
 - $\mathrm{mass\_drift\_rel} \le 1.0e{-10}$
 - $\mathrm{momx\_drift\_rel} \le 1.0e{-10}$
@@ -218,7 +225,7 @@ The thresholds of `analytic_h_l2_rel` are calibrated against an independent refe
   - `swe2d_ref_n128_sx000_sy000_dts100`
 - `expected_outcome`: `pass`
 - judgment conditions:
-  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
+  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 5.0e{-2}$.
   - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
   - The momentum-conservation judgment is not applied. The non-application basis is "because the bottom-topography source term exchanges momentum".
@@ -236,7 +243,7 @@ The thresholds of `analytic_h_l2_rel` are calibrated against an independent refe
   - `swe2d_flat_ref_n128_sx000_sy000_dts100`
 - `expected_outcome`: `pass`
 - judgment conditions:
-  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
+  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 5.0e{-2}$.
   - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
   - The momentum-conservation judgment is applied. The evaluation expressions are `momx_drift_rel` and `momy_drift_rel`, and the threshold for both is $\le 1.0e{-10}$.
@@ -252,7 +259,7 @@ The thresholds of `analytic_h_l2_rel` are calibrated against an independent refe
   - `swe2d_lake_n064_sx000_sy000_dts100`
 - `expected_outcome`: `pass`
 - judgment conditions:
-  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
+  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 5.0e{-2}$.
   - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
   - The momentum-conservation judgment is not applied. The non-application basis is "because the bottom-topography source term exchanges momentum".
@@ -268,7 +275,7 @@ The thresholds of `analytic_h_l2_rel` are calibrated against an independent refe
   - `swe2d_ref_n064_sx000_sy000_dts100_tend500`
 - `expected_outcome`: `pass`
 - judgment conditions:
-  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
+  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 5.0e{-2}$.
   - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is $\le 5.0e{-10}$.
   - The momentum-conservation judgment is not applied. The non-application basis is "because the bottom-topography source term exchanges momentum".
@@ -284,7 +291,7 @@ The thresholds of `analytic_h_l2_rel` are calibrated against an independent refe
   - `swe2d_resp_n064_sx000_sy000_dts100`
 - `expected_outcome`: `pass`
 - judgment conditions:
-  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
+  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 5.0e{-2}$.
   - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
   - The momentum-conservation judgment is not applied. The non-application basis is "because the bottom-topography source term exchanges momentum".
@@ -301,7 +308,7 @@ The thresholds of `analytic_h_l2_rel` are calibrated against an independent refe
   - `shifted` is `swe2d_flat_sym_n064_sx025_sy012_dts100`
 - `expected_outcome`: `pass`
 - judgment conditions:
-  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
+  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of each case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 5.0e{-2}$.
   - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
   - The momentum-conservation judgment is applied. The evaluation expressions are `momx_drift_rel` and `momy_drift_rel`, and the threshold for both is $\le 1.0e{-10}$.
@@ -319,7 +326,7 @@ The thresholds of `analytic_h_l2_rel` are calibrated against an independent refe
 - `xfail_condition`: `cfl.max > 1.0`
 - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'cfl'`
 - judgment conditions:
-  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
+  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$. `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$), and its real value and status are reported: the case performs all of its steps (2-6), and a run whose step loop stops on the wet-domain error of the Controlled Spec §5 reports the count performed and a `fail` (2-6). The `run.n_step` judgment is non-gating for this test: its status is not a condition of `pass_when`, so a `fail` on it does not change this test's outcome, which the `CFL` judgment decides.
   - The depth-positivity judgment is applied and its real `extrema.h.min` value and status are reported against the threshold $\ge 5.0e{-2}$ (it is never `N/A`; the §5-3 rule does not apply to it). It is non-gating for this test: its status is not a condition of `pass_when`, so a `fail` on it does not change this test's outcome.
   - The mass-conservation judgment is not applied. The non-application basis is "because the purpose of the guard test is only the detection of a stability-condition violation".
   - The momentum-conservation judgment is not applied. The non-application basis is "because the purpose of the guard test is only the detection of a stability-condition violation".
@@ -335,7 +342,7 @@ The thresholds of `analytic_h_l2_rel` are calibrated against an independent refe
   - `swe2d_flat_ref_n064_sx000_sy000_dts100_rect`
 - `expected_outcome`: `pass`
 - judgment conditions:
-  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$.
+  - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 5.0e{-2}$.
   - The mass-conservation judgment is applied. The evaluation expression is `mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
   - The momentum-conservation judgment is applied. The evaluation expressions are `momx_drift_rel` and `momy_drift_rel`, and the threshold for both is $\le 1.0e{-10}$.
