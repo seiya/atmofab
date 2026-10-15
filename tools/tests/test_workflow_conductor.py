@@ -46,6 +46,7 @@ _FORTRAN_BUNDLE_FACTS = _bb_registry.capability_module(
     "language", _BB_PROFILE.toolchain["language"], "bundle_facts")
 from tools import orchestration_runtime as ort
 from tools import usage_reset
+from tools.tests import skip_probes
 from tools.tests.orchestration_fixtures import accept_any_certified_ir, certify_node
 from tools.tests.private_root_fixture import (
     isolated_homes_per_test_suite,
@@ -24549,7 +24550,7 @@ class CudaCppPhysicsHostFilesTest(unittest.TestCase):
             self.assertEqual(outcome.decision.reason, "generate_dependency_headers_failed")
 
 
-@unittest.skipUnless(shutil.which("nvcc"), "the CUDA compiler driver is not installed")
+@skip_probes.skip_unless_installed("cuda_compiler_driver")
 class CudaCppLintAttributionTest(unittest.TestCase):
     """Decision 10 of issue #289's R4-b PR-6 plan: the lint attribution needs no new rule for a
     host-rendered runner that includes the checks header and the harness header. Both headers are

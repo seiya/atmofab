@@ -34,6 +34,7 @@ from tools.orchestration_runtime import (
     codex_isolation_profile_kwargs,
     render_bwrap_command,
 )
+from tools.tests import skip_probes
 from tools.tests.llm_samples import sample_config_with
 
 
@@ -346,8 +347,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         start-up error. On a host carrying neither CLI both rows skip, and the criterion is
         unmeasured there.
         """
-        if shutil.which(cli) is None:
-            self.skipTest("backend CLI not installed on this host")
+        skip_probes.require_installed(self, cli)
         with tempfile.TemporaryDirectory() as t, tempfile.TemporaryDirectory() as h:
             repo = Path(t).resolve()
             orch, arid = f"orch_{cli}", f"arid_{cli}"
@@ -634,8 +634,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
 
         Returns `(argv, profile, repo)`; the caller owns the tempdirs through `addCleanup`.
         """
-        if shutil.which(backend) is None:
-            self.skipTest("backend CLI not installed on this host")
+        skip_probes.require_installed(self, backend)
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         repo = Path(tmp.name).resolve() / "repo"
@@ -734,8 +733,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         `_pure_launch_under_profile` uses and which cannot tell a shared home from a
         per-lineage one.
         """
-        if shutil.which("codex") is None:
-            self.skipTest("backend CLI not installed on this host")
+        skip_probes.require_installed(self, "codex")
         from tools.tests.private_root_fixture import seed_codex_auth
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -942,7 +940,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
 
 
 
-@unittest.skipUnless(shutil.which("claude"), "backend CLI not installed on this host")
+@skip_probes.skip_unless_installed("claude")
 class ClaudeSettingsIsolationTests(unittest.TestCase):
     """UNBILLED (issue #453): the operator's settings FILE does not reach a pure claude leaf.
 

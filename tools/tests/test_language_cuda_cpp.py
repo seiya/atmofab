@@ -31,6 +31,7 @@ from tools.backends.linter.nvcc import lint as nvcc_lint
 from tools.backends.parallel.cuda import directives as cuda_directives
 from tools.backends.parallel.cuda import execution as cuda_execution
 from tools.backends.parallel.cuda import trace as cuda_trace
+from tools.tests import skip_probes
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 NVCC = shutil.which("nvcc")
@@ -3140,7 +3141,7 @@ class MakeGateTests(unittest.TestCase):
         self.assertFalse(gates._recipe_line_relinks("\techo NVCC is the driver", {}))
 
 
-@unittest.skipUnless(NVCC, "the CUDA compiler driver is not installed")
+@skip_probes.skip_unless_installed("cuda_compiler_driver")
 class RealDriverTests(unittest.TestCase):
     """Measured claims of `docs/backends/linter/nvcc/RULES.md` and the syntax adapter, run."""
 
