@@ -23464,9 +23464,11 @@ class MultiProviderPreflightTests(unittest.TestCase):
         self.assertEqual(llm_http_leaf._env_proxies(captured[0]), {})
 
     def test_no_proxy_note_on_a_direct_failure_without_a_proxy(self) -> None:
-        """The note is for a proxied host only; `NO_PROXY` alone names no route."""
+        """The note is for a proxied host only; `NO_PROXY` alone, or a proxy variable set to
+        an empty value, names no route."""
         base_url = f"http://127.0.0.1:{_dead_loopback_port()}/v1"
-        for extra in ({}, {"NO_PROXY": "localhost", "no_proxy": "localhost"}):
+        for extra in ({}, {"NO_PROXY": "localhost", "no_proxy": "localhost"},
+                      {"HTTP_PROXY": "", "https_proxy": "  "}):
             env = _env_without_proxies()
             env.update(extra, ATMOFAB_TEST_LOCAL_KEY="k")
             with self.subTest(extra=extra), patch.dict(os.environ, env, clear=True):
