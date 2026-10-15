@@ -340,6 +340,10 @@ when a rule does not obviously apply:
     fixture. The check is one command — run the new classes under pytest and under
     `env -u <VAR> python3 -m unittest <dotted.path>` and diff the verdicts. The fix is to build
     the relationship in the fixture, not to unset the variable.
+    The conftest-guard witnesses (`test_suite_private_root_harness.py`, and the guard rows in
+    `test_suite_environment_isolation.py`, `test_run_workflow.py`, `test_orchestration_runtime.py`)
+    FAIL under plain `unittest` by design since issue #498 — they assert they run under pytest
+    rather than skip — so they are not the signal being diffed.
     **When the relationship is with the HOST rather than with a variable, the diff has to be over
     a FAMILY of environments, and the family needs every property the rows spell — not just the
     one that is red.** Issue #84's rows reasoned about `$HOME` and the checkout: a sweep over the

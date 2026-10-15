@@ -74,9 +74,10 @@ python3 -m pytest tools/tests/ -q -p no:randomly
   and one corrected my claim with its own measurement. Writing it down settles it. Conversely,
   **hand over a stale count and reviewers take it for the baseline and miss a real failure**
 - **Skips: measure, do not assume.** On 2026-08-19 the suite reported 4877 passed and **0
-  skipped**; every skip in `tools/tests/` is conditional on the host (gfortran, bwrap, `/proc` and
-  the rest of `_DECLARED_ENVIRONMENT_SKIPS` in
-  `tools/tests/test_skip_reasons_are_declared.py`), so what you see depends on the machine. **If a skip appears, find out which condition produced it** —
+  skipped**. Since issue #498 the only skips the suite can report are the three probe skips in
+  `tools/tests/skip_probes.py` (the CUDA compiler driver, `claude`, `codex`); on the operator's
+  host all three are installed, so the count is 0, and any other skip is a defect the report check
+  (`python3 -m tools.tests.skip_probes <report>`) refuses. **If a skip appears, find out which condition produced it** —
   that is the reason to look, and it is the same reason whether the count is 0 or 3. An earlier
   version of this line claimed one permanent calibration skip and sent a reader hunting a test that
   does not exist.
