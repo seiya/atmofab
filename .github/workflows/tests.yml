@@ -157,7 +157,8 @@ jobs:
         # reads the same report and refuses every `<skipped>` that is not a probe-reason skip for
         # a dependency absent on this runner (`tools/tests/skip_probes.py`, issue #498). The
         # `sysctl` step above records that losing it produced ten skips AND failed two tests;
-        # both are red now, the skips by the second command.
+        # since #498 those ten rows error in `setUpClass` instead of skipping, so the heredoc's
+        # failure count is what reddens the job on them, not this second command.
         #
         # AND NOTHING ELSE READS THIS FILE. `tools/tests/test_ci_workflow.py` used to check the
         # decisions here — the suite command, the guard step's existence and `if: always()`, its
