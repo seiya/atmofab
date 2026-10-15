@@ -433,7 +433,7 @@ The thresholds are calibrated against an independent reference implementation of
 
 ### 6-12. `l1_tc4_rectangular_grid`
 - `level`: `L1`
-- `objective`: confirm, for `tc4_translating_low` on the rectangular grid of 2-10, the initial state at the cell centres, the error against the prescribed flow at $t_{end}$, mass conservation and positivity; an implementation that exchanges the two extents, the two domain lengths or the two spacings fails a judgment of this test (2-10).
+- `objective`: confirm, for `tc4_translating_low` on the rectangular grid of 2-10, the initial state at the cell centres, the error against the prescribed flow at $t_{end}$, mass conservation and positivity; each exchange of the two extents, the two domain lengths or the two spacings measured in 2-10 fails a judgment of this test.
 - target cases:
   - `chan_tc4_ref_n064_dts100_rect`
 - `expected_outcome`: `pass`
