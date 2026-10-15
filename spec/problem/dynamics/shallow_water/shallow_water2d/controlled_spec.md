@@ -81,7 +81,7 @@ U^{*}_{i+1/2,j,R}=\left[h^{*}_{i+1/2,j,R},\;h^{*}_{i+1/2,j,R}\,u_{i+1,j},\;h^{*}
 $$
 The `y`-interface $(i,j+1/2)$ is reconstructed the same way, with $z_{i,j+1/2}=\max(z_{b,i,j},z_{b,i,j+1})$ giving $h^{*}_{i,j+1/2,B}$ from cell $(i,j)$ and $h^{*}_{i,j+1/2,T}$ from cell $(i,j+1)$, and producing the bottom state $U^{*}_{i,j+1/2,B}$ and the top state $U^{*}_{i,j+1/2,T}$.
 3. Compute the interface flux with `dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux`, passing the reconstructed states of step 2 as its `U_L` / `U_R` / `U_B` / `U_T` inputs. The flux `component`'s input/output contract is unchanged: it consumes the interface states the caller supplies.
-4. Execute the `SSPRK2` update with `dynamics_shallow_water_time_update_2d_ssprk2__advance`, supplying the interface-flux difference field
+4. Execute one stage of the `SSPRK2` step of step 5 with `dynamics_shallow_water_time_update_2d_ssprk2__advance`, supplying the interface-flux difference field
 $$
 L_{flux}=-\frac{F^{*}_{i+1/2,j}-F^{*}_{i-1/2,j}}{\Delta x}
 -\frac{G^{*}_{i,j+1/2}-G^{*}_{i,j-1/2}}{\Delta y}
