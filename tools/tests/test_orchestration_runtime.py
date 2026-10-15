@@ -23240,6 +23240,48 @@ class HostPycacheRedirectRootTest(unittest.TestCase):
             r"(?:.*\n)*?\s*finally:\s*\n\s*sys\.pycache_prefix\s*=\s*saved_pycache_prefix")
 
 
+def _recording_server(status: int = 200, location: str | None = None):
+    """A loopback HTTP server that records each request line it receives (issue #83).
+
+    Returns `(server, seen)`; the caller shuts it down. Real sockets, so a probe's ROUTE —
+    direct, through a proxy, following a redirect — is observed rather than assumed."""
+    import threading
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    seen: list[str] = []
+
+    class _Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            seen.append(self.requestline)
+            self.send_response(status)
+            if location:
+                self.send_header("Location", location)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *_a) -> None:
+            pass
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), _Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server, seen
+
+
+def _dead_loopback_port() -> int:
+    """A loopback port nothing listens on: bound, read, closed."""
+    import socket
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    return port
+
+
+def _env_without_proxies() -> dict[str, str]:
+    return {k: v for k, v in os.environ.items() if not k.lower().endswith("_proxy")}
+
+
 class MultiProviderPreflightTests(unittest.TestCase):
     """Issue #28 Phase 4: preflight probes EVERY provider a configuration can launch.
 
@@ -23325,6 +23367,112 @@ class MultiProviderPreflightTests(unittest.TestCase):
             out = ort._probe_http_provider(self._row(), opener=None)
         self.assertFalse(out["launchable"])       # the missing key still fails it
         self.assertTrue([c for c in out["checks"] if "reachable" in c["name"]][0]["pass"])
+
+    # --- the probe takes the leaf's route (issue #83) ---------------------------------
+
+    def _serve(self, **kw):
+        server, seen = _recording_server(**kw)
+        self.addCleanup(server.server_close)
+        self.addCleanup(server.shutdown)
+        return f"http://127.0.0.1:{server.server_port}", seen
+
+    @staticmethod
+    def _reachable(out):
+        return next(c for c in out["checks"] if c["name"].endswith("endpoint_reachable"))
+
+    def test_the_reachability_probe_takes_the_leafs_route_not_the_operators_proxy(
+            self) -> None:
+        """The proxy families are a named exclusion, so a leaf goes direct; the probe that
+        vouches for it must go the same way. The control at the end shows the environment
+        DOES route a bare `urlopen` through the proxy, so the two routes are told apart."""
+        import urllib.request
+
+        proxy, proxy_seen = self._serve()
+        endpoint, endpoint_seen = self._serve()
+        env = _env_without_proxies()
+        env.update({"HTTP_PROXY": proxy, "http_proxy": proxy, "HTTPS_PROXY": proxy,
+                    "ATMOFAB_TEST_LOCAL_KEY": "k"})
+        with patch.dict(os.environ, env, clear=True):
+            out = ort._probe_http_provider(self._row(base_url=f"{endpoint}/v1"), opener=None)
+            self.assertTrue(out["launchable"], out)
+            self.assertEqual(self._reachable(out)["detail"], "responded")
+            self.assertEqual(len(endpoint_seen), 1)
+            self.assertTrue(endpoint_seen[0].startswith("GET /v1 "), endpoint_seen)
+            self.assertEqual(proxy_seen, [])
+            # control: the process's own route goes through the proxy
+            urllib.request.urlopen(f"{endpoint}/v1", timeout=5).close()
+        self.assertEqual(len(proxy_seen), 1)
+        self.assertEqual(len(endpoint_seen), 1)
+
+    def test_a_proxy_only_endpoint_fails_preflight_as_it_will_fail_the_leaf(self) -> None:
+        """The issue's shape: the endpoint is reachable only through the proxy. Preflight now
+        fails, as the leaf would, and the detail names the proxy variables — never a value,
+        which carries credentials and lands in a persisted payload."""
+        proxy, proxy_seen = self._serve()
+        proxy_with_userinfo = proxy.replace("http://", "http://user:pw@")
+        env = _env_without_proxies()
+        env.update({"HTTP_PROXY": proxy_with_userinfo, "ATMOFAB_TEST_LOCAL_KEY": "k"})
+        base_url = f"http://127.0.0.1:{_dead_loopback_port()}/v1"
+        with patch.dict(os.environ, env, clear=True):
+            out = ort._probe_http_provider(self._row(base_url=base_url), opener=None)
+        self.assertFalse(out["launchable"])
+        detail = self._reachable(out)["detail"]
+        self.assertIn("Connection refused", detail)
+        self.assertIn("HTTP_PROXY is set on this host and not forwarded to a leaf", detail)
+        self.assertEqual(proxy_seen, [])
+        dumped = json.dumps(out)
+        self.assertNotIn(proxy.removeprefix("http://"), dumped)
+        self.assertNotIn("user:pw", dumped)
+
+    def test_a_redirecting_endpoint_is_reachable_and_the_redirect_is_not_followed(
+            self) -> None:
+        """The leaf's opener refuses redirects; a redirect proves a server answered, so it
+        counts as reachable by its status, and the target is never contacted."""
+        target, target_seen = self._serve()
+        endpoint, endpoint_seen = self._serve(status=302, location=f"{target}/elsewhere")
+        env = _env_without_proxies()
+        env["ATMOFAB_TEST_LOCAL_KEY"] = "k"
+        with patch.dict(os.environ, env, clear=True):
+            out = ort._probe_http_provider(self._row(base_url=f"{endpoint}/v1"), opener=None)
+        self.assertTrue(out["launchable"], out)
+        self.assertEqual(self._reachable(out)["detail"], "HTTP 302")
+        self.assertEqual(len(endpoint_seen), 1)
+        self.assertEqual(target_seen, [])
+
+    def test_the_probe_filters_the_environment_the_way_the_conductor_does(self) -> None:
+        """The opener is built over `leaf_env_from(os.environ)` — the environment
+        `_child_env` starts from — so no proxy family reaches it."""
+        from tools import llm_http_leaf
+
+        host = {"HTTPS_PROXY": "http://user:pw@proxy:3128", "NO_PROXY": "localhost",
+                "all_proxy": "socks5://p:1", "ATMOFAB_TEST_LOCAL_KEY": "k"}
+        self.assertEqual(llm_http_leaf._env_proxies(ort.leaf_env_from(host)), {})
+        captured: list[Any] = []
+
+        def _recorder(env=None):
+            captured.append(env)
+            return lambda *_a, **_k: object()
+
+        with patch.dict(os.environ, host, clear=False), \
+                patch.object(llm_http_leaf, "_default_opener", _recorder):
+            out = ort._probe_http_provider(self._row(), opener=None)
+            expected = ort.leaf_env_from(os.environ)
+        self.assertTrue(out["launchable"])
+        self.assertEqual(len(captured), 1)
+        self.assertIsNotNone(captured[0])
+        self.assertEqual(captured[0], expected)
+        self.assertEqual(llm_http_leaf._env_proxies(captured[0]), {})
+
+    def test_no_proxy_note_on_a_direct_failure_without_a_proxy(self) -> None:
+        """The note is for a proxied host only; `NO_PROXY` alone names no route."""
+        base_url = f"http://127.0.0.1:{_dead_loopback_port()}/v1"
+        for extra in ({}, {"NO_PROXY": "localhost", "no_proxy": "localhost"}):
+            env = _env_without_proxies()
+            env.update(extra, ATMOFAB_TEST_LOCAL_KEY="k")
+            with self.subTest(extra=extra), patch.dict(os.environ, env, clear=True):
+                out = ort._probe_http_provider(self._row(base_url=base_url), opener=None)
+                self.assertFalse(out["launchable"])
+                self.assertNotIn("not forwarded", self._reachable(out)["detail"])
 
     # --- the providers map -----------------------------------------------------------
 
@@ -23488,7 +23636,8 @@ class MultiProviderPreflightTests(unittest.TestCase):
             with patch.dict(os.environ, {"ATMOFAB_TEST_LOCAL_KEY": "k"}, clear=False), \
                  patch.object(ort, "probe_execution_platform",
                               return_value=_launchable_preflight_dict(backend="claude")), \
-                 patch("urllib.request.urlopen", _refuse), \
+                 patch("tools.llm_http_leaf._default_opener",
+                       lambda env=None: _refuse), \
                  self.assertRaises(RuntimeError):
                 ort._run_live_probe_and_update(
                     repo_root, "orch_001",
@@ -26479,8 +26628,10 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
         collections disagree and this fails."""
         # SET IDENTITY, not iteration. The old version looped over the tuple, so removing
         # an entry just looped less and stayed green — measured: all 11 proxy/TLS drops
-        # survived it. Nothing at runtime reads this constant (it is a recorded decision,
-        # not a filter input), so this test is the only thing that can notice it shrinking.
+        # survived it. At runtime only `_probe_http_provider` reads this constant, and only
+        # to NAME a set proxy variable in a failure detail (issue #83); it is a recorded
+        # decision, not a filter input, so this test is still the only thing that can
+        # notice it shrinking.
         self.assertEqual(set(ort.LEAF_ENV_NAMED_EXCLUSIONS), {
             "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
             "http_proxy", "https_proxy", "no_proxy", "all_proxy",
