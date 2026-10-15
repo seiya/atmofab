@@ -77,6 +77,25 @@ class CheckReportTests(unittest.TestCase):
         self.assertEqual(accepted, {_CUDA_REASON: ["tools.tests.test_x.T::t1"],
                                     claude_reason: ["tools.tests.test_x.T::t2"]})
 
+    def test_every_skipped_child_of_one_case_is_read(self) -> None:
+        """pytest writes one `<skipped>` per skipped `subTest` into the same `<testcase>`."""
+        xml = _report('<testcase classname="tools.tests.test_x.T" name="t1">'
+                      f'<skipped type="pytest.skip" message="{_CUDA_REASON}">a</skipped>'
+                      '<skipped type="pytest.skip" message="arbitrary second">b</skipped>'
+                      '</testcase>')
+        refusals, accepted = self._check(xml)
+        self.assertEqual(len(refusals), 1, refusals)
+        self.assertIn("'arbitrary second'", refusals[0])
+        self.assertEqual(accepted, {_CUDA_REASON: ["tools.tests.test_x.T::t1"]})
+
+    def test_a_collection_skip_is_refused_as_such(self) -> None:
+        refusals, _ = self._check(_report(
+            '<testcase classname="" name="tools.tests.test_x">'
+            '<skipped message="collection skipped">x</skipped></testcase>'))
+        self.assertEqual(len(refusals), 1)
+        self.assertIn("skipped at collection", refusals[0])
+        self.assertNotIn("xfail", refusals[0])
+
     def test_every_suite_in_the_report_is_read(self) -> None:
         xml = ('<testsuites><testsuite name="a">' + _passed("t0") + '</testsuite>'
                '<testsuite name="b">' + _skipped("t1", message="other") + '</testsuite></testsuites>')
@@ -238,6 +257,7 @@ class MainTests(unittest.TestCase):
     def test_main_refuses_a_wrong_argument_count(self) -> None:
         with mock.patch("sys.stderr"):
             self.assertEqual(skip_probes.main([]), 2)
+            self.assertEqual(skip_probes.main(["a.xml", "b.xml"]), 2)
 
 
 if __name__ == "__main__":

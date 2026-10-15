@@ -79,6 +79,31 @@ def _case_id(case: ET.Element) -> str:
     return f"{classname}::{name}" if classname else name
 
 
+def _refusal(case_id: str, skipped: ET.Element, is_present: Callable[[str], bool]) -> str | None:
+    """Why one `<skipped>` element is refused, or `None` when it is an accepted probe skip."""
+    kind = skipped.get("type", "")
+    message = skipped.get("message", "")
+    if kind == "pytest.xfail":
+        return (f"{case_id}: reported as <skipped type='pytest.xfail'> — an xfail or expected "
+                "failure is a skip by another name; make the test pass or fail")
+    if kind != _SKIP_TYPE:
+        # A module-level `pytest.skip(..., allow_module_level=True)` or `importorskip` is
+        # written with no type and the message `collection skipped` (measured, pytest 9.1.1).
+        return (f"{case_id}: reported as <skipped type={kind!r}> with {message!r} — a module "
+                "skipped at collection, or a shape this check does not know; a test in this "
+                "suite does not skip")
+    dependency = REASON_TO_DEPENDENCY.get(message)
+    if dependency is None:
+        return (f"{case_id}: skipped with {message!r}, which is not a probe reason — a test in "
+                "this suite does not skip; a missing dependency fails with a message naming the "
+                "install (tools/tests/skip_probes.py)")
+    if is_present(dependency):
+        return (f"{case_id}: skipped with {message!r}, but {dependency} is installed on this "
+                "host, so the row must run (or the check ran on another host or PATH than the "
+                "suite)")
+    return None
+
+
 def check_report(path, *, present: Callable[[str], bool] | None = None
                  ) -> tuple[list[str], dict[str, list[str]]]:
     """(refusals, accepted ids by reason) over every `<testcase>` carrying `<skipped>`.
@@ -96,31 +121,15 @@ def check_report(path, *, present: Callable[[str], bool] | None = None
     # Every `<testcase>` under the root, not only the first suite's: a case this loop does not
     # visit is a skip it accepts.
     for case in root.iter("testcase"):
-        skipped = case.find("skipped")
-        if skipped is None:
-            continue
         case_id = _case_id(case)
-        kind = skipped.get("type", "")
-        message = skipped.get("message", "")
-        if kind != _SKIP_TYPE:
-            refusals.append(
-                f"{case_id}: reported as <skipped type={kind!r}> — an xfail or expected failure "
-                "is a skip by another name; make the test pass or fail")
-            continue
-        dependency = REASON_TO_DEPENDENCY.get(message)
-        if dependency is None:
-            refusals.append(
-                f"{case_id}: skipped with {message!r}, which is not a probe reason — a test in "
-                "this suite does not skip; a missing dependency fails with a message naming the "
-                "install (tools/tests/skip_probes.py)")
-            continue
-        if is_present(dependency):
-            refusals.append(
-                f"{case_id}: skipped with {message!r}, but {dependency} is installed on this "
-                "host, so the row must run (or the check ran on another host or PATH than the "
-                "suite)")
-            continue
-        accepted.setdefault(message, []).append(case_id)
+        # EVERY `<skipped>` child, not the first: pytest writes one per skipped `subTest` into
+        # the same `<testcase>`, so a first-only read accepts the second subtest's reason unread.
+        for skipped in case.findall("skipped"):
+            refusal = _refusal(case_id, skipped, is_present)
+            if refusal is not None:
+                refusals.append(refusal)
+            else:
+                accepted.setdefault(skipped.get("message", ""), []).append(case_id)
     return refusals, accepted
 
 
