@@ -184,7 +184,10 @@ jobs:
             echo "::error::the suite produced no report — it did not run" >&2
             exit 1
           fi
-          python3 - "$report" "${{ steps.reference.outputs.count }}" <<'GUARD'
+          # Both commands run whatever the first says, so a red run still prints which rows
+          # did not run; the step fails if either does.
+          status=0
+          python3 - "$report" "${{ steps.reference.outputs.count }}" <<'GUARD' || status=1
           import sys, xml.etree.ElementTree as ET
           report, expected = sys.argv[1], int(sys.argv[2])
           suite = ET.parse(report).getroot()
@@ -211,4 +214,5 @@ jobs:
                   f"the suite reported {failures} failures or errors, and the job reached this "
                   "step anyway — the suite step is not able to fail the run.")
           GUARD
-          python3 -m tools.tests.skip_probes "$report"
+          python3 -m tools.tests.skip_probes "$report" || status=1
+          exit "$status"
