@@ -92,6 +92,17 @@ S^{hu}_{i,j}=\frac{g}{2\,\Delta x}\left(\left(h^{*}_{i+1/2,j,L}\right)^2-\left(h
 S^{hv}_{i,j}=\frac{g}{2\,\Delta y}\left(\left(h^{*}_{i,j+1/2,B}\right)^2-\left(h^{*}_{i,j-1/2,T}\right)^2\right)
 $$
 Here $h^{*}_{i+1/2,j,L}$ and $h^{*}_{i-1/2,j,R}$ are the two reconstructed depths of cell $(i,j)$ itself, taken at its right and left `x`-interfaces; $h^{*}_{i,j+1/2,B}$ and $h^{*}_{i,j-1/2,T}$ are the same for its top and bottom `y`-interfaces. `z_b` remains accepted but inert at the `dynamics_shallow_water_time_update_2d_ssprk2__advance` boundary: the bottom topography is consumed by the reconstruction of step 2 and by $S_b$, both of which belong to this `problem` `node`, and the time-update `component`'s input/output contract is unchanged.
+5. Compose the two stages of the `SSPRK2` step in this `problem` `node`. Write $L(U)=L_{flux}(U)+S_b(U)$ for the right-hand side that steps 1 to 4 build from a state $U$: the ghost update, the reconstruction, the interface flux and the source term are all evaluated at that state. One step from $U^n$ to $U^{n+1}$ makes two calls of `dynamics_shallow_water_time_update_2d_ssprk2__advance`:
+$$
+U^{(1)}=\mathrm{advance}\left(U^n;\ L_{flux}(U^n),\ S_b(U^n)\right)=U^n+\Delta t\,L(U^n)
+$$
+$$
+U^{(2)}=\mathrm{advance}\left(U^{(1)};\ L_{flux}(U^{(1)}),\ S_b(U^{(1)})\right)=U^{(1)}+\Delta t\,L(U^{(1)})
+$$
+$$
+U^{n+1}=\frac{1}{2}U^n+\frac{1}{2}U^{(2)}
+$$
+Steps 1 to 4 run at $U^n$ for the call that gives $U^{(1)}$, and again at $U^{(1)}$ for the call that gives $U^{(2)}$. The time-update `component` receives `L_flux` and `S_b` as fixed fields, and at its `L0` profile one call is the step $U+\Delta t\,(L_{flux}+S_b)$, so the re-evaluation of the right-hand side at the stage state and the average with $U^n$ belong to this `problem` `node`. A step made of one call with the fields of $U^n$ is the forward-Euler step, not the `SSPRK2` step of this `spec`.
 
 The discretization holds the following invariants.
 - **Wet domain.** $h^{*}>0$ at every interface, at every step of the run. The domain of validity of this `problem spec` is the non-drying regime; drying and wetting are out of scope.
