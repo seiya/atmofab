@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `shallow_water2d`
-- `spec_version`: `0.4.4`
+- `spec_version`: `0.4.5`
 - `status`: `controlled_draft`
 - `spec_kind`: `problem`
 - `domain`: `dynamics`
@@ -81,7 +81,7 @@ U^{*}_{i+1/2,j,R}=\left[h^{*}_{i+1/2,j,R},\;h^{*}_{i+1/2,j,R}\,u_{i+1,j},\;h^{*}
 $$
 The `y`-interface $(i,j+1/2)$ is reconstructed the same way, with $z_{i,j+1/2}=\max(z_{b,i,j},z_{b,i,j+1})$ giving $h^{*}_{i,j+1/2,B}$ from cell $(i,j)$ and $h^{*}_{i,j+1/2,T}$ from cell $(i,j+1)$, and producing the bottom state $U^{*}_{i,j+1/2,B}$ and the top state $U^{*}_{i,j+1/2,T}$.
 3. Compute the interface flux with `dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux`, passing the reconstructed states of step 2 as its `U_L` / `U_R` / `U_B` / `U_T` inputs. The flux `component`'s input/output contract is unchanged: it consumes the interface states the caller supplies.
-4. Execute the `SSPRK2` update with `dynamics_shallow_water_time_update_2d_ssprk2__advance`, supplying the interface-flux difference field
+4. Execute one stage of the `SSPRK2` step of step 5 with `dynamics_shallow_water_time_update_2d_ssprk2__advance`, supplying the interface-flux difference field
 $$
 L_{flux}=-\frac{F^{*}_{i+1/2,j}-F^{*}_{i-1/2,j}}{\Delta x}
 -\frac{G^{*}_{i,j+1/2}-G^{*}_{i,j-1/2}}{\Delta y}
@@ -92,6 +92,17 @@ S^{hu}_{i,j}=\frac{g}{2\,\Delta x}\left(\left(h^{*}_{i+1/2,j,L}\right)^2-\left(h
 S^{hv}_{i,j}=\frac{g}{2\,\Delta y}\left(\left(h^{*}_{i,j+1/2,B}\right)^2-\left(h^{*}_{i,j-1/2,T}\right)^2\right)
 $$
 Here $h^{*}_{i+1/2,j,L}$ and $h^{*}_{i-1/2,j,R}$ are the two reconstructed depths of cell $(i,j)$ itself, taken at its right and left `x`-interfaces; $h^{*}_{i,j+1/2,B}$ and $h^{*}_{i,j-1/2,T}$ are the same for its top and bottom `y`-interfaces. `z_b` remains accepted but inert at the `dynamics_shallow_water_time_update_2d_ssprk2__advance` boundary: the bottom topography is consumed by the reconstruction of step 2 and by $S_b$, both of which belong to this `problem` `node`, and the time-update `component`'s input/output contract is unchanged.
+5. Compose the two stages of the `SSPRK2` step in this `problem` `node`. Write $L(U)=L_{flux}(U)+S_b(U)$ for the right-hand side that steps 1 to 4 build from a state $U$: the ghost update, the reconstruction, the interface flux and the source term are all evaluated at that state. One step from $U^n$ to $U^{n+1}$ makes two calls of `dynamics_shallow_water_time_update_2d_ssprk2__advance`:
+$$
+U^{(1)}=\mathrm{advance}\left(U^n;\ L_{flux}(U^n),\ S_b(U^n)\right)=U^n+\Delta t\,L(U^n)
+$$
+$$
+U^{(2)}=\mathrm{advance}\left(U^{(1)};\ L_{flux}(U^{(1)}),\ S_b(U^{(1)})\right)=U^{(1)}+\Delta t\,L(U^{(1)})
+$$
+$$
+U^{n+1}=\frac{1}{2}U^n+\frac{1}{2}U^{(2)}
+$$
+Steps 1 to 4 run at $U^n$ for the call that gives $U^{(1)}$, and again at $U^{(1)}$ for the call that gives $U^{(2)}$. The time-update `component` receives `L_flux` and `S_b` as fixed fields, and at its `L0` profile one call is the step $U+\Delta t\,(L_{flux}+S_b)$, so the re-evaluation of the right-hand side at the stage state and the average with $U^n$ belong to this `problem` `node`. A step made of one call with the fields of $U^n$ is the forward-Euler step, not the `SSPRK2` step of this `spec`.
 
 The discretization holds the following invariants.
 - **Wet domain.** $h^{*}>0$ at every interface, at every step of the run. The domain of validity of this `problem spec` is the non-drying regime; drying and wetting are out of scope.
@@ -143,7 +154,7 @@ The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries t
 The reference basis is Williamson et al. (1992, JCP, DOI:10.1016/S0021-9991(05)80016-6), Audusse et al. (2004, SIAM J. Sci. Comput. 25(6), DOI:10.1137/S1064827503431090), LeVeque (2002), and Toro (2009).
 
 ## 9. tests reference
-The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d/tests.md`, with `test_profile_version` of `0.3.1`.
+The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d/tests.md`, with `test_profile_version` of `0.4.0`.
 
 ## 10. AD preparation information
 `ad_readiness.enabled` is `true`. The state update is expressed in the form $U_{next}=F(U_{now}, params)$, and `max`, `abs`, `ceil`, and the periodic-index wrap are made explicit as non-differentiable operations.
