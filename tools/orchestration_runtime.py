@@ -7491,12 +7491,16 @@ CLAUDE_LEAF_ENV_EXTRAS = ("CLAUDE_CODE_MAX_OUTPUT_TOKENS", "CLAUDE_CODE_DISABLE_
 # (`HTTP_PROXY` / `HTTPS_PROXY` / `NO_PROXY` / `ALL_PROXY` in both cases, `SSL_CERT_FILE`,
 # `SSL_CERT_DIR`, `NODE_EXTRA_CA_CERTS`) are NOT forwarded. Two reasons: a proxy URL
 # routinely carries credentials, and this list's values are persisted verbatim into
-# `sandbox_profiles/<arid>.json` and the rendered argv; and their absence fails LOUDLY —
-# for an HTTP provider at preflight, whose reachability probe takes the leaf's route (issue
-# #83), and for every leaf at egress (it cannot reach the API at all) — rather than silently
-# redirecting, which is the failure mode the whole closure exists to prevent. An operator on a proxied host adds
-# them here with a justification — this comment is the record that the decision was made
-# and what it costs.
+# `sandbox_profiles/<arid>.json` and the rendered argv; and their absence fails LOUDLY
+# rather than silently redirecting, which is the failure mode the whole closure exists to
+# prevent. For the proxy members that means at egress for every leaf (it cannot reach the
+# API at all) and, for an HTTP provider, already at preflight, whose reachability probe
+# takes the leaf's route (issue #83). The TLS members bind a CLI leaf only: an HTTP leaf
+# and that probe run in the conductor's own process, where OpenSSL reads `SSL_CERT_FILE` /
+# `SSL_CERT_DIR` from the process environment. An operator on a proxied host moves the
+# names from this tuple to `LEAF_ENV_ALLOWLIST` with a justification (removing them here
+# alone forwards nothing) — this comment is the record that the decision was made and what
+# it costs.
 LEAF_ENV_NAMED_EXCLUSIONS = (
     "HTTP_PROXY", "HTTPS_PROXY", "NO_PROXY", "ALL_PROXY",
     "http_proxy", "https_proxy", "no_proxy", "all_proxy",
