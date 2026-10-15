@@ -11,8 +11,12 @@ What decides is the RUN's report, not a reading of the test source: `check_repor
 pytest JUnit report and refuses every `<skipped>` element (one per skipped `subTest`, so a
 `<testcase>` can carry several) that is
 
-- an xfail — pytest's JUnit writer reports `xfail` and `unittest.expectedFailure` as
-  `<skipped type="pytest.xfail">`, the latter with an EMPTY message, so the type decides;
+- an xfail that failed — pytest's JUnit writer reports `xfail` and `unittest.expectedFailure`
+  as `<skipped type="pytest.xfail">`, the latter with an EMPTY message, so the type decides (a
+  non-strict xfail that passes is reported as a pass: its body ran);
+- a module skipped at collection — reported with no type and the message `collection skipped`,
+  whatever reason it gave, so even a probe reason is refused there: a probe skip goes through
+  `skip_unless_installed` on the class or function, or `require_installed` in the method;
 - a skip whose message is not one of the probe reasons below;
 - a probe-reason skip whose dependency is present on the host running the check — such a row
   could have run, so it must.
@@ -32,7 +36,7 @@ and refused only on a host that has it — the operator's, where all three are i
 test that never reaches the report — an early `return` in a test body, `__test__ = False`, a test
 under `if`, `del` of a test — is a pass or an absence, not a skip; nothing in the suite or in CI
 sees those (CI's pristine collection count reads the same source as the run, so it drops them
-on both sides — measured in issue #498's round 1). Both are issue #498's out-of-scope list.
+on both sides). Both are accepted limits, recorded with their measurements on issue #498.
 """
 from __future__ import annotations
 
@@ -96,7 +100,8 @@ def _refusal(case_id: str, skipped: ET.Element, is_present: Callable[[str], bool
         # written with no type and the message `collection skipped` (measured, pytest 9.1.1).
         return (f"{case_id}: reported as <skipped type={kind!r}> with {message!r} — a module "
                 "skipped at collection, or a shape this check does not know; a test in this "
-                "suite does not skip")
+                "suite does not skip, and a probe skip goes through skip_unless_installed or "
+                "require_installed, not a module-level skip")
     dependency = REASON_TO_DEPENDENCY.get(message)
     if dependency is None:
         return (f"{case_id}: skipped with {message!r}, which is not a probe reason — a test in "

@@ -52,6 +52,7 @@ class CheckReportTests(unittest.TestCase):
         self.assertEqual(len(refusals), 2)
         for refusal in refusals:
             self.assertIn("type='pytest.xfail'", refusal)
+            self.assertIn("an xfail or expected failure", refusal)
         self.assertEqual(accepted, {})
 
     def test_a_probe_skip_whose_dependency_is_present_is_refused(self) -> None:
@@ -87,6 +88,20 @@ class CheckReportTests(unittest.TestCase):
         self.assertEqual(len(refusals), 1, refusals)
         self.assertIn("'arbitrary second'", refusals[0])
         self.assertEqual(accepted, {_CUDA_REASON: ["tools.tests.test_x.T::t1"]})
+
+    def test_each_element_is_judged_and_filed_under_its_own_reason(self) -> None:
+        """A refusal does not end the case, and an accepted skip is filed under ITS reason."""
+        claude_reason = skip_probes.DEPENDENCIES["claude"][1]
+        xml = _report('<testcase classname="tools.tests.test_x.T" name="t1">'
+                      '<skipped type="pytest.skip" message="foreign">a</skipped>'
+                      f'<skipped type="pytest.skip" message="{_CUDA_REASON}">b</skipped>'
+                      f'<skipped type="pytest.skip" message="{claude_reason}">c</skipped>'
+                      '<skipped type="pytest.skip" message="other foreign">d</skipped>'
+                      '</testcase>')
+        refusals, accepted = self._check(xml)
+        self.assertEqual(len(refusals), 2, refusals)
+        self.assertEqual(accepted, {_CUDA_REASON: ["tools.tests.test_x.T::t1"],
+                                    claude_reason: ["tools.tests.test_x.T::t1"]})
 
     def test_a_collection_skip_is_refused_as_such(self) -> None:
         refusals, _ = self._check(_report(
