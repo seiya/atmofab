@@ -13,18 +13,19 @@ model-directed tools against the filesystem. An HTTP pure leaf runs none: the re
 handed to the same `extract_json_document` / bundle / verdict validators the CLI pure leaf's
 response goes through, and the leaf's write authority is the empty set either way (the host
 still runs the FS-diff over empty write_roots). What IS new is egress: the conductor now
-originates outbound HTTPS to an operator-configured `base_url`. This module still ASKS urllib
-to honour the standard proxy environment variables, and it is handed the leaf's environment to
-read them from — but since the leaf's environment became a declared allowlist (issue #63), the
-proxy families are a NAMED EXCLUSION (`orchestration_runtime.LEAF_ENV_NAMED_EXCLUSIONS`), so
-`_env_proxies` finds nothing and an operator who routes egress through a proxy NO LONGER keeps
-doing so on this path. Measured, not inferred. The mechanism below is kept rather than deleted
-because the exclusion is a decision that can be revisited by adding the names back, and the
-handler is what makes that a one-line change; the exclusion's own comment carries the reasons.
-An asymmetry worth knowing: the HTTP PREFLIGHT (`orchestration_runtime`'s reachability probe)
-calls `urllib.request.urlopen` bare, so it still reads the process-global environment and still
-goes through the operator's proxy. On a proxied host preflight therefore passes while the leaf
-call it is vouching for cannot reach the same endpoint.
+originates outbound HTTPS to an operator-configured `base_url`. This module asks urllib to
+honour the proxy variables of the environment it is HANDED — the leaf's, the dict
+`workflow_conductor._child_env` authors — and since that environment is a declared allowlist
+(issue #63) with the proxy families a NAMED EXCLUSION
+(`orchestration_runtime.LEAF_ENV_NAMED_EXCLUSIONS`), `_env_proxies` finds nothing and the request
+goes direct. Measured, not inferred. The mechanism below is kept rather than deleted because the
+exclusion is a decision that can be revisited by adding the names back, and the handler is what
+makes that a one-line change; the exclusion's own comment carries the reasons. The HTTP
+PREFLIGHT reachability probe (`orchestration_runtime._probe_http_provider`) opens its request
+with this same `_default_opener` over `leaf_env_from(os.environ)`, so preflight and the leaf
+take one route by construction and a proxied host fails at preflight rather than after it
+(issue #83; before that fix the probe called `urlopen` bare and passed through the operator's
+proxy).
 
 **The key is never in the config.** A config names the ENVIRONMENT VARIABLE
 (`api_key_env`); this module reads it at call time and puts it in a header. It is never logged,
@@ -140,7 +141,8 @@ def _default_opener(env: "Mapping[str, str] | None" = None) -> "Callable[..., An
     leaf environment became a declared allowlist.) Reading it rather than the process-global
     `os.environ` is what keeps this call on the same footing as every other leaf: today that
     means NO proxy, because the proxy families are a named exclusion — see the module
-    docstring."""
+    docstring. The preflight probe is the second caller, with `leaf_env_from(os.environ)`;
+    `env=None` installs urllib's environment-reading `ProxyHandler` and is NOT that route."""
     handlers: list[Any] = [_NoRedirects]
     if env is not None:
         handlers.append(_EnvProxyHandler(_env_proxies(env)))
