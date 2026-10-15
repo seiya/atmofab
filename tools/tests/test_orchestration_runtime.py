@@ -23463,6 +23463,23 @@ class MultiProviderPreflightTests(unittest.TestCase):
         self.assertEqual(captured[0], expected)
         self.assertEqual(llm_http_leaf._env_proxies(captured[0]), {})
 
+    def test_the_reachability_probe_is_bounded_by_the_preflight_timeout(self) -> None:
+        """A hung endpoint must not hold a run at the starting line: the leaf's opener gets
+        `_HTTP_PREFLIGHT_TIMEOUT_SECONDS`, as bare `urlopen` did."""
+        from tools import llm_http_leaf
+
+        calls: list[dict[str, Any]] = []
+
+        def _opener_factory(env=None):
+            return lambda *_a, **kw: calls.append(kw)
+
+        with patch.dict(os.environ, {"ATMOFAB_TEST_LOCAL_KEY": "k"}, clear=False), \
+                patch.object(llm_http_leaf, "_default_opener", _opener_factory):
+            out = ort._probe_http_provider(self._row(), opener=None)
+        self.assertTrue(out["launchable"])
+        self.assertEqual(calls, [{"timeout": ort._HTTP_PREFLIGHT_TIMEOUT_SECONDS}])
+        self.assertLessEqual(ort._HTTP_PREFLIGHT_TIMEOUT_SECONDS, 30)
+
     def test_no_proxy_note_on_a_direct_failure_without_a_proxy(self) -> None:
         """The note is for a proxied host only; `NO_PROXY` alone, or a proxy variable set to
         an empty value, names no route."""
