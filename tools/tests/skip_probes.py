@@ -1,4 +1,4 @@
-"""The only place a test in this suite may skip from, and the reader of a run's reported skips.
+"""The only place a test in this suite is meant to skip from, and the reader of a run's reported skips.
 
 Rule (issue #498): a test does not skip. The one exception is a dependency that GitHub-hosted
 CI cannot reasonably install — today the CUDA compiler driver and the two leaf CLIs. Those
@@ -8,7 +8,8 @@ runs the row. Every other missing dependency FAILS with a message that names the
 decision, not a convenience; `check_report` refuses every reason not in it.
 
 What decides is the RUN's report, not a reading of the test source: `check_report` reads a
-pytest JUnit report and refuses every `<testcase>` carrying `<skipped>` that is
+pytest JUnit report and refuses every `<skipped>` element (one per skipped `subTest`, so a
+`<testcase>` can carry several) that is
 
 - an xfail — pytest's JUnit writer reports `xfail` and `unittest.expectedFailure` as
   `<skipped type="pytest.xfail">`, the latter with an EMPTY message, so the type decides;
@@ -25,9 +26,13 @@ It prints what it accepted, per reason with the test ids, then every refusal, an
 any refusal. pytest collects only `test_*.py`, so this module is not itself a test; its tests
 are `tools/tests/test_skip_probes.py`.
 
-What it does not see: a test that never reaches the report — an early `return` in a test body,
-`__test__ = False`, a test under `if`, `del` of a test — is a pass or an absence, not a skip
-(issue #498's out-of-scope list; CI's pristine collection count covers the last three).
+What it does not see. It matches the reason STRING, not where the skip came from: a test that
+spells a probe reason itself is accepted wherever that dependency is absent (on CI, all three),
+and refused only on a host that has it — the operator's, where all three are installed. And a
+test that never reaches the report — an early `return` in a test body, `__test__ = False`, a test
+under `if`, `del` of a test — is a pass or an absence, not a skip; nothing in the suite or in CI
+sees those (CI's pristine collection count reads the same source as the run, so it drops them
+on both sides — measured in issue #498's round 1). Both are issue #498's out-of-scope list.
 """
 from __future__ import annotations
 
