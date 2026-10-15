@@ -3,10 +3,10 @@
 ## 0. Meta information
 - `status`: `draft`
 - `test_profile_id`: `shallow_water2d_baseline`
-- `test_profile_version`: `0.4.0`
+- `test_profile_version`: `0.5.0`
 - `spec_ref.spec_kind`: `problem`
 - `spec_ref.spec_id`: `shallow_water2d`
-- `spec_ref.spec_version`: `0.4.5`
+- `spec_ref.spec_version`: `0.4.6`
 - `spec_ref.controlled_spec_path`: `spec/problem/dynamics/shallow_water/shallow_water2d/controlled_spec.md`
 
 ## 1. Test purpose
