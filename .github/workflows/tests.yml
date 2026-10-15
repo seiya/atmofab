@@ -127,6 +127,12 @@ jobs:
         # No retry, deliberately: `TODO.md` records an intermittent failure in this suite, and a
         # retry would hide on a second machine exactly what a second machine is here to expose.
         # `--junitxml` is what the guard below reads; it selects nothing.
+        env:
+          # A fact about the RUNNER, not a change to the launcher backend: Open MPI counts
+          # physical cores as slots, and this runner exposes 4 vCPUs on 2 cores, so the distributed
+          # runner rows' `mpirun -n 4` was refused with "There are not enough slots available"
+          # (measured on run 38821799136, the first run with MPI installed; issue #498).
+          OMPI_MCA_rmaps_base_oversubscribe: "1"
         run: >
           python3 -m pytest tools/tests/ -q -rs
           --junitxml="${{ runner.temp }}/pytest-report.xml"
