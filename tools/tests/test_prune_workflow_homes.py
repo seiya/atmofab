@@ -844,8 +844,8 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         """A census that could not look must not report "nothing found".
 
         Matching the patterns proves the patterns; it never proves the SEARCH ran. Outside
-        a git repository — a `git archive` snapshot, which is how reviewers on this branch
-        take a mutation baseline — `git grep` exits 128 and prints nothing, and the census
+        a git repository — a `git archive` snapshot, which is how reviewers took a mutation
+        baseline when this row was written — `git grep` exits 128 and prints nothing, and the census
         passed with a planted caller present until the return code was read.
 
         Driven by making the search fail rather than by asserting on the code path, so it

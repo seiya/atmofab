@@ -563,7 +563,9 @@ nor resets the two-consecutive-clean-security-rounds condition.**
 
   If you do start editing, **write the fact and the time into the next round's prompt**.
 - Always in the prompt: **the target is `git diff origin/main...HEAD`**, and **"do not modify the
-  checkout; run mutation tests against a `git archive` snapshot or a separate worktree"**
+  checkout; run mutation tests in a separate worktree"** — not a `git archive` export: since
+  issue #498 the suite's git-census rows in `test_prune_workflow_homes.py` FAIL outside a git
+  checkout rather than skip, so every mutant scored with that file there reads as killed
 - **A scratchpad per agent**: "**create your own subdirectory, named uniquely to you (add your
   PID); do not reuse or overwrite existing paths, and delete only the subdirectory you created,
   never the round's shared root**". Put your own working files in a subdirectory the same way.

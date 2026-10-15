@@ -61,7 +61,8 @@ python3 -m pytest tools/tests/ -q -p no:randomly
   particular depth under `$HOME`, so the pair was red wherever it did not (identical on `main`
   and on a branch). Issue #84 closed that on 2026-09-02 — the fixture builds both halves now —
   but a location-dependent row is a class, not one pair. **Compare the DELTA, not absolute
-  values**
+  values**. A `git archive` export is no longer a comparable tree at all: the git-census rows
+  in `test_prune_workflow_homes.py` fail outside a checkout since issue #498 — use a worktree
 - **This count rots. Re-measure before handing anything over.** Three measurements of the same
   suite: 5 failures on 2026-08-13; 2 failed + 1 skipped on 2026-08-18
   (`test_blocks_bash_only_tilde_prefixes` / `test_directory_options_anchor_like_cd`, both since
