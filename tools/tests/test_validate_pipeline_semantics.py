@@ -7549,9 +7549,7 @@ end module shallow_water2d_model
         #
         # Pinned as REFUSED rather than left undiscovered: the failure is fail-closed and visible,
         # and closing it would mean a fourth label mechanism — an error-guided per-statement
-        # repair — for a conjunction of two exotic features. Not a task: fail-closed, and 0 of
-        # the 723 on-disk models carry a label (2026-10-16). Record:
-        # https://github.com/seiya/atmofab/issues/181#issuecomment-5560466309
+        # repair — for a conjunction of two exotic features. Recorded in TODO.md instead.
         source = """module shallow_water2d_model
   implicit none
 100 contains
