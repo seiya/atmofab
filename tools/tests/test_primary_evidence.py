@@ -215,12 +215,12 @@ class GrammarAllowlistTest(unittest.TestCase):
             "sum": (1, 1), "mean": (1, 1), "min": (1, 8), "max": (1, 8), "abs": (1, 1),
             "sqrt": (1, 1), "exp": (1, 1), "log": (1, 1), "log2": (1, 1), "sin": (1, 1),
             "cos": (1, 1), "norm2": (1, 1), "maxabs": (1, 1), "roll": (2, 5), "ceil": (1, 1),
-            "floor": (1, 1), "atan2": (2, 2), "transpose": (1, 1), "flip": (2, 2),
+            "floor": (1, 1), "atan2": (2, 2), "transpose": (1, 3), "flip": (2, 2),
             "coarsen": (2, 2)})
         self.assertEqual(pe.CONSTANTS, {"pi": np.pi, "e": np.e})
         self.assertEqual(pe.GRAMMAR_VERSION, 5)
         self.assertEqual(pe.MAX_INPUT_RANK, 4)
-        for src in ("abs(1, 2)", "sum()", "roll(final.h)", "transpose(final.h, 1)",
+        for src in ("abs(1, 2)", "sum()", "roll(final.h)", "transpose(final.h, 1, 0, 1)",
                     "flip(final.h)", "flip(final.h, 0, 1)", "coarsen(final.h)",
                     "coarsen(final.h, 2, 2)"):
             with self.subTest(src=src), self.assertRaises(pe.PrimaryEvidenceError):
@@ -579,6 +579,10 @@ class EvaluationTest(unittest.TestCase):
         self.assertEqual(ev("transpose(final.h)").shape, (6, 4))
         np.testing.assert_array_equal(ev("transpose(final.u)"), u)
         np.testing.assert_array_equal(ev("transpose(final.c)"), np.transpose(c3, (2, 1, 0)))
+        np.testing.assert_array_equal(ev("transpose(final.c, 1, 2)"), np.transpose(c3, (0, 2, 1)))
+        np.testing.assert_array_equal(ev("transpose(final.c, 2, 0)"), np.transpose(c3, (2, 1, 0)))
+        np.testing.assert_array_equal(ev("transpose(final.h, 0, 1)"), h.T)
+        np.testing.assert_array_equal(ev("transpose(final.h, 1, 1)"), h)
         np.testing.assert_array_equal(ev("flip(final.h, 0)"), h[::-1, :])
         np.testing.assert_array_equal(ev("flip(final.h, 1)"), h[:, ::-1])
         np.testing.assert_array_equal(ev("flip(final.h, 2 - 1.0)"), h[:, ::-1])
@@ -598,6 +602,11 @@ class EvaluationTest(unittest.TestCase):
                          ("flip(final.h, 0.5)", "the axis 0.5 is not an integer"),
                          ("flip(final.h, final.u)", "must be a scalar"),
                          ("coarsen(final.h, 4)", "does not divide every extent of shape [4, 6]"),
+                         ("coarsen(final.u, 8)", "does not divide every extent of shape [4]"),
+                         ("transpose(final.h, 1)", "takes the array alone, or the array and the two"),
+                         ("transpose(final.c, 1, 3)", "transpose(): axis 3 is outside [0, 3)"),
+                         ("transpose(final.c, 0.5, 1)", "the axis 0.5 is not an integer"),
+                         ("transpose(final.c, final.u, 1)", "must be a scalar"),
                          ("coarsen(final.h, 0)", "the factor 0 is below 1"),
                          ("coarsen(final.h, 1.5)", "the factor 1.5 is not an integer"),
                          ("coarsen(final.h, final.u)", "must be a scalar"),
@@ -632,6 +641,26 @@ class EvaluationTest(unittest.TestCase):
         with self.assertRaisesRegex(pe.PrimaryEvidenceError, "do not pair"):
             pe.evaluate(pe.parse_expr("norm2(final.h - at('b').final.h)"), envs["t"],
                         at_envs=envs)
+
+    def test_a_stacked_state_axis_exchange_is_writable(self) -> None:
+        """Issue #513 round 1: a component suite captures `[ncomp, nx, ny]`; its axis exchange
+        exchanges the two spatial axes alone and the two momentum components on axis 0
+        (`S'(1) = S(1)^T, S'(2) = S(3)^T, S'(3) = S(2)^T`) — `transpose(a, 1, 2)` with
+        `roll(flip(., 0), 1, 0, 0)`. The full reversal `transpose(a)` does not pair."""
+        base = np.arange(1.0, 1.0 + 3 * 6 * 4).reshape(3, 6, 4)
+        moved = np.stack([base[0].T, base[2].T, base[1].T])
+        envs = {"b": pe.CaseEnv(case_id="b", initial=None, final={"S": base}, inputs={},
+                                coordinates={}),
+                "t": pe.CaseEnv(case_id="t", initial=None, final={"S": moved}, inputs={},
+                                coordinates={})}
+        src = "maxabs(final.S - roll(flip(transpose(at('b').final.S, 1, 2), 0), 1, 0, 0))"
+        self.assertEqual(float(pe.evaluate(pe.parse_expr(src), envs["t"], at_envs=envs)), 0.0)
+        # the component exchange is load-bearing: without it the pair does not hold
+        src = "maxabs(final.S - transpose(at('b').final.S, 1, 2))"
+        self.assertGreater(float(pe.evaluate(pe.parse_expr(src), envs["t"], at_envs=envs)), 0.0)
+        with self.assertRaisesRegex(pe.PrimaryEvidenceError, "do not pair"):
+            pe.evaluate(pe.parse_expr("maxabs(final.S - transpose(at('b').final.S))"),
+                        envs["t"], at_envs=envs)
 
     def test_atan2_is_the_quadrant_correct_elementwise_arctangent(self) -> None:
         """Grammar 4 (issue #327): `atan2(y, x)` keeps the quadrant `atan(y / x)` loses, pairs
@@ -1380,7 +1409,10 @@ class SchemaGateTest(unittest.TestCase):
                           ("maxabs(coarsen(final.h, final.h))",
                            "coarsen(): every argument after the first must be a scalar"),
                           ("transpose(final.s)", "transpose(): the first argument must be an array"),
-                          ("flip(final.s, 0)", "flip(): the first argument must be an array")):
+                          ("flip(final.s, 0)", "flip(): the first argument must be an array"),
+                          ("maxabs(transpose(final.h, 1))",
+                           "transpose(): takes the array alone, or the array and the two axes "
+                           "it exchanges")):
             with self.subTest(expr=expr):
                 self.assertEqual(self._v([{**HMIN, "expr": expr}]),
                                  [f"primary_predicates[0].expr: {msg}"])
@@ -1518,6 +1550,7 @@ class StaticRankTest(unittest.TestCase):
         "inputs.k", "inputs.a1", "inputs.a2 - final.h", "at('a').inputs.a1",
         "at('a').final.v", "comparand.final.h", "comparand.initial.s",
         "transpose(final.h)", "transpose(final.v)", "flip(final.h, 1)", "flip(final.v, 0)",
+        "transpose(final.h, 0, 1)",
         "coarsen(final.h, 2)", "coarsen(final.v, 2)", "norm2(final.h - flip(at('a').final.h, 0))",
         "sum(coarsen(final.h, inputs.k))",
     )
@@ -1542,6 +1575,7 @@ class StaticRankTest(unittest.TestCase):
                      "max(final.h, final.v)", "min(final.h, 0, final.v)",
                      "atan2(final.h, final.v)", "sum(final.h + final.v)",
                      "transpose(final.s)", "flip(final.s, 0)", "coarsen(final.t, 1)",
+                     "transpose(final.h, 1)", "transpose(final.h, final.h, 1)",
                      "flip(final.h, final.v)", "coarsen(final.h, final.h)",
                      "transpose(final.h) + final.v", "flip(final.h, 0) - final.v"):
             with self.subTest(expr=expr):

@@ -21861,8 +21861,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # that takes this bump. Round 3 (V4c-iii counted among the items with no deterministic
         # backstop): measured 98279, no bump. Issue #513 (grammar 5: the functions lines name
         # `transpose`, `flip`, `coarsen`): bumped 98400->98600; measured 98522 at the commit that
-        # takes this bump.
-        "docs/workflow/phases/phase_01_compile.md": 98600,
+        # takes this bump. Round 1 (`transpose(a, i, j)`; the operands line admits a state brought
+        # to this case's shape by `transpose` / `flip` / `coarsen`): bumped 98600->98800; measured
+        # 98784 at the commit that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 98800,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

@@ -103,9 +103,9 @@ error, so no evaluation escapes the per-predicate record.
 The Compile gate infers RANKS statically (`expr_rank`, issue #440) from the declared
 `shape_expr`s, the state's rank and each case's inputs, so an operand pair of unequal rank, a
 `roll` with the wrong shift count or a non-scalar shift, a `transpose` / `flip` / `coarsen` of
-a scalar or with a non-scalar axis or factor, and an array-valued `expr` are refused
-before any run — the first two with the message evaluation would raise, the last naming the
-rank where `_scalar` names the shape; the gate prefixes the location, names the case when the
+a scalar or with a non-scalar axis or factor, a `transpose` given one axis, and an
+array-valued `expr` are refused before any run — each but the last with the message
+evaluation would raise, the last naming the rank where `_scalar` names the shape; the gate prefixes the location, names the case when the
 refusal is not the same in every case, and adds the coordinate's rank to an operand-pair
 refusal of a predicate that names a coordinate. Extents are not declared numerically, so an extent
 mismatch stays an evaluation error.
@@ -165,14 +165,16 @@ COORDINATE_PLACEMENTS: frozenset[str] = frozenset({"cell_center"})
 #: name -> (min_args, max_args). `min` / `max` reduce with ONE argument and are elementwise
 #: with two or more. `roll` takes the array and one integer shift per axis, leading axes
 #: first. `atan2(y, x)` is elementwise, in `[-pi, pi]`. `transpose(a)` reverses the order of
-#: the array's axes; `flip(a, k)` reverses axis `k` (an integer scalar, leading axis `0`);
+#: the array's axes, and `transpose(a, i, j)` exchanges axes `i` and `j` alone (a stacked
+#: `[ncomp, nx, ny]` state is exchanged with `transpose(a, 1, 2)`); `flip(a, k)` reverses axis
+#: `k` (an integer scalar, leading axis `0`);
 #: `coarsen(a, f)` is the mean over each block of `f` cells along every axis (`f` an integer
 #: scalar `>= 1` dividing every extent). This table is the whole function vocabulary.
 FUNCTIONS: dict[str, tuple[int, int]] = {
     "sum": (1, 1), "mean": (1, 1), "min": (1, 8), "max": (1, 8), "abs": (1, 1),
     "sqrt": (1, 1), "exp": (1, 1), "log": (1, 1), "log2": (1, 1), "sin": (1, 1),
     "cos": (1, 1), "norm2": (1, 1), "maxabs": (1, 1), "roll": (2, 5), "ceil": (1, 1),
-    "floor": (1, 1), "atan2": (2, 2), "transpose": (1, 1), "flip": (2, 2), "coarsen": (2, 2),
+    "floor": (1, 1), "atan2": (2, 2), "transpose": (1, 3), "flip": (2, 2), "coarsen": (2, 2),
 }
 CONSTANTS: dict[str, float] = {"pi": math.pi, "e": math.e}
 #: Name roots an attribute chain may start from. `at` is a call, not a root.
@@ -885,13 +887,24 @@ def _reducible(name: str, value: Any) -> Any:
     return value
 
 
+#: The refusal of a `transpose` given one axis: it takes the array alone or with two axes.
+_TRANSPOSE_ARITY = "transpose(): takes the array alone, or the array and the two axes it exchanges"
+
+
 def _integer_scalar(name: str, what: str, value: Any) -> int:
-    if np.ndim(value) != 0:
-        raise PrimaryEvidenceError(f"{name}(): {what} must be a scalar")
+    """`value` as an int; the caller has refused a non-scalar already."""
     fv = float(value)
     if not fv.is_integer():
         raise PrimaryEvidenceError(f"{name}(): {what} {fv!r} is not an integer")
     return int(fv)
+
+
+def _axis(name: str, arr: np.ndarray, value: Any) -> int:
+    k = _integer_scalar(name, "the axis", value)
+    if not 0 <= k < arr.ndim:
+        raise PrimaryEvidenceError(
+            f"{name}(): axis {k} is outside [0, {arr.ndim}) for an array of rank {arr.ndim}")
+    return k
 
 
 def _array_first(name: str, args: list[Any]) -> Any:
@@ -904,13 +917,14 @@ def _array_first(name: str, args: list[Any]) -> Any:
         if np.ndim(extra) != 0:
             raise PrimaryEvidenceError(f"{name}(): every argument after the first must be a scalar")
     if name == "transpose":
-        return np.transpose(arr)
+        if len(args) == 1:
+            return np.transpose(arr)
+        if len(args) != 3:
+            raise PrimaryEvidenceError(_TRANSPOSE_ARITY)
+        i, j = (_axis(name, arr, a) for a in args[1:])
+        return np.swapaxes(arr, i, j)
     if name == "flip":
-        k = _integer_scalar(name, "the axis", args[1])
-        if not 0 <= k < arr.ndim:
-            raise PrimaryEvidenceError(
-                f"flip(): axis {k} is outside [0, {arr.ndim}) for an array of rank {arr.ndim}")
-        return np.flip(arr, axis=k)
+        return np.flip(arr, axis=_axis(name, arr, args[1]))
     f = _integer_scalar(name, "the factor", args[1])
     if f < 1:
         raise PrimaryEvidenceError(f"coarsen(): the factor {f} is below 1")
@@ -1360,9 +1374,9 @@ def expr_rank(node: ast.AST, env: RankEnv, binds: dict[str, int]) -> int:
     """The rank `_eval_node` would return for ``node``, inferred from declarations alone, or
     `PrimaryEvidenceError` with the message evaluation would raise for an operand pair of
     unequal rank, a `roll` with the wrong shift count or a non-scalar shift, a `transpose` /
-    `flip` / `coarsen` of a scalar or with a non-scalar second argument. Extents are not
-    inferred: an extent mismatch stays an evaluation error. ``node`` must have passed
-    `parse_expr` and name resolution (the gate ranks nothing it refused)."""
+    `flip` / `coarsen` of a scalar or with a non-scalar axis or factor, a `transpose` given one
+    axis. Extents are not inferred: an extent mismatch stays an evaluation error. ``node`` must
+    have passed `parse_expr` and name resolution (the gate ranks nothing it refused)."""
     if isinstance(node, ast.Expression):
         return expr_rank(node.body, env, binds)
     if isinstance(node, ast.Constant):
@@ -1415,6 +1429,8 @@ def expr_rank(node: ast.AST, env: RankEnv, binds: dict[str, int]) -> int:
         if any(r != 0 for r in ranks[1:]):
             raise PrimaryEvidenceError(
                 f"{name}(): every argument after the first must be a scalar")
+        if name == "transpose" and len(ranks) == 2:
+            raise PrimaryEvidenceError(_TRANSPOSE_ARITY)
         return ranks[0]
     # roll
     if len(ranks) - 1 != ranks[0]:
@@ -1518,9 +1534,9 @@ def validate_primary_predicate_schema(
     A predicate whose names all resolve is then ranked (`expr_rank`, issue #440): every bind
     in order and `expr`, refusing an operand pair of unequal rank (a coordinate has the
     state's rank), a `roll` shift count other than the array's rank or a non-scalar shift, a
-    `transpose` / `flip` / `coarsen` of a scalar or with a non-scalar second argument, and
-    an `expr` that is not a scalar. A name or bind violation on the predicate suppresses its
-    rank check, so one defect is reported once.
+    `transpose` / `flip` / `coarsen` of a scalar or with a non-scalar axis or factor, a
+    `transpose` given one axis, and an `expr` that is not a scalar. A name or bind violation
+    on the predicate suppresses its rank check, so one defect is reported once.
 
     Every parsed predicate must read this run's captured state (`predicate_reads_state`),
     and must still read it once the terms constant by form are pruned (`effective_names`,

@@ -218,8 +218,9 @@ io_contract:
   #   functions   sum, mean, min, max (one argument reduces; two to eight are elementwise), abs, sqrt, exp, log,
   #               log2, sin, cos, norm2 (sqrt of the sum of squares), maxabs, ceil, floor,
   #               atan2(y, x) (elementwise, in [-pi, pi]; grammar 4 — a discrete mode's phase),
-  #               roll(a, s0[, s1, ...]) (one INTEGER shift per axis, rank ≤ 4; a non-integer shift is an evaluation error)
-  #               transpose(a) (axes reversed), flip(a, k) (axis k reversed; k an INTEGER, 0 the leading axis),
+  #               roll(a, s0[, s1, ...]) (one INTEGER shift per axis, rank ≤ 4; a non-integer shift is an evaluation error),
+  #               transpose(a) (axes reversed) / transpose(a, i, j) (axes i and j exchanged: [ncomp, nx, ny] → [ncomp, ny, nx]
+  #               by transpose(a, 1, 2)), flip(a, k) (axis k reversed; k an INTEGER, 0 the leading axis),
   #               coarsen(a, f) (block mean over f cells along every axis; f an INTEGER ≥ 1 dividing every extent) — grammar 5
   #               — positional arguments only; the names are exactly the keys of `FUNCTIONS` in that module
   #   refused     a subscript or slice, a comparison, `and` / `or` / `not`, a conditional, a lambda, a
@@ -230,7 +231,8 @@ io_contract:
   #   operands    a scalar pairs with anything; two arrays pair only at equal rank with every extent equal or 1 on
   #               one side (a [nx] array never pairs with a [nx, ny] one, and the 32×32 state of one case never
   #               pairs with the 64×64 state of another — a cross-case comparison reduces each case to a scalar
-  #               first, or rolls a state of the SAME shape). A coordinate carries the state's shape, so a field
+  #               first, or brings the other case's state to this one's shape: roll it, transpose or flip it (a
+  #               symmetry pair), or coarsen a finer case's state by the extent ratio). A coordinate carries the state's shape, so a field
   #               built from one reduces over every cell; a reduction over a field with an extent-1 axis (a
   #               coordinate the host could not expand, because the captured arrays of the state's rank disagree
   #               on shape — or a state with an axis of extent 1) is refused until the field is paired with a state array

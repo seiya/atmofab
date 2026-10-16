@@ -669,8 +669,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     "compile-docs-15": "59442f590423e239156bd66efa011c18f76425b9cec7e77a72ce1250fadc2832",
     # compile-docs-16 (issue #513): the grammar block's function lines name `transpose`, `flip`
     # and `coarsen` (grammar 5). A bump: a leaf reading it may author a predicate the previous
-    # grammar refused.
-    "compile-docs-16": "5a19cbd45d4cc1c9a4cf1376a92bbd7245571c2fed0f8e9934f43db88379897b",
+    # grammar refused. Re-pinned in round 1 before shipping: `transpose(a, i, j)`, and the
+    # operands line admits a cross-case state brought to this case's shape by `transpose` /
+    # `flip` / `coarsen` (it had said only `roll`).
+    "compile-docs-16": "f7d9da58ef2178f8bfd5d95518cd99f6288d693d394ff624e8bf68534cab1124",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1495,8 +1497,10 @@ PINNED_VERDICT: dict[str, str] = {
     # verdict-10 (issue #513): grammar 5 — `transpose(a)`, `flip(a, k)` and `coarsen(a, f)` join
     # the function table (a symmetry pair reads its base through the axis exchange or a mirror;
     # a refinement family restricts its finest level by the block mean), and every record
-    # carries `grammar_version: 5`. A bump, as verdict-7 was for grammar 4.
-    "verdict-10": "8369473f991a6a2e9fa792b110a7fb76e4bf9bbf8a060a4d1d8987cb059f2c4f",
+    # carries `grammar_version: 5`. A bump, as verdict-7 was for grammar 4. Re-pinned in round 1
+    # before shipping (the version is new on this branch): `transpose(a, i, j)` exchanges two
+    # axes alone, so a stacked `[ncomp, nx, ny]` state's axis exchange is writable.
+    "verdict-10": "b02dc336e5417211ba91a86d10c35bb1cd90a617e594f142d174cf8607cf44c7",
 }
 
 
