@@ -21859,8 +21859,14 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # constant bounds as refused, unequal extents as what exposes the rest, and the fail ban as
         # the ABSENCE of a listed prototype): bumped 98200->98400; measured 98219 at the commit
         # that takes this bump. Round 3 (V4c-iii counted among the items with no deterministic
-        # backstop): measured 98279, no bump.
-        "docs/workflow/phases/phase_01_compile.md": 98400,
+        # backstop): measured 98279, no bump. Issue #513 (grammar 5: the functions lines name
+        # `transpose`, `flip`, `coarsen`): bumped 98400->98600; measured 98522 at the commit that
+        # takes this bump. Round 1 (`transpose(a, i, j)`; the operands line admits a state brought
+        # to this case's shape by `transpose` / `flip` / `coarsen`): bumped 98600->98800; measured
+        # 98784 at the commit that takes this bump. Round 3 (the errors line names an axis outside
+        # the rank and a non-dividing factor): bumped 98800->99000; measured 98917 at the commit
+        # that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 99000,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
