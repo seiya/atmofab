@@ -1589,6 +1589,9 @@ class PhysicsGateTests(unittest.TestCase):
                 f"  std::function<void()> dead = [&]() mutable -> void {body};\n"),
             "nested live lambda inside a dead one": (
                 f"  auto dead = [&]() {{ auto inner = [&]() {body}; inner(); }};\n"),
+            # `b` is named, but only inside the dead `a`: dead too, on the second pass.
+            "named only inside a dead lambda": (
+                f"  auto b = [&]() {body};\n  auto a = [&]() {{ b(); }};\n"),
         }.items():
             with self.subTest(label):
                 model, out = self._dead_lambda_gates(text)
@@ -1607,6 +1610,14 @@ class PhysicsGateTests(unittest.TestCase):
             "named again, never invoked": (f"  auto dead = [&]() {body};\n"
                                            "  (void)dead;\n"),
             "dead branch, no lambda": "  if (false) { u_new.data[0] = flux[0]; }\n",
+            # A member target can be invoked without its name being written again (`s` handed
+            # on), so it is not read as a binding.
+            # (`first` is written nowhere else, so only the member rule keeps it live.)
+            "member target": ("  std::pair<std::function<void()>, int> s;\n"
+                              f"  s.first = [&]() {body};\n  (void)s;\n"),
+            # No `;` right after the `}`: not a statement this reads, so not blanked.
+            "declarator list": (f"  auto dead = [&]() {body}, other = 0;\n"
+                                "  (void)other;\n"),
         }.items():
             with self.subTest(label):
                 self.assertEqual([], self._dead_lambda_gates(text)[1])
