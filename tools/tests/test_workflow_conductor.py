@@ -46,6 +46,7 @@ _FORTRAN_BUNDLE_FACTS = _bb_registry.capability_module(
     "language", _BB_PROFILE.toolchain["language"], "bundle_facts")
 from tools import orchestration_runtime as ort
 from tools import usage_reset
+from tools.tests import skip_probes
 from tools.tests.orchestration_fixtures import accept_any_certified_ir, certify_node
 from tools.tests.private_root_fixture import (
     isolated_homes_per_test_suite,
@@ -9696,9 +9697,6 @@ def _unallocatable_pid() -> int:
 
 _UNALLOCATABLE_PID = _unallocatable_pid()
 
-# `/proc` is what the parser reads; a host without it has no identity to parse.
-_HAS_PROC = Path("/proc/self/stat").exists()
-
 
 
 class ProcStatParsingTests(unittest.TestCase):
@@ -9762,7 +9760,6 @@ class ProcStatParsingTests(unittest.TestCase):
         self.assertEqual(len(twenty[twenty.rfind(")") + 1:].split()), 20)
         self.assertEqual(wc._parse_proc_stat(twenty), ("S", "777"))
 
-    @unittest.skipUnless(_HAS_PROC, "requires Linux /proc")
     def test_matches_the_real_proc_entry_for_this_process(self) -> None:
         # Guards against the crafted bodies above drifting from the real layout. The
         # expected pair is derived HERE, from the documented field offsets, rather than
@@ -11370,8 +11367,6 @@ class LeafSpawnTest(unittest.TestCase):
         assertion that fails the moment the identity breaks again."""
         import os as _os
 
-        if not Path("/proc/self/stat").exists():
-            self.skipTest("requires Linux /proc")
         signalled: list[tuple[int, int]] = []
 
         class _Leaf:
@@ -24549,7 +24544,7 @@ class CudaCppPhysicsHostFilesTest(unittest.TestCase):
             self.assertEqual(outcome.decision.reason, "generate_dependency_headers_failed")
 
 
-@unittest.skipUnless(shutil.which("nvcc"), "the CUDA compiler driver is not installed")
+@skip_probes.skip_unless_installed("cuda_compiler_driver")
 class CudaCppLintAttributionTest(unittest.TestCase):
     """Decision 10 of issue #289's R4-b PR-6 plan: the lint attribution needs no new rule for a
     host-rendered runner that includes the checks header and the harness header. Both headers are

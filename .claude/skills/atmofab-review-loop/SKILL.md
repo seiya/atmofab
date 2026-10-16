@@ -340,6 +340,10 @@ when a rule does not obviously apply:
     fixture. The check is one command — run the new classes under pytest and under
     `env -u <VAR> python3 -m unittest <dotted.path>` and diff the verdicts. The fix is to build
     the relationship in the fixture, not to unset the variable.
+    The conftest-guard witnesses (`test_suite_private_root_harness.py`, and the guard rows in
+    `test_suite_environment_isolation.py`, `test_run_workflow.py`, `test_orchestration_runtime.py`)
+    FAIL under plain `unittest` by design since issue #498 — they assert they run under pytest
+    rather than skip — so they are not the signal being diffed.
     **When the relationship is with the HOST rather than with a variable, the diff has to be over
     a FAMILY of environments, and the family needs every property the rows spell — not just the
     one that is red.** Issue #84's rows reasoned about `$HOME` and the checkout: a sweep over the
@@ -559,7 +563,12 @@ nor resets the two-consecutive-clean-security-rounds condition.**
 
   If you do start editing, **write the fact and the time into the next round's prompt**.
 - Always in the prompt: **the target is `git diff origin/main...HEAD`**, and **"do not modify the
-  checkout; run mutation tests against a `git archive` snapshot or a separate worktree"**
+  checkout; run mutation tests in a separate worktree"** — not a `git archive` export: rows that
+  call `git` FAIL outside a checkout, so every mutant scored with their files there reads as
+  killed. Measured at issue #498 (every `tools/tests/test_*.py` run in an export): six files —
+  `test_backend_boundary.py`, the three linter backends' test files, `test_hooks_dev_cli.py` (the
+  hook command runs `git rev-parse`), and, since #498 turned its skip into a failure,
+  `test_prune_workflow_homes.py`
 - **A scratchpad per agent**: "**create your own subdirectory, named uniquely to you (add your
   PID); do not reuse or overwrite existing paths, and delete only the subdirectory you created,
   never the round's shared root**". Put your own working files in a subdirectory the same way.

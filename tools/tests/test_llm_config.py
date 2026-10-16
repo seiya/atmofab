@@ -1545,8 +1545,8 @@ class MirrorTableDriftTests(unittest.TestCase):
             path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
             os.chmod(path, 0o000)
             try:
-                if os.access(path, os.R_OK):     # running as root: the mode does not apply
-                    self.skipTest("cannot make a file unreadable as this user")
+                self.assertFalse(os.access(path, os.R_OK), "running as root: file modes do not apply; "
+                                 "run the suite as an unprivileged user")
                 self.assertEqual(lc.config_sha256(path), "sha256:unreadable")
             finally:
                 os.chmod(path, 0o644)

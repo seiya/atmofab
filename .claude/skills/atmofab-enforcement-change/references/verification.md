@@ -61,7 +61,9 @@ python3 -m pytest tools/tests/ -q -p no:randomly
   particular depth under `$HOME`, so the pair was red wherever it did not (identical on `main`
   and on a branch). Issue #84 closed that on 2026-09-02 — the fixture builds both halves now —
   but a location-dependent row is a class, not one pair. **Compare the DELTA, not absolute
-  values**
+  values**. A `git archive` export is not a comparable tree at all: rows that call `git` fail
+  outside a checkout (six files at issue #498 — `atmofab-review-loop` `SKILL.md` names them) —
+  use a worktree
 - **This count rots. Re-measure before handing anything over.** Three measurements of the same
   suite: 5 failures on 2026-08-13; 2 failed + 1 skipped on 2026-08-18
   (`test_blocks_bash_only_tilde_prefixes` / `test_directory_options_anchor_like_cd`, both since
@@ -74,9 +76,12 @@ python3 -m pytest tools/tests/ -q -p no:randomly
   and one corrected my claim with its own measurement. Writing it down settles it. Conversely,
   **hand over a stale count and reviewers take it for the baseline and miss a real failure**
 - **Skips: measure, do not assume.** On 2026-08-19 the suite reported 4877 passed and **0
-  skipped**; every skip in `tools/tests/` is conditional on the host (gfortran, bwrap, `/proc` and
-  the rest of `_DECLARED_ENVIRONMENT_SKIPS` in
-  `tools/tests/test_skip_reasons_are_declared.py`), so what you see depends on the machine. **If a skip appears, find out which condition produced it** —
+  skipped**. Since issue #498 the only skips the report check
+  (`python3 -m tools.tests.skip_probes <report>`) accepts are the three probe skips in
+  `tools/tests/skip_probes.py` (the CUDA compiler driver, `claude`, `codex`), and only where the
+  dependency is absent; on the operator's host all three are installed, so the expected count is 0.
+  Any other skip is still REPORTED by the suite, which exits 0 — it is a defect, and only the
+  check refuses it. **If a skip appears, find out which condition produced it** —
   that is the reason to look, and it is the same reason whether the count is 0 or 3. An earlier
   version of this line claimed one permanent calibration skip and sent a reader hunting a test that
   does not exist.

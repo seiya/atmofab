@@ -29,6 +29,7 @@ from tools.backends.language.cuda_cpp import source as cpp_source
 from tools.backends.language.fortran import runner as ft_runner
 from tools.host_render import RenderError
 from tools.structured_signatures import load_structured_signatures
+from tools.tests import skip_probes
 from tools.tests import test_fortran_runner as ft_tests
 
 HARNESS = "harness_cpp_gpu"
@@ -597,7 +598,7 @@ def _nvcc_lint(directory: Path, sources: list[str]) -> subprocess.CompletedProce
                           capture_output=True, text=True, check=False)
 
 
-@unittest.skipUnless(NVCC, "the CUDA compiler driver is not installed")
+@skip_probes.skip_unless_installed("cuda_compiler_driver")
 class NvccSmokeTest(unittest.TestCase):
     """The rendered runner and checks header, the host-rendered harness header, a host-only
     harness stub and a checks stub: held to the declared lint rule set, then built and RUN (no

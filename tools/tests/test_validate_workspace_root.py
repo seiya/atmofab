@@ -1019,10 +1019,7 @@ class ValidateWorkspaceRootTests(unittest.TestCase):
             sneaky_dir = repo_root / "workspace" / "plans" / "node" / "src"
             sneaky_dir.mkdir(parents=True, exist_ok=True)
             sneaky = sneaky_dir / "sneaky.py"
-            try:
-                _os.symlink(tmp_target, sneaky)
-            except OSError:
-                self.skipTest("symlink not supported on this filesystem")
+            _os.symlink(tmp_target, sneaky)
 
             violations, _ = validate(repo_root=repo_root, workspace_root="workspace")
             self.assertTrue(
@@ -1059,10 +1056,7 @@ class ValidateWorkspaceRootTests(unittest.TestCase):
             tmp_dir = repo_root / "workspace" / "tmp" / arid
             tmp_dir.mkdir(parents=True, exist_ok=True)
             symlinked = tmp_dir / "symlinked.py"
-            try:
-                _os.symlink(external_target, symlinked)
-            except OSError:
-                self.skipTest("symlink not supported on this filesystem")
+            _os.symlink(external_target, symlinked)
 
             violations, _ = validate(repo_root=repo_root, workspace_root="workspace")
             self.assertTrue(

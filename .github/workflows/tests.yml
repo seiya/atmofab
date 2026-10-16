@@ -57,24 +57,27 @@ jobs:
         # two documents already carry. What witnesses this line instead is the suite it installs for:
         # `tools/tests/test_host_prerequisites.py` asserts the derived executables are on PATH at a
         # supported version, and each linter backend's tests FAIL rather than skip when their tool
-        # is absent (`docs/DEVELOPMENT.md` §Fresh-machine setup step 6 says why).
+        # is absent (`docs/DEVELOPMENT.md` §Fresh-machine setup step 6 says why). MPI is here
+        # because the suite's MPI rows fail without it (issue #498): the only rows that still skip
+        # on this runner are the ones `tools/tests/skip_probes.py` exempts.
         run: |
           sudo apt-get update
           sudo apt-get install -y \
             gfortran make \
             cppcheck \
             jq \
-            bubblewrap
+            bubblewrap \
+            libopenmpi-dev openmpi-bin
 
       - name: Allow unprivileged user namespaces
         # Measured on this workflow's first run, which used `ubuntu-latest` (24.04, whose AppArmor
         # profile restricts unprivileged user namespaces by default): the sandbox tests reported
-        # ten declared skips ("bwrap / user namespaces not available") and the execution-platform
+        # ten skips ("bwrap / user namespaces not available") and the execution-platform
         # probe's own `sandbox_bwrap_*` checks failed, which took the aggregate preflight status to
         # `fail` and with it two tests whose subject is a DIFFERENT check. Setting it took, and
         # both went away together. Kept after the move to 22.04, which may not need it: the step
         # is one line, `|| true` makes it inert where the knob is absent, and removing it would
-        # make the next image change silently reintroduce ten skips.
+        # make the next image change reintroduce those rows — as failures now, not skips (#498).
         #
         # Lifting the restriction rather than accepting the skips, because a skipped sandbox test
         # is the one an operator never sees: `docs/BWRAP_ENABLEMENT.md` is the requirement, the
@@ -101,7 +104,7 @@ jobs:
         run: |
           which python3 && python3 --version
           pip freeze
-          for tool in fortitude ruff cppcheck gfortran make bwrap; do
+          for tool in fortitude ruff cppcheck gfortran make bwrap mpirun; do
             "$tool" --version 2>&1 | head -1 || true
           done
 
@@ -118,12 +121,20 @@ jobs:
           echo "a pristine configuration collects $count tests"
 
       - name: Run the suite
-        # `-rs` prints the reason for every skip. On this repository that is not diagnostics but
-        # the point: `tools/tests/test_skip_reasons_are_declared.py` requires every skip reason to
-        # be declared, and a skip that fires only on a runner is the one an operator never sees.
+        # `-rs` prints the reason for every skip, and the guard step's second command refuses any
+        # skip that is not a probe's: a skip that fires only on a runner is the one an operator
+        # never sees.
         # No retry, deliberately: `TODO.md` records an intermittent failure in this suite, and a
         # retry would hide on a second machine exactly what a second machine is here to expose.
         # `--junitxml` is what the guard below reads; it selects nothing.
+        env:
+          # A fact about the RUNNER, not a change to the launcher backend: the distributed runner
+          # rows' `mpirun -n 4` (run only where `sched_getaffinity` reports at least 4 CPUs) was
+          # refused with "There are not enough slots available" on run 38821799136, the first
+          # run with MPI installed (issue #498). Open MPI counts physical cores as slots, so the
+          # runner has fewer cores than CPUs — inferred from that refusal; the log prints no
+          # core count.
+          OMPI_MCA_rmaps_base_oversubscribe: "1"
         run: >
           python3 -m pytest tools/tests/ -q -rs
           --junitxml="${{ runner.temp }}/pytest-report.xml"
@@ -143,13 +154,13 @@ jobs:
         #
         # WHAT THIS STILL CANNOT SEE, said rather than implied: a `conftest.py` edit, because
         # both the reference and the run go through it; a retry loop, because the report is the
-        # last invocation's; and a SKIP, because a skipped test emits a `<testcase>` and so is
-        # counted on BOTH sides — anything that turns a test into a declared skip on the runner
-        # passes this guard. The `sysctl` step above is NOT an instance of that, and the mistake
-        # is worth naming because it is the obvious one to reach for: what its own comment
-        # records is that losing it produced ten skips AND failed two tests, and the `if failures`
-        # arm below reddens the job on those. An instance would be a skip with no failure beside
-        # it, and this job has no measured one.
+        # last invocation's. A SKIP is counted on BOTH sides, because a skipped test emits a
+        # `<testcase>`, so the heredoc cannot see one — which is why the step's second command
+        # reads the same report and refuses every `<skipped>` that is not a probe-reason skip for
+        # a dependency absent on this runner (`tools/tests/skip_probes.py`, issue #498). The
+        # `sysctl` step above records that losing it produced ten skips AND failed two tests;
+        # since #498 those ten rows error in `setUpClass` instead of skipping, so the heredoc's
+        # failure count is what reddens the job on them, not this second command.
         #
         # AND NOTHING ELSE READS THIS FILE. `tools/tests/test_ci_workflow.py` used to check the
         # decisions here — the suite command, the guard step's existence and `if: always()`, its
@@ -176,7 +187,10 @@ jobs:
             echo "::error::the suite produced no report — it did not run" >&2
             exit 1
           fi
-          python3 - "$report" "${{ steps.reference.outputs.count }}" <<'GUARD'
+          # Both commands run whatever the first says, so a red run still prints which rows
+          # did not run; the step fails if either does.
+          status=0
+          python3 - "$report" "${{ steps.reference.outputs.count }}" <<'GUARD' || status=1
           import sys, xml.etree.ElementTree as ET
           report, expected = sys.argv[1], int(sys.argv[2])
           suite = ET.parse(report).getroot()
@@ -203,3 +217,5 @@ jobs:
                   f"the suite reported {failures} failures or errors, and the job reached this "
                   "step anyway — the suite step is not able to fail the run.")
           GUARD
+          python3 -m tools.tests.skip_probes "$report" || status=1
+          exit "$status"

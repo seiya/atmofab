@@ -225,11 +225,8 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         import, so which of them are present depends on what has been collected. Running
         this file alone shows one; running the whole suite shows both.
         """
-        if "pytest" not in sys.modules:
-            # The subject is a pytest hook. Under plain `unittest` there is no conftest
-            # and nothing to observe; asserting anyway would fail for the absence of the
-            # harness rather than for a defect.
-            self.skipTest("the suite's environment guard is not installed")
+        self.assertIn("pytest", sys.modules,
+                      "the suite's environment guard is a conftest hook: run the suite under pytest")
         # Under pytest the flag is an ASSERTION, not a skip condition. Skipping on it
         # instead let "the hook never set CONFIGURED" pass as "not applicable" — measured,
         # that mutant survived a sweep by turning this test into a skip. Read from the
@@ -932,8 +929,7 @@ class NoShadowedTestMethodTests(unittest.TestCase):
 
     NOT repository-wide, since issue #183 moved the review instruments' tests to
     `.claude/skills/<skill>/scripts/tests/` (one instrument since issue #445). They are outside
-    this scan, and outside
-    `test_skip_reasons_are_declared.py`'s corpus for the same reason. Deliberately not widened:
+    this scan for that reason. Deliberately not widened:
     the whole point of that move is that the default run stops reading `.claude/`, and a glob
     added here would put it back. Each skill states the command that runs its own tests.
     """

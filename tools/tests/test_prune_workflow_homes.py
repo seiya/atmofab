@@ -761,13 +761,13 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         """
         import subprocess
         repo_root = Path(__file__).resolve().parents[2]
-        if not (repo_root / ".git").exists():
-            # NOT a vacuous pass — a declared skip. The census's subject is this
-            # repository, and a tree extracted from `git archive` (how a mutation
-            # baseline is taken here) is not one. Failing there would redden every
-            # snapshot baseline, which is a different way to make the census useless.
-            # `git` failing INSIDE a repository is a different thing and fails below.
-            self.skipTest("not a git checkout")
+        # The census's subject is this repository; a tree that is not a checkout (a `git
+        # archive` export) is not a place this suite runs — the mutation script works in
+        # `git worktree`s, where `.git` is a file and exists. `git` failing INSIDE a
+        # repository is a different thing and fails below.
+        self.assertTrue((repo_root / ".git").exists(),
+                        "the census's subject is this repository: run the suite in a git "
+                        "checkout or worktree, not an exported tree")
         offenders: dict[str, list[str]] = {}
         for pattern in self.CALLER_PATTERNS:
             proc = subprocess.run(
@@ -844,17 +844,17 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         """A census that could not look must not report "nothing found".
 
         Matching the patterns proves the patterns; it never proves the SEARCH ran. Outside
-        a git repository — a `git archive` snapshot, which is how reviewers on this branch
-        take a mutation baseline — `git grep` exits 128 and prints nothing, and the census
+        a git repository — a `git archive` snapshot, which is how reviewers took a mutation
+        baseline when this row was written — `git grep` exits 128 and prints nothing, and the census
         passed with a planted caller present until the return code was read.
 
         Driven by making the search fail rather than by asserting on the code path, so it
         also covers a `git` that is missing or refuses for some other reason.
 
         The OTHER shape — a tree that is not a checkout at all, which is what a `git
-        archive` snapshot is — takes a declared skip instead, because the census's subject
-        is this repository and failing there would redden every snapshot baseline. That
-        distinction is what `.git` existing decides.
+        archive` export is — fails earlier and says so, because the census's subject is this
+        repository (#498: a test does not skip). That distinction is what `.git` existing
+        decides.
         """
         import subprocess
         real_run = subprocess.run

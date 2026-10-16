@@ -12640,10 +12640,7 @@ class RuntimeRoBindDnsTests(unittest.TestCase):
         paths = _runtime_ro_bind_paths()
         self.assertIn("/etc", paths)
         resolv = Path("/etc/resolv.conf")
-        try:
-            real = resolv.resolve()
-        except OSError:
-            self.skipTest("/etc/resolv.conf not resolvable on this host")
+        real = resolv.resolve()
         if real != resolv and real.exists() and not real.is_relative_to(Path("/etc")):
             self.assertIn(
                 str(real), paths,
@@ -13310,9 +13307,10 @@ class SignatureDriftCanaryTests(unittest.TestCase):
     # operator's `workspace/`. It is a valuable comparison and it is not a test: `workspace/` is
     # gitignored machine-local runtime state, absent from every fresh clone, so the row failed in any
     # clean checkout — it took down the round-0 mutation sweep's own baseline, since the sweep runs in
-    # worktrees. Making it `skipTest` instead is the recorded WRONG answer in this repository:
-    # `tools/tests/test_skip_reasons_are_declared.py` exists because a calibration row pinned inside
-    # `workspace/` skipped silently for weeks while its comment called itself the real-shape line.
+    # worktrees. Making it `skipTest` instead is the recorded WRONG answer in this repository: a
+    # calibration row pinned inside `workspace/` skipped silently for weeks while its comment called
+    # itself the real-shape line, and the report check (`tools/tests/skip_probes.py`) now refuses
+    # any skip that is not a probe's.
     #
     # So the comparison stays a MEASUREMENT, taken once and recorded where a measurement belongs (the
     # `spec:` commit's message and `TODO.md`): at `2dd73cd`, every component's §5.1 agreed with its
@@ -15787,10 +15785,7 @@ class RecordTimeoutTests(unittest.TestCase):
             if link_path.is_dir() and not link_path.is_symlink():
                 import shutil as _sh
                 _sh.rmtree(link_path)
-            try:
-                os.symlink(external, link_path)
-            except OSError:
-                self.skipTest("symlink not supported on this filesystem")
+            os.symlink(external, link_path)
 
             self._deactivate(repo_root, arid)
             record_timeout(
@@ -26369,14 +26364,10 @@ class DurableWorkflowHomesTests(unittest.TestCase):
         """
         import tools.orchestration_runtime as runtime
         from tools.operator_private_root import operator_secret_root
-        if not getattr(runtime._workflow_homes_root,
-                       "_atmofab_private_root_guard_installed", False):
-            # The subject of this test is a pytest fixture. Run under plain `unittest`
-            # there is no guard to observe, and asserting anyway would fail for the
-            # absence of the harness rather than for a defect. ONE marker spelling for
-            # all three roots (issue #133), so a witness cannot ask about a name that
-            # exists only on the resolver it happens to wrap.
-            self.skipTest("the suite's operator-private-root guard is not installed")
+        self.assertTrue(
+            getattr(runtime._workflow_homes_root, "_atmofab_private_root_guard_installed", False),
+            "the suite's operator-private-root guard is a conftest fixture and is not "
+            "installed: run the suite under pytest")
         real_root = operator_secret_root() / "homes"
         existed_before = real_root.exists()
         env = {k: v for k, v in os.environ.items()
@@ -27678,7 +27669,6 @@ class BackendRuntimeBindPathsTests(unittest.TestCase):
         self.assertEqual(self._ro_for("cli-sim", None, bindir), [str(bindir)])
 
 
-@unittest.skipUnless(_bwrap_usable(), "bwrap / user namespaces not available")
 class LeafEnvLiveBwrapWitnessTests(unittest.TestCase):
     """The one measurement that is not an argv assertion: RUN the rendered command and
     read the child's actual environment.
@@ -27690,6 +27680,13 @@ class LeafEnvLiveBwrapWitnessTests(unittest.TestCase):
     command for `/usr/bin/env`, runs it under a POISONED parent environment, and compares
     the child's real environment against `profile["env"]`.
     """
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not _bwrap_usable():
+            raise AssertionError(
+                "bwrap is absent or unprivileged user namespaces are disabled; see "
+                "docs/BWRAP_ENABLEMENT.md (CI lifts kernel.apparmor_restrict_unprivileged_userns)")
 
     def test_the_child_env_is_the_profile_env_and_nothing_of_the_parents(self) -> None:
         d = tempfile.mkdtemp()
