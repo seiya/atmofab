@@ -1066,11 +1066,12 @@ def _validate_problem_model_dependency_dataflow(
     `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model, latent only because of the
     `problem/` guard below. Closing (c) needs a flow-sensitive pass: each dependency
     operation's per-argument intents from its published interface, and reaching-definitions
-    over statement order. It is not scheduled; `Generate.verify` G5 owns `required_sources`
-    reachability. The gfortran debug dump is not that pass's input: measured 2026-08-12,
-    `-fdump-fortran-original`'s `code:` section differs between gfortran 12.4.0 and 14.2.0 on 27
-    of 319 analysable files, while its `procedure name =` / `Formal arglist:` / `DUMMY(...)`
-    lines were identical on all 4328 lines — enough for dummy intents, not for dataflow.
+    over statement order (`TODO.md` carries it). `Generate.verify` G5 owns `required_sources`
+    reachability meanwhile. The gfortran debug dump is not that pass's input: measured
+    2026-08-12, `-fdump-fortran-original` differs between gfortran 12.4.0 and 14.2.0 on 27 of
+    319 analysable files overall, the `code:` section included, while its `procedure name =` /
+    `Formal arglist:` / `DUMMY(...)` lines were identical on all 4328 lines — enough for dummy
+    intents, not for dataflow.
 
     Residue (c) above is the one with a named instance: the
     `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model yields
