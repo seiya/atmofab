@@ -2,21 +2,21 @@
 
 ## 0. Meta information
 - `spec_id`: `dynamics_shallow_water_source_2d_coriolis`
-- `spec_version`: `0.1.1`
+- `spec_version`: `0.2.0`
 - `status`: `controlled_draft`
 - `spec_kind`: `component`
 - `domain`: `dynamics`
 - `family`: `shallow_water`
 
 ## 1. Responsibility and scope
-This `component` is responsible only for evaluating the Coriolis source term of the 2D shallow water equation on the interior cells of a grid, from a conserved-variable field and a Coriolis parameter given per interior row. It does not integrate in time, does not apply a boundary condition, and does not define the Coriolis parameter: the profile of `f` over `y` (an `f`-plane, a `β`-plane, or any other row-wise profile) is the vocabulary of the `problem` that evaluates it, and this `component` receives only its values.
+This `component` is responsible only for evaluating the Coriolis source term of the 2D shallow water equation on the interior cells of a grid, from a conserved-variable field and a Coriolis parameter given per interior cell. It does not integrate in time, does not apply a boundary condition, and does not define the Coriolis parameter: the profile of `f` over the grid (an `f`-plane, a `β`-plane varying along `y` or along `x`, or any other profile) is the vocabulary of the `problem` that evaluates it, and this `component` receives only its values. The parameter is given per cell rather than per row so that the operation holds no orientation: a `problem` whose `β`-plane varies along `x` (a channel whose along-channel axis is `y`, [issue #514](https://github.com/seiya/atmofab/issues/514)) passes its profile as it passes one varying along `y`.
 
 ## 2. input/output contract
-The inputs are the extents `ncomp`, `nx`, `ny`, the Coriolis parameter `f` (`ny` values, one per interior row, at the cell centre, unit `1/s`), and the conserved-variable field `U` (`ncomp` × `nx` × `ny`, ordered `[h, hu, hv]` along the first extent, interior cells only, no ghost cells). The outputs are the source field `S` (`ncomp` × `nx` × `ny`, aligned with `U`, unit of the `hu` / `hv` components `m2/s2` and of the `h` component `m/s`) and the input guard `guard_pass` (§4).
+The inputs are the extents `ncomp`, `nx`, `ny`, the Coriolis parameter `f` (`nx` × `ny`, one value per interior cell, at the cell centre, unit `1/s`), and the conserved-variable field `U` (`ncomp` × `nx` × `ny`, ordered `[h, hu, hv]` along the first extent, interior cells only, no ghost cells). The outputs are the source field `S` (`ncomp` × `nx` × `ny`, aligned with `U`, unit of the `hu` / `hv` components `m2/s2` and of the `h` component `m/s`) and the input guard `guard_pass` (§4).
 
 **Published signature.** §5.1 pins the operation's full argument list, and this paragraph describes it: a reader must be able to check the two against each other. The published arguments are exactly those seven, in that order: `ncomp`, `nx`, `ny`, `f`, `U`, `S`, `guard_pass`. `U` is an input and `S` is a separate output array, so the operation never reads a cell it has written.
 
-`f` has the interior extent `ny` and no ghost cells: the source is evaluated on interior cells only, so a ghost value of `f` would be a value nothing reads. The sign convention is that of a `y` axis pointing north: `f>0` in the northern hemisphere, and the source turns an eastward (`+x`) velocity toward the south (`-y`).
+`f` has the interior extents `nx` × `ny` and no ghost cells: the source is evaluated on interior cells only, so a ghost value of `f` would be a value nothing reads. The sign convention is that of a right-handed `(x, y)` plane seen from above: `f>0` is a counter-clockwise rotation of the frame (the northern hemisphere when `y` points north), and the source then turns a `+x` velocity toward `-y` and a `+y` velocity toward `+x`. The sign of `f` is the caller's: a reflection of the plane or an exchange of its axes reverses the sense of rotation, and the caller passes `-f` for the transformed frame.
 
 Units: `h` is in `m`, `hu` and `hv` are in `m2/s`, `f` is in `1/s`.
 
@@ -24,15 +24,15 @@ Units: `h` is in `m`, `hu` and `hv` are in `m2/s`, `f` is in `1/s`.
 The published `operation` is `dynamics_shallow_water_source_2d_coriolis__apply`. For every interior cell $(i,j)$, $i=1..nx$, $j=1..ny$, the source is
 $$
 S_{1,i,j}=0,\qquad
-S_{2,i,j}=f_j\,(hv)_{i,j},\qquad
-S_{3,i,j}=-f_j\,(hu)_{i,j}
+S_{2,i,j}=f_{i,j}\,(hv)_{i,j},\qquad
+S_{3,i,j}=-f_{i,j}\,(hu)_{i,j}
 $$
 which is the discrete form of the continuous Coriolis source $S=[0,\ f\,hv,\ -f\,hu]^T$ of the momentum equations
 $$
 \frac{\partial (hu)}{\partial t}+\cdots=f\,hv,\qquad
 \frac{\partial (hv)}{\partial t}+\cdots=-f\,hu
 $$
-The evaluation is pointwise: $S_{\cdot,i,j}$ depends on $U_{\cdot,i,j}$ and $f_j$ only. The source does no work on the flow: $(hu)\,S_2+(hv)\,S_3=0$ at every cell, identically.
+The evaluation is pointwise: $S_{\cdot,i,j}$ depends on $U_{\cdot,i,j}$ and $f_{i,j}$ only. The source does no work on the flow: $(hu)\,S_2+(hv)\,S_3=0$ at every cell, identically.
 
 ## 4. Failure conditions and constraints
 Treat `ncomp/=3`, `nx<1`, and `ny<1` as invalid input and an error: `guard_pass` is false and `S` is not a valid source field. `h<=0` is not checked here: `h` does not enter the source, and the dry-state guard belongs to the flux `component` and to the `problem`.
@@ -72,12 +72,13 @@ procedures:
     spec:
       type: integer
   - name: f
-    rank: 1
+    rank: 2
     intent: in
     spec:
       type: real
       kind: dp
     dims:
+    - nx
     - ny
   - name: U
     rank: 3
@@ -107,13 +108,13 @@ procedures:
 ```
 
 ## 6. Prohibitions
-Forbid evaluating `f` from a profile or parameters inside this `component` (it receives values only). Forbid an implicit or semi-implicit treatment of the Coriolis term (a rotation of the velocity by the time step): the operation returns the explicit source at the supplied state, and the time treatment is the time-update `component`'s. Forbid a source contribution to the `h` component.
+Forbid evaluating `f` from a profile or parameters inside this `component` (it receives values only), and forbid reading it as a function of one index (one value per row or per column): it is received per cell, and the cell's own value is the one the source uses. Forbid an implicit or semi-implicit treatment of the Coriolis term (a rotation of the velocity by the time step): the operation returns the explicit source at the supplied state, and the time treatment is the time-update `component`'s. Forbid a source contribution to the `h` component.
 
 ## 7. Traceability
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_coriolis/tests.md`, with `test_profile_version` of `0.2.0`.
+The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_coriolis/tests.md`, with `test_profile_version` of `0.3.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. The operation is linear in `U` and holds no non-differentiable operation.

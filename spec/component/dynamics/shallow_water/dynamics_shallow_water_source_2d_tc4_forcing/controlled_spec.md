@@ -2,48 +2,57 @@
 
 ## 0. Meta information
 - `spec_id`: `dynamics_shallow_water_source_2d_tc4_forcing`
-- `spec_version`: `0.1.1`
+- `spec_version`: `0.2.0`
 - `status`: `controlled_draft`
 - `spec_kind`: `component`
 - `domain`: `dynamics`
 - `family`: `shallow_water`
 
 ## 1. Responsibility and scope
-This `component` is responsible only for evaluating the external forcing that makes one prescribed flow — a geostrophic background given per interior row plus a translating Gaussian low — an exact solution of the forced 2D shallow water equations in conservation form, at the interior cell centres and at one time. The prescribed flow is the channel form of the forced translating low of Williamson et al. (1992) §4 (test case 4). The forcing is a function of position and time and does not read the state of the run that applies it. It does not integrate in time, does not apply a boundary condition, does not evaluate the Coriolis source, and does not define the background: the profile of the background over `y` is the vocabulary of the `problem` that evaluates it, and this `component` receives only its values.
+This `component` is responsible only for evaluating the external forcing that makes one prescribed flow — a geostrophic background that varies across the channel and is uniform along it, plus a Gaussian low translating along the channel — an exact solution of the forced 2D shallow water equations in conservation form, at the interior cell centres and at one time. The prescribed flow is the channel form of the forced translating low of Williamson et al. (1992) §4 (test case 4). Which array axis is the along-channel (periodic) axis is an input of the operation (`along_axis`), not a decision this `component` makes: an `x`-channel passes `1`, and a channel whose along-channel axis is `y` passes `2` ([issue #514](https://github.com/seiya/atmofab/issues/514)). The forcing is a function of position and time and does not read the state of the run that applies it. It does not integrate in time, does not apply a boundary condition, does not evaluate the Coriolis source, and does not define the background: the profile of the background across the channel is the vocabulary of the `problem` that evaluates it, and this `component` receives only its values.
 
 ## 2. input/output contract
-The inputs are the extents `ncomp`, `nx`, `ny`, the interior cell-centre coordinates `x` (`nx` values, unit `m`) and `y` (`ny` values, unit `m`), the time `t` (unit `s`), the background given per interior row — the Coriolis parameter `f` (`ny` values, unit `1/s`), its derivative `dfdy` (`ny` values, unit `1/(m s)`), the background velocity `ubar` (`ny` values, unit `m/s`), its derivative `dubar` (`ny` values, unit `1/s`), and the background depth `hbar` (`ny` values, unit `m`) — the gravitational acceleration `g` (unit `m/s2`), the channel length `L_x` (unit `m`), and the four parameters of the low: its streamfunction amplitude `psi0` (unit `m2/s`), its radius `R_low` (unit `m`), its translation speed `c_tr` (unit `m/s`), and its centre at `t=0`, `x_c0` and `y_c` (unit `m`). The outputs are the forcing field `S` (`ncomp` × `nx` × `ny`, ordered `[h, hu, hv]` along the first extent, interior cells only, no ghost cells; unit of the `h` component `m/s`, of the `hu` and `hv` components `m2/s2`) and the input guard `guard_pass` (§4).
+The inputs are the extents `ncomp`, `nx`, `ny`, the orientation `along_axis`, the interior cell-centre coordinates `x` (`nx` values, unit `m`) and `y` (`ny` values, unit `m`), the time `t` (unit `s`), the background given per interior cell (`nx` × `ny` each) — the Coriolis parameter `f` (unit `1/s`), its derivative across the channel `dfdr` (unit `1/(m s)`), the background velocity along the channel `ubar` (unit `m/s`), its derivative across the channel `dubar` (unit `1/s`), and the background depth `hbar` (unit `m`) — the gravitational acceleration `g` (unit `m/s2`), the channel length along the channel `L_along` (unit `m`), and the five parameters of the low: its streamfunction amplitude `psi0` (unit `m2/s`), its radius `R_low` (unit `m`), its translation speed along the channel `c_tr` (unit `m/s`, signed), and its centre at `t=0`, the along-channel coordinate `s_c0` and the cross-channel coordinate `r_c` (unit `m`). The outputs are the forcing field `S` (`ncomp` × `nx` × `ny`, ordered `[h, hu, hv]` along the first extent, interior cells only, no ghost cells; unit of the `h` component `m/s`, of the `hu` and `hv` components `m2/s2`) and the input guard `guard_pass` (§4).
 
-**Published signature.** §5.1 pins the operation's full argument list, and this paragraph describes it: a reader must be able to check the two against each other. The published arguments are exactly those twenty, in that order: `ncomp`, `nx`, `ny`, `x`, `y`, `t`, `f`, `dfdy`, `ubar`, `dubar`, `hbar`, `g`, `L_x`, `psi0`, `R_low`, `c_tr`, `x_c0`, `y_c`, `S`, `guard_pass`. The extents `ncomp`, `nx`, `ny` and the row-wise Coriolis parameter `f` are the vocabulary of `dynamics_shallow_water_source_2d_coriolis`, whose source is added to this forcing by the caller. `S` is the only array the operation writes, and it is not among its inputs, so the operation never reads a cell it has written.
+`along_axis` is an integer scalar. With `along_axis = 1` the channel runs along `x`: the along-channel coordinate of the cell $(i,j)$ is $s=x_i$ and its cross-channel coordinate is $r=y_j$, and the background velocity is $(\bar u, 0)$. With `along_axis = 2` the channel runs along `y`: $s=y_j$, $r=x_i$, and the background velocity is $(0, \bar u)$. `ubar` is the background velocity component along the channel in either orientation, and `dfdr` and `dubar` are derivatives with respect to $r$.
 
-The row-wise inputs have the interior extent `ny` and no ghost cells, as `x` has the interior extent `nx`: the forcing is evaluated on interior cells only, so a ghost value would be a value nothing reads. The sign convention of `f` is that of a `y` axis pointing north, the convention of `dynamics_shallow_water_source_2d_coriolis` §2.
+**Published signature.** §5.1 pins the operation's full argument list, and this paragraph describes it: a reader must be able to check the two against each other. The published arguments are exactly those twenty-one, in that order: `ncomp`, `nx`, `ny`, `along_axis`, `x`, `y`, `t`, `f`, `dfdr`, `ubar`, `dubar`, `hbar`, `g`, `L_along`, `psi0`, `R_low`, `c_tr`, `s_c0`, `r_c`, `S`, `guard_pass`. The extents `ncomp`, `nx`, `ny` and the per-cell Coriolis parameter `f` are the vocabulary of `dynamics_shallow_water_source_2d_coriolis`, whose source is added to this forcing by the caller. `S` is the only array the operation writes, and it is not among its inputs, so the operation never reads a cell it has written.
 
-**Precondition on the background.** The background is in geostrophic balance: $g\,\partial_y\bar h=-f\,\bar u$ at every interior row. The operation evaluates $\partial_y\bar h$ through this relation and does not difference `hbar`, so `hbar` enters only as the depth of the background state. A background that does not satisfy the relation is outside this contract: the operation then returns a forcing for the balanced background rather than for the supplied one, and nothing in the returned values reports the disagreement. `dfdy` is the derivative of the same profile `f` is sampled from, and `dubar` the derivative of the profile `ubar` is sampled from; both are supplied because the operation evaluates them at the cell centre and differences no array.
+The background arguments have the interior extents `nx` × `ny` and no ghost cells, as `x` and `y` have the interior extents: the forcing is evaluated on interior cells only, so a ghost value would be a value nothing reads. They are given per cell rather than per row or per column so that one argument list serves both orientations; the operation reads each cell's own values. The sign convention of `f` is that of `dynamics_shallow_water_source_2d_coriolis` §2 (`f>0` is a counter-clockwise rotation of the right-handed `(x, y)` plane).
 
-**Known property at a wall.** The low is a Gaussian in the distance from its centre and is not zero anywhere. At a channel wall a distance $L_y/2$ from the centre row `y_c`, the streamfunction of the low is $\psi_0 e^{-(L_y/2)^2/R_{low}^2}$, which is $1.1\times10^{-7}\,\psi_0$ at $L_y/2=4R_{low}$; the depth and the wall-normal velocity the low contributes there are of that order — the wall-normal velocity is $1.1\times10^{-7}$ of its own maximum — while the along-wall velocity is $1.0\times10^{-6}$ of its own maximum, one order larger, because it carries the factor $2(y-y_c)/R_{low}^2$ that is largest at the wall. The prescribed flow is therefore an exact solution of the forced equations in the interior and is not a solution of a wall condition that sets the normal velocity to zero: the residual of such a wall condition is the wall value of the low, and a `problem` adopting this `component` states its own wall treatment and the size of that residual.
+**Precondition on the background.** The background is uniform along the channel — each background argument takes one value along every line of cells along the channel — and is in geostrophic balance, $g\,\nabla\bar h=-f\,\hat k\times\bar{\mathbf u}$ at every interior cell: $g\,\partial_y\bar h=-f\,\bar u$ for `along_axis = 1`, and $g\,\partial_x\bar h=+f\,\bar u$ for `along_axis = 2`. The operation evaluates the cross-channel derivative of $\bar h$ through this relation and does not difference `hbar`, so `hbar` enters only as the depth of the background state. A background that does not satisfy the relation is outside this contract: the operation then returns a forcing for the balanced background rather than for the supplied one, and nothing in the returned values reports the disagreement. `dfdr` is the derivative of the same profile `f` is sampled from, and `dubar` the derivative of the profile `ubar` is sampled from; both are supplied because the operation evaluates them at the cell centre and differences no array.
+
+**Known property at a wall.** The low is a Gaussian in the distance from its centre and is not zero anywhere. At a channel wall a distance $L_r/2$ from the centre's cross-channel coordinate `r_c`, where $L_r$ is the channel width, the streamfunction of the low is $\psi_0 e^{-(L_r/2)^2/R_{low}^2}$, which is $1.1\times10^{-7}\,\psi_0$ at $L_r/2=4R_{low}$; the depth and the wall-normal velocity the low contributes there are of that order — the wall-normal velocity is $1.1\times10^{-7}$ of its own maximum — while the along-wall velocity is $1.0\times10^{-6}$ of its own maximum, one order larger, because it carries the factor $2(r-r_c)/R_{low}^2$ that is largest at the wall. The prescribed flow is therefore an exact solution of the forced equations in the interior and is not a solution of a wall condition that sets the normal velocity to zero: the residual of such a wall condition is the wall value of the low, and a `problem` adopting this `component` states its own wall treatment and the size of that residual.
 
 Units: `S` carries the units stated above, which are the units of a source of the conservation-form equations: the `h` component is a depth tendency and the `hu` / `hv` components are momentum tendencies.
 
 ## 3. Operation definition
-The published `operation` is `dynamics_shallow_water_source_2d_tc4_forcing__apply`. The prescribed flow is built from the streamfunction of the low, at the interior cell $(i,j)$, $i=1..nx$, $j=1..ny$, and the time $t$:
+The published `operation` is `dynamics_shallow_water_source_2d_tc4_forcing__apply`. The prescribed flow is built from the streamfunction of the low, at the interior cell $(i,j)$, $i=1..nx$, $j=1..ny$, with the along-channel and cross-channel coordinates $(s, r)$ of the cell (§2), and at the time $t$:
 $$
-x_c(t)=x_{c0}+c_{tr}\,t,\qquad
-\xi_i=\frac{\pi\,(x_i-x_c(t))}{L_x},\qquad
-r^2_{ij}=\left(\frac{L_x}{\pi}\right)^2\sin^2\xi_i+(y_j-y_c)^2,\qquad
-\psi_{ij}=\psi_0\,e^{-r^2_{ij}/R_{low}^2}
+s_c(t)=s_{c0}+c_{tr}\,t,\qquad
+\xi=\frac{\pi\,(s-s_c(t))}{L_{along}},\qquad
+\rho^2=\left(\frac{L_{along}}{\pi}\right)^2\sin^2\xi+(r-r_c)^2,\qquad
+\psi=\psi_0\,e^{-\rho^2/R_{low}^2}
 $$
-which is periodic in `x` with the period `L_x` and is the Gaussian $\psi_0 e^{-d^2/R_{low}^2}$ of the distance `d` from the centre wherever $|x_i-x_c(t)|\ll L_x$. With $k_\psi=L_x/(\pi R_{low}^2)$ the derivatives of $\psi$ are
+which is periodic along the channel with the period `L_along` and is the Gaussian $\psi_0 e^{-d^2/R_{low}^2}$ of the distance `d` from the centre wherever $|s-s_c(t)|\ll L_{along}$. With $k_\psi=L_{along}/(\pi R_{low}^2)$ the derivatives of $\psi$ along and across the channel are
 $$
-\psi_x=-k_\psi\sin 2\xi\;\psi,\qquad
-\psi_y=-\frac{2(y-y_c)}{R_{low}^2}\;\psi,\qquad
-\psi_t=-c_{tr}\,\psi_x
+\psi_s=-k_\psi\sin 2\xi\;\psi,\qquad
+\psi_r=-\frac{2(r-r_c)}{R_{low}^2}\;\psi,\qquad
+\psi_t=-c_{tr}\,\psi_s
 $$
 $$
-\psi_{xx}=\left(-\frac{2}{R_{low}^2}\cos 2\xi+k_\psi^2\sin^2 2\xi\right)\psi,\qquad
-\psi_{xy}=\frac{2(y-y_c)L_x}{\pi R_{low}^4}\sin 2\xi\;\psi,\qquad
-\psi_{yy}=\left(-\frac{2}{R_{low}^2}+\frac{4(y-y_c)^2}{R_{low}^4}\right)\psi
+\psi_{ss}=\left(-\frac{2}{R_{low}^2}\cos 2\xi+k_\psi^2\sin^2 2\xi\right)\psi,\qquad
+\psi_{sr}=\frac{2(r-r_c)L_{along}}{\pi R_{low}^4}\sin 2\xi\;\psi,\qquad
+\psi_{rr}=\left(-\frac{2}{R_{low}^2}+\frac{4(r-r_c)^2}{R_{low}^4}\right)\psi
 $$
-The prescribed flow and its derivatives are
+and its derivatives in `x` and `y` are these, assigned by the orientation:
+$$
+\texttt{along\_axis}=1:\quad \psi_x=\psi_s,\ \psi_y=\psi_r,\ \psi_{xx}=\psi_{ss},\ \psi_{xy}=\psi_{sr},\ \psi_{yy}=\psi_{rr}
+$$
+$$
+\texttt{along\_axis}=2:\quad \psi_x=\psi_r,\ \psi_y=\psi_s,\ \psi_{xx}=\psi_{rr},\ \psi_{xy}=\psi_{sr},\ \psi_{yy}=\psi_{ss}
+$$
+The low contributes the streamfunction flow $(-\psi_y,\ \psi_x)$ in either orientation, and the background its velocity along the channel. With `along_axis = 1` the prescribed flow and its derivatives are
 $$
 \tilde u=\bar u-\psi_y,\qquad \tilde v=\psi_x,\qquad \tilde h=\bar h+\frac{f\,\psi}{g}
 $$
@@ -56,7 +65,20 @@ $$
 \tilde h_y=-\frac{f\,\bar u}{g}+\frac{f'\,\psi+f\,\psi_y}{g},\qquad
 \tilde h_t=-\frac{c_{tr}\,f\,\psi_x}{g}
 $$
-where $\bar u$, $\bar u'$, $f$, $f'$ and $\bar h$ are `ubar`, `dubar`, `f`, `dfdy` and `hbar` at the row `j`, and the first term of $\tilde h_y$ is the geostrophic relation of §2. The residuals of the advective-form equations are
+and with `along_axis = 2` they are
+$$
+\tilde u=-\psi_y,\qquad \tilde v=\bar u+\psi_x,\qquad \tilde h=\bar h+\frac{f\,\psi}{g}
+$$
+$$
+\tilde u_x=-\psi_{xy},\quad \tilde u_y=-\psi_{yy},\quad \tilde u_t=c_{tr}\,\psi_{yy},\qquad
+\tilde v_x=\bar u'+\psi_{xx},\quad \tilde v_y=\psi_{xy},\quad \tilde v_t=-c_{tr}\,\psi_{xy}
+$$
+$$
+\tilde h_x=\frac{f\,\bar u}{g}+\frac{f'\,\psi+f\,\psi_x}{g},\qquad
+\tilde h_y=\frac{f\,\psi_y}{g},\qquad
+\tilde h_t=-\frac{c_{tr}\,f\,\psi_y}{g}
+$$
+where $\bar u$, $\bar u'$, $f$, $f'$ and $\bar h$ are `ubar`, `dubar`, `f`, `dfdr` and `hbar` at the cell $(i,j)$, the time derivatives are $-c_{tr}$ times the along-channel derivatives of the low's terms (the background is steady), and the first term of the cross-channel derivative of $\tilde h$ is the geostrophic relation of §2. The residuals of the advective-form equations are, in either orientation,
 $$
 F_u=\tilde u_t+\tilde u\,\tilde u_x+\tilde v\,\tilde u_y+g\,\tilde h_x-f\,\tilde v,\qquad
 F_v=\tilde v_t+\tilde u\,\tilde v_x+\tilde v\,\tilde v_y+g\,\tilde h_y+f\,\tilde u
@@ -70,10 +92,12 @@ S_{1,i,j}=F_h,\qquad
 S_{2,i,j}=\tilde h\,F_u+\tilde u\,F_h,\qquad
 S_{3,i,j}=\tilde h\,F_v+\tilde v\,F_h
 $$
-Each of the three residuals is written as the full residual of its equation and is not reduced by a cancellation the prescribed flow satisfies: $g\tilde h_x-f\tilde v$ is zero and $g\tilde h_y+f\tilde u$ is $f'\psi$ for this flow, and both are evaluated as written. The evaluation is pointwise: $S_{\cdot,i,j}$ depends on $x_i$, $y_j$, $t$, the row-wise background at `j` and the scalar parameters only, and on no element of `S`. With $\psi_0=0$ the prescribed flow is the geostrophic background, $F_u$, $F_v$ and $F_h$ are each zero, and `S` is zero at every cell. The divergence $\tilde u_x+\tilde v_y$ of the prescribed flow is zero at every cell, because the low contributes a streamfunction flow and the background has no `y` component; the term is written because the definition is the residual of the conservation-form equation, and it contributes nothing for this flow.
+Each of the three residuals is written as the full residual of its equation and is not reduced by a cancellation the prescribed flow satisfies: with `along_axis = 1`, $g\tilde h_x-f\tilde v$ is zero and $g\tilde h_y+f\tilde u$ is $f'\psi$ for this flow; with `along_axis = 2`, $g\tilde h_x-f\tilde v$ is $f'\psi$ and $g\tilde h_y+f\tilde u$ is zero; each is evaluated as written. The evaluation is pointwise: $S_{\cdot,i,j}$ depends on $x_i$, $y_j$, $t$, the background at $(i,j)$ and the scalar parameters only, and on no element of `S`. With $\psi_0=0$ the prescribed flow is the geostrophic background, $F_u$, $F_v$ and $F_h$ are each zero, and `S` is zero at every cell. The divergence $\tilde u_x+\tilde v_y$ of the prescribed flow is zero at every cell, because the low contributes a streamfunction flow and the background has no cross-channel component; the term is written because the definition is the residual of the conservation-form equation, and it contributes nothing for this flow.
+
+The two orientations are each other's image under the exchange of the axes, which reverses the sense of rotation and the sign of a streamfunction: the forcing at `along_axis = 2` for the arguments $(nx, ny, x, y, f, f', \bar u, \bar u', \bar h, \psi_0)$ is, cell by cell, the forcing at `along_axis = 1` for $(ny, nx, y, x, -f^T, -f'^T, \bar u^T, \bar u'^T, \bar h^T, -\psi_0)$ (the other scalars unchanged) transposed, with its second and third components exchanged — up to the order of the floating-point operations, since the advective products of a residual are summed in the order §3 writes them. This is not an instruction to compute one orientation from the other: §6 forbids that, and `tests.md` compares the two orientations as a symmetry pair (`docs/TESTS.md` §Symmetry pairs).
 
 ## 4. Failure conditions and constraints
-Treat `ncomp/=3`, `nx<1`, `ny<1`, `R_low<=0`, and `L_x<=0` as invalid input and an error: `guard_pass` is false, and every element of `S` is set to zero. The zero is what the operation publishes on a rejected input — not a valid forcing, and stated so that the rejection has an observable consequence in the output; a caller reads `guard_pass`, not the zeros. No element of the input arrays is read on a rejected input. `R_low<=0` and `L_x<=0` are invalid because the formulas of §3 divide by $R_{low}^2$ and by `L_x`. `h<=0` is not checked here: the state does not enter the forcing, and the dry-state guard belongs to the flux `component` and to the `problem`.
+Treat `ncomp/=3`, `nx<1`, `ny<1`, an `along_axis` other than `1` or `2`, `R_low<=0`, and `L_along<=0` as invalid input and an error: `guard_pass` is false, and every element of `S` is set to zero. The zero is what the operation publishes on a rejected input — not a valid forcing, and stated so that the rejection has an observable consequence in the output; a caller reads `guard_pass`, not the zeros. No element of the input arrays is read on a rejected input. `R_low<=0` and `L_along<=0` are invalid because the formulas of §3 divide by $R_{low}^2$ and by `L_along`. `h<=0` is not checked here: the state does not enter the forcing, and the dry-state guard belongs to the flux `component` and to the `problem`.
 
 ## 5. Public API and compatibility
 The only published `operation_id` is `dynamics_shallow_water_source_2d_tc4_forcing__apply`.
@@ -109,6 +133,11 @@ procedures:
     intent: in
     spec:
       type: integer
+  - name: along_axis
+    rank: 0
+    intent: in
+    spec:
+      type: integer
   - name: x
     rank: 1
     intent: in
@@ -132,44 +161,49 @@ procedures:
       type: real
       kind: dp
   - name: f
-    rank: 1
+    rank: 2
     intent: in
     spec:
       type: real
       kind: dp
     dims:
+    - nx
     - ny
-  - name: dfdy
-    rank: 1
+  - name: dfdr
+    rank: 2
     intent: in
     spec:
       type: real
       kind: dp
     dims:
+    - nx
     - ny
   - name: ubar
-    rank: 1
+    rank: 2
     intent: in
     spec:
       type: real
       kind: dp
     dims:
+    - nx
     - ny
   - name: dubar
-    rank: 1
+    rank: 2
     intent: in
     spec:
       type: real
       kind: dp
     dims:
+    - nx
     - ny
   - name: hbar
-    rank: 1
+    rank: 2
     intent: in
     spec:
       type: real
       kind: dp
     dims:
+    - nx
     - ny
   - name: g
     rank: 0
@@ -177,7 +211,7 @@ procedures:
     spec:
       type: real
       kind: dp
-  - name: L_x
+  - name: L_along
     rank: 0
     intent: in
     spec:
@@ -201,13 +235,13 @@ procedures:
     spec:
       type: real
       kind: dp
-  - name: x_c0
+  - name: s_c0
     rank: 0
     intent: in
     spec:
       type: real
       kind: dp
-  - name: y_c
+  - name: r_c
     rank: 0
     intent: in
     spec:
@@ -231,13 +265,13 @@ procedures:
 ```
 
 ## 6. Prohibitions
-Forbid evaluating the forcing from the state of the run (the forcing is a function of position and time; a term read from `h`, `hu` or `hv` is forbidden). Forbid evaluating it at a time other than the one supplied: the caller passes the time of the stage state the forcing is added to, and the operation uses that value alone. Forbid re-deriving the background inside this `component` — the row-wise values are received, not computed from a profile or its parameters — and forbid differencing a received array in place of the supplied derivative. Forbid changing the form of the low (its Gaussian shape, its periodic argument, its translation at the constant speed `c_tr`) and forbid reducing a residual of §3 by a cancellation the prescribed flow satisfies.
+Forbid evaluating the forcing from the state of the run (the forcing is a function of position and time; a term read from `h`, `hu` or `hv` is forbidden). Forbid evaluating it at a time other than the one supplied: the caller passes the time of the stage state the forcing is added to, and the operation uses that value alone. Forbid re-deriving the background inside this `component` — the per-cell values are received, not computed from a profile or its parameters — and forbid differencing a received array in place of the supplied derivative. Forbid deciding the orientation from anything other than `along_axis`, and forbid realising one orientation through the other — exchanging the arguments to the other orientation's form, evaluating there and exchanging the result back: each orientation evaluates §3 with its own assignment of $(s, r)$ and its own prescribed flow, because `tests.md` compares the two orientations as a symmetry pair and an implementation that derives one from the other compares a path with itself (`docs/TESTS.md` §Symmetry pairs). Forbid changing the form of the low (its Gaussian shape, its periodic argument, its translation along the channel at the constant signed speed `c_tr`) and forbid reducing a residual of §3 by a cancellation the prescribed flow satisfies.
 
 ## 7. Traceability
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_tc4_forcing/tests.md`, with `test_profile_version` of `0.2.0`.
+The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_source_2d_tc4_forcing/tests.md`, with `test_profile_version` of `0.3.0`.
 
 ## 9. AD preparation information
-`ad_readiness.enabled` is `true`. The operation holds no non-differentiable operation: the discrete operations of §3 are `exp`, `sin`, `cos` and arithmetic, each differentiable in the inputs. The operation does not depend on the state, so its derivative with respect to the state is zero.
+`ad_readiness.enabled` is `true`. The operation holds no non-differentiable operation: the discrete operations of §3 are `exp`, `sin`, `cos` and arithmetic, each differentiable in the inputs, and `along_axis` selects between two such evaluations. The operation does not depend on the state, so its derivative with respect to the state is zero.
