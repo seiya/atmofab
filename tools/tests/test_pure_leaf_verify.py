@@ -1039,9 +1039,11 @@ class PureVerifySubstepTests(unittest.TestCase):
         the fallback launch here renders with `repair_strategy: none`.
 
         The missing home is faked where production detects it (`record_launch`'s
-        `codex_lineage_home_missing`, read after the launch is recorded and before any leaf is
-        spawned), on the claude fake, where a session id is the child's arid — so, as in the
-        producer's row, the codex thread-id spelling of the target is not this row's subject.
+        `codex_lineage_home_missing`, which production returns before any durable launch
+        mutation and so before any leaf is spawned; the fake records the request first and
+        then adds the flag, so the dead warm turn's request stays observable), on the claude
+        fake, where a session id is the child's arid — so, as in the producer's row, the codex
+        thread-id spelling of the target is not this row's subject.
         """
         c, refs = self._waiting(wc.ProcResult(0, _envelope({"verification_status": "pass"}), ""),
                                 wc.ProcResult(0, _envelope(_verdict("pass")), ""), record=True)
@@ -1059,21 +1061,44 @@ class PureVerifySubstepTests(unittest.TestCase):
         oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
         self.assertEqual(oc.status, "pass")
         self.assertEqual(vanished, [True])
-        # Three launches recorded: cold, the warm repair that died to the missing home, the
-        # cold repair that replaced it. Two spawned: the dead warm turn never reached the leaf.
+        # Three requests built: cold, the warm repair that died to the missing home, the cold
+        # repair that replaced it. Two spawned: the dead warm turn never reached the leaf.
         self.assertEqual([r["repair_strategy"] for r in c.requests], ["none", "reuse", "reuse"])
         self.assertTrue(c.requests[1].get("warm_resume"))
         self.assertNotIn("prior_document", c.requests[1])       # warm turns do not send it
         self.assertFalse(c.requests[2].get("warm_resume"))
         self.assertEqual(c.requests[2]["repair_target_agent_run_id"], "child-1")
         self.assertTrue(c.requests[2].get("repair_findings"))
-        self.assertIn('"verification_status": "pass"', c.requests[2]["prior_document"])
+        self.assertEqual(json.loads(c.requests[2]["prior_document"]),
+                         {"verification_status": "pass"})
         self.assertTrue(c.requests[2].get("pure_context"))
         self.assertEqual([k.get("resume_session_id") for k in c.spawn_kwargs], [None, None])
         self.assertEqual(oc.attempts, 2)
         self.assertTrue(any(ev == "resume_session_unavailable"
                             and f.get("reason") == "codex_lineage_home_missing"
                             for ev, f in c.events), c.events)
+
+    def test_a_repair_whose_session_is_not_resumable_is_built_and_spawned_cold(self) -> None:
+        """The reviewer loop computes `warm` in its own copy of the producer's line —
+        `resume_session_id is not None and _pure_session_resumable(...)` — and the producer's
+        (d) row does not reach this copy (issue #508, round 1: dropping the resumability half
+        here left the suite green). A schema-violating verdict whose claude session is gone must
+        be repaired COLD: the request carries the findings, the prior verdict and the full
+        context, and the spawn names no session to resume. Warm instead, the repair would be a
+        context-free `--resume` of a transcript that no longer exists."""
+        c, refs = self._waiting(wc.ProcResult(0, _envelope({"verification_status": "pass"}), ""),
+                                wc.ProcResult(0, _envelope(_verdict("pass")), ""), record=True)
+        c._claude_session_resumable = lambda session_id: False  # type: ignore[assignment]
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual([r["repair_strategy"] for r in c.requests], ["none", "reuse"])
+        self.assertFalse(c.requests[1].get("warm_resume"))
+        self.assertEqual(c.requests[1]["repair_target_agent_run_id"], "child-1")
+        self.assertTrue(c.requests[1].get("repair_findings"))
+        self.assertEqual(json.loads(c.requests[1]["prior_document"]),
+                         {"verification_status": "pass"})
+        self.assertTrue(c.requests[1].get("pure_context"))
+        self.assertEqual([k.get("resume_session_id") for k in c.spawn_kwargs], [None, None])
 
     def test_every_reviewer_launch_names_the_target_language(self) -> None:
         """The generate reviewer's template carries `{{language:<name>}}` markers, and the
@@ -1255,6 +1280,57 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual(findings[0], findings[1])
         self.assertTrue(findings[1])
         self.assertNotIn("usage limit", findings[1].lower())
+
+    def test_a_transient_retry_is_not_a_repair_turn_and_the_record_counts_it(self) -> None:
+        """The reviewer twin of the producer row of the same name (issue #508, round 1): one
+        dropped connection on the cold attempt, then a schema-violating verdict on every turn.
+        The retry must not spend the repair budget, and the launch count, the outcome's
+        `attempts` and `verdict_meta` must all count the flake: `MAX_BUNDLE_REPAIR_TURNS + 2`."""
+        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        malformed = wc.ProcResult(0, _envelope({"verification_status": "pass"}), "")
+        c, refs = self._waiting(self._FLAKE, *([malformed] * (MAX_BUNDLE_REPAIR_TURNS + 1)),
+                                record=True)
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(c.slept, [2.0])
+        self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 2)
+        self.assertEqual([r["repair_strategy"] for r in c.requests],
+                         ["none", "none"] + ["reuse"] * MAX_BUNDLE_REPAIR_TURNS)
+        self.assertEqual(oc.attempts, MAX_BUNDLE_REPAIR_TURNS + 2)
+        vmeta = json.loads((c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
+        self.assertEqual(vmeta["failure_category"], "verdict_schema_violation")
+        self.assertEqual(vmeta["attempts"], MAX_BUNDLE_REPAIR_TURNS + 2)
+        self.assertEqual(len(vmeta["per_attempt"]), MAX_BUNDLE_REPAIR_TURNS + 2)
+
+    def test_a_warm_repair_that_never_ran_is_not_a_repair_turn(self) -> None:
+        """The reviewer twin of the producer row of the same name (issue #508, round 1): a
+        schema-violating verdict on every turn, the lineage home vanishing on the first warm
+        repair. The dead turn must not spend the repair budget: every repair the budget allows
+        still reaches a leaf (`MAX_BUNDLE_REPAIR_TURNS + 1` spawns), and the record counts the
+        launches that ran, not the request that died."""
+        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        malformed = wc.ProcResult(0, _envelope({"verification_status": "pass"}), "")
+        c, refs = self._waiting(malformed, malformed, record=True)
+        recorded = c.record_launch
+        vanished: list[bool] = []
+
+        def _vanish_once(child_arid, request, entry=None, **kw):
+            rec = recorded(child_arid, request, entry, **kw)
+            if request.get("warm_resume") and not vanished:
+                vanished.append(True)
+                return {**(rec or {}), "codex_lineage_home_missing": True}
+            return rec
+
+        c.record_launch = _vanish_once  # type: ignore[assignment]
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(vanished, [True])
+        self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 1)
+        self.assertEqual(len(c.requests), MAX_BUNDLE_REPAIR_TURNS + 2)
+        self.assertEqual(oc.attempts, MAX_BUNDLE_REPAIR_TURNS + 1)
+        vmeta = json.loads((c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
+        self.assertEqual(vmeta["attempts"], MAX_BUNDLE_REPAIR_TURNS + 1)
+        self.assertEqual(len(vmeta["per_attempt"]), MAX_BUNDLE_REPAIR_TURNS + 1)
 
     def test_unencodable_valid_verdict_is_schema_violation_not_transport(self) -> None:
         # Codex review (defect 1): a schema-SOUND verdict whose last_fail_reason holds a lone

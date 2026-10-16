@@ -1614,6 +1614,77 @@ class PureUsageLimitWaitTest(unittest.TestCase):
             self.assertIn("capability_requirements", findings[1])
             self.assertNotIn("limit", findings[1].lower())      # never the transport evidence
 
+    def test_a_transient_retry_is_not_a_repair_turn_and_the_record_counts_it(self) -> None:
+        """A transient death is re-launched in place and must not spend the repair budget, and
+        the terminal record must count the launch it cost (issue #508, round 1). Fixture: one
+        dropped connection on the cold attempt, then a schema violation on every turn, so the
+        run straddles the budget — a retry that spent an `attempt` makes one repair fewer.
+        Pinned on the launch count, the outcome's `attempts` and the `bundle_meta` the outer
+        route and `orchestration_diagnostics` read, which must all say the same number: the
+        flake, the cold re-launch and exactly `MAX_BUNDLE_REPAIR_TURNS` repairs. The reviewer
+        twin of the `attempts` half is `test_the_reviewer_wait_budget_is_the_schedule_then_fails_closed`;
+        this loop had none, and only a re-launch in the history separates `len(per_attempt)`
+        from `attempt + 1`."""
+        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        bad = _valid_bundle()
+        del bad["capability_requirements"]
+        flake = wc.ProcResult(1, "", "API Error: Connection closed mid-response.")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _write_node(repo)
+            c = self._conductor(
+                repo, [flake] + [wc.ProcResult(0, _envelope(bad), "")] * (MAX_BUNDLE_REPAIR_TURNS + 1))
+            requests, _ = self._recording(c)
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            self.assertEqual(oc.status, "fail")
+            self.assertEqual(c.slept, [2.0])                    # the transient backoff, once
+            self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 2)
+            self.assertEqual([r["repair_strategy"] for r in requests],
+                             ["none", "none"] + ["reuse"] * MAX_BUNDLE_REPAIR_TURNS)
+            self.assertEqual(oc.attempts, MAX_BUNDLE_REPAIR_TURNS + 2)
+            meta = json.loads((repo / refs.source_dir() / "bundle_meta.json").read_text())
+            self.assertEqual(meta["failure_category"], "bundle_schema_violation")
+            self.assertEqual(meta["attempts"], MAX_BUNDLE_REPAIR_TURNS + 2)
+            self.assertEqual(len(meta["per_attempt"]), MAX_BUNDLE_REPAIR_TURNS + 2)
+
+    def test_a_warm_repair_that_never_ran_is_not_a_repair_turn(self) -> None:
+        """A warm repair whose codex lineage home is gone returns None from `_spawn_pure_turn`
+        before any leaf runs (issue #245); the loop retries it cold and must not charge the
+        repair budget for it (issue #508, round 1). Fixture: a schema violation on every turn,
+        the home vanishing on the first warm repair. Every repair the budget allows still
+        reaches a leaf — `MAX_BUNDLE_REPAIR_TURNS + 1` spawns — and the dead turn is in the
+        requests and nowhere in the record. The existing lineage row passes on its first cold
+        repair, so it cannot see a dead turn that spent an `attempt`. Faked at `record_launch`,
+        where production detects it, on the claude fake (see that row)."""
+        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        bad = _valid_bundle()
+        del bad["capability_requirements"]
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _write_node(repo)
+            c = self._conductor(repo, [wc.ProcResult(0, _envelope(bad), "")])
+            requests, _ = self._recording(c)
+            recorded = c.record_launch
+            vanished: list[bool] = []
+
+            def _vanish_once(child_arid, request, entry=None, **kw):
+                rec = recorded(child_arid, request, entry, **kw)
+                if request.get("warm_resume") and not vanished:
+                    vanished.append(True)
+                    return {**(rec or {}), "codex_lineage_home_missing": True}
+                return rec
+
+            c.record_launch = _vanish_once  # type: ignore[assignment]
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            self.assertEqual(oc.status, "fail")
+            self.assertEqual(vanished, [True])
+            self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 1)
+            self.assertEqual(len(requests), MAX_BUNDLE_REPAIR_TURNS + 2)
+            self.assertEqual(oc.attempts, MAX_BUNDLE_REPAIR_TURNS + 1)
+            meta = json.loads((repo / refs.source_dir() / "bundle_meta.json").read_text())
+            self.assertEqual(meta["attempts"], MAX_BUNDLE_REPAIR_TURNS + 1)
+            self.assertEqual(len(meta["per_attempt"]), MAX_BUNDLE_REPAIR_TURNS + 1)
+
     def test_a_pure_leaf_that_wrote_no_envelope_names_the_exit_it_died_at(self) -> None:
         """The other `unavailable` half (issue #47). A leaf killed at the per-leaf cap writes
         nothing to stdout: its tokens were spent and are unrecorded. Separable from a live leaf
@@ -2076,7 +2147,6 @@ class PureProducerColdFallbackSurrogateTests(unittest.TestCase):
             # bundle_meta persisted cleanly (excerpt normalized), and its write did not fail_close.
             meta = json.loads((c.repo_root / refs.source_dir() / "bundle_meta.json").read_text())
             self.assertEqual(meta["failure_category"], "bundle_schema_violation")
-
             self.assertEqual(oc.leaf_returncode, 0)   # NOT a host-write fail_close
 
     def test_a_turn_that_is_not_warm_never_resumes_the_session_it_still_names(self) -> None:
@@ -2411,9 +2481,10 @@ class PureProducerExemplarTests(unittest.TestCase):
         c.envelopes = [_envelope(_valid_bundle())]
         # The session IS resumable, so the seed takes the WARM branch — and then the launch finds
         # the lineage home gone underneath it. Faked where PRODUCTION detects it: `record_launch`'s
-        # `codex_lineage_home_missing`, which is read AFTER the launch is recorded and BEFORE
-        # any leaf is spawned. Stubbing `_spawn_pure_turn` itself would skip the recorded launch
-        # and leave nothing to assert the warm turn's shape on.
+        # `codex_lineage_home_missing`, which production returns BEFORE any durable launch
+        # mutation and so before any leaf is spawned. The fake records the request first and
+        # then adds the flag, which is what leaves the warm turn's shape to assert on; stubbing
+        # `_spawn_pure_turn` itself would leave nothing.
         real_record = c.record_launch
         vanished: list[bool] = []
 
