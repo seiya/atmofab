@@ -460,9 +460,9 @@ class SplitTopLevelCommasTests(unittest.TestCase):
 
     def test_mask_still_blanks_a_string_whose_quote_follows_b_o_or_z(self) -> None:
         # The one way the BOZ exception could open a hole is reading a STRING as a BOZ and
-        # leaving its contents live. Each row puts a `b` / `o` / `z` as near a string's opening
-        # quote as legal source allows: after a separator, ending a name, before a closing
-        # quote, inside a doubled-quote escape, ending a kind prefix, after `//`.
+        # leaving its contents live. The first rows put a `b` / `o` / `z` as near a string's
+        # opening quote as legal source allows: after a separator, ending a name, before a
+        # closing quote, inside a doubled-quote escape, ending a kind prefix, after `//`.
         cases = {
             "call f(b, 'x')": "call f(b, ' ')",
             "s = 'z'": "s = ' '",
@@ -474,12 +474,17 @@ class SplitTopLevelCommasTests(unittest.TestCase):
             "s = o//'x'": "s = o//' '",
             "bob = 'x'": "bob = ' '",
             "s = 'b'//'end'": "s = ' '//'   '",
-            # The name-character class, each member: a letter, a digit and `_` before the `b`.
+            # The name-character class, each member: a letter of either case, a digit and `_`
+            # before the `b`. None of these is legal source; they pin the look-behind.
             "s = bo'end subroutine'": "s = bo'              '",
             "s = x1b'end'": "s = x1b'   '",
             "s = x_b'end'": "s = x_b'   '",
+            "s = XB'end'": "s = XB'   '",
             # A quote at the very start of the text: the look-behind must not wrap to its end.
             "'end' // b": "'   ' // b",
+            # A string AFTER a BOZ: the BOZ decision is the opening quote's own, never carried.
+            "i = int(o'7', 4); s = 'end subroutine'": "i = int(o'7', 4); s = '              '",
+            "i = int(o'7', 4)\ns = 'end subroutine'": "i = int(o'7', 4)\ns = '              '",
         }
         for text, expected in cases.items():
             self.assertEqual(mask_code_lookalikes(text), expected, text)
