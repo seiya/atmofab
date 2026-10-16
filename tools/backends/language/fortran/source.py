@@ -778,18 +778,6 @@ def module_level_type_definitions(
         tree, unit_name, lambda start, stop: view[to_view(start):to_view(stop)])
 
 
-def module_level_prototypes(
-    lowered: str, unit_name: str
-) -> fortran_structure.PrototypeReading:
-    """The prototypes ``lowered`` declares in an interface block of the module ``unit_name``'s own
-    specification part, and where every prototype of each name stands — what the §5.1
-    `interfaces` comparison must read. The reading is this module's (`structure_reading`), the rule
-    the backend's (`structure.module_level_prototypes`, canonical for it). Raises the same two
-    errors as `structure_reading`."""
-    view, tree, to_view = structure_reading(lowered)
-    return fortran_structure.module_level_prototypes(
-        tree, unit_name, lambda start, stop: view[to_view(start):to_view(stop)])
-
 
 
 def procedure_envelopes(lowered: str) -> list[ProcedureEnvelope]:

@@ -1494,7 +1494,8 @@ def generated_source_violations(
         # the publishing module's own specification part, or a second definition outside the
         # publishing module. Each is one a reference to the name can bind to instead of the one
         # compared here — a `procedure(<name>)` dummy in the scope of a local interface block, or
-        # a consumer-view reader that takes the first header of the name in the file.
+        # the consumer-facing dependency surface (`interface._extract_subroutine_interface` /
+        # `_extract_interface_prototype`), which takes the first header of the name in the file.
         # Refused only when the name is declared more than once in all: a lone declaration in the
         # wrong place is the prototype arm's "outside" or the definedness arm's "never DEFINES".
         lname = name.lower()
@@ -1509,8 +1510,9 @@ def generated_source_violations(
                 parts.append(f"{len(proto_lines)} prototype(s) of it (at statement"
                              f"{'s' if len(proto_lines) > 1 else ''} {where} of its joined view)")
             if stray_defs > 0:
-                parts.append(f"{stray_defs} definition(s) of it outside the module "
-                             f"'{model_files[0].stem}'s own `contains` section")
+                parts.append(f"{stray_defs} definition(s) of it beside the one the module "
+                             f"'{model_files[0].stem}' publishes (a second one in its "
+                             "`contains` section, a contained procedure, another program unit)")
             violations.append(
                 f"{target}: generated model source declares controlled_spec §5.1 {kind} '{name}' "
                 f"more than once — {' and '.join(parts)}. A reference to the name binds to "
@@ -1721,13 +1723,6 @@ def generated_source_violations(
     # without `only:` (`use m, a => b`) and a bare `use m` are refused by the lint gate (C121,
     # measured) in the same substep, which is why this loop reads `only:` lists alone.
     type_names = sorted(type_stanzas)
-    # And the pinned PROTOTYPE names, the same way and for the same reason (issue #504 round 1): a
-    # `use aux, only: f => g` local to a published procedure makes that procedure's
-    # `procedure(f)` dummies `g`'s interface, while the module still declares the pinned `f` for
-    # the prototype comparison to find — measured 0 violations at 4a600047 and on origin/main,
-    # `gfortran -fsyntax-only -std=f2008` rc 0, with `g` an `integer function`. The structure
-    # reader's count sees prototypes and definitions, not a binding brought in by `use`.
-    proto_names = sorted(proto_stanzas)
     publishing_units = {model_file.stem.lower() for model_file in model_files}
     # Read each `use` statement WHOLE: one normalised statement per `;`-split logical line. The atom
     # set was read here until issue #430 round 1, and `declaration_atoms` splits any line carrying
@@ -1742,9 +1737,8 @@ def generated_source_violations(
                           for part in fortran_lines.split_fortran_statements(line))
         if _USE_ONLY_RE.match(statement)
     ]
-    for name in [n for n in param_names if n] + type_names + proto_names:
+    for name in [n for n in param_names if n] + type_names:
         is_type = name in type_stanzas
-        is_proto = name in proto_stanzas
         for statement in use_statements:
             use_match = _USE_ONLY_RE.match(statement)
             module, imported = use_match.group(1), use_match.group(2)
@@ -1766,18 +1760,6 @@ def generated_source_violations(
                     "definitions of a pinned type are refused too); rename an imported entity you "
                     "still need to a name of its own")
                 break
-            if is_proto:
-                if module in publishing_units:
-                    continue
-                violations.append(
-                    f"{target}: generated model source imports the §5.1 prototype name `{name}` "
-                    f"(`{statement}`) from a module other than the publishing one — §5.1 pins "
-                    "the prototype as this module's own, and an imported binding of its name "
-                    f"makes every `procedure({name})` dummy in that scope the imported interface. "
-                    f"Declare `{name}` only in the one abstract interface block of this module's "
-                    "specification part and drop the name from the `use`; rename an imported "
-                    "entity you still need to a name of its own")
-                break
             violations.append(
                 f"{target}: generated model source imports the §5.1 module parameter "
                 f"`{name}` (`{statement}`) instead of declaring it — the published ABI's kind must "
@@ -1790,6 +1772,40 @@ def generated_source_violations(
                 f"`{name}` back from the model module or declaring `{name}` a second time — "
                 f"a second binding of `{name}` anywhere in this file is refused too")
             break
+
+    # A pinned PROTOTYPE name bound by any statement other than an interface header (issue #504
+    # review): a `procedure(g) :: f` or `procedure(g), pointer :: f` declaration, an `external`
+    # one, or a `use aux, only: f => g` import, local to a published procedure, makes that
+    # procedure's `procedure(f)` dummies the other interface, while the module still declares
+    # the pinned `f` for the prototype comparison to find. Each measured 0 violations at
+    # 4d15c237 and on origin/main 3ff3f789, `gfortran -fsyntax-only -std=f2008` rc 0, and a
+    # §5.1-conforming consumer then fails with "Interface mismatch in dummy procedure 'cb'". The
+    # structure reader's count sees interface bodies and procedure definitions; a binding is
+    # asked of the declared-names reader instead, per statement, as the module-parameter count
+    # below asks it. A header is not a binding to that reader, so the prototype itself is not
+    # counted; an import from the publishing module (a same-file helper module taking the
+    # interface) binds the pinned prototype and is not refused.
+    proto_view = fortran_source.joined_masked_view(combined.lower()).split("\n")
+    for name in sorted(proto_stanzas):
+        lname = name.lower()
+        bindings = []
+        for statement in proto_view:
+            if not statement.strip() or lname not in set().union(
+                    *fortran_source.declared_names(statement)):
+                continue
+            use_match = _USE_ONLY_RE.match(fortran_lines.normalize_fortran_line(statement))
+            if use_match and use_match.group(1) in publishing_units:
+                continue
+            bindings.append(statement.strip())
+        if bindings:
+            listed = ", ".join(f"`{statement}`" for statement in bindings)
+            violations.append(
+                f"{target}: generated model source binds the §5.1 prototype name `{name}` "
+                f"outside its interface block — {listed} — and a `procedure({name})` dummy in "
+                "that scope takes the interface such a statement gives the name, not the "
+                f"prototype §5.1 pins. Declare `{name}` only as the prototype in the one abstract "
+                "interface block of this module's specification part; give any other entity "
+                "(a procedure pointer, a dummy, an imported procedure) a name of its own")
 
     # Pair by INDEX over the unfiltered list, not by zipping against a FILTERED name list.
     # `param_lines` maps one-to-one over the same `module_parameters`

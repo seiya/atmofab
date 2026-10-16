@@ -29095,8 +29095,10 @@ class PrototypeScopeGateTests(unittest.TestCase):
                              for x in v), v)
 
     def test_a_contained_definition_of_the_prototype_name_is_refused(self) -> None:
-        # A procedure contained in the published one, named like the prototype: the dummy's
-        # `procedure(hx_f)` then names the contained procedure's interface.
+        # A procedure contained in the published one, named like the prototype: a second
+        # declaration of the pinned name. (gfortran 11.4 still resolves the dummy's
+        # `procedure(hx_f)` to the module's prototype here — passing an integer to `cb` is
+        # "passed INTEGER(4) to REAL(8)" — so this row pins the refusal, not a binding.)
         contained = ("  contains\n    integer function hx_f(x)\n"
                      "      integer, intent(in) :: x\n      hx_f = x\n"
                      "    end function hx_f\n")
@@ -29110,8 +29112,18 @@ class PrototypeScopeGateTests(unittest.TestCase):
                  "  end subroutine hx__advance\nend module hx_aux\n\n")
         v = self._generate(self._model(self._PINNED, ahead=ahead))
         self.assertTrue(any("procedure 'hx__advance' more than once — 1 definition(s) of it "
-                            "outside the module 'hx_model'" in x for x in v), v)
+                            "beside the one the module 'hx_model' publishes" in x for x in v), v)
         self.assertFalse(any("drifts" in x for x in v), v)
+        # A second definition in the module's own `contains` section is told the same way; the
+        # message must not call it "outside" that section (round 2 of the review).
+        twice = self._model(self._PINNED).replace(
+            "\nend module hx_model\n",
+            "\n  subroutine hx__advance(n)\n    integer, intent(in) :: n\n    print *, n\n"
+            "  end subroutine hx__advance\n\nend module hx_model\n", 1)
+        v = self._generate(twice)
+        self.assertTrue(any("procedure 'hx__advance' more than once — 1 definition(s) of it "
+                            "beside the one the module 'hx_model' publishes (a second one in its "
+                            "`contains` section" in x for x in v), v)
 
     def test_a_published_procedure_prototyped_and_defined_only_in_another_body(self) -> None:
         # The module only prototypes the published procedure, and a procedure contained in a
@@ -29134,17 +29146,19 @@ class PrototypeScopeGateTests(unittest.TestCase):
         self.assertEqual(both.count("subroutine hx__advance(cb, v)"), 2)
         v = self._generate(both)
         self.assertTrue(any("procedure 'hx__advance' more than once — 1 prototype(s) of it" in x
-                            and "1 definition(s) of it outside" in x for x in v), v)
+                            and "1 definition(s) of it beside" in x for x in v), v)
         self.assertTrue(any("never DEFINES it" in x for x in v), v)
         v = self._generate(only_contained)
         self.assertTrue(any("never DEFINES it" in x for x in v), v)
         self.assertFalse(any("more than once" in x for x in v), v)
 
-    def test_an_import_binding_the_prototype_name_is_refused(self) -> None:
-        # Round 1 of issue #504's review: `use hx_aux, only: hx_f => hx_g` local to the published
-        # procedure makes its `procedure(hx_f)` dummy `hx_g`'s interface (an `integer function`),
-        # while the module still declares the pinned `hx_f`. 0 violations at 4a600047 and on
-        # origin/main; `gfortran -fsyntax-only -std=f2008 -Wall` rc 0.
+    def test_a_statement_binding_the_prototype_name_is_refused(self) -> None:
+        # Issue #504's review, rounds 1 and 2: a statement local to the published procedure that
+        # binds `hx_f` — an import renaming another interface onto it, a `procedure(hx_g) :: hx_f`
+        # declaration, a procedure pointer of that name — makes its `procedure(hx_f)` dummy
+        # `hx_g`'s interface (an `integer function`), while the module still declares the pinned
+        # `hx_f`. Each: 0 violations on origin/main and before the fix,
+        # `gfortran -fsyntax-only -std=f2008 -Wall` rc 0.
         aux = ("module hx_aux\n  implicit none\n  abstract interface\n"
                "    integer function hx_g(x)\n      implicit none\n"
                "      integer, intent(in) :: x\n    end function hx_g\n  end interface\n"
@@ -29153,8 +29167,27 @@ class PrototypeScopeGateTests(unittest.TestCase):
                               local="    use hx_aux, only: hx_f => hx_g\n").replace(
             "v = cb(1.0_dp)", "v = real(cb(1), dp)")
         v = self._generate(renamed)
-        self.assertTrue(any("imports the §5.1 prototype name `hx_f` (`usehx_aux,only:hx_f=>hx_g`)"
-                            in x for x in v), v)
+        self.assertTrue(any("binds the §5.1 prototype name `hx_f` outside its interface block — "
+                            "`use hx_aux, only: hx_f => hx_g`" in x for x in v), v)
+        other = ("  abstract interface\n    integer function hx_g(x)\n      implicit none\n"
+                 "      integer, intent(in) :: x\n    end function hx_g\n  end interface\n")
+        # The message quotes the statement as the joined view carries it (a label stripped).
+        for label, local, quoted in (
+                ("declaration", "    procedure(hx_g) :: hx_f\n", "procedure(hx_g) :: hx_f"),
+                ("pointer", "    procedure(hx_g), pointer :: hx_f => null()\n",
+                 "procedure(hx_g), pointer :: hx_f => null()"),
+                ("labelled import", "10  use hx_aux, only: hx_f => hx_g\n",
+                 "use hx_aux, only: hx_f => hx_g")):
+            with self.subTest(label):
+                source = self._model(self._PINNED, local=local,
+                                     ahead=aux if "use" in local else "").replace(
+                    "v = cb(1.0_dp)", "v = real(cb(1), dp)")
+                if "use" not in local:
+                    source = source.replace("  end interface\n", "  end interface\n" + other, 1)
+                v = self._generate(source)
+                self.assertTrue(any("binds the §5.1 prototype name `hx_f` outside its interface "
+                                    f"block — `{quoted}`"
+                                    in x for x in v), v)
         # The same name imported from the publishing module (a helper module of the same file
         # taking the interface it needs) binds the pinned prototype, and is not refused.
         helper = ("\nmodule hx_user\n  use hx_model, only: hx_f\n  implicit none\n"

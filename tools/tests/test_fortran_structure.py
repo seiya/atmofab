@@ -454,7 +454,13 @@ class PrototypeTests(unittest.TestCase):
 
     def test_module_level_prototypes_reads_the_publishing_module_alone(self) -> None:
         from tools.backends.language.fortran import source as fortran_source
-        reading = fortran_source.module_level_prototypes(self._SOURCE.lower(), "m")
+
+        def read(unit: str) -> fs.PrototypeReading:
+            view, tree, to_view = fortran_source.structure_reading(self._SOURCE.lower())
+            return fs.module_level_prototypes(
+                tree, unit, lambda start, stop: view[to_view(start):to_view(stop)])
+
+        reading = read("m")
         self.assertEqual(set(reading.definitions), {"f", "s"})
         f = reading.definitions["f"]
         # The header the typed form carries is read whole; `import` / `implicit none` are not
@@ -475,12 +481,8 @@ class PrototypeTests(unittest.TestCase):
                          ["subroutine f(a)", "real(dp) function f(x)",
                           "function f(x) result(y)"])
         # A submodule is not the module a consumer `use`s, even when its name is asked for.
-        self.assertEqual(
-            set(fortran_source.module_level_prototypes(self._SOURCE.lower(),
-                                                       "impl").definitions), set())
-        self.assertEqual(
-            set(fortran_source.module_level_prototypes(self._SOURCE.lower(),
-                                                       "helper").definitions), {"f"})
+        self.assertEqual(set(read("impl").definitions), set())
+        self.assertEqual(set(read("helper").definitions), {"f"})
 
 
 class ErrorReportingTests(unittest.TestCase):
