@@ -315,8 +315,8 @@ _LAMBDA_BINDING_RE = re.compile(r"(?<!\w)(?P<name>[A-Za-z_]\w*)\s*=\s*\[")
 #: An init-capture (`[v = expr]`, `[&r = out]`) or anything that may evaluate code in the
 #: capture list: its initializer runs when the lambda is CREATED, so the lambda is live.
 _LAMBDA_EVALUATING_CAPTURE_RE = re.compile(r"[({]|\w\s*=")
-#: What a statement that DECLARES the bound name says before it: `auto`, `const auto`,
-#: `std::function<…>`. Anything else — nothing (an assignment to a name declared elsewhere: a
+#: What a statement that DECLARES the bound name says before it: `auto` or `std::function<…>`,
+#: optionally after `static` / `const` / `constexpr`. Anything else — nothing (an assignment to a name declared elsewhere: a
 #: parameter, a range-for variable, a namespace-scope variable, all invocable without this body
 #: writing the name), `for (auto`, a declarator list — is not read as a declaration.
 _LAMBDA_DECLARATION_HEAD_RE = re.compile(
@@ -340,8 +340,8 @@ def _blank_dead_lambdas(body: str) -> str:
       their `[`; `x = a[0];` has no `{` after its `]`. An unbound lambda — passed as an
       argument, invoked in place, returned — is live.
     * Only a statement that DECLARES the name can make it dead: the text from the statement's
-      start to NAME must be `auto`, `const auto` or `std::function<…>`
-      (`_LAMBDA_DECLARATION_HEAD_RE`). A plain `NAME = [` assigns a name declared elsewhere — a
+      start to NAME must be `auto` or `std::function<…>`, optionally after `static` / `const` /
+      `constexpr` (`_LAMBDA_DECLARATION_HEAD_RE`). A plain `NAME = [` assigns a name declared elsewhere — a
       reference parameter, a range-for variable, a namespace-scope variable — that can be
       invoked without this body writing it, and `for (auto f = [` and `T f, &g = f = [` are not
       a declaration of one name; all of these are live (round 1 of issue #506's review: each

@@ -1626,6 +1626,11 @@ class PhysicsGateTests(unittest.TestCase):
             # An init-capture's initializer runs when the lambda is created (round 2, Codex):
             # `keep` is never invoked, and `u_new` still receives `flux`.
             "init-capture": ("  auto keep = [r = (u_new.data[0] = flux[0])]() { return r; };\n"),
+            # Each half of the evaluating-capture pattern alone (round 3).
+            "direct-initialized capture": (
+                "  auto keep = [r(u_new.data[0] = flux[0])]() { return r; };\n"),
+            "unparenthesized initializer": (
+                "  auto keep = [r = u_new.data[0] = flux[0]]() { return r; };\n"),
             # Round 1 of the review: each of these compiles and was refused by the first fix.
             # None is a statement that DECLARES the name (`auto` / `const auto` /
             # `std::function<…>`), so none can make it dead: the first two invoke the lambda
@@ -1691,6 +1696,16 @@ class PhysicsGateTests(unittest.TestCase):
                 "{consume}", " + dt * flux[static_cast<std::size_t>(i)]"))
             self.assertEqual([], dependency_use(beside))
             self.assertEqual([], self._gates(beside, ["dep"]))
+            # Invoked by name, the lambda's call is the function's call (round 3).
+            called = self._model(tmp, body.replace("{live}", "  unused();\n").replace(
+                "{consume}", ""))
+            self.assertEqual([], dependency_use(called))
+            self.assertEqual([], self._gates(called, ["dep"]))
+            # A dead chain is dead to this check too: `f` names `unused`, and nothing names `f`.
+            chain = self._model(tmp, body.replace(
+                "{live}", "  auto f = [&]() { unused(); };\n").replace("{consume}", ""))
+            self.assertEqual(["missing dependency operation call (dep__*)"],
+                             dependency_use(chain))
 
     def test_an_array_declarator_and_a_subscript_are_not_lambda_introducers(self) -> None:
         # `buf[4]{…}` is a `[` whose `]` is followed by a `{`, with no `NAME =` before it;
@@ -1715,6 +1730,12 @@ class PhysicsGateTests(unittest.TestCase):
         self.assertNotIn("fv", blanked)
         self.assertNotIn("auto", blanked)  # the declaration head goes with it
         self.assertIn("out = u;", blanked)
+        # The declaration prefixes the head admits (round 3: unpinned until then).
+        for head in ("static auto", "constexpr auto", "static const auto",
+                     "const std::function<void()>"):
+            with self.subTest(head):
+                self.assertNotIn("fv", cpp_source._blank_dead_lambdas(
+                    f"{{ {head} dead = []() {{ out = fv; }}; }}"))
 
     def test_a_never_invoked_lambda_does_not_hide_a_literal_only_output(self) -> None:
         dead = "void p__f(double& out, double u) { auto dead = [&]() { out = u; }; out = 1.0; }"

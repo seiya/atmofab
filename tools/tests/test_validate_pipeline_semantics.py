@@ -6937,6 +6937,15 @@ end module m
                                 "  real :: s\n  call dep__apply(x, s)\n  y = s\n")
         self.assertEqual(dependency_use(beside), [])
         self.assertEqual(self._dataflow_violations(beside), [])
+        # A source the structure reader refuses (a variable named `endsubroutine`, which
+        # gfortran accepts) keeps the masked-text reading, where the dead call still counts —
+        # and does not raise out of this check; the `problem` model gates refuse it themselves.
+        unresolved = source.replace("    real :: scratch, a\n",
+                                    "    real :: scratch, a, endsubroutine\n"
+                                    "    endsubroutine = 1.0\n")
+        with self.assertRaises(fortran_source.SourceStructureError):
+            fortran_source.structure_reading(unresolved.lower())
+        self.assertEqual(dependency_use(unresolved), [])
 
     def test_a_contained_procedure_named_like_a_keyword_is_live(self) -> None:
         # The name scan takes every identifier token, keywords included: a contained procedure
