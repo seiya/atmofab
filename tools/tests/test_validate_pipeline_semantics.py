@@ -20069,7 +20069,12 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
         the pinned 5-argument signature produced ZERO violations — the gate compared §5.1 against the
         decoy. Moving the decoy before the real subroutine restored the 4 violations, which is what
         identified last-wins as the mechanism. A `Generate.gate` pass while publishing an ABI §5.1
-        does not declare is the `leaf shortcut` this gate exists to refuse."""
+        does not declare is the `leaf shortcut` this gate exists to refuse.
+
+        Since issue #504 the splitter no longer reads the generated source: the published procedure
+        is compared against the module's own definition (issue #430), and the decoy prototype is
+        refused as a second declaration of the published name by the structure reader's count —
+        which this row still pins, in both orderings."""
         import tempfile
         decoy = (
             "  subroutine abi_note()\n"
@@ -20097,7 +20102,8 @@ class InfrastructureGeneratedSignatureGateTests(unittest.TestCase):
                     violations = self._run(ex, tmp)
                 self.assertTrue(violations, label)
                 self.assertTrue(
-                    any("must be declared exactly once" in v for v in violations),
+                    any("procedure 'hx__emit_real' more than once" in v
+                        and "1 prototype(s) of it" in v for v in violations),
                     (label, violations))
         # ...and the same source WITHOUT the decoy passes, so the row is not just "any extra text
         # fails".
@@ -21506,12 +21512,18 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
                            + "  end subroutine hx__write_metrics_basis\n")
                 violations = self._gate(self._C._GOOD_SOURCE.replace(self._DEF, drifted))
                 named = [v for v in violations if "'hx__write_metrics_basis'" in v]
-                # ONE message for the name: a second, "no procedure of that name/header found",
-                # would contradict the first (round 3 mutant v3). Since issue #430 it is the
-                # drift itself, read from the definition's own `n`, not the decoy's.
-                self.assertEqual(len(named), 1, violations)
-                self.assertIn("drifts from controlled_spec §5.1", named[0])
-                self.assertIn("`n` — its type is `real(dp)` where §5.1 pins `integer`", named[0])
+                # ONE drift message for the name, and no "no procedure of that name/header found",
+                # which would contradict it (round 3 mutant v3). Since issue #430 it is the drift
+                # itself, read from the definition's own `n`, not the decoy's. Since issue #504 the
+                # decoy is ALSO refused, as a second declaration of the published name.
+                drifts = [v for v in named if "drifts from controlled_spec §5.1" in v]
+                self.assertEqual(len(drifts), 1, violations)
+                self.assertIn("`n` — its type is `real(dp)` where §5.1 pins `integer`", drifts[0])
+                self.assertFalse(any("no procedure of that name/header found" in v
+                                     for v in named), violations)
+                self.assertTrue(any("more than once — 1 prototype(s) of it" in v
+                                    for v in named), violations)
+                self.assertEqual(len(named), 2, violations)
 
     def test_each_definition_is_split_alone(self) -> None:
         # Named after PR #279's per-definition split (`module_level_definition_stanzas`), which
@@ -21729,7 +21741,7 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
         # dedicated exit code. Swallowed, it becomes a content violation the leaf retries forever.
         unavailable = fortran_structure.FortranStructureUnavailableError
         with unittest.mock.patch.object(
-                fortran_source, "module_level_procedure_names",
+                fortran_source, "structure_reading",
                 side_effect=unavailable("no grammar")), tempfile.TemporaryDirectory() as t:
             tmp = Path(t)
             execution = self.inst._seed(tmp, source=self._C._GOOD_SOURCE)
@@ -28925,9 +28937,11 @@ class ProcedureTypedSurfaceGateTests(unittest.TestCase):
         self.assertEqual(self._generate(split), [])
 
     def test_a_pinned_prototype_spelled_twice_in_different_case_is_refused(self) -> None:
-        # The splitter keys raw text and this gate keys lowercased names, so a drifted module
+        # The splitter keyed raw text and this gate keys lowercased names, so a drifted module
         # prototype `HX_RHS_1D` plus a block-local `hx_rhs_1d` carrying the pinned shape would
-        # leave the comparison to whichever came last (issue #430).
+        # leave the comparison to whichever came last (issue #430). Since issue #504 the
+        # structure reader counts prototypes by lowercased name, any scope, so this is the same
+        # "more than once" refusal as any second prototype.
         twice = self._MODEL.replace(
             "    subroutine hx_rhs_1d(u, dudt)\n", "    subroutine HX_RHS_1D(u, dudt)\n", 1).replace(
             "      real(dp), intent(out) :: dudt(:)\n    end subroutine hx_rhs_1d\n",
@@ -28940,7 +28954,8 @@ class ProcedureTypedSurfaceGateTests(unittest.TestCase):
         self.assertEqual(twice.count("HX_RHS_1D"), 1)
         self.assertIn("block\n      interface", twice)
         v = self._generate(twice)
-        self.assertTrue(any("more than one interface prototype of 'hx_rhs_1d'" in x for x in v), v)
+        self.assertTrue(any("prototype 'hx_rhs_1d' more than once — 2 prototype(s) of it" in x
+                            for x in v), v)
 
     def test_a_prototype_defined_as_a_procedure_is_refused(self) -> None:
         # The model implements the callback itself instead of declaring its shape: the
@@ -28973,6 +28988,285 @@ class ProcedureTypedSurfaceGateTests(unittest.TestCase):
         # guard the signatures / module_parameters halves take (terminal by TYPE).
         v = self._generate(self._MODEL, public_api=self._public_api(interfaces=_OMIT))
         self.assertTrue(any(isinstance(x, vps.StaleDependencyIRViolation) for x in v), v)
+
+
+class PrototypeScopeGateTests(unittest.TestCase):
+    """Issue #504: a §5.1 `interfaces` prototype is read from the one interface block of the
+    publishing module's own specification part (`structure.module_level_prototypes`), and a second
+    declaration of a pinned name anywhere in the file is refused. Drives the Generate.static source
+    pin with `ProcedureTypedSurfaceGateTests`' harness over a §5.1 whose prototype is a FUNCTION —
+    the header shape the whole-file splitter dropped when it carried a type (`real(dp) function`).
+
+    MEASURED on `origin/main` (`3ff3f789`), each row's first source through this same `_generate`:
+    the local-interface row (d1), the contained-definition row and the body-only row gave 0
+    violations. d1 and the contained row compile (`gfortran -fsyntax-only -std=f2008 -Wall`, 11.4.0,
+    rc 0). In d1 the published procedure's `procedure(hx_f)` dummy binds to the LOCAL pinned
+    prototype (passing an integer to `cb` is a "passed INTEGER(4) to REAL(8)" error) while the
+    module's own `hx_f` — the one a consumer `use`s — is the drifted one. The helper-module row's source here was refused on `origin/main` too (2
+    violations); the form the issue's plan measured at 0 (§1-2 of its comment) declares the
+    prototype kind-less in §5.1, which this fixture does not."""
+
+    _SECTION_51_FORTRAN = (
+        "integer, parameter :: dp = real64\n"
+        "abstract interface\n"
+        "  function hx_f(x) result(y)\n"
+        "    real(dp), intent(in) :: x\n"
+        "    real(dp) :: y\n"
+        "  end function hx_f\n"
+        "end interface\n"
+        "subroutine hx__advance(cb, v)\n"
+        "  procedure(hx_f) :: cb\n"
+        "  real(dp), intent(out) :: v\n"
+        "end subroutine hx__advance\n"
+    )
+    _SECTION_51 = _structured_section51_from_fortran(_SECTION_51_FORTRAN)
+    _STRUCT = parse_signatures_from_fortran(_SECTION_51_FORTRAN)
+    _controlled_spec = ProcedureTypedSurfaceGateTests._controlled_spec
+    _public_api = ProcedureTypedSurfaceGateTests._public_api
+    _generate = ProcedureTypedSurfaceGateTests._generate
+
+    _PINNED = ("function hx_f(x) result(y)\n{i}  import :: dp\n{i}  implicit none\n"
+               "{i}  real(dp), intent(in) :: x\n{i}  real(dp) :: y\n{i}end function hx_f\n")
+    _DRIFTED = ("real(dp) function hx_f(x)\n{i}  import :: dp\n{i}  implicit none\n"
+                "{i}  integer, intent(in) :: x\n{i}end function hx_f\n")
+
+    def _model(self, module_proto: str | None, *, local: str = "", contained: str = "",
+               ahead: str = "", name: str = "hx_model") -> str:
+        block = ("  abstract interface\n    " + module_proto.format(i="    ")
+                 + "  end interface\n") if module_proto is not None else ""
+        return (ahead + f"module {name}\n  use, intrinsic :: iso_fortran_env, only: real64\n"
+                "  implicit none\n  private\n  public :: dp, hx__advance\n"
+                "  integer, parameter :: dp = real64\n\n" + block + "\ncontains\n\n"
+                "  subroutine hx__advance(cb, v)\n" + local
+                + "    procedure(hx_f) :: cb\n    real(dp), intent(out) :: v\n"
+                "    v = cb(1.0_dp)\n" + contained + "  end subroutine hx__advance\n\n"
+                f"end module {name}\n")
+
+    def test_the_faithful_source_passes(self) -> None:
+        self.assertEqual(self._generate(self._model(self._PINNED)), [])
+
+    def test_a_second_prototype_in_the_published_procedure_is_refused(self) -> None:
+        # d1: the module's abstract interface carries a drifted typed-function prototype, and the
+        # published procedure's own interface block carries the pinned one — which is what its
+        # `procedure(hx_f)` dummy binds to.
+        local = "    interface\n      " + self._PINNED.format(i="      ") + "    end interface\n"
+        source = self._model(self._DRIFTED, local=local)
+        self.assertEqual(source.count("function hx_f(x)"), 2)
+        v = self._generate(source)
+        # The two statement positions, computed from the view the message speaks in.
+        view = fortran_source.joined_masked_view(source.lower()).split("\n")
+        at = [str(i + 1) for i, line in enumerate(view) if "function hx_f(x)" in line]
+        self.assertEqual(len(at), 2)
+        self.assertTrue(any("prototype 'hx_f' more than once — 2 prototype(s) of it (at "
+                            f"statements {', '.join(at)} of its joined view)" in x for x in v), v)
+        # Without the drift the second prototype is still refused: which one a reference binds to
+        # is not something the gate can decide.
+        v = self._generate(self._model(self._PINNED, local=local))
+        self.assertTrue(any("prototype 'hx_f' more than once" in x for x in v), v)
+
+    def test_a_second_prototype_in_a_helper_module_is_refused(self) -> None:
+        # d3: the pinned form in a helper module ahead of the publishing one.
+        ahead = ("module hx_aux\n  use, intrinsic :: iso_fortran_env, only: real64\n"
+                 "  implicit none\n  integer, parameter :: wp = real64\n  abstract interface\n"
+                 "    function hx_f(x) result(y)\n      import :: wp\n      implicit none\n"
+                 "      real(wp), intent(in) :: x\n      real(wp) :: y\n"
+                 "    end function hx_f\n  end interface\nend module hx_aux\n\n")
+        v = self._generate(self._model(self._DRIFTED, ahead=ahead))
+        self.assertTrue(any("prototype 'hx_f' more than once — 2 prototype(s)" in x for x in v), v)
+
+    def test_a_prototype_declared_only_in_a_procedure_body_is_refused(self) -> None:
+        local = "    interface\n      " + self._PINNED.format(i="      ") + "    end interface\n"
+        v = self._generate(self._model(None, local=local))
+        self.assertTrue(any("declares the controlled_spec §5.1 prototype 'hx_f' outside the "
+                            "publishing module's own specification part" in x for x in v), v)
+        self.assertFalse(any("does not declare the controlled_spec §5.1 prototype" in x
+                             for x in v), v)
+
+    def test_a_prototype_with_a_typed_header_is_compared_not_missed(self) -> None:
+        # The splitter dropped `real(dp) function hx_f(x)`, so `origin/main` told the leaf the
+        # prototype was absent; it is the header that differs.
+        typed = ("real(dp) function hx_f(x)\n{i}  import :: dp\n{i}  implicit none\n"
+                 "{i}  real(dp), intent(in) :: x\n{i}end function hx_f\n")
+        v = self._generate(self._model(typed))
+        self.assertTrue(any("prototype 'hx_f' drifts from controlled_spec §5.1's `interfaces` "
+                            "entry — its header reads `real(dp) function hx_f(x)`" in x
+                            for x in v), v)
+        self.assertFalse(any("does not declare the controlled_spec §5.1 prototype" in x
+                             for x in v), v)
+
+    def test_a_contained_definition_of_the_prototype_name_is_refused(self) -> None:
+        # A procedure contained in the published one, named like the prototype: a second
+        # declaration of the pinned name. (gfortran 11.4 still resolves the dummy's
+        # `procedure(hx_f)` to the module's prototype here — passing an integer to `cb` is
+        # "passed INTEGER(4) to REAL(8)" — so this row pins the refusal, not a binding.)
+        contained = ("  contains\n    integer function hx_f(x)\n"
+                     "      integer, intent(in) :: x\n      hx_f = x\n"
+                     "    end function hx_f\n")
+        v = self._generate(self._model(self._PINNED, contained=contained))
+        self.assertTrue(any("DEFINES 'hx_f', which controlled_spec §5.1 declares as a prototype"
+                            in x for x in v), v)
+        # With a second prototype too, the "more than once" message counts the definition
+        # without calling it the one the module publishes (round 4).
+        local = "    interface\n      " + self._PINNED.format(i="      ") + "    end interface\n"
+        v = self._generate(self._model(self._PINNED, local=local, contained=contained))
+        self.assertTrue(any("prototype 'hx_f' more than once — 2 prototype(s) of it" in x
+                            and "1 definition(s) of it (a prototype is never defined)" in x
+                            for x in v), v)
+
+    def test_a_published_procedure_defined_again_in_a_helper_module_is_refused(self) -> None:
+        ahead = ("module hx_aux\n  implicit none\ncontains\n  subroutine hx__advance(n)\n"
+                 "    integer, intent(in) :: n\n    print *, n\n"
+                 "  end subroutine hx__advance\nend module hx_aux\n\n")
+        v = self._generate(self._model(self._PINNED, ahead=ahead))
+        self.assertTrue(any("procedure 'hx__advance' more than once — 1 definition(s) of it "
+                            "beside the one the module 'hx_model' publishes" in x for x in v), v)
+        self.assertFalse(any("drifts" in x for x in v), v)
+        # A second definition in the module's own `contains` section is told the same way; the
+        # message must not call it "outside" that section (round 2 of the review).
+        twice = self._model(self._PINNED).replace(
+            "\nend module hx_model\n",
+            "\n  subroutine hx__advance(n)\n    integer, intent(in) :: n\n    print *, n\n"
+            "  end subroutine hx__advance\n\nend module hx_model\n", 1)
+        v = self._generate(twice)
+        self.assertTrue(any("procedure 'hx__advance' more than once — 1 definition(s) of it "
+                            "beside the one the module 'hx_model' publishes (a second one in its "
+                            "`contains` section" in x for x in v), v)
+
+    def test_a_published_procedure_prototyped_and_defined_only_in_another_body(self) -> None:
+        # The module only prototypes the published procedure, and a procedure contained in a
+        # helper defines one of the same name: two declarations, neither the module's own
+        # definition — told as both faults. A lone contained definition is only the
+        # definedness fault ("never DEFINES"), never "more than once".
+        proto = ("  interface\n    subroutine hx__advance(cb, v)\n      import :: dp, hx_f\n"
+                 "      procedure(hx_f) :: cb\n      real(dp), intent(out) :: v\n"
+                 "    end subroutine hx__advance\n  end interface\n")
+        helper = ("  subroutine hx_helper(cb, v)\n    procedure(hx_f) :: cb\n"
+                  "    real(dp), intent(out) :: v\n    call hx__advance(cb, v)\n  contains\n"
+                  "    subroutine hx__advance(cb, v)\n      procedure(hx_f) :: cb\n"
+                  "      real(dp), intent(out) :: v\n      v = cb(1.0_dp)\n"
+                  "    end subroutine hx__advance\n  end subroutine hx_helper\n")
+        base = self._model(self._PINNED)
+        start = base.index("  subroutine hx__advance(cb, v)\n")
+        end = base.index("  end subroutine hx__advance\n") + len("  end subroutine hx__advance\n")
+        only_contained = base[:start] + helper + base[end:]
+        both = only_contained.replace("\ncontains\n", "\n" + proto + "\ncontains\n", 1)
+        self.assertEqual(both.count("subroutine hx__advance(cb, v)"), 2)
+        v = self._generate(both)
+        self.assertTrue(any("procedure 'hx__advance' more than once — 1 prototype(s) of it" in x
+                            and "1 definition(s) of it beside" in x for x in v), v)
+        self.assertTrue(any("never DEFINES it" in x for x in v), v)
+        v = self._generate(only_contained)
+        self.assertTrue(any("never DEFINES it" in x for x in v), v)
+        self.assertFalse(any("more than once" in x for x in v), v)
+
+    def test_a_statement_binding_the_prototype_name_is_refused(self) -> None:
+        # Issue #504's review, rounds 1 and 2: a statement local to the published procedure that
+        # binds `hx_f` — an import renaming another interface onto it, a `procedure(hx_g) :: hx_f`
+        # declaration, a procedure pointer of that name — makes its `procedure(hx_f)` dummy
+        # `hx_g`'s interface (an `integer function`), while the module still declares the pinned
+        # `hx_f`. Each: 0 violations on origin/main and before the fix,
+        # `gfortran -fsyntax-only -std=f2008 -Wall` rc 0.
+        aux = ("module hx_aux\n  implicit none\n  abstract interface\n"
+               "    integer function hx_g(x)\n      implicit none\n"
+               "      integer, intent(in) :: x\n    end function hx_g\n  end interface\n"
+               "end module hx_aux\n\n")
+        renamed = self._model(self._PINNED, ahead=aux,
+                              local="    use hx_aux, only: hx_f => hx_g\n").replace(
+            "v = cb(1.0_dp)", "v = real(cb(1), dp)")
+        v = self._generate(renamed)
+        self.assertTrue(any("binds the §5.1 prototype name `hx_f` outside its interface block — "
+                            "`use hx_aux, only: hx_f => hx_g`" in x for x in v), v)
+        other = ("  abstract interface\n    integer function hx_g(x)\n      implicit none\n"
+                 "      integer, intent(in) :: x\n    end function hx_g\n  end interface\n")
+        # The message quotes the statement as the joined view carries it (a label stripped).
+        for label, local, quoted in (
+                ("declaration", "    procedure(hx_g) :: hx_f\n", "procedure(hx_g) :: hx_f"),
+                ("pointer", "    procedure(hx_g), pointer :: hx_f => null()\n",
+                 "procedure(hx_g), pointer :: hx_f => null()"),
+                ("labelled import", "10  use hx_aux, only: hx_f => hx_g\n",
+                 "use hx_aux, only: hx_f => hx_g"),
+                ("continued pointer", "    procedure(hx_g), &\n      pointer :: hx_f => null()\n",
+                 "procedure(hx_g),  pointer :: hx_f => null()")):  # the join keeps the blanks
+            with self.subTest(label):
+                source = self._model(self._PINNED, local=local,
+                                     ahead=aux if "use" in local else "").replace(
+                    "v = cb(1.0_dp)", "v = real(cb(1), dp)")
+                if "use" not in local:
+                    source = source.replace("  end interface\n", "  end interface\n" + other, 1)
+                v = self._generate(source)
+                self.assertTrue(any("binds the §5.1 prototype name `hx_f` outside its interface "
+                                    f"block — `{quoted}`"
+                                    in x for x in v), v)
+        # The same name imported from the publishing module (a helper module of the same file
+        # taking the interface it needs) binds the pinned prototype, and is not refused.
+        helper = ("\nmodule hx_user\n  use hx_model, only: hx_f\n  implicit none\n"
+                  "  procedure(hx_f), pointer :: hook => null()\nend module hx_user\n")
+        public = self._model(self._PINNED).replace("public :: dp, hx__advance",
+                                                   "public :: dp, hx_f, hx__advance", 1)
+        self.assertEqual(self._generate(public + helper), [])
+
+    def test_an_implicit_result_prototype_is_not_a_binding_of_its_own_name(self) -> None:
+        # Round 3 of the review: a §5.1 function prototype whose result is named like the function
+        # renders as `function hx_f(x)` + `real(dp) :: hx_f`. The binding rule read that result
+        # declaration as a rebinding of `hx_f`, so the exact pinned form was refused and no source
+        # could pass (21ee9ab7). The prototype's own span is skipped now.
+        section = (
+            "integer, parameter :: dp = real64\nabstract interface\n  function hx_f(x)\n"
+            "    real(dp), intent(in) :: x\n    real(dp) :: hx_f\n  end function hx_f\n"
+            "end interface\nsubroutine hx__advance(cb, v)\n  procedure(hx_f) :: cb\n"
+            "  real(dp), intent(out) :: v\nend subroutine hx__advance\n")
+        from tools.backends.language.fortran.signatures import (
+            render_interface_to_fortran,
+        )
+
+        struct = parse_signatures_from_fortran(section)
+        self.assertEqual(struct["interfaces"][0]["result"]["name"], "hx_f")
+        self.assertIn("function hx_f(x)\n", render_interface_to_fortran(struct["interfaces"][0]))
+
+        class Implicit(PrototypeScopeGateTests):
+            _SECTION_51 = _structured_section51_from_fortran(section)
+            _STRUCT = struct
+
+        gate = Implicit("test_the_faithful_source_passes")
+        proto = ("function hx_f(x)\n{i}  import :: dp\n{i}  implicit none\n"
+                 "{i}  real(dp), intent(in) :: x\n{i}  real(dp) :: hx_f\n{i}end function hx_f\n")
+        self.assertEqual(gate._generate(gate._model(proto)), [])
+        # The skip is the prototype's own span: the same declaration in the published procedure
+        # is still a binding.
+        v = gate._generate(gate._model(proto, local="    real(dp) :: hx_f\n"))
+        self.assertTrue(any("binds the §5.1 prototype name `hx_f` outside its interface block — "
+                            "`real(dp) :: hx_f`" in x for x in v), v)
+
+    def test_a_misnamed_module_is_told_as_the_absent_publisher(self) -> None:
+        v = self._generate(self._model(self._PINNED, name="hx"))
+        self.assertTrue(v)
+        self.assertTrue(all("declares no program unit named 'hx_model'" in x for x in v), v)
+        # ...and a binding of the prototype name is not told beside it (round 4): the one
+        # repair is the module's name.
+        other = ("  abstract interface\n    integer function hx_g(x)\n      implicit none\n"
+                 "      integer, intent(in) :: x\n    end function hx_g\n  end interface\n")
+        bound = self._model(self._PINNED, name="hx", local="    procedure(hx_g) :: hx_f\n").replace(
+            "  end interface\n", "  end interface\n" + other, 1)
+        v = self._generate(bound)
+        self.assertTrue(v)
+        self.assertTrue(all("declares no program unit named 'hx_model'" in x for x in v), v)
+
+    def test_an_unresolvable_source_runs_no_prototype_comparison(self) -> None:
+        # A variable named after a keyword the parser needs: refused as a structure fault, and no
+        # prototype finding is made from a reading the front end could not give.
+        source = self._model(self._DRIFTED).replace(
+            "    v = cb(1.0_dp)\n", "    v = cb(1.0_dp)\n    endsubroutine = 1\n")
+        v = self._generate(source)
+        self.assertTrue(any("could not resolve this source" in x and "each §5.1 prototype must "
+                            "be read from the one interface block that declares it" in x
+                            for x in v), v)
+        self.assertFalse(any("prototype 'hx_f'" in x or "prototype name `hx_f`" in x
+                             for x in v), v)
+        # ...including the binding rule, which reads the same structure view.
+        bound = source.replace("    procedure(hx_f) :: cb\n",
+                               "    procedure(hx_g) :: hx_f\n    procedure(hx_f) :: cb\n", 1)
+        self.assertNotEqual(bound, source)
+        self.assertFalse(any("prototype name `hx_f`" in x for x in self._generate(bound)))
 
 
 class DeviceKernelExecutionGateTests(unittest.TestCase):

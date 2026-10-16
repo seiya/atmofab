@@ -291,7 +291,57 @@ class FailClosedTest(unittest.TestCase):
 
 
 class FortranStanzaParserTests(unittest.TestCase):
-    """Generated .f90 still uses the stanza splitter; retain its legacy fail-closed coverage."""
+    """The stanza splitter's fail-closed coverage. It reads host-rendered interface text only since
+    issue #504 (the generated model source is read by the structure front end), so a line it cannot
+    place is an error rather than a skip."""
+
+    def test_a_header_shape_the_renderer_never_emits_is_an_error(self) -> None:
+        # Issue #504: each of these was skipped silently, so a stanza could vanish from a text
+        # with no error. The renderer emits none of them; in host text one means the renderer and
+        # the splitter disagree.
+        for line in ("type, bind(c) :: t", "type t", "type, extends(b) :: t",
+                     "module subroutine foo(x)", "impure subroutine foo(x)",
+                     "integer function f(x)", "real(dp) function f(x) result(y)"):
+            with self.subTest(line=line):
+                block = line + "\n  integer, intent(in) :: x\nend\n"
+                ops, types, ifaces, errors = parse_interface_stanzas(block)
+                self.assertTrue(any(f"unrecognised line outside any stanza: '{line}'" in e
+                                    for e in errors), errors)
+                self.assertEqual((ops, types, ifaces), ({}, {}, {}))
+                with self.assertRaises(SignatureParseError):
+                    normalized_stanza_index(block)
+
+    def test_a_listing_inside_an_interface_block_is_an_error(self) -> None:
+        for line in ("module procedure x", "procedure x", "module subroutine s(n)",
+                     "real(dp) function f(x)"):
+            with self.subTest(line=line):
+                _ops, _types, ifaces, errors = parse_interface_stanzas(
+                    f"abstract interface\n  {line}\nend interface\n")
+                self.assertEqual(
+                    [e for e in errors if "unrecognised line" in e],
+                    [(f"unrecognised line inside an interface block: '{line}' — this reader "
+                      "takes host-rendered interface text only, so a line it cannot place is a "
+                      "renderer / splitter disagreement, not a spec or source fault")])
+                self.assertEqual(ifaces, {})
+
+    def test_every_harness_pin_the_runner_renders_against_splits_clean(self) -> None:
+        # The runner's embedded pins are the other host text the splitter reads
+        # (`assert_harness_pin`, `_parse_stanzas`): no line of theirs may be unplaceable.
+        from tools.backends.language.fortran import runner
+        self.assertEqual(len(runner._HARNESS_PINS), 2)
+        for spec_id, pin in runner._HARNESS_PINS.items():
+            with self.subTest(spec_id=spec_id):
+                ops, types, _ifaces, errors = parse_interface_stanzas(pin.interface)
+                self.assertEqual(errors, [])
+                self.assertTrue(ops and types)
+
+    def test_the_module_parameter_lines_and_blanks_are_not_errors(self) -> None:
+        block = ("integer, parameter :: dp = real64\n\n"
+                 "INTEGER , PARAMETER :: case_id_len = 64\n  ! a comment\n"
+                 "subroutine s(a)\n  real(dp), intent(in) :: a\nend subroutine s\n")
+        ops, _types, _ifaces, errors = parse_interface_stanzas(block)
+        self.assertEqual(errors, [])
+        self.assertEqual(sorted(ops), ["s"])
 
     def test_unterminated_stanza_errors(self) -> None:
         with self.assertRaisesRegex(SignatureParseError, "unterminated"):
@@ -578,7 +628,9 @@ class FortranStanzaParserTests(unittest.TestCase):
         _ops, types, _ifaces, errors = parse_interface_stanzas(
             "type :: hx__a, hx__b\n  integer :: x\nend type hx__a\n")
         self.assertEqual(types, {})
-        self.assertEqual(errors, [])
+        # Not a stanza, so (since issue #504) an unrecognised line rather than a silent skip.
+        self.assertIn("unrecognised line outside any stanza: 'type :: hx__a, hx__b'",
+                      [e.split(" — ")[0] for e in errors])
 
     def test_a_component_declaration_is_not_a_type_header(self) -> None:
         # `_TYPE_HEADER_RE` is now the ONE owner of "what a type header is" — the stanza splitter
@@ -589,10 +641,10 @@ class FortranStanzaParserTests(unittest.TestCase):
         # component out is the missing comma before `::`, not the paren exclusion. What the paren
         # exclusion actually decides is every attribute list CONTAINING parentheses — `extends(b)`,
         # `bind(c)`, `public, bind(c)` — each of which is a legal type header the pattern silently
-        # refuses (no stanza, no error). An earlier version of this comment named `extends` as the
-        # only such input, which a reviewer measured false. None of those forms appears in the
-        # corpus today; pinning the class here would freeze the refusal, so TODO.md's
-        # `_TYPE_HEADER_RE` entry records it instead.
+        # refuses. An earlier version of this comment named `extends` as the only such input,
+        # which a reviewer measured false. Since issue #504 the splitter reads host-rendered text
+        # only, where none of those forms is rendered, and a line it refuses is an ERROR rather
+        # than a silent skip (`test_a_header_shape_the_renderer_never_emits_is_an_error`).
         block = ("type :: hx__outer\n"
                  "  type(hx__inner), allocatable :: parts(:)\n"
                  "  integer :: n\n"
@@ -714,12 +766,16 @@ class InterfaceBlockStanzaTests(unittest.TestCase):
         self.assertTrue(any(a.startswith("use") for a in stanza_atoms(ifaces["rhs_2d"])),
                         stanza_atoms(ifaces["rhs_2d"]))
 
-    def test_generic_interface_module_procedure_lines_are_dropped(self) -> None:
+    def test_generic_interface_module_procedure_lines_are_errors(self) -> None:
+        # Dropped silently until issue #504; the renderer emits no generic interface, so each
+        # listing line is now an error, and still not a prototype.
         block = ("interface hx__gen\n  module procedure hx__real\n  procedure hx__int\n"
                  "end interface hx__gen\n"
                  "subroutine hx__real(a)\n  real, intent(in) :: a\nend subroutine hx__real\n")
         ops, _types, ifaces, errors = parse_interface_stanzas(block)
-        self.assertEqual(errors, [])
+        self.assertEqual([e.split(" — ")[0] for e in errors],
+                         ["unrecognised line inside an interface block: 'module procedure hx__real'",
+                          "unrecognised line inside an interface block: 'procedure hx__int'"])
         self.assertEqual(ifaces, {})
         self.assertEqual(sorted(ops), ["hx__real"])
 
@@ -762,15 +818,19 @@ class InterfaceBlockStanzaTests(unittest.TestCase):
         self.assertIn("real :: local", ops["hx__f"])
 
     def test_an_interface_block_inside_a_procedure_body_yields_prototypes(self) -> None:
-        # Generated source: an explicit interface for an external, written inside a procedure
-        # body. The block terminates the procedure stanza (the declarations before it are kept)
-        # and its prototype is a prototype, not a second published procedure.
+        # Generated-source shape: an explicit interface for an external, written inside a
+        # procedure body. The block terminates the procedure stanza (the declarations before it
+        # are kept) and its prototype is a prototype, not a second published procedure. The
+        # renderer writes no body, so since issue #504 the body's executable statement and the
+        # `end` it leaves outside every stanza are errors.
         block = ("subroutine hx__f(a)\n  real, intent(in) :: a\n"
                  "  interface\n    subroutine ext(x)\n      real, intent(in) :: x\n"
                  "    end subroutine ext\n  end interface\n"
                  "  call ext(a)\nend subroutine hx__f\n")
         ops, _types, ifaces, errors = parse_interface_stanzas(block)
-        self.assertEqual(errors, [])
+        self.assertEqual([e.split(" — ")[0] for e in errors],
+                         ["unrecognised line outside any stanza: 'call ext(a)'",
+                          "unrecognised line outside any stanza: 'end subroutine hx__f'"])
         self.assertEqual(sorted(ops), ["hx__f"])
         self.assertEqual(sorted(ifaces), ["ext"])
         self.assertIn("real, intent(in) :: a", ops["hx__f"])
@@ -1405,6 +1465,7 @@ class NameCollisionTest(unittest.TestCase):
 
         publishing = ("component", "infrastructure")
         seen = []
+        rendered_kinds: set[str] = set()
         for cs in sorted((REPO_ROOT / "spec").rglob("controlled_spec.md")):
             rel = cs.relative_to(REPO_ROOT)
             body, err = _section51_fence_body(cs)
@@ -1416,7 +1477,22 @@ class NameCollisionTest(unittest.TestCase):
             *_stanzas, parse_err = _parse_canonical_interface_from_controlled_spec(
                 cs, fortran_signatures)
             self.assertIsNone(parse_err, f"{rel}: {parse_err}")
+            # Issue #504: the splitter reads host-rendered text only and errors on a line it
+            # cannot place, so every per-symbol rendering the IR pin splits must also split
+            # clean, to exactly one stanza.
+            struct, load_err = load_structured_signatures(body)
+            self.assertIsNone(load_err, f"{rel}: {load_err}")
+            for kind, render in (("procedures", fortran_signatures.render_symbol_to_fortran),
+                                 ("types", fortran_signatures.render_symbol_to_fortran),
+                                 ("interfaces", fortran_signatures.render_interface_to_fortran)):
+                for sig in struct.get(kind) or []:
+                    rendered_kinds.add(kind)
+                    ops, types, ifaces, errors = parse_interface_stanzas(render(sig))
+                    self.assertEqual(errors, [], f"{rel}: {sig.get('name')}")
+                    self.assertEqual(len(ops) + len(types) + len(ifaces), 1,
+                                     f"{rel}: {sig.get('name')}")
         self.assertIn(HARNESS_SPEC, seen, "the sweep found no §5.1 — its reader has drifted")
+        self.assertEqual(rendered_kinds, {"procedures", "types", "interfaces"})
 
 
 class NeutralVocabularyTest(unittest.TestCase):
@@ -1872,20 +1948,18 @@ class Section51StanzaLayerTests(unittest.TestCase):
 
     def test_commented_out_stanza_behind_an_exotic_separator_is_not_parsed(self) -> None:
         # issue #23, defect A, at `_parse_interface_stanzas` — which the generated-signature
-        # gate runs over the MODEL SOURCE to compare each pinned §5.1 signature within its own
-        # procedure stanza. A form feed inside a comment ended the comment early under
-        # `str.splitlines()` and re-admitted its tail AS CODE, conjuring a stanza header out of
-        # prose: it never closes, so it is reported unterminated and fails Generate closed on a
-        # source gfortran and fortitude both accept.
+        # gate ran over the MODEL SOURCE until issue #504 (it reads host-rendered text only now;
+        # the scanner property this row pins is the same for either). A form feed inside a
+        # comment ended the comment early under `str.splitlines()` and re-admitted its tail AS
+        # CODE, conjuring a stanza header out of prose: it never closes, so it is reported
+        # unterminated and fails closed on a text gfortran and fortitude both accept.
         for ch, name in (("\x0c", "form feed"), ("\x0b", "vertical tab"), ("\x85", "NEL"),
                          ("\u2028", "LINE SEPARATOR")):
             with self.subTest(separator=name):
-                src = ("module hx_model\ncontains\n"
-                       f"  ! removed: {ch} subroutine hx__ghost(a)\n"
+                src = (f"  ! removed: {ch} subroutine hx__ghost(a)\n"
                        "  subroutine hx__real(a)\n"
                        "    real, intent(in) :: a\n"
-                       "  end subroutine\n"
-                       "end module\n")
+                       "  end subroutine\n")
                 ops, types, _ifaces, errors = parse_interface_stanzas(src)
                 self.assertEqual(errors, [], f"a {name} must not end the comment")
                 self.assertEqual(sorted(ops), ["hx__real"])

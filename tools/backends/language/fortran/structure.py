@@ -254,6 +254,24 @@ class DerivedType:
 
 
 @dataclass(frozen=True)
+class Prototype:
+    """One procedure DECLARED inside an `interface` block — a prototype, read with the same
+    `_procedure` as a definition, so its ``header_start`` / ``declarations`` locate its header
+    statement and its own declaration statements (an `import` or `implicit` statement is neither
+    and is not collected).
+
+    The scope is recorded as `DerivedType` records it: ``unit`` / ``unit_kind`` are the innermost
+    `module` / `submodule` the interface block stands in (None outside one), and ``in_procedure``
+    is True when the block stands inside a procedure node — a definition's specification part, a
+    `BLOCK` in one, or another prototype's body (a prototype's own dummy-procedure interface)."""
+
+    procedure: Procedure
+    unit: str | None
+    unit_kind: str | None
+    in_procedure: bool
+
+
+@dataclass(frozen=True)
 class StructureTree:
     view: str
     procedures: tuple[Procedure, ...]
@@ -261,6 +279,7 @@ class StructureTree:
     units: tuple[ProgramUnit, ...]
     errors: tuple[StructureError, ...]
     types: tuple[DerivedType, ...] = ()
+    prototypes: tuple[Prototype, ...] = ()
 
 
 def _load_parser():
@@ -364,7 +383,10 @@ def parse_view(view: str) -> StructureTree:
 
     Procedures are returned in body order. A procedure DECLARED inside an `interface` block is not
     a definition and is not returned — its span is returned separately so the caller can blank it
-    IN PLACE, keeping every body a slice of one length-preserving transform of the view.
+    IN PLACE, keeping every body a slice of one length-preserving transform of the view — and it is
+    returned as a `Prototype` instead, in body order too. A generic interface's `module procedure`
+    / `procedure` listing is a `procedure_statement` to this grammar, not a procedure node, so it is
+    neither.
     """
     parser = _load_parser()
     encoded = view.encode("utf-8")
@@ -375,6 +397,7 @@ def parse_view(view: str) -> StructureTree:
     interface_spans: list[tuple[int, int]] = []
     units: list[ProgramUnit] = []
     types: list[DerivedType] = []
+    prototypes: list[Prototype] = []
     errors: list[StructureError] = []
 
     def record_error(node) -> None:
@@ -446,6 +469,17 @@ def parse_view(view: str) -> StructureTree:
             procedure = _procedure(view, encoded, node, kind, to_char)
             if procedure is not None:
                 procedures.append(procedure)
+        elif kind in ("subroutine", "function") and node.children:
+            # Inside an interface block: a prototype. (`module_procedure` is a definition form only
+            # — a separate module subprogram — so it has no prototype reading.)
+            procedure = _procedure(view, encoded, node, kind, to_char)
+            if procedure is not None:
+                prototypes.append(Prototype(
+                    procedure=procedure,
+                    unit=unit[1] if unit is not None else None,
+                    unit_kind=unit[0] if unit is not None else None,
+                    in_procedure=inside_procedure,
+                ))
         if kind:
             inside_procedure = True
         # Reversed so the stack pops children left to right: `procedures` is sorted by
@@ -463,6 +497,7 @@ def parse_view(view: str) -> StructureTree:
         units=tuple(sorted(units, key=lambda item: item.start)),
         errors=tuple(sorted(errors, key=lambda item: (item.line, item.snippet))),
         types=tuple(sorted(types, key=lambda item: item.start)),
+        prototypes=tuple(sorted(prototypes, key=lambda item: item.procedure.body_start)),
     )
 
 
@@ -803,6 +838,60 @@ def module_level_type_definitions(
                 other_children=derived.other_children,
             ))
     return TypeReading(definitions, counts)
+
+
+@dataclass(frozen=True)
+class PrototypeReading:
+    """`module_level_prototypes`' answer. ``definitions`` are the prototypes declared in an
+    interface block of the publishing module's own specification part, keyed by lowercased name;
+    ``lines`` is, for every prototype name the whole file declares in any scope, the line of each
+    declaring header statement in the caller's view (1-based, in file order)."""
+
+    definitions: dict[str, Definition]
+    lines: dict[str, tuple[int, ...]]
+
+
+def module_level_prototypes(
+    tree: StructureTree,
+    unit_name: str,
+    text_between: Callable[[int, int], str],
+) -> PrototypeReading:
+    """The prototypes ``tree`` declares in an interface block of the MODULE ``unit_name``'s own
+    specification part — not in a submodule, not inside a procedure (a definition, a `BLOCK` in
+    one, another prototype's body) — plus where every prototype of each name stands, any scope.
+    ``text_between`` is `module_level_definitions`'.
+
+    This is what the §5.1 `interfaces` comparison reads, and the whole-file stanza splitter is not
+    (issue #504). The splitter knew three header shapes and skipped every other line, so a
+    prototype written `real(dp) function f(x)` or `module subroutine s(n)` was invisible to it and
+    another prototype of the same name stood in for it. Measured on `origin/main` at `3ff3f789`,
+    with §5.1 pinning `function f(x) result(y)` and a published procedure taking a `procedure(f)`
+    dummy: a drifted `real(dp) function f(x)` in the module's abstract interface plus the pinned
+    form in a local interface block of the published procedure (whose dummy then binds to the local
+    one) gave 0 violations; so did the pinned form in a helper module ahead of the publishing one
+    beside a kind-less drifted prototype. Reading the prototype the module's own specification part
+    carries leaves no other prototype to read; counting every prototype of the name, any scope,
+    lets the caller refuse the second one a `procedure(<name>)` dummy could bind to instead."""
+    wanted = unit_name.strip().lower()
+    definitions: dict[str, Definition] = {}
+    lines: dict[str, list[int]] = {}
+    for prototype in tree.prototypes:
+        procedure = prototype.procedure
+        # `.lower()` states the key rather than deciding it: every caller parses a lower-cased
+        # view, so dropping it survives the suite (not pinned).
+        name = procedure.name.strip().lower()
+        lines.setdefault(name, []).append(
+            text_between(0, procedure.header_start).count("\n") + 1)
+        if (prototype.unit_kind == "module" and prototype.unit == wanted
+                and not prototype.in_procedure):
+            definitions.setdefault(name, Definition(
+                header=text_between(procedure.header_start, procedure.body_start).strip(),
+                declarations=tuple(
+                    (declaration.kind, text_between(declaration.start, declaration.end).strip())
+                    for declaration in procedure.declarations),
+                local_types=procedure.local_types,
+            ))
+    return PrototypeReading(definitions, {name: tuple(found) for name, found in lines.items()})
 
 
 def module_level_procedure_names(
