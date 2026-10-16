@@ -1163,10 +1163,10 @@ def _validate_problem_model_dependency_dataflow(
     issue #506 — measured at `c9f46eee`: a never-called contained `dead` doing `y = scratch`
     returned 0 violations, as did a dead chain `a` -> `b`) — its assignments AND its calls, so a
     dependency call that only dead code makes is not seen here and is refused by the
-    dependency-use check as no call at all. What is NOT closed is every spelling
-    that names the dead code: a dead branch in the host (`if (.false.) then / y = scratch /
-    end if`, measured 0 violations at the same commit), `if (.false.) call dead()`, and `p =>
-    dead` for a pointer never called. Each needs control flow, the same flow-sensitive pass as
+    dependency-use check as no call at all. What is NOT closed: a dead branch in the host
+    (`if (.false.) then / y = scratch / end if`, measured 0 violations at the same commit), and
+    every spelling that names the dead procedure — `if (.false.) call dead()`, and `p => dead`
+    for a pointer never called. Each needs control flow, the same flow-sensitive pass as
     (c); `Generate.verify` G5 and the runtime own them meanwhile.
 
     Residue (c) above is the one with a named instance: the
@@ -2352,9 +2352,11 @@ def validate_dependency_operations(
         # defines nothing (fail-closed).
         lowered = fortran_lines.mask_code_lookalikes(text.lower())
         # The CALL clause reads the source with its dead contained procedures blanked: a call
-        # that never runs is not a use of the dependency (issue #506 — every gate reads dead code
-        # the same way, as absent). A source the structure reader refuses keeps today's reading;
-        # the `problem` model gates refuse it on their own.
+        # that never runs is not a use of the dependency (issue #506 — the `problem` model gates
+        # read dead code the same way, as absent). A source the structure reader refuses keeps
+        # the masked-text reading, which counts a dead call: on a `problem` node the model gates
+        # refuse that source on their own, on a component the §5.1 signature pin does when the
+        # node has a pinned surface, and otherwise it is read as it was before issue #506.
         live = _without_dead_contained_procedures(text.lower()) or lowered
 
         for spec_id in dep_spec_ids:

@@ -360,9 +360,9 @@ def _blank_dead_lambdas(body: str) -> str:
     rests on.
 
     NOT CLOSED, and the same bound as the Fortran binding's (its dataflow gate's residue (d)):
-    every spelling that names the dead code — `(void)dead;`, a two-statement
-    `std::function<void()> f; f = [&]{…};` (the declaration names `f`), `if (false) { out = fv; }`
-    — and every declaration spelling the bullets above leave live. The gates do not read
+    a dead branch (`if (false) { out = fv; }`), every spelling that names the dead lambda —
+    `(void)dead;`, a two-statement `std::function<void()> f; f = [&]{…};` (the declaration names
+    `f`) — and every declaration spelling the bullets above leave live. The gates do not read
     control flow.
     """
     while True:
@@ -1594,8 +1594,8 @@ def _validate_problem_dependency_dataflow(
 
     Every body read here has had its dead named lambdas blanked by `run_problem_model_gates`
     (`_blank_dead_lambdas`, issue #506): an assignment in a lambda the function never names again
-    feeds no closure. Code that names the dead text — `(void)dead;`, `if (false) { … }` — still
-    does; the gate does not read control flow, the same bound as the Fortran binding's residue
+    feeds no closure. A dead branch (`if (false) { … }`) and code that names the dead lambda
+    (`(void)dead;`) still do; the gate does not read control flow, the same bound as the Fortran binding's residue
     (d). A dependency CALL in a dead lambda is absent too; the dependency-use check
     (`validate_dependency_operations`) reads the same blanked bodies, so a function whose only
     call never runs is refused there as calling none."""

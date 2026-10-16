@@ -6789,8 +6789,8 @@ end module m
             "subroutine host(x, y)\n"
             "  real, intent(in) :: x\n"
             "  real, intent(out) :: y\n"
-            "  real :: t\n"
-            "  call inner(t)\n"
+            "  real :: tttt\n"
+            "  call inner(tttt)\n"
             "  y = helper_marker\n"
             "contains\n"
             "  subroutine inner(z)\n"
@@ -6815,6 +6815,17 @@ end module m
         self.assertIn("w = dead_marker", dead.body)
         self.assertIn("intent(out) :: w", dead.out_scope)
         self.assertEqual(host.body.count("\n"), source.count("\n") - 2)
+        # IN PLACE: the same source with `dead` named (a same-length local) gives a host body of
+        # the same length with its newlines at the same offsets — deleting the span instead of
+        # blanking it would move every later position the dataflow gate compares.
+        named = source.replace("real :: tttt", "real :: dead").replace(
+            "call inner(tttt)", "call inner(dead)")
+        live_host = next(e for e in fortran_source.procedure_envelopes(named)
+                         if e.name == "host")
+        self.assertIn("w = dead_marker", live_host.body)
+        self.assertEqual(len(host.body), len(live_host.body))
+        self.assertEqual([i for i, c in enumerate(host.body) if c == "\n"],
+                         [i for i, c in enumerate(live_host.body) if c == "\n"])
         self.assertIn("intent(out) :: y", host.out_scope)
         self.assertNotIn("intent(out) :: z", host.out_scope)
         self.assertIn("z = 2.0", inner.body)
@@ -6890,7 +6901,7 @@ end module m
         self.assertEqual(self._dataflow_violations(live), [])
 
     def test_a_dependency_call_only_in_dead_code_is_no_call(self) -> None:
-        # Dead code is absent to EVERY gate, the dependency-use check included (issue #506,
+        # Dead code is absent to every `problem` model gate and to the dependency-use check (#506,
         # rounds 1-2 of its review): an earlier fix read calls from the unblanked text and the
         # closure from the blanked one, and each round found a shape the two disagreed on. A
         # model whose only dependency call sits in a never-called contained procedure — with or

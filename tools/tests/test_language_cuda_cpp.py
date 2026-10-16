@@ -1661,7 +1661,7 @@ class PhysicsGateTests(unittest.TestCase):
             self.assertEqual([], self._gates(self._model(tmp, body), ["dep"]))
 
     def test_a_dependency_call_only_in_a_never_invoked_lambda_is_no_call(self) -> None:
-        # Dead code is absent to EVERY gate, the dependency-use check included (issue #506,
+        # Dead code is absent to every `problem` model gate and to the dependency-use check (#506,
         # rounds 1-2 of its review): an earlier fix read calls from the unblanked body and the
         # closure from the blanked one, and each round found a shape the two disagreed on. A
         # function whose only dependency call sits in a dead lambda — with its consumer, or with
