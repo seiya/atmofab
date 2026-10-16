@@ -29000,8 +29000,9 @@ class PrototypeScopeGateTests(unittest.TestCase):
     MEASURED on `origin/main` (`3ff3f789`), each row's first source through this same `_generate`:
     the local-interface row (d1), the contained-definition row and the body-only row gave 0
     violations. d1 and the contained row compile (`gfortran -fsyntax-only -std=f2008 -Wall`, 11.4.0,
-    rc 0), and in both the published procedure's `procedure(hx_f)` dummy binds to the drifted
-    declaration. The helper-module row's source here was refused on `origin/main` too (2
+    rc 0). In d1 the published procedure's `procedure(hx_f)` dummy binds to the LOCAL pinned
+    prototype (passing an integer to `cb` is a "passed INTEGER(4) to REAL(8)" error) while the
+    module's own `hx_f` — the one a consumer `use`s — is the drifted one. The helper-module row's source here was refused on `origin/main` too (2
     violations); the form the issue's plan measured at 0 (§1-2 of its comment) declares the
     prototype kind-less in §5.1, which this fixture does not."""
 
@@ -29138,6 +29139,29 @@ class PrototypeScopeGateTests(unittest.TestCase):
         v = self._generate(only_contained)
         self.assertTrue(any("never DEFINES it" in x for x in v), v)
         self.assertFalse(any("more than once" in x for x in v), v)
+
+    def test_an_import_binding_the_prototype_name_is_refused(self) -> None:
+        # Round 1 of issue #504's review: `use hx_aux, only: hx_f => hx_g` local to the published
+        # procedure makes its `procedure(hx_f)` dummy `hx_g`'s interface (an `integer function`),
+        # while the module still declares the pinned `hx_f`. 0 violations at 4a600047 and on
+        # origin/main; `gfortran -fsyntax-only -std=f2008 -Wall` rc 0.
+        aux = ("module hx_aux\n  implicit none\n  abstract interface\n"
+               "    integer function hx_g(x)\n      implicit none\n"
+               "      integer, intent(in) :: x\n    end function hx_g\n  end interface\n"
+               "end module hx_aux\n\n")
+        renamed = self._model(self._PINNED, ahead=aux,
+                              local="    use hx_aux, only: hx_f => hx_g\n").replace(
+            "v = cb(1.0_dp)", "v = real(cb(1), dp)")
+        v = self._generate(renamed)
+        self.assertTrue(any("imports the §5.1 prototype name `hx_f` (`usehx_aux,only:hx_f=>hx_g`)"
+                            in x for x in v), v)
+        # The same name imported from the publishing module (a helper module of the same file
+        # taking the interface it needs) binds the pinned prototype, and is not refused.
+        helper = ("\nmodule hx_user\n  use hx_model, only: hx_f\n  implicit none\n"
+                  "  procedure(hx_f), pointer :: hook => null()\nend module hx_user\n")
+        public = self._model(self._PINNED).replace("public :: dp, hx__advance",
+                                                   "public :: dp, hx_f, hx__advance", 1)
+        self.assertEqual(self._generate(public + helper), [])
 
     def test_a_misnamed_module_is_told_as_the_absent_publisher(self) -> None:
         v = self._generate(self._model(self._PINNED, name="hx"))
