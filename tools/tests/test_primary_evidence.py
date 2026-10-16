@@ -583,6 +583,10 @@ class EvaluationTest(unittest.TestCase):
         np.testing.assert_array_equal(ev("transpose(final.c, 2, 0)"), np.transpose(c3, (2, 1, 0)))
         np.testing.assert_array_equal(ev("transpose(final.h, 0, 1)"), h.T)
         np.testing.assert_array_equal(ev("transpose(final.h, 1, 1)"), h)
+        c4 = np.arange(120.0).reshape(2, 3, 4, 5)
+        env.final["d"] = c4
+        np.testing.assert_array_equal(ev("transpose(final.d)"), np.transpose(c4, (3, 2, 1, 0)))
+        np.testing.assert_array_equal(ev("transpose(final.d, 1, 3)"), np.swapaxes(c4, 1, 3))
         np.testing.assert_array_equal(ev("flip(final.h, 0)"), h[::-1, :])
         np.testing.assert_array_equal(ev("flip(final.h, 1)"), h[:, ::-1])
         np.testing.assert_array_equal(ev("flip(final.h, 2 - 1.0)"), h[:, ::-1])
@@ -1411,8 +1415,10 @@ class SchemaGateTest(unittest.TestCase):
                           ("transpose(final.s)", "transpose(): the first argument must be an array"),
                           ("flip(final.s, 0)", "flip(): the first argument must be an array"),
                           ("maxabs(transpose(final.h, 1))",
-                           "transpose(): takes the array alone, or the array and the two axes "
-                           "it exchanges")):
+                           ("transpose(): takes the array alone, or the array and the two axes "
+                            "it exchanges")),
+                          ("maxabs(transpose(final.h, 0, final.h))",
+                           "transpose(): every argument after the first must be a scalar")):
             with self.subTest(expr=expr):
                 self.assertEqual(self._v([{**HMIN, "expr": expr}]),
                                  [f"primary_predicates[0].expr: {msg}"])
@@ -1576,6 +1582,7 @@ class StaticRankTest(unittest.TestCase):
                      "atan2(final.h, final.v)", "sum(final.h + final.v)",
                      "transpose(final.s)", "flip(final.s, 0)", "coarsen(final.t, 1)",
                      "transpose(final.h, 1)", "transpose(final.h, final.h, 1)",
+                     "transpose(final.h, 0, final.h)",
                      "flip(final.h, final.v)", "coarsen(final.h, final.h)",
                      "transpose(final.h) + final.v", "flip(final.h, 0) - final.v"):
             with self.subTest(expr=expr):
