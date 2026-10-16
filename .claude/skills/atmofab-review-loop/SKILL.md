@@ -564,10 +564,11 @@ nor resets the two-consecutive-clean-security-rounds condition.**
   If you do start editing, **write the fact and the time into the next round's prompt**.
 - Always in the prompt: **the target is `git diff origin/main...HEAD`**, and **"do not modify the
   checkout; run mutation tests in a separate worktree"** — not a `git archive` export: rows that
-  call `git` (`git ls-files`, `git check-ignore`, `git grep`) in `test_backend_boundary.py`, the
-  three linter backends' test files and — since issue #498, which turned its skip into a failure
-  — `test_prune_workflow_homes.py` FAIL outside a checkout, so every mutant scored with those
-  files there reads as killed
+  call `git` FAIL outside a checkout, so every mutant scored with their files there reads as
+  killed. Measured at issue #498 (every `tools/tests/test_*.py` run in an export): six files —
+  `test_backend_boundary.py`, the three linter backends' test files, `test_hooks_dev_cli.py` (the
+  hook command runs `git rev-parse`), and, since #498 turned its skip into a failure,
+  `test_prune_workflow_homes.py`
 - **A scratchpad per agent**: "**create your own subdirectory, named uniquely to you (add your
   PID); do not reuse or overwrite existing paths, and delete only the subdirectory you created,
   never the round's shared root**". Put your own working files in a subdirectory the same way.

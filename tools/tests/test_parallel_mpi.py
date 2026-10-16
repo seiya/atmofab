@@ -115,7 +115,8 @@ def _require_mpi_pair() -> str:
         raise AssertionError(
             "no MPI installation whose wrapper compiles the binding canary was found on PATH or "
             f"in /usr/bin; install an MPI whose {wrapper.COMPILER_WRAPPER} compiles a program "
-            "using the binding module with this host's compiler (docs/RUNBOOK.md#0-1, "
+            "using the binding module with this host's compiler — or, if one is installed, "
+            "install the compiler its wrapper calls (docs/RUNBOOK.md#0-1, "
             "docs/backends/parallel/mpi/LAUNCHER.md §3)")
     return _PAIR
 

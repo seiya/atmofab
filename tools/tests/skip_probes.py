@@ -36,7 +36,7 @@ and refused only on a host that has it — the operator's, where all three are i
 test that never reaches the report — an early `return` in a test body, `__test__ = False`, a test
 under `if`, `del` of a test — is a pass or an absence, not a skip; nothing in the suite or in CI
 sees those (CI's pristine collection count reads the same source as the run, so it drops them
-on both sides). Both are accepted limits, recorded with their measurements on issue #498.
+on both sides). Both are accepted limits, recorded on issue #498.
 """
 from __future__ import annotations
 

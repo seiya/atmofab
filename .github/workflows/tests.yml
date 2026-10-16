@@ -128,10 +128,12 @@ jobs:
         # retry would hide on a second machine exactly what a second machine is here to expose.
         # `--junitxml` is what the guard below reads; it selects nothing.
         env:
-          # A fact about the RUNNER, not a change to the launcher backend: Open MPI counts
-          # physical cores as slots, and this runner exposes 4 vCPUs on 2 cores, so the distributed
-          # runner rows' `mpirun -n 4` was refused with "There are not enough slots available"
-          # (measured on run 38821799136, the first run with MPI installed; issue #498).
+          # A fact about the RUNNER, not a change to the launcher backend: the distributed runner
+          # rows' `mpirun -n 4` (run only where `sched_getaffinity` reports at least 4 CPUs) was
+          # refused with "There are not enough slots available" on run 38821799136, the first
+          # run with MPI installed (issue #498). Open MPI counts physical cores as slots, so the
+          # runner has fewer cores than CPUs — inferred from that refusal; the log prints no
+          # core count.
           OMPI_MCA_rmaps_base_oversubscribe: "1"
         run: >
           python3 -m pytest tools/tests/ -q -rs
