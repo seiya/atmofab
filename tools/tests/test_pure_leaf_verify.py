@@ -1039,9 +1039,10 @@ class PureVerifySubstepTests(unittest.TestCase):
         the fallback launch here renders with `repair_strategy: none`.
 
         The missing home is faked where production detects it (`record_launch`'s
-        `codex_lineage_home_missing`, which production returns before any durable launch
-        mutation and so before any leaf is spawned; the fake records the request first and
-        then adds the flag, so the dead warm turn's request stays observable), on the claude
+        `codex_lineage_home_missing`, which the runtime's record-launch returns before it
+        writes any launch state and so before any leaf is spawned; the fake runs the real
+        record first and then adds the flag, so the dead warm turn's request stays
+        observable), on the claude
         fake, where a session id is the child's arid — so, as in the producer's row, the codex
         thread-id spelling of the target is not this row's subject.
         """
@@ -1321,8 +1322,8 @@ class PureVerifySubstepTests(unittest.TestCase):
         """The reviewer twin of the producer row of the same name (issue #508, round 1): a
         schema-violating verdict on every turn, the lineage home vanishing on the first warm
         repair. The dead turn must not spend the repair budget: every repair the budget allows
-        still reaches a leaf (`MAX_BUNDLE_REPAIR_TURNS + 1` spawns), and the record counts the
-        launches that ran, not the request that died."""
+        still reaches a leaf (`MAX_BUNDLE_REPAIR_TURNS + 1` spawns), and `verdict_meta` counts
+        the launches that ran, not the request that died."""
         from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
         malformed = wc.ProcResult(0, _envelope({"verification_status": "pass"}), "")
         c, refs = self._waiting(malformed, malformed, record=True)
@@ -1351,7 +1352,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         """The reviewer's PASS path counts its launches at three sites — `verdict_meta`, the
         verdict's project meta (`source_meta.json#attempt_count` here) and the terminal row's
         `result_summary` — and only the outcome's `attempts` was pinned (issue #508, round 2;
-        the producer's pass path is pinned by `test_transport_usage_limit_waits_then_passes`).
+        the producer twin is `test_a_bundle_accepted_after_a_transient_retry_records_every_launch`).
         One dropped connection, then a passing verdict: two launches, and every record says 2.
         Only a re-launch in the history separates `len(per_attempt)` from `attempt + 1`."""
         c, refs = self._waiting(self._FLAKE)

@@ -1678,7 +1678,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
         repair budget for it (issue #508, round 1). Fixture: a schema violation on every turn,
         the home vanishing on the first warm repair. Every repair the budget allows still
         reaches a leaf — `MAX_BUNDLE_REPAIR_TURNS + 1` spawns — and the dead turn is in the
-        requests and nowhere in the record. The existing lineage row passes on its first cold
+        requests and not in `bundle_meta`'s `per_attempt`. The existing lineage row passes on its first cold
         repair, so it cannot see a dead turn that spent an `attempt`. Faked at `record_launch`,
         where production detects it, on the claude fake (see that row)."""
         from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
@@ -1793,6 +1793,31 @@ class PureUsageLimitWaitTest(unittest.TestCase):
             # both launches are visible as per_attempt rows; the dead one is labeled pure_transport
             self.assertEqual(len(meta["per_attempt"]), 2)
             self.assertEqual(meta["per_attempt"][0]["failure_category"], "pure_transport")
+
+    def test_a_bundle_accepted_after_a_transient_retry_records_every_launch(self) -> None:
+        """The producer twin of the reviewer's row of the same name (issue #508, round 3). One
+        dropped connection, then a valid bundle: two launches, and the terminal row's
+        `result_summary` says so as well as `bundle_meta` (which
+        `test_transport_usage_limit_waits_then_passes` already pinned, for a wait rather than a
+        flake). Only a re-launch in the history separates `len(per_attempt)` from
+        `attempt + 1`. Not pinned here: the count `write_artifacts` receives, which
+        `generate.generate`'s writer ignores and which reaches only `compile.generate`'s pending
+        `ir_meta.json#attempt_count`."""
+        flake = wc.ProcResult(1, "", "API Error: Connection closed mid-response.")
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _write_node(repo)
+            c = self._conductor(repo, [flake, wc.ProcResult(0, _envelope(_valid_bundle()), "")])
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            self.assertEqual(oc.status, "pass")
+            self.assertEqual(c._spawn, 2)
+            self.assertEqual(oc.attempts, 2)
+            meta = json.loads((repo / refs.source_dir() / "bundle_meta.json").read_text())
+            self.assertEqual(meta["attempts"], 2)
+            self.assertEqual(len(meta["per_attempt"]), 2)
+            payloads = [cap["--agent-run-json"] for sub, cap in c.calls
+                        if sub == "finalize-child" and "--agent-run-json" in cap]
+            self.assertIn("(attempts=2)", json.dumps(payloads[-1]))
 
     def test_the_wait_asks_the_provider_of_this_substeps_own_entry(self) -> None:
         """Issue #405: the reset probe is asked with the producer loop's OWN `entry`, so a
@@ -2506,10 +2531,11 @@ class PureProducerExemplarTests(unittest.TestCase):
         c.envelopes = [_envelope(_valid_bundle())]
         # The session IS resumable, so the seed takes the WARM branch — and then the launch finds
         # the lineage home gone underneath it. Faked where PRODUCTION detects it: `record_launch`'s
-        # `codex_lineage_home_missing`, which production returns BEFORE any durable launch
-        # mutation and so before any leaf is spawned. The fake records the request first and
-        # then adds the flag, which is what leaves the warm turn's shape to assert on; stubbing
-        # `_spawn_pure_turn` itself would leave nothing.
+        # `codex_lineage_home_missing`, which the runtime's record-launch returns before it
+        # writes any launch state (the conductor's `record_launch` has already written the
+        # request's input evidence), and so before any leaf is spawned. The fake runs the real
+        # record first and then adds the flag, which is what leaves the warm turn's shape to
+        # assert on; stubbing `_spawn_pure_turn` itself would leave nothing.
         real_record = c.record_launch
         vanished: list[bool] = []
 
