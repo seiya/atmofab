@@ -1560,6 +1560,100 @@ class PhysicsGateTests(unittest.TestCase):
                               "operation outputs to its output dataflow (candidates=['fv'])"],
                              self._gates(model, ["dep"]))
 
+    # Issue #506: a lambda bound to a name the body never uses again is dead, and its
+    # assignments must not feed the closure (or exempt the function from the other two gates).
+    # Measured at `c9f46eee` (before the fix): every DEAD row below returned no violation.
+    _DEAD_LAMBDA_BAD = (
+        "void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+        " double dt) {\n"
+        "  std::vector<double> flux(static_cast<std::size_t>(u.extent[0]));\n"
+        "  atmofab::View<double, 1> fv{flux.data(), {u.extent[0]}};\n"
+        "  dep_model::dep__flux(u, fv, dt);\n"
+        "{lambda}"
+        "  for (long i = 0; i < u.extent[0]; ++i) {\n"
+        "    u_new.data[i] = u.data[i];\n"
+        "  }\n}")
+    _DEAD_LAMBDA_BODY = "{ u_new.data[0] = flux[0]; }"
+
+    def _dead_lambda_gates(self, lambda_text: str) -> tuple[Path, list[str]]:
+        with tempfile.TemporaryDirectory() as tmp:
+            model = self._model(tmp, self._DEAD_LAMBDA_BAD.replace("{lambda}", lambda_text))
+            return model, self._gates(model, ["dep"])
+
+    def test_a_never_invoked_named_lambda_does_not_consume_a_dependency_result(self) -> None:
+        body = self._DEAD_LAMBDA_BODY
+        for label, text in {
+            "auto": f"  auto dead = [&]() {body};\n",
+            "const auto, no parameter list": f"  const auto dead = [&] {body};\n",
+            "std::function, mutable, trailing return": (
+                f"  std::function<void()> dead = [&]() mutable -> void {body};\n"),
+            "nested live lambda inside a dead one": (
+                f"  auto dead = [&]() {{ auto inner = [&]() {body}; inner(); }};\n"),
+        }.items():
+            with self.subTest(label):
+                model, out = self._dead_lambda_gates(text)
+                self.assertEqual([(f"{model}: function p__step does not propagate dependency "
+                                   "operation outputs to its output dataflow "
+                                   "(candidates=['fv'])")], out)
+
+    def test_a_named_lambda_the_body_uses_is_live(self) -> None:
+        body = self._DEAD_LAMBDA_BODY
+        for label, text in {
+            "invoked by name": (f"  auto live = [&]() {body};\n"
+                                "  live();\n"),
+            "invoked in place, unnamed": f"  [&]() {body}();\n",
+            # The bound, pinned in the safe direction: any later use of the name keeps it live,
+            # control flow is not read (the dataflow gate's docstring states the residue).
+            "named again, never invoked": (f"  auto dead = [&]() {body};\n"
+                                           "  (void)dead;\n"),
+            "dead branch, no lambda": "  if (false) { u_new.data[0] = flux[0]; }\n",
+        }.items():
+            with self.subTest(label):
+                self.assertEqual([], self._dead_lambda_gates(text)[1])
+
+    def test_an_array_declarator_and_a_subscript_are_not_lambda_introducers(self) -> None:
+        # `buf[4]{…}` is a `[` whose `]` is followed by a `{`, with no `NAME =` before it;
+        # `first = buf[0]` has the `NAME =` and no `{` after the `]`. Neither is a lambda, and
+        # reading either as a dead one would blank live code (here: the consuming statement's
+        # declaration and the buffer it reads).
+        text = ("  double buf[4]{0.0, 1.0, 2.0, 3.0};\n"
+                "  double first = buf[0];\n  (void)first;\n")
+        model, out = self._dead_lambda_gates(text)
+        self.assertEqual([(f"{model}: function p__step does not propagate dependency "
+                           "operation outputs to its output dataflow (candidates=['fv'])")], out)
+        consume = text + "  u_new.data[0] = buf[1] + flux[0];\n"
+        self.assertEqual([], self._dead_lambda_gates(consume)[1])
+        self.assertEqual(cpp_source._blank_dead_lambdas("{" + text + "}"), "{" + text + "}")
+
+    def test_blanking_a_dead_lambda_keeps_every_offset(self) -> None:
+        body = "\n  auto dead = [&]() {\n    out = fv;\n  };\n  out = u;\n"
+        blanked = cpp_source._blank_dead_lambdas(body)
+        self.assertEqual(len(body), len(blanked))
+        self.assertEqual([i for i, c in enumerate(body) if c == "\n"],
+                         [i for i, c in enumerate(blanked) if c == "\n"])
+        self.assertNotIn("fv", blanked)
+        self.assertIn("out = u;", blanked)
+
+    def test_a_never_invoked_lambda_does_not_hide_a_literal_only_output(self) -> None:
+        dead = "void p__f(double& out, double u) { auto dead = [&]() { out = u; }; out = 1.0; }"
+        live = dead.replace("out = 1.0;", "dead(); out = 1.0;")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(any("literal-only assignments" in v
+                                for v in self._gates(self._model(tmp, dead), [])))
+            self.assertFalse(any("literal-only assignments" in v
+                                 for v in self._gates(self._model(tmp, live), [])))
+
+    def test_a_loop_only_in_a_never_invoked_lambda_does_not_exempt_a_metric_kernel(
+            self) -> None:
+        dead = ("void p__m(double x, double& a, double& b, double& c, double& d, double& e) {\n"
+                "  auto dead = [&]() { for (int i = 0; i < 2; ++i) { a = a + x; } };\n"
+                "  a = x; b = x; c = x; d = x; e = x;\n}")
+        live = dead.replace("  a = x;", "  dead();\n  a = x;")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(any("metric-only scalar kernel" in v for v in self._gates(
+                self._model(tmp, dead), [], multidim="p")))
+            self.assertEqual([], self._gates(self._model(tmp, live), [], multidim="p"))
+
     def test_a_declaration_s_initializer_is_not_an_assignment_before_the_call(self) -> None:
         """Round 1 of this change's review: copy-initialized buffers (`= std::vector<double>(n)`,
         `auto f = ...`) were read as inputs the call consumes, so a discarded dependency result
