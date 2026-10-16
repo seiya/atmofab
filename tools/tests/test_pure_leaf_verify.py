@@ -899,6 +899,22 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual(vmeta["failure_category"], "verdict_schema_violation")
         self.assertTrue(vmeta.get("failure_excerpt"))
 
+    def test_exhaustion_spends_exactly_the_repair_budget(self) -> None:
+        """The reviewer loop's copy of the budget boundary, `attempt < MAX_BUNDLE_REPAIR_TURNS`,
+        which had no witness either (issue #508): widened to `<=`, every exhaustion bills one
+        launch more than the budget names, and the row above stays green because the fake
+        repeats its last envelope for as many launches as the loop asks. The two loops are
+        separate copies, so the producer's row does not cover this one. Pinned on the launch
+        count, the outcome's `attempts`, and the `verdict_meta` the outer route reads."""
+        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        c, refs, oc = self._run([_envelope({"verification_status": "pass"})])
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 1)
+        self.assertEqual(oc.attempts, MAX_BUNDLE_REPAIR_TURNS + 1)
+        vmeta = json.loads((c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
+        self.assertEqual(vmeta["attempts"], MAX_BUNDLE_REPAIR_TURNS + 1)
+        self.assertEqual(len(vmeta["per_attempt"]), MAX_BUNDLE_REPAIR_TURNS + 1)
+
     def test_unparseable_reply_categorized(self) -> None:
         c, refs, oc = self._run([_envelope("not a verdict at all")])
         self.assertEqual(oc.status, "fail")
@@ -1010,6 +1026,80 @@ class PureVerifySubstepTests(unittest.TestCase):
 
     _QUOTA = wc.ProcResult(1, "", "Claude AI usage limit reached")
     _FLAKE = wc.ProcResult(1, "", "API Error: Connection closed mid-response.")
+
+    def test_a_missing_lineage_home_on_a_warm_repair_falls_back_to_a_cold_repair_of_the_same_verdict(self) -> None:
+        """The reviewer twin of the producer's
+        `test_a_missing_lineage_home_on_a_warm_seed_falls_back_carrying_the_prior_document`
+        (issue #508). `_spawn_pure_turn` returns None when a warm codex resume has no lineage
+        home to run in (issue #245); the loop then sets `cold_repair_target =
+        resume_session_id` so the NEXT turn is still a `reuse` repair of the reviewer's own
+        schema-violating verdict — findings, prior document, full context — rather than a
+        fresh review that forgets what it was repairing. The two loops are separate copies of
+        that line, and the producer's row left the reviewer's unwitnessed: with it dropped,
+        the fallback launch here renders with `repair_strategy: none`.
+
+        The missing home is faked where production detects it (`record_launch`'s
+        `codex_lineage_home_missing`, which the runtime's record-launch returns before it
+        writes any launch state and so before any leaf is spawned; the fake runs the real
+        record first and then adds the flag, so the dead warm turn's request stays
+        observable), on the claude
+        fake, where a session id is the child's arid — so, as in the producer's row, the codex
+        thread-id spelling of the target is not this row's subject.
+        """
+        c, refs = self._waiting(wc.ProcResult(0, _envelope({"verification_status": "pass"}), ""),
+                                wc.ProcResult(0, _envelope(_verdict("pass")), ""), record=True)
+        real_record = c.record_launch
+        vanished: list[bool] = []
+
+        def _vanish_once(child_arid, request, entry=None, **kw):
+            rec = real_record(child_arid, request, entry, **kw)
+            if request.get("warm_resume") and not vanished:
+                vanished.append(True)
+                return {**rec, "codex_lineage_home_missing": True}
+            return rec
+
+        c.record_launch = _vanish_once  # type: ignore[assignment]
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual(vanished, [True])
+        # Three requests built: cold, the warm repair that died to the missing home, the cold
+        # repair that replaced it. Two spawned: the dead warm turn never reached the leaf.
+        self.assertEqual([r["repair_strategy"] for r in c.requests], ["none", "reuse", "reuse"])
+        self.assertTrue(c.requests[1].get("warm_resume"))
+        self.assertNotIn("prior_document", c.requests[1])       # warm turns do not send it
+        self.assertFalse(c.requests[2].get("warm_resume"))
+        self.assertEqual(c.requests[2]["repair_target_agent_run_id"], "child-1")
+        self.assertTrue(c.requests[2].get("repair_findings"))
+        self.assertEqual(json.loads(c.requests[2]["prior_document"]),
+                         {"verification_status": "pass"})
+        self.assertTrue(c.requests[2].get("pure_context"))
+        self.assertEqual([k.get("resume_session_id") for k in c.spawn_kwargs], [None, None])
+        self.assertEqual(oc.attempts, 2)
+        self.assertTrue(any(ev == "resume_session_unavailable"
+                            and f.get("reason") == "codex_lineage_home_missing"
+                            for ev, f in c.events), c.events)
+
+    def test_a_repair_whose_session_is_not_resumable_is_built_and_spawned_cold(self) -> None:
+        """The reviewer loop computes `warm` in its own copy of the producer's line —
+        `resume_session_id is not None and _pure_session_resumable(...)` — and the producer's
+        (d) row does not reach this copy (issue #508, round 1: dropping the resumability half
+        here left the suite green). A schema-violating verdict whose claude session is gone must
+        be repaired COLD: the request carries the findings, the prior verdict and the full
+        context, and the spawn names no session to resume. Warm instead, the repair would be a
+        context-free `--resume` of a transcript that no longer exists."""
+        c, refs = self._waiting(wc.ProcResult(0, _envelope({"verification_status": "pass"}), ""),
+                                wc.ProcResult(0, _envelope(_verdict("pass")), ""), record=True)
+        c._claude_session_resumable = lambda session_id: False  # type: ignore[assignment]
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual([r["repair_strategy"] for r in c.requests], ["none", "reuse"])
+        self.assertFalse(c.requests[1].get("warm_resume"))
+        self.assertEqual(c.requests[1]["repair_target_agent_run_id"], "child-1")
+        self.assertTrue(c.requests[1].get("repair_findings"))
+        self.assertEqual(json.loads(c.requests[1]["prior_document"]),
+                         {"verification_status": "pass"})
+        self.assertTrue(c.requests[1].get("pure_context"))
+        self.assertEqual([k.get("resume_session_id") for k in c.spawn_kwargs], [None, None])
 
     def test_every_reviewer_launch_names_the_target_language(self) -> None:
         """The generate reviewer's template carries `{{language:<name>}}` markers, and the
@@ -1191,6 +1281,116 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual(findings[0], findings[1])
         self.assertTrue(findings[1])
         self.assertNotIn("usage limit", findings[1].lower())
+
+    def test_a_transient_retry_is_not_a_repair_turn_and_the_record_counts_it(self) -> None:
+        """The reviewer twin of the producer row of the same name (issue #508, rounds 1-2).
+        (1) One dropped connection on the cold attempt, then a schema-violating verdict on every
+        turn: the retry must not spend the repair budget, and the launch count, the outcome's
+        `attempts` and `verdict_meta` must all count the flake, `MAX_BUNDLE_REPAIR_TURNS + 2`.
+        (2) The connection drops on the first repair turn instead: the retry re-runs that repair
+        against the same session with the same findings, and still spends no budget."""
+        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        malformed = wc.ProcResult(0, _envelope({"verification_status": "pass"}), "")
+        c, refs = self._waiting(self._FLAKE, *([malformed] * (MAX_BUNDLE_REPAIR_TURNS + 1)),
+                                record=True)
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(c.slept, [2.0])
+        self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 2)
+        self.assertEqual([r["repair_strategy"] for r in c.requests],
+                         ["none", "none"] + ["reuse"] * MAX_BUNDLE_REPAIR_TURNS)
+        self.assertEqual(oc.attempts, MAX_BUNDLE_REPAIR_TURNS + 2)
+        vmeta = json.loads((c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
+        self.assertEqual(vmeta["failure_category"], "verdict_schema_violation")
+        self.assertEqual(vmeta["attempts"], MAX_BUNDLE_REPAIR_TURNS + 2)
+        self.assertEqual(len(vmeta["per_attempt"]), MAX_BUNDLE_REPAIR_TURNS + 2)
+        c, refs = self._waiting(malformed, self._FLAKE, *([malformed] * MAX_BUNDLE_REPAIR_TURNS),
+                                record=True)
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 2)
+        self.assertEqual([r["repair_strategy"] for r in c.requests],
+                         ["none"] + ["reuse"] * (MAX_BUNDLE_REPAIR_TURNS + 1))
+        # the flaked repair (child-2) and its retry (child-3) resume the same session
+        self.assertEqual([k.get("resume_session_id") for k in c.spawn_kwargs][:3],
+                         [None, "child-1", "child-1"])
+        findings = [str(r.get("repair_findings", "")) for r in c.requests[1:3]]
+        self.assertEqual(findings[0], findings[1])
+        self.assertTrue(findings[1])
+
+    def test_a_warm_repair_that_never_ran_is_not_a_repair_turn(self) -> None:
+        """The reviewer twin of the producer row of the same name (issue #508, round 1): a
+        schema-violating verdict on every turn, the lineage home vanishing on the first warm
+        repair. The dead turn must not spend the repair budget: every repair the budget allows
+        still reaches a leaf (`MAX_BUNDLE_REPAIR_TURNS + 1` spawns), and `verdict_meta` counts
+        the launches that ran, not the request that died."""
+        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        malformed = wc.ProcResult(0, _envelope({"verification_status": "pass"}), "")
+        c, refs = self._waiting(malformed, malformed, record=True)
+        recorded = c.record_launch
+        vanished: list[bool] = []
+
+        def _vanish_once(child_arid, request, entry=None, **kw):
+            rec = recorded(child_arid, request, entry, **kw)
+            if request.get("warm_resume") and not vanished:
+                vanished.append(True)
+                return {**(rec or {}), "codex_lineage_home_missing": True}
+            return rec
+
+        c.record_launch = _vanish_once  # type: ignore[assignment]
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(vanished, [True])
+        self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 1)
+        self.assertEqual(len(c.requests), MAX_BUNDLE_REPAIR_TURNS + 2)
+        self.assertEqual(oc.attempts, MAX_BUNDLE_REPAIR_TURNS + 1)
+        vmeta = json.loads((c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
+        self.assertEqual(vmeta["attempts"], MAX_BUNDLE_REPAIR_TURNS + 1)
+        self.assertEqual(len(vmeta["per_attempt"]), MAX_BUNDLE_REPAIR_TURNS + 1)
+
+    def test_a_verdict_accepted_after_a_transient_retry_records_every_launch(self) -> None:
+        """The reviewer's PASS path counts its launches at three sites — `verdict_meta`, the
+        verdict's project meta (`source_meta.json#attempt_count` here) and the terminal row's
+        `result_summary` — and only the outcome's `attempts` was pinned (issue #508, round 2;
+        the producer twin is `test_a_bundle_accepted_after_a_transient_retry_records_every_launch`).
+        One dropped connection, then a passing verdict: two launches, and every record says 2.
+        Only a re-launch in the history separates `len(per_attempt)` from `attempt + 1`."""
+        c, refs = self._waiting(self._FLAKE)
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual(c._spawn, 2)
+        self.assertEqual(oc.attempts, 2)
+        base = c.repo_root / refs.source_dir()
+        vmeta = json.loads((base / "verdict_meta.json").read_text())
+        self.assertEqual(vmeta["result"], "pass")
+        self.assertEqual(vmeta["attempts"], 2)
+        self.assertEqual(len(vmeta["per_attempt"]), 2)
+        self.assertEqual(vmeta["per_attempt"][0]["failure_category"], "pure_transport")
+        self.assertEqual(json.loads((base / "source_meta.json").read_text())["attempt_count"], 2)
+        payloads = [cap["--agent-run-json"] for sub, cap in c.calls
+                    if sub == "finalize-child" and "--agent-run-json" in cap]
+        self.assertIn("attempts=2)", json.dumps(payloads[-1]))
+
+    def test_transport_terminal_after_a_schema_repair_records_the_transport_excerpt(self) -> None:
+        """The reviewer twin of the producer's
+        `test_transport_terminal_after_a_content_repair_records_the_transport_excerpt` (issue
+        #508, round 2): a schema-violating verdict, then the repair turn dies of a usage limit
+        with the wait flag OFF, which is terminal. `verdict_meta` must pair
+        `failure_category: pure_transport` with the TRANSPORT excerpt, never the schema finding
+        still held in the repair carrier."""
+        c, refs = self._waiting(wc.ProcResult(0, _envelope({"verification_status": "pass"}), ""),
+                                self._QUOTA, flag=False, record=True)
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(oc.leaf_returncode, 1)
+        stale = c.requests[1]["repair_findings"]      # the schema finding the carrier holds
+        self.assertTrue(stale)
+        vmeta = json.loads((c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
+        self.assertEqual(vmeta["failure_category"], "pure_transport")
+        excerpt = vmeta.get("failure_excerpt") or ""
+        self.assertIn("usage limit", excerpt.lower())
+        self.assertNotIn(stale, excerpt)
+        self.assertEqual(vmeta["attempts"], 2)
 
     def test_unencodable_valid_verdict_is_schema_violation_not_transport(self) -> None:
         # Codex review (defect 1): a schema-SOUND verdict whose last_fail_reason holds a lone
