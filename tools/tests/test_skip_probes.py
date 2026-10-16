@@ -103,6 +103,13 @@ class CheckReportTests(unittest.TestCase):
         self.assertEqual(accepted, {_CUDA_REASON: ["tools.tests.test_x.T::t1"],
                                     claude_reason: ["tools.tests.test_x.T::t1"]})
 
+    def test_a_skip_of_an_unknown_type_is_refused_even_with_a_probe_reason(self) -> None:
+        refusals, accepted = self._check(_report(
+            _skipped("t1", kind="pytest.something", message=_CUDA_REASON)))
+        self.assertEqual(len(refusals), 1, refusals)
+        self.assertIn("a shape this check does not know", refusals[0])
+        self.assertEqual(accepted, {})
+
     def test_a_collection_skip_is_refused_as_such(self) -> None:
         refusals, _ = self._check(_report(
             '<testcase classname="" name="tools.tests.test_x">'
@@ -139,6 +146,13 @@ class ProbeTableTests(unittest.TestCase):
             self.assertEqual(skip_probes.REASON_TO_DEPENDENCY[reason], dep)
         adapter = registry.capability_module("compiler", "nvcc", "syntax_check")
         self.assertEqual(skip_probes.DEPENDENCIES["cuda_compiler_driver"][0](), str(adapter.EXECUTABLE))
+        # The CUDA reason is kept verbatim from before #498 so CI's skip figures stay comparable
+        # across that change (plan Decision 3); each CLI reason names its own CLI.
+        self.assertEqual(skip_probes.DEPENDENCIES["cuda_compiler_driver"][1],
+                         "the CUDA compiler driver is not installed")
+        for cli in ("claude", "codex"):
+            self.assertEqual(skip_probes.DEPENDENCIES[cli][1],
+                             f"the {cli} CLI is not installed on this host")
         self.assertEqual(skip_probes.DEPENDENCIES["claude"][0](), "claude")
         self.assertEqual(skip_probes.DEPENDENCIES["codex"][0](), "codex")
 
