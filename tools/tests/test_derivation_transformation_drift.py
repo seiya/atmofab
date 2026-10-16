@@ -898,7 +898,7 @@ PINNED_RENDER: dict[str, str] = {
     # render-9 (issue #437): the rendered cuda_cpp runner drops the trailing blanks of each
     # status `checks_compute` returns before it fills the harness check record, so a padded
     # "na  " never reaches the harness writer from a physics node.
-    "render-9": "8567602b0caba3a16668cbfae6362a97435c697645fc03b98071c883deea806d",
+    "render-9": "e209df38172b7d0425de2bc5210b5f93704cfc77187f2bc673b7f84bbb0e1aac",
     # Re-pinned (issue #444), behaviour-preserving: two comments moved: `parallel/mpi/wrapper.py`
     # and `language/fortran/bundle.py` cite `tools/build_runtime.py` instead of
     # `mcp_servers/build_runtime_server.py`; nothing rendered moved. (Measured by diffing the tuple
@@ -942,6 +942,12 @@ PINNED_RENDER: dict[str, str] = {
     # against origin/main 0b070284's: those two rows and no other.) The digest `render-9`
     # shipped with at 0b070284:
     "render-9@0b070284": "9eb1dcaf07f462a7016968eca34aa98619bb41788157f659a25a8a0bde0fae09",
+    # Re-pinned (issue #504), behaviour-preserving for this transformation: `signatures.py`'s
+    # `generated_source_violations` — a Generate.static gate, not a renderer — reads §5.1
+    # prototypes from the structure front end instead of the stanza splitter; no `render_*`
+    # function moved. (Measured by diffing `render_tuple()` against origin/main 3ff3f789's: that
+    # row and no other.) The digest `render-9` shipped with at 3ff3f789:
+    "render-9@3ff3f789": "8567602b0caba3a16668cbfae6362a97435c697645fc03b98071c883deea806d",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
