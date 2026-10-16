@@ -29,7 +29,7 @@ The discretization constraints are the following.
 - ghost width: `ng=2`
 - time integration: `RK4` (the tendency passed as a procedure argument; the time-update `component` evaluates it at the four stages)
 - boundary condition: `x` periodic mapping, `y` mirror ghost (`h` and `hu` even, `hv` odd)
-- Coriolis source: explicit, evaluated at each stage state, `f` supplied per interior row by the adopting `spec`
+- Coriolis source: explicit, evaluated at each stage state, `f` supplied per interior cell by the adopting `spec` (`dynamics_shallow_water_source_2d_coriolis` `0.2.0` takes an `nx` × `ny` field)
 - additional forcing: none selected by this `profile`; an explicit forcing the adopting `spec` declares directly is evaluated at each stage (§2)
 
 ## 4. Fallback rules
