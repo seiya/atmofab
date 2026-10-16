@@ -27,7 +27,8 @@ The correctness contract is the round-trip on the REAL harness §5.1 (see
 ``normalized_stanza_lines(render(parse(real_block)))`` equals ``normalized_stanza_lines(real_block)``.
 As long as that holds, switching §5.1 / the IR to the structured form leaves every downstream
 signature comparison byte-for-byte unchanged — the gate renders the structured form back to the exact
-Fortran lines it already knows how to compare against a generated ``.f90``.
+Fortran lines it compares (a generated ``.f90`` is read by the structure front end since issue #504;
+the stanza lines are compared against host-rendered text and the IR).
 
 The struct vocabulary is language-neutral throughout: the neutral ``type`` names (``real`` /
 ``integer`` / ``logical`` / ``string`` / ``derived`` / ``procedure`` — not ``character`` /
@@ -158,7 +159,7 @@ def parse_interface_stanzas(
     - an interface stanza is a PROTOTYPE — a procedure header found inside an ``interface`` /
       ``abstract interface`` block — with the same shape as a procedure stanza, minus the
       ``import`` / ``implicit none`` lines a prototype body legally carries (they are scope
-      plumbing, not ABI). A generic interface's ``module procedure`` listing is dropped.
+      plumbing, not ABI). A generic interface's ``module procedure`` listing is an error.
     The module ``parameter`` declarations, comments and blanks outside any stanza are skipped; any
     other line outside a stanza, or a line inside an interface block that opens no prototype, is
     reported in ``errors``. So is an unterminated stanza or interface block, and a duplicate
@@ -1414,7 +1415,8 @@ def generated_source_violations(
     type_reading: fortran_structure.TypeReading | None = None
     prototype_reading: fortran_structure.PrototypeReading | None = None
     # Every procedure DEFINITION in the file, any scope, by lowercased name: how many, and the
-    # names of the ones the publishing module carries at module level (`module_level_procedures`).
+    # names of the ones the publishing module carries at module level
+    # (`structure.module_level_procedure_names`).
     defined_counts: dict[str, int] = {}
     # The structure reader's view, one statement per line, and for each procedure name the view
     # lines its own procedure nodes span (header to END, prototypes and definitions alike).
@@ -1501,8 +1503,9 @@ def generated_source_violations(
 
     def _stray_declarations(name: str, kind: str) -> None:
         # A pinned name declared more than once: a second prototype anywhere, a prototype outside
-        # the publishing module's own specification part, or a second definition outside the
-        # publishing module. Each is one a reference to the name can bind to instead of the one
+        # the publishing module's own specification part, or any definition beside the one the
+        # publishing module carries at module level (a second one in its `contains` section, a
+        # contained procedure, another program unit). Each is one a reference to the name can bind to instead of the one
         # compared here — a `procedure(<name>)` dummy in the scope of a local interface block, or
         # the consumer-facing dependency surface (`interface._extract_subroutine_interface` /
         # `_extract_interface_prototype`), which takes the first header of the name in the file.
@@ -1519,7 +1522,9 @@ def generated_source_violations(
             if proto_lines:
                 parts.append(f"{len(proto_lines)} prototype(s) of it (at statement"
                              f"{'s' if len(proto_lines) > 1 else ''} {where} of its joined view)")
-            if stray_defs > 0:
+            if stray_defs > 0 and kind == "prototype":
+                parts.append(f"{stray_defs} definition(s) of it (a prototype is never defined)")
+            elif stray_defs > 0:
                 parts.append(f"{stray_defs} definition(s) of it beside the one the module "
                              f"'{model_files[0].stem}' publishes (a second one in its "
                              "`contains` section, a contained procedure, another program unit)")
@@ -1801,9 +1806,11 @@ def generated_source_violations(
     # reader counts some typed headers (`integer function f(x)`) as a binding of `f`; a second
     # prototype or a definition of the name is refused above. An import from the publishing
     # module (a same-file helper module taking the interface) binds the pinned prototype and is
-    # not refused. Skipped, like every other arm, when the source has no single resolvable
-    # publisher (refused above).
-    for name in sorted(proto_stanzas) if structure_view_lines is not None else ():
+    # not refused. Skipped, like the "more than once" check, when the source has no single
+    # resolvable publisher — several files, an unresolvable source, a module not named after the
+    # file — each refused above.
+    bindings_read = structure_view_lines is not None and unit_absent is None
+    for name in sorted(proto_stanzas) if bindings_read else ():
         lname = name.lower()
         bindings = []
         skip = own_lines.get(lname, set())

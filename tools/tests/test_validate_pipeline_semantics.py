@@ -29105,6 +29105,13 @@ class PrototypeScopeGateTests(unittest.TestCase):
         v = self._generate(self._model(self._PINNED, contained=contained))
         self.assertTrue(any("DEFINES 'hx_f', which controlled_spec §5.1 declares as a prototype"
                             in x for x in v), v)
+        # With a second prototype too, the "more than once" message counts the definition
+        # without calling it the one the module publishes (round 4).
+        local = "    interface\n      " + self._PINNED.format(i="      ") + "    end interface\n"
+        v = self._generate(self._model(self._PINNED, local=local, contained=contained))
+        self.assertTrue(any("prototype 'hx_f' more than once — 2 prototype(s) of it" in x
+                            and "1 definition(s) of it (a prototype is never defined)" in x
+                            for x in v), v)
 
     def test_a_published_procedure_defined_again_in_a_helper_module_is_refused(self) -> None:
         ahead = ("module hx_aux\n  implicit none\ncontains\n  subroutine hx__advance(n)\n"
@@ -29208,7 +29215,10 @@ class PrototypeScopeGateTests(unittest.TestCase):
             "    real(dp), intent(in) :: x\n    real(dp) :: hx_f\n  end function hx_f\n"
             "end interface\nsubroutine hx__advance(cb, v)\n  procedure(hx_f) :: cb\n"
             "  real(dp), intent(out) :: v\nend subroutine hx__advance\n")
-        from tools.backends.language.fortran.signatures import render_interface_to_fortran
+        from tools.backends.language.fortran.signatures import (
+            render_interface_to_fortran,
+        )
+
         struct = parse_signatures_from_fortran(section)
         self.assertEqual(struct["interfaces"][0]["result"]["name"], "hx_f")
         self.assertIn("function hx_f(x)\n", render_interface_to_fortran(struct["interfaces"][0]))
@@ -29229,6 +29239,15 @@ class PrototypeScopeGateTests(unittest.TestCase):
 
     def test_a_misnamed_module_is_told_as_the_absent_publisher(self) -> None:
         v = self._generate(self._model(self._PINNED, name="hx"))
+        self.assertTrue(v)
+        self.assertTrue(all("declares no program unit named 'hx_model'" in x for x in v), v)
+        # ...and a binding of the prototype name is not told beside it (round 4): the one
+        # repair is the module's name.
+        other = ("  abstract interface\n    integer function hx_g(x)\n      implicit none\n"
+                 "      integer, intent(in) :: x\n    end function hx_g\n  end interface\n")
+        bound = self._model(self._PINNED, name="hx", local="    procedure(hx_g) :: hx_f\n").replace(
+            "  end interface\n", "  end interface\n" + other, 1)
+        v = self._generate(bound)
         self.assertTrue(v)
         self.assertTrue(all("declares no program unit named 'hx_model'" in x for x in v), v)
 

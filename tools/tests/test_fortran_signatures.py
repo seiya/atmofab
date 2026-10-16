@@ -319,9 +319,9 @@ class FortranStanzaParserTests(unittest.TestCase):
                     f"abstract interface\n  {line}\nend interface\n")
                 self.assertEqual(
                     [e for e in errors if "unrecognised line" in e],
-                    [f"unrecognised line inside an interface block: '{line}' — this reader "
-                     "takes host-rendered interface text only, so a line it cannot place is a "
-                     "renderer / splitter disagreement, not a spec or source fault"])
+                    [(f"unrecognised line inside an interface block: '{line}' — this reader "
+                      "takes host-rendered interface text only, so a line it cannot place is a "
+                      "renderer / splitter disagreement, not a spec or source fault")])
                 self.assertEqual(ifaces, {})
 
     def test_every_harness_pin_the_runner_renders_against_splits_clean(self) -> None:

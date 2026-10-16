@@ -779,7 +779,6 @@ def module_level_type_definitions(
 
 
 
-
 def procedure_envelopes(lowered: str) -> list[ProcedureEnvelope]:
     """Every procedure DEFINITION in ``lowered``, with the body each gate must read.
 
