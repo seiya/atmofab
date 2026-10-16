@@ -936,8 +936,9 @@ PINNED_RENDER: dict[str, str] = {
     # Re-pinned (issue #501), and NOT bumped, on this reasoning: `lines.py`'s mask keeps a BOZ
     # literal's contents where it blanked them, so a source carrying one is read rather than
     # refused. No certified source carries a BOZ, a procedure header cannot, and a refused
-    # Generate has no stored output (`select_eligible` drops it), so no rendered byte with a
-    # stored key moves; `signatures.py` gains a comment. (Measured by diffing `render_tuple()`
+    # Generate wrote no `source_meta.json`, so `_stage_meta_candidates` never offers it as a
+    # stored output (the five refused stages hold none); no rendered byte with a stored key
+    # moves. `signatures.py` gains a comment. (Measured by diffing `render_tuple()`
     # against origin/main 0b070284's: those two rows and no other.) The digest `render-9`
     # shipped with at 0b070284:
     "render-9@0b070284": "9eb1dcaf07f462a7016968eca34aa98619bb41788157f659a25a8a0bde0fae09",
