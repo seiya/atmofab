@@ -135,6 +135,17 @@ def parse_interface_stanzas(
 ) -> tuple[dict[str, list[str]], dict[str, list[str]], dict[str, list[str]], list[str]]:
     """Parse a §5.1 canonical Fortran interface block into per-symbol *stanzas*.
 
+    HOST-RENDERED TEXT ONLY: §5.1 rendered from its structured form, a harness pin, an IR symbol
+    rendered by `render_symbol_to_fortran` / `render_interface_to_fortran` (and the readable
+    Fortran §5.1 the tests author and lower). What it accepts is what that renderer emits — a
+    `pure` / `elemental` / `recursive` prefix on an untyped `subroutine` / `function` header, a
+    `type :: name` type header, an `abstract interface` block, and the module `parameter` lines —
+    and a line it cannot place is an ERROR, not a skip: in host text it can only mean the renderer
+    and this splitter disagree. The generated model source, which a leaf writes in any legal
+    spelling, is read by the structure front end instead (issue #504; it was read here, and a
+    `real(dp) function f(x)` prototype the three header patterns do not know was silently
+    skipped, letting another prototype of the name stand in for it).
+
     Returns ``(op_stanzas, type_stanzas, iface_stanzas, errors)``. Each stanza value is the
     ordered list of that symbol's interface logical lines (comment-stripped, continuation-joined,
     but NOT yet whitespace-normalized — kept readable for gate messages):
@@ -146,10 +157,11 @@ def parse_interface_stanzas(
       ``abstract interface`` block — with the same shape as a procedure stanza, minus the
       ``import`` / ``implicit none`` lines a prototype body legally carries (they are scope
       plumbing, not ABI). A generic interface's ``module procedure`` listing is dropped.
-    Lines outside any stanza (the public ``parameter`` declarations, comments, blanks) are
-    ignored. An unterminated stanza or interface block, OR a duplicate symbol name — across all
-    three kinds, so a prototype sharing a defined procedure's name is a duplicate too — is
-    reported in ``errors`` (fail-closed at the caller — a duplicate must never silently overwrite,
+    The module ``parameter`` declarations, comments and blanks outside any stanza are skipped; any
+    other line outside a stanza, or a line inside an interface block that opens no prototype, is
+    reported in ``errors``. So is an unterminated stanza or interface block, and a duplicate
+    symbol name — across all three kinds, so a prototype sharing a defined procedure's name is a
+    duplicate too — (fail-closed at the caller — a duplicate must never silently overwrite,
     which would let a malformed first copy hide behind a correct second)."""
     lines = fortran_lines.fortran_logical_line_texts(block_body)
     op_stanzas: dict[str, list[str]] = {}
@@ -232,8 +244,16 @@ def parse_interface_stanzas(
             seen.add(name)
             op_stanzas[name] = stanza
         else:
+            if not _MODULE_PARAM_RE.match(line):
+                errors.append(_unrecognised(line, "outside any stanza"))
             i += 1
     return op_stanzas, type_stanzas, iface_stanzas, errors
+
+
+def _unrecognised(line: str, where: str) -> str:
+    return (f"unrecognised line {where}: '{line}' — this reader takes host-rendered interface "
+            "text only, so a line it cannot place is a renderer / splitter disagreement, not a "
+            "spec or source fault")
 
 
 def _collect_interface_block(
@@ -258,7 +278,11 @@ def _collect_interface_block(
             return i + 1, True
         m_proc = _IFACE_PROC_START.match(cur)
         if not m_proc:
-            i += 1  # `module procedure x`, a generic-listing `procedure x`, a comment-only line
+            # The renderer emits no generic interface and no other prototype header shape, so a
+            # `module procedure x` listing or a `module subroutine` / typed-function header here
+            # is a renderer / splitter disagreement.
+            errors.append(_unrecognised(cur, "inside an interface block"))
+            i += 1
             continue
         name = m_proc.group(2)
         stanza = [cur]
