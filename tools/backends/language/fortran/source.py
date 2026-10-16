@@ -544,12 +544,9 @@ class ProcedureEnvelope:
     host's closure and silenced all three gates — measured at `c9f46eee`, a dead `y = scratch`
     and a dead chain `a` -> `b` each returned 0 violations). A dead procedure's OWN envelope is
     still emitted and still judged against its own `intent(out)`.
-    ``call_body`` is the same slice with the dead procedures NOT blanked, and it is where the
-    dependency-dataflow gate finds its dependency CALLS: blanking a dead `call dep__op(x, s)`
-    would hide a call the dependency-use check still counts, so a model whose only dependency
-    call sits in code that never runs passed both (round 1 of issue #506's review: flagged at
-    `c9f46eee`, silent at the first fix). Read from ``call_body``, such a call's actuals are
-    candidates the host's closure — read from ``body`` — does not reach, so it is flagged.
+    A dependency CALL in a dead procedure is invisible here too, and the dependency-use check
+    (`validate_dependency_operations`) does not count it either, so a model whose only call
+    never runs is refused there as calling none.
     ``out_scope`` is the part of it before the subroutine's own `contains`, and is where
     ``out_vars`` — the `intent(out)` dummies, the definable outputs every gate keys on — is read
     from: a contained procedure's dummies are its own, not its host's.
@@ -610,7 +607,6 @@ class ProcedureEnvelope:
     result_name: str | None
     intent_out_vars: frozenset[str]
     out_vars: frozenset[str]
-    call_body: str
 
 
 
@@ -852,6 +848,16 @@ def _dead_contained_spans(
     return tuple(dead)
 
 
+def _without_dead_contained_procedures(lowered: str) -> str | None:
+    """The view of ``lowered`` with every dead contained procedure (`_dead_contained_spans`)
+    blanked in place, or None when the structure does not resolve."""
+    try:
+        view, tree, to_view = structure_reading(lowered)
+    except SourceStructureError:
+        return None
+    return fortran_structure.blank_spans(view, _dead_contained_spans(view, tree, to_view))
+
+
 def procedure_envelopes(lowered: str) -> list[ProcedureEnvelope]:
     """Every procedure DEFINITION in ``lowered``, with the body each gate must read.
 
@@ -943,7 +949,6 @@ def procedure_envelopes(lowered: str) -> list[ProcedureEnvelope]:
                 result_name=procedure.result_name,
                 intent_out_vars=intent_out_vars,
                 out_vars=frozenset(out_vars),
-                call_body=interfaces_blanked[body_start:body_end],
             )
         )
     return envelopes
@@ -1156,7 +1161,9 @@ def _validate_problem_model_dependency_dataflow(
     intents, not for dataflow. (d) DEAD CODE THE CLOSURE STILL READS. A contained procedure its
     host never names is blanked out of the host's body before this runs (`procedure_envelopes`,
     issue #506 — measured at `c9f46eee`: a never-called contained `dead` doing `y = scratch`
-    returned 0 violations, as did a dead chain `a` -> `b`). What is NOT closed is every spelling
+    returned 0 violations, as did a dead chain `a` -> `b`) — its assignments AND its calls, so a
+    dependency call that only dead code makes is not seen here and is refused by the
+    dependency-use check as no call at all. What is NOT closed is every spelling
     that names the dead code: a dead branch in the host (`if (.false.) then / y = scratch /
     end if`, measured 0 violations at the same commit), `if (.false.) call dead()`, and `p =>
     dead` for a pointer never called. Each needs control flow, the same flow-sensitive pass as
@@ -1237,11 +1244,7 @@ def _validate_problem_model_dependency_dataflow(
             continue
 
         dep_output_candidates: set[str] = set()
-        # Calls come from `call_body` — dead contained procedures included — and the closure
-        # below from `body`, without them: a dependency call that never runs still yields its
-        # candidates, and nothing in dead code consumes them (issue #506). Both are slices of one
-        # length-preserving view, so `call_pos` and the assignment positions stay comparable.
-        for callee, args_raw, call_pos in iter_calls(envelope.call_body):
+        for callee, args_raw, call_pos in iter_calls(body):
             if not any(callee.startswith(prefix) for prefix in dep_prefixes):
                 continue
             call_vars = split_names(args_raw)
@@ -2348,6 +2351,11 @@ def validate_dependency_operations(
         # `! subroutine dep__op is external` raised a redefinition violation against a model that
         # defines nothing (fail-closed).
         lowered = fortran_lines.mask_code_lookalikes(text.lower())
+        # The CALL clause reads the source with its dead contained procedures blanked: a call
+        # that never runs is not a use of the dependency (issue #506 — every gate reads dead code
+        # the same way, as absent). A source the structure reader refuses keeps today's reading;
+        # the `problem` model gates refuse it on their own.
+        live = _without_dead_contained_procedures(text.lower()) or lowered
 
         for spec_id in dep_spec_ids:
             spec_id_l = spec_id.lower()
@@ -2364,7 +2372,7 @@ def validate_dependency_operations(
                     f"{model_file}: dependency operation redefinition detected ({spec_id}__*)"
                 )
 
-            if not re.search(rf"\bcall\s+{op_prefix}[a-z0-9_]*\b", lowered):
+            if not re.search(rf"\bcall\s+{op_prefix}[a-z0-9_]*\b", live):
                 violations.append(
                     f"{model_file}: missing dependency operation call ({spec_id}__*)"
                 )

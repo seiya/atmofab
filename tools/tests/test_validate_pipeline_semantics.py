@@ -6889,16 +6889,16 @@ end module m
             "  y = x\n", "  call dead(t)\n  y = x\n")
         self.assertEqual(self._dataflow_violations(live), [])
 
-    def test_a_dependency_call_only_in_a_never_called_contained_procedure_is_refused(
-        self,
-    ) -> None:
-        # Round 1 of the review: blanking the dead procedure out of its host hid its dependency
-        # CALL too, so a model whose only call never runs passed the dataflow gate (the
-        # dependency-use check counts the call text and passed as well). Flagged at `c9f46eee`,
-        # silent at the first fix. Calls are read from the unblanked `call_body`; the closure
-        # from the blanked `body`, so nothing in the dead procedure consumes the result — not
-        # even an assignment to its own `intent(out)`.
-        no_outputs = """module m
+    def test_a_dependency_call_only_in_dead_code_is_no_call(self) -> None:
+        # Dead code is absent to EVERY gate, the dependency-use check included (issue #506,
+        # rounds 1-2 of its review): an earlier fix read calls from the unblanked text and the
+        # closure from the blanked one, and each round found a shape the two disagreed on. A
+        # model whose only dependency call sits in a never-called contained procedure — with or
+        # without a dead consumer, with or without a dead assignment to its input before it —
+        # calls no dependency, and the dependency-use check says so. At `c9f46eee` the variant
+        # with the dead consumer passed both (that check counted the call text).
+        source = """module m
+use dep_model, only: dep__apply
 implicit none
 contains
 subroutine solve(x, y)
@@ -6907,20 +6907,36 @@ subroutine solve(x, y)
   y = 2.0 * x
 contains
   subroutine unused()
-    real :: scratch
-    call dep__apply(x, scratch)
+    real :: scratch, a
+    a = x
+    call dep__apply(a, scratch)
     y = scratch
   end subroutine unused
 end subroutine solve
 end module m
 """
-        self.assertIn("does not propagate dependency operation outputs",
-                      " ".join(self._dataflow_violations(no_outputs)))
-        own_output = no_outputs.replace("  subroutine unused()\n", "  subroutine unused(z)\n"
-                                        "    real, intent(out) :: z\n").replace(
-            "    y = scratch\n", "    z = scratch\n")
-        self.assertIn("subroutine solve does not propagate",
-                      " ".join(self._dataflow_violations(own_output)))
+
+        def dependency_use(text: str) -> list[str]:
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "m.f90"
+                path.write_text(text)
+                violations: list[str] = []
+                fortran_source.validate_dependency_operations([path], ["dep"], violations)
+                return violations
+
+        self.assertEqual(self._dataflow_violations(source), [])
+        self.assertEqual([v.split(": ", 1)[1] for v in dependency_use(source)],
+                         ["missing dependency operation call (dep__*)"])
+        # Called, the same procedure is the host's call: present, and consumed.
+        live = source.replace("  y = 2.0 * x\n", "  call unused()\n")
+        self.assertEqual(dependency_use(live), [])
+        self.assertEqual(self._dataflow_violations(live), [])
+        # A live, consumed call beside dead code that also calls the dependency: the dead call
+        # is simply not there (round 2: the split reading refused this in C++).
+        beside = source.replace("  y = 2.0 * x\n",
+                                "  real :: s\n  call dep__apply(x, s)\n  y = s\n")
+        self.assertEqual(dependency_use(beside), [])
+        self.assertEqual(self._dataflow_violations(beside), [])
 
     def test_a_contained_procedure_named_like_a_keyword_is_live(self) -> None:
         # The name scan takes every identifier token, keywords included: a contained procedure
