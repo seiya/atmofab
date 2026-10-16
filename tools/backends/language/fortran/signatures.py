@@ -1495,11 +1495,14 @@ def generated_source_violations(
         # publishing module. Each is one a reference to the name can bind to instead of the one
         # compared here — a `procedure(<name>)` dummy in the scope of a local interface block, or
         # a consumer-view reader that takes the first header of the name in the file.
+        # Refused only when the name is declared more than once in all: a lone declaration in the
+        # wrong place is the prototype arm's "outside" or the definedness arm's "never DEFINES".
         lname = name.lower()
         proto_lines = prototype_reading.lines.get(lname, ())
-        module_protos = 1 if lname in prototype_reading.definitions else 0
-        stray_defs = defined_counts.get(lname, 0) - (1 if lname in module_level_names else 0)
-        if len(proto_lines) > 1 or len(proto_lines) > module_protos or stray_defs > 0:
+        defs = defined_counts.get(lname, 0)
+        stray_protos = len(proto_lines) - (1 if lname in prototype_reading.definitions else 0)
+        stray_defs = defs - (1 if lname in module_level_names else 0)
+        if len(proto_lines) + defs > 1 and (stray_protos > 0 or stray_defs > 0):
             where = ", ".join(str(line) for line in proto_lines)
             parts = []
             if proto_lines:

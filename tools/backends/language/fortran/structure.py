@@ -877,6 +877,8 @@ def module_level_prototypes(
     lines: dict[str, list[int]] = {}
     for prototype in tree.prototypes:
         procedure = prototype.procedure
+        # `.lower()` states the key rather than deciding it: every caller parses a lower-cased
+        # view, so dropping it survives the suite (not pinned).
         name = procedure.name.strip().lower()
         lines.setdefault(name, []).append(
             text_between(0, procedure.header_start).count("\n") + 1)

@@ -29112,6 +29112,33 @@ class PrototypeScopeGateTests(unittest.TestCase):
                             "outside the module 'hx_model'" in x for x in v), v)
         self.assertFalse(any("drifts" in x for x in v), v)
 
+    def test_a_published_procedure_prototyped_and_defined_only_in_another_body(self) -> None:
+        # The module only prototypes the published procedure, and a procedure contained in a
+        # helper defines one of the same name: two declarations, neither the module's own
+        # definition — told as both faults. A lone contained definition is only the
+        # definedness fault ("never DEFINES"), never "more than once".
+        proto = ("  interface\n    subroutine hx__advance(cb, v)\n      import :: dp, hx_f\n"
+                 "      procedure(hx_f) :: cb\n      real(dp), intent(out) :: v\n"
+                 "    end subroutine hx__advance\n  end interface\n")
+        helper = ("  subroutine hx_helper(cb, v)\n    procedure(hx_f) :: cb\n"
+                  "    real(dp), intent(out) :: v\n    call hx__advance(cb, v)\n  contains\n"
+                  "    subroutine hx__advance(cb, v)\n      procedure(hx_f) :: cb\n"
+                  "      real(dp), intent(out) :: v\n      v = cb(1.0_dp)\n"
+                  "    end subroutine hx__advance\n  end subroutine hx_helper\n")
+        base = self._model(self._PINNED)
+        start = base.index("  subroutine hx__advance(cb, v)\n")
+        end = base.index("  end subroutine hx__advance\n") + len("  end subroutine hx__advance\n")
+        only_contained = base[:start] + helper + base[end:]
+        both = only_contained.replace("\ncontains\n", "\n" + proto + "\ncontains\n", 1)
+        self.assertEqual(both.count("subroutine hx__advance(cb, v)"), 2)
+        v = self._generate(both)
+        self.assertTrue(any("procedure 'hx__advance' more than once — 1 prototype(s) of it" in x
+                            and "1 definition(s) of it outside" in x for x in v), v)
+        self.assertTrue(any("never DEFINES it" in x for x in v), v)
+        v = self._generate(only_contained)
+        self.assertTrue(any("never DEFINES it" in x for x in v), v)
+        self.assertFalse(any("more than once" in x for x in v), v)
+
     def test_a_misnamed_module_is_told_as_the_absent_publisher(self) -> None:
         v = self._generate(self._model(self._PINNED, name="hx"))
         self.assertTrue(v)
