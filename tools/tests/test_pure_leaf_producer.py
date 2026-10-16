@@ -1414,6 +1414,24 @@ class PureProducerSubstepTests(unittest.TestCase):
         self.assertEqual(meta["failure_category"], "bundle_schema_violation")
         self.assertTrue(meta.get("failure_excerpt"))
 
+    def test_exhaustion_spends_exactly_the_repair_budget(self) -> None:
+        """`attempt < MAX_BUNDLE_REPAIR_TURNS` is the budget's boundary, and it had no witness
+        (issue #508): widened to `<=`, every exhaustion bills one launch more than the budget
+        names, and the row above stays green because the fake repeats its last envelope for as
+        many launches as the loop asks. Pinned on the launch count, the outcome's `attempts`,
+        and the `bundle_meta` the outer route reads: one cold attempt plus exactly
+        `MAX_BUNDLE_REPAIR_TURNS` repair turns."""
+        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        bad = _valid_bundle()
+        del bad["capability_requirements"]
+        c, refs, oc = self._run([_envelope(bad)])
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 1)
+        self.assertEqual(oc.attempts, MAX_BUNDLE_REPAIR_TURNS + 1)
+        meta = json.loads((c.repo_root / refs.source_dir() / "bundle_meta.json").read_text())
+        self.assertEqual(meta["attempts"], MAX_BUNDLE_REPAIR_TURNS + 1)
+        self.assertEqual(len(meta["per_attempt"]), MAX_BUNDLE_REPAIR_TURNS + 1)
+
     def test_unparseable_reply_categorized(self) -> None:
         c, refs, oc = self._run([_envelope("not json at all", )])
         self.assertEqual(oc.status, "fail")
@@ -2058,7 +2076,55 @@ class PureProducerColdFallbackSurrogateTests(unittest.TestCase):
             # bundle_meta persisted cleanly (excerpt normalized), and its write did not fail_close.
             meta = json.loads((c.repo_root / refs.source_dir() / "bundle_meta.json").read_text())
             self.assertEqual(meta["failure_category"], "bundle_schema_violation")
+
             self.assertEqual(oc.leaf_returncode, 0)   # NOT a host-write fail_close
+
+    def test_a_turn_that_is_not_warm_never_resumes_the_session_it_still_names(self) -> None:
+        """`_spawn_pure_turn` hands `spawn_leaf` a `resume_session_id` only when the turn is
+        warm (issue #508). Across a cold-fallback repair the loop KEEPS `resume_session_id` —
+        it is the repair target (`repair_target_agent_run_id`) — while the request is built as
+        a cold launch: full context plus the prior document. Passing the id through regardless
+        of `warm` sends that cold request as a resume of the session the host has just judged
+        not resumable: a request built for one transport delivered on the other. The gate is
+        shared by both loops; driven here through the producer, on the claude fake (where a
+        session id is the child's arid), and pinned on the kwargs the transport receives."""
+        class _C(_PureFakeConductor):
+            def _claude_session_resumable(self, arid, **kw):  # type: ignore[override]
+                return False  # every repair turn is a cold fallback
+        bad = _valid_bundle()
+        del bad["capability_requirements"]
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _write_node(repo)
+            (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
+            c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
+                   llm_config=_cfg("claude"), env={})
+            c.envelopes = [_envelope(bad), _envelope(_valid_bundle())]
+            requests: list[dict] = []
+            spawn_kwargs: list[dict] = []
+            orig_rec, orig_spawn = c.record_launch, c.spawn_leaf
+
+            def _rec(child_arid, request, entry=None, **kw):
+                requests.append(request)
+                return orig_rec(child_arid, request, entry, **kw)
+
+            def _spawn(prompt_text, child_env, entry=None, **kwargs):
+                spawn_kwargs.append(dict(kwargs))
+                return orig_spawn(prompt_text, child_env, entry, **kwargs)
+
+            c.record_launch = _rec      # type: ignore[assignment]
+            c.spawn_leaf = _spawn       # type: ignore[assignment]
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            self.assertEqual(oc.status, "pass")
+            self.assertEqual(oc.attempts, 2)
+            # The repair turn still names the dead session as its target, and is built cold...
+            self.assertEqual(requests[1]["repair_strategy"], "reuse")
+            self.assertEqual(requests[1]["repair_target_agent_run_id"], "child-1")
+            self.assertFalse(requests[1].get("warm_resume"))
+            self.assertIn("prior_document", requests[1])
+            self.assertTrue(requests[1].get("pure_context"))
+            # ...and is spawned cold: no resume target reaches the transport.
+            self.assertEqual([k.get("resume_session_id") for k in spawn_kwargs], [None, None])
 
 
 # ======================================================================================

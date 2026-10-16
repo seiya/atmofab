@@ -899,6 +899,22 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual(vmeta["failure_category"], "verdict_schema_violation")
         self.assertTrue(vmeta.get("failure_excerpt"))
 
+    def test_exhaustion_spends_exactly_the_repair_budget(self) -> None:
+        """The reviewer loop's copy of the budget boundary, `attempt < MAX_BUNDLE_REPAIR_TURNS`,
+        which had no witness either (issue #508): widened to `<=`, every exhaustion bills one
+        launch more than the budget names, and the row above stays green because the fake
+        repeats its last envelope for as many launches as the loop asks. The two loops are
+        separate copies, so the producer's row does not cover this one. Pinned on the launch
+        count, the outcome's `attempts`, and the `verdict_meta` the outer route reads."""
+        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        c, refs, oc = self._run([_envelope({"verification_status": "pass"})])
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 1)
+        self.assertEqual(oc.attempts, MAX_BUNDLE_REPAIR_TURNS + 1)
+        vmeta = json.loads((c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
+        self.assertEqual(vmeta["attempts"], MAX_BUNDLE_REPAIR_TURNS + 1)
+        self.assertEqual(len(vmeta["per_attempt"]), MAX_BUNDLE_REPAIR_TURNS + 1)
+
     def test_unparseable_reply_categorized(self) -> None:
         c, refs, oc = self._run([_envelope("not a verdict at all")])
         self.assertEqual(oc.status, "fail")
@@ -1010,6 +1026,54 @@ class PureVerifySubstepTests(unittest.TestCase):
 
     _QUOTA = wc.ProcResult(1, "", "Claude AI usage limit reached")
     _FLAKE = wc.ProcResult(1, "", "API Error: Connection closed mid-response.")
+
+    def test_a_missing_lineage_home_on_a_warm_repair_falls_back_to_a_cold_repair_of_the_same_verdict(self) -> None:
+        """The reviewer twin of the producer's
+        `test_a_missing_lineage_home_on_a_warm_seed_falls_back_carrying_the_prior_document`
+        (issue #508). `_spawn_pure_turn` returns None when a warm codex resume has no lineage
+        home to run in (issue #245); the loop then sets `cold_repair_target =
+        resume_session_id` so the NEXT turn is still a `reuse` repair of the reviewer's own
+        schema-violating verdict — findings, prior document, full context — rather than a
+        fresh review that forgets what it was repairing. The two loops are separate copies of
+        that line, and the producer's row left the reviewer's unwitnessed: with it dropped,
+        the fallback launch here renders with `repair_strategy: none`.
+
+        The missing home is faked where production detects it (`record_launch`'s
+        `codex_lineage_home_missing`, read after the launch is recorded and before any leaf is
+        spawned), on the claude fake, where a session id is the child's arid — so, as in the
+        producer's row, the codex thread-id spelling of the target is not this row's subject.
+        """
+        c, refs = self._waiting(wc.ProcResult(0, _envelope({"verification_status": "pass"}), ""),
+                                wc.ProcResult(0, _envelope(_verdict("pass")), ""), record=True)
+        real_record = c.record_launch
+        vanished: list[bool] = []
+
+        def _vanish_once(child_arid, request, entry=None, **kw):
+            rec = real_record(child_arid, request, entry, **kw)
+            if request.get("warm_resume") and not vanished:
+                vanished.append(True)
+                return {**rec, "codex_lineage_home_missing": True}
+            return rec
+
+        c.record_launch = _vanish_once  # type: ignore[assignment]
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual(vanished, [True])
+        # Three launches recorded: cold, the warm repair that died to the missing home, the
+        # cold repair that replaced it. Two spawned: the dead warm turn never reached the leaf.
+        self.assertEqual([r["repair_strategy"] for r in c.requests], ["none", "reuse", "reuse"])
+        self.assertTrue(c.requests[1].get("warm_resume"))
+        self.assertNotIn("prior_document", c.requests[1])       # warm turns do not send it
+        self.assertFalse(c.requests[2].get("warm_resume"))
+        self.assertEqual(c.requests[2]["repair_target_agent_run_id"], "child-1")
+        self.assertTrue(c.requests[2].get("repair_findings"))
+        self.assertIn('"verification_status": "pass"', c.requests[2]["prior_document"])
+        self.assertTrue(c.requests[2].get("pure_context"))
+        self.assertEqual([k.get("resume_session_id") for k in c.spawn_kwargs], [None, None])
+        self.assertEqual(oc.attempts, 2)
+        self.assertTrue(any(ev == "resume_session_unavailable"
+                            and f.get("reason") == "codex_lineage_home_missing"
+                            for ev, f in c.events), c.events)
 
     def test_every_reviewer_launch_names_the_target_language(self) -> None:
         """The generate reviewer's template carries `{{language:<name>}}` markers, and the
