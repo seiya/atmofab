@@ -2412,8 +2412,9 @@ class PureProducerExemplarTests(unittest.TestCase):
         self.assertIn("! prior art body", c.prompts[0])
 
     def test_warm_repair_attempt_does_not_attach_exemplar(self) -> None:
-        # The repair template has no `<exemplar>` slot, so attaching it to a repair turn would
-        # ship payload bytes nothing renders.
+        # A repair turn renders no exemplar (no `<exemplar>` slot in the repair template, and the
+        # cold repair's launch body is rendered without one), so attaching it to a repair turn
+        # would ship payload bytes nothing renders.
         bad = _valid_bundle()
         del bad["capability_requirements"]
         c, oc = self._run([_envelope(bad), _envelope(_valid_bundle())])
@@ -2811,6 +2812,48 @@ class PureColdRepairPromptTests(unittest.TestCase):
                 launch = ort._render_pure_launch_prompt(req)
                 self.assertIn(ort._pure_launch_body(req), launch)
                 self.assertIn(ort._pure_launch_body(req), cold)
+                # ... and what the slice drops is the launch's persona paragraph and its identity
+                # block, exactly: the repair carries its own of each, once.
+                persona = launch.split("\n\n", 1)[0]
+                self.assertTrue(persona.startswith("Pure-function leaf turn"), persona[:60])
+                self.assertNotIn(persona, cold)
+                for marker in ("Target node_key: ", "agent_run_id: ", "prompt_contract_version: "):
+                    self.assertEqual(cold.count(marker), 1, marker)
+
+    def test_a_document_quoting_the_identity_marker_reaches_the_cold_repair_whole(self) -> None:
+        """The body ends at the LAST identity block, so a context document that quotes the
+        identity marker — a producer's source under review can carry any text — is not cut
+        at the quote."""
+        quoted = "line one\n\nTarget node_key: quoted\n\nline after the quote"
+        req = {"leaf_mode": "pure", "step": "generate", "substep": "verify", "node_key": _NODE,
+               "orchestration_id": "o", "agent_run_id": "c",
+               "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+               "pure_language": "fortran", "pure_parallel": "openmp",
+               "repair_findings": "x is missing", "prior_document": '{"k": 1}',
+               "pure_context": {k: (quoted if k == "bundle_document" else f"<{k} body>")
+                                for k in ort.PURE_CONTEXT_REQUIRED_KEYS[("generate", "verify")]}}
+        self.assertIn("bundle_document", req["pure_context"])
+        cold = ort._render_pure_repair_prompt(req)
+        self.assertIn("line after the quote", cold)
+        for key in req["pure_context"]:
+            if key != "bundle_document":
+                self.assertIn(f"<{key} body>", cold)
+
+    def test_a_cold_repair_renders_no_exemplar_even_when_one_is_attached(self) -> None:
+        """A repair turn corrects the leaf's own document and carries no prior art. The
+        conductor attaches the exemplar only to a turn that renders the launch template; the
+        cold repair's re-stated launch body drops a stray one itself (issue #510), so the
+        decision does not rest on the caller alone. Positive control: the same request as a
+        cold LAUNCH renders it."""
+        exemplar = {"node_key": "component/sibling@1.0.0",
+                    "sources": [{"filename": "sibling_model.f90",
+                                 "text": "module sibling_model\n  ! prior art body\n"
+                                         "end module sibling_model\n"}]}
+        req = self._req(exemplar=exemplar)
+        self.assertIn("! prior art body", ort._render_pure_launch_prompt(req))
+        cold = ort._render_pure_repair_prompt(req)
+        self.assertNotIn("! prior art body", cold)
+        self.assertNotIn("Certified exemplar", cold)
 
     def test_placeholder_drop_keeps_rule_text_that_mentions_placeholders(self) -> None:
         # Only a line that is nothing but a document slot is a slot (`_PURE_PLACEHOLDER_RE` is a

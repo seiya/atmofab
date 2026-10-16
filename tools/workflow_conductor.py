@@ -7609,8 +7609,10 @@ class Conductor:
         # R5: resolve the certified sibling exemplar ONCE, above the loop — it is
         # attempt-invariant (the selector never raises; a failure just omits it), mirroring the
         # agentic path. It is attached per-attempt only when that attempt renders the LAUNCH
-        # template: the repair template (`pure_bundle_repair.txt`) has no `<exemplar>` slot, so
-        # attaching it to a repair turn would ship the payload with nothing rendering it.
+        # template: a repair turn renders no exemplar (`pure_bundle_repair.txt` has no
+        # `<exemplar>` slot, and a cold repair's re-stated launch body is rendered without one,
+        # `orchestration_runtime._pure_launch_body`), so attaching it to a repair turn would ship
+        # the payload with nothing rendering it.
         exemplar = self._resolve_exemplar(refs) if spec.wants_exemplar else None
         attempt = 0
         usage_waits = 0

@@ -2299,8 +2299,8 @@ class PureRenderTests(unittest.TestCase):
     # derivation below descends into them without wrapping them.
     _PROMPT_RENDER_TRANSIT = frozenset({
         "_render_launch_prompt_template",
-        # Trims the text `_render_pure_launch_prompt` returns (persona line, identity block,
-        # empty paragraphs) and adds no prose of its own (issue #510).
+        # Slices the text `_render_pure_launch_prompt` returns (drops the persona line and the
+        # identity block) and adds no prose of its own (issue #510).
         "_pure_launch_body",
     })
     # Callees on the closure that add no prose of their own. Not descended into: the closure of

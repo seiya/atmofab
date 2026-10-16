@@ -9669,8 +9669,8 @@ def _pure_launch_template(request_payload: dict[str, Any]) -> str:
     """The launch template this pure request renders, composed for its `pure_language` and
     `pure_parallel`.
 
-    The ONE place a pure launch template is read by name, so the cold launch, the cold-repair
-    paragraph lift and the output-contract lift all see the same composed text. `KeyError`
+    The ONE place a pure launch template is read by name, so the cold launch and the cold
+    repair's re-statement of its body (`_pure_launch_body`) see the same composed text. `KeyError`
     when no template matches the request (each caller decides what that means)."""
     name = _pure_launch_template_name(request_payload)
     template = _load_launch_prompt_templates()[name]
@@ -9769,8 +9769,12 @@ def _pure_launch_body(request_payload: dict[str, Any]) -> str:
     filled under the label paragraph the launch template gives it. A cold repair re-states the
     launch prompt whole rather than lifting paragraphs from it by prefix (issue #510). The slice
     is byte-for-byte the cold launch's text — an empty slot's blank lines included — so a
-    document body reaches the repair exactly as it reaches the launch."""
-    full = _render_pure_launch_prompt(request_payload)
+    document body reaches the repair exactly as it reaches the launch. It is rendered WITHOUT
+    the certified exemplar: a repair turn corrects the leaf's own document and carries no prior
+    art, so the renderer drops a stray `exemplar` here rather than relying on the conductor
+    never to attach one."""
+    full = _render_pure_launch_prompt(
+        {k: v for k, v in request_payload.items() if k != "exemplar"})
     body = full.split("\n\n", 1)[1] if "\n\n" in full else ""
     cut = body.rfind("\n\nTarget node_key: ")
     if cut != -1:
