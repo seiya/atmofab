@@ -10,7 +10,9 @@ This module exposes two pure functions plus the struct vocabulary, over a §5.1 
 (``parse_interface_stanzas`` / ``stanza_atoms`` / ``stanza_line_list`` / ``stanza_line_set`` /
 ``declaration_atoms`` / ``canonicalize_end_line``) that the neutral gates also call directly:
 splitting a §5.1 block into per-symbol stanzas and reducing a stanza to its comparison atoms is
-Fortran knowledge, and the gates that compare them are neutral.
+Fortran knowledge, and the gates that compare them are neutral. The splitter reads HOST-RENDERED
+text only (§5.1, a harness pin, a rendered IR symbol); the generated model source is read by the
+structure front end (``structure.py``; issue #504).
 
 - ``parse_signatures_from_fortran(block_body)`` — a §5.1 Fortran interface block → the structured
   representation (``{module_parameters, types, interfaces, procedures}``). Built on this module's own stanza
@@ -101,11 +103,11 @@ _IFACE_OPEN_RE = re.compile(
 )
 _IFACE_BLOCK_END = re.compile(r"^\s*end\s*interface\b", re.IGNORECASE)
 # Lines of a prototype body that carry no ABI: `import [:: names]` brings host entities into the
-# interface body's scope and `implicit none` is the mapping rule. Both are legal (and `implicit
-# none` is required by the lint gate, C002) in a prototype the leaf writes, and neither belongs
-# in the stanza a gate compares, so the splitter drops them. A generic interface's `module
-# procedure <name>` / `procedure <name>` listing is likewise not a prototype; it is dropped by
-# position (it sits inside the block but outside any prototype), not by this pattern.
+# interface body's scope and `implicit none` is the mapping rule. The renderer emits neither, but
+# the readable Fortran §5.1 the tests author and lower may carry them, and neither belongs in the
+# stanza a gate compares, so the splitter drops them. A generic interface's `module procedure
+# <name>` / `procedure <name>` listing is not a prototype either, and the renderer emits none: it
+# is an error (issue #504).
 _IFACE_BODY_NOISE_RE = re.compile(r"^\s*(?:import\b|implicit\s+none\b)", re.IGNORECASE)
 
 # The `subroutine` / `function` alternatives are REACHED — `source_atoms` runs
@@ -1514,8 +1516,7 @@ def generated_source_violations(
                 "this gate compares need not be the one in effect; declare it exactly once — "
                 + ("as a prototype in the one abstract interface block of the module's "
                    "specification part" if kind == "prototype" else
-                   "defined in the module's own `contains` section, with at most one interface "
-                   "body of it in the module's specification part (a separate module procedure)")
+                   "defined in the module's own `contains` section")
                 + " — and delete the others (another interface block, a procedure body, a helper "
                 "module, a different case spelling)")
 
