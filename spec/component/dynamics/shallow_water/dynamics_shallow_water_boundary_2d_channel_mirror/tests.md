@@ -20,7 +20,7 @@ The mapping admits four transformations (`docs/TESTS.md` §Symmetry pairs); the 
 - The even-mirror judgment uses the base cases with `odd_at_wall=false`; the odd-mirror judgment uses those with `odd_at_wall=true`; the `x`-wrap judgment and the corner judgment use every base normal case (the periodic mapping does not depend on `odd_at_wall`).
 - **Axis-exchange cases.** Each base normal case `<base>` has a transposed copy `<base>_axis` at `wall_axis=1`, with `nx` and `ny` exchanged, `nx_total` and `ny_total` exchanged, the same `ng` and `odd_at_wall`, and `U_in` the transpose of the base's padded `U_in` (interior `U_in(i,j) = 10*j + i`, ghost cells the sentinel). The eight are `l0_ng1_even_axis` … `l0_ngeqnx_odd_axis`; each sorts after its base. The transposed `ng=ny` case is a `ng=nx` edge at `wall_axis=1` and the transposed `ng=nx` case a `ng=ny` edge, so each edge of §4 is reached in both orientations.
 - **Mirror cases.** `l0_ng2_odd_xmir` and `l0_ng2_odd_ymir` are `l0_ng2_odd` (`wall_axis=2`, `odd_at_wall=true`) with the padded `U_in` reversed along the first array axis (`U_in'(i,j) = U_in(nx_total+1-i, j)`, the reversal along the periodic axis) and along the second (`U_in'(i,j) = U_in(i, ny_total+1-j)`, the reversal across the walls) respectively; the sentinel ghost cells stay ghost cells under either reversal. Each sorts after its base.
-- The abnormal cases use `wall_axis=2` (but for the two wall-axis cases), `odd_at_wall=false` and the sentinel-filled ghost cells of the normal cases; each violates exactly one clause of the Controlled Spec §4. The invalid-`ny` case uses `ny=1` with `nx=4`, `ng=1`, `nx_total=6`, `ny_total=3`. The invalid-`nx` case uses `nx=1` with `ny=4`, `ng=1`, `nx_total=3`, `ny_total=6`. The invalid-`ng`-below-one case uses `ng=0` with `nx=4`, `ny=3`, `nx_total=4`, `ny_total=3`. The invalid-`ng`-over-`ny` case uses `ng=3`, `nx=4`, `ny=2`, `nx_total=10`, `ny_total=8` (`ng>ny`, `ng<=nx`). The invalid-`ng`-over-`nx` case uses `ng=3`, `nx=2`, `ny=4`, `nx_total=8`, `ny_total=10` (`ng>nx`, `ng<=ny`). The two invalid-wall-axis cases use the grid of `l0_ng1_even` with `wall_axis=0` and `wall_axis=3`, so that a guard written as `wall_axis>2` accepts the first and one written as `wall_axis<1` accepts the second. The abnormal cases are `l0_invalid_ny`, `l0_invalid_nx`, `l0_invalid_ng_zero`, `l0_invalid_ng_over_ny`, `l0_invalid_ng_over_nx`, `l0_invalid_wall_axis_0`, `l0_invalid_wall_axis_3`.
+- The abnormal cases use `wall_axis=2` (but for the two wall-axis cases), `odd_at_wall=false` and the sentinel-filled ghost cells of the normal cases; each violates exactly one clause of the Controlled Spec §4. The invalid-`ny` case uses `ny=1` with `nx=4`, `ng=1`, `nx_total=6`, `ny_total=3`. The invalid-`nx` case uses `nx=1` with `ny=4`, `ng=1`, `nx_total=3`, `ny_total=6`. The invalid-`ng`-below-one case uses `ng=0` with `nx=4`, `ny=3`, `nx_total=4`, `ny_total=3`. The invalid-`ng`-over-`ny` case uses `ng=3`, `nx=4`, `ny=2`, `nx_total=10`, `ny_total=8` (`ng>ny`, `ng<=nx`). The invalid-`ng`-over-`nx` case uses `ng=3`, `nx=2`, `ny=4`, `nx_total=8`, `ny_total=10` (`ng>nx`, `ng<=ny`). The two invalid-wall-axis cases use the grid of `l0_ng1_even` with `wall_axis=0` and `wall_axis=3`, so that a guard written as `wall_axis>2` accepts the first and one written as `wall_axis<1` accepts the second. The abnormal cases are `l0_invalid_ny`, `l0_invalid_nx`, `l0_invalid_ng_zero`, `l0_invalid_ng_over_ny`, `l0_invalid_ng_over_nx`, `l0_invalid_wall_axis_0`, `l0_invalid_wall_axis_3`. Each of the five grid cases has a transposed copy `<case>_axis` at `wall_axis=1` (`nx` and `ny` exchanged, `nx_total` and `ny_total` exchanged, the same `ng`), so that a guard evaluated in one orientation's branch only is visible: §4 rejects each grid in either orientation. The copy violates the transposed clause — `l0_invalid_ny_axis` has `nx=1`, `l0_invalid_nx_axis` has `ny=1`, `l0_invalid_ng_over_ny_axis` has `ng>nx`, `l0_invalid_ng_over_nx_axis` has `ng>ny`, `l0_invalid_ng_zero_axis` has `ng=0` — and is judged by the test of the clause it violates.
 
 ## 3. Execution-control rules
 `N/A`: this `component` applies a boundary mapping to a provided field and defines no time-stepping or iteration. Execution control is the responsibility of the `problem` runner.
@@ -70,30 +70,35 @@ The mapping admits four transformations (`docs/TESTS.md` §Symmetry pairs); the 
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `ny<2`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: on `l0_invalid_ny` at `wall_axis=2` and on `l0_invalid_nx_axis` at `wall_axis=1`, `grid_valid` is false and `checks.input_guard` fails.
 - `test_id`: `l0_invalid_nx_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_boundary_2d_channel_mirror__apply`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `nx<2`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: on `l0_invalid_nx` at `wall_axis=2` and on `l0_invalid_ny_axis` at `wall_axis=1`, `grid_valid` is false and `checks.input_guard` fails.
 - `test_id`: `l0_invalid_ng_zero_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_boundary_2d_channel_mirror__apply`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `ng<1`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: on `l0_invalid_ng_zero` at `wall_axis=2` and on `l0_invalid_ng_zero_axis` at `wall_axis=1`, `grid_valid` is false and `checks.input_guard` fails.
 - `test_id`: `l0_invalid_ng_over_ny_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_boundary_2d_channel_mirror__apply`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `ng>ny`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: on `l0_invalid_ng_over_ny` at `wall_axis=2` and on `l0_invalid_ng_over_nx_axis` at `wall_axis=1`, `grid_valid` is false and `checks.input_guard` fails.
 - `test_id`: `l0_invalid_ng_over_nx_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_boundary_2d_channel_mirror__apply`
   - `expected_outcome`: `xfail`
   - `xfail_condition`: `ng>nx`
   - `pass_when`: `verdict.overall == fail and verdict.failed_checks includes 'input_guard'`
+  - `judgment`: on `l0_invalid_ng_over_nx` at `wall_axis=2` and on `l0_invalid_ng_over_ny_axis` at `wall_axis=1`, `grid_valid` is false and `checks.input_guard` fails.
 - `test_id`: `l0_invalid_wall_axis_zero_xfail`
   - `level`: `L0`
   - `operation_id`: `dynamics_shallow_water_boundary_2d_channel_mirror__apply`
