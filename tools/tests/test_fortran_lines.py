@@ -451,6 +451,8 @@ class SplitTopLevelCommasTests(unittest.TestCase):
         cases = {
             "i = int(o'755', 4) ! o'1'": "i = int(000000, 4) !     ",
             "x = o'7&\n&55'": "x = 000&\n&000",
+            # A comment-only line inside a continued BOZ is a comment, blanked as one.
+            "x = o'7&\n! c\n&5'": "x = 000&\n!  \n&00",
             "x = o'7!' ! end subroutine": "x = 00000 !               ",
             # A BOZ at the very start of the text: the test must not wrap round to its end.
             "z'f'+k": "0000+k",

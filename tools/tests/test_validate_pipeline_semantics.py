@@ -21590,7 +21590,7 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
 
     def test_a_model_that_uses_a_boz_literal_is_read(self) -> None:
         # The gate the five production attempts of issue #501 failed at: a BOZ constant anywhere
-        # in the model (here in a private helper beside the published operations) made the
+        # in the model (here in a helper outside §5.1, beside the published operations) made the
         # structure reader refuse, and this gate reported "could not resolve" for a legal
         # source. With the mask writing the BOZ as zeros the source is read and passes.
         boz = self._C._GOOD_SOURCE.replace(
