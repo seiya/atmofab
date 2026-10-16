@@ -698,8 +698,9 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         documents to the rule with a check at that point, and this is the check.
 
         Scoped to the files this change owns, and to CODE — a document may legitimately
-        name a deleted test as deleted, and `TODO.md` does. A code comment pointing at a
-        test is telling the reader where to look, so it has to lead somewhere.
+        name a deleted test as deleted, and issue #84's record does
+        (https://github.com/seiya/atmofab/issues/84#issuecomment-5560395673). A code comment
+        pointing at a test is telling the reader where to look, so it has to lead somewhere.
         """
         cited_names = set()
         for rel in _CITATION_SOURCES:
@@ -793,8 +794,9 @@ class OperatorEnvironmentIsolationTests(unittest.TestCase):
         # BOTH PRODUCERS, by COUNT. There are two — `pytest_report_header` (session
         # preamble, suppressed by `-q`) and `pytest_terminal_summary` (survives `-q`) —
         # and asserting only that the line APPEARS is satisfied by the summary alone at
-        # every verbosity, which is how deleting the header survived a sweep. The header
-        # is the one that survives `-p no:terminal`, so it is not redundant.
+        # every verbosity, which is how deleting the header survived a sweep. Neither
+        # survives `-p no:terminal` (0 disclosures, measured 2026-10-16; TODO.md records
+        # the silent strip), so the count at default verbosity is what pins the header.
         for extra, expected in (([], 2), (["-q"], 1)):
             with self.subTest(verbosity=extra or ["default"]):
                 reported = _run([sys.executable, "-m", "pytest", node] + extra, poison)

@@ -475,8 +475,10 @@ class PurePayloadValidationTests(unittest.TestCase):
     def test_validate_payload_rejects_a_blank_required_verify_context_value(self) -> None:
         # The PRESENCE check has two halves and only the key-absence half was pinned: mutating
         # `not (isinstance(v, str) and v.strip())` to `k not in ctx` left all five pure test files
-        # green. The non-empty half is what `TODO.md` item (b) cites as the reason an empty node
-        # artifact never reaches a billed leaf, so it must not be able to rot unobserved.
+        # green. The non-empty half is what item (b) of issue #142's record
+        # (https://github.com/seiya/atmofab/issues/142#issuecomment-5560398588) cites as the
+        # reason an empty node artifact never reaches a billed leaf, so it must not be able to
+        # rot unobserved.
         for blank in ("", "   ", "\n"):
             req = _pure_request("verify")
             ctx = dict(req["pure_context"])  # type: ignore[arg-type]
@@ -2282,8 +2284,9 @@ class PureRenderTests(unittest.TestCase):
           grading how compromised the existing artifacts are and mapping to reuse-vs-discard,
           not the `Generate.verify` rubric's repair-route value — and the template is covered
           instead by `PureRenderTests`' template-file sweep and by the prompt-contract drift
-          guard, which hashes it. `TODO.md`'s rubric-twin entry records that the pair it used
-          to own is gone.
+          guard, which hashes it. PR #419's audit of the rubric-twin entry records that the pair
+          it used to own is gone
+          (https://github.com/seiya/atmofab/pull/419#issuecomment-5996926913).
         """
         found = self._host_built_severity_mentions()
         detail = "; ".join(f"{k!r} in {sorted(v)}" for k, v in sorted(found.items()))

@@ -781,6 +781,13 @@ def classify_post_judge_violations(violations: list[str]) -> str:
         return "unknown"
     saw_recoverable = False
     saw_unknown = False
+    # Reachability (TODO.md audit, 2026-10-16): the only leaf-chosen leading token is a bundle
+    # `logical_path`, which the extension allowlist confines to a source suffix, so it can grade
+    # its own line `unknown` or (through an `orchestrations/` segment) `unrecoverable`, never
+    # `recoverable`; and it cannot mask an integrity line, because `unrecoverable` returns per
+    # line. Every integrity finding leads with a host-built path (`<pipeline_dir>/lineage.json`,
+    # `<orchestration_dir>/…`) or carries a marker, so none is read `unknown` and escalated.
+    # The text scan therefore buys a leaf nothing.
     for raw in violations:
         line = raw.strip()
         # The offending artifact path is the leading token, delimited by ':' or whitespace.
@@ -6696,7 +6703,7 @@ class Conductor:
         `dependency_graph_document` and (through the unfenced `<dependency_facts>` block) the
         published-operations catalog. `docs/workflow/CHECKS_MODULE_CONTRACT.md` is sliced to its
         ABI sections by the same `_checks_contract_abi_sections` the reviewer uses, so this caller
-        adds no new reader of that document beyond the one `TODO.md` already records."""
+        adds no new reader of that document beyond the reviewer's."""
         from tools.orchestration_runtime import (CHECKS_MODULE_CONTRACT_REF,
                                                  WORKFLOW_PHASE_DOC_BY_STEP)
         contract_text = self._pure_repo_document(

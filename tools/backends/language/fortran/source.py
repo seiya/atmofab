@@ -482,7 +482,8 @@ def split_names(raw: str) -> list[str]:
     lost `u_np1` made an `intent(out)` dummy its own candidate, so the disjoint test could not
     fire, while a lost `ncomp` hid the constant that now clears it.
 
-    The end-to-end movement, before to after, is elsewhere and `TODO.md` lists it: two
+    The end-to-end movement, before to after, is elsewhere and issue #181's record lists it
+    (https://github.com/seiya/atmofab/issues/181#issuecomment-5559628999): two
     `workspace_20260319` artifacts lose a FALSE `initialize_state` violation whose only candidate
     is a module `parameter`; one 20260712 model keeps firing with two names recovered from behind
     a `&`; and two `profile/`-domain files move in opposite directions, neither of which any gate
@@ -553,8 +554,10 @@ class ProcedureEnvelope:
     * a dependency result propagated to the host's `intent(out)` INSIDE a contained procedure, by
       host association, was invisible to the host's envelope — a false violation.
 
-    Neither is reachable in this tree today (0 of the 365 `*_model.f90` define a contained
-    procedure), which is exactly why the tree differential could not see them.
+    Neither was reachable in the tree the differential ran over (0 of its 365 `*_model.f90`
+    defined a contained procedure), which is exactly why it could not see them. Measured
+    2026-10-16 at `112af78b`: 17 of the 387 `workspace/` models now define one — every
+    `shallow_water2d_channel` model, whose `rhs` is passed to the RK4 dependency.
 
     ``out_vars`` IS THE DEFINABLE-OUTPUT SET, and what belongs in it depends on ``kind``:
 
@@ -823,7 +826,8 @@ def procedure_envelopes(lowered: str) -> list[ProcedureEnvelope]:
     interface/implementation boundary via the gfortran dump — was measured and dropped: the three
     dump markers that are stable across compiler versions carry neither the result name nor the
     function/subroutine distinction, so it could only ever have rescued a subroutine-shaped one,
-    of which this tree has none. See `TODO.md`.
+    of which this tree has none. See
+    https://github.com/seiya/atmofab/issues/181#issuecomment-5559629951 .
     """
     # The label reading — two readings of one program, chosen by the PARSER — belongs to
     # `structure_reading` and is stated in its docstring, once. It was duplicated here verbatim
@@ -1060,7 +1064,13 @@ def _validate_problem_model_dependency_dataflow(
     rule still treats a variable written by an earlier `call` as a candidate, and the consumption
     closure still cannot cross a call; the measured instance is the
     `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model, latent only because of the
-    `problem/` guard below. Closing (c) is the flow-sensitive pass recorded in `TODO.md`.
+    `problem/` guard below. Closing (c) needs a flow-sensitive pass: each dependency
+    operation's per-argument intents from its published interface, and reaching-definitions
+    over statement order. It is not scheduled; `Generate.verify` G5 owns `required_sources`
+    reachability. The gfortran debug dump is not that pass's input: measured 2026-08-12,
+    `-fdump-fortran-original`'s `code:` section differs between gfortran 12.4.0 and 14.2.0 on 27
+    of 319 analysable files, while its `procedure name =` / `Formal arglist:` / `DUMMY(...)`
+    lines were identical on all 4328 lines — enough for dummy intents, not for dataflow.
 
     Residue (c) above is the one with a named instance: the
     `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model yields
@@ -1069,8 +1079,8 @@ def _validate_problem_model_dependency_dataflow(
     producer-side residue (written by an earlier `call`, which the candidate rule does not count
     as a producer), while `u_new` is written by the dependency call itself — a correct candidate
     whose flag is consumption-side, because `u = u_new` then crosses a `call` the assignment-only
-    closure cannot follow. Whoever builds the flow-sensitive pass needs both halves, so `TODO.md`
-    carries the case with that split."""
+    closure cannot follow. Whoever builds the flow-sensitive pass needs both halves (record:
+    https://github.com/seiya/atmofab/issues/181#issuecomment-5560396801)."""
     if not node_key.startswith("problem/"):
         return
     if not dep_spec_ids:

@@ -7549,7 +7549,9 @@ end module shallow_water2d_model
         #
         # Pinned as REFUSED rather than left undiscovered: the failure is fail-closed and visible,
         # and closing it would mean a fourth label mechanism — an error-guided per-statement
-        # repair — for a conjunction of two exotic features. Recorded in TODO.md instead.
+        # repair — for a conjunction of two exotic features. Not a task: fail-closed, and 0 of
+        # the 723 on-disk models carry a label (2026-10-16). Record:
+        # https://github.com/seiya/atmofab/issues/181#issuecomment-5560466309
         source = """module shallow_water2d_model
   implicit none
 100 contains
@@ -8364,7 +8366,8 @@ end module shallow_water2d_model
         # only together with the candidate rule's named-constant clause — measured on every
         # `*_model.f90` in the tree, the pair moves the violation count down by two with no
         # `problem/` file changing verdict. (The absolute pair depends on how `dep_spec_ids` is
-        # derived for that sweep; TODO.md records the harness. The DELTA does not.)
+        # derived for that sweep; issue #181's record holds the harness,
+        # https://github.com/seiya/atmofab/issues/181#issuecomment-5559628999. The DELTA does not.)
         for raw in ("h_in, & ! set a, mid, b\n       h_in, tmp",
                     "h_in, & ! it's the field\n       h_in, tmp"):
             self.assertEqual(fortran_source.split_names(raw), ["h_in", "h_in", "tmp"], raw)

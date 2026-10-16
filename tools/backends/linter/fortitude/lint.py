@@ -94,7 +94,8 @@ back, and the route is `--target-std <toolchain.standard>` (measured to stop `C0
 `f2008` without dropping it). It is not taken here because it makes the argv node-dependent —
 `run_linter` would gain a caller-supplied input — and because the corpus has no such node:
 measured over every `spec.ir.yaml` in the tree, `toolchain.standard` is `f2008` (185 documents,
-plus 3 spelling it `2008`) and nothing else. `TODO.md` carries it.
+plus 3 spelling it `2008`) and nothing else. `docs/backends/linter/fortitude/RULES.md`'s `C003`
+row carries it.
 
 What this module deliberately does NOT do: decide the verdict, read findings, or know about the
 gate. It states the invocation; `tools/build_runtime.py` runs it and
