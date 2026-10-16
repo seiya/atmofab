@@ -556,8 +556,8 @@ class ProcedureEnvelope:
 
     Neither was reachable in the tree the differential ran over (0 of its 365 `*_model.f90`
     defined a contained procedure), which is exactly why it could not see them. Measured
-    2026-10-16 at `112af78b`: 17 of the 387 `workspace/` models now define one — every
-    `shallow_water2d_channel` model, whose `rhs` is passed to the RK4 dependency.
+    2026-10-16 at `112af78b`: 17 of the 387 `workspace/` models now define one — 17 of the 20
+    `shallow_water2d_channel` models, each passing its contained `rhs` to the RK4 dependency.
 
     ``out_vars`` IS THE DEFINABLE-OUTPUT SET, and what belongs in it depends on ``kind``:
 
