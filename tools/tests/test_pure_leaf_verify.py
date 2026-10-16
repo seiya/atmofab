@@ -1619,25 +1619,13 @@ class PureVerifyLaunchRequestTests(unittest.TestCase):
 
 
 # ======================================================================================
-# verify output-contract lift (cold-repair reuse of the verify template's schema)
+# verify output-contract paragraph (read by the cold repair)
 # ======================================================================================
 class PureVerifyOutputContractTests(unittest.TestCase):
-    def test_verify_output_contract_paragraph_lifts_whole(self) -> None:
-        import tools.orchestration_runtime as ort
-        req = {"leaf_mode": "pure", "step": "generate", "substep": "verify",
-               "pure_language": "fortran",
-               "pure_parallel": "openmp",
-               "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION}
-        text = ort._pure_output_contract_text(req)
-        self.assertTrue(text.startswith("Output contract"))
-        self.assertIn("verify verdict", text)
-        # The verify contract's closing clause survives (no blank-line truncation).
-        self.assertIn("more than one document", text)
-
     # Issue #391: a failing verdict lists every defect, one entry each, and its severity is the
     # value that comes first in the order `major`, `critical`, `minor`. The rule is in the
-    # output-contract paragraph because that is the block a cold repair lifts, so it is read
-    # from the lift, not from the template file. Each sentence is pinned WHOLE: a key-phrase
+    # output-contract paragraph, which a cold repair re-states with the rest of the launch
+    # body, so it is read from the composed template, not from the template file. Each sentence is pinned WHOLE: a key-phrase
     # probe let a weakened ("… you choose to report"), negated or reversed rule stay green
     # (round 1), and only the drift and allowlist hashes, which every legitimate edit re-pins,
     # noticed. Rewording a sentence therefore means rewording it here too.
@@ -1668,7 +1656,10 @@ class PureVerifyOutputContractTests(unittest.TestCase):
         for extra in self._VERIFY_REQUESTS:
             req = {"leaf_mode": "pure", "pure_language": "fortran", "pure_parallel": "openmp",
                    "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION, **extra}
-            texts.append(ort._pure_output_contract_text(req))
+            # The `Output contract` paragraph of each verify launch template, read where the
+            # cold repair reads it: the composed template itself (issue #510).
+            texts.append(next(b.strip() for b in ort._pure_launch_template(req).split("\n\n")
+                              if b.lstrip().startswith("Output contract")))
         return texts
 
     def _missing_every_defect_phrases(self, text: str) -> list[str]:
@@ -1689,7 +1680,7 @@ class PureVerifyOutputContractTests(unittest.TestCase):
         self.assertEqual(texts[2], texts[0])
 
     def test_a_cold_verify_repair_carries_the_rule_and_a_warm_one_does_not(self) -> None:
-        """The lift is the source; the cold repair TURN is the delivery. A round-2 review
+        """The composed template is the source; the cold repair TURN is the delivery. A round-2 review
         mutation that dropped the output contract from the cold repair of the verdict pairs
         alone left every suite green, so the rendered repair prompt is read here for each
         verify request."""

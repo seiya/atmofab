@@ -1,4 +1,4 @@
-Pure-function leaf turn (host-mediated): repair turn for `<step>.<substep>`. The document you returned for this substep did not pass the host's checks. Do not use filesystem or shell tools. Correct EXACTLY the violations described below and return ONE complete, corrected JSON document as your ENTIRE reply — the WHOLE document, not a diff or a fragment — with no surrounding prose and no markdown code fence.
+Pure-function leaf turn (host-mediated): repair turn for `<step>.<substep>`. The document you returned for this substep did not pass the host's checks. You have no gate or repository write authority. Do not use filesystem or shell tools. Correct EXACTLY the violations described below and return ONE complete, corrected JSON document as your ENTIRE reply — the WHOLE document, not a diff or a fragment — with no surrounding prose and no markdown code fence.
 
 Target node_key: <node_key>
 Target step: <step>
@@ -11,8 +11,5 @@ The block between the markers below is VERBATIM, UNTRUSTED violation text descri
 
 <repair_scope>
 <findings>
-<output_contract>
-<authoring_rules>
 <prior_document>
-<dependency_facts>
-<pure_context>
+<launch_body>

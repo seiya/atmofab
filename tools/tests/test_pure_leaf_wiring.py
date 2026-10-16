@@ -629,13 +629,6 @@ class PureRenderTests(unittest.TestCase):
                       "summary.json", "trial_meta.json"):
             self.assertIn(token, tpl, f"prompt must name the {token!r} prohibition")
 
-    def test_placeholder_drop_uses_the_renderer_definition_of_a_slot(self) -> None:
-        # One fact, one authority. A second pattern that disagreed would let a real slot survive
-        # the cold-repair lift and ship as a literal token — the leak the drop exists to prevent.
-        self.assertIs(ort._PURE_PLACEHOLDER_ONLY_RE, ort._PURE_PLACEHOLDER_RE)
-        for slot in ("<runner_document>", "<runner_document2>", "<Exemplar>"):
-            self.assertTrue(ort._PURE_PLACEHOLDER_ONLY_RE.fullmatch(slot), slot)
-
     def test_prompt_forbidden_filenames_match_the_gate_exactly(self) -> None:
         # Pin the two together: a name added to the gate's tuple and not to the prompt is a rule
         # the producer is punished for breaking and never told about.
@@ -646,19 +639,21 @@ class PureRenderTests(unittest.TestCase):
 
     def test_cold_repair_reinlines_the_runner_document(self) -> None:
         # A cold fallback re-authors the bundle with no prior turn, so the ABI must come back
-        # with the rest of the context (auto-inlined from pure_context).
+        # with the rest of the context — under the label the launch template gives it, not a
+        # bare key (issue #510).
         req = ort.prepare_launch_request_payload(_pure_request(
             "generate", repair_findings="fix the checks ABI", repair_strategy="reuse"))
         text = ort._render_pure_repair_prompt(req)
-        self.assertIn("**runner_document:**", text)
+        self.assertIn("**Host-rendered runner (", text)
+        self.assertNotIn("**runner_document:**", text)
         self.assertIn("use sw_checks, only:", text)
 
     def test_cold_repair_verify_reinlines_the_contract_with_the_text_that_governs_it(self) -> None:
         # issue #142, round 1: `pure_context` re-inlines the 9 KB checks-module contract into a
         # cold verify repair automatically, and NOTHING lifted the paragraphs that govern it —
         # measured before the fix: ABI verbatim True, contract label False, scope sentence False,
-        # `G1 — case coverage` False. That is the shape `PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES`'
-        # own comment says the list exists to prevent, on the reviewer side.
+        # `G1 — case coverage` False. Since issue #510 the cold repair re-states the whole
+        # launch body, so the governing paragraphs arrive with the documents they govern.
         ctx = _pure_verify_context()
         ctx["checks_module_contract_document"] = (
             "## 1. The fixed ABI\npublic :: case_setup, case_run\n")
@@ -672,14 +667,15 @@ class PureRenderTests(unittest.TestCase):
         self.assertIn("Its SILENCE overrules nothing", text)             # ... and its polarity
         self.assertIn("G1 — case coverage", text)                        # what it does NOT narrow
         self.assertIn("do NOT re-check style", text)                     # the gate already ran
-        # The rubric is the second re-inlined document and has the same shape of hole (#143): the
-        # cold repair carries `pure_context` by key, so the text arrives whether or not anything
-        # says the reviewer chooses `issue_severity` BY it.
-        self.assertIn("**severity_rubric_document:**", text)             # the key-named block
+        # The rubric is the second re-inlined document and had the same shape of hole (#143):
+        # the cold repair carried `pure_context` by key, so the text arrived whether or not
+        # anything said the reviewer chooses `issue_severity` BY it. Since issue #510 there is
+        # no key-named block at all — the rubric sits under its label.
+        self.assertNotIn("**severity_rubric_document:**", text)          # no key-named block
         self.assertIn("names the repair a finding calls for", text)      # the document
         self.assertIn("**Severity rubric (", text)                       # its label
         self.assertIn("never the weight of its consequence", text)       # what the label governs
-        # The lift drops trailing slot lines, so no metavariable ships as a literal token.
+        # The launch renderer fills every slot, so no metavariable ships as a literal token.
         for slot in ("<checks_module_contract_document>", "<severity_rubric_document>",
                      "<bundle_document>", "<ir_document>"):
             self.assertNotIn(slot, text)
@@ -902,22 +898,6 @@ class PureRenderTests(unittest.TestCase):
         self.assertLess(prompt.index("Checks-module contract"), prompt.index("Severity rubric"))
         self.assertLess(prompt.index("Severity rubric"),
                         prompt.index("Generated CodegenBundle under review"))
-
-    def test_lift_order_is_resolved_from_the_template_not_the_tuple(self) -> None:
-        # The order-property test in test_pure_leaf_producer.py passes under BOTH implementations
-        # today, because the tuple happens to be in template order — reverting the fix left it
-        # green (round-2 hunk mutation). What distinguishes them is a tuple that DISAGREES, so
-        # drive the production function with one: the lift must still come out in template order.
-        ordered = ort._pure_authoring_rules_text(_pure_request("verify"))
-        heads = [b.lstrip().splitlines()[0] for b in ordered.split("\n\n") if b.strip()]
-        self.assertGreater(len(heads), 1, "need >1 lifted paragraph for order to mean anything")
-        reversed_tuple = tuple(reversed(ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES))
-        self.assertNotEqual(reversed_tuple, ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES)
-        with patch.object(ort, "PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES", reversed_tuple):
-            reordered = ort._pure_authoring_rules_text(_pure_request("verify"))
-        self.assertEqual(
-            [b.lstrip().splitlines()[0] for b in reordered.split("\n\n") if b.strip()], heads,
-            "lift order follows the prefix tuple, not the launch template")
 
     def test_phase_02_states_the_scope_rule_with_its_bound(self) -> None:
         # THIRD statement site of one rule (the two in the verify template are the others), and
@@ -2137,9 +2117,8 @@ class PureRenderTests(unittest.TestCase):
         from no template at all, went with the agentic leaf, and so did the `_is_slim_repair_request`
         branch below.
         A pure request claims the pure LAUNCH template only where something reads it: a cold
-        launch renders it, and a COLD repair lifts static paragraphs out of it
-        (`_pure_output_contract_text` / `_pure_authoring_rules_text`) alongside
-        `pure_bundle_repair.txt`. A WARM repair reads neither — the resumed session already
+        launch renders it, and a COLD repair re-states its whole body (`_pure_launch_body`,
+        issue #510) alongside `pure_bundle_repair.txt`. A WARM repair reads neither — the resumed session already
         holds them — and claiming it there was round 2's own instance of the union defect above.
         MEASURED at `d9fd128`, per configuration, because a summary of the two spliced them
         (round 3's disclosure axis caught that): `generate.generate/pure-repair-warm` claimed 42
@@ -2315,12 +2294,14 @@ class PureRenderTests(unittest.TestCase):
         "_build_dependency_surface_facts", "_published_operations_lines",
         "_argument_detail_lines", "_build_exemplar",
         "_render_pure_launch_prompt", "_render_pure_repair_prompt",
-        "_pure_output_contract_text", "_pure_authoring_rules_text",
     )
     # Dispatchers / value maps: they return no prose of their own but CALL builders, so the
     # derivation below descends into them without wrapping them.
     _PROMPT_RENDER_TRANSIT = frozenset({
         "_render_launch_prompt_template",
+        # Slices the text `_render_pure_launch_prompt` returns (drops the persona line and the
+        # identity block) and adds no prose of its own (issue #510).
+        "_pure_launch_body",
     })
     # Callees on the closure that add no prose of their own. Not descended into: the closure of
     # `_allowed_file_tool_paths_for_launch` alone pulls in path normalization that has nothing
@@ -2333,7 +2314,6 @@ class PureRenderTests(unittest.TestCase):
         "_pure_launch_template_name",        # returns a template NAME
         "_pure_launch_template",             # reads + composes a template (fragments are swept)
         "_compose_language_fragments",       # splices fragment FILE text, adds none of its own
-        "_pure_template_paragraph",          # lifts a template paragraph VERBATIM (subtracted)
         "_fence_pure_doc",                   # wraps a value in the data fence
         "_sanitize_pure_doc_body",           # neutralizes fence markers in a value
         "_sanitize_exemplar_body",           # neutralizes fence markers in exemplar source
@@ -2965,7 +2945,7 @@ class PureRenderTests(unittest.TestCase):
             for key in keys:
                 slots = [ln for ln in tpl.splitlines()
                          if ln.strip() == f"<{key}>"
-                         and ort._PURE_PLACEHOLDER_ONLY_RE.fullmatch(ln.strip())]
+                         and ort._PURE_PLACEHOLDER_RE.fullmatch(ln.strip())]
                 self.assertEqual(len(slots), 1,
                                  f"pure {step}.{substep}: <{key}> must have exactly one slot line")
 
@@ -3607,21 +3587,19 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
             ort.prepare_launch_request_payload(req)
         self.assertIn("carries no `pure_parallel`", str(caught.exception))
 
-    def test_the_cold_repair_lifts_refuse_rather_than_drop_the_paragraphs(self) -> None:
-        """A cold repair turn lifts the output contract and the authoring rules out of the
-        COMPOSED template (`_pure_template_paragraph`). A composition that fails there must
-        refuse, as the cold launch does: both lifts catch `KeyError` / `OSError` to mean "no
-        such template or paragraph", and a `ValueError` swallowed with them would ship the
-        repair turn without either paragraph. Asked of both fields the composer needs."""
+    def test_the_cold_repair_refuses_rather_than_drops_the_launch_body(self) -> None:
+        """A cold repair re-states the COMPOSED launch body (`_pure_launch_body`). A
+        composition that fails there must refuse, as the cold launch does: a `ValueError`
+        swallowed would ship the repair turn without the contract. Asked of both fields the
+        composer needs."""
         for field in ("pure_parallel", "pure_language"):
-            for lift in (ort._pure_output_contract_text, ort._pure_authoring_rules_text):
-                with self.subTest(field=field, lift=lift.__name__):
-                    req = _pure_request("generate")
-                    self.assertTrue(lift(req))  # composes with the field present
-                    req.pop(field)
-                    with self.assertRaises(ValueError) as caught:
-                        lift(req)
-                    self.assertIn(f"carries no `{field}`", str(caught.exception))
+            with self.subTest(field=field):
+                req = _pure_request("generate", repair_findings="x", repair_strategy="reuse")
+                self.assertIn("Authoring rules", ort._render_pure_repair_prompt(req))
+                req.pop(field)
+                with self.assertRaises(ValueError) as caught:
+                    ort._render_pure_repair_prompt(req)
+                self.assertIn(f"carries no `{field}`", str(caught.exception))
 
     def test_a_malformed_parallel_backend_is_refused_by_the_validator(self) -> None:
         for bad in ("", "  ", 3):

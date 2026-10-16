@@ -2412,8 +2412,9 @@ class PureProducerExemplarTests(unittest.TestCase):
         self.assertIn("! prior art body", c.prompts[0])
 
     def test_warm_repair_attempt_does_not_attach_exemplar(self) -> None:
-        # The repair template has no `<exemplar>` slot, so attaching it to a repair turn would
-        # ship payload bytes nothing renders.
+        # A repair turn renders no exemplar (no `<exemplar>` slot in the repair template, and the
+        # cold repair's launch body is rendered without one), so attaching it to a repair turn
+        # would ship payload bytes nothing renders.
         bad = _valid_bundle()
         del bad["capability_requirements"]
         c, oc = self._run([_envelope(bad), _envelope(_valid_bundle())])
@@ -2597,35 +2598,6 @@ class PureProducerExemplarTests(unittest.TestCase):
 # Cold-repair prompt contract (M-C 修正4)
 # ======================================================================================
 class PureColdRepairPromptTests(unittest.TestCase):
-    @staticmethod
-    def _generate_template_variants() -> "list[tuple[str, str]]":
-        """Every `(substep, pure_shape)` a pure GENERATE launch can render.
-
-        WHAT IS DERIVED AND WHAT IS NOT, because a round-3 census caught the first version of
-        this docstring overclaiming: the SHAPED variants are read off
-        `PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE`, which is the table the launch validator refuses a
-        `pure_shape` against — so a new shape genuinely cannot be omitted. The DEFAULT-shape
-        pair is derived from `_PROMPT_TEMPLATE_FILES` instead, because no by-shape table
-        mentions it, and deriving it is what closes the remaining hole: a new default-shape
-        GENERATE substep template would otherwise be silently unexercised, which is the exact
-        class this helper was introduced to close.
-
-        `pure_shape` is `""` for the default shape, which is how the request spells it."""
-        # The escalate diagnostician holds a `pure generate.diagnose` key of its own and is NOT
-        # one of these: it has no static rule paragraphs and no repair loop (issue #169 PR-1).
-        # Excluded by asking `DIAGNOSE_LAUNCH_PAIRS`, so a second diagnose pair follows.
-        diagnose = {substep for step, substep in ort.DIAGNOSE_LAUNCH_PAIRS
-                    if step == "generate"}
-        default = sorted(
-            key.split(".", 1)[1] for key in ort._PROMPT_TEMPLATE_FILES
-            if key.startswith("pure generate.") and key.count(".") == 1
-            and key.split(".", 1)[1] not in diagnose)
-        out = [(substep, "") for substep in default]
-        out += [(substep, shape)
-                for step, substep, shape in sorted(ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE)
-                if step == "generate"]
-        return out
-
     def _req(self, *, shape: str = "", **overrides):
         substep = overrides.get("substep", "generate")
         if shape:
@@ -2723,16 +2695,6 @@ class PureColdRepairPromptTests(unittest.TestCase):
         text = ort._render_pure_repair_prompt(req)
         self.assertNotIn("Dependency facts", text)
 
-    def test_output_contract_lift_is_the_whole_paragraph(self) -> None:
-        # Guards against silent truncation: if a template edit splits the "Output contract"
-        # paragraph with a blank line, `split("\n\n")` would drop everything after it and the
-        # cold repair would ship a schema-thin contract. Pin both the heading (start) and the
-        # paragraph's final clause (end) so either kind of drift fails the suite rather than
-        # silently degrading a cold repair turn.
-        text = ort._pure_output_contract_text(self._req())
-        self.assertTrue(text.startswith("Output contract"))
-        self.assertIn("diagnose it", text)  # the closing clause of the generate.generate contract
-
     def test_cold_repair_includes_authoring_rules_and_output_contract(self) -> None:
         # A cold fallback re-authors the whole bundle with no prior turn, so it needs the
         # deterministic-gate rules for the same reason it needs the schema (M-C cold-repair
@@ -2745,56 +2707,141 @@ class PureColdRepairPromptTests(unittest.TestCase):
         # rule's presence is the prohibition rather than the directive.
         self.assertIn("--ignore-allow-comments", text)
 
-    def test_cold_repair_lifts_every_static_rule_paragraph(self) -> None:
-        # The ABI paragraph was added to the launch template and silently not lifted, so a cold
-        # repair handed the producer the runner source with no statement that it must publish all
-        # ten as subroutines — Z2 defect D reproduced in the RECOVERY path, which is reached
-        # exactly when recovery is happening. Assert against the template's own paragraphs, not a
-        # literal list, so a third static paragraph cannot be silently omitted the same way.
-        #
-        # The list serves BOTH pure templates (issue #142 added the verify entries), so a prefix
-        # is checked against the template that HOLDS it. Two properties, and the second is what
-        # keeps the first from going vacuous: every paragraph present in a template is lifted into
-        # that template's cold repair, AND every prefix in the list is present in at least one
-        # template — a prefix that matches nothing anywhere is a typo silently lifting nothing.
-        placed = {prefix: [] for prefix in ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES}
-        # Every pure GENERATE template, derived from the renderer's own table rather than a
-        # hand-written pair. A round-2 reviewer measured what the pair cost: issue #169 added two
-        # `.harness` templates whose rule paragraphs opened with prefixes this list did not
-        # carry, and neither this row nor its sibling below drove those keys — so a cold-fallback
-        # repair shipped without the shape's file rules (producer) and without a single checklist
-        # item (reviewer), with the suite green. Deriving the keys is what makes a THIRD template
-        # impossible to omit the same way.
-        for substep, shape in self._generate_template_variants():
-            template = composed_pure_template(ort._pure_launch_template_name(
-                {"step": "generate", "substep": substep, "pure_shape": shape}))
-            text = ort._render_pure_repair_prompt(self._req(substep=substep, shape=shape))
-            for prefix in ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES:
-                if prefix not in template:
-                    continue
-                placed[prefix].append(substep)
-                start = template.index(prefix)
-                end = template.index("\n\n", start)
-                for line in (ln.strip() for ln in template[start:end].splitlines()):
-                    if line and not line.startswith("<"):  # the doc slot is filled elsewhere
-                        self.assertIn(line, text,
-                                      f"cold repair ({substep}, {shape or 'default'}) "
-                                      f"dropped: {line[:60]}")
-        for prefix, substeps in placed.items():
-            self.assertTrue(substeps, f"prefix matches no pure template: {prefix!r}")
+    @staticmethod
+    def _repair_loop_pairs() -> list[tuple[str, str, str]]:
+        """Every `(step, substep, pure_shape)` whose leaf runs under a repair loop: each pure
+        template except the escalate diagnostician's (no repair loop, issue #169 PR-1)."""
+        out = []
+        for key in sorted(ort._PROMPT_TEMPLATE_FILES):
+            if not key.startswith("pure ") or key == "pure bundle repair":
+                continue
+            parts = key[len("pure "):].split(".")
+            step, substep, shape = parts[0], parts[1], (parts[2] if len(parts) > 2 else "")
+            if (step, substep) in ort.DIAGNOSE_LAUNCH_PAIRS:
+                continue
+            out.append((step, substep, shape))
+        return out
 
-    def test_placeholder_drop_keeps_rule_text_that_mentions_placeholders(self) -> None:
-        # The drop is `fullmatch` on the STRIPPED line, so only a line that is nothing but a
-        # document slot goes. Rule text quoting a `<...>` metavariable — `use <module>, only:
-        # <names>`, the `associate (unused_<name> => <name>)` binding — must survive; dropping it
-        # would silently delete a rule from every cold repair.
+    _IDENTITY_LINE_RE = re.compile(
+        r"^(Target node_key|Target step|Target substep|orchestration_id|agent_run_id|"
+        r"prompt_contract_version): <")
+
+    def test_a_cold_repair_restates_the_whole_launch_body_under_its_own_labels(self) -> None:
+        """A cold repair re-states the launch prompt WHOLE (issue #510): every line of the
+        composed launch template after its persona line, except the identity block, in template
+        order, with each context document fenced under the label paragraph the launch gives it,
+        exactly once. This replaces the by-prefix lift: a paragraph added to a launch template
+        reaches the cold repair by existing, and a document body never arrives under a bare
+        key with its label stranded elsewhere. The expected lines are read off the template
+        independently of how the renderer trims it."""
+        from tools.pure_leaf import PURE_DOC_FENCE_BEGIN
+        self.assertEqual(len(self._repair_loop_pairs()), 7)
+        for step, substep, shape in self._repair_loop_pairs():
+            with self.subTest(pair=f"{step}.{substep}{('.' + shape) if shape else ''}"):
+                keys = (ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[(step, substep, shape)]
+                        if shape else ort.PURE_CONTEXT_REQUIRED_KEYS[(step, substep)])
+                req = {"leaf_mode": "pure", "step": step, "substep": substep,
+                       "node_key": _HARNESS if shape else _NODE,
+                       "orchestration_id": "o", "agent_run_id": "c",
+                       "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                       "repair_findings": "x is missing", "prior_document": '{"k": 1}',
+                       "pure_context": {k: f"<{k} body>" for k in keys}}
+                if step == "generate":
+                    req["pure_language"] = "fortran"
+                    req["pure_parallel"] = "openmp"
+                if shape:
+                    req["pure_shape"] = shape
+                template = ort._pure_launch_template(req)
+                cold = ort._render_pure_repair_prompt(req)
+                body = template.split("\n\n", 1)[1]
+                last = -1
+                for line in (ln.strip() for ln in body.splitlines()):
+                    if not line or self._IDENTITY_LINE_RE.match(line):
+                        continue
+                    slot = ort._PURE_PLACEHOLDER_RE.fullmatch(line)
+                    if slot and slot.group(1) in keys:
+                        line = f"<{slot.group(1)} body>"       # the document, where its slot is
+                    elif slot:
+                        continue                               # `<exemplar>` / `<dependency_facts>`
+                    self.assertEqual(cold.count(line), 1, f"{line[:70]!r} not exactly once")
+                    at = cold.index(line)
+                    self.assertGreater(at, last, f"out of template order: {line[:70]!r}")
+                    last = at
+                # ... and each document sits directly under its label: only the fence opener
+                # between them.
+                for key in keys:
+                    at = cold.index(f"<{key} body>")
+                    before = cold[:at].rstrip().splitlines()
+                    self.assertEqual(before[-1], PURE_DOC_FENCE_BEGIN, key)
+                    self.assertTrue(before[-2].startswith("**"), (key, before[-2][:60]))
+                self.assertIn("You have no gate or repository write authority", cold)
+                # Named independently of the persona cut: a template edit that glued the output
+                # contract onto the persona paragraph would drop it from both sides of the
+                # line-by-line comparison above.
+                self.assertEqual(cold.count("\nOutput contract ("), 1)
+                self.assertIn("The document you returned for this substep did not pass",
+                              cold.splitlines()[0])
+                self.assertNotIn("<launch_body>", cold)
+                # ... and the re-stated body is a byte slice of the cold launch prompt itself,
+                # so no document body is reflowed on its way into the repair.
+                launch = ort._render_pure_launch_prompt(req)
+                self.assertIn(ort._pure_launch_body(req), launch)
+                self.assertIn(ort._pure_launch_body(req), cold)
+                # ... and what the slice drops is the launch's persona paragraph and its identity
+                # block, exactly: the repair carries its own of each, once.
+                persona = launch.split("\n\n", 1)[0]
+                self.assertTrue(persona.startswith("Pure-function leaf turn"), persona[:60])
+                self.assertNotIn(persona, cold)
+                for marker in ("Target node_key: ", "agent_run_id: ", "prompt_contract_version: "):
+                    self.assertEqual(cold.count(marker), 1, marker)
+
+    def test_a_document_quoting_the_identity_marker_reaches_the_cold_repair_whole(self) -> None:
+        """The body ends at the LAST identity block, so a context document that quotes the
+        identity marker — a producer's source under review can carry any text — is not cut
+        at the quote."""
+        quoted = "line one\n\nTarget node_key: quoted\n\nline after the quote"
+        req = {"leaf_mode": "pure", "step": "generate", "substep": "verify", "node_key": _NODE,
+               "orchestration_id": "o", "agent_run_id": "c",
+               "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+               "pure_language": "fortran", "pure_parallel": "openmp",
+               "repair_findings": "x is missing", "prior_document": '{"k": 1}',
+               "pure_context": {k: (quoted if k == "bundle_document" else f"<{k} body>")
+                                for k in ort.PURE_CONTEXT_REQUIRED_KEYS[("generate", "verify")]}}
+        self.assertIn("bundle_document", req["pure_context"])
+        cold = ort._render_pure_repair_prompt(req)
+        self.assertIn("line after the quote", cold)
+        for key in req["pure_context"]:
+            if key != "bundle_document":
+                self.assertIn(f"<{key} body>", cold)
+
+    def test_a_cold_repair_renders_no_exemplar_even_when_one_is_attached(self) -> None:
+        """A repair turn corrects the leaf's own document and carries no prior art. The
+        conductor attaches the exemplar only to a turn that renders the launch template; the
+        cold repair's re-stated launch body drops a stray one itself (issue #510), so the
+        decision does not rest on the caller alone. Positive control: the same request as a
+        cold LAUNCH renders it."""
+        exemplar = {"node_key": "component/sibling@1.0.0",
+                    "sources": [{"filename": "sibling_model.f90",
+                                 "text": "module sibling_model\n  ! prior art body\n"
+                                         "end module sibling_model\n"}]}
+        req = self._req(exemplar=exemplar)
+        self.assertIn("! prior art body", ort._render_pure_launch_prompt(req))
+        cold = ort._render_pure_repair_prompt(req)
+        self.assertNotIn("! prior art body", cold)
+        self.assertNotIn("Certified exemplar", cold)
+
+    def test_cold_repair_keeps_rule_text_that_mentions_placeholders(self) -> None:
+        # Only a line that is nothing but a document slot is a slot (`_PURE_PLACEHOLDER_RE` is a
+        # `fullmatch`). Rule text quoting a `<...>` metavariable — `use <module>, only:
+        # <names>`, the `associate (unused_<name> => <name>)` binding — must reach the cold
+        # repair; losing it would silently delete a rule from every cold repair.
         text = ort._render_pure_repair_prompt(self._req())
         self.assertIn("use <module>, only: <names>", text)
         self.assertIn("associate (unused_<name> => <name>); end associate", text)
 
     def test_cold_repair_leaks_no_document_placeholder(self) -> None:
-        # A lifted paragraph ends with the `<doc>` slot its launch template fills; nothing
-        # substitutes it here, so it would ship as a literal token.
+        # Every document slot of the launch body the cold repair re-states is filled (or emptied)
+        # by the launch renderer; none may ship as a literal token.
         text = ort._render_pure_repair_prompt(self._req())
         for slot in ("<runner_document>", "<ir_document>", "<tests_document>", "<exemplar>"):
             self.assertNotIn(slot, text)
@@ -2804,134 +2851,6 @@ class PureColdRepairPromptTests(unittest.TestCase):
         text = ort._render_pure_repair_prompt(self._req(warm_resume=True))
         self.assertNotIn("Authoring rules", text)
         self.assertNotIn("--ignore-allow-comments", text)
-
-    def test_authoring_rules_lift_is_the_whole_paragraph(self) -> None:
-        # An interior blank line introduced by a template edit would make `split("\n\n")` drop
-        # everything after it, shipping a cold repair with only the first rule groups. Assert
-        # STRUCTURALLY (not just heading + current closing clause): everything the template holds
-        # between the heading and the next section must survive the lift. A literal-anchored pin
-        # catches truncation of today's text but NOT an append — a rule (6) added after a blank
-        # line would vanish from the cold repair with the test still green.
-        text = ort._pure_authoring_rules_text(self._req())
-        self.assertTrue(text.startswith("Authoring rules"))
-        template = composed_pure_template("pure generate.generate")
-        start = template.index("Authoring rules")
-        end = template.index("**Harness capabilities")  # the next section of the static prefix
-        for line in (ln.strip() for ln in template[start:end].splitlines()):
-            if line:
-                self.assertIn(line, text)
-
-    def test_verify_lift_is_the_whole_reviewer_paragraphs_and_nothing_else(self) -> None:
-        # Until issue #142 this asserted the verify lift was EMPTY. It is deliberately not, now:
-        # the reviewer's cold repair carries the `Review checklist` (G1-G7 plus the
-        # deterministic-gate exclusion) and the inlined contract's label + scope bound, because
-        # `pure_context` re-inlines the 9 KB ABI document into that prompt regardless.
-        #
-        # TWO properties, and the second is the one a round-2 reviewer had to supply. (a) Nothing
-        # foreign is lifted: every block starts with a prefix that occurs in THIS template — which
-        # is the real statement of "no producer rule leaks into a reviewer turn", where asserting
-        # the absence of three strings that do not occur in the verify template at all pinned
-        # nothing. (b) Nothing is TRUNCATED: the lift is a `\n\n` split, so a blank line inserted
-        # into either paragraph silently drops everything after it — measured, inserting one
-        # before `G5 — io_contract` dropped G5/G6/G7 from every cold verify repair and left 197
-        # tests green, because the previous test computed its expectation with `template.index(
-        # "\n\n", start)`, the very mechanism under test. The terminators below are INDEPENDENT
-        # of that split, exactly as the producer's `test_authoring_rules_lift_is_the_whole_
-        # paragraph` uses `**Harness capabilities`. Issue #143 added the severity-rubric label as
-        # a third pair rather than widening the contract pair's terminator: with one span running
-        # from the contract label to the bundle, the contract paragraph's own end would stop being
-        # pinned the moment a paragraph between them is lifted.
-        req = self._req(substep="verify")
-        lifted = ort._pure_authoring_rules_text(req)
-        template = composed_pure_template("pure generate.verify")
-
-        # (a) every lifted block is a paragraph of THIS template
-        for block in lifted.split("\n\n"):
-            head = block.lstrip().splitlines()[0]
-            self.assertTrue(
-                any(head.startswith(pfx) for pfx in ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES),
-                f"lifted block is not a declared static paragraph: {head[:70]}")
-            self.assertIn(head, template, f"lifted block is foreign to this template: {head[:70]}")
-
-        # (b) each paragraph survives WHOLE, bounded by a terminator the split cannot move
-        for prefix, terminator in (("Review checklist", "**Controlled spec"),
-                                   ("**Checks-module contract (", "**Severity rubric ("),
-                                   ("**Severity rubric (", "**Generated CodegenBundle")):
-            start = template.index(prefix)
-            end = template.index(terminator)
-            self.assertGreater(end, start, (prefix, terminator))
-            for line in (ln.strip() for ln in template[start:end].splitlines()):
-                if line and not line.startswith("<"):   # the doc slot is filled elsewhere
-                    self.assertIn(line, lifted, f"verify lift dropped: {line[:70]}")
-
-        self.assertNotIn("<authoring_rules>", ort._render_pure_repair_prompt(req))
-
-    def test_harness_verify_lift_is_the_whole_reviewer_paragraphs(self) -> None:
-        """The same two properties on the `harness` shape's reviewer template (issue #169).
-
-        Its checklist opens with a scope paragraph and an input-side clause that the m3c one
-        states elsewhere; those were separate `\n\n` blocks until a round-2 reviewer measured
-        the cold repair carrying the checklist HEADER and none of H1-H10 — the reviewer would
-        re-judge holding "the deterministic gate already ran, do NOT re-check style" and no
-        checklist at all. They are one paragraph now, and the terminators below are INDEPENDENT
-        of the `\n\n` split that does the lifting, so re-introducing a blank line is red here."""
-        req = self._req(substep="verify", shape="harness")
-        lifted = ort._pure_authoring_rules_text(req)
-        template = composed_pure_template("pure generate.verify.harness")
-
-        for block in lifted.split("\n\n"):
-            head = block.lstrip().splitlines()[0]
-            self.assertTrue(
-                any(head.startswith(pfx) for pfx in ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES),
-                f"lifted block is not a declared static paragraph: {head[:70]}")
-            self.assertIn(head, template, f"lifted block is foreign to this template: {head[:70]}")
-
-        for prefix, terminator in (("Review checklist", "**Controlled spec"),
-                                   ("**Runner-output contract (", "**Severity rubric ("),
-                                   ("**Severity rubric (", "**Generated CodegenBundle")):
-            start = template.index(prefix)
-            end = template.index(terminator)
-            self.assertGreater(end, start, (prefix, terminator))
-            for line in (ln.strip() for ln in template[start:end].splitlines()):
-                if line and not line.startswith("<"):
-                    self.assertIn(line, lifted, f"harness verify lift dropped: {line[:70]}")
-        # ...including the last checklist item, which is what a re-introduced blank line eats.
-        self.assertIn("H10 — dependency consistency", lifted)
-
-    def test_harness_generate_lift_carries_the_shape_rules(self) -> None:
-        """The producer half. `File shape (` is the ONLY statement of this shape's host-enforced
-        rules — one model named and declaring `<spec_id>_model`, one runner, no checks file — so
-        a cold repair of a `bundle_shape_unsupported` finding without it hands the leaf the
-        findings text and not the contract it violated (the recorded Z2 defect D, in the
-        recovery path)."""
-        lifted = ort._pure_authoring_rules_text(self._req(shape="harness"))
-        template = composed_pure_template("pure generate.generate.harness")
-        for prefix, terminator in (("What makes this shape different", "Output contract ("),
-                                   ("File shape (", "Authoring rules ("),
-                                   ("Authoring rules (", "**Harness capabilities"),
-                                   ("**Runner-output contract (", "Target node_key:")):
-            start = template.index(prefix)
-            end = template.index(terminator)
-            self.assertGreater(end, start, (prefix, terminator))
-            for line in (ln.strip() for ln in template[start:end].splitlines()):
-                if line and not line.startswith("<"):
-                    self.assertIn(line, lifted, f"harness generate lift dropped: {line[:70]}")
-        self.assertIn("EXACTLY ONE file of role `model`", lifted)
-        self.assertIn("(12)", lifted)  # the last authoring rule (issue #417)
-
-    def test_cold_repair_paragraphs_are_lifted_in_template_order(self) -> None:
-        # The loop iterated `PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES` while its docstring said
-        # "in template order". Inert while the generate template's three paragraphs happened to
-        # sit in tuple order; issue #142 added two more, and a readability reorder of the tuple
-        # would then have silently reordered a cold repair against the launch prompt a warm
-        # session holds, with nothing red. Measured before the fix: reordering the tuple put the
-        # contract label ahead of the checklist and left 197 tests green.
-        for substep in ("generate", "verify"):
-            template = composed_pure_template(f"pure generate.{substep}")
-            lifted = ort._pure_authoring_rules_text(self._req(substep=substep))
-            heads = [b.lstrip().splitlines()[0] for b in lifted.split("\n\n") if b.strip()]
-            self.assertEqual(heads, sorted(heads, key=template.index),
-                             f"pure generate.{substep}: lift order is not template order")
 
     def test_style_lint_distills_c072_character_dummy_widths(self) -> None:
         # Fail #1 (orch_9a5fe93e): the pure leaf authored `character(len=*), intent(out)` and
