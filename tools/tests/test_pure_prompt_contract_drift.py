@@ -986,7 +986,9 @@ def _contract_tuple() -> dict[str, object]:
         # PR-2): the text that replaces a template's `{{language:<name>}}` marker is template
         # bytes a leaf reads, moved, so it is pinned exactly as the template files are. Every
         # file under the directory, keyed by its path below it, so a new language's fragments
-        # join the pin by existing (`TODO.md`'s `project_pure_prompt_gate_drift_guard_gap`).
+        # join the pin by existing (the `project_pure_prompt_gate_drift_guard_gap` class issue
+        # #289's R4-b plan closed,
+        # https://github.com/seiya/atmofab/issues/289#issuecomment-5824025920).
         "language_fragments": {
             str(path.relative_to(tpl_dir / "backends")): path.read_text(encoding="utf-8")
             for path in sorted((tpl_dir / "backends").rglob("*.txt"))

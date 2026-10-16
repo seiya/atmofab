@@ -13,7 +13,8 @@ Two independent halves, neither of which contributes to any verdict:
   tokens. It was measured byte-identical across LLVM 17/18/19/21 on this corpus, which is what
   makes it usable as an oracle. It stays OUT of the gate deliberately: a verdict must not depend
   on which machine ran it, and flang is not a dependency this toolchain can require (``gfortran``
-  is). See the DECIDED note in ``TODO.md``.
+  is). See the DECIDED note in the front-end swap's record
+  (https://github.com/seiya/atmofab/issues/181#issuecomment-5559629951).
 
 WHY THE `--flang` HALF SHELLS OUT DIRECTLY, since `AGENTS.md` requires compile / run / quality
 checks to go through the build-runtime library and a reviewer has raised this once. Three
@@ -27,7 +28,8 @@ reasons, each checked rather than argued:
   gfortran with a fixed `-fsyntax-only -std=<std>` argv — so there is no flang path to route
   through and no way to ask for that mode.
 * **Adding one would contradict a recorded decision.** Making flang a build-runtime capability makes it a
-  capability of a RUN, and `TODO.md`'s DECIDED note keeps it out of the gate precisely so no
+  capability of a RUN, and the front-end swap's DECIDED note (issue #181's record) keeps it out
+  of the gate precisely so no
   verdict depends on which machine ran it. This harness never contributes to a verdict.
 * **The rule's own scope.** `AGENTS.md` bans one-off BUILDS that call a compiler directly, and
   says in the same breath that the syntax front-end gate is outside that ban because it builds

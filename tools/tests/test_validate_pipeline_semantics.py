@@ -8364,7 +8364,8 @@ end module shallow_water2d_model
         # only together with the candidate rule's named-constant clause — measured on every
         # `*_model.f90` in the tree, the pair moves the violation count down by two with no
         # `problem/` file changing verdict. (The absolute pair depends on how `dep_spec_ids` is
-        # derived for that sweep; TODO.md records the harness. The DELTA does not.)
+        # derived for that sweep; issue #181's record holds the harness,
+        # https://github.com/seiya/atmofab/issues/181#issuecomment-5559628999. The DELTA does not.)
         for raw in ("h_in, & ! set a, mid, b\n       h_in, tmp",
                     "h_in, & ! it's the field\n       h_in, tmp"):
             self.assertEqual(fortran_source.split_names(raw), ["h_in", "h_in", "tmp"], raw)

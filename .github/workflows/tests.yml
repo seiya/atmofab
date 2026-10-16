@@ -124,8 +124,8 @@ jobs:
         # `-rs` prints the reason for every skip, and the guard step's second command refuses any
         # skip that is not a probe's: a skip that fires only on a runner is the one an operator
         # never sees.
-        # No retry, deliberately: `TODO.md` records an intermittent failure in this suite, and a
-        # retry would hide on a second machine exactly what a second machine is here to expose.
+        # No retry, deliberately: a retry would hide on a second machine exactly what a second
+        # machine is here to expose.
         # `--junitxml` is what the guard below reads; it selects nothing.
         env:
           # A fact about the RUNNER, not a change to the launcher backend: the distributed runner
@@ -175,7 +175,9 @@ jobs:
         # so. It also held the half that has no other home: it coupled this file to
         # `docs/DEVELOPMENT.md`'s CI paragraph, so the image, the interpreter, the quoted command
         # and the sandbox claim could not drift from the job in either direction. That coupling
-        # is gone and nothing replaces it; `TODO.md` records it as an accepted residue. The only
+        # is gone and nothing replaces it: an accepted residue of #183, which PR #419's audit
+        # removed from `TODO.md` as not a task
+        # (https://github.com/seiya/atmofab/pull/419#issuecomment-5996926913). The only
         # thing still reading this file is `tools/tests/test_backend_boundary.py`'s
         # technology-token scan, which reads the TEXT for backend tokens and nothing about what
         # the job does — and whose growth half is frozen out of the suite (`AGENTS.md` §Backend

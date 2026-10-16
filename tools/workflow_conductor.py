@@ -6696,7 +6696,7 @@ class Conductor:
         `dependency_graph_document` and (through the unfenced `<dependency_facts>` block) the
         published-operations catalog. `docs/workflow/CHECKS_MODULE_CONTRACT.md` is sliced to its
         ABI sections by the same `_checks_contract_abi_sections` the reviewer uses, so this caller
-        adds no new reader of that document beyond the one `TODO.md` already records."""
+        adds no new reader of that document beyond the reviewer's."""
         from tools.orchestration_runtime import (CHECKS_MODULE_CONTRACT_REF,
                                                  WORKFLOW_PHASE_DOC_BY_STEP)
         contract_text = self._pure_repo_document(

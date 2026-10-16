@@ -13313,7 +13313,9 @@ class SignatureDriftCanaryTests(unittest.TestCase):
     # any skip that is not a probe's.
     #
     # So the comparison stays a MEASUREMENT, taken once and recorded where a measurement belongs (the
-    # `spec:` commit's message and `TODO.md`): at `2dd73cd`, every component's §5.1 agreed with its
+    # `spec:` commit's message and issue #153's record,
+    # https://github.com/seiya/atmofab/issues/153#issuecomment-5559622300): at `2dd73cd`,
+    # every component's §5.1 agreed with its
     # certified source on argument names, order, `intent` and `rank`, except
     # `dynamics_advection_diffusion_boundary_1d_periodic_copy`, whose ABI the operator decided to
     # change — that one disagreed on argument order, which is also the canary's only real-data witness.
@@ -24231,7 +24233,8 @@ class JsonPayloadFileArgTests(unittest.TestCase):
 
 
 class AgentRoleFailClosedTests(unittest.TestCase):
-    """`agent_role` must be fail-closed at BOTH chokepoints (TODO.md, high).
+    """`agent_role` must be fail-closed at BOTH chokepoints (high; recorded on PR #57,
+    https://github.com/seiya/atmofab/pull/57#issuecomment-5559631060).
 
     WHAT IS PINNED vs WHAT IS SAMPLED is declared in `_DEFINITION_DRIVEN` /
     `_SAMPLE_DRIVEN` below and CHECKED BY A TEST

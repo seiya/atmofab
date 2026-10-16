@@ -3528,7 +3528,8 @@ class CapabilityOwnershipTests(unittest.TestCase):
         `control_file` is a question of BOTH `build_system` and `language`. Keyed by capability
         alone, the migrated-out-of-the-core rule refused the language half — still legitimately
         inlined — the moment the build-system half moved, and the remedy its message named led
-        straight to the no-package refusal. That is the next area in `TODO.md`, blocked by a
+        straight to the no-package refusal. That was the next area of the migration ledger
+        `TODO.md` held until issue #469, blocked by a
         rule written three commits earlier. It is per AXIS for that reason.
         """
         migrated_make = registry.Backend(
