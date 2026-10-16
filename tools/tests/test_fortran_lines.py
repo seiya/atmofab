@@ -433,6 +433,70 @@ class SplitTopLevelCommasTests(unittest.TestCase):
         self.assertEqual(mask_code_lookalikes("x = 'rate &\n&more' ! note & tail"),
                          "x = '     &\n&    ' !            ")
 
+    def test_mask_writes_a_boz_literal_as_zeros(self) -> None:
+        # A BOZ constant is not a character literal (issue #501). Blanking `o'755'` to `o'   '`
+        # made tree-sitter-fortran report an ERROR the raw text does not have, and every gate
+        # reading the structure refused the source; keeping it made its prefix letter and its hex
+        # digits identifiers to every rule that collects names from the view (`int(z'dead')` was
+        # a call edge to a procedure `dead` in the checks-reach gate). The whole literal is
+        # written as zeros of its own length: a comment after it is still blanked, its closing
+        # quote still closes it, and a `&` inside it survives as a continuation marker.
+        texts = []
+        for lit in ("o'755'", "z'ff'", "b'101'", "O'17'", "B'101'", 'Z"FF"', 'z"ff"',
+                    "z'dead'"):
+            for template in ("  i = int({}, 4)", "  data j / {} /"):
+                text = template.format(lit)
+                self.assertEqual(mask_code_lookalikes(text), template.format("0" * len(lit)))
+                texts.append(text)
+        cases = {
+            "i = int(o'755', 4) ! o'1'": "i = int(000000, 4) !     ",
+            "x = o'7&\n&55'": "x = 000&\n&000",
+            # A comment-only line inside a continued BOZ is a comment, blanked as one.
+            "x = o'7&\n! c\n&5'": "x = 000&\n!  \n&00",
+            "x = o'7!' ! end subroutine": "x = 00000 !               ",
+            # A BOZ at the very start of the text: the test must not wrap round to its end.
+            "z'f'+k": "0000+k",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(mask_code_lookalikes(text), expected, text)
+            texts.append(text)
+        # Idempotence: a masked text is a fixed point of the mask.
+        for text in texts:
+            once = mask_code_lookalikes(text)
+            self.assertEqual(mask_code_lookalikes(once), once, text)
+
+    def test_mask_still_blanks_a_string_whose_quote_follows_b_o_or_z(self) -> None:
+        # The one way the BOZ exception could open a hole is reading a STRING as a BOZ and
+        # leaving its contents live. The first rows put a `b` / `o` / `z` as near a string's
+        # opening quote as legal source allows: after a separator, ending a name, before a
+        # closing quote, inside a doubled-quote escape, after `//`; and a kind prefix, which
+        # ends in `_` and so never puts the letter against the quote.
+        cases = {
+            "call f(b, 'x')": "call f(b, ' ')",
+            "s = 'z'": "s = ' '",
+            "x = foo//'abc'": "x = foo//'   '",
+            "s = 'ab'": "s = '  '",
+            "k = c_char_'x'": "k = c_char_' '",
+            "s = 'it''s b'": "s = '  ''   '",
+            "s = 'o''z'": "s = ' '' '",
+            "s = o//'x'": "s = o//' '",
+            "bob = 'x'": "bob = ' '",
+            "s = 'b'//'end'": "s = ' '//'   '",
+            # The name-character class, each member: a letter of either case, a digit and `_`
+            # before the `b`. None of these is legal source; they pin the look-behind.
+            "s = bo'end subroutine'": "s = bo'              '",
+            "s = x1b'end'": "s = x1b'   '",
+            "s = x_b'end'": "s = x_b'   '",
+            "s = XB'end'": "s = XB'   '",
+            # A quote at the very start of the text: the look-behind must not wrap to its end.
+            "'end' // b": "'   ' // b",
+            # A string AFTER a BOZ: the BOZ decision is the opening quote's own, never carried.
+            "i = int(o'7', 4); s = 'end subroutine'": "i = int(0000, 4); s = '              '",
+            "i = int(o'7', 4)\ns = 'end subroutine'": "i = int(0000, 4)\ns = '              '",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(mask_code_lookalikes(text), expected, text)
+
     def test_separator_must_be_one_character_the_brackets_do_not_claim(self) -> None:
         # Raised, not asserted, so `python3 -O` cannot elide it: a two-character separator
         # (Fortran's `//`) matches nothing per-character and would return the input unsplit —

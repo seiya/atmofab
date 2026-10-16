@@ -1484,7 +1484,8 @@ def generated_source_violations(
             # whole-file-splitter comparison here "so two faults are told in one attempt"; that
             # comparison is the hole issue #430 closes, and the 5 structure refusals recorded
             # under `workspace/pipelines` (2026-10-06) were each the only fault reported, so
-            # the second fault it was kept for has no production witness.
+            # the second fault it was kept for has no production witness. (Their cause was a BOZ
+            # literal the mask blanked, issue #501: none of them was a structure fault at all.)
 
     def _drift(name: str, sentences: list[str]) -> None:
         for sentence in sentences:

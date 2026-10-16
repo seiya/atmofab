@@ -105,6 +105,11 @@ def _is_all_blank(line: str) -> bool:
     return not line.strip(_BLANKS)
 
 
+# A character that may end a Fortran name: a `b` / `o` / `z` right before a quote opens a BOZ
+# constant only when the character before it is not one of these (`mask_code_lookalikes`).
+_NAME_CHAR = re.compile(r"[A-Za-z0-9_]")
+
+
 def strip_fortran_comment_tracking_quotes(
     line: str, quote: str | None
 ) -> tuple[str, str | None]:
@@ -326,6 +331,20 @@ def mask_code_lookalikes(text: str) -> str:
     feed a masked text to a rule that inspects literal CONTENT — the forbidden-filename scans
     deliberately catch a quoted `verdict.json`.
 
+    A BOZ constant (`o'755'`, `z'ff'`, `b'101'`, either case, either quote) is NOT a character
+    literal, and it is written as a run of `0` of the same length, prefix letter and quotes
+    included (a `&` inside it survives, as in a literal). Blanking its contents made
+    tree-sitter-fortran 0.6.0 report an ERROR on `o'   '` that it does not report on the raw
+    text: five `Generate.gate` attempts were refused that way (issue #501). Keeping them is wrong
+    the other way: the hex digits `a`-`f` and the prefix letter are identifiers to every rule that
+    collects names from the view, so `int(z'dead')` made a call edge to a procedure `dead` in the
+    checks-reach gate. An integer literal of zeros parses where the BOZ did and names nothing. A
+    quote opens a BOZ when the character before it is `b` / `o` / `z` and the one before THAT
+    cannot end a name — on legal free-form source nothing else puts a lone letter against a quote
+    (there is no implicit concatenation, and a kind prefix ends in `_`). The quote state is
+    tracked inside a BOZ exactly as inside a literal, so its closing quote closes it and a `!` in
+    it is not a comment.
+
     The defect this exists for: `subroutine\\s+(\\w+)\\s*\\((.*?)\\)(.*?)end\\s+subroutine` over raw
     source stops at the first TEXTUAL `end subroutine`, so a comment mentioning one truncates the
     body and the `Generate.static` gates that read that body go silent — fail-open from one
@@ -333,6 +352,7 @@ def mask_code_lookalikes(text: str) -> str:
     fail-closed. Both were observed."""
     out: list[str] = []
     quote: str | None = None
+    boz = False  # set at every opening quote, read only while `quote` is open
     in_comment = False
     line_start = 0
     continues = False
@@ -357,12 +377,22 @@ def mask_code_lookalikes(text: str) -> str:
             # `continuation_state_after_line` and `fortran_logical_lines` read it off the text
             # they are given. Blanking it made a masked continued literal look terminated, so its
             # closing quote read as an opening one — the same defect the mask exists to remove.
-            out.append(ch if ch in (quote, "&") else " ")
+            if boz:
+                out.append("&" if ch == "&" else "0")
+            else:
+                out.append(ch if ch in (quote, "&") else " ")
             if ch == quote:
                 quote = None
         elif ch in ("'", '"'):
             quote = ch
-            out.append(ch)
+            boz = (
+                index >= 1
+                and text[index - 1] in "bozBOZ"
+                and (index < 2 or not _NAME_CHAR.match(text[index - 2]))
+            )
+            if boz:
+                out[-1] = "0"  # the prefix letter, which the `else` branch below just wrote
+            out.append("0" if boz else ch)
         elif ch == "!":
             in_comment = True
             out.append(ch)

@@ -6033,6 +6033,21 @@ end submodule comp_impl
         self.assertTrue(gate("problem/comp@0.1.0", "comp", keyword_named))
         self.assertTrue(gate("problem/comp@0.1.0", "comp", abbreviated))
 
+    def test_a_boz_literal_is_not_a_structure_refusal(self) -> None:
+        # Issue #501: the masked view blanked a BOZ constant's digits, tree-sitter-fortran read
+        # `o'   '` as an ERROR, and every gate that reads the structure refused a legal source —
+        # five `Generate.gate` attempts were lost that way. The keyword-named refusal row above is
+        # the control that refusal itself still works.
+        for lit in ("o'755'", "z'ff'", "b'101'", "O'17'", 'z"ff"'):
+            source = ("module m\nuse iso_c_binding, only: c_int\nimplicit none\ncontains\n"
+                      "subroutine s(i)\n  integer(c_int), intent(out) :: i\n"
+                      f"  i = int({lit}, c_int)\nend subroutine s\nend module m\n")
+            fortran_source.structure_reading(source.lower())
+        source = ("module m\nimplicit none\ncontains\nsubroutine s(i)\n"
+                  "  integer, intent(out) :: i\n  integer :: j\n  data j / o'755' /\n"
+                  "  i = j\nend subroutine s\nend module m\n")
+        fortran_source.structure_reading(source.lower())
+
     def test_the_module_procedure_refusal_does_not_silence_the_rest_of_the_file(self) -> None:
         # The refusal is ABOUT one procedure, so it must not stop the gates from reading the
         # others. An earlier version stopped the whole file at the refusal, out of symmetry with
@@ -21573,6 +21588,21 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
             "HX__H_NAMED", "hx__h_named"))
         self.assertEqual(self._gate(spaced), [], spaced)
 
+    def test_a_model_that_uses_a_boz_literal_is_read(self) -> None:
+        # The gate the five production attempts of issue #501 failed at: a BOZ constant anywhere
+        # in the model (here in a helper outside §5.1, beside the published operations) made the
+        # structure reader refuse, and this gate reported "could not resolve" for a legal
+        # source. With the mask writing the BOZ as zeros the source is read and passes.
+        boz = self._C._GOOD_SOURCE.replace(
+            "end module hx_model\n",
+            "  subroutine hx__private_mode(m)\n"
+            "    integer, intent(out) :: m\n"
+            "    m = int(o'755')\n"
+            "  end subroutine hx__private_mode\n"
+            "end module hx_model\n", 1)
+        self.assertNotEqual(boz, self._C._GOOD_SOURCE)
+        self.assertEqual(self._gate(boz), [])
+
     def test_unresolvable_structure_is_a_content_violation_not_a_silent_pass(self) -> None:
         # The check must not be behind a switch the LEAF holds. A source the front end cannot
         # resolve is refused; if it were skipped, naming one variable after a keyword would
@@ -22428,6 +22458,23 @@ class ChecksReachGateTests(unittest.TestCase):
                 v = self._run(_reach_checks("    call bx__step(u)\n"), m)
                 self.assertEqual(len(v), 1, v)
                 self.assertIn("the model source defines no `subroutine bx__<op>`", v[0])
+
+    def test_a_boz_literal_names_no_procedure_for_the_walk(self) -> None:
+        # Issue #501, round 2 (Codex): a mask that KEPT a BOZ's text left its prefix letter and
+        # its hex digits in the view as identifiers, so `int(z'dead')` in `case_run` was an edge
+        # to an orphan helper `dead` that calls the operation, and the gate passed a `case_run`
+        # that never reaches the model. Each row names its helper after a word the literal
+        # spells; the `z'1234'` row spells no word and is the control that the fixture refuses
+        # for the reach reason at all.
+        for helper, lit in (("dead", "z'dead'"), ("z", "z'1'"), ("o", "o'7'"), ("b", "b'1'"),
+                            ("dead", "z'1234'")):
+            with self.subTest(lit):
+                extra = (f"  subroutine {helper}()\n    call bx__step(u)\n"
+                         f"  end subroutine {helper}\n")
+                checks = _reach_checks(f"    integer :: k\n    k = int({lit})\n", extra=extra)
+                v = self._run(checks)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn(_REACH, v[0])
 
     def test_m2_the_backend_function_refuses_an_empty_model_list(self) -> None:
         v = fortran_source.checks_model_reach_violations(

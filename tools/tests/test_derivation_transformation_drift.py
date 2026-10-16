@@ -898,7 +898,7 @@ PINNED_RENDER: dict[str, str] = {
     # render-9 (issue #437): the rendered cuda_cpp runner drops the trailing blanks of each
     # status `checks_compute` returns before it fills the harness check record, so a padded
     # "na  " never reaches the harness writer from a physics node.
-    "render-9": "9eb1dcaf07f462a7016968eca34aa98619bb41788157f659a25a8a0bde0fae09",
+    "render-9": "8567602b0caba3a16668cbfae6362a97435c697645fc03b98071c883deea806d",
     # Re-pinned (issue #444), behaviour-preserving: two comments moved: `parallel/mpi/wrapper.py`
     # and `language/fortran/bundle.py` cite `tools/build_runtime.py` instead of
     # `mcp_servers/build_runtime_server.py`; nothing rendered moved. (Measured by diffing the tuple
@@ -933,6 +933,15 @@ PINNED_RENDER: dict[str, str] = {
     # `render_tuple()` against origin/main 3502ee67's: those four rows and no other.) The digest
     # `render-9` shipped with at 3502ee67:
     "render-9@3502ee67": "787bc235e2831b2311e8e34b2844adf34dc91b0d93c79eb0cb079726abaaadb0",
+    # Re-pinned (issue #501), and NOT bumped, on this reasoning: `lines.py`'s mask writes a BOZ
+    # literal as zeros of its length where it blanked its contents, so a source carrying one is
+    # read rather than refused. The mask's output differs only on a text that carries a BOZ; no
+    # certified source carries one, and a refused Generate wrote no `source_meta.json`, so
+    # `_stage_meta_candidates` never offers it as a stored output (the five refused stages hold
+    # none); no rendered byte with a stored key moves. `signatures.py` gains a comment. (Measured by diffing `render_tuple()`
+    # against origin/main 0b070284's: those two rows and no other.) The digest `render-9`
+    # shipped with at 0b070284:
+    "render-9@0b070284": "9eb1dcaf07f462a7016968eca34aa98619bb41788157f659a25a8a0bde0fae09",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
