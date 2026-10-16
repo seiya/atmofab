@@ -128,7 +128,7 @@
     },
     "tools/orchestration_runtime.py": {
       "fortran": 8,
-      "fortran-subroutine": 5,
+      "fortran-subroutine": 4,
       "fortran-suffix": 10,
       "make-control-file": 6
     },

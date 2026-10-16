@@ -9561,9 +9561,9 @@ def _pure_launch_template_name(request_payload: dict[str, Any]) -> str:
 
 #: A neutral template's marker for a place the target LANGUAGE's rules go (issue #289, R4-b
 #: PR-2). Composed away before any `<key>` substitution, so a composed template is exactly the
-#: text the leaf reads and every paragraph lift (`_pure_template_paragraph`) sees it too. A
-#: distinct spelling from `<key>` on purpose: a marker left in a rendered prompt is a composer
-#: defect, and it must not be mistaken for an unfilled data slot.
+#: text the leaf reads and the cold repair's re-statement of the body (`_pure_launch_body`)
+#: sees it too. A distinct spelling from `<key>` on purpose: a marker left in a rendered prompt
+#: is a composer defect, and it must not be mistaken for an unfilled data slot.
 _LANGUAGE_FRAGMENT_RE = re.compile(r"\{\{language:([a-z0-9_]+)\}\}")
 
 
@@ -9732,54 +9732,6 @@ def _render_pure_launch_prompt(request_payload: dict[str, Any]) -> str:
     return _substitute_pure_placeholders(template, subs)
 
 
-def _pure_template_paragraph(request_payload: dict[str, Any], prefix: str) -> str:
-    """The static paragraph beginning `prefix` in the pure launch template for this
-    (step, substep), lifted VERBATIM.
-
-    A cold repair fallback has no prior turn that carried the launch template's static prefix, so
-    it must re-state the parts the producer needs. Lifting from the launch template
-    (`pure_{step}_{substep}.txt`) keeps the repair and the cold launch describing the same rules
-    from a single source rather than a hand-copied duplicate that could drift. A paragraph is a
-    `\\n\\n`-delimited block, so a template paragraph must carry no interior blank line or the lift
-    silently truncates it (pinned by a test). Returns '' when no launch template matches
-    (defensive) or when this template has no such paragraph (e.g. the verify template has no
-    authoring rules) — the caller then omits the section."""
-    try:
-        template = _pure_launch_template(request_payload)
-    except (KeyError, OSError):
-        return ""
-    for block in template.split("\n\n"):
-        if block.lstrip().startswith(prefix):
-            return block.strip()
-    return ""
-
-
-def _pure_output_contract_text(request_payload: dict[str, Any]) -> str:
-    """The static output-contract paragraph (the CodegenBundle schema) of the pure launch
-    template for this (step, substep)."""
-    return _pure_template_paragraph(request_payload, "Output contract")
-
-
-# Every static paragraph of a pure launch template that a COLD-FALLBACK repair must restate,
-# keyed by its opening prefix. The `Output contract` block has its own slot; these fill the
-# `<authoring_rules>` slot in template order.
-#
-# This is a LIST, not a pair of hand-written calls, because the omission it prevents already
-# happened: the ABI paragraph was added to the launch template and silently not lifted, so a cold
-# repair handed the producer the runner source with no statement that it must publish all ten
-# names as subroutines — Z2 defect D reproduced in the recovery path, which is reached exactly
-# when recovery is happening. A paragraph absent from a given template (the verify template has
-# no authoring rules) lifts to '' and is skipped, so one list serves both.
-# The verify entries were added by issue #142, and for the reason this list already records: the
-# reviewer's launch template gained an inlined checks-module contract, `pure_context` re-inlines it
-# into a cold repair automatically, and nothing lifted the text that GOVERNS it — so a cold-repaired
-# reviewer held 9 KB of ABI with neither the `Review checklist` paragraph (which is where "the
-# deterministic gate already settled the ABI, do NOT re-check it" and the contract's scope sentence
-# live) nor the contract's own label. Measured before the fix: label False, ABI verbatim True,
-# scope sentence False, `G1 — case coverage` False.
-# Issue #143 added the severity-rubric label for the same reason once more: `pure_context`
-# re-inlines the rubric into a cold repair, and without its label paragraph the reviewer holds the
-# rubric text with no statement that `issue_severity` is chosen BY it.
 # The pure pairs whose leaf returns a VERDICT — a conclusion about someone else's artifact —
 # rather than the artifact itself. Only these render `<repair_scope>` (issue #209 round 5).
 #
@@ -9811,72 +9763,17 @@ PURE_REPAIR_SCOPE_PARAGRAPH = (
 )
 
 
-PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES: tuple[str, ...] = (
-    "Authoring rules",
-    "Review checklist",
-    "**Host-rendered runner",
-    "**Checks-module behavioral contract",
-    "**Checks-module contract (",
-    "**Severity rubric (",
-    # The `harness` bundle shape (issue #169). Its producer states the shape's file rules in
-    # their own paragraph rather than inside the output contract, and both its templates label
-    # the inlined runner-output contract — the same reason `**Checks-module contract (` and
-    # `**Severity rubric (` are here, since `pure_context` re-inlines the document body into the
-    # cold repair regardless and an unlabelled body loses its "this document governs" clause.
-    # A round-2 reviewer measured the omission: without these, a cold-fallback repair of a
-    # `bundle_shape_unsupported` finding handed the leaf the findings text and NOT the shape
-    # rules it had violated.
-    "What makes this shape different",
-    "File shape (",
-    "**Runner-output contract (",
-    "**Legality and gate guards (",
-    "**Static lint rule set (",
-)
-
-# A line that is nothing but a `<placeholder>` token — the launch template's document slots.
-# Reuses `_PURE_PLACEHOLDER_RE`, the renderer's own definition of a slot, rather than restating
-# it: a second pattern that disagreed (`<[a-z_]+>` misses `<runner_document2>`, `<Exemplar>`)
-# would let a real slot survive the lift and ship as a literal token to the producer — the same
-# leak this drop exists to prevent, and the same one-fact-two-authorities shape as the duplicated
-# ABI tuple. `fullmatch` on the stripped line keeps rule text that merely QUOTES a metavariable
-# (`use <module>, only: <names>`).
-_PURE_PLACEHOLDER_ONLY_RE = _PURE_PLACEHOLDER_RE
-
-
-def _pure_authoring_rules_text(request_payload: dict[str, Any]) -> str:
-    """The static rule paragraphs (the deterministic-gate closure the producer must satisfy) of
-    the pure launch template for this (step, substep), in template order.
-
-    A cold-fallback repair re-states them for the same reason it re-states the output contract:
-    the producer is re-authoring the whole document with no prior turn to carry the rules, and a
-    bundle repaired into schema conformance still has to clear the `Generate.gate` union
-    (lint / syntax / static checkers) afterwards."""
-    # TEMPLATE order, not tuple order — the docstring above states the first and the loop used to
-    # produce the second. That was inert while the generate template's three paragraphs happened to
-    # appear in tuple order; issue #142 added two verify prefixes, and any later insertion or a
-    # readability reorder of the tuple would have silently reordered a cold repair against the
-    # launch prompt a warm session holds, with nothing red. Resolve the order from the template.
-    try:
-        template = _pure_launch_template(request_payload)
-    except (KeyError, OSError):
-        template = ""
-    ordered = sorted(
-        (pfx for pfx in PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES if pfx in template),
-        key=template.index)
-    blocks = []
-    for prefix in ordered:
-        text = _pure_template_paragraph(request_payload, prefix)
-        if not text:
-            continue
-        # A lifted paragraph may end with the `<doc>` placeholder its launch-template slot fills
-        # (the ABI paragraph is followed by `<runner_document>`). Nothing substitutes it here —
-        # the repair template is what gets substituted, not this value — so it would ship as a
-        # literal `<runner_document>` in the prompt. Drop those lines: `<pure_context>` re-inlines
-        # every context document below anyway, so the text keeps its referent.
-        kept = [ln for ln in text.splitlines()
-                if not _PURE_PLACEHOLDER_ONLY_RE.fullmatch(ln.strip())]
-        blocks.append("\n".join(kept).rstrip())
-    return "\n\n".join(b for b in blocks if b)
+def _pure_launch_body(request_payload: dict[str, Any]) -> str:
+    """The launch prompt this request would have been sent cold, minus its persona line and its
+    identity block: everything between them, in template order, with every document slot
+    filled under the label paragraph the launch template gives it. A cold repair re-states the
+    launch prompt whole rather than lifting paragraphs from it by prefix (issue #510)."""
+    full = _render_pure_launch_prompt(request_payload)
+    body = full.split("\n\n", 1)[1] if "\n\n" in full else ""
+    cut = body.rfind("\n\nTarget node_key: ")
+    if cut != -1:
+        body = body[:cut]
+    return re.sub(r"\n{3,}", "\n\n", body).strip()
 
 
 def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
@@ -9884,23 +9781,17 @@ def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
 
     The findings excerpt is wrapped in the same data-only fence as an inlined document so the
     single scan carve-out covers it. On a WARM repair the resumed session already holds the
-    output-contract schema, the authoring rules, the prior document under repair, and the full
-    context, so `<output_contract>`, `<authoring_rules>`, `<prior_document>`, and
-    `<pure_context>` are all empty. On the COLD fallback there is no prior turn at all — the
-    session was GC'd, the codex home rotated under it, or (since issue #209) the provider never
-    had one to resume and this is the FIRST turn of an outer `reuse` reopen — so the repair
-    re-states the
-    output-contract SCHEMA and the AUTHORING RULES (both lifted from the launch template — a
-    re-authored bundle still has to clear the deterministic gates), re-inlines the model's PRIOR
-    document under repair (`prior_document`, threaded by
-    the producer repair loop — the parsed bundle re-serialized, the raw unparseable reply text,
-    or, when the cold turn is the reopen's first, the failed attempt's own artifact read back
-    from disk by the loop's seed), re-inlines the input context documents (`pure_context`), AND
-    re-inlines the
-    host-resolved `dependency_facts` (the published-operation interfaces of the node's component
-    dependencies — the initial launch injects them, so a cold repair that dropped them could
-    re-author code that calls a dependency without its API). This is the M-C cold-repair contract
-    (the M-B stub was context-complete but schema-thin)."""
+    launch prompt and the prior document under repair, so `<prior_document>` and `<launch_body>`
+    are empty. On the COLD fallback there is no prior turn at all — the session was GC'd, the
+    codex home rotated under it, or (since issue #209) the provider never had one to resume and
+    this is the FIRST turn of an outer `reuse` reopen — so the repair re-inlines the model's PRIOR
+    document under repair (`prior_document`, threaded by the repair loop — the parsed document
+    re-serialized, the raw unparseable reply text, or, when the cold turn is the reopen's first,
+    the failed attempt's own artifact read back from disk by the loop's seed) and then re-states
+    the launch prompt's whole body (`_pure_launch_body`): the output contract, every rule
+    paragraph, the host-resolved `dependency_facts`, and each `pure_context` document under the
+    label paragraph the launch template gives it (issue #510; it replaced a by-prefix lift of
+    named paragraphs plus a bare-key re-inline of the context)."""
     templates = _load_launch_prompt_templates()
     template = templates["pure bundle repair"]
     findings = str(request_payload.get("repair_findings", "")).strip()
@@ -9925,31 +9816,14 @@ def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
             in PURE_VERDICT_PAIRS else ""),
     }
     if not request_payload.get("warm_resume"):
-        subs["output_contract"] = _pure_output_contract_text(request_payload)
-        subs["authoring_rules"] = _pure_authoring_rules_text(request_payload)
         prior = str(request_payload.get("prior_document", "")).strip()
         subs["prior_document"] = (
             "**Your prior document under repair (correct it — do not restart from scratch):**\n"
             + _fence_pure_doc(prior)) if prior else ""
-        # dependency_facts stays UNFENCED (host-resolved orientation, must remain in the
-        # gate-allowlist scan text), sanitized like the initial launch so a stray fence marker in
-        # it cannot pair with a later legitimate fence END. Empty when the node has no resolved
-        # dependencies (`_build_dependency_facts` returns "").
-        subs["dependency_facts"] = _sanitize_pure_doc_body(
-            _build_dependency_facts(request_payload))
-        pure_context = request_payload.get("pure_context")
-        context_blocks: list[str] = []
-        if isinstance(pure_context, dict):
-            for key in sorted(pure_context, key=str):
-                context_blocks.append(f"**{key}:**")
-                context_blocks.append(_fence_pure_doc(str(pure_context[key])))
-        subs["pure_context"] = "\n".join(context_blocks)
+        subs["launch_body"] = _pure_launch_body(request_payload)
     else:
-        subs["output_contract"] = ""
-        subs["authoring_rules"] = ""
         subs["prior_document"] = ""
-        subs["dependency_facts"] = ""
-        subs["pure_context"] = ""
+        subs["launch_body"] = ""
     return _substitute_pure_placeholders(template, subs)
 
 

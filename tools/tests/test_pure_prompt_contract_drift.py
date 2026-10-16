@@ -973,6 +973,17 @@ PINNED: dict[str, str] = {
     # prototype it was never shown). Re-pinned in round 3 before shipping: the reviewer's
     # scope sentence counts four items with no deterministic backstop (V4c-iii added).
     "pure-75": "0864c29cc21a8ec3b5ee7f9edee58498adbc477dc3d19769252ae2d413060b66",
+    # pure-76 (issue #510): a cold-fallback repair re-states the launch prompt's whole body
+    # (`_pure_launch_body`) instead of lifting named paragraphs by prefix and re-inlining
+    # `pure_context` under bare keys, so every label paragraph and the persona sentence reach a
+    # cold repair. Members moved: `templates["pure_bundle_repair.txt"]` (line 1 gains "You have
+    # no gate or repository write authority."; the five slots `<output_contract>` …
+    # `<pure_context>` become `<prior_document>` `<launch_body>`) and `repair_static_prefixes`
+    # is gone with the enumeration it pinned. The eight launch templates did not change. No gate
+    # changed, so no IR or bundle is newly refused. Side effects as before: an exemplar
+    # certified at pure-75 or earlier stops being offered, and an orchestration whose
+    # `generate` ran under pure-75 cannot be `--resume`d across this bump.
+    "pure-76": "f977f2c14da9b20bcc4880ee82dbe356ae212db6dbb284401f65bedbeeb8b478",
 }
 
 
@@ -994,7 +1005,6 @@ def _contract_tuple() -> dict[str, object]:
             for path in sorted((tpl_dir / "backends").rglob("*.txt"))
         },
         "system_prompt": PURE_SYSTEM_PROMPT,
-        "repair_static_prefixes": list(ort.PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES),
         # The checks ABI's names and status width, PER LANGUAGE that renders a runner (issue #289,
         # R4-b PR-6): until the second renderer these named the Fortran module, so a `cuda_cpp`
         # runner's ABI could change with the digest unmoved.
@@ -1154,7 +1164,7 @@ class PurePromptContractDriftTests(unittest.TestCase):
             + "' here (its digest must differ from every existing pin — else it is an empty bump).\n"
             "  (2) UNINTENTIONAL drift: revert the edit to the pinned surface "
             f"({len(_TEMPLATE_FILES)} pure_*.txt templates, "
-            "PURE_REPAIR_STATIC_PARAGRAPH_PREFIXES, the "
+            "the "
             "language backend runner's checks-ABI constants, or an inlined document — "
             "CHECKS_MODULE_CONTRACT.md §1-4, phase_02_generate.md's severity rubric, "
             "RUNNER_OUTPUT_CONTRACT.md §1+§3 AND the whole of that file)."
