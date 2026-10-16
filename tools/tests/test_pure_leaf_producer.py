@@ -2806,6 +2806,11 @@ class PureColdRepairPromptTests(unittest.TestCase):
                 self.assertIn("The document you returned for this substep did not pass",
                               cold.splitlines()[0])
                 self.assertNotIn("<launch_body>", cold)
+                # ... and the re-stated body is a byte slice of the cold launch prompt itself,
+                # so no document body is reflowed on its way into the repair.
+                launch = ort._render_pure_launch_prompt(req)
+                self.assertIn(ort._pure_launch_body(req), launch)
+                self.assertIn(ort._pure_launch_body(req), cold)
 
     def test_placeholder_drop_keeps_rule_text_that_mentions_placeholders(self) -> None:
         # Only a line that is nothing but a document slot is a slot (`_PURE_PLACEHOLDER_RE` is a

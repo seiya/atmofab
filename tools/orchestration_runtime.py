@@ -9767,13 +9767,15 @@ def _pure_launch_body(request_payload: dict[str, Any]) -> str:
     """The launch prompt this request would have been sent cold, minus its persona line and its
     identity block: everything between them, in template order, with every document slot
     filled under the label paragraph the launch template gives it. A cold repair re-states the
-    launch prompt whole rather than lifting paragraphs from it by prefix (issue #510)."""
+    launch prompt whole rather than lifting paragraphs from it by prefix (issue #510). The slice
+    is byte-for-byte the cold launch's text — an empty slot's blank lines included — so a
+    document body reaches the repair exactly as it reaches the launch."""
     full = _render_pure_launch_prompt(request_payload)
     body = full.split("\n\n", 1)[1] if "\n\n" in full else ""
     cut = body.rfind("\n\nTarget node_key: ")
     if cut != -1:
         body = body[:cut]
-    return re.sub(r"\n{3,}", "\n\n", body).strip()
+    return body.strip()
 
 
 def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
