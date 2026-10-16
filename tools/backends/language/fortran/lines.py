@@ -332,12 +332,16 @@ def mask_code_lookalikes(text: str) -> str:
     deliberately catch a quoted `verdict.json`.
 
     A BOZ constant (`o'755'`, `z'ff'`, `b'101'`, either case, either quote) is NOT a character
-    literal, and its contents are copied through. They are digits no structure rule can read as
-    code, and blanking them made tree-sitter-fortran 0.6.0 report an ERROR on `o'   '` that it
-    does not report on the raw text: five `Generate.gate` attempts were refused that way (issue
-    #501). A quote opens a BOZ when the character before it is `b` / `o` / `z` and the one before
-    THAT cannot end a name — on legal free-form source nothing else puts a lone letter against a
-    quote (there is no implicit concatenation, and a kind prefix ends in `_`). The quote state is
+    literal, and it is written as a run of `0` of the same length, prefix letter and quotes
+    included (a `&` inside it survives, as in a literal). Blanking its contents made
+    tree-sitter-fortran 0.6.0 report an ERROR on `o'   '` that it does not report on the raw
+    text: five `Generate.gate` attempts were refused that way (issue #501). Keeping them is wrong
+    the other way: the hex digits `a`-`f` and the prefix letter are identifiers to every rule that
+    collects names from the view, so `int(z'dead')` made a call edge to a procedure `dead` in the
+    checks-reach gate. An integer literal of zeros parses where the BOZ did and names nothing. A
+    quote opens a BOZ when the character before it is `b` / `o` / `z` and the one before THAT
+    cannot end a name — on legal free-form source nothing else puts a lone letter against a quote
+    (there is no implicit concatenation, and a kind prefix ends in `_`). The quote state is
     tracked inside a BOZ exactly as inside a literal, so its closing quote closes it and a `!` in
     it is not a comment.
 
@@ -373,7 +377,10 @@ def mask_code_lookalikes(text: str) -> str:
             # `continuation_state_after_line` and `fortran_logical_lines` read it off the text
             # they are given. Blanking it made a masked continued literal look terminated, so its
             # closing quote read as an opening one — the same defect the mask exists to remove.
-            out.append(ch if boz or ch in (quote, "&") else " ")
+            if boz:
+                out.append("&" if ch == "&" else "0")
+            else:
+                out.append(ch if ch in (quote, "&") else " ")
             if ch == quote:
                 quote = None
         elif ch in ("'", '"'):
@@ -383,7 +390,9 @@ def mask_code_lookalikes(text: str) -> str:
                 and text[index - 1] in "bozBOZ"
                 and (index < 2 or not _NAME_CHAR.match(text[index - 2]))
             )
-            out.append(ch)
+            if boz:
+                out[-1] = "0"  # the prefix letter, which the `else` branch below just wrote
+            out.append("0" if boz else ch)
         elif ch == "!":
             in_comment = True
             out.append(ch)

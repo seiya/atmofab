@@ -21588,10 +21588,11 @@ class PublishedProcedureDefinednessTests(unittest.TestCase):
             "HX__H_NAMED", "hx__h_named"))
         self.assertEqual(self._gate(spaced), [], spaced)
 
-    def test_a_published_operation_that_uses_a_boz_literal_is_read(self) -> None:
-        # The gate the five production attempts of issue #501 failed at: a BOZ constant in the
-        # model made the structure reader refuse, and this gate reported "could not resolve" for
-        # a legal source. With the digits kept by the mask the source is read and passes.
+    def test_a_model_that_uses_a_boz_literal_is_read(self) -> None:
+        # The gate the five production attempts of issue #501 failed at: a BOZ constant anywhere
+        # in the model (here in a private helper beside the published operations) made the
+        # structure reader refuse, and this gate reported "could not resolve" for a legal
+        # source. With the mask writing the BOZ as zeros the source is read and passes.
         boz = self._C._GOOD_SOURCE.replace(
             "end module hx_model\n",
             "  subroutine hx__private_mode(m)\n"
@@ -22457,6 +22458,23 @@ class ChecksReachGateTests(unittest.TestCase):
                 v = self._run(_reach_checks("    call bx__step(u)\n"), m)
                 self.assertEqual(len(v), 1, v)
                 self.assertIn("the model source defines no `subroutine bx__<op>`", v[0])
+
+    def test_a_boz_literal_names_no_procedure_for_the_walk(self) -> None:
+        # Issue #501, round 2 (Codex): a mask that KEPT a BOZ's text left its prefix letter and
+        # its hex digits in the view as identifiers, so `int(z'dead')` in `case_run` was an edge
+        # to an orphan helper `dead` that calls the operation, and the gate passed a `case_run`
+        # that never reaches the model. Each row names its helper after a word the literal
+        # spells; the `z'1234'` row spells no word and is the control that the fixture refuses
+        # for the reach reason at all.
+        for helper, lit in (("dead", "z'dead'"), ("z", "z'1'"), ("o", "o'7'"), ("b", "b'1'"),
+                            ("dead", "z'1234'")):
+            with self.subTest(lit):
+                extra = (f"  subroutine {helper}()\n    call bx__step(u)\n"
+                         f"  end subroutine {helper}\n")
+                checks = _reach_checks(f"    integer :: k\n    k = int({lit})\n", extra=extra)
+                v = self._run(checks)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn(_REACH, v[0])
 
     def test_m2_the_backend_function_refuses_an_empty_model_list(self) -> None:
         v = fortran_source.checks_model_reach_violations(
