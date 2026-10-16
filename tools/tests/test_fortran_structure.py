@@ -347,7 +347,7 @@ class InterfaceSpanTests(unittest.TestCase):
             "subroutine s(u, v)\n  interface\n    subroutine other(a)\n"
             "    end subroutine other\n  end interface\n  v = u\nend subroutine s\n")
         tree = fs.parse_view(view)
-        blanked = fs.blank_interface_spans(view, tree.interface_spans)
+        blanked = fs.blank_spans(view, tree.interface_spans)
         self.assertEqual(len(view), len(blanked))
         self.assertEqual(view.count("\n"), blanked.count("\n"))
         self.assertNotIn("subroutine other", blanked)
@@ -364,7 +364,7 @@ class InterfaceSpanTests(unittest.TestCase):
             "    subroutine other(a)\n    end subroutine other\n  end interface\n"
             "  v = u\nend subroutine s\n")
         tree = fs.parse_view(view)
-        blanked = fs.blank_interface_spans(view, tree.interface_spans)
+        blanked = fs.blank_spans(view, tree.interface_spans)
         procedure = tree.procedures[0]
         self.assertIn("v = u", blanked[procedure.body_start:procedure.body_end])
 

@@ -25,6 +25,7 @@ nothing else from the neutral core.
 
 from __future__ import annotations
 
+import dataclasses
 import re
 from collections.abc import Iterable
 from pathlib import Path
@@ -289,15 +290,129 @@ _PRINTF_CALL_RE = re.compile(r"\b(?:v?f|v?s|v?sn|v)?printf\s*\(")
 
 def _close_paren(code: str, open_at: int) -> int:
     """Offset of the `)` closing the `(` at `open_at` in masked `code`, or the end."""
+    return _close_bracket(code, open_at, "(", ")")
+
+
+def _close_bracket(code: str, open_at: int, opener: str, closer: str) -> int:
+    """Offset of the ``closer`` closing the ``opener`` at `open_at` in masked `code`, or the end."""
     depth = 0
     for index in range(open_at, len(code)):
-        if code[index] == "(":
+        if code[index] == opener:
             depth += 1
-        elif code[index] == ")":
+        elif code[index] == closer:
             depth -= 1
             if depth == 0:
                 return index
     return len(code)
+
+
+#: What may stand between a lambda's `]` (or its `)`) and its `{`: `mutable`, `constexpr`,
+#: `noexcept`, `-> type`. Anything else — a `;`, an `=`, a `}` — means the `[` opened no lambda.
+_LAMBDA_TAIL_RE = re.compile(r"[\w\s:<>,*&()\->]*")
+#: A lambda introducer BOUND to a name: `NAME = [`. Whether the statement DECLARES that name is
+#: `_LAMBDA_DECLARATION_HEAD_RE`'s question (a member `s.f = [` is not a declaration).
+_LAMBDA_BINDING_RE = re.compile(r"(?<!\w)(?P<name>[A-Za-z_]\w*)\s*=\s*\[")
+#: An init-capture (`[v = expr]`, `[&r = out]`) or anything that may evaluate code in the
+#: capture list: its initializer runs when the lambda is CREATED, so the lambda is live.
+_LAMBDA_EVALUATING_CAPTURE_RE = re.compile(r"[({]|\w\s*=")
+#: What a statement that DECLARES the bound name says before it: `auto` or `std::function<…>`,
+#: optionally after `static` / `const` / `constexpr`. Anything else — nothing (an assignment to a name declared elsewhere: a
+#: parameter, a range-for variable, a namespace-scope variable, all invocable without this body
+#: writing the name), `for (auto`, a declarator list — is not read as a declaration.
+_LAMBDA_DECLARATION_HEAD_RE = re.compile(
+    r"\s*(?:(?:const|constexpr|static)\s+)*(?:auto|std\s*::\s*function\s*<[^;{}=]*>)\s*")
+
+
+def _blank_dead_lambdas(body: str) -> str:
+    """``body`` with every lambda bound to a name the body never uses again blanked IN PLACE,
+    from the start of its declaration statement through its `;` (issue #506).
+
+    The `problem` model gates read a function's body flow-insensitively, so an assignment inside
+    a lambda that is never invoked — `auto dead = [&]() { out = fv; };` — fed the dataflow
+    closure exactly as a live one did and silenced the gate (measured at `c9f46eee`: 0
+    violations). This is the C++ form of the Fortran binding's never-named contained procedure
+    (`fortran/source.py` `_dead_contained_spans`), and it is read the same way: by whether the
+    NAME occurs, not by enumerating how it is invoked.
+
+    * A BOUND lambda is `NAME = [` (`_LAMBDA_BINDING_RE`) whose `[` is followed by its balanced
+      `]`, an optional `(params)`, an optional tail (`_LAMBDA_TAIL_RE`) and a `{`. A subscript
+      `a[i]`, an array declarator `double buf[4]{…}` and `new int[3]{}` have no `=` right before
+      their `[`; `x = a[0];` has no `{` after its `]`. An unbound lambda — passed as an
+      argument, invoked in place, returned — is live.
+    * Only a statement that DECLARES the name can make it dead: the text from the statement's
+      start to NAME must be `auto` or `std::function<…>`, optionally after `static` / `const` /
+      `constexpr` (`_LAMBDA_DECLARATION_HEAD_RE`). A plain `NAME = [` assigns a name declared elsewhere — a
+      reference parameter, a range-for variable, a namespace-scope variable — that can be
+      invoked without this body writing it, and `for (auto f = [` and `T f, &g = f = [` are not
+      a declaration of one name; all of these are live (round 1 of issue #506's review: each
+      compiled and was refused). Declarations in any other spelling stay live too:
+      `[[maybe_unused]] auto f = [`, `auto f{[…]{…}};`, `const auto& f = [`, `auto&& f = [`, a
+      type alias `Fn f = [` — those are read as they were before this function existed.
+    * A lambda with an init-capture (`[v = expr]`) is live: the initializer runs when the
+      lambda is created, whether or not it is ever invoked (round 2, Codex).
+    * A bound one is DEAD when `\bNAME\b` occurs nowhere in the body outside its own statement,
+      and when its `}` is followed by `;`. Otherwise it is live, which is how every lambda was
+      read before this.
+
+    Dead text is removed and the scan repeated to a fixed point, so a lambda named only inside
+    a dead one is dead too, and a lambda nested in a dead one goes with it. Blanking keeps every
+    newline and every offset, the invariant the dataflow gate's `pos < call_start` comparison
+    rests on.
+
+    NOT CLOSED, and the same bound as the Fortran binding's (its dataflow gate's residue (d)):
+    a dead branch (`if (false) { out = fv; }`), every spelling that names the dead lambda —
+    `(void)dead;`, a two-statement `std::function<void()> f; f = [&]{…};` (the declaration names
+    `f`) — and every declaration spelling the bullets above leave live. The gates do not read
+    control flow.
+    """
+    while True:
+        blanked = _blank_dead_lambdas_once(body)
+        if blanked == body:
+            return body
+        body = blanked
+
+
+def _blank_dead_lambdas_once(body: str) -> str:
+    spans: list[tuple[int, int]] = []
+    index = 0
+    while True:
+        binding = _LAMBDA_BINDING_RE.search(body, index)
+        if binding is None:
+            break
+        open_at = binding.end() - 1
+        index = open_at + 1
+        close_at = _close_bracket(body, open_at, "[", "]")
+        if _LAMBDA_EVALUATING_CAPTURE_RE.search(body, open_at + 1, close_at):
+            continue
+        cursor = close_at + 1
+        rest = body[cursor:].lstrip()
+        if rest.startswith("("):
+            cursor = _close_paren(body, body.index("(", cursor)) + 1
+        tail = _LAMBDA_TAIL_RE.match(body, cursor)
+        brace_at = tail.end() if tail else cursor
+        if brace_at >= len(body) or body[brace_at] != "{":
+            continue
+        end_at = _close_bracket(body, brace_at, "{", "}")
+        semicolon = re.compile(r"\s*;").match(body, end_at + 1)
+        if end_at >= len(body) or semicolon is None:
+            continue
+        statement_start = max(body.rfind(ch, 0, binding.start()) for ch in ";{}") + 1
+        if not _LAMBDA_DECLARATION_HEAD_RE.fullmatch(body, statement_start, binding.start()):
+            continue
+        statement_end = semicolon.end()
+        outside = body[:statement_start] + body[statement_end:]
+        if re.search(rf"\b{re.escape(binding.group('name'))}\b", outside):
+            continue
+        spans.append((statement_start, statement_end))
+        index = statement_end
+    if not spans:
+        return body
+    characters = list(body)
+    for start, end in spans:
+        for position in range(start, end):
+            if characters[position] != "\n":
+                characters[position] = " "
+    return "".join(characters)
 
 
 def validate_runner_json_serialization(
@@ -881,7 +996,8 @@ def validate_dependency_operations(
     """Each model source uses each direct dependency the way the build links it: it includes the
     dependency's host-rendered header (`"<dep>_model.cuh"`), it defines no `<dep>__*` function
     (a redefinition of the dependency's operation), and it calls at least one `<dep>__*`
-    operation from a function body (qualified `<dep>_model::` or not). The three clauses of the
+    operation from a function body (qualified `<dep>_model::` or not) outside a dead named
+    lambda (`_blank_dead_lambdas`). The three clauses of the
     Fortran binding's `use` / `subroutine` / `call` check, read over CODE only (`lines.mask`), so
     a comment or a literal answers none of them. A source whose declarations do not read is
     refused rather than judged on the part that was read. A node with no dependency — the harness —
@@ -896,7 +1012,9 @@ def validate_dependency_operations(
             violations.append(_structure_refusal(model_file, decls.errors,
                                                  "the dependency-use gate"))
             continue
-        bodies = [fn.body for fn in decls.functions if fn.defined]
+        # A call in a dead named lambda is not a use (issue #506): every gate reads dead code as
+        # absent, this one included.
+        bodies = [_blank_dead_lambdas(fn.body) for fn in decls.functions if fn.defined]
         for spec_id in dep_spec_ids:
             if cpp_header.basename(spec_id) not in includes:
                 violations.append(
@@ -1472,7 +1590,15 @@ def _validate_problem_dependency_dataflow(
     `_actual_names` (which falls back to every plain name the actual mentions) minus integers,
     file constants and this file's function names — and when that leaves the CALL nothing, its
     actuals' names unfiltered — so an output reached through a pointer, a helper or a member still yields a
-    candidate."""
+    candidate.
+
+    Every body read here has had its dead named lambdas blanked by `run_problem_model_gates`
+    (`_blank_dead_lambdas`, issue #506): an assignment in a lambda the function never names again
+    feeds no closure. A dead branch (`if (false) { … }`) and code that names the dead lambda
+    (`(void)dead;`) still do; the gate does not read control flow, the same bound as the Fortran binding's residue
+    (d). A dependency CALL in a dead lambda is absent too; the dependency-use check
+    (`validate_dependency_operations`) reads the same blanked bodies, so a function whose only
+    call never runs is refused there as calling none."""
     if not dep_spec_ids:
         return
     positions: dict[str, list[bool]] = {}
@@ -1647,7 +1773,8 @@ def run_problem_model_gates(
 ) -> None:
     """The three `problem` model gates over one model source, read once. Scoped to `problem/`,
     as the Fortran binding's are. A source whose declarations do not read is REFUSED here — every
-    gate would otherwise pass what it could not see."""
+    gate would otherwise pass what it could not see. Each function body is read with its dead
+    named lambdas blanked (`_blank_dead_lambdas`, issue #506)."""
     if not node_key.startswith("problem/"):
         return
     decls = cpp_decls.read(text)
@@ -1655,7 +1782,11 @@ def run_problem_model_gates(
         violations.append(_structure_refusal(model_file, decls.errors,
                                              "the `problem` model gates"))
         return
-    functions = [fn for fn in decls.functions if fn.defined]
+    # A named lambda the body never uses again is blanked out of every function body before any
+    # gate (or `_function_summaries`) reads it (issue #506); `code` below, the file-wide view the
+    # constant set is read from, is not touched.
+    functions = [dataclasses.replace(fn, body=_blank_dead_lambdas(fn.body))
+                 for fn in decls.functions if fn.defined]
     code = cpp_lines.strip_preprocessor(cpp_lines.mask(text))
     _validate_problem_literal_outputs(model_file, functions, violations)
     _validate_problem_dependency_dataflow(model_file, functions, code, dep_spec_ids, violations)

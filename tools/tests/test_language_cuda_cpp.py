@@ -1560,6 +1560,203 @@ class PhysicsGateTests(unittest.TestCase):
                               "operation outputs to its output dataflow (candidates=['fv'])"],
                              self._gates(model, ["dep"]))
 
+    # Issue #506: a lambda bound to a name the body never uses again is dead, and its
+    # assignments must not feed the closure (or exempt the function from the other two gates).
+    # Measured at `c9f46eee` (before the fix): every DEAD row below returned no violation.
+    _DEAD_LAMBDA_BAD = (
+        "void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+        " double dt) {\n"
+        "  std::vector<double> flux(static_cast<std::size_t>(u.extent[0]));\n"
+        "  atmofab::View<double, 1> fv{flux.data(), {u.extent[0]}};\n"
+        "  dep_model::dep__flux(u, fv, dt);\n"
+        "{lambda}"
+        "  for (long i = 0; i < u.extent[0]; ++i) {\n"
+        "    u_new.data[i] = u.data[i];\n"
+        "  }\n}")
+    _DEAD_LAMBDA_BODY = "{ u_new.data[0] = flux[0]; }"
+
+    def _dead_lambda_gates(self, lambda_text: str) -> tuple[Path, list[str]]:
+        with tempfile.TemporaryDirectory() as tmp:
+            model = self._model(tmp, self._DEAD_LAMBDA_BAD.replace("{lambda}", lambda_text))
+            return model, self._gates(model, ["dep"])
+
+    def test_a_never_invoked_named_lambda_does_not_consume_a_dependency_result(self) -> None:
+        body = self._DEAD_LAMBDA_BODY
+        for label, text in {
+            "auto": f"  auto dead = [&]() {body};\n",
+            "const auto, no parameter list": f"  const auto dead = [&] {body};\n",
+            "std::function, mutable, trailing return": (
+                f"  std::function<void()> dead = [&]() mutable -> void {body};\n"),
+            "nested live lambda inside a dead one": (
+                f"  auto dead = [&]() {{ auto inner = [&]() {body}; inner(); }};\n"),
+            # `b` is named, but only inside the dead `a`: dead too, on the second pass.
+            "named only inside a dead lambda": (
+                f"  auto b = [&]() {body};\n  auto a = [&]() {{ b(); }};\n"),
+            # A parameter list the tail pattern alone does not span (`=` in a default).
+            "parameter with a default": (
+                "  auto dead = [&](double s = 1.0) { u_new.data[0] = s * flux[0]; };\n"),
+            # Its own name inside its own body is not a use from outside.
+            "self-referencing std::function": (
+                "  std::function<void()> dead = [&]() { dead(); u_new.data[0] = flux[0]; };\n"),
+        }.items():
+            with self.subTest(label):
+                model, out = self._dead_lambda_gates(text)
+                self.assertEqual([(f"{model}: function p__step does not propagate dependency "
+                                   "operation outputs to its output dataflow "
+                                   "(candidates=['fv'])")], out)
+
+    def test_a_named_lambda_the_body_uses_is_live(self) -> None:
+        body = self._DEAD_LAMBDA_BODY
+        for label, text in {
+            "invoked by name": (f"  auto live = [&]() {body};\n"
+                                "  live();\n"),
+            "invoked in place, unnamed": f"  [&]() {body}();\n",
+            # The bound, pinned in the safe direction: any later use of the name keeps it live,
+            # control flow is not read (the dataflow gate's docstring states the residue).
+            "named again, never invoked": (f"  auto dead = [&]() {body};\n"
+                                           "  (void)dead;\n"),
+            "dead branch, no lambda": "  if (false) { u_new.data[0] = flux[0]; }\n",
+            # A member target can be invoked without its name being written again (`s` handed
+            # on); `s.first = [` is not a declaration (`first` is written nowhere else).
+            "member target": ("  std::pair<std::function<void()>, int> s;\n"
+                              f"  s.first = [&]() {body};\n  (void)s;\n"),
+            # No `;` right after the `}`: not a statement this reads, so not blanked.
+            "declarator list": (f"  std::function<void()> dead = [&]() {body}, other;\n"
+                                "  (void)other;\n"),
+            # An init-capture's initializer runs when the lambda is created (round 2, Codex):
+            # `keep` is never invoked, and `u_new` still receives `flux`.
+            "init-capture": ("  auto keep = [r = (u_new.data[0] = flux[0])]() { return r; };\n"),
+            # Each half of the evaluating-capture pattern alone (round 3).
+            "direct-initialized capture": (
+                "  auto keep = [r(u_new.data[0] = flux[0])]() { return r; };\n"),
+            "unparenthesized initializer": (
+                "  auto keep = [r = u_new.data[0] = flux[0]]() { return r; };\n"),
+            # Round 1 of the review: each of these compiles and was refused by the first fix.
+            # None is a statement that DECLARES the name (`auto` / `const auto` /
+            # `std::function<…>`), so none can make it dead: the first two invoke the lambda
+            # without writing this name again; the `for` initializer never invokes it at all,
+            # and is live only because its head is not a declaration.
+            "range-for variable": ("  std::array<std::function<void()>, 1> tasks;\n"
+                                   f"  for (auto& t : tasks) t = [&]() {body};\n"
+                                   "  for (auto& run : tasks) run();\n"),
+            "alias in the same statement": (
+                f"  std::function<void()> f, &g = f = [&]() {body};\n  g();\n"),
+            "for initializer": (f"  for (auto bump = [&]() {body}; false;) {{ }}\n"),
+        }.items():
+            with self.subTest(label):
+                self.assertEqual([], self._dead_lambda_gates(text)[1])
+
+    def test_a_lambda_assigned_to_a_reference_parameter_is_live(self) -> None:
+        # Round 1 of the review: `task` is handed back to the caller, which may invoke it, and
+        # nothing in `p__bind`'s body writes the name again. A plain assignment is not a
+        # declaration, so the lambda is live and the flux it consumes reaches `u_new`; read as
+        # dead, the dependency's result is discarded and the gate refuses a correct function.
+        body = ("void p__bind(std::function<void()>& task, atmofab::View<const double, 1> u,\n"
+                "            atmofab::View<double, 1> u_new, double dt) {\n"
+                "  std::vector<double> flux(4);\n"
+                "  atmofab::View<double, 1> fv{flux.data(), {4}};\n"
+                "  dep_model::dep__flux(u, fv, dt);\n"
+                "  task = [=]() { u_new.data[0] = flux[0]; };\n}")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual([], self._gates(self._model(tmp, body), ["dep"]))
+
+    def test_a_dependency_call_only_in_a_never_invoked_lambda_is_no_call(self) -> None:
+        # Dead code is absent to every `problem` model gate and to the dependency-use check (#506,
+        # rounds 1-2 of its review): an earlier fix read calls from the unblanked body and the
+        # closure from the blanked one, and each round found a shape the two disagreed on. A
+        # function whose only dependency call sits in a dead lambda — with its consumer, or with
+        # an assignment to its input before it — calls no dependency. At `c9f46eee` the variant
+        # with the consumer inside the lambda passed both gates.
+        body = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+                " double dt) {\n"
+                "  std::vector<double> flux(static_cast<std::size_t>(u.extent[0]));\n"
+                "  atmofab::View<double, 1> fv{flux.data(), {u.extent[0]}};\n"
+                "  std::vector<double> g(4);\n"
+                "  atmofab::View<double, 1> gv{g.data(), {4}};\n"
+                "  auto unused = [&]() { g[0] = u.data[0]; dep_model::dep__flux(u, gv, dt);"
+                " u_new.data[0] = g[0]; };\n"
+                "{live}"
+                "  for (long i = 0; i < u.extent[0]; ++i) {\n"
+                "    u_new.data[i] = u.data[i]{consume};\n  }\n}")
+
+        def dependency_use(model: Path) -> list[str]:
+            out: list[str] = []
+            cpp_source.validate_dependency_operations([model], ["dep"], out)
+            return [v.split(": ", 1)[1] for v in out]
+
+        with tempfile.TemporaryDirectory() as tmp:
+            model = self._model(tmp, body.replace("{live}", "").replace("{consume}", ""))
+            self.assertEqual(["missing dependency operation call (dep__*)"],
+                             dependency_use(model))
+            self.assertEqual([], self._gates(model, ["dep"]))
+            # Beside a live, consumed call the dead one is simply not there (round 2: the split
+            # reading refused this, `candidates` naming the dead call's buffer).
+            beside = self._model(tmp, body.replace(
+                "{live}", "  dep_model::dep__flux(u, fv, dt);\n").replace(
+                "{consume}", " + dt * flux[static_cast<std::size_t>(i)]"))
+            self.assertEqual([], dependency_use(beside))
+            self.assertEqual([], self._gates(beside, ["dep"]))
+            # Invoked by name, the lambda's call is the function's call (round 3).
+            called = self._model(tmp, body.replace("{live}", "  unused();\n").replace(
+                "{consume}", ""))
+            self.assertEqual([], dependency_use(called))
+            self.assertEqual([], self._gates(called, ["dep"]))
+            # A dead chain is dead to this check too: `f` names `unused`, and nothing names `f`.
+            chain = self._model(tmp, body.replace(
+                "{live}", "  auto f = [&]() { unused(); };\n").replace("{consume}", ""))
+            self.assertEqual(["missing dependency operation call (dep__*)"],
+                             dependency_use(chain))
+
+    def test_an_array_declarator_and_a_subscript_are_not_lambda_introducers(self) -> None:
+        # `buf[4]{…}` is a `[` whose `]` is followed by a `{`, with no `NAME =` before it;
+        # `first = buf[0]` has the `NAME =` and no `{` after the `]`. Neither is a lambda, and
+        # reading either as a dead one would blank live code (here: the consuming statement's
+        # declaration and the buffer it reads).
+        text = ("  double buf[4]{0.0, 1.0, 2.0, 3.0};\n"
+                "  double first = buf[0];\n  (void)first;\n")
+        model, out = self._dead_lambda_gates(text)
+        self.assertEqual([(f"{model}: function p__step does not propagate dependency "
+                           "operation outputs to its output dataflow (candidates=['fv'])")], out)
+        consume = text + "  u_new.data[0] = buf[1] + flux[0];\n"
+        self.assertEqual([], self._dead_lambda_gates(consume)[1])
+        self.assertEqual(cpp_source._blank_dead_lambdas("{" + text + "}"), "{" + text + "}")
+
+    def test_blanking_a_dead_lambda_keeps_every_offset(self) -> None:
+        body = "\n  auto dead = [&]() {\n    out = fv;\n  };\n  out = u;\n"
+        blanked = cpp_source._blank_dead_lambdas(body)
+        self.assertEqual(len(body), len(blanked))
+        self.assertEqual([i for i, c in enumerate(body) if c == "\n"],
+                         [i for i, c in enumerate(blanked) if c == "\n"])
+        self.assertNotIn("fv", blanked)
+        self.assertNotIn("auto", blanked)  # the declaration head goes with it
+        self.assertIn("out = u;", blanked)
+        # The declaration prefixes the head admits (round 3: unpinned until then).
+        for head in ("static auto", "constexpr auto", "static const auto",
+                     "const std::function<void()>"):
+            with self.subTest(head):
+                self.assertNotIn("fv", cpp_source._blank_dead_lambdas(
+                    f"{{ {head} dead = []() {{ out = fv; }}; }}"))
+
+    def test_a_never_invoked_lambda_does_not_hide_a_literal_only_output(self) -> None:
+        dead = "void p__f(double& out, double u) { auto dead = [&]() { out = u; }; out = 1.0; }"
+        live = dead.replace("out = 1.0;", "dead(); out = 1.0;")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(any("literal-only assignments" in v
+                                for v in self._gates(self._model(tmp, dead), [])))
+            self.assertFalse(any("literal-only assignments" in v
+                                 for v in self._gates(self._model(tmp, live), [])))
+
+    def test_a_loop_only_in_a_never_invoked_lambda_does_not_exempt_a_metric_kernel(
+            self) -> None:
+        dead = ("void p__m(double x, double& a, double& b, double& c, double& d, double& e) {\n"
+                "  auto dead = [&]() { for (int i = 0; i < 2; ++i) { a = a + x; } };\n"
+                "  a = x; b = x; c = x; d = x; e = x;\n}")
+        live = dead.replace("  a = x;", "  dead();\n  a = x;")
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertTrue(any("metric-only scalar kernel" in v for v in self._gates(
+                self._model(tmp, dead), [], multidim="p")))
+            self.assertEqual([], self._gates(self._model(tmp, live), [], multidim="p"))
+
     def test_a_declaration_s_initializer_is_not_an_assignment_before_the_call(self) -> None:
         """Round 1 of this change's review: copy-initialized buffers (`= std::vector<double>(n)`,
         `auto f = ...`) were read as inputs the call consumes, so a discarded dependency result
