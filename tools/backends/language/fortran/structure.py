@@ -663,8 +663,9 @@ def _program_unit(encoded: bytes, node, to_char) -> ProgramUnit | None:
     return None
 
 
-def blank_interface_spans(view: str, spans: tuple[tuple[int, int], ...]) -> str:
-    """``view`` with every interface span replaced by blanks, IN PLACE.
+def blank_spans(view: str, spans: tuple[tuple[int, int], ...]) -> str:
+    """``view`` with every span replaced by blanks, IN PLACE — the interface spans, and the
+    contained procedures their host never names (issue #506).
 
     In place, not deleted, so a body stays ONE `start:end` slice of a string the same length as
     the view — the invariant the dependency-dataflow gate's before/after position comparison

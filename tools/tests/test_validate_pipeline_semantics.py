@@ -6365,13 +6365,16 @@ end module m
         # Literal-outputs gate. Reading `intent(out)` from the whole body would add the contained
         # procedure's `z` — which is assigned from an input, not a literal — to the host's out-set,
         # `all_literal` would go false, and the host's genuinely literal-only outputs would pass.
-        # Fail-open.
+        # Fail-open. The host CALLS the helper: a helper it never names is blanked out of its body
+        # (issue #506), and then the whole-body reading this pins against would see no `z` at all.
         source = """module m
 implicit none
 contains
 subroutine solve(x, y)
   real, intent(in) :: x
   real, intent(out) :: y
+  real :: t
+  call helper(t)
   y = 1.0
 contains
   subroutine helper(z)
@@ -6388,15 +6391,17 @@ end module m
         # Dependency-dataflow gate. Reading `intent(out)` from the whole body would seed the
         # backward closure with the contained procedure's `z`, which IS assigned from the
         # discarded dependency output, so the disjointness test would stop firing while the host's
-        # own `intent(out)` still never receives it. Fail-open.
+        # own `intent(out)` still never receives it. Fail-open. The host CALLS the helper, for the
+        # reason the literal-outputs row above gives.
         source = """module m
 implicit none
 contains
 subroutine solve(x, y)
   real, intent(in) :: x
   real, intent(out) :: y
-  real :: scratch
+  real :: scratch, t
   call dep__apply(x, scratch)
+  call helper(t)
   y = 1.0
 contains
   subroutine helper(z)
@@ -6776,23 +6781,40 @@ end module m
         # its contained procedures — a `call` in one of them, with the `intent(out)` in the host,
         # is the host's business and used to be invisible to every gate — while its out-scope stops
         # at the `contains`, because a contained procedure's dummies are its own.
-        envelopes = fortran_source.procedure_envelopes(
+        #
+        # Only a contained procedure the host NAMES is in its body (issue #506): `dead` is never
+        # named, so its text is blanked in place out of the host's body — same length, newlines
+        # kept — while its own envelope is still emitted with its own text.
+        source = (
             "subroutine host(x, y)\n"
             "  real, intent(in) :: x\n"
             "  real, intent(out) :: y\n"
+            "  real :: t\n"
+            "  call inner(t)\n"
             "  y = helper_marker\n"
             "contains\n"
             "  subroutine inner(z)\n"
             "    real, intent(out) :: z\n"
             "    z = 2.0\n"
             "  end subroutine inner\n"
+            "  subroutine dead(w)\n"
+            "    real, intent(out) :: w\n"
+            "    w = dead_marker\n"
+            "  end subroutine dead\n"
             "end subroutine host\n"
         )
-        self.assertEqual(sorted(e.name for e in envelopes), ["host", "inner"])
+        envelopes = fortran_source.procedure_envelopes(source)
+        self.assertEqual(sorted(e.name for e in envelopes), ["dead", "host", "inner"])
         host = next(e for e in envelopes if e.name == "host")
         inner = next(e for e in envelopes if e.name == "inner")
+        dead = next(e for e in envelopes if e.name == "dead")
         self.assertIn("y = helper_marker", host.body)
         self.assertIn("z = 2.0", host.body)
+        self.assertNotIn("dead_marker", host.body)
+        self.assertNotIn("subroutine dead", host.body)
+        self.assertIn("w = dead_marker", dead.body)
+        self.assertIn("intent(out) :: w", dead.out_scope)
+        self.assertEqual(host.body.count("\n"), source.count("\n") - 2)
         self.assertIn("intent(out) :: y", host.out_scope)
         self.assertNotIn("intent(out) :: z", host.out_scope)
         self.assertIn("z = 2.0", inner.body)
@@ -6833,6 +6855,215 @@ end module shallow_water2d_model
             "  subroutine helper()\n    call dep__apply(x, scratch)\n    y = scratch\n",
         )
         self.assertEqual(self._dataflow_violations(propagated), [])
+
+    # Issue #506: a contained procedure its host never NAMES is dead, and its assignments must not
+    # feed the host's backward closure (or exempt the host from the other two gates). Every
+    # source below is accepted by `gfortran -fsyntax-only -std=f2008` unless a row says
+    # otherwise. Measured at `c9f46eee` (before the fix): the two dead-code rows returned 0
+    # violations; the live and named-by-reference rows returned 0 then and must still.
+    _DEAD_CONTAINED_BASE = """module m
+implicit none
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: scratch
+  call dep__apply(x, scratch)
+  y = x
+contains
+  subroutine dead(z)
+    real, intent(out) :: z
+    y = scratch
+    z = 0.0
+  end subroutine dead
+end subroutine solve
+end module m
+"""
+
+    def test_a_never_called_contained_procedure_does_not_consume_a_dependency_result(self) -> None:
+        self.assertIn("does not propagate dependency operation outputs",
+                      " ".join(self._dataflow_violations(self._DEAD_CONTAINED_BASE)))
+        # The same procedure, CALLED, is the host's own code and consumes the result.
+        live = self._DEAD_CONTAINED_BASE.replace("  y = x\n", "  call dead(x)\n  y = x\n")
+        self.assertEqual(self._dataflow_violations(live), [])
+
+    def test_a_never_called_contained_procedure_is_still_judged_on_its_own_text(self) -> None:
+        # Blanking a dead procedure out of its HOST must not blank it out of its OWN envelope:
+        # its own discarded dependency result is still flagged against its own `intent(out)`.
+        source = """module m
+implicit none
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  y = x
+contains
+  subroutine dead(z)
+    real, intent(out) :: z
+    real :: scratch
+    call dep__apply(x, scratch)
+    z = 0.0
+  end subroutine dead
+end subroutine solve
+end module m
+"""
+        self.assertIn("does not propagate dependency operation outputs",
+                      " ".join(self._dataflow_violations(source)))
+
+    def test_a_dead_chain_of_contained_procedures_is_dead_and_a_live_chain_is_live(self) -> None:
+        # Reachability is transitive: `a` names `b`, so `b` is live exactly when `a` is. Deleting
+        # the worklist's recursion (reading only the host's own text) makes the live half red;
+        # treating every contained procedure as live makes the dead half silent.
+        chain = """module m
+implicit none
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: scratch
+  call dep__apply(x, scratch)
+  y = x
+contains
+  subroutine a()
+    call b()
+  end subroutine a
+  subroutine b()
+    y = scratch
+  end subroutine b
+end subroutine solve
+end module m
+"""
+        self.assertIn("does not propagate dependency operation outputs",
+                      " ".join(self._dataflow_violations(chain)))
+        live = chain.replace("  y = x\n", "  call a()\n  y = x\n")
+        self.assertEqual(self._dataflow_violations(live), [])
+
+    def test_a_contained_procedure_passed_as_an_actual_is_live(self) -> None:
+        # The channel models' shape (17 of the 387 `workspace/` models at `c9f46eee`): the host
+        # never calls `rhs`, it passes it to the dependency, which does. Its name occurs in the
+        # host, so it is live; reading reachability by `call` alone would refuse every one.
+        source = """module m
+implicit none
+contains
+subroutine solve(n, u, u_new)
+  integer, intent(in) :: n
+  real, intent(in) :: u(n)
+  real, intent(out) :: u_new(n)
+  call dep__advance(n, u, rhs, u_new)
+contains
+  subroutine rhs(m, v, dv)
+    integer, intent(in) :: m
+    real, intent(in) :: v(m)
+    real, intent(out) :: dv(m)
+    dv = -v
+  end subroutine rhs
+end subroutine solve
+end module m
+"""
+        self.assertEqual(self._dataflow_violations(source), [])
+        host = next(e for e in fortran_source.procedure_envelopes(source) if e.name == "solve")
+        self.assertIn("dv = -v", host.body)
+
+    def test_a_contained_procedure_named_only_in_a_generic_interface_is_live(self) -> None:
+        # The host names `inner` only inside a generic interface in its specification part, and
+        # calls the generic. Interface spans are blanked out of the body, so a reachability read
+        # from the BLANKED text would call `inner` dead and flag this correct program; it is read
+        # from the unblanked view. `gfortran -fsyntax-only -std=f2008 -Wall` (11.4.0): rc 0.
+        source = """module m
+implicit none
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: scratch
+  interface g
+    procedure inner
+  end interface g
+  call dep__apply(x, scratch)
+  call g()
+contains
+  subroutine inner()
+    y = scratch
+  end subroutine inner
+end subroutine solve
+end module m
+"""
+        self.assertEqual(self._dataflow_violations(source), [])
+
+    def test_a_pointer_assigned_contained_procedure_stays_live(self) -> None:
+        # The bound, pinned in the safe direction: `p => dead` names `dead`, so it is live even
+        # though nothing ever calls through `p`. Control flow is not read (residue (d) of the
+        # dataflow gate's docstring); this row exists so a later change that DOES read it is a
+        # visible decision rather than an accident.
+        source = """module m
+implicit none
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: scratch
+  procedure(), pointer :: p
+  call dep__apply(x, scratch)
+  p => dead
+  y = x
+contains
+  subroutine dead()
+    y = scratch
+  end subroutine dead
+end subroutine solve
+end module m
+"""
+        self.assertEqual(self._dataflow_violations(source), [])
+
+    def test_a_never_called_contained_procedure_does_not_hide_a_literal_only_host(self) -> None:
+        # Literal-outputs gate: the dead `y = x` used to make `y` look input-dependent. At
+        # `c9f46eee` this returned no violation.
+        source = """module m
+implicit none
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  y = 1.0
+contains
+  subroutine dead()
+    y = x
+  end subroutine dead
+end subroutine solve
+end module m
+"""
+        self.assertIn("literal-only assignments for all intent(out) vars",
+                      " ".join(self._literal_output_violations(source)))
+
+    def test_a_loop_only_in_a_never_called_contained_procedure_does_not_exempt_its_host(
+        self,
+    ) -> None:
+        # Metric-only kernel gate: a `do` loop exempts the host, and one inside a dead contained
+        # procedure used to. The same procedure CALLED is the host's loop and still exempts it.
+        source = """module m
+implicit none
+contains
+subroutine metrics(a, e_tot, e_kin, e_pot, mass, enstrophy)
+  real, intent(in) :: a
+  real, intent(out) :: e_tot, e_kin, e_pot, mass, enstrophy
+  e_tot = a
+  e_kin = a
+  e_pot = a
+  mass = a
+  enstrophy = a
+contains
+  subroutine dead()
+    integer :: i
+    do i = 1, 3
+      e_tot = e_tot + a
+    end do
+  end subroutine dead
+end subroutine metrics
+end module m
+"""
+        self.assertTrue(self._metric_kernel_violations(source))
+        live = source.replace("  enstrophy = a\ncontains", "  enstrophy = a\n  call dead()\ncontains")
+        self.assertEqual(self._metric_kernel_violations(live), [])
 
     def test_paren_less_subroutine_does_not_swallow_the_next_subroutine(self) -> None:
         # The old envelope required a parenthesised dummy list, so a paren-less `subroutine setup`

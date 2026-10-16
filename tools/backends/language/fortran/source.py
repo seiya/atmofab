@@ -538,7 +538,12 @@ class SourceStructureError(Exception):
 class ProcedureEnvelope:
     """One procedure definition, as the three `problem` model gates read it.
 
-    ``body`` is everything between the header and the terminator, CONTAINED PROCEDURES INCLUDED.
+    ``body`` is everything between the header and the terminator, the contained procedures the
+    host NAMES included and the ones it never names blanked in place (`_dead_contained_spans`,
+    issue #506: before that, an assignment inside a never-called contained procedure fed the
+    host's closure and silenced all three gates — measured at `c9f46eee`, a dead `y = scratch`
+    and a dead chain host-less `a` -> `b` each returned 0 violations). A dead procedure's OWN
+    envelope is still emitted and still judged against its own `intent(out)`.
     ``out_scope`` is the part of it before the subroutine's own `contains`, and is where
     ``out_vars`` — the `intent(out)` dummies, the definable outputs every gate keys on — is read
     from: a contained procedure's dummies are its own, not its host's.
@@ -779,6 +784,67 @@ def module_level_type_definitions(
 
 
 
+def _dead_contained_spans(
+    view: str, tree: fortran_structure.StructureTree, to_view: Callable[[int], int]
+) -> tuple[tuple[int, int], ...]:
+    """The view spans of every contained procedure its host never NAMES — header through `end`
+    statement — for `procedure_envelopes` to blank out of the host's body (issue #506).
+
+    REACHABILITY BY NAME, and nothing else: a contained procedure is live when its name occurs
+    as an identifier token in the host's own statements (`view[body_start:contains_at]`) or in
+    the text of a contained procedure already found live, to a fixed point; every other one is
+    dead. A call, an actual argument, a pointer assignment, a function reference and a generic
+    interface's `procedure` statement are not enumerated — they all WRITE THE NAME, which is the
+    one thing this reads (`atmofab-enforcement-change` §1: the source-text surface is not closed
+    by enumerating grammar). Polarity: a name that occurs is live, which is how every contained
+    procedure was read before this; a dead one is the new case. Calling a live one dead needs a
+    reference that does not write the name, which neither F2008 nor this tree has.
+
+    The names are read from the UNBLANKED view, on purpose: a generic interface in the host's
+    specification part (`interface g / procedure inner / end interface g`) is the only place
+    `inner` is named when the host calls `g`, and reading the interface-blanked text would call
+    `inner` dead and refuse a program `gfortran -fsyntax-only -std=f2008` accepts (measured, rc
+    0, gfortran 11.4.0). No keyword filter either, so a contained procedure named like a keyword
+    stays live rather than dead.
+
+    CONTROL FLOW IS NOT READ: `if (.false.) call dead()` and `p => dead` make `dead` live, exactly
+    as `if (.false.) then / y = scratch / end if` keeps its assignment live in the host. The
+    gates are flow-insensitive (`docs/DEVELOPMENT.md`'s deterministic-gate rule leaves the
+    reaching-definitions pass the other would need to the semantic check); this removes the one
+    spelling of dead code that needs no flow analysis to see, and closes no wider class.
+
+    F2008 forbids an internal procedure inside an internal procedure, so the host↔contained
+    relation is one level deep and is read by offset (`contains_at <= header_start < body_end`)
+    rather than by a parent link the tree does not carry.
+    """
+    dead: list[tuple[int, int]] = []
+    for host in tree.procedures:
+        if host.contains_at is None:
+            continue
+        contains_at, host_end = to_view(host.contains_at), to_view(host.body_end)
+        inner = {
+            procedure.name.lower(): procedure
+            for procedure in tree.procedures
+            if contains_at <= to_view(procedure.header_start) < host_end
+        }
+        live: set[str] = set()
+        frontier = [view[to_view(host.body_start):contains_at]]
+        while frontier:
+            for token in IDENTIFIER_PATTERN.findall(frontier.pop()):
+                if token in inner and token not in live:
+                    live.add(token)
+                    procedure = inner[token]
+                    frontier.append(view[to_view(procedure.body_start):to_view(procedure.body_end)])
+        for name, procedure in inner.items():
+            if name in live:
+                continue
+            end_line = view.find("\n", to_view(procedure.body_end))
+            dead.append(
+                (to_view(procedure.header_start), len(view) if end_line < 0 else end_line + 1)
+            )
+    return tuple(dead)
+
+
 def procedure_envelopes(lowered: str) -> list[ProcedureEnvelope]:
     """Every procedure DEFINITION in ``lowered``, with the body each gate must read.
 
@@ -801,7 +867,7 @@ def procedure_envelopes(lowered: str) -> list[ProcedureEnvelope]:
     the call" by comparing an `assignment_records` position with an `iter_calls`
     position, both taken inside `body`, and `joined_masked_view`'s own contract is that
     offsets are comparable only when both come from the same view. An interface span is therefore
-    BLANKED IN PLACE rather than deleted, by `fortran_structure.blank_interface_spans`, after the
+    BLANKED IN PLACE rather than deleted, by `fortran_structure.blank_spans`, after the
     parse — deletion also preserves the ORDER of what remains, but not the offsets.
 
     A parse carrying an ERROR or MISSING node RAISES `SourceStructureError` instead of
@@ -835,11 +901,19 @@ def procedure_envelopes(lowered: str) -> list[ProcedureEnvelope]:
     view, tree, to_view = structure_reading(lowered)
 
     spans = tuple((to_view(start), to_view(end)) for start, end in tree.interface_spans)
-    blanked = fortran_structure.blank_interface_spans(view, spans)
+    interfaces_blanked = fortran_structure.blank_spans(view, spans)
+    dead_spans = _dead_contained_spans(view, tree, to_view)
+    host_blanked = fortran_structure.blank_spans(interfaces_blanked, dead_spans)
+    dead_starts = {start for start, _end in dead_spans}
     envelopes: list[ProcedureEnvelope] = []
     for procedure in tree.procedures:
         body_end = to_view(procedure.body_end)
         body_start = to_view(procedure.body_start)
+        # A dead procedure's OWN envelope is read from the text with only the interfaces blanked:
+        # it is still judged against its own `intent(out)`, on its own statements.
+        blanked = (
+            interfaces_blanked if to_view(procedure.header_start) in dead_starts else host_blanked
+        )
         out_end = body_end if procedure.contains_at is None else min(
             to_view(procedure.contains_at), body_end
         )
@@ -1071,7 +1145,14 @@ def _validate_problem_model_dependency_dataflow(
     2026-08-12, `-fdump-fortran-original` differs between gfortran 12.4.0 and 14.2.0 on 27 of
     319 analysable files overall, the `code:` section included, while its `procedure name =` /
     `Formal arglist:` / `DUMMY(...)` lines were identical on all 4328 lines — enough for dummy
-    intents, not for dataflow.
+    intents, not for dataflow. (d) DEAD CODE THE CLOSURE STILL READS. A contained procedure its
+    host never names is blanked out of the host's body before this runs (`procedure_envelopes`,
+    issue #506 — measured at `c9f46eee`: a never-called contained `dead` doing `y = scratch`
+    returned 0 violations, as did a dead chain `a` -> `b`). What is NOT closed is every spelling
+    that names the dead code: a dead branch in the host (`if (.false.) then / y = scratch /
+    end if`, measured 0 violations at the same commit), `if (.false.) call dead()`, and `p =>
+    dead` for a pointer never called. Each needs control flow, the same flow-sensitive pass as
+    (c); `Generate.verify` G5 and the runtime own them meanwhile.
 
     Residue (c) above is the one with a named instance: the
     `dynamics_shallow_water_profile_2d_rusanov_p0_ssprk2` model yields
