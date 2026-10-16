@@ -1282,10 +1282,12 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertNotIn("usage limit", findings[1].lower())
 
     def test_a_transient_retry_is_not_a_repair_turn_and_the_record_counts_it(self) -> None:
-        """The reviewer twin of the producer row of the same name (issue #508, round 1): one
-        dropped connection on the cold attempt, then a schema-violating verdict on every turn.
-        The retry must not spend the repair budget, and the launch count, the outcome's
-        `attempts` and `verdict_meta` must all count the flake: `MAX_BUNDLE_REPAIR_TURNS + 2`."""
+        """The reviewer twin of the producer row of the same name (issue #508, rounds 1-2).
+        (1) One dropped connection on the cold attempt, then a schema-violating verdict on every
+        turn: the retry must not spend the repair budget, and the launch count, the outcome's
+        `attempts` and `verdict_meta` must all count the flake, `MAX_BUNDLE_REPAIR_TURNS + 2`.
+        (2) The connection drops on the first repair turn instead: the retry re-runs that repair
+        against the same session with the same findings, and still spends no budget."""
         from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
         malformed = wc.ProcResult(0, _envelope({"verification_status": "pass"}), "")
         c, refs = self._waiting(self._FLAKE, *([malformed] * (MAX_BUNDLE_REPAIR_TURNS + 1)),
@@ -1301,6 +1303,19 @@ class PureVerifySubstepTests(unittest.TestCase):
         self.assertEqual(vmeta["failure_category"], "verdict_schema_violation")
         self.assertEqual(vmeta["attempts"], MAX_BUNDLE_REPAIR_TURNS + 2)
         self.assertEqual(len(vmeta["per_attempt"]), MAX_BUNDLE_REPAIR_TURNS + 2)
+        c, refs = self._waiting(malformed, self._FLAKE, *([malformed] * MAX_BUNDLE_REPAIR_TURNS),
+                                record=True)
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 2)
+        self.assertEqual([r["repair_strategy"] for r in c.requests],
+                         ["none"] + ["reuse"] * (MAX_BUNDLE_REPAIR_TURNS + 1))
+        # the flaked repair (child-2) and its retry (child-3) resume the same session
+        self.assertEqual([k.get("resume_session_id") for k in c.spawn_kwargs][:3],
+                         [None, "child-1", "child-1"])
+        findings = [str(r.get("repair_findings", "")) for r in c.requests[1:3]]
+        self.assertEqual(findings[0], findings[1])
+        self.assertTrue(findings[1])
 
     def test_a_warm_repair_that_never_ran_is_not_a_repair_turn(self) -> None:
         """The reviewer twin of the producer row of the same name (issue #508, round 1): a
@@ -1331,6 +1346,50 @@ class PureVerifySubstepTests(unittest.TestCase):
         vmeta = json.loads((c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
         self.assertEqual(vmeta["attempts"], MAX_BUNDLE_REPAIR_TURNS + 1)
         self.assertEqual(len(vmeta["per_attempt"]), MAX_BUNDLE_REPAIR_TURNS + 1)
+
+    def test_a_verdict_accepted_after_a_transient_retry_records_every_launch(self) -> None:
+        """The reviewer's PASS path counts its launches at three sites — `verdict_meta`, the
+        verdict's project meta (`source_meta.json#attempt_count` here) and the terminal row's
+        `result_summary` — and only the outcome's `attempts` was pinned (issue #508, round 2;
+        the producer's pass path is pinned by `test_transport_usage_limit_waits_then_passes`).
+        One dropped connection, then a passing verdict: two launches, and every record says 2.
+        Only a re-launch in the history separates `len(per_attempt)` from `attempt + 1`."""
+        c, refs = self._waiting(self._FLAKE)
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "pass")
+        self.assertEqual(c._spawn, 2)
+        self.assertEqual(oc.attempts, 2)
+        base = c.repo_root / refs.source_dir()
+        vmeta = json.loads((base / "verdict_meta.json").read_text())
+        self.assertEqual(vmeta["result"], "pass")
+        self.assertEqual(vmeta["attempts"], 2)
+        self.assertEqual(len(vmeta["per_attempt"]), 2)
+        self.assertEqual(vmeta["per_attempt"][0]["failure_category"], "pure_transport")
+        self.assertEqual(json.loads((base / "source_meta.json").read_text())["attempt_count"], 2)
+        payloads = [cap["--agent-run-json"] for sub, cap in c.calls
+                    if sub == "finalize-child" and "--agent-run-json" in cap]
+        self.assertIn("attempts=2)", json.dumps(payloads[-1]))
+
+    def test_transport_terminal_after_a_schema_repair_records_the_transport_excerpt(self) -> None:
+        """The reviewer twin of the producer's
+        `test_transport_terminal_after_a_content_repair_records_the_transport_excerpt` (issue
+        #508, round 2): a schema-violating verdict, then the repair turn dies of a usage limit
+        with the wait flag OFF, which is terminal. `verdict_meta` must pair
+        `failure_category: pure_transport` with the TRANSPORT excerpt, never the schema finding
+        still held in the repair carrier."""
+        c, refs = self._waiting(wc.ProcResult(0, _envelope({"verification_status": "pass"}), ""),
+                                self._QUOTA, flag=False, record=True)
+        oc = c._run_pure_verify_substep(refs, "generate", "verify", ())
+        self.assertEqual(oc.status, "fail")
+        self.assertEqual(oc.leaf_returncode, 1)
+        stale = c.requests[1]["repair_findings"]      # the schema finding the carrier holds
+        self.assertTrue(stale)
+        vmeta = json.loads((c.repo_root / refs.source_dir() / "verdict_meta.json").read_text())
+        self.assertEqual(vmeta["failure_category"], "pure_transport")
+        excerpt = vmeta.get("failure_excerpt") or ""
+        self.assertIn("usage limit", excerpt.lower())
+        self.assertNotIn(stale, excerpt)
+        self.assertEqual(vmeta["attempts"], 2)
 
     def test_unencodable_valid_verdict_is_schema_violation_not_transport(self) -> None:
         # Codex review (defect 1): a schema-SOUND verdict whose last_fail_reason holds a lone

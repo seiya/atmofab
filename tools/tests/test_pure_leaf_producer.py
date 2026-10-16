@@ -1615,16 +1615,23 @@ class PureUsageLimitWaitTest(unittest.TestCase):
             self.assertNotIn("limit", findings[1].lower())      # never the transport evidence
 
     def test_a_transient_retry_is_not_a_repair_turn_and_the_record_counts_it(self) -> None:
-        """A transient death is re-launched in place and must not spend the repair budget, and
-        the terminal record must count the launch it cost (issue #508, round 1). Fixture: one
-        dropped connection on the cold attempt, then a schema violation on every turn, so the
-        run straddles the budget — a retry that spent an `attempt` makes one repair fewer.
-        Pinned on the launch count, the outcome's `attempts` and the `bundle_meta` the outer
-        route and `orchestration_diagnostics` read, which must all say the same number: the
-        flake, the cold re-launch and exactly `MAX_BUNDLE_REPAIR_TURNS` repairs. The reviewer
-        twin of the `attempts` half is `test_the_reviewer_wait_budget_is_the_schedule_then_fails_closed`;
-        this loop had none, and only a re-launch in the history separates `len(per_attempt)`
-        from `attempt + 1`."""
+        """A transient death is re-launched in place: `attempt` and the repair carriers are
+        unchanged, and the terminal record counts the launch it cost (issue #508, rounds 1-2).
+
+        (1) One dropped connection on the cold attempt, then a schema violation on every turn,
+        so the run straddles the budget — a retry that spent an `attempt` makes one repair
+        fewer. Pinned on the launch count, the outcome's `attempts` and the `bundle_meta` the
+        outer route and `orchestration_diagnostics` read, which must all say the same number:
+        the flake, the cold re-launch and exactly `MAX_BUNDLE_REPAIR_TURNS` repairs. The
+        reviewer twin of the `attempts` half is
+        `test_the_reviewer_wait_budget_is_the_schedule_then_fails_closed`; this loop had none,
+        and only a re-launch in the history separates `len(per_attempt)` from `attempt + 1`.
+
+        (2) The connection drops on the first REPAIR turn instead. The retry re-runs that
+        repair against the same session with the same findings, and still spends no budget: a
+        retry that cleared `resume_session_id` or `last_excerpt` would re-launch a fresh turn
+        that forgets what it was repairing, and one that spent an `attempt` there would fail
+        one repair early."""
         from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
         bad = _valid_bundle()
         del bad["capability_requirements"]
@@ -1646,6 +1653,24 @@ class PureUsageLimitWaitTest(unittest.TestCase):
             self.assertEqual(meta["failure_category"], "bundle_schema_violation")
             self.assertEqual(meta["attempts"], MAX_BUNDLE_REPAIR_TURNS + 2)
             self.assertEqual(len(meta["per_attempt"]), MAX_BUNDLE_REPAIR_TURNS + 2)
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _write_node(repo)
+            c = self._conductor(
+                repo, [wc.ProcResult(0, _envelope(bad), ""), flake]
+                + [wc.ProcResult(0, _envelope(bad), "")] * MAX_BUNDLE_REPAIR_TURNS)
+            requests, spawn_kwargs = self._recording(c)
+            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            self.assertEqual(oc.status, "fail")
+            self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 2)
+            self.assertEqual([r["repair_strategy"] for r in requests],
+                             ["none"] + ["reuse"] * (MAX_BUNDLE_REPAIR_TURNS + 1))
+            # the flaked repair (child-2) and its retry (child-3) resume the same session
+            self.assertEqual([k.get("resume_session_id") for k in spawn_kwargs][:3],
+                             [None, "child-1", "child-1"])
+            findings = [str(r.get("repair_findings", "")) for r in requests[1:3]]
+            self.assertEqual(findings[0], findings[1])
+            self.assertIn("capability_requirements", findings[1])
 
     def test_a_warm_repair_that_never_ran_is_not_a_repair_turn(self) -> None:
         """A warm repair whose codex lineage home is gone returns None from `_spawn_pure_turn`
