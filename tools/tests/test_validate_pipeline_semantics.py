@@ -6884,8 +6884,65 @@ end module m
         self.assertIn("does not propagate dependency operation outputs",
                       " ".join(self._dataflow_violations(self._DEAD_CONTAINED_BASE)))
         # The same procedure, CALLED, is the host's own code and consumes the result.
-        live = self._DEAD_CONTAINED_BASE.replace("  y = x\n", "  call dead(x)\n  y = x\n")
+        live = self._DEAD_CONTAINED_BASE.replace(
+            "  real :: scratch\n", "  real :: scratch, t\n").replace(
+            "  y = x\n", "  call dead(t)\n  y = x\n")
         self.assertEqual(self._dataflow_violations(live), [])
+
+    def test_a_dependency_call_only_in_a_never_called_contained_procedure_is_refused(
+        self,
+    ) -> None:
+        # Round 1 of the review: blanking the dead procedure out of its host hid its dependency
+        # CALL too, so a model whose only call never runs passed the dataflow gate (the
+        # dependency-use check counts the call text and passed as well). Flagged at `c9f46eee`,
+        # silent at the first fix. Calls are read from the unblanked `call_body`; the closure
+        # from the blanked `body`, so nothing in the dead procedure consumes the result — not
+        # even an assignment to its own `intent(out)`.
+        no_outputs = """module m
+implicit none
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  y = 2.0 * x
+contains
+  subroutine unused()
+    real :: scratch
+    call dep__apply(x, scratch)
+    y = scratch
+  end subroutine unused
+end subroutine solve
+end module m
+"""
+        self.assertIn("does not propagate dependency operation outputs",
+                      " ".join(self._dataflow_violations(no_outputs)))
+        own_output = no_outputs.replace("  subroutine unused()\n", "  subroutine unused(z)\n"
+                                        "    real, intent(out) :: z\n").replace(
+            "    y = scratch\n", "    z = scratch\n")
+        self.assertIn("subroutine solve does not propagate",
+                      " ".join(self._dataflow_violations(own_output)))
+
+    def test_a_contained_procedure_named_like_a_keyword_is_live(self) -> None:
+        # The name scan takes every identifier token, keywords included: a contained procedure
+        # may be named `only` (Fortran keywords are not reserved), and a `KEYWORDS` filter on
+        # the scan would call it dead and flag this correct program.
+        source = """module m
+implicit none
+contains
+subroutine solve(x, y)
+  real, intent(in) :: x
+  real, intent(out) :: y
+  real :: scratch
+  call dep__apply(x, scratch)
+  call only()
+contains
+  subroutine only()
+    y = scratch
+  end subroutine only
+end subroutine solve
+end module m
+"""
+        self.assertEqual(self._dataflow_violations(source), [])
 
     def test_a_never_called_contained_procedure_is_still_judged_on_its_own_text(self) -> None:
         # Blanking a dead procedure out of its HOST must not blank it out of its OWN envelope:

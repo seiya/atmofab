@@ -542,8 +542,14 @@ class ProcedureEnvelope:
     host NAMES included and the ones it never names blanked in place (`_dead_contained_spans`,
     issue #506: before that, an assignment inside a never-called contained procedure fed the
     host's closure and silenced all three gates — measured at `c9f46eee`, a dead `y = scratch`
-    and a dead chain host-less `a` -> `b` each returned 0 violations). A dead procedure's OWN
-    envelope is still emitted and still judged against its own `intent(out)`.
+    and a dead chain `a` -> `b` each returned 0 violations). A dead procedure's OWN envelope is
+    still emitted and still judged against its own `intent(out)`.
+    ``call_body`` is the same slice with the dead procedures NOT blanked, and it is where the
+    dependency-dataflow gate finds its dependency CALLS: blanking a dead `call dep__op(x, s)`
+    would hide a call the dependency-use check still counts, so a model whose only dependency
+    call sits in code that never runs passed both (round 1 of issue #506's review: flagged at
+    `c9f46eee`, silent at the first fix). Read from ``call_body``, such a call's actuals are
+    candidates the host's closure — read from ``body`` — does not reach, so it is flagged.
     ``out_scope`` is the part of it before the subroutine's own `contains`, and is where
     ``out_vars`` — the `intent(out)` dummies, the definable outputs every gate keys on — is read
     from: a contained procedure's dummies are its own, not its host's.
@@ -604,6 +610,7 @@ class ProcedureEnvelope:
     result_name: str | None
     intent_out_vars: frozenset[str]
     out_vars: frozenset[str]
+    call_body: str
 
 
 
@@ -936,6 +943,7 @@ def procedure_envelopes(lowered: str) -> list[ProcedureEnvelope]:
                 result_name=procedure.result_name,
                 intent_out_vars=intent_out_vars,
                 out_vars=frozenset(out_vars),
+                call_body=interfaces_blanked[body_start:body_end],
             )
         )
     return envelopes
@@ -1229,7 +1237,11 @@ def _validate_problem_model_dependency_dataflow(
             continue
 
         dep_output_candidates: set[str] = set()
-        for callee, args_raw, call_pos in iter_calls(body):
+        # Calls come from `call_body` — dead contained procedures included — and the closure
+        # below from `body`, without them: a dependency call that never runs still yields its
+        # candidates, and nothing in dead code consumes them (issue #506). Both are slices of one
+        # length-preserving view, so `call_pos` and the assignment positions stay comparable.
+        for callee, args_raw, call_pos in iter_calls(envelope.call_body):
             if not any(callee.startswith(prefix) for prefix in dep_prefixes):
                 continue
             call_vars = split_names(args_raw)

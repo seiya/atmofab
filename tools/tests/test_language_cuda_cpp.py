@@ -1592,6 +1592,12 @@ class PhysicsGateTests(unittest.TestCase):
             # `b` is named, but only inside the dead `a`: dead too, on the second pass.
             "named only inside a dead lambda": (
                 f"  auto b = [&]() {body};\n  auto a = [&]() {{ b(); }};\n"),
+            # A parameter list the tail pattern alone does not span (`=` in a default).
+            "parameter with a default": (
+                "  auto dead = [&](double s = 1.0) { u_new.data[0] = s * flux[0]; };\n"),
+            # Its own name inside its own body is not a use from outside.
+            "self-referencing std::function": (
+                "  std::function<void()> dead = [&]() { dead(); u_new.data[0] = flux[0]; };\n"),
         }.items():
             with self.subTest(label):
                 model, out = self._dead_lambda_gates(text)
@@ -1618,9 +1624,55 @@ class PhysicsGateTests(unittest.TestCase):
             # No `;` right after the `}`: not a statement this reads, so not blanked.
             "declarator list": (f"  auto dead = [&]() {body}, other = 0;\n"
                                 "  (void)other;\n"),
+            # Round 1 of the review: each of these compiles, invokes the lambda without this
+            # statement's name being written again, and was refused by the first fix. Only a
+            # statement that DECLARES the name (`auto` / `const auto` / `std::function<…>`)
+            # can make it dead.
+            "range-for variable": ("  std::array<std::function<void()>, 1> tasks;\n"
+                                   f"  for (auto& t : tasks) t = [&]() {body};\n"
+                                   "  for (auto& run : tasks) run();\n"),
+            "alias in the same statement": (
+                f"  std::function<void()> f, &g = f = [&]() {body};\n  g();\n"),
+            "for initializer": (f"  for (auto bump = [&]() {body}; false;) {{ }}\n"),
         }.items():
             with self.subTest(label):
                 self.assertEqual([], self._dead_lambda_gates(text)[1])
+
+    def test_a_lambda_assigned_to_a_reference_parameter_is_live(self) -> None:
+        # Round 1 of the review: `task` is bound in one function and invoked in another, so no
+        # use of its name follows the binding in `p__bind`'s body. A plain assignment is not a
+        # declaration, so it is live.
+        body = ("void p__bind(std::function<void()>& task, atmofab::View<double, 1> u_new,\n"
+                "            const std::vector<double>& flux) {\n"
+                "  task = [=]() { u_new.data[0] = flux[0]; };\n}\n"
+                "void p__set(double& out, double u) {\n"
+                "  static std::function<void()> keep;\n  (void)keep;\n"
+                "  out = 1.0;\n  (void)u;\n}\n")
+        with tempfile.TemporaryDirectory() as tmp:
+            out = self._gates(self._model(tmp, body), [])
+            self.assertEqual(1, len(out), out)  # p__set's literal-only output, nothing else
+            self.assertIn("p__set", out[0])
+        blanked = cpp_source._blank_dead_lambdas("{ task = [=]() { out = fv; }; }")
+        self.assertIn("out = fv", blanked)
+
+    def test_a_dependency_call_only_in_a_never_invoked_lambda_is_refused(self) -> None:
+        # Round 1 of the review: blanking the dead lambda hid its dependency CALL too, so a body
+        # whose only call never runs passed the dataflow gate (and the dependency-use check,
+        # which counts the call text). Flagged at `c9f46eee` (`candidates=['fv']`), silent at
+        # the first fix. Calls are read from the unblanked body.
+        body = ("void p__step(atmofab::View<const double, 1> u, atmofab::View<double, 1> u_new,"
+                " double dt) {\n"
+                "  std::vector<double> flux(static_cast<std::size_t>(u.extent[0]));\n"
+                "  atmofab::View<double, 1> fv{flux.data(), {u.extent[0]}};\n"
+                "  auto unused = [&]() { dep_model::dep__flux(u, fv, dt);"
+                " u_new.data[0] = flux[0]; };\n"
+                "  for (long i = 0; i < u.extent[0]; ++i) {\n"
+                "    u_new.data[i] = u.data[i];\n  }\n}")
+        with tempfile.TemporaryDirectory() as tmp:
+            model = self._model(tmp, body)
+            self.assertEqual([(f"{model}: function p__step does not propagate dependency "
+                               "operation outputs to its output dataflow "
+                               "(candidates=['fv'])")], self._gates(model, ["dep"]))
 
     def test_an_array_declarator_and_a_subscript_are_not_lambda_introducers(self) -> None:
         # `buf[4]{…}` is a `[` whose `]` is followed by a `{`, with no `NAME =` before it;
@@ -1643,6 +1695,7 @@ class PhysicsGateTests(unittest.TestCase):
         self.assertEqual([i for i, c in enumerate(body) if c == "\n"],
                          [i for i, c in enumerate(blanked) if c == "\n"])
         self.assertNotIn("fv", blanked)
+        self.assertNotIn("auto", blanked)  # the declaration head goes with it
         self.assertIn("out = u;", blanked)
 
     def test_a_never_invoked_lambda_does_not_hide_a_literal_only_output(self) -> None:

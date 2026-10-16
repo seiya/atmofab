@@ -312,6 +312,12 @@ _LAMBDA_TAIL_RE = re.compile(r"[\w\s:<>,*&()\->]*")
 #: A lambda introducer BOUND to a name: `NAME = [`. A member (`s.f = [`, `p->f = [`) or a
 #: qualified name is not matched — what it holds can be invoked without its name being written.
 _LAMBDA_BINDING_RE = re.compile(r"(?<![\w.>:])(?P<name>[A-Za-z_]\w*)\s*=\s*\[")
+#: What a statement that DECLARES the bound name says before it: `auto`, `const auto`,
+#: `std::function<…>`. Anything else — nothing (an assignment to a name declared elsewhere: a
+#: parameter, a range-for variable, a namespace-scope variable, all invocable without this body
+#: writing the name), `for (auto`, a declarator list — is not read as a declaration.
+_LAMBDA_DECLARATION_HEAD_RE = re.compile(
+    r"\s*(?:(?:const|constexpr|static)\s+)*(?:auto|std\s*::\s*function\s*<[^;{}=]*>)\s*")
 
 
 def _blank_dead_lambdas(body: str) -> str:
@@ -325,12 +331,18 @@ def _blank_dead_lambdas(body: str) -> str:
     (`fortran/source.py` `_dead_contained_spans`), and it is read the same way: by whether the
     NAME occurs, not by enumerating how it is invoked.
 
-    * A BOUND lambda is `NAME = [` (`_LAMBDA_BINDING_RE`) — `auto NAME = [`, `const auto NAME
-      = [`, `std::function<…> NAME = [` and a plain `NAME = [` alike — whose `[` is followed by
-      its balanced `]`, an optional `(params)`, an optional tail (`_LAMBDA_TAIL_RE`) and a `{`.
-      A subscript `a[i]`, an array declarator `double buf[4]{…}` and `new int[3]{}` have no `=`
-      right before their `[`; `x = a[0];` has no `{` after its `]`. An unbound lambda — passed
-      as an argument, invoked in place, returned — is live.
+    * A BOUND lambda is `NAME = [` (`_LAMBDA_BINDING_RE`) whose `[` is followed by its balanced
+      `]`, an optional `(params)`, an optional tail (`_LAMBDA_TAIL_RE`) and a `{`. A subscript
+      `a[i]`, an array declarator `double buf[4]{…}` and `new int[3]{}` have no `=` right before
+      their `[`; `x = a[0];` has no `{` after its `]`. An unbound lambda — passed as an
+      argument, invoked in place, returned — is live.
+    * Only a statement that DECLARES the name can make it dead: the text from the statement's
+      start to NAME must be `auto`, `const auto` or `std::function<…>`
+      (`_LAMBDA_DECLARATION_HEAD_RE`). A plain `NAME = [` assigns a name declared elsewhere — a
+      reference parameter, a range-for variable, a namespace-scope variable — that can be
+      invoked without this body writing it, and `for (auto f = [` and `T f, &g = f = [` are not
+      a declaration of one name; all of these are live (round 1 of issue #506's review: each
+      compiled and was refused).
     * A bound one is DEAD when `\bNAME\b` occurs nowhere in the body outside its own statement,
       and when its `}` is followed by `;`. Otherwise it is live, which is how every lambda was
       read before this.
@@ -375,6 +387,8 @@ def _blank_dead_lambdas_once(body: str) -> str:
         if end_at >= len(body) or semicolon is None:
             continue
         statement_start = max(body.rfind(ch, 0, binding.start()) for ch in ";{}") + 1
+        if not _LAMBDA_DECLARATION_HEAD_RE.fullmatch(body, statement_start, binding.start()):
+            continue
         statement_end = semicolon.end()
         outside = body[:statement_start] + body[statement_end:]
         if re.search(rf"\b{re.escape(binding.group('name'))}\b", outside):
@@ -1525,7 +1539,7 @@ def _validate_problem_literal_outputs(model_file: Path, functions: list[cpp_decl
 
 def _validate_problem_dependency_dataflow(
     model_file: Path, functions: list[cpp_decls.Function], code: str, dep_spec_ids: list[str],
-    violations: list[str],
+    violations: list[str], call_bodies: dict[int, str] | None = None,
 ) -> None:
     """Every dependency call of a function must let what that call WRITES flow to one of the
     function's outputs (the inert-call / discarded-result defect) — PER CALL, where the Fortran
@@ -1569,7 +1583,11 @@ def _validate_problem_dependency_dataflow(
     (`_blank_dead_lambdas`, issue #506): an assignment in a lambda the function never names again
     feeds no closure. Code that names the dead text — `(void)dead;`, `if (false) { … }` — still
     does; the gate does not read control flow, the same bound as the Fortran binding's residue
-    (d)."""
+    (d). The dependency CALLS, and their actuals, are read from ``call_bodies`` — the bodies
+    with nothing blanked, keyed by `id()` of the function in ``functions`` — so a dependency
+    call parked in a dead lambda still yields candidates nothing consumes, and is refused as it
+    was before the blanking (round 1 of issue #506's review). Both bodies are one length, so the
+    positions stay comparable."""
     if not dep_spec_ids:
         return
     positions: dict[str, list[bool]] = {}
@@ -1599,6 +1617,7 @@ def _validate_problem_dependency_dataflow(
     # only ever widened, so two functions of one name (overloads, two namespaces) share the union
     # and the iteration ends (round 2: an alternating pair never converged).
     by_name = {fn.name: fn for fn in functions}
+    call_body_of = {id(fn): (call_bodies or {}).get(id(fn), fn.body) for fn in functions}
     storage_of = {id(fn): _storage_names_of(fn) for fn in functions}
     excluded_of = {id(fn): _integer_names(fn) | constants | function_names for fn in functions}
     records_of = {id(fn): (_value_records(fn.body, summaries, returns)
@@ -1616,8 +1635,8 @@ def _validate_problem_dependency_dataflow(
         # fluxes were discarded).
         calls = [(call.start(), call.end() - 1, positions.get(call.group("name")),
                   array_outputs.get(call.group("name"), set()))
-                 for call in call_re.finditer(fn.body)]
-        for call in _CALL_RE.finditer(fn.body):
+                 for call in call_re.finditer(call_body_of[id(fn)])]
+        for call in _CALL_RE.finditer(call_body_of[id(fn)]):
             callee = by_name.get(call.group("name"))
             if callee is None or callee.name == fn.name or not reached.get(callee.name):
                 continue
@@ -1632,7 +1651,7 @@ def _validate_problem_dependency_dataflow(
                arrays: set[int]) -> list[set[str]]:
         """Per written actual of the call whose `(` is at `open_at`, the names it hands over."""
         written: list[str] = []
-        for index, arg in enumerate(_call_arguments(fn.body, open_at)):
+        for index, arg in enumerate(_call_arguments(call_body_of[id(fn)], open_at)):
             if out_at is not None and not (index < len(out_at) and out_at[index]):
                 continue
             if arrays and index not in arrays:
@@ -1756,10 +1775,13 @@ def run_problem_model_gates(
     # A named lambda the body never uses again is blanked out of every function body before any
     # gate (or `_function_summaries`) reads it (issue #506); `code` below, the file-wide view the
     # constant set is read from, is not touched.
-    functions = [dataclasses.replace(fn, body=_blank_dead_lambdas(fn.body))
-                 for fn in decls.functions if fn.defined]
+    # The dataflow gate reads its dependency CALLS from the unblanked bodies (`call_bodies`).
+    defined = [fn for fn in decls.functions if fn.defined]
+    functions = [dataclasses.replace(fn, body=_blank_dead_lambdas(fn.body)) for fn in defined]
+    call_bodies = {id(blanked): fn.body for blanked, fn in zip(functions, defined)}
     code = cpp_lines.strip_preprocessor(cpp_lines.mask(text))
     _validate_problem_literal_outputs(model_file, functions, violations)
-    _validate_problem_dependency_dataflow(model_file, functions, code, dep_spec_ids, violations)
+    _validate_problem_dependency_dataflow(model_file, functions, code, dep_spec_ids, violations,
+                                          call_bodies)
     _validate_problem_metric_only_scalar_kernel(multidim_spec_id, model_file, functions,
                                                 violations)
