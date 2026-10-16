@@ -384,6 +384,105 @@ class InterfaceSpanTests(unittest.TestCase):
         self.assertEqual(["defined"], [p.name for p in tree.procedures])
 
 
+class PrototypeTests(unittest.TestCase):
+    """`StructureTree.prototypes` and `module_level_prototypes` (issue #504): every procedure
+    DECLARED in an interface block, with the scope the walk found it in, and the ones of the
+    publishing module's own specification part, which the §5.1 `interfaces` comparison reads."""
+
+    _SOURCE = textwrap.dedent("""
+        module helper
+          abstract interface
+            subroutine F(a)
+              integer, intent(in) :: a
+            end subroutine F
+          end interface
+        end module helper
+        module m
+          implicit none
+          interface g
+            module procedure impl_a
+            procedure impl_b
+          end interface g
+          abstract interface
+            real(dp) function f(x)
+              import :: dp
+              implicit none
+              integer, intent(in) :: x
+            end function f
+            module subroutine s(n)
+              integer, intent(in) :: n
+              interface
+                subroutine nested(k)
+                end subroutine nested
+              end interface
+            end subroutine s
+          end interface
+        contains
+          subroutine pub(cb)
+            interface
+              function f(x) result(y)
+                real :: x, y
+              end function f
+            end interface
+            procedure(f) :: cb
+          end subroutine pub
+        end module m
+        submodule (m) impl
+          interface
+            subroutine in_sub(k)
+            end subroutine in_sub
+          end interface
+        end submodule impl
+    """)
+
+    def test_every_prototype_is_recorded_with_its_scope_and_none_is_a_definition(self) -> None:
+        tree = fs.parse_view(view_of(self._SOURCE))
+        got = [(p.procedure.name, p.procedure.kind, p.unit_kind, p.unit, p.in_procedure)
+               for p in tree.prototypes]
+        self.assertEqual(got, [
+            ("f", "subroutine", "module", "helper", False),
+            ("f", "function", "module", "m", False),
+            ("s", "subroutine", "module", "m", False),
+            ("nested", "subroutine", "module", "m", True),
+            ("f", "function", "module", "m", True),
+            ("in_sub", "subroutine", "submodule", "impl", False),
+        ])
+        # The generic interface's listing is not a prototype, and no prototype is a definition.
+        names = {p.procedure.name for p in tree.prototypes}
+        self.assertFalse({"impl_a", "impl_b", "g"} & names)
+        self.assertEqual(["pub"], [p.name for p in tree.procedures])
+
+    def test_module_level_prototypes_reads_the_publishing_module_alone(self) -> None:
+        from tools.backends.language.fortran import source as fortran_source
+        reading = fortran_source.module_level_prototypes(self._SOURCE.lower(), "m")
+        self.assertEqual(set(reading.definitions), {"f", "s"})
+        f = reading.definitions["f"]
+        # The header the typed form carries is read whole; `import` / `implicit none` are not
+        # declarations.
+        self.assertEqual(f.header, "real(dp) function f(x)")
+        self.assertEqual(f.declarations, (("variable_declaration", "integer, intent(in) :: x"),))
+        self.assertEqual(reading.definitions["s"].header, "module subroutine s(n)")
+        # The nested interface block inside the prototype `s` is that prototype's, not `s`'s
+        # declaration.
+        self.assertEqual(reading.definitions["s"].declarations,
+                         (("variable_declaration", "integer, intent(in) :: n"),))
+        # Every prototype of each name, any scope, in file order — case folded (`F` / `f`).
+        view = view_of(self._SOURCE)
+        headers = view.split("\n")
+        self.assertEqual(set(reading.lines), {"f", "s", "nested", "in_sub"})
+        self.assertEqual(len(reading.lines["f"]), 3)
+        self.assertEqual([headers[line - 1].strip() for line in reading.lines["f"]],
+                         ["subroutine f(a)", "real(dp) function f(x)",
+                          "function f(x) result(y)"])
+        # A submodule is not the module a consumer `use`s, even when its name is asked for.
+        self.assertEqual(
+            set(fortran_source.module_level_prototypes(self._SOURCE.lower(),
+                                                       "impl").definitions), set())
+        self.assertEqual(
+            set(fortran_source.module_level_prototypes(self._SOURCE.lower(),
+                                                       "helper").definitions), {"f"})
+
+
 class ErrorReportingTests(unittest.TestCase):
     def test_an_unresolvable_structure_is_reported_with_a_locatable_line(self) -> None:
         # The message a leaf reads names the statement, so the line has to be the VIEW's line —
