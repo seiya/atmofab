@@ -150,7 +150,10 @@ Bitwise agreement is not required. Agreement is judged by the following properti
 - Conservation-law drift is within tolerance
 - Constraints (non-negativity, excessive overshoot) are within tolerance
 - The error against the analytic solution or reference solution is within tolerance
-- The error improves with `refinement`
+- The error improves with `refinement`, judged in three norms against the analytic solution or a `restricted reference` (`docs/TESTS.md` §Refinement judgment)
+- A `symmetry pair` agrees to round-off (`docs/TESTS.md` §Symmetry pairs)
+- **restricted reference**: The finest level of a `refinement` family, restricted to each coarser grid by the conservative block mean over the cells it covers (grammar function `coarsen`); the reference of a refinement judgment where the spec gives no analytic solution.
+- **symmetry pair**: A base case and a transformed case (translation, axis exchange, or mirror, with every odd parameter reversed) whose final states agree to round-off once the transformation is applied to the base's state (`roll`, `transpose`, `flip`). The transformed case runs the kernel's transformed code path; the `Controlled Spec` forbids mapping it back to the base orientation.
 - Future: statistical, spectral, and ensemble metrics
 
 ## 5. Algorithm Classes

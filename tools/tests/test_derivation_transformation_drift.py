@@ -667,6 +667,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # for the ABSENCE of a listed prototype (a spec contradicting it is still a fail). Round 3:
     # the scope paragraph counts V4c-iii among the items with no deterministic backstop (four).
     "compile-docs-15": "59442f590423e239156bd66efa011c18f76425b9cec7e77a72ce1250fadc2832",
+    # compile-docs-16 (issue #513): the grammar block's function lines name `transpose`, `flip`
+    # and `coarsen` (grammar 5). A bump: a leaf reading it may author a predicate the previous
+    # grammar refused.
+    "compile-docs-16": "5a19cbd45d4cc1c9a4cf1376a92bbd7245571c2fed0f8e9934f43db88379897b",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1488,6 +1492,11 @@ PINNED_VERDICT: dict[str, str] = {
     # Round 2: `-(-X)` collapses to `X` before the comparison, and the refusal message names
     # the negated-add form.
     "verdict-9": "954dd3143c47cd945f7e48bbac23f859cd0257606daa226c09a2a084bae7a96b",
+    # verdict-10 (issue #513): grammar 5 — `transpose(a)`, `flip(a, k)` and `coarsen(a, f)` join
+    # the function table (a symmetry pair reads its base through the axis exchange or a mirror;
+    # a refinement family restricts its finest level by the block mean), and every record
+    # carries `grammar_version: 5`. A bump, as verdict-7 was for grammar 4.
+    "verdict-10": "8369473f991a6a2e9fa792b110a7fb76e4bf9bbf8a060a4d1d8987cb059f2c4f",
 }
 
 
