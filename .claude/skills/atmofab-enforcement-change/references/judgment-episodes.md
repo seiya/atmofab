@@ -483,6 +483,39 @@ self-test input, name who authors that input; if it is the leaf being caught, th
 live where that leaf cannot write (the IR, host-rendered code, the host), and each target's type
 system is a separate execution (a fixed-width type re-pads, a dynamic string does not).
 
+## Rule 1-d: "no rule can read X" checked against X, not against the readers (issue #501 / PR #502, 2026-10-16)
+
+Issue #501: `lines.mask_code_lookalikes` blanked every quoted span, so a BOZ constant
+(`o'755'`) reached tree-sitter-fortran as `o'   '`, an ERROR, and every Fortran structure gate
+refused five legal `Generate.gate` attempts. The plan (D1) made the mask copy a BOZ's text
+through, and justified it in one sentence: the contents are hex digits, which no
+keyword-structure rule can read as a statement and which cannot collide with a `<spec>__<op>`
+name. It listed every consumer of the view — the three `problem` gates, the checks-reach gate,
+the §5.1 gate, the renderer — and measured the change against the corpus (only the five real
+BOZ files moved) and against the structure differential (exactly the expected lines). The two
+round-1 reviewers found test gaps and record errors, and no fail-open in the code as written.
+
+**What no run touched.** The checks-reach gate's walk follows every `IDENTIFIER_PATTERN` match
+in a procedure body that names a procedure the file defines. `a`-`f` are identifier characters
+and so is the prefix letter, so `k = int(z'dead')` in `case_run` was an edge to an orphan
+`subroutine dead` calling the operation, and the gate passed a `case_run` that never reaches
+the model; `z'1'` with a helper named `z` did the same through the prefix letter, which the
+plan's sentence did not even mention. At origin/main every one of these was a structure
+refusal. The Codex native review found it in round 2; the round-2 blank-slate reviewer found
+the same class in two more readers (`z'd'` counted as a read of `d` by the dependency-dataflow
+gate, `data j / z'ab' /` giving `declared_names` a phantom `ab`).
+
+**Why 1-d as written did not fire.** The plan executed its premises — the corpus delta, the
+differential, the five sources — and every execution was of the mask or of the parser. The
+D1 sentence was about the READERS, and it was written as a property of the input ("they are
+hex digits"), which is the form that never sends you to the readers. The corpus could not
+show it either: the only real BOZ was `o'755'`, whose digits spell nothing.
+
+**Fix:** the mask writes the whole BOZ — letter, quotes, digits — as `0` of its length, an
+integer literal that parses where the BOZ did and names nothing; a reach-gate row pins each
+phantom edge (`ChecksReachGateTests.test_a_boz_literal_names_no_procedure_for_the_walk`), red
+with the keep-text mask.
+
 ## Section 4: a whole-function mock hid a missing argument (issue #284 PR-2 / PR #286, 2026-09-24)
 
 PR-2 made `_closure_node_validated_in_own_pipeline(repo_root, token)` take a third argument,

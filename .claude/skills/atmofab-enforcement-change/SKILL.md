@@ -186,6 +186,20 @@ to **one unbilled observation**).
   each target's type system separately** (a fixed-width string re-pads an unpadded supply, a
   dynamic one does not). Surface 11 asks this of a gate's switch; this is the same question asked
   of its stimulus (`references/judgment-episodes.md` §Rule 1-d, issue #437)
+- **A premise of the form "no rule can read X" is a claim about every READER, and it is
+  executed by driving X through each one.** It reads as a fact about X — what X's characters
+  are — so it gets checked against X and never against the readers. Issue #501's plan made a
+  mask KEEP a BOZ literal's text instead of blanking it, on "its contents are hex digits no
+  structure rule can read as code"; the plan enumerated every reader of the masked view and
+  drove none of them with the kept text. The checks-reach gate collects identifiers with a
+  regex over the view, and `a`-`f` plus the prefix letter are identifiers: `int(z'dead')` beside
+  an orphan `subroutine dead` that calls the operation cleared the gate (Codex, round 2; the
+  design was reversed to writing the literal as zeros). **Rule: when a change makes text LIVE
+  in a view that used to hide it, list the readers of that view that collect NAMES (identifier
+  regexes, walks, `declared_names`), and drive each with the newly live text and a procedure
+  or variable named after what it spells.** A reader that only searches for keywords is the one
+  you will check first, and the one that cannot show it (`references/judgment-episodes.md`
+  §Rule 1-d, issue #501)
 - When a premise collapses, **keep the measurements**. The plan dies; the measured facts stay
 
 **1-e. "Out of scope because the leaf gains nothing" is a classification rule 1 does not govern.**
