@@ -582,7 +582,7 @@ class PureCompileProfileContextTests(_Fixture):
         the context, because nothing holds it. A round-1 security axis relaxed the conjunction to
         `not (reuse and findings)` and every test file naming `pure_context` stayed green (nine,
         enumerated with `git ls-files`, measured at 1ad8e3b4^) — so the term that keeps a
-        cold repair from shipping an empty `<pure_context>` was pinned by nothing.
+        cold repair from shipping without its context documents was pinned by nothing.
 
         Driven through the validator on all three shapes, so the exemption is measured at the
         frame that grants it rather than asserted about.

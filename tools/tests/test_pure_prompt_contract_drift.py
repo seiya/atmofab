@@ -20,7 +20,7 @@ historical pin. The assertions catch three drift directions:
 
 The pin set is deliberately NARROW (a churn magnet if widened): the five template files, the
 fixed `PURE_SYSTEM_PROMPT` (the `--system-prompt` string, a documented version-bump trigger in
-`pure_leaf.py`), the cold-repair static-paragraph prefix list, the checks-ABI constants the
+`pure_leaf.py`), the checks-ABI constants the
 templates distill verbatim (`CHECKS_PUBLIC_NAMES` and the two character widths), and — since
 issue #142 — the §1-4 slice of `docs/workflow/CHECKS_MODULE_CONTRACT.md` and — since issue #143 —
 the `#### Severity of a finding` slice of `docs/workflow/phases/phase_02_generate.md`, both of

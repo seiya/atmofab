@@ -1680,7 +1680,7 @@ class PureVerifyOutputContractTests(unittest.TestCase):
         self.assertEqual(texts[2], texts[0])
 
     def test_a_cold_verify_repair_carries_the_rule_and_a_warm_one_does_not(self) -> None:
-        """The lift is the source; the cold repair TURN is the delivery. A round-2 review
+        """The composed template is the source; the cold repair TURN is the delivery. A round-2 review
         mutation that dropped the output contract from the cold repair of the verdict pairs
         alone left every suite green, so the rendered repair prompt is read here for each
         verify request."""
