@@ -898,7 +898,7 @@ PINNED_RENDER: dict[str, str] = {
     # render-9 (issue #437): the rendered cuda_cpp runner drops the trailing blanks of each
     # status `checks_compute` returns before it fills the harness check record, so a padded
     # "na  " never reaches the harness writer from a physics node.
-    "render-9": "45005c33ed64883df3f41b27a0520ba530d87783a95ed856399a0d0644005719",
+    "render-9": "cbc3033128b8cd86d58bbbcb0d0997cbb4df99c71b043b16294ca45be1d34dd9",
     # Re-pinned (issue #444), behaviour-preserving: two comments moved: `parallel/mpi/wrapper.py`
     # and `language/fortran/bundle.py` cite `tools/build_runtime.py` instead of
     # `mcp_servers/build_runtime_server.py`; nothing rendered moved. (Measured by diffing the tuple

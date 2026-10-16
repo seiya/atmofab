@@ -1416,6 +1416,10 @@ def generated_source_violations(
     # Every procedure DEFINITION in the file, any scope, by lowercased name: how many, and the
     # names of the ones the publishing module carries at module level (`module_level_procedures`).
     defined_counts: dict[str, int] = {}
+    # The structure reader's view, one statement per line, and for each procedure name the view
+    # lines its own procedure nodes span (header to END, prototypes and definitions alike).
+    structure_view_lines: list[str] | None = None
+    own_lines: dict[str, set[int]] = {}
     module_level_names: frozenset[str] = frozenset()
     unit_absent: str | None = None
     # Every symbol kind §5.1 pins is read from the tree, prototypes included. The False branch is
@@ -1456,6 +1460,12 @@ def generated_source_violations(
             for procedure in tree.procedures:
                 lname = procedure.name.strip().lower()
                 defined_counts[lname] = defined_counts.get(lname, 0) + 1
+            structure_view_lines = view.split("\n")
+            for procedure in (*tree.procedures, *(p.procedure for p in tree.prototypes)):
+                first = text_between(0, procedure.header_start).count("\n")
+                last = text_between(0, procedure.body_end).count("\n")
+                own_lines.setdefault(procedure.name.strip().lower(), set()).update(
+                    range(first, last + 1))
         # `FortranStructureUnavailableError` is deliberately NOT caught: it is the OPERATOR's
         # failure (an uninstalled package), no edit to this source can clear it, and `main`
         # answers it with a dedicated exit code. Same rule as `source.run_problem_model_gates`.
@@ -1774,23 +1784,31 @@ def generated_source_violations(
             break
 
     # A pinned PROTOTYPE name bound by any statement other than an interface header (issue #504
-    # review): a `procedure(g) :: f` or `procedure(g), pointer :: f` declaration, an `external`
-    # one, or a `use aux, only: f => g` import, local to a published procedure, makes that
-    # procedure's `procedure(f)` dummies the other interface, while the module still declares
-    # the pinned `f` for the prototype comparison to find. Each measured 0 violations at
-    # 4d15c237 and on origin/main 3ff3f789, `gfortran -fsyntax-only -std=f2008` rc 0, and a
-    # §5.1-conforming consumer then fails with "Interface mismatch in dummy procedure 'cb'". The
+    # review): a `procedure(g) :: f` or `procedure(g), pointer :: f` declaration local to a
+    # published procedure makes that procedure's `procedure(f)` dummies the other interface,
+    # while the module still declares the pinned `f` for the prototype comparison to find —
+    # measured 0 violations at 4d15c237 and on origin/main 3ff3f789, `gfortran -fsyntax-only
+    # -std=f2008` rc 0, and a §5.1-conforming consumer then fails with "Interface mismatch in
+    # dummy procedure 'cb'". A `use aux, only: f => g` import does the same (0 on origin/main;
+    # 4d15c237 refused it with an arm this rule replaces); an `external` declaration of `f` is
+    # refused here too, though gfortran already refuses it beside `procedure(f)`. The
     # structure reader's count sees interface bodies and procedure definitions; a binding is
-    # asked of the declared-names reader instead, per statement, as the module-parameter count
-    # below asks it. A header is not a binding to that reader, so the prototype itself is not
-    # counted; an import from the publishing module (a same-file helper module taking the
-    # interface) binds the pinned prototype and is not refused.
-    proto_view = fortran_source.joined_masked_view(combined.lower()).split("\n")
-    for name in sorted(proto_stanzas):
+    # asked of the declared-names reader instead, per statement of the structure reader's view,
+    # as the module-parameter count below asks it. A procedure node NAMED like the prototype is
+    # skipped whole, header to END: the prototype's own header and an implicit result's
+    # declaration (`function f(x)` + `real(dp) :: f`, which the §5.1 renderer emits when the
+    # result is named like the function) are the prototype, not a rebinding of it, and that
+    # reader counts some typed headers (`integer function f(x)`) as a binding of `f`; a second
+    # prototype or a definition of the name is refused above. An import from the publishing
+    # module (a same-file helper module taking the interface) binds the pinned prototype and is
+    # not refused. Skipped, like every other arm, when the source has no single resolvable
+    # publisher (refused above).
+    for name in sorted(proto_stanzas) if structure_view_lines is not None else ():
         lname = name.lower()
         bindings = []
-        for statement in proto_view:
-            if not statement.strip() or lname not in set().union(
+        skip = own_lines.get(lname, set())
+        for index, statement in enumerate(structure_view_lines):
+            if index in skip or not statement.strip() or lname not in set().union(
                     *fortran_source.declared_names(statement)):
                 continue
             use_match = _USE_ONLY_RE.match(fortran_lines.normalize_fortran_line(statement))

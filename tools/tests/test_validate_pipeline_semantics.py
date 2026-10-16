@@ -29177,7 +29177,9 @@ class PrototypeScopeGateTests(unittest.TestCase):
                 ("pointer", "    procedure(hx_g), pointer :: hx_f => null()\n",
                  "procedure(hx_g), pointer :: hx_f => null()"),
                 ("labelled import", "10  use hx_aux, only: hx_f => hx_g\n",
-                 "use hx_aux, only: hx_f => hx_g")):
+                 "use hx_aux, only: hx_f => hx_g"),
+                ("continued pointer", "    procedure(hx_g), &\n      pointer :: hx_f => null()\n",
+                 "procedure(hx_g),  pointer :: hx_f => null()")):  # the join keeps the blanks
             with self.subTest(label):
                 source = self._model(self._PINNED, local=local,
                                      ahead=aux if "use" in local else "").replace(
@@ -29196,6 +29198,35 @@ class PrototypeScopeGateTests(unittest.TestCase):
                                                    "public :: dp, hx_f, hx__advance", 1)
         self.assertEqual(self._generate(public + helper), [])
 
+    def test_an_implicit_result_prototype_is_not_a_binding_of_its_own_name(self) -> None:
+        # Round 3 of the review: a §5.1 function prototype whose result is named like the function
+        # renders as `function hx_f(x)` + `real(dp) :: hx_f`. The binding rule read that result
+        # declaration as a rebinding of `hx_f`, so the exact pinned form was refused and no source
+        # could pass (21ee9ab7). The prototype's own span is skipped now.
+        section = (
+            "integer, parameter :: dp = real64\nabstract interface\n  function hx_f(x)\n"
+            "    real(dp), intent(in) :: x\n    real(dp) :: hx_f\n  end function hx_f\n"
+            "end interface\nsubroutine hx__advance(cb, v)\n  procedure(hx_f) :: cb\n"
+            "  real(dp), intent(out) :: v\nend subroutine hx__advance\n")
+        from tools.backends.language.fortran.signatures import render_interface_to_fortran
+        struct = parse_signatures_from_fortran(section)
+        self.assertEqual(struct["interfaces"][0]["result"]["name"], "hx_f")
+        self.assertIn("function hx_f(x)\n", render_interface_to_fortran(struct["interfaces"][0]))
+
+        class Implicit(PrototypeScopeGateTests):
+            _SECTION_51 = _structured_section51_from_fortran(section)
+            _STRUCT = struct
+
+        gate = Implicit("test_the_faithful_source_passes")
+        proto = ("function hx_f(x)\n{i}  import :: dp\n{i}  implicit none\n"
+                 "{i}  real(dp), intent(in) :: x\n{i}  real(dp) :: hx_f\n{i}end function hx_f\n")
+        self.assertEqual(gate._generate(gate._model(proto)), [])
+        # The skip is the prototype's own span: the same declaration in the published procedure
+        # is still a binding.
+        v = gate._generate(gate._model(proto, local="    real(dp) :: hx_f\n"))
+        self.assertTrue(any("binds the §5.1 prototype name `hx_f` outside its interface block — "
+                            "`real(dp) :: hx_f`" in x for x in v), v)
+
     def test_a_misnamed_module_is_told_as_the_absent_publisher(self) -> None:
         v = self._generate(self._model(self._PINNED, name="hx"))
         self.assertTrue(v)
@@ -29210,7 +29241,13 @@ class PrototypeScopeGateTests(unittest.TestCase):
         self.assertTrue(any("could not resolve this source" in x and "each §5.1 prototype must "
                             "be read from the one interface block that declares it" in x
                             for x in v), v)
-        self.assertFalse(any("prototype 'hx_f'" in x for x in v), v)
+        self.assertFalse(any("prototype 'hx_f'" in x or "prototype name `hx_f`" in x
+                             for x in v), v)
+        # ...including the binding rule, which reads the same structure view.
+        bound = source.replace("    procedure(hx_f) :: cb\n",
+                               "    procedure(hx_g) :: hx_f\n    procedure(hx_f) :: cb\n", 1)
+        self.assertNotEqual(bound, source)
+        self.assertFalse(any("prototype name `hx_f`" in x for x in self._generate(bound)))
 
 
 class DeviceKernelExecutionGateTests(unittest.TestCase):
