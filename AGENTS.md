@@ -25,6 +25,13 @@ The assumptions every design, review, and triage decision in this repository res
 - **A record that resides in `~/` — an agent's automatic memory, a scratch plan file, a session transcript — is a personal working aid, not a canonical record.** A fact that is permanently needed is not recorded until it has landed in this repository or on GitHub; land it before closing the work.
 - `docs/DEVELOPMENT.md` §Record placement is canonical for which destination each kind of record takes. Do not restate the map here.
 
+## Pull request rules
+The reason for these rules: CI on GitHub consumes the operator's budget on every run, and a push to a pull request's branch, or opening a pull request, starts one. A run should belong to a state of the change worth paying for, which is the state after review.
+
+- **Push and open the pull request after every review round of the change has finished.** At that point both need no further permission.
+- **Before every review round has finished, do not push and do not open a pull request without the user's permission** — to any branch, a pull request's branch included. Each push needs its own permission; permission for one push does not extend to the next. An approved plan or an instruction to implement is not that permission. The case that may justify asking is CI that must run on the change before review ends (CI runs only for a pull request or a push to `main`).
+- **Merging is not covered by either rule**: a merge needs the user's explicit instruction.
+
 ## Backend boundary rules
 - A concrete technology is chosen per **`axis`**, and the knowledge each choice implies lives in exactly one **`backend`** package, `tools/backends/<axis>/<backend_id>/`, registered in `tools/backends/registry.py`. `docs/BACKEND_BOUNDARY.md` is canonical for the rule, the placement table (code / documents / prompt templates / `SKILL`), and the procedure for adding a `backend` or an `axis`.
 - The **`neutral core`** — every other module, template, `SKILL`, and document — may name an `axis` value as an opaque token. It must not contain a file extension, keyword, statement grammar, compiler argument, lint rule id, directive spelling, control-file syntax, symbol-naming convention, or diagnostic format that the value implies.
