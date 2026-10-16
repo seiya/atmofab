@@ -231,8 +231,8 @@ io_contract:
   #   operands    a scalar pairs with anything; two arrays pair only at equal rank with every extent equal or 1 on
   #               one side (a [nx] array never pairs with a [nx, ny] one, and the 32×32 state of one case never
   #               pairs with the 64×64 state of another — a cross-case comparison reduces each case to a scalar
-  #               first, or brings the other case's state to this one's shape: roll it, transpose or flip it (a
-  #               symmetry pair), or coarsen a finer case's state by the extent ratio). A coordinate carries the state's shape, so a field
+  #               first, or brings the two states to one shape: roll, transpose or flip the base's (a symmetry pair),
+  #               or coarsen the finer of the two by the extent ratio). A coordinate carries the state's shape, so a field
   #               built from one reduces over every cell; a reduction over a field with an extent-1 axis (a
   #               coordinate the host could not expand, because the captured arrays of the state's rank disagree
   #               on shape — or a state with an axis of extent 1) is refused until the field is paired with a state array
