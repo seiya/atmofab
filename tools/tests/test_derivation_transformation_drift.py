@@ -898,7 +898,7 @@ PINNED_RENDER: dict[str, str] = {
     # render-9 (issue #437): the rendered cuda_cpp runner drops the trailing blanks of each
     # status `checks_compute` returns before it fills the harness check record, so a padded
     # "na  " never reaches the harness writer from a physics node.
-    "render-9": "9eb1dcaf07f462a7016968eca34aa98619bb41788157f659a25a8a0bde0fae09",
+    "render-9": "67505bc62a6c6ad98dff32089b6dee2682ea7648c6cbbb1f3aea1acdd5efa24a",
     # Re-pinned (issue #444), behaviour-preserving: two comments moved: `parallel/mpi/wrapper.py`
     # and `language/fortran/bundle.py` cite `tools/build_runtime.py` instead of
     # `mcp_servers/build_runtime_server.py`; nothing rendered moved. (Measured by diffing the tuple
@@ -933,6 +933,14 @@ PINNED_RENDER: dict[str, str] = {
     # `render_tuple()` against origin/main 3502ee67's: those four rows and no other.) The digest
     # `render-9` shipped with at 3502ee67:
     "render-9@3502ee67": "787bc235e2831b2311e8e34b2844adf34dc91b0d93c79eb0cb079726abaaadb0",
+    # Re-pinned (issue #501), and NOT bumped, on this reasoning: `lines.py`'s mask keeps a BOZ
+    # literal's contents where it blanked them, so a source carrying one is read rather than
+    # refused. No certified source carries a BOZ, a procedure header cannot, and a refused
+    # Generate has no stored output (`select_eligible` drops it), so no rendered byte with a
+    # stored key moves; `signatures.py` gains a comment. (Measured by diffing `render_tuple()`
+    # against origin/main 0b070284's: those two rows and no other.) The digest `render-9`
+    # shipped with at 0b070284:
+    "render-9@0b070284": "9eb1dcaf07f462a7016968eca34aa98619bb41788157f659a25a8a0bde0fae09",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:

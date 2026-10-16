@@ -433,6 +433,57 @@ class SplitTopLevelCommasTests(unittest.TestCase):
         self.assertEqual(mask_code_lookalikes("x = 'rate &\n&more' ! note & tail"),
                          "x = '     &\n&    ' !            ")
 
+    def test_mask_keeps_a_boz_literal_whole(self) -> None:
+        # A BOZ constant is not a character literal: blanking `o'755'` to `o'   '` made
+        # tree-sitter-fortran report an ERROR the raw text does not have, and every gate reading
+        # the structure refused the source (issue #501). Its contents survive the mask, a
+        # comment after it is still blanked, and its closing quote still closes it.
+        texts = []
+        for lit in ("o'755'", "z'ff'", "b'101'", "O'17'", 'Z"FF"', 'z"ff"'):
+            for text in (f"  i = int({lit}, 4)", f"  data j / {lit} /"):
+                self.assertEqual(mask_code_lookalikes(text), text)
+                texts.append(text)
+        cases = {
+            "i = int(o'755', 4) ! o'1'": "i = int(o'755', 4) !     ",
+            "x = o'7&\n&55'": "x = o'7&\n&55'",
+            "x = o'7!' ! end subroutine": "x = o'7!' !               ",
+            # A BOZ at the very start of the text: the test must not wrap round to its end.
+            "z'f'+k": "z'f'+k",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(mask_code_lookalikes(text), expected, text)
+            texts.append(text)
+        # Idempotence: `_split_top_level` decides "already masked" by `mask(text) == text`.
+        for text in texts:
+            once = mask_code_lookalikes(text)
+            self.assertEqual(mask_code_lookalikes(once), once, text)
+
+    def test_mask_still_blanks_a_string_whose_quote_follows_b_o_or_z(self) -> None:
+        # The one way the BOZ exception could open a hole is reading a STRING as a BOZ and
+        # leaving its contents live. Each row puts a `b` / `o` / `z` as near a string's opening
+        # quote as legal source allows: after a separator, ending a name, before a closing
+        # quote, inside a doubled-quote escape, ending a kind prefix, after `//`.
+        cases = {
+            "call f(b, 'x')": "call f(b, ' ')",
+            "s = 'z'": "s = ' '",
+            "x = foo//'abc'": "x = foo//'   '",
+            "s = 'ab'": "s = '  '",
+            "k = c_char_'x'": "k = c_char_' '",
+            "s = 'it''s b'": "s = '  ''   '",
+            "s = 'o''z'": "s = ' '' '",
+            "s = o//'x'": "s = o//' '",
+            "bob = 'x'": "bob = ' '",
+            "s = 'b'//'end'": "s = ' '//'   '",
+            # The name-character class, each member: a letter, a digit and `_` before the `b`.
+            "s = bo'end subroutine'": "s = bo'              '",
+            "s = x1b'end'": "s = x1b'   '",
+            "s = x_b'end'": "s = x_b'   '",
+            # A quote at the very start of the text: the look-behind must not wrap to its end.
+            "'end' // b": "'   ' // b",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(mask_code_lookalikes(text), expected, text)
+
     def test_separator_must_be_one_character_the_brackets_do_not_claim(self) -> None:
         # Raised, not asserted, so `python3 -O` cannot elide it: a two-character separator
         # (Fortran's `//`) matches nothing per-character and would return the input unsplit —
