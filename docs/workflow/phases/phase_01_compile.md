@@ -238,7 +238,8 @@ io_contract:
   #               on shape — or a state with an axis of extent 1) is refused until the field is paired with a state array
   #   errors      a non-finite intermediate (a division by zero, a literal `1e400` included), an unpaired operand
   #               extent, a capture file absent / ragged / non-numeric / non-finite / of the wrong rank, a variable the
-  #               case's capture does not hold, an `initial.<var>` of a node whose own runner writes no `initial/`
+  #               case's capture does not hold, a flip / transpose axis outside the rank or a coarsen factor that does
+  #               not divide (the gate checks ranks, not these values), an `initial.<var>` of a node whose own runner writes no `initial/`
   #               capture (a harness self-test: its predicates read `final.<var>` and `inputs.<path>`) — each is a
   #               STRUCTURAL failure of that predicate at Validate.execute (of a cross-target one: an unevaluable
   #               agreement); a comparand variable whose shape differs from this run's is a DISAGREEMENT, not structural

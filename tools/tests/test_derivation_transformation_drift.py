@@ -672,8 +672,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # grammar refused. Re-pinned in round 1 before shipping: `transpose(a, i, j)`, and the
     # operands line admits a cross-case state brought to this case's shape by `transpose` /
     # `flip` / `coarsen` (it had said only `roll`). Round 2: that line says the finer of the two
-    # states is coarsened (the carrier is the finest case, which coarsens its own).
-    "compile-docs-16": "0ee26a9a6ce60225ab5dd8940d4597e56a6c7d8365ffeb828f242484e6a24b9d",
+    # states is coarsened (the carrier is the finest case, which coarsens its own). Round 3: the
+    # errors line names an axis outside the rank and a non-dividing factor (values the gate does
+    # not check).
+    "compile-docs-16": "2189cbe5f154c9bfe02a6ef295716b020116705173ea5ccc3bf7937dcd6e7c63",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1500,8 +1502,10 @@ PINNED_VERDICT: dict[str, str] = {
     # a refinement family restricts its finest level by the block mean), and every record
     # carries `grammar_version: 5`. A bump, as verdict-7 was for grammar 4. Re-pinned in round 1
     # before shipping (the version is new on this branch): `transpose(a, i, j)` exchanges two
-    # axes alone, so a stacked `[ncomp, nx, ny]` state's axis exchange is writable.
-    "verdict-10": "b02dc336e5417211ba91a86d10c35bb1cd90a617e594f142d174cf8607cf44c7",
+    # axes alone, so a stacked `[ncomp, nx, ny]` state's axis exchange is writable. Round 3: the
+    # `_RANK_RULES` comment and the module docstring name transpose's axis range among the
+    # evaluation errors (comment / docstring only; no record's value moves).
+    "verdict-10": "565659840661d2cc65fef640ca9b86fd5446503a36a41f6e3038d0c621a8571d",
 }
 
 

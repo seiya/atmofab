@@ -92,9 +92,9 @@ operator or of an elementwise `min` / `max` must be a scalar and anything, or tw
 equal rank whose extents agree or are 1 on one side (a coordinate broadcasts against a state
 array; a `[nx]` array never silently pairs with a `[nx, ny]` one, and a 32×32 state never
 pairs with a 64×64 one). Any of these — and an unallocated, ragged, non-numeric,
-non-finite or wrong-rank snapshot array, a `roll` shift that is not an integer, a `flip` axis
-outside the array's rank, a `coarsen` factor that does not divide every extent, a case whose
-capture file is absent — raises `PrimaryEvidenceError`, which `evaluate_primary_predicates`
+non-finite or wrong-rank snapshot array, a `roll` shift that is not an integer, a `flip` or
+`transpose` axis outside the array's rank, a `coarsen` factor that does not divide every
+extent, a case whose capture file is absent — raises `PrimaryEvidenceError`, which `evaluate_primary_predicates`
 records on that predicate as a STRUCTURAL failure (the evidence could not be judged) and
 `verdict_evaluator.evaluate_verdict` folds into `structural_violation`. `evaluate` also
 converts every arithmetic exception Python or numpy can raise on admitted operands into that
@@ -1333,8 +1333,8 @@ def evaluate_primary_predicates(ir: dict[str, Any], run_dir: Path, *,
 #: of the arguments with more; ``elementwise``: the argument's rank; ``pairwise``: the two
 #: arguments' pairwise rank; ``roll``: the array's rank, with one scalar shift per axis;
 #: ``array_first``: the first argument's rank, which must not be 0, every other argument a
-#: scalar (`flip`'s axis range, `coarsen`'s divisibility and both integer checks stay
-#: evaluation errors: they need values).
+#: scalar (an axis range, `coarsen`'s divisibility and every integer check stay evaluation
+#: errors: they need values).
 _RANK_RULES: dict[str, str] = {
     "sum": "reduce", "mean": "reduce", "norm2": "reduce", "maxabs": "reduce",
     "min": "reduce_or_pairwise", "max": "reduce_or_pairwise",

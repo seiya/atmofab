@@ -21863,8 +21863,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # `transpose`, `flip`, `coarsen`): bumped 98400->98600; measured 98522 at the commit that
         # takes this bump. Round 1 (`transpose(a, i, j)`; the operands line admits a state brought
         # to this case's shape by `transpose` / `flip` / `coarsen`): bumped 98600->98800; measured
-        # 98784 at the commit that takes this bump.
-        "docs/workflow/phases/phase_01_compile.md": 98800,
+        # 98784 at the commit that takes this bump. Round 3 (the errors line names an axis outside
+        # the rank and a non-dividing factor): bumped 98800->99000; measured 98917 at the commit
+        # that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 99000,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
