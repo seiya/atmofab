@@ -173,7 +173,11 @@ value is one more output, whether or not its `return` names anything.
   `nullptr` / `NULL` before the call (`cudaFree(g_f); g_f = nullptr; cudaMalloc(&g_f, n);`, the
   growth of a kept buffer) is not an assignment statement for the "assigned before" clause;
   another spelling (`g_f = 0;`, `g_f = alloc(n);`) still is. The summaries and reach are keyed by
-  name and only widened, so two functions of one name share the union.
+  name and only widened, so two functions of one name share the union. A lambda bound to a
+  name the function never uses again (`auto dead = [&]() { out = fv; };` and nothing else
+  naming `dead`) counts for none of the three gates: its statement is blanked out of the
+  function before they read it (issue #506). A dead branch (`if (false) { … }`) is not read as
+  dead; the gates do not read control flow.
 - **Metric-only scalar kernel.** On a multi-dimensional `problem` node, a function with five or
   more outputs and neither an array parameter (`atmofab::View`, `atmofab::Array`, `std::vector`, a
   pointer) nor a loop (`for`, `while`, a `<<<` launch) is refused.
