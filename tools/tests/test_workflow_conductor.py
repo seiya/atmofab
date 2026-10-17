@@ -17786,8 +17786,11 @@ class DeterministicBuildTest(unittest.TestCase):
         from unittest import mock
 
         from tools.tests.target_fixtures import profile_with
+        # The certified grid is imposed, so the fake harness reports it and the certified row
+        # passes (an unimposed one leaves its perf record empty).
         target = profile_with(parallel={"backend": "mpi"},
                               execution={"threads_per_rank": 1, "ranks": 4,
+                                         "process_grid": [4, 1],
                                          "sweep": {"grids": [[2, 2]]}})
         real = wc.Conductor._author_quality_check
 
@@ -17811,6 +17814,9 @@ class DeterministicBuildTest(unittest.TestCase):
                 self.assertEqual(trial["status"], "fail")
                 self.assertEqual(trial["failure_category"], "quality_check_mismatch")
                 self.assertIn("shape grid_2x2", trial["failure_excerpt"])
+                self.assertNotIn("shape certified", trial["failure_excerpt"])
+                quality = json.loads((node_dir / "quality_check.json").read_text("utf-8"))
+                self.assertEqual([r["status"] for r in quality["shapes"]], ["pass", "fail"])
                 self.assertIn("the run failed" if name == "crash" else "launch_match",
                               trial["failure_excerpt"])
 
@@ -23050,6 +23056,24 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
                 self.assertEqual((status, doc["shapes"][1]["status"]), ("fail", "fail"))
                 self.assertTrue(any("could not be evaluated" in ln for ln in
                                     wc.Conductor._quality_check_failure_lines(self.node)))
+
+    def test_the_certified_shape_is_compared_with_the_reference_too(self) -> None:
+        """The certified run is a shape like any other: with no sweep at all (one shape), a
+        certified run whose check statuses or verdict differ from the serial reference's fails
+        the check, and the top-level `checks` say so — origin/main's comparison, kept."""
+        self.shapes = self.shapes[:1]
+        other = {"checks": {"c1": {"status": "fail"}},
+                 "verdict": {"overall": "fail", "failed_checks": ["c1"]}}
+        statuses = {"checks": {"c1": {"status": "xfail"}}, "verdict": self.diag["verdict"]}
+        verdict = {"checks": self.diag["checks"], "verdict": {"overall": "fail"}}
+        for name, diag in (("both", other), ("statuses", statuses), ("verdict", verdict)):
+            with self.subTest(name):
+                status, doc = self._author([{"shape": self.shapes[0],
+                                             "dir": self._run_dir(f"c_{name}", self.h, diag=diag),
+                                             "ok": True, "command_id": "R"}])
+                self.assertEqual(len(doc["shapes"]), 1)
+                self.assertEqual((status, doc["shapes"][0]["status"]), ("fail", "fail"))
+                self.assertFalse(all(doc["checks"].values()))
 
     def test_a_captured_extent_that_differs_disagrees(self) -> None:
         """A shape whose captured state has another extent than the reference's disagrees
