@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `test_profile_id`: `dynamics_advection_diffusion_time_update_1d_euler1_l0`
-- `test_profile_version`: `0.3.0`
+- `test_profile_version`: `0.4.0`
 - `status`: `draft`
 - `spec_ref.spec_kind`: `component`
 - `spec_ref.spec_id`: `dynamics_advection_diffusion_time_update_1d_euler1`
@@ -11,6 +11,8 @@
 
 ## 1. Test purpose
 This suite verifies the published `operation` `dynamics_advection_diffusion_time_update_1d_euler1__advance` at `L0`: the zero-tendency invariance, the single-step update-formula consistency, and the input guard for an invalid time step (`dt<=0`).
+
+The suite carries no symmetry pair (`docs/TESTS.md` §Symmetry pairs). The update admits the **mirror** (`u_n` and `L_flux` reversed together; a tendency is not a component along $x$, so no sign is reversed), the **translation** (both arrays shifted together), and, being linear, the **sign reversal** ($u^n \to -u^n$, $L \to -L$). Each cell's update reads only that cell's own values (Controlled Spec §3), so each of these maps the output by the same transformation for every conforming kernel, and `l0_single_step_formula_pass` pins every cell of the output on its fixed inputs: a kernel that a pair over those inputs separates from a conforming one deviates in that judgment too (measured with an independent reference of §3: a loop one cell short, leaving the setup sentinel in the last cell, deviates there by `1001.68` and a tendency read one cell shifted by `0.58`). The transformations judge nothing beyond the formula case, and a one-dimensional update has no axis exchange.
 
 ## 2. Input-defaulting rules
 - The normal case uses `nx>=1`, `dt>0`, and a finite `L_flux`.
@@ -25,6 +27,7 @@ This suite verifies the published `operation` `dynamics_advection_diffusion_time
 ## 5. Diagnostics contract
 - Require outputting `checks.zero_tendency_invariance`, `checks.formula_consistency`, and `checks.input_guard` in `diagnostics.json`.
 - When `guard_pass` is false, `u_np1` is undefined (`controlled_spec.md` §4): only `checks.input_guard` is evaluated, and every other check reports status `na` without reading `u_np1`.
+- The state of a case, captured after setup and after the run, consists of `u_n` and `L_flux` (the inputs of §2, written at setup), `u_np1` (`nx` values, the sentinel `-999` at setup), and `guard_pass`, a scalar recorded as a number because a state variable is real-valued: `-1` at setup, before the `operation` is called; `1` when the call returned true; `0` when it returned false. The setup value `-1` is distinct from both values the call can return, so a case whose `operation` was not called captures `-1`. Every `pass` judgment of §6 requires `guard_pass = 1` on the cases it names, and every `xfail` judgment requires `guard_pass = 0` on its cases; these are host-evaluated from the capture after the run (the refusal's observable consequence: an output array of a rejected input is not defined by the Controlled Spec §4, so the flag is the only state that distinguishes a rejection from an executed update). `checks.input_guard` is `pass` when `guard_pass = 1` and `fail` otherwise.
 - `cross_target_state_agreement` compares this target's run with every other target's certified variant of this node, case by case (`docs/TESTS.md` §Cross-target judgment): for one output `q` captured after the run and the same output `q_ref` of the same case in the other variant, it is `max|q - q_ref| / max(max|q|, max|q_ref|, 1)` over every element. The host evaluates it from the captured state, against each other variant separately; it is not a `diagnostics.json` field, and on a target with no other certified variant it holds vacuously.
 
 ## 6. Test definitions
