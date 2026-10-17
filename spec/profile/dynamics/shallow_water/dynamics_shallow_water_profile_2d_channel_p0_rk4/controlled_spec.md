@@ -26,7 +26,7 @@ The discretization constraints are the following.
 - reconstruction: `p0`
 - time integration: `RK4` (the tendency passed as a procedure argument; the time-update `component` evaluates it at the four stages)
 - boundary condition: `x` periodic mapping, `y` mirror ghost (`h` and `hu` even, `hv` odd)
-- Coriolis source: explicit, evaluated at each stage state, `f` supplied per interior row by the adopting `spec`
+- Coriolis source: explicit, evaluated at each stage state, `f` supplied per interior cell by the adopting `spec` (`dynamics_shallow_water_source_2d_coriolis` `0.2.0` takes an `nx` × `ny` field)
 
 ## 4. Fallback rules
 When the compatibility condition of a target `component` is not satisfied, it is an error, and automatic switching to an alternative `profile` is forbidden. The host resolver enforces this, and each shape is refused by its own name: a §1 compatibility range that matches no catalog version stops the run as `dependency_unresolvable` naming the `component`; an adopting `spec` whose own constraint on THIS `profile` matches no catalog version stops it as `profile_unresolvable`; and two adopted `profile` requiring incompatible ranges of one `component` stop it as `profile_component_conflict`. None degrades to a substitute.
