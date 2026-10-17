@@ -25829,7 +25829,7 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                "    sb_u_axis1 = 1\n  end subroutine\nend module\n")
 
     def _run(self, model: str | None = None, checks: str | None = None, *,
-             plan: object = None, node_key: str = "component/dep_base@0.1.0",
+             plan: object = None, node_key: str = "problem/dep_base@0.1.0",
              array: str = "u") -> list[str]:
         with tempfile.TemporaryDirectory() as t:
             repo_root = Path(t)
@@ -25866,6 +25866,50 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
 
     def test_a_distributed_node_through_the_harness_passes(self) -> None:
         self.assertEqual(self._run(), [])
+
+    def test_a_component_model_names_no_harness_operation(self) -> None:
+        """Issue #512: a consumer calls a component's operations on its own rank's block, so a
+        component distributes its cases in its checks module and its MODEL names no harness
+        operation (the closing run of PR-4a: two of three regenerated advdiff components
+        partitioned inside their operation, and the problem built on them was wrong on every
+        grid with p1 > 1). A problem's model may (its one operation is driven by its own
+        checks module only)."""
+        component = "component/dep_base@0.1.0"
+        checks = self._CHECKS.replace(
+            "    sb_u_axis1 = 1\n",
+            "    sb_u_axis1 = 1\n    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, "
+            ".true.)\n")
+        bare = ("module dep_base_model\ncontains\n  subroutine dep_base__step(u)\n"
+                "    real(8), intent(inout) :: u(:)\n    u = u\n  end subroutine\nend module\n")
+        self.assertEqual(self._run(model=bare, checks=checks, node_key=component), [])
+        for op in ("exchange_halo_r1(u, 1, 1, .true.)", "partition(n, 1, glo, ghi)",
+                   "grid_dims(p1, p2)"):
+            with self.subTest(op=op):
+                model = bare.replace("    u = u\n", f"    call harness_fortran_cpu_mpi__{op}\n")
+                v = self._run(model=model, checks=checks, node_key=component)
+                self.assertEqual(len(v), 1, v)
+                self.assertIn("dep_base_model.f90: a component's published operations", v[0])
+                self.assertIn(f"'harness_fortran_cpu_mpi__{op.split('(')[0]}'", v[0])
+                # ...and whatever the plan says.
+                self.assertEqual(len(self._run(model=model, checks=checks, node_key=component,
+                                               plan={"precision": {}, "parallelization": {
+                                                   "model": "none"}})), 1)
+                # A problem's model may.
+                self.assertEqual(self._run(model=model, checks=checks), [])
+        # A use list naming one, or a function reference, is a reference too; a string or a
+        # comment is not, and neither is a name that only starts the same way.
+        for line, refused in (
+                ("  use harness_fortran_cpu_mpi_model, only: harness_fortran_cpu_mpi__comm_size\n",
+                 True),
+                ("    n = harness_fortran_cpu_mpi__reduce_max(x)\n", True),
+                ("    ! harness_fortran_cpu_mpi__partition is the checks module's\n", False),
+                ("    msg = 'harness_fortran_cpu_mpi__partition'\n", False),
+                ("    x = my_harness_fortran_cpu_mpi__partition\n", False)):
+            with self.subTest(line=line):
+                model = bare.replace("    u = u\n", line) if not line.startswith("  use") \
+                    else bare.replace("contains", line.rstrip("\n") + "\ncontains")
+                v = self._run(model=model, checks=checks, node_key=component)
+                self.assertEqual(len(v), int(refused), v)
 
     def test_a_direct_use_of_the_library_is_refused_whatever_the_plan(self) -> None:
         declined = {"precision": {}, "state_residency": "host",

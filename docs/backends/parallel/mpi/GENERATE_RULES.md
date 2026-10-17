@@ -23,6 +23,13 @@ distributed harness under a backend with no launcher (`target_profile._process_m
   `problem` source calls the harness's distributed-state operations instead: the rank and grid
   queries, `__partition` and `__exchange_halo_r1` / `__exchange_halo_r2` along a grid dimension,
   and the four reductions.
+- A `component`'s published operations are called by every consumer on that consumer's own
+  rank's block, so they compute exactly what the spec says over the arrays they are handed and
+  name no harness operation; the component distributes its own cases in its checks module
+  (`case_setup` partitions and allocates the block, `case_run` exchanges the halo and calls the
+  unmodified operation). A `problem` drives its components the same way (issue #512 PR-4a's
+  closing run: components that partitioned inside their operations made the problem wrong on
+  every grid with `p1 > 1`).
 - The host-rendered runner starts and ends the runtime, gathers every partitioned bound array
   onto rank 0 at each capture point, sums the ranks' updated-cell counts, and calls the writers
   on rank 0 only. Which arrays are partitioned, and how, is the checks module's partition
@@ -35,7 +42,7 @@ distributed harness under a backend with no launcher (`target_profile._process_m
 
 | gate | refused | code |
 |---|---|---|
-| `Generate.gate` static check, the presence floor (`component` / `problem` only) | a model or checks source that reaches the library directly: a `use` of `mpi` / `mpi_f08`, an `include` of `mpif.h`, a call of or reference to a name that starts with `mpi_` — whatever the plan says | `tools/backends/parallel/mpi/directives.py` |
+| `Generate.gate` static check, the presence floor (`component` / `problem` only) | a model or checks source that reaches the library directly: a `use` of `mpi` / `mpi_f08`, an `include` of `mpif.h`, a call of or reference to a name that starts with `mpi_` — whatever the plan says; on a `component`, a MODEL source that names any harness operation, whatever the plan says (issue #512: consumers call a component's operations on their own block) | `tools/backends/parallel/mpi/directives.py` |
 | same, unless the plan's `parallelization` model explicitly names `none` or another model | a plan whose `state_residency` is not `distributed`; sources with no statement (or one-line logical `if`) calling the target harness's `<harness>__partition` or `<harness>__exchange_halo_r1` / `_r2` by that name (a leaf's own `<spec_id>__partition` is not one); a checks module that sets no bound array's `sb_<var>_axis1` / `sb_<var>_axis2` to anything but a literal `0` | same |
 | `Generate.gate` static check, the checks-source gate | a physics `use` of the harness module without `only:`, or naming a harness name other than the distributed-state operations for a physics source; a bound array's partition metadata left unpublished | `tools/validate_pipeline_semantics._validate_checks_source_files`, with the renderer's `physics_harness_uses` / `distributed_state_names` |
 | bundle acceptance | the same unpublished metadata, before anything is written; a `distributed` residency without `distributed_state@N` | `tools/codegen_bundle.pure_bundle_contract_violation` |

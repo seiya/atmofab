@@ -10,6 +10,11 @@ carries it):
 
 * the model and checks sources never reach the library directly — no `use` of its modules, no
   `include` of its header, no call of a procedure of its namespace — whatever the plan says;
+* on a `component` node the MODEL sources name no harness operation at all, whatever the plan
+  says (issue #512): a consumer calls a component's published operations on its own rank's
+  block, so an operation that partitions, exchanges, asks the grid or reduces inside itself
+  distributes that block a second time. The component distributes its own cases in its checks
+  module, around the unmodified operation, as a consumer does;
 * unless the bundle's `target_lowering_plan.parallelization` explicitly declines MPI, the plan
   declares `state_residency: distributed`, at least one source calls the harness's partition or
   halo exchange, and the checks module sets at least one bound array's partition axis along a
@@ -87,9 +92,10 @@ def _code_statements(text: str) -> list[tuple[str, str]]:
 class PresenceFloor:
     """What the floor asks of one (language, hardware class) pair: a whole-node judgment."""
 
-    #: `node_violations(model_texts=, checks_texts=, plan=, bound_arrays=, harness_spec_id=)` →
-    #: the findings, each naming a file. `bound_arrays` is the node's bound array variables (the
-    #: IR's snapshot variables of rank >= 1); `harness_spec_id` is the target's harness.
+    #: `node_violations(model_texts=, checks_texts=, plan=, bound_arrays=, harness_spec_id=,
+    #: node_kind=)` → the findings, each naming a file. `bound_arrays` is the node's bound array
+    #: variables (the IR's snapshot variables of rank >= 1); `harness_spec_id` is the target's
+    #: harness; `node_kind` is the first segment of the node_key (`component` / `problem`).
     node_violations: Any
 
 
@@ -116,12 +122,33 @@ def lowering_plan_declines(plan: Any) -> bool:
     return declined
 
 
+def _harness_reference_re(harness_spec_id: str) -> re.Pattern[str]:
+    """Any name of the target harness's namespace (`<harness>__<op>`), not preceded by a word
+    character or a component selector — a reference, a call, or a name in a `use` list."""
+    return re.compile(rf"(?<![\w%]){re.escape(harness_spec_id)}__\w+", re.IGNORECASE)
+
+
 def _fortran_cpu_violations(*, model_texts: dict[Path, str], checks_texts: dict[Path, str],
                             plan: Any, bound_arrays: Iterable[str],
-                            harness_spec_id: str) -> list[str]:
+                            harness_spec_id: str, node_kind: str) -> list[str]:
     statements = {path: _code_statements(text)
                   for path, text in [*model_texts.items(), *checks_texts.items()]}
     out: list[str] = []
+    if node_kind == "component" and harness_spec_id:
+        named = _harness_reference_re(harness_spec_id)
+        for path in model_texts:
+            hits = [m.group(0) for _raw, masked in statements[path] for m in named.finditer(masked)]
+            if hits:
+                out.append(
+                    f"{path}: a component's published operations are called by every consumer "
+                    f"on that consumer's own rank's block, so a component MODEL source names no "
+                    f"operation of the harness — this one names {hits[0]!r}: an operation that "
+                    "partitions, exchanges, asks the grid or reduces inside itself distributes an "
+                    "already distributed block a second time. Keep each operation computing "
+                    "exactly what the spec says over the arrays it is handed, and distribute the "
+                    "component's own cases in its checks module: case_setup partitions and "
+                    "allocates this rank's block, case_run fills the halo with the harness's "
+                    "exchange and then calls the unmodified operation on the block")
     for path, stmts in statements.items():
         direct = [raw for raw, masked in stmts
                   if _FORBIDDEN_STATEMENT_RE.match(raw) or _FORBIDDEN_REFERENCE_RE.search(masked)]

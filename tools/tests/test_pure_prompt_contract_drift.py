@@ -996,6 +996,14 @@ PINNED: dict[str, str] = {
     # offered, and an orchestration whose `generate` ran under pure-76 cannot be `--resume`d
     # across this bump.
     "pure-77": "af6350bf9f141f8ff4b2a019d41a36ba1a86a2505da0121f0b2ac811728c7738",
+    # pure-78 (issue #512, PR-4a closing run): a component's published operations are called by
+    # consumers on their own rank's block, so the distribution of a component's cases lives in
+    # its checks module and its model names no harness operation; a problem drives its
+    # components on its block. Members moved: the `mpi` fragments
+    # (`generate_generate.txt` §target_lowering_floor, `generate_verify.txt`
+    # §checklist_g6_floor_scope). The gate that moved with them is the `mpi` presence floor
+    # (a component model naming a harness operation is refused).
+    "pure-78": "a0d57d208ea8c2bcecb186b96617927fcf75ce5ec1fa24d30afc418590f3e904",
 }
 
 

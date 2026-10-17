@@ -2748,7 +2748,8 @@ def _validate_parallel_presence_floor(
             plan=bundle.get("target_lowering_plan"),
             bound_arrays=[v for v, shape in _state_snapshot_requirement_details(
                 repo_root, execution)[0].items() if _shape_rank_or_none(shape) not in (None, 0)],
-            harness_spec_id=str(target.harness.get("infrastructure_id") or "")))
+            harness_spec_id=str(target.harness.get("infrastructure_id") or ""),
+            node_kind=execution.node_key.split("/", 1)[0]))
         return
     if directives.lowering_plan_declines(bundle.get("target_lowering_plan")):
         return  # an explicit declaration G6 judges; the target's backend is the default
