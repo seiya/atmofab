@@ -18779,7 +18779,8 @@ class DeterministicBuildTest(unittest.TestCase):
 
     def _b1_execute(self, repo: Path, ir_yaml: str, *, gate_result: tuple[int, str],
                     matching_diagnostics: bool,
-                    diagnostics: dict | None = None) -> tuple[dict, dict]:
+                    diagnostics: dict | None = None,
+                    captures=None) -> tuple[dict, dict]:
         """Drive _execute_inproc with the post_execute gate subprocess stubbed to `gate_result`
         (returncode, stdout) and the runner/make-test diagnostics seeded so the quality_check
         passes (matching_diagnostics) or fails. Returns (result, trial_meta-or-{}).
@@ -18823,11 +18824,17 @@ class DeterministicBuildTest(unittest.TestCase):
             # checked-in target sweeps its thread count, each shape in a directory of its own).
             Path(args["project_dir"], "diagnostics.json").write_text(json.dumps(diag),
                                                                     encoding="utf-8")
+            if captures is not None:
+                captures(Path(args["project_dir"]), "run")
             return {"ok": True, "command_id": "R"}
 
+        def fake_qc(args):
+            if captures is not None:
+                captures(Path(args["env"]["RUNDIR"]), "qc")
+            return {"ok": True, "command_id": "Q"}
+
         with mock.patch.object(build_runtime, "tool_run_program", fake_run_program), \
-             mock.patch.object(build_runtime, "tool_run_quality_checks",
-                               lambda a: {"ok": True, "command_id": "Q"}), \
+             mock.patch.object(build_runtime, "tool_run_quality_checks", fake_qc), \
              mock.patch.object(wc.subprocess, "run", fake_subprocess_run):
             _record_build_site(c.repo_root, refs)
             result = c._execute_inproc(refs, "child-1")
@@ -18953,6 +18960,54 @@ class DeterministicBuildTest(unittest.TestCase):
                                         matching_diagnostics=True)
             self.assertNotIn(wc._EXECUTE_EXCERPT_TRUNCATION_MARK, meta["failure_excerpt"])
             self.assertIn("post_execute: bad shape", meta["failure_excerpt"])
+
+    def test_execute_inproc_compares_each_shape_s_state_with_the_serial_reference(
+            self) -> None:
+        """Issue #512, through `_execute_inproc`: the state every execution shape captured is
+        compared with the quality check's re-run — the serial reference — not with the
+        certified run. Every run of the binary captures the same state and the re-run captures
+        it scaled by 1 + 1e-6: the certified shape and each sweep shape disagree with it, which
+        a comparison against the certified run (equal to itself) would not see; with the
+        re-run equal too, the run passes."""
+        import tempfile
+
+        import numpy as np
+        import yaml
+
+        from tools.tests import test_primary_evidence as tpe
+        h = np.arange(tpe.NX * tpe.NY, dtype=float).reshape(tpe.NX, tpe.NY) + 1.0
+        ir = tpe._ir([tpe.CROSS])
+        ir["io_contract"]["test_predicates"] = [{
+            "test_id": "t_mass", "expected_outcome": "pass", "target_cases": ["a", "b"],
+            "pass_when": {"all": [{"ref": "checks.k.status", "op": "eq", "value": "pass",
+                                   "per_case": True}]}}]
+        diag = {"checks": {"k": {"status": "pass"}}, "verdict": {"overall": "pass"},
+                "per_case": {c: {"checks": {"k": {"status": "pass"}}} for c in ("a", "b")}}
+        for scale, expected in ((1.0 + 1e-6, "fail"), (1.0, "pass")):
+            def captures(d: Path, role: str, scale=scale) -> None:
+                sdir = d / "raw" / "state_snapshots"
+                (sdir / "initial").mkdir(parents=True, exist_ok=True)
+                hh = h * (scale if role == "qc" else 1.0)
+                for cid in ("a", "b"):
+                    for sub in (sdir / "initial", sdir):
+                        (sub / f"{cid}.json").write_text(
+                            json.dumps({"h": hh.tolist(), "s": 1.0, "t": 0.0}))
+                (d / "diagnostics.json").write_text(json.dumps(diag), encoding="utf-8")
+
+            with self.subTest(scale=scale), tempfile.TemporaryDirectory() as td:
+                repo = Path(td)
+                _out, meta = self._b1_execute(repo, yaml.safe_dump(ir), gate_result=(0, ""),
+                                              matching_diagnostics=True, diagnostics=diag,
+                                              captures=captures)
+                quality = json.loads((repo / self._b1_refs().run_node_dir()
+                                      / "quality_check.json").read_text())
+                self.assertGreater(len(quality["shapes"]), 1)
+                self.assertEqual(quality["status"], expected, quality)
+                statuses = {r["state_agreement"]["status"] for r in quality["shapes"]}
+                self.assertEqual(statuses, {"disagree"} if expected == "fail" else {"agree"})
+                if expected == "fail":
+                    self.assertEqual(meta["failure_category"], "quality_check_mismatch")
+                    self.assertIn("disagrees with the serial reference", meta["failure_excerpt"])
 
     def test_execute_inproc_records_quality_check_mismatch(self) -> None:
         # Gates clean, no snapshot requirement -> the only failing input is the make-test re-run
@@ -22834,10 +22889,12 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
             (d / "perf.json").write_text(json.dumps({"parallelism": perf}))
         return d
 
-    def _author(self, runs: list[dict], *, ir=None, launcher: bool = False) -> tuple[str, dict]:
+    def _author(self, runs: list[dict], *, ir=None, launcher: bool = False,
+                qc_diag=None) -> tuple[str, dict]:
         ir = self.tpe._ir([self.tpe.CROSS]) if ir is None else ir
         status = wc.Conductor._author_quality_check(
-            self.node, self.diag, "Q", "make_test", ir=ir, reference_dir=self.ref,
+            self.node, self.diag if qc_diag is None else qc_diag, "Q", "make_test", ir=ir,
+            reference_dir=self.ref,
             shape_runs=runs, launcher=launcher)
         return status, json.loads((self.node / "quality_check.json").read_text())
 
@@ -22899,6 +22956,46 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
         self.assertFalse(doc["shapes"][1]["verdict_match"])
         # The certified shape still matches, and the top-level checks are its own.
         self.assertTrue(all(doc["checks"].values()))
+
+    def test_a_state_comparison_that_cannot_be_evaluated_fails(self) -> None:
+        """A shape that ran but left no capture, or a capture the predicates cannot read, is
+        `unevaluable` — a failure, never an agreement."""
+        import shutil
+        bare = self._run_dir("bare", self.h)
+        shutil.rmtree(bare / "raw")
+        broken = self._run_dir("broken", self.h)
+        (broken / "raw" / "state_snapshots" / "a.json").write_text(json.dumps({"s": 1.0}))
+        for d in (bare, broken):
+            with self.subTest(d=d.name):
+                status, doc = self._author(self._runs(self._run_dir(f"run_{d.name}", self.h), d))
+                self.assertEqual(doc["shapes"][1]["state_agreement"]["status"], "unevaluable")
+                self.assertEqual((status, doc["shapes"][1]["status"]), ("fail", "fail"))
+                self.assertTrue(any("could not be evaluated" in ln for ln in
+                                    wc.Conductor._quality_check_failure_lines(self.node)))
+
+    def test_each_comparison_alone_fails_the_shape(self) -> None:
+        """The shape's status is the conjunction: a check status that differs while the verdict
+        agrees fails it, and so does a verdict the shape did not write."""
+        statuses_only = {"checks": {"c1": {"status": "xfail"}}, "verdict": self.diag["verdict"]}
+        no_verdict = {"checks": self.diag["checks"]}
+        for name, diag, key in (("statuses", statuses_only, "diagnostics_match"),
+                                ("no verdict", no_verdict, "verdict_available")):
+            with self.subTest(name):
+                status, doc = self._author(self._runs(
+                    self._run_dir(f"run_{key}", self.h),
+                    self._run_dir(f"t2_{key}", self.h, diag=diag)))
+                row = doc["shapes"][1]
+                self.assertFalse(row[key])
+                self.assertEqual((status, row["status"]), ("fail", "fail"))
+                self.assertEqual(doc["shapes"][0]["status"], "pass")
+        # Neither the reference nor the shape wrote a verdict: the two agree (None == None),
+        # and only `verdict_available` refuses the comparison.
+        status, doc = self._author(self._runs(
+            self._run_dir("run_none", self.h, diag=no_verdict),
+            self._run_dir("t2_none", self.h, diag=no_verdict)), qc_diag=no_verdict)
+        self.assertTrue(all(r["verdict_match"] and not r["verdict_available"]
+                            for r in doc["shapes"]))
+        self.assertEqual(status, "fail")
 
     def test_a_shape_that_failed_or_did_not_run_fails(self) -> None:
         for ids, failure, needles in (
