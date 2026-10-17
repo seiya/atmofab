@@ -922,7 +922,13 @@ PINNED_RENDER: dict[str, str] = {
     # lines are split onto a block `if`. (Measured by diffing `render_tuple()` against
     # origin/main b60c642c's: those two rows.) Re-pinned in place again by the closing-run
     # fix: the runner's ABI comment says a component's model names no harness operation.
-    "render-10": "1a8602441c121673af4819425483d766510e6f778121e9439f2ca5aea5b3792d",
+    "render-10": "f0ac72cc15928f9cb8b493370d15d5f8a6c85f758de9934d89f283f43c7d6ad2",
+    # Re-pinned (issue #512, PR-4b), behaviour-preserving: `tools/host_execution.py` gains
+    # `serial_execution_env` and an execution-shape argument to `launch_shape`; the renderers
+    # read `perf_parallelism`, which is unchanged, and render nothing the module moved.
+    # (Measured by diffing `render_tuple()` against origin/main 79e90e32's: that row and no
+    # other.) The digest `render-10` shipped with at 79e90e32:
+    "render-10@79e90e32": "1a8602441c121673af4819425483d766510e6f778121e9439f2ca5aea5b3792d",
     # Re-pinned (issue #469), behaviour-preserving: `make/control_file.py` gains
     # `CONTROL_FILE_BASENAMES`, the names `make` reads without `-f`, which `codegen_bundle`
     # derives its reserved bundle basenames from; nothing it renders moved. (Measured by diffing
@@ -1023,7 +1029,13 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "e2559263012048780bff1a791db971827b07bacf974ae55c55eeb9a945bcd92f",
+    "build-2": "af54b83d25eaa7ee64d46da7749c9d3170e99cfa9b46b039a1934e3ea1f0b3ce",
+    # Re-pinned (issue #512, PR-4b), behaviour-preserving: `tools/host_execution.py` gains
+    # `serial_execution_env` and an execution-shape argument to `launch_shape`, whose default is
+    # the certified shape — the one the build's backstop call asks for, with the argv prefix,
+    # environment and refusals it had. (Measured by diffing `build_tuple()` against origin/main
+    # 79e90e32's: that row and no other.) The digest `build-2` shipped with at 79e90e32:
+    "build-2@79e90e32": "e2559263012048780bff1a791db971827b07bacf974ae55c55eeb9a945bcd92f",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build
@@ -1382,6 +1394,16 @@ PINNED_EXECUTE: dict[str, str] = {
     # backend's `execution_env`). Rows moved: `tools/host_execution.py` and the mpi
     # `execution_env` module.
     "execute-9": "498b82394e172d1a5c391e6a0e31e9596180770b52d29e5673cbf841cc165b52",
+    # execute-10 (issue #512, PR-4b): the binary also runs once per shape of the target's
+    # `execution.sweep`, the quality check's re-run is the serial reference (one thread, and the
+    # grid (1, 1) for a launcher backend), and `quality_check.json` compares every shape with it
+    # by check statuses, verdict and captured state under the IR's cross-target predicates
+    # (`shapes`); `trial_meta.json#environment` gains `sweep` and `serial_reference_env`. A bump:
+    # a certified execute-9 record carries no `shapes`, which the post-execute gate requires.
+    # Rows moved: `Conductor._execute_inproc`, `Conductor._author_quality_check`,
+    # `tools/host_execution.py`, and the mpi and cuda `execution_env` modules (a thread count
+    # other than one is refused).
+    "execute-10": "2e28207f87715adab599d77f769544448b7145474e85eba655058c9bdd52a234",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

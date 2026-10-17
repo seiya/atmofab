@@ -81,4 +81,9 @@ module's loops are lowered is never a finding (issue #400).
 A binary built for `openmp` is launched with `OMP_NUM_THREADS` and `OMP_THREAD_LIMIT` both set to
 the target profile's `execution.threads_per_rank` (`tools/backends/parallel/openmp/execution.py`, the
 `execution_env` capability, read by `tools/host_execution.py`). The limit caps a nested or
-`num_threads(...)` region at the width the profile states.
+`num_threads(...)` region at the width the profile states. Each count of the profile's
+`execution.sweep.threads_per_rank` is a further run of the same binary with both variables set to
+it, and the quality check's serial reference runs with both set to `1`; each run's check
+statuses, verdict and captured state are compared with the reference's
+(`docs/workflow/phases/phase_04_validate.md` §4-2, issue #512), so a race, an unprotected
+reduction into the state, or a loop whose result depends on the team size fails there.

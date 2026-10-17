@@ -19,9 +19,10 @@ missing key, a wrongly typed value and a ``target_id`` that is not the file's st
 resolve the harness or ask the registry. The launch gate (``target_profile_violations``, run by
 ``resolve_run_target``) refuses a harness the catalog cannot resolve and a hardware class,
 language, build system, parallel backend or pinned compiler the host does not implement; a
-``hardware.architecture`` its class's ``perf_facts`` does not admit; and, for a run that reaches
-``Validate``, a hardware class this host cannot launch on or a parallel backend it has no launch
-environment for (issue #289). ``toolchain.standard`` and ``toolchain.linker`` are recorded tokens
+``hardware.architecture`` its class's ``perf_facts`` does not admit; a thread count, a rank count,
+a process grid or an ``execution.sweep`` member the parallel backend does not run (issues #316,
+#512); and, for a run that reaches ``Validate``, a hardware class this host cannot launch on or a
+parallel backend it has no launch environment for (issue #289). ``toolchain.standard`` and ``toolchain.linker`` are recorded tokens
 it does not check. A profile the host would have to guess about is a run nobody can reproduce.
 """
 
@@ -82,9 +83,37 @@ PROFILE_SHAPE: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "toolchain": (frozenset({"language", "standard", "build_system"}),
                   frozenset({"compiler", "linker"})),
     "parallel": (frozenset({"backend"}), frozenset()),
-    "execution": (frozenset({"threads_per_rank"}), frozenset({"ranks", "process_grid"})),
+    "execution": (frozenset({"threads_per_rank"}),
+                  frozenset({"ranks", "process_grid", "sweep"})),
     "harness": (frozenset({"infrastructure_id", "version_constraint"}), frozenset()),
 }
+
+#: The members `execution.sweep` may name (issue #512): each is a list of values the execution
+#: shape takes in turn, one more run of the binary per value. `grids` varies the process grid
+#: (a launcher backend's), `threads_per_rank` the threads of each rank.
+SWEEP_KEYS = frozenset({"grids", "threads_per_rank"})
+
+#: The label of the shape the certifying run takes — the profile's own `execution` — among the
+#: shapes `TargetProfile.execution_shapes` lists.
+CERTIFIED_SHAPE_LABEL = "certified"
+
+
+@dataclass(frozen=True)
+class ExecutionShape:
+    """One shape a Validate run launches the binary in (issue #512): `threads_per_rank` threads
+    in each of `ranks` processes, the ranks arranged in `process_grid` when the shape imposes
+    one (None: the harness's own arrangement, `(ranks, 1)`). `label` names it in the records
+    (`quality_check.json#shapes`), and is unique among a profile's shapes."""
+
+    label: str
+    threads_per_rank: int
+    ranks: int
+    process_grid: tuple[int, int] | None
+
+    def record(self) -> dict[str, Any]:
+        return {"label": self.label, "threads_per_rank": self.threads_per_rank,
+                "ranks": self.ranks,
+                "process_grid": None if self.process_grid is None else list(self.process_grid)}
 
 
 class TargetProfileError(ValueError):
@@ -145,6 +174,34 @@ class TargetProfile:
         if grid is None:
             return (self.ranks, 1)
         return (int(grid[0]), int(grid[1]))
+
+    @property
+    def certified_shape(self) -> ExecutionShape:
+        """The shape the certifying run takes: the profile's own `execution`."""
+        return ExecutionShape(CERTIFIED_SHAPE_LABEL, self.threads_per_rank, self.ranks,
+                              self.process_grid if self.declares_process_grid else None)
+
+    @property
+    def sweep_shapes(self) -> list[ExecutionShape]:
+        """The further shapes `execution.sweep` names (issue #512), in the order it names them:
+        one per process grid (`grid_<p1>x<p2>`: `p1 p2` ranks in that grid, the certified
+        threads per rank), then one per thread count (`threads_<t>`: the certified ranks and
+        grid). Empty when the profile declares no sweep."""
+        sweep = self.doc["execution"].get("sweep") or {}
+        out = [ExecutionShape(f"grid_{p1}x{p2}", self.threads_per_rank, p1 * p2, (p1, p2))
+               for p1, p2 in ((int(g[0]), int(g[1])) for g in sweep.get("grids") or ())]
+        certified = self.certified_shape
+        out += [ExecutionShape(f"threads_{int(t)}", int(t), certified.ranks,
+                               certified.process_grid)
+                for t in sweep.get("threads_per_rank") or ()]
+        return out
+
+    @property
+    def execution_shapes(self) -> list[ExecutionShape]:
+        """Every shape a Validate run of this target launches the binary in: the certified
+        shape first, then the sweep's. Each is compared with the one-process, one-thread serial
+        reference the quality check runs (`docs/workflow/phases/phase_04_validate.md` §4-2)."""
+        return [self.certified_shape, *self.sweep_shapes]
 
     @property
     def harness(self) -> dict[str, str]:
@@ -318,14 +375,6 @@ def _shape_violations(doc: Any) -> list[str]:
         threads = execution["threads_per_rank"]
         if isinstance(threads, bool) or not isinstance(threads, int) or threads < 1:
             out.append(f"execution.threads_per_rank: must be an integer >= 1, got {threads!r}")
-        elif threads != 1:
-            # Validate.execute's run IS the single-thread reference the quality check compares
-            # a parallel re-run against (docs/workflow/phases/phase_04_validate.md §4-2); a
-            # profile running more threads per rank would leave that comparison two parallel
-            # runs. Refused until execute gains a separate serial reference run.
-            out.append(f"execution.threads_per_rank: must be 1 until Validate.execute runs a "
-                       f"separate single-thread reference for the quality check "
-                       f"(phase_04_validate.md §4-2), got {threads}")
     if isinstance(execution, dict) and "ranks" in execution:
         ranks = execution["ranks"]
         if isinstance(ranks, bool) or not isinstance(ranks, int) or ranks < 1:
@@ -340,12 +389,67 @@ def _shape_violations(doc: Any) -> list[str]:
         elif type(ranks) is int and grid[0] * grid[1] != ranks:
             out.append(f"execution.process_grid: {grid!r} arranges {grid[0] * grid[1]} "
                        f"rank(s), and execution.ranks is {ranks!r}")
+    if isinstance(execution, dict) and "sweep" in execution:
+        out += _sweep_violations(execution)
     harness = doc.get("harness")
     if isinstance(harness, dict) and "version_constraint" in harness:
         constraint = harness["version_constraint"]
         if not (isinstance(constraint, str) and constraint.strip()):
             out.append(f"harness.version_constraint: must be a non-empty string, "
                        f"got {constraint!r}")
+    return out
+
+
+def _sweep_violations(execution: dict[str, Any]) -> list[str]:
+    """The grammar of `execution.sweep` (issue #512): a non-empty mapping of `SWEEP_KEYS`, each a
+    non-empty list of distinct values. A grid is two integers >= 1 arranging at most
+    `execution.ranks` ranks — the machine the profile is written for runs that many — other than
+    `[1, 1]`, the serial reference every run already takes, and other than the certified run's
+    own grid. A thread count is an integer >= 2 other than the certified `threads_per_rank`
+    (one thread is the serial reference). Which backends admit each member is the launch gate's
+    (`hardware_violations`)."""
+    sweep = execution["sweep"]
+    if not isinstance(sweep, dict) or not sweep:
+        return [f"execution.sweep: must be a non-empty mapping of {sorted(SWEEP_KEYS)}, "
+                f"got {sweep!r}"]
+    out = [f"execution.sweep: unknown key {k!r}" for k in sorted(set(sweep) - SWEEP_KEYS, key=str)]
+    ranks = execution.get("ranks", 1)
+    grid = execution.get("process_grid")
+    certified_grid = grid if isinstance(grid, list) else [ranks, 1]
+    if "grids" in sweep:
+        grids = sweep["grids"]
+        if not (isinstance(grids, list) and grids and all(
+                isinstance(g, list) and len(g) == 2 and all(type(p) is int and p >= 1 for p in g)
+                for g in grids)):
+            out.append(f"execution.sweep.grids: must be a non-empty list of [p1, p2] pairs of "
+                       f"integers >= 1, got {grids!r}")
+        else:
+            seen: list[list[int]] = []
+            for g in grids:
+                if g in seen:
+                    out.append(f"execution.sweep.grids: {g!r} is listed twice")
+                seen.append(g)
+                if g == [1, 1]:
+                    out.append("execution.sweep.grids: [1, 1] is the serial reference every "
+                               "run already takes")
+                elif g == certified_grid:
+                    out.append(f"execution.sweep.grids: {g!r} is the certified run's own grid")
+                elif type(ranks) is int and g[0] * g[1] > ranks:
+                    out.append(f"execution.sweep.grids: {g!r} arranges {g[0] * g[1]} ranks, "
+                               f"more than execution.ranks ({ranks!r})")
+    if "threads_per_rank" in sweep:
+        counts = sweep["threads_per_rank"]
+        if not (isinstance(counts, list) and counts
+                and all(type(t) is int and t >= 2 for t in counts)):
+            out.append(f"execution.sweep.threads_per_rank: must be a non-empty list of "
+                       f"integers >= 2 (one thread is the serial reference), got {counts!r}")
+        else:
+            for i, t in enumerate(counts):
+                if t in counts[:i]:
+                    out.append(f"execution.sweep.threads_per_rank: {t} is listed twice")
+                elif t == execution.get("threads_per_rank"):
+                    out.append(f"execution.sweep.threads_per_rank: {t} is the certified run's "
+                               f"own threads_per_rank")
     return out
 
 
@@ -524,7 +628,9 @@ def hardware_violations(profile: TargetProfile, *, until_phase: str | None = Non
     without one the binary runs as one process whatever the profile says, and the run would be
     recorded as the rank count nothing ran with. Asked of every run, since the count is part of
     what the target is. `execution.process_grid` needs one too (issue #512): it arranges the
-    ranks the launcher starts.
+    ranks the launcher starts; so does `execution.sweep.grids`. Every thread count the profile
+    runs a rank with — `threads_per_rank` and `execution.sweep.threads_per_rank` — must be one
+    the backend's launch environment admits (`_thread_count_violations`).
 
     The EXECUTION half is asked of every run except one whose `until_phase` is in
     `NON_EXECUTING_PHASES` — None, the stricter question, is asked it. It
@@ -564,6 +670,13 @@ def hardware_violations(profile: TargetProfile, *, until_phase: str | None = Non
             "parallel", profile.parallel_backend, "launcher"):
         out.append(f"execution.process_grid: a process grid arranges the ranks a launcher "
                    f"starts, and parallel backend {profile.parallel_backend} declares none")
+    sweep = profile.doc["execution"].get("sweep") or {}
+    if "grids" in sweep and backend_registry.unimplemented_reason(
+            "parallel", profile.parallel_backend) is None and not backend_registry.provides(
+            "parallel", profile.parallel_backend, "launcher"):
+        out.append(f"execution.sweep.grids: a process grid arranges the ranks a launcher "
+                   f"starts, and parallel backend {profile.parallel_backend} declares none")
+    out += _thread_count_violations(profile)
     if str(until_phase or "").strip().lower() not in NON_EXECUTING_PHASES:
         for axis, value, capability, where in (
                 ("hardware", hardware_class, "execution", "hardware.class"),
@@ -572,6 +685,41 @@ def hardware_violations(profile: TargetProfile, *, until_phase: str | None = Non
             if reason is not None:
                 out.append(f"{where}: a run that reaches Validate launches the binary, and "
                            f"{reason}")
+    return out
+
+
+def _thread_count_violations(profile: TargetProfile) -> list[str]:
+    """Every thread count the profile runs a rank with other than one — `threads_per_rank` and
+    each of `execution.sweep.threads_per_rank` (issue #512) — must be one the parallel
+    backend's launch environment admits: its `execution_env` answers the count, or refuses it
+    (`ValueError`, e.g. a model whose ranks run one thread each). A backend whose launch
+    environment is the neutral core's empty one runs one thread whatever the profile says, so it
+    admits none; a backend this repository does not implement is refused in its own words
+    elsewhere."""
+    from tools.backends import registry as backend_registry
+
+    counts = [("execution.threads_per_rank", profile.threads_per_rank)]
+    counts += [("execution.sweep.threads_per_rank", int(t))
+               for t in (profile.doc["execution"].get("sweep") or {}).get(
+                   "threads_per_rank") or ()]
+    backend = profile.parallel_backend
+    if backend_registry.missing_capability_reason("parallel", backend, "execution_env") \
+            is not None:
+        return []
+    out: list[str] = []
+    for where, count in counts:
+        if count == 1:
+            continue
+        if "execution_env" not in backend_registry.get("parallel", backend).backend_provides:
+            out.append(f"{where}: {count} threads per rank, and parallel backend {backend} "
+                       f"launches each rank as one thread")
+            continue
+        module = backend_registry.capability_module("parallel", backend, "execution_env")
+        try:
+            module.environment(count)
+        except ValueError as exc:
+            out.append(f"{where}: parallel backend {backend} does not run {count} threads per "
+                       f"rank ({exc})")
     return out
 
 

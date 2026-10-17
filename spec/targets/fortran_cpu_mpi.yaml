@@ -10,6 +10,11 @@
 # harness reads it from the launch environment; (2, 2) exercises both grid dimensions, the
 # corner halo exchange and the rank numbering, which a (ranks, 1) run cannot tell apart.
 #
+# `execution.sweep.grids` are the further grids the same binary runs in (issue #512), each with
+# p1 p2 ranks: a kernel whose state depends on the decomposition — a halo exchanged along one
+# dimension only, a remainder cell under 3 ranks, a wrap across a rank boundary — disagrees with
+# the quality check's serial reference (one process, grid (1, 1)) under one of them.
+#
 # A component or problem node built for this target is distributed over the ranks through the
 # harness (docs/backends/parallel/mpi/GENERATE_RULES.md), and its host-rendered runner gathers
 # the partitioned state onto rank 0 before it is captured (issue #316 PR-4).
@@ -28,6 +33,8 @@ execution:
   threads_per_rank: 1
   ranks: 4
   process_grid: [2, 2]
+  sweep:
+    grids: [[4, 1], [1, 4], [3, 1], [1, 3], [2, 1], [1, 2]]
 harness:
   infrastructure_id: harness_fortran_cpu_mpi
   version_constraint: ">=0.1.0 <1.0.0"

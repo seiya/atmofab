@@ -292,7 +292,9 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         "The host knows the environment overrides a binary built for this parallel model is "
         "launched with (`tools/host_execution.py`; `run_program` merges them over the host "
         "process's own environment), and, for a launcher backend, how it imposes a target's "
-        "process grid on the ranks (`environment(threads_per_rank, process_grid=)`). An empty set is an answer — the binary inherits the host's "
+        "process grid on the ranks (`environment(threads_per_rank, process_grid=)`). A thread "
+        "count the model does not run is refused with `ValueError`, which the launch gate asks "
+        "of every count a profile names (`target_profile._thread_count_violations`). An empty set is an answer — the binary inherits the host's "
         "environment unchanged — and a value that does not declare this job has no answer: the "
         "launch shape refuses it rather than guessing which of the two it meant.",
     ),

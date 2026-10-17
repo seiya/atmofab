@@ -29,7 +29,7 @@ from unittest import mock
 import tools.workflow_conductor as wc
 from tools.backends import registry
 from tools.execution_sites import Site
-from tools.host_execution import LOCAL_SITE, launch_shape
+from tools.host_execution import LOCAL_SITE, launch_shape, serial_execution_env
 from tools.tests.llm_samples import sample_config_with as _cfg
 from tools.tests.target_fixtures import TARGET_ID, profile_with
 from tools.tests.test_remote_execution import _SCP_SHIM, _SSH_SHIM
@@ -228,8 +228,25 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
         # One log entry per command, at the canonical placements, naming LOCAL artifacts.
         run_log = n.log_entries(n.node_dir / "command_log.jsonl")
         qc_log = n.log_entries(n.src / "command_log.jsonl")
-        self.assertEqual([e["tool_name"] for e in run_log], ["run_program"])
+        # The run, then one run per sweep shape of the target (issue #512), each in a job
+        # directory of its own and recorded at the local directory it came home to.
+        shapes = n.target.execution_shapes
+        self.assertGreater(len(shapes), 1, "the fixture target declares no sweep; this row "
+                                           "would not see a sweep run at a site")
+        self.assertEqual([e["tool_name"] for e in run_log], ["run_program"] * len(shapes))
         self.assertEqual([e["tool_name"] for e in qc_log], ["run_quality_checks"])
+        sweep_tmp = n.repo / "workspace" / "tmp" / "arid-1" / "sweep"
+        for shape, entry in zip(shapes[1:], run_log[1:]):
+            with self.subTest(shape=shape.label):
+                self.assertEqual(entry["cwd"], str(sweep_tmp / shape.label))
+                self.assertEqual(entry["site"]["remote_cwd"], f"{job}/sweep/{shape.label}")
+                self.assertEqual(entry["command"], run_log[0]["command"])
+                self.assertEqual(entry["env_override_keys"],
+                                 sorted(launch_shape(n.target, n.site, shape).env))
+                self.assertTrue((sweep_tmp / shape.label / "argv.json").is_file())
+        quality = json.loads((n.node_dir / "quality_check.json").read_text())
+        self.assertEqual([r["label"] for r in quality["shapes"]], [s.label for s in shapes])
+        self.assertTrue(all(r["status"] == "pass" for r in quality["shapes"]))
         self.assertEqual(run_log[0]["command"][0], str(n.binary.resolve()))
         self.assertEqual(run_log[0]["cwd"], str(run_tmp))
         self.assertEqual(qc_log[0]["command"], ["make", "test"])
@@ -241,8 +258,9 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
         self.assertEqual(run_log[0]["timeout_sec"], server.RUN_PROGRAM_TIMEOUT_SEC)
         self.assertEqual(qc_log[0]["timeout_sec"], server.QUALITY_CHECKS_TIMEOUT_SEC)
         self.assertEqual(run_log[0]["capture_limit"], wc._FULL_CAPTURE_LIMIT)
-        self.assertEqual(sorted(qc_log[0]["env_override_keys"]),
-                         ["BIN", "BINDIR", "CASES", "OBJDIR", "RUNDIR", "SPEC"])
+        self.assertEqual(sorted(qc_log[0]["env_override_keys"]), sorted(
+            ["BIN", "BINDIR", "CASES", "OBJDIR", "RUNDIR", "SPEC",
+             *serial_execution_env(n.target.parallel_backend)]))
         launch_env = launch_shape(n.target, n.site).env
         self.assertTrue(launch_env, "the fixture target's model sets no env; this row would not "
                                     "tell a passed env from a dropped one")

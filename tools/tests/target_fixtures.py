@@ -53,10 +53,19 @@ def profile_with(profile: TargetProfile = FORTRAN_CPU, **sections: dict) -> Targ
     """`profile` with some sections' keys overridden — `profile_with(toolchain={"language":
     "c"})` — under the same id. For the tests that used to vary a node's IR toolchain: since
     issue #284 the host reads the TARGET, so the variation belongs on the profile. The loader's
-    registry-free shape is kept; nothing here asks whether the host implements the value."""
+    registry-free shape is kept; nothing here asks whether the host implements the value.
+
+    `execution` is REPLACED, not merged, when given: it is one shape, and a merge would carry
+    the base profile's `sweep` into a shape it was not written for. A variant that changes the
+    parallel model and states no `execution` runs one thread per rank and no sweep (issue #512):
+    the checked-in profile's threads and thread sweep are its own model's, which another model
+    may refuse."""
     doc = {k: (dict(v) if isinstance(v, dict) else v) for k, v in profile.doc.items()}
+    if "parallel" in sections and "execution" not in sections:
+        doc["execution"] = {"threads_per_rank": 1}
     for section, overrides in sections.items():
-        doc[section] = {**doc.get(section, {}), **overrides}
+        doc[section] = (dict(overrides) if section == "execution"
+                        else {**doc.get(section, {}), **overrides})
     return replace(profile, doc=doc, sha256=sha256_hex(canonical_json_bytes(doc)))
 
 
@@ -113,3 +122,18 @@ def composed_pure_template(key: str, profile: TargetProfile = FORTRAN_CPU) -> st
         ort._load_launch_prompt_templates()[key], ort._PROMPT_TEMPLATE_FILES[key],
         {"pure_language": profile.toolchain["language"],
          "pure_parallel": profile.parallel_backend})
+
+
+def passing_shape_rows(profile: TargetProfile = FORTRAN_CPU) -> list[dict]:
+    """`quality_check.json#shapes` of a run of `profile` whose every execution shape agreed with
+    the serial reference (issue #512): one passing row per `profile.execution_shapes`, in order,
+    with the rank count and grid a harness of a launcher target reports."""
+    rows = []
+    for shape in profile.execution_shapes:
+        rows.append({**shape.record(), "command_id": f"cmd_{shape.label}", "run_ok": True,
+                     "verdict_available": True, "diagnostics_match": True,
+                     "verdict_match": True, "verdict": "pass",
+                     "observed_mpi_ranks": shape.ranks,
+                     "observed_process_grid": list(shape.process_grid or (shape.ranks, 1)),
+                     "state_agreement": {"status": "agree"}, "status": "pass"})
+    return rows
