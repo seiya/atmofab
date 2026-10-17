@@ -155,7 +155,12 @@ $$
 \rho^2=\left(\frac{L_s}{\pi}\right)^2\sin^2\xi+(r-r_c)^2,\qquad
 \xi=\frac{\pi\,(s-s_{c0}-c_{tr}\,t)}{L_s}
 $$
-with $\psi_0=-0.03\,gh_0/f_0$, $R_{low}=2a/12.74244$ (so $R_{low}=1.0\times10^6\ \mathrm{m}$ to the digits given), $c_{tr}=U_j\cos\theta_0$, $s_{c0}=L_s/2$ and $r_c=L_r/2$, and $\psi_x$, $\psi_y$ its derivatives in `x` and `y` (the along- and cross-channel derivatives of the forcing `component`'s §3, assigned by the orientation). The prescribed flow is, with the streamfunction convention $u=-\psi_y$, $v=\psi_x$ of either orientation,
+with $\psi_0=-0.03\,gh_0/f_0$, $R_{low}=2a/12.74244$ (so $R_{low}=1.0\times10^6\ \mathrm{m}$ to the digits given), $c_{tr}=U_j\cos\theta_0$, $s_{c0}=L_s/2$ and $r_c=L_r/2$, and its derivatives along and across the channel
+$$
+\psi_s=-\frac{L_s}{\pi R_{low}^2}\sin 2\xi\;\psi,\qquad
+\psi_r=-\frac{2\,(r-r_c)}{R_{low}^2}\;\psi
+$$
+assigned to the derivatives in `x` and `y` by the orientation: $(\psi_x, \psi_y)=(\psi_s, \psi_r)$ for `channel_axis=x` and $(\psi_x, \psi_y)=(\psi_r, \psi_s)$ for `channel_axis=y` (the forcing `component`'s §3 states the same derivatives and the second derivatives its residuals need). The prescribed flow is, with the streamfunction convention $u=-\psi_y$, $v=\psi_x$ of either orientation,
 $$
 \texttt{channel\_axis}=x:\quad \tilde u=\bar u-\psi_y,\qquad \tilde v=\psi_x;\qquad\qquad
 \texttt{channel\_axis}=y:\quad \tilde u=-\psi_y,\qquad \tilde v=\bar u+\psi_x
@@ -165,7 +170,7 @@ $$
 $$
 and it is an exact solution of the equations of §1 with the forcing $Q$ that `dynamics_shallow_water_source_2d_tc4_forcing` §3 defines, with that `component`'s `S` as $Q$, its `along_axis` as in §5 step 6, its per-cell arguments `f`, `dfdr`, `ubar`, `dubar`, `hbar` the values at the cell centre of $f(r)$, $\beta$, $\bar u(r)$, $\bar u'(r)=U_j\,k\sin 2kr$ and $\bar h(r)$, and `x`, `y`, `g`, `L_along` $=L_s$, `psi0`, `R_low`, `c_tr`, `s_c0`, `r_c` the values above. The derivatives `dfdr` and `dubar` are the closed forms stated here and not differences of the arrays. The five per-cell arrays, the cell-centre coordinates and the parameters of the low are evaluated once at setup. The initial state is the prescribed flow at $t=0$ at the cell centres $(x_i, y_j)$: $h=\tilde h$, $hu=\tilde h\,\tilde u$, $hv=\tilde h\,\tilde v$. The reference solution at time $t$ is the prescribed flow at $t$; the centre of the low moves a distance $c_{tr}\,t$ along the channel, so $\tilde h(x,y,t)-\tilde h(x,y,0)=f\,(\psi(x,y,t)-\psi(x,y,0))/g$.
 
-The integral of `tc3_compact_jet` is evaluated by composite Simpson quadrature on a uniform sub-grid of spacing $\Delta r/64$ (with $\Delta r=dy$ for `channel_axis=x`, $dx$ for `channel_axis=y`) from $r'=0$ to the cell centre $r_j$ of the $j$-th line across the channel, which spans $64j-32$ sub-intervals (an even count for every $j$); this quadrature is part of the definition of the discrete initial state and is not an implementation choice. $u_s$ has compact support in $(r_b, r_e)$ and its largest magnitude is $|u_0|$ at $\zeta=x_e/2$. Because $r_b+r_e=L_r$ and $u_s$ is symmetric about $L_r/2$, the $\beta$ term of $f$ integrates to zero over the support, and the depth beyond the jet ($r>r_e$) is the constant
+The integral of `tc3_compact_jet` is evaluated by composite Simpson quadrature on a uniform sub-grid of spacing $\Delta r/64$ (with $\Delta r=dy$ for `channel_axis=x`, $dx$ for `channel_axis=y`) from $r'=0$ to the $j$-th cell-centre cross-channel coordinate $r_j=(j-\tfrac12)\Delta r$, which spans $64j-32$ sub-intervals (an even count for every $j$); this quadrature is part of the definition of the discrete initial state and is not an implementation choice. $u_s$ has compact support in $(r_b, r_e)$ and its largest magnitude is $|u_0|$ at $\zeta=x_e/2$. Because $r_b+r_e=L_r$ and $u_s$ is symmetric about $L_r/2$, the $\beta$ term of $f$ integrates to zero over the support, and the depth beyond the jet ($r>r_e$) is the constant
 $$
 h_N=h_0-\sigma\,\frac{f_0\,u_0\,e^{4/x_e}}{g}\,\frac{r_e-r_b}{x_e}\,C,\qquad C=\int_0^{x_e}e^{-1/\zeta-1/(x_e-\zeta)}\,d\zeta=1.12064479227927\times10^{-7}
 $$
