@@ -516,6 +516,47 @@ integer literal that parses where the BOZ did and names nothing; a reach-gate ro
 phantom edge (`ChecksReachGateTests.test_a_boz_literal_names_no_procedure_for_the_walk`), red
 with the keep-text mask.
 
+## Rule 1-d: a certification on the degenerate grid, and a node certified under its own runner only (issue #512 PR-4a / PR #519, 2026-10-17)
+
+The PR moved `harness_fortran_cpu_mpi` to a host-imposed two-dimensional process grid
+(`ATMOFAB_PROCESS_GRID`; unset → `(ranks, 1)`). Three things went wrong, and each shows the
+same premise from a different side: **what the certifying run actually exercised**.
+
+**The degenerate member.** The first commit deferred the host side that sets the grid, so the
+harness's Validate ran on `(4, 1)` and its quality check on `(1, 1)`. Both round-1 reviewers,
+independently, evaluated the real predicates over simulated defective harnesses: one that
+ignores the variable, one that numbers the grid column-major, one whose gather lets every rank
+of an unpartitioned line contribute — all passed on `(4, 1)`, while the node was certified for
+`distributed_state@2`. Imposing `[2, 2]` closed those and opened the next: the partition case's
+14 × 10 sizes divide evenly by 2, so a harness giving the remainder to the highest coordinates
+passed at `(2, 2)` (round-1 security reviewer, F2). Sizes 15 × 11 made the remainder branch
+taken there. Neither defect needed a new predicate — only a configuration on which the
+existing one gives a different answer.
+
+**An echo into the record.** Round 2 found that the post-execute comparison of
+`perf.json#parallelism.process_grid` with the imposed grid pinned only what `__write_perf`
+prints, and the harness writes both: a harness that keeps `(size, 1)` and echoes the variable
+into its perf record passed all 19 predicates and the gate (measured on the real leaf-generated
+harness). It is #437's shape — the catch rested on a value the caught leaf supplies — and the
+cheapest edit a leaf refused by that gate would make. The fix ties the self-test snapshot's
+`p1`, `p2` (what `__grid_dims` reports) to the launch grid, so the lie has to move into
+`__grid_dims`, where the `owner` predicate refuses it.
+
+**The consumer's calling convention.** The closing run (`advdiff1d_linear --with-deps` on
+`fortran_cpu_mpi`) failed Validate: the analytic error 2.3 against a 0.23 bound. Re-running the
+built binary by hand gave the right answer on `(1, 1)` and `(1, 4)` and the wrong one on
+`(4, 1)` and `(2, 2)`. Two of the three regenerated components had put the partition and the
+halo exchange INSIDE their published operation; their own runner hands that operation the whole
+array, so each component certified, and the problem hands it its own block, which was
+partitioned again. The 0.1.0-era components had distributed in their checks module around the
+unmodified operation, by the leaf's choice — no rule required it, so a regeneration could drop
+it. Rounds 0-3 and Codex had all looked at the gates, the harness, the runner and the prompt
+fragments; none of those instruments composes two generated nodes, and the closing run is the
+first thing that did. The fix: the mpi presence floor refuses a component MODEL source that
+names any harness operation (round 4 ran it over every generated component in the workspace:
+only the two culprits trip it), the producer and reviewer fragments state the convention, and
+the rendered runner's ABI comment stopped telling every physics source it may use the harness.
+
 ## Section 4: a whole-function mock hid a missing argument (issue #284 PR-2 / PR #286, 2026-09-24)
 
 PR-2 made `_closure_node_validated_in_own_pipeline(repo_root, token)` take a third argument,

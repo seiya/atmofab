@@ -200,6 +200,28 @@ to **one unbilled observation**).
   or variable named after what it spells.** A reader that only searches for keywords is the one
   you will check first, and the one that cannot show it (`references/judgment-episodes.md`
   §Rule 1-d, issue #501)
+- **A premise that a certifying run exercises a property is a claim about the CONFIGURATION it
+  ran on, and the default configuration is often the degenerate member of the family.** Issue
+  #512 PR-4a certified a harness for a two-dimensional process grid with a run that imposed no
+  grid, so it ran on `(ranks, 1)`; on that member a harness that ignored the grid, or numbered
+  it column-major, passed every predicate (both round-1 reviewers, measured through the real
+  predicates). The fix imposed `[2, 2]` — and then a 14 × 10 partition divided evenly there, so
+  the remainder branch went unexercised too. **Rule: for each property the certification claims,
+  name the configuration of the certified run on which a defective implementation gives a
+  DIFFERENT answer, and make the run take it** (`references/judgment-episodes.md` §Rule 1-d,
+  issue #512)
+- **A node certified alone is certified under ITS OWN RUNNER'S calling convention, and its
+  consumers may call it another way.** Issue #512 PR-4a's lowering rules let a `component`
+  distribute its cases; two regenerated components did it INSIDE their published operation,
+  which their own runner calls on the whole array — so each certified — while the `problem`
+  built on them calls the operation on its own rank's block, which was distributed a second
+  time: wrong on every grid with `p1 > 1`. Round 0, three review rounds and Codex read the gates, the
+  harness and the prompts and found nothing of it; the `--with-deps` closing run over the
+  consumer did, through the problem's own predicates. **Rule: when a change governs how a node
+  is DRIVEN (a parallel model, a residency, a capture convention), state how a CONSUMER calls
+  that node and hold both certifications to it — a gate on the producing side where the shape
+  is visible, and a closing run over a consumer before the change is called done**
+  (`references/judgment-episodes.md` §Rule 1-d, issue #512)
 - When a premise collapses, **keep the measurements**. The plan dies; the measured facts stay
 
 **1-e. "Out of scope because the leaf gains nothing" is a classification rule 1 does not govern.**
