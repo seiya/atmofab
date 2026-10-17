@@ -9837,6 +9837,36 @@ end program shallow_water2d_runner
             )
             self.assertEqual([], violations)
 
+    def test_the_whole_validator_requires_every_execution_shape(self) -> None:
+        """Issue #512, at the validator's entry point rather than the check function: the
+        passing fixture's `quality_check.json` loses one execution shape of the fixture target
+        (whose checked-in profile sweeps its thread count), and the whole run names it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            _create_minimal_execution_tree(
+                repo_root,
+                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text=("module shallow_water2d_model\n"
+                            "use dynamics_shallow_water_flux_2d_rusanov_p0_model\n"
+                            "implicit none\ncontains\nsubroutine solve(flag)\n"
+                            "  logical, intent(out) :: flag\n"
+                            "  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)\n"
+                            "end subroutine solve\nend module shallow_water2d_model\n"),
+                runner_text=("program shallow_water2d_runner\nimplicit none\n"
+                             "write(*,*) 'ok'\nend program shallow_water2d_runner\n"),
+                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+            )
+            paths = [q for q in (repo_root / "workspace" / "pipelines").rglob("quality_check.json")]
+            self.assertEqual(len(paths), 1, paths)
+            self.assertEqual(validate(repo_root=repo_root, workspace_root="workspace"), [])
+            quality = json.loads(paths[0].read_text(encoding="utf-8"))
+            self.assertGreater(len(quality["shapes"]), 1)
+            quality["shapes"] = quality["shapes"][:-1]
+            paths[0].write_text(json.dumps(quality), encoding="utf-8")
+            violations = validate(repo_root=repo_root, workspace_root="workspace")
+            self.assertTrue(any("execution shapes are" in v for v in violations), violations)
+
     def test_detects_non_isolated_step_context_when_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)

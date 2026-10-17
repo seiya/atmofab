@@ -142,6 +142,15 @@ class CheckedInProfileTests(unittest.TestCase):
                 REPO_ROOT, profile, node_key="problem/advdiff1d_linear@0.4.0",
                 until_phase=phase), [], phase)
 
+    def test_the_checked_in_cpu_profile_runs_threads_and_sweeps_them(self) -> None:
+        """Issue #512: `fortran_cpu`'s certified run is multi-threaded and its sweep varies the
+        count, so a race or a team-size dependence meets the one-thread serial reference."""
+        profile = tp.load_target_profile(REPO_ROOT, "fortran_cpu")
+        self.assertGreater(profile.threads_per_rank, 1)
+        counts = [s.threads_per_rank for s in profile.sweep_shapes]
+        self.assertTrue(counts and all(c > 1 for c in counts), counts)
+        self.assertEqual(tp.hardware_violations(profile), [])
+
     def test_the_checked_in_mpi_profile_launches_four_ranks_over_its_own_harness(self) -> None:
         """Issue #316 (R4-c PR-3): `fortran_cpu_mpi` names the `mpi` parallel backend with four
         ranks and the distributed-state harness, and passes the launch gate for that harness at
@@ -158,6 +167,13 @@ class CheckedInProfileTests(unittest.TestCase):
         # that tells the harness's rank numbering and corner exchange apart.
         self.assertTrue(profile.declares_process_grid)
         self.assertEqual(profile.process_grid, (2, 2))
+        # ...and its sweep (issue #512) takes the grid along each dimension alone, both
+        # orientations, and a rank count the cases' extents do not divide evenly.
+        grids = [s.process_grid for s in profile.sweep_shapes]
+        self.assertTrue(any(g[0] > 1 and g[1] == 1 for g in grids), grids)
+        self.assertTrue(any(g[0] == 1 and g[1] > 1 for g in grids), grids)
+        self.assertTrue(any(g[0] * g[1] == 3 for g in grids), grids)
+        self.assertTrue(all(g[0] * g[1] <= profile.ranks for g in grids), grids)
         self.assertEqual(profile.toolchain["language"], "fortran")
         self.assertNotIn("compiler", profile.toolchain)  # a wrapper target pins no compiler
         harness = tp.harness_node_key_for_target(REPO_ROOT, profile)
