@@ -9,7 +9,7 @@ dependencies:
   # too is refused (`profile_component_declared_twice`).
   components:
     - component_id: dynamics_shallow_water_source_2d_tc4_forcing
-      version_constraint: ">=0.1.0 <1.0.0"
+      version_constraint: ">=0.2.0 <1.0.0"
   profiles:
     - profile_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
       version_constraint: ">=0.1.0 <1.0.0"
