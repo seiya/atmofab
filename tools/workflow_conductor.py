@@ -407,9 +407,11 @@ _EXCERPT_LINE_CHARS = 160
 
 
 def _stderr_head_and_tail(stderr: str) -> dict[str, str]:
-    """`{stderr_head, stderr_tail}` of a failed run's stderr: its first `_SHAPE_STDERR_LINES`
-    lines and, when there are more than twice that many, its last ones (else `""`), each
-    bounded to `_SHAPE_STDERR_CHARS` characters from the end that joins the two."""
+    """`{stderr_head, stderr_tail}` of a failed run's stderr. One of at most
+    2 × `_SHAPE_STDERR_LINES` lines is kept whole as the head, bounded to 2 ×
+    `_SHAPE_STDERR_CHARS` characters, and the tail is `""`. A longer one keeps its first
+    `_SHAPE_STDERR_LINES` lines as the head and its last as the tail, each bounded to
+    `_SHAPE_STDERR_CHARS` characters from the end that joins the two."""
     lines = stderr.splitlines()
     if len(lines) <= 2 * _SHAPE_STDERR_LINES:
         return {"stderr_head": "\n".join(lines)[:2 * _SHAPE_STDERR_CHARS], "stderr_tail": ""}
@@ -11310,8 +11312,8 @@ class Conductor:
         `shape_runs` holds one entry per shape the run launched — the certified shape first
         (`target_profile.TargetProfile.execution_shapes`) — as `{shape, dir, ok, command_id}`:
         its `ExecutionShape`, the directory the run wrote, whether `run_program` succeeded and
-        its log entry, with `failure` when it did not: `{return_code, error, stderr_tail}` for a
-        run that failed, `{not_run}` naming the command that stopped it for one that did not
+        its log entry, with `failure` when it did not: `{return_code, error, stderr_head,
+        stderr_tail}` (`_stderr_head_and_tail`) for a run that failed, `{not_run}` naming the command that stopped it for one that did not
         run. The row records it as `run_failure`, and the repair excerpt quotes it. Each shape is compared with the reference by the statuses of its
         `diagnostics.json` checks, its verdict, and its captured state through the IR's
         cross-target predicates (`_shape_state_agreement`); a shape that failed to run is a

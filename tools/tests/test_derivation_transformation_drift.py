@@ -939,7 +939,7 @@ PINNED_RENDER: dict[str, str] = {
     # lines are split onto a block `if`. (Measured by diffing `render_tuple()` against
     # origin/main b60c642c's: those two rows.) Re-pinned in place again by the closing-run
     # fix: the runner's ABI comment says a component's model names no harness operation.
-    "render-10": "fb0d829a614eb523bccb23ffd2eff096561cf5d6429baf5c474d909226da954f",
+    "render-10": "f69756d2dd31d0871a4a8ff94bbf17b68f65a763cceb17c22c09e5e41e7e5eff",
     # Re-pinned (issue #512, PR-4b), behaviour-preserving: `tools/host_execution.py` gains
     # `serial_execution_env` and an execution-shape argument to `launch_shape`; the renderers
     # read `perf_parallelism`, which is unchanged, and render nothing the module moved.
@@ -1046,7 +1046,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "c5b68eea0102a6340392739d952dbbf13fda9698ba6634fb024eaae3f7785d11",
+    "build-2": "5b48ee7cbac94d7dc27fc8c8ccdcc95f6c7dbc10787aa2551418723669df71bf",
     # Re-pinned (issue #512, PR-4b), behaviour-preserving: `tools/host_execution.py` gains
     # `serial_execution_env` and an execution-shape argument to `launch_shape`, whose default is
     # the certified shape — the one the build's backstop call asks for, with the argv prefix,
@@ -1424,7 +1424,9 @@ PINNED_EXECUTE: dict[str, str] = {
     # and the shapes — `_shape_state_agreement`, `_quality_check_failure_lines` and its stderr
     # bounds, `ExecutionShape`, `CERTIFIED_SHAPE_LABEL` and the three `TargetProfile` shape
     # properties (a later edit to any of them moved no pin before); the failure record moved.
-    "execute-10": "18acf3de23c2f17f19b6d5056a755440bf205d5294315bec10a8c717762d206f",
+    # Round 2 added `_stderr_head_and_tail` and the excerpt bounds (`_EXCERPT_*`) to the
+    # tuple; round 3 stopped the local sweep at its first failing shape.
+    "execute-10": "c274efe8a29659110643cae39921cfb18b0e79ab4a050802f650fb6d9909df80",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

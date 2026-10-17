@@ -26,8 +26,8 @@ class LaunchShapeTests(unittest.TestCase):
         self.assertEqual(shape.env, expected)
 
     def test_the_thread_count_is_the_profiles_not_a_default(self) -> None:
-        # Driven off the only value every profile carries today (1): a hardcoded 1 must fail.
-        # The loader refuses > 1 for now, so the document is varied past it on purpose.
+        # A value no checked-in profile's certified run carries (3): a hardcoded default must
+        # fail.
         three = profile_with(execution={"threads_per_rank": 3})
         self.assertEqual(set(he.launch_shape(three).env.values()), {"3"})
 

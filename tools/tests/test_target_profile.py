@@ -189,7 +189,8 @@ class CheckedInProfileTests(unittest.TestCase):
         profile's document — and so no sha256, and no Generate / Build / Validate key of its
         target — moves. The digests are the ones at origin/main fcced0b6, before the key
         existed; a profile edited on purpose updates its row here: `fortran_cpu` was, by issue
-        #512 PR-4b (four threads per rank and a thread sweep), which re-derives its Validates."""
+        #512 PR-4b (four threads per rank and a thread sweep), which re-derives its Generates, Builds
+        and Validates (the profile hash is in the generate and validate keys)."""
         expected = {
             "cpp_gpu": "sha256:5d7efb15cbc7c40eb63a9c541bce3600e9c418e7f444813a8456ec13a7d4140b",
             "fortran_cpu": "sha256:826abe218051af61ab1f2541ab7ed40f3d4b227c435489653b9edbd1ae149e55",

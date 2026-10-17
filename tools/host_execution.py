@@ -206,11 +206,13 @@ def _runtime_probe(parallel_backend: str) -> tuple[str, ...] | None:
 
 
 def serial_execution_env(parallel_backend: str) -> dict[str, str]:
-    """The environment the quality check's serial reference runs with (issue #512): one thread,
-    and — for a backend that declares a launcher, whose binary the re-run starts as one process
-    without it — the process grid `(1, 1)` imposed explicitly, so neither a thread variable nor
-    a grid variable the host process carries reaches it. Refused like `launch_shape`'s for a
-    backend with no launch environment."""
+    """The environment the quality check's serial reference runs with (issue #512): the parallel
+    backend's launch environment for one thread and — for a backend that declares a launcher,
+    whose binary the re-run starts as one process without it — the process grid `(1, 1)`, so
+    the variables that backend sets cannot reach the reference from the host process at other
+    values. A variable the backend does not set (a thread variable under `mpi`; anything under
+    a backend whose environment is empty) is inherited, as it is by every run. Refused like
+    `launch_shape`'s for a backend with no launch environment."""
     return _execution_env(parallel_backend, 1,
                           (1, 1) if declares_launcher(parallel_backend) else None)
 
