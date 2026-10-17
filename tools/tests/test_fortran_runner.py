@@ -717,8 +717,9 @@ class RenderShapeTest(unittest.TestCase):
         self.assertIn("call harness_fortran_cpu__write_metrics_basis(mb_entries, 3)", self.txt)
         self.assertIn("call harness_fortran_cpu__write_diagnostics(results, ncases)", self.txt)
         self.assertIn("harness_fortran_cpu__write_perf(", self.txt)
-        # perf parallelism: mpi=1, threads from IR (1), gpu=0
-        self.assertIn("steps_total, cells_total, walltime, 1, 1, 0)", self.txt)
+        # perf parallelism: mpi=1, the target profile's threads per rank, gpu=0
+        self.assertIn(f"steps_total, cells_total, walltime, 1, "
+                      f"{_TARGET_PROFILE.threads_per_rank}, 0)", self.txt)
 
     def test_no_forbidden_outputs(self) -> None:
         for forbidden in ("verdict.json", "aggregate_verdict", "summary.json", "trial_meta"):

@@ -26,8 +26,8 @@ class LaunchShapeTests(unittest.TestCase):
         self.assertEqual(shape.env, expected)
 
     def test_the_thread_count_is_the_profiles_not_a_default(self) -> None:
-        # Driven off the only value every profile carries today (1): a hardcoded 1 must fail.
-        # The loader refuses > 1 for now, so the document is varied past it on purpose.
+        # A value no checked-in profile's certified run carries (3): a hardcoded default must
+        # fail.
         three = profile_with(execution={"threads_per_rank": 3})
         self.assertEqual(set(he.launch_shape(three).env.values()), {"3"})
 
@@ -401,3 +401,69 @@ class OpenmpExecutionEnvTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ExecutionShapeLaunchTests(unittest.TestCase):
+    """Issue #512: a sweep shape is launched with its own rank count, grid and threads, without
+    the device trace; the quality check's serial reference runs one thread and — for a launcher
+    backend — the grid (1, 1), whatever the host process carries."""
+
+    def test_a_grid_shape_launches_its_ranks_in_its_grid(self) -> None:
+        launcher = registry.capability_module("parallel", "mpi", "launcher")
+        mpi = profile_with(parallel={"backend": "mpi"},
+                           execution={"threads_per_rank": 1, "ranks": 4, "process_grid": [2, 2],
+                                      "sweep": {"grids": [[3, 1], [1, 2]]}})
+        certified = he.launch_shape(mpi)
+        self.assertEqual(certified.argv_prefix, tuple(launcher.argv_prefix(4)))
+        self.assertEqual(certified.env, {"ATMOFAB_PROCESS_GRID": "2,2"})
+        self.assertEqual(he.launch_shape(mpi, None, mpi.certified_shape), certified)
+        for shape, ranks, grid in zip(mpi.sweep_shapes, (3, 2), ("3,1", "1,2")):
+            with self.subTest(shape=shape.label):
+                launch = he.launch_shape(mpi, None, shape)
+                self.assertEqual(launch.argv_prefix, tuple(launcher.argv_prefix(ranks)))
+                self.assertEqual(launch.env, {"ATMOFAB_PROCESS_GRID": grid})
+
+    def test_a_thread_shape_launches_its_thread_count(self) -> None:
+        cpu = profile_with(execution={"threads_per_rank": 4,
+                                      "sweep": {"threads_per_rank": [2, 3]}})
+        self.assertEqual(he.launch_shape(cpu).env,
+                         {"OMP_NUM_THREADS": "4", "OMP_THREAD_LIMIT": "4"})
+        self.assertEqual([he.launch_shape(cpu, None, s).env["OMP_NUM_THREADS"]
+                          for s in cpu.sweep_shapes], ["2", "3"])
+
+    def test_a_sweep_shape_runs_without_the_device_trace(self) -> None:
+        from tools.target_profile import ExecutionShape
+        gpu = profile_with(hardware={"class": "gpu", "architecture": "sm_90"},
+                           parallel={"backend": "cuda"})
+        from tools.execution_sites import Site
+        site = Site("gpu_box", ("gpu",), host="box", workdir="/w")
+        self.assertIsNotNone(he.launch_shape(gpu, site).trace)
+        other = he.launch_shape(gpu, site, ExecutionShape("other", 1, 1, None))
+        self.assertIsNone(other.trace)
+        self.assertEqual(other.argv_prefix, ())
+
+    def test_the_serial_reference_runs_one_thread_and_one_rank(self) -> None:
+        self.assertEqual(he.serial_execution_env("openmp"),
+                         {"OMP_NUM_THREADS": "1", "OMP_THREAD_LIMIT": "1"})
+        self.assertEqual(he.serial_execution_env("mpi"), {"ATMOFAB_PROCESS_GRID": "1,1"})
+        self.assertEqual(he.serial_execution_env("cuda"), {})
+        self.assertEqual(he.serial_execution_env("none"), {})
+
+    def test_a_shape_the_backend_refuses_is_unavailable(self) -> None:
+        from tools.target_profile import ExecutionShape
+        for backend in ("mpi", "cuda"):
+            with self.subTest(backend=backend):
+                module = registry.capability_module("parallel", backend, "execution_env")
+                with self.assertRaises(ValueError):
+                    module.environment(2)
+                self.assertEqual(module.environment(1), {})
+                profile = profile_with(parallel={"backend": backend},
+                                       hardware={"class": "cpu"} if backend == "mpi" else
+                                       {"class": "gpu", "architecture": "sm_90"})
+                site = None
+                if backend == "cuda":
+                    from tools.execution_sites import Site
+                    site = Site("gpu_box", ("gpu",), host="box", workdir="/w")
+                with self.assertRaises(he.LaunchUnavailable) as ctx:
+                    he.launch_shape(profile, site, ExecutionShape("threads_2", 2, 1, None))
+                self.assertIn("execution shape threads_2", str(ctx.exception))

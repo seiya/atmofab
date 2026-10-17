@@ -29,8 +29,13 @@ make test                                                           # the qualit
   `(ranks, 1)` when it is unset (`harness_fortran_cpu_mpi` §3.3, issue #512). The launch shape
   sets it from the profile's `execution.process_grid` (`tools/backends/parallel/mpi/
   execution.py`; `fortran_cpu_mpi` imposes `[2, 2]`), and sets nothing when the profile states
-  none. The singleton `make test` re-run is not handed it, so it runs on `(1, 1)` — unless the
-  conductor's own environment carries the variable, which it inherits.
+  none. The singleton `make test` re-run is handed `1,1`, so it runs on `(1, 1)` whatever the
+  conductor's own environment carries (`host_execution.serial_execution_env`).
+- Each grid of the profile's `execution.sweep.grids` is a further run of the same binary and
+  cases (issue #512): `mpirun -n <p1 p2>` with `ATMOFAB_PROCESS_GRID=p1,p2`, after the quality
+  check, each compared with the singleton re-run (`phase_04_validate.md` §4-2). A grid arranges
+  at most `execution.ranks` ranks; `fortran_cpu_mpi` sweeps `[4, 1]`, `[1, 4]`, `[3, 1]`,
+  `[1, 3]`, `[2, 1]`, `[1, 2]`.
 - The build control file pins its compiler variable to `mpif90`, and the `Generate.gate` syntax
   stage of the compiler the wrapper runs (`WRAPPED_COMPILER`, `gfortran`) runs with `mpif90` at
   `argv[0]`. The compiler's adapter — its flags and its diagnostics — is unchanged. A target
@@ -49,6 +54,8 @@ make test                                                           # the qualit
 | `trial_meta.json#environment.launch.env` | `{"ATMOFAB_PROCESS_GRID": "p1,p2"}` when the profile imposes a grid, `{}` otherwise |
 | `perf.json#parallelism.process_grid` | `[p1, p2]`, the grid the harness arranged the ranks in; the post-execute gate requires the profile's `execution.process_grid`, or `[execution.ranks, 1]` when it imposes none (issue #512). The harness writes it from the grid it established; on the harness's own Validate run the gate also requires the self-test snapshots' `p1`, `p2` (the grid `__grid_dims` reports) to be the launch grid, so a perf record that echoes the imposed grid while the harness arranged its ranks another way is refused (`validate_pipeline_semantics._validate_harness_reported_grid`) |
 | `quality_check.json#comparison.reference.ranks` / `.candidate.ranks` | `execution.ranks` / `1`; the post-execute gate requires both |
+| `quality_check.json#shapes[]` | one row per execution shape, the certified run's first: its `ranks` and `process_grid`, and `observed_mpi_ranks` / `observed_process_grid`, what its harness wrote in `perf.json`; the post-execute gate requires the rows to be the profile's shapes and each observation to be its shape's (issue #512) |
+| `trial_meta.json#environment.sweep[]` | each sweep shape's launch: `["mpirun", "-n", "<p1 p2>"]` and `{"ATMOFAB_PROCESS_GRID": "p1,p2"}` |
 | build key `toolchain.compiler_wrapper` / `toolchain.parallel_runtime` / `toolchain.compiler_version` | `mpif90`; the first line of `mpif90 -show`, the runtime installation the binary links against; and the compiler's version asked as `mpif90 --version`, which the wrapper passes to the compiler it is configured with. A change of installation or of that compiler is another build. The syntax stage's recorded `compiler_version` is asked the same way |
 
 ## 3. Requirements on the host
@@ -108,8 +115,10 @@ there.
 
 ## 5. Out of scope
 
-- More than one thread per rank (`execution.threads_per_rank` is 1 on every profile), and a
-  hybrid model with threads inside each rank.
+- More than one thread per rank, and a hybrid model with threads inside each rank: the
+  backend's launch environment refuses a thread count other than one, and the launch gate asks it
+  of `execution.threads_per_rank` and of each `execution.sweep.threads_per_rank`
+  (`target_profile._thread_count_violations`).
 - The presence floor of `mpi` in `Generate.static` (`parallel_directives`), and the
   distributed-state harness a domain-decomposed kernel calls. Both belong to later stages of
   issue #316.

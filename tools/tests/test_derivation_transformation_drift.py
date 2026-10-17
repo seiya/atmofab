@@ -43,6 +43,7 @@ from pathlib import Path
 import tools.derivation as d
 import tools.execution_sites as es
 import tools.orchestration_runtime as ort
+import tools.target_profile as tp
 import tools.workflow_conductor as wc
 
 _REPO = Path(wc.__file__).resolve().parents[1]
@@ -375,6 +376,22 @@ def execute_tuple() -> dict[str, str]:
         "Conductor._promote_run_evidence": _source_digest(wc.Conductor._promote_run_evidence),
         "Conductor._author_quality_check": _source_digest(wc.Conductor._author_quality_check),
         "Conductor._author_snapshot_schema": _source_digest(wc.Conductor._author_snapshot_schema),
+        # Issue #512: what the quality check compares each execution shape by (the state
+        # agreement), what it tells a repair (the failure lines and how much stderr they keep),
+        # and the shapes a profile names — the profile hash binds the YAML, not the code that
+        # turns it into shapes and labels.
+        "Conductor._shape_state_agreement": _source_digest(wc.Conductor._shape_state_agreement),
+        "Conductor._quality_check_failure_lines":
+            _source_digest(wc.Conductor._quality_check_failure_lines),
+        "workflow_conductor._SHAPE_STDERR_* / _EXCERPT_*":
+            json.dumps([wc._SHAPE_STDERR_LINES, wc._SHAPE_STDERR_CHARS,
+                        wc._EXCERPT_STDERR_HEAD, wc._EXCERPT_STDERR_TAIL,
+                        wc._EXCERPT_LINE_CHARS]),
+        "workflow_conductor._stderr_head_and_tail": _source_digest(wc._stderr_head_and_tail),
+        "target_profile.ExecutionShape": _source_digest(tp.ExecutionShape),
+        "target_profile.CERTIFIED_SHAPE_LABEL": tp.CERTIFIED_SHAPE_LABEL,
+        **{f"TargetProfile.{name}": _source_digest(getattr(tp.TargetProfile, name).fget)
+           for name in ("certified_shape", "sweep_shapes", "execution_shapes")},
     }
 
 
@@ -922,7 +939,13 @@ PINNED_RENDER: dict[str, str] = {
     # lines are split onto a block `if`. (Measured by diffing `render_tuple()` against
     # origin/main b60c642c's: those two rows.) Re-pinned in place again by the closing-run
     # fix: the runner's ABI comment says a component's model names no harness operation.
-    "render-10": "1a8602441c121673af4819425483d766510e6f778121e9439f2ca5aea5b3792d",
+    "render-10": "f69756d2dd31d0871a4a8ff94bbf17b68f65a763cceb17c22c09e5e41e7e5eff",
+    # Re-pinned (issue #512, PR-4b), behaviour-preserving: `tools/host_execution.py` gains
+    # `serial_execution_env` and an execution-shape argument to `launch_shape`; the renderers
+    # read `perf_parallelism`, which is unchanged, and render nothing the module moved.
+    # (Measured by diffing `render_tuple()` against origin/main 79e90e32's: that row and no
+    # other.) The digest `render-10` shipped with at 79e90e32:
+    "render-10@79e90e32": "1a8602441c121673af4819425483d766510e6f778121e9439f2ca5aea5b3792d",
     # Re-pinned (issue #469), behaviour-preserving: `make/control_file.py` gains
     # `CONTROL_FILE_BASENAMES`, the names `make` reads without `-f`, which `codegen_bundle`
     # derives its reserved bundle basenames from; nothing it renders moved. (Measured by diffing
@@ -1023,7 +1046,13 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "e2559263012048780bff1a791db971827b07bacf974ae55c55eeb9a945bcd92f",
+    "build-2": "5b48ee7cbac94d7dc27fc8c8ccdcc95f6c7dbc10787aa2551418723669df71bf",
+    # Re-pinned (issue #512, PR-4b), behaviour-preserving: `tools/host_execution.py` gains
+    # `serial_execution_env` and an execution-shape argument to `launch_shape`, whose default is
+    # the certified shape — the one the build's backstop call asks for, with the argv prefix,
+    # environment and refusals it had. (Measured by diffing `build_tuple()` against origin/main
+    # 79e90e32's: that row and no other.) The digest `build-2` shipped with at 79e90e32:
+    "build-2@79e90e32": "e2559263012048780bff1a791db971827b07bacf974ae55c55eeb9a945bcd92f",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build
@@ -1382,6 +1411,22 @@ PINNED_EXECUTE: dict[str, str] = {
     # backend's `execution_env`). Rows moved: `tools/host_execution.py` and the mpi
     # `execution_env` module.
     "execute-9": "498b82394e172d1a5c391e6a0e31e9596180770b52d29e5673cbf841cc165b52",
+    # execute-10 (issue #512, PR-4b): the binary also runs once per shape of the target's
+    # `execution.sweep`, the quality check's re-run is the serial reference (one thread, and the
+    # grid (1, 1) for a launcher backend), and `quality_check.json` compares every shape with it
+    # by check statuses, verdict and captured state under the IR's cross-target predicates
+    # (`shapes`); `trial_meta.json#environment` gains `sweep` and `serial_reference_env`. A bump:
+    # a certified execute-9 record carries no `shapes`, which the post-execute gate requires.
+    # Rows moved: `Conductor._execute_inproc`, `Conductor._author_quality_check`,
+    # `tools/host_execution.py`, and the mpi and cuda `execution_env` modules (a thread count
+    # other than one is refused).
+    # Re-pinned in place (unshipped) by round 1: the tuple gained what decides the comparison
+    # and the shapes — `_shape_state_agreement`, `_quality_check_failure_lines` and its stderr
+    # bounds, `ExecutionShape`, `CERTIFIED_SHAPE_LABEL` and the three `TargetProfile` shape
+    # properties (a later edit to any of them moved no pin before); the failure record moved.
+    # Round 2 added `_stderr_head_and_tail` and the excerpt bounds (`_EXCERPT_*`) to the
+    # tuple; round 3 stopped the local sweep at its first failing shape.
+    "execute-10": "c274efe8a29659110643cae39921cfb18b0e79ab4a050802f650fb6d9909df80",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

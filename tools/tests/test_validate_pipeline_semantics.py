@@ -667,6 +667,7 @@ def _create_minimal_execution_tree(
             "t": 0.0,
         },
     )
+    from tools.tests.target_fixtures import passing_shape_rows
     _write_json(
         node_dir / "quality_check.json",
         {
@@ -676,6 +677,7 @@ def _create_minimal_execution_tree(
                 "diagnostics_match": True,
                 "verdict_match": True,
             },
+            "shapes": passing_shape_rows(),
         },
     )
 
@@ -1577,6 +1579,9 @@ class PipelineHarnessDagTests(unittest.TestCase):
     def test_a_harness_validated_in_its_own_pipeline_completes_it(self) -> None:
         with tempfile.TemporaryDirectory() as tmp, _harness_validated_elsewhere():
             self.assertEqual(self._violations(Path(tmp)), [])
+
+
+_ABSENT = object()
 
 
 class ValidatePipelineSemanticsTests(unittest.TestCase):
@@ -9832,6 +9837,36 @@ end program shallow_water2d_runner
             )
             self.assertEqual([], violations)
 
+    def test_the_whole_validator_requires_every_execution_shape(self) -> None:
+        """Issue #512, at the validator's entry point rather than the check function: the
+        passing fixture's `quality_check.json` loses one execution shape of the fixture target
+        (whose checked-in profile sweeps its thread count), and the whole run names it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _seed_shape_expr_schema_into(repo_root)
+            _create_minimal_execution_tree(
+                repo_root,
+                dep_spec_id="dynamics_shallow_water_flux_2d_rusanov_p0",
+                model_text=("module shallow_water2d_model\n"
+                            "use dynamics_shallow_water_flux_2d_rusanov_p0_model\n"
+                            "implicit none\ncontains\nsubroutine solve(flag)\n"
+                            "  logical, intent(out) :: flag\n"
+                            "  call dynamics_shallow_water_flux_2d_rusanov_p0__compute_flux(flag)\n"
+                            "end subroutine solve\nend module shallow_water2d_model\n"),
+                runner_text=("program shallow_water2d_runner\nimplicit none\n"
+                             "write(*,*) 'ok'\nend program shallow_water2d_runner\n"),
+                run_command=["./simulate", "workspace/spec.ir.yaml", "workspace/outdir"],
+            )
+            paths = [q for q in (repo_root / "workspace" / "pipelines").rglob("quality_check.json")]
+            self.assertEqual(len(paths), 1, paths)
+            self.assertEqual(validate(repo_root=repo_root, workspace_root="workspace"), [])
+            quality = json.loads(paths[0].read_text(encoding="utf-8"))
+            self.assertGreater(len(quality["shapes"]), 1)
+            quality["shapes"] = quality["shapes"][:-1]
+            paths[0].write_text(json.dumps(quality), encoding="utf-8")
+            violations = validate(repo_root=repo_root, workspace_root="workspace")
+            self.assertTrue(any("execution shapes are" in v for v in violations), violations)
+
     def test_detects_non_isolated_step_context_when_required(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -14743,6 +14778,99 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
             self.assertTrue(
                 any("canonical command log placement" in v for v in violations),
                 violations)
+
+    def test_the_quality_check_lists_every_execution_shape_and_each_holds(self) -> None:
+        """Issue #512: `quality_check.json#shapes` lists exactly the target's execution shapes
+        (the certified one, then each of `execution.sweep`'s), in order, with each shape's
+        ranks, grid and threads, and every comparison with the serial reference holding; a
+        launcher target's harness reported each shape's rank count and grid. Driven over a
+        missing record, a missing / extra / reordered shape, a wrong declared member, each
+        failed comparison, and each wrong observation."""
+        from unittest import mock
+
+        from tools.tests.target_fixtures import FORTRAN_CPU, passing_shape_rows, profile_with
+        mpi = profile_with(parallel={"backend": "mpi"},
+                           execution={"threads_per_rank": 1, "ranks": 4, "process_grid": [2, 2],
+                                      "sweep": {"grids": [[4, 1], [1, 3]]}})
+
+        def run(target, shapes) -> list[str]:
+            with tempfile.TemporaryDirectory() as tmp:
+                node_dir = Path(tmp) / "node"
+                node_dir.mkdir()
+                doc = {"status": "pass"}
+                if shapes is not _ABSENT:
+                    doc["shapes"] = shapes
+                _write_json(node_dir / "quality_check.json", doc)
+                execution = vps.NodeExecution(node_key="component/x@0.1.0", node_dir=node_dir,
+                                              exec_dir=node_dir, pipeline_dir=Path(tmp))
+                violations: list[str] = []
+                with mock.patch.object(vps, "_pipeline_target", return_value=target):
+                    vps._validate_execution_shapes(Path(tmp), execution, violations)
+                return violations
+
+        for target in (FORTRAN_CPU, mpi):
+            with self.subTest(target=target.parallel_backend, row="clean"):
+                self.assertGreater(len(target.execution_shapes), 1)
+                self.assertEqual(run(target, passing_shape_rows(target)), [])
+        # A target with no sweep has one shape, the certified run's.
+        plain = profile_with(execution={"threads_per_rank": 1})
+        self.assertEqual(run(plain, passing_shape_rows(plain)), [])
+        self.assertEqual(len(passing_shape_rows(plain)), 1)
+
+        def edited(target, index, **changes):
+            rows = passing_shape_rows(target)
+            for key, value in changes.items():
+                if value is _ABSENT:
+                    rows[index].pop(key, None)
+                else:
+                    rows[index][key] = value
+            return rows
+
+        good = passing_shape_rows(mpi)
+        refused = {
+            "absent": (mpi, _ABSENT, "shapes must be a list"),
+            "not a list": (mpi, {"certified": {}}, "shapes must be a list"),
+            "missing shape": (mpi, good[:-1], "execution shapes are"),
+            "extra shape": (mpi, good + [dict(good[-1], label="grid_2x1")],
+                            "execution shapes are"),
+            "reordered": (mpi, [good[0], good[2], good[1]], "execution shapes are"),
+            "certified dropped": (mpi, good[1:], "execution shapes are"),
+            "ranks": (mpi, edited(mpi, 1, ranks=3), "shapes[grid_4x1].ranks"),
+            "grid": (mpi, edited(mpi, 2, process_grid=[3, 1]), "shapes[grid_1x3].process_grid"),
+            "threads": (FORTRAN_CPU, edited(FORTRAN_CPU, 1, threads_per_rank=3),
+                        "shapes[threads_2].threads_per_rank"),
+            "run failed": (FORTRAN_CPU, edited(FORTRAN_CPU, 2, run_ok=False),
+                           "shapes[threads_3].run_ok must be true"),
+            "verdict absent": (mpi, edited(mpi, 0, verdict_available=_ABSENT),
+                               "shapes[certified].verdict_available must be true"),
+            "diagnostics": (mpi, edited(mpi, 1, diagnostics_match=False),
+                            "shapes[grid_4x1].diagnostics_match must be true"),
+            "verdict": (mpi, edited(mpi, 2, verdict_match=False),
+                        "shapes[grid_1x3].verdict_match must be true"),
+            "state disagrees": (mpi, edited(mpi, 1, state_agreement={"status": "disagree"}),
+                                "shapes[grid_4x1].state_agreement.status is 'disagree'"),
+            "state unevaluable": (FORTRAN_CPU, edited(FORTRAN_CPU, 1,
+                                                      state_agreement={"status": "unevaluable"}),
+                                  "state_agreement.status is 'unevaluable'"),
+            "state not run": (FORTRAN_CPU, edited(FORTRAN_CPU, 1,
+                                                  state_agreement={"status": "not_run"}),
+                              "state_agreement.status is 'not_run'"),
+            "state absent": (mpi, edited(mpi, 0, state_agreement=_ABSENT),
+                             "state_agreement.status is None"),
+            "observed ranks": (mpi, edited(mpi, 2, observed_mpi_ranks=4),
+                               "shapes[grid_1x3]: the harness reported mpi_ranks=4"),
+            "observed grid": (mpi, edited(mpi, 1, observed_process_grid=[1, 4]),
+                              "process_grid=[1, 4]"),
+            "observed bool": (mpi, edited(mpi, 0, observed_mpi_ranks=True), "mpi_ranks=True"),
+            "declared bool": (FORTRAN_CPU, edited(FORTRAN_CPU, 0, ranks=True),
+                              "shapes[certified].ranks is True"),
+        }
+        for name, (target, shapes, needle) in refused.items():
+            with self.subTest(row=name):
+                violations = run(target, shapes)
+                self.assertTrue(any(needle in v for v in violations), violations)
+        # A target without a launcher is not asked what its harness observed.
+        self.assertEqual(run(FORTRAN_CPU, edited(FORTRAN_CPU, 1, observed_mpi_ranks=9)), [])
 
     def test_a_launcher_run_reports_the_targets_rank_count(self) -> None:
         """Issue #316: under a launcher, the run's performance record states the target's rank

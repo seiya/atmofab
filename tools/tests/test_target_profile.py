@@ -48,6 +48,9 @@ class _ScratchRepo:
     def write(self, stem: str, **overrides: object) -> Path:
         doc = _checkout_doc()
         doc["target_id"] = stem
+        # One thread and no sweep: the checked-in profile's thread shape is its own parallel
+        # model's (issue #512), and the rows here vary the model.
+        doc["execution"] = {"threads_per_rank": 1}
         doc["harness"] = {"infrastructure_id": "harness_x", "version_constraint": ">=0.3.0 <1.0.0"}
         for dotted, value in overrides.items():
             obj = doc
@@ -139,6 +142,15 @@ class CheckedInProfileTests(unittest.TestCase):
                 REPO_ROOT, profile, node_key="problem/advdiff1d_linear@0.4.0",
                 until_phase=phase), [], phase)
 
+    def test_the_checked_in_cpu_profile_runs_threads_and_sweeps_them(self) -> None:
+        """Issue #512: `fortran_cpu`'s certified run is multi-threaded and its sweep varies the
+        count, so a race or a team-size dependence meets the one-thread serial reference."""
+        profile = tp.load_target_profile(REPO_ROOT, "fortran_cpu")
+        self.assertGreater(profile.threads_per_rank, 1)
+        counts = [s.threads_per_rank for s in profile.sweep_shapes]
+        self.assertTrue(counts and all(c > 1 for c in counts), counts)
+        self.assertEqual(tp.hardware_violations(profile), [])
+
     def test_the_checked_in_mpi_profile_launches_four_ranks_over_its_own_harness(self) -> None:
         """Issue #316 (R4-c PR-3): `fortran_cpu_mpi` names the `mpi` parallel backend with four
         ranks and the distributed-state harness, and passes the launch gate for that harness at
@@ -155,6 +167,13 @@ class CheckedInProfileTests(unittest.TestCase):
         # that tells the harness's rank numbering and corner exchange apart.
         self.assertTrue(profile.declares_process_grid)
         self.assertEqual(profile.process_grid, (2, 2))
+        # ...and its sweep (issue #512) takes the grid along each dimension alone, both
+        # orientations, and a rank count the cases' extents do not divide evenly.
+        grids = [s.process_grid for s in profile.sweep_shapes]
+        self.assertTrue(any(g[0] > 1 and g[1] == 1 for g in grids), grids)
+        self.assertTrue(any(g[0] == 1 and g[1] > 1 for g in grids), grids)
+        self.assertTrue(any(g[0] * g[1] == 3 for g in grids), grids)
+        self.assertTrue(all(g[0] * g[1] <= profile.ranks for g in grids), grids)
         self.assertEqual(profile.toolchain["language"], "fortran")
         self.assertNotIn("compiler", profile.toolchain)  # a wrapper target pins no compiler
         harness = tp.harness_node_key_for_target(REPO_ROOT, profile)
@@ -169,10 +188,12 @@ class CheckedInProfileTests(unittest.TestCase):
         """Issue #316: `execution.ranks` is optional with a default of 1 so that no existing
         profile's document — and so no sha256, and no Generate / Build / Validate key of its
         target — moves. The digests are the ones at origin/main fcced0b6, before the key
-        existed; a profile edited on purpose updates its row here."""
+        existed; a profile edited on purpose updates its row here: `fortran_cpu` was, by issue
+        #512 PR-4b (four threads per rank and a thread sweep), which re-derives its Generates, Builds
+        and Validates (the profile hash is in the generate and validate keys)."""
         expected = {
             "cpp_gpu": "sha256:5d7efb15cbc7c40eb63a9c541bce3600e9c418e7f444813a8456ec13a7d4140b",
-            "fortran_cpu": "sha256:24e5b2f02d275829459b2d7e93d575370821347366936c6311b1d65262c3bfd4",
+            "fortran_cpu": "sha256:826abe218051af61ab1f2541ab7ed40f3d4b227c435489653b9edbd1ae149e55",
         }
         got = {tid: tp.load_target_profile(REPO_ROOT, tid).sha256 for tid in expected}
         self.assertEqual(got, expected)
@@ -301,15 +322,62 @@ class LoaderTests(unittest.TestCase):
             with self.subTest(field=dotted):
                 self.assertIn(needle, self._refusal(**{dotted: value}))
 
-    def test_more_than_one_thread_per_rank_is_refused_for_now(self) -> None:
-        """Validate.execute's run is the single-thread reference of the quality check
-        (phase_04_validate.md §4-2): a profile running more threads would leave that
-        comparison two parallel runs, a quality certification that tested nothing."""
-        for threads in (2, 4):
-            with self.subTest(threads=threads):
-                reason = self._refusal(execution__threads_per_rank=threads)
-                self.assertIn("threads_per_rank", reason)
-                self.assertIn("single-thread reference", reason)
+    def test_more_than_one_thread_per_rank_loads(self) -> None:
+        """Issue #512: the quality check's serial reference is its own one-thread re-run, so the
+        certified run may run more threads; whether the backend runs them is the launch gate's
+        (`LaunchGateTests.test_a_thread_count_the_backend_refuses_is_refused`)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            repo.write("t1", execution__threads_per_rank=4)
+            self.assertEqual(tp.load_target_profile(repo.root, "t1").threads_per_rank, 4)
+
+    def test_the_sweep_grammar(self) -> None:
+        """Issue #512: `execution.sweep` names `grids` and/or `threads_per_rank`, each a
+        non-empty list of distinct values; a grid is two integers >= 1 of at most
+        `execution.ranks` ranks, never `[1, 1]` (the serial reference) or the certified grid; a
+        thread count is >= 2 and not the certified one."""
+        refused = {
+            "empty mapping": ({}, "non-empty mapping"),
+            "not a mapping": ([2], "non-empty mapping"),
+            "unknown key": ({"block": [1]}, "unknown key 'block'"),
+            "empty grids": ({"grids": []}, "non-empty list of [p1, p2]"),
+            "grid of one": ({"grids": [[2]]}, "non-empty list of [p1, p2]"),
+            "zero grid": ({"grids": [[0, 2]]}, "non-empty list of [p1, p2]"),
+            "bool grid": ({"grids": [[True, 2]]}, "non-empty list of [p1, p2]"),
+            "repeated grid": ({"grids": [[2, 1], [2, 1]]}, "listed twice"),
+            "serial grid": ({"grids": [[1, 1]]}, "serial reference"),
+            "certified grid": ({"grids": [[2, 2]]}, "certified run's own grid"),
+            "too many ranks": ({"grids": [[5, 1]]}, "more than execution.ranks"),
+            "one thread": ({"threads_per_rank": [1]}, "integers >= 2"),
+            "empty threads": ({"threads_per_rank": []}, "integers >= 2"),
+            "repeated threads": ({"threads_per_rank": [3, 3]}, "listed twice"),
+            "certified threads": ({"threads_per_rank": [2]}, "certified run's own"),
+        }
+        base = {"threads_per_rank": 2, "ranks": 4, "process_grid": [2, 2]}
+        for name, (sweep, needle) in refused.items():
+            with self.subTest(name):
+                self.assertIn(needle, self._refusal(execution={**base, "sweep": sweep}))
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            repo.write("t1", execution={**base, "sweep": {"grids": [[4, 1], [1, 3]],
+                                                          "threads_per_rank": [3]}})
+            profile = tp.load_target_profile(repo.root, "t1")
+            self.assertEqual([s.record() for s in profile.execution_shapes], [
+                {"label": "certified", "threads_per_rank": 2, "ranks": 4, "process_grid": [2, 2]},
+                {"label": "grid_4x1", "threads_per_rank": 2, "ranks": 4, "process_grid": [4, 1]},
+                {"label": "grid_1x3", "threads_per_rank": 2, "ranks": 3, "process_grid": [1, 3]},
+                {"label": "threads_3", "threads_per_rank": 3, "ranks": 4,
+                 "process_grid": [2, 2]}])
+            # Without an imposed grid the certified one is (ranks, 1), and a thread shape
+            # imposes none either.
+            repo.write("t1", execution={"threads_per_rank": 1, "ranks": 2,
+                                        "sweep": {"threads_per_rank": [2]}})
+            self.assertIn("certified run's own grid", self._refusal(
+                execution={"threads_per_rank": 1, "ranks": 2, "sweep": {"grids": [[2, 1]]}}))
+            profile = tp.load_target_profile(repo.root, "t1")
+            self.assertEqual(profile.sweep_shapes[0].record(),
+                             {"label": "threads_2", "threads_per_rank": 2, "ranks": 2,
+                              "process_grid": None})
 
     def test_the_rank_count_is_optional_and_a_positive_integer(self) -> None:
         """Issue #316: `execution.ranks` defaults to 1 and, when stated, is an integer >= 1."""
@@ -381,9 +449,12 @@ class SchemaAgreementTests(unittest.TestCase):
                 self.assertIs(node["additionalProperties"], False)
                 self.assertEqual(set(node["required"]), set(required))
                 self.assertEqual(set(node["properties"]), set(required | optional))
-        self.assertEqual(
-            schema["properties"]["execution"]["properties"]["threads_per_rank"],
-            {"type": "integer", "minimum": 1, "maximum": 1})
+        execution = schema["properties"]["execution"]["properties"]
+        self.assertEqual({k: v for k, v in execution["threads_per_rank"].items()
+                          if k != "description"}, {"type": "integer", "minimum": 1})
+        # The sweep's members are the loader's.
+        self.assertEqual(set(execution["sweep"]["properties"]), set(tp.SWEEP_KEYS))
+        self.assertFalse(execution["sweep"]["additionalProperties"])
         self.assertEqual(schema["properties"]["target_profile_version"]["enum"],
                          [tp.TARGET_PROFILE_VERSION])
         # An open token, like every other axis value: the vocabulary is the registry's
@@ -427,6 +498,44 @@ class LaunchGateTests(unittest.TestCase):
                     # reason is worded differently).
                     if dotted != "parallel__backend":
                         self.assertIn("is not a declared", violations[0])
+
+    def test_a_thread_count_the_backend_refuses_is_refused(self) -> None:
+        """Issue #512: every thread count a rank runs — the certified one and each of the
+        sweep's — must be one the parallel backend's launch environment admits. OpenMP runs any
+        count; MPI and CUDA run one thread per rank and refuse more; a backend whose launch
+        environment is the neutral core's empty one (`none`) runs one thread whatever it is
+        told. One thread is admitted everywhere, and the refusal names the member."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            self.assertEqual(tp.hardware_violations(self._profile(
+                repo, execution={"threads_per_rank": 4,
+                                 "sweep": {"threads_per_rank": [2, 3]}})), [])
+            for backend in ("mpi", "cuda", "none"):
+                for execution, where in (
+                        ({"threads_per_rank": 2}, "execution.threads_per_rank: "),
+                        ({"threads_per_rank": 1, "sweep": {"threads_per_rank": [3]}},
+                         "execution.sweep.threads_per_rank: ")):
+                    with self.subTest(backend=backend, execution=execution):
+                        violations = tp.hardware_violations(self._profile(
+                            repo, parallel__backend=backend, execution=execution))
+                        self.assertTrue(any(v.startswith(where) and backend in v
+                                            for v in violations), violations)
+                with self.subTest(backend=backend, threads=1):
+                    self.assertFalse(any("threads" in v for v in tp.hardware_violations(
+                        self._profile(repo, parallel__backend=backend))))
+
+    def test_a_grid_sweep_needs_a_launcher(self) -> None:
+        """Issue #512: a sweep of process grids arranges ranks a launcher starts."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            execution = {"threads_per_rank": 1, "ranks": 4, "sweep": {"grids": [[2, 1]]}}
+            needle = "execution.sweep.grids: a process grid arranges the ranks a launcher starts"
+            for backend in ("openmp", "none"):
+                with self.subTest(backend=backend):
+                    self.assertTrue(any(v.startswith(needle) for v in tp.hardware_violations(
+                        self._profile(repo, parallel__backend=backend, execution=execution))))
+            self.assertFalse(any(v.startswith(needle) for v in tp.hardware_violations(
+                self._profile(repo, parallel__backend="mpi", execution=execution))))
 
     def test_more_ranks_than_one_need_a_launcher_at_every_phase(self) -> None:
         """Issue #316: without a launcher the binary runs as one process whatever the profile

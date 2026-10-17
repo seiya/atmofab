@@ -28,7 +28,7 @@ A target profile requires the following fields. `spec/schema/targets/target_prof
 - `toolchain.standard` (the language standard spelled the way the compiler names it; it is passed verbatim to the compiler driver, so an elided spelling is rejected by the driver).
 - `toolchain.build_system` (the `build_system` axis value).
 - `parallel.backend` (the `parallel` axis value).
-- `execution.threads_per_rank` (the loader accepts only `1`; `docs/GLOSSARY.md` §1 `target profile`).
+- `execution.threads_per_rank`, and the optional `execution.ranks`, `execution.process_grid` and `execution.sweep` (the further shapes the Validate run launches the binary in, each compared with a one-process, one-thread serial reference; `docs/GLOSSARY.md` §1 `target profile`, `execution-shape sweep`).
 - `harness` (`infrastructure_id`, `version_constraint`): the `infrastructure` node every non-infrastructure node built for this target runs over. The host resolves it to the highest catalog version that satisfies the constraint (`tools/target_profile.py:harness_node_key_for_target`).
 
 Rules:
