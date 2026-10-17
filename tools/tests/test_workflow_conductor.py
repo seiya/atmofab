@@ -17779,8 +17779,10 @@ class DeterministicBuildTest(unittest.TestCase):
 
     def test_execute_inproc_a_sweep_shape_that_fails_routes_back_to_generate(self) -> None:
         """A shape whose run fails, or whose harness reports another grid, fails the quality
-        check (`quality_check_mismatch`, a warm Generate repair) with an excerpt naming the
-        shape — the certified run having passed."""
+        check with an excerpt naming the shape — the certified run having passed. The gate is
+        answered 0 here (`_drive_traced_execute`), so the category is the quality check's own,
+        `quality_check_mismatch`; in a real run the post-execute gate refuses the same record
+        first and the category is `post_execute_violation`, with the same warm route."""
         from unittest import mock
 
         from tools.tests.target_fixtures import profile_with
