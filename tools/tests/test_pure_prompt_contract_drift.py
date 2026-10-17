@@ -1009,8 +1009,11 @@ PINNED: dict[str, str] = {
     # operations a case calls on a block accept — at `ng` alone a component whose operation
     # refuses a one-cell block failed its guard under the grid (4, 1) the sweep runs, and
     # deadlocked under (3, 1). Members moved: `generate_generate.txt` §target_lowering_floor,
-    # `generate_verify.txt` §checklist_g6_floor_scope.
-    "pure-79": "cb6d6c25057fffdb917125eccc010704ac2a8617418041e383440786e2642bf8",
+    # `generate_verify.txt` §checklist_g6_floor_scope. Re-pinned in place (unshipped) by round 3:
+    # the `mpi` fragments say the sweep's runs start fewer than `execution.ranks` processes, and
+    # the `openmp` fragments (§target_lowering_floor, §checklist_g6_floor_scope) say a region's
+    # team is never fixed inside the kernel — the thread sweep's comparison sees one width then.
+    "pure-79": "721deedaac8c3a38affeda95e4dd0a856b3c4b753fc35b7df1bb87983f0eadfe",
 }
 
 

@@ -86,4 +86,9 @@ the target profile's `execution.threads_per_rank` (`tools/backends/parallel/open
 it, and the quality check's serial reference runs with both set to `1`; each run's check
 statuses, verdict and captured state are compared with the reference's
 (`docs/workflow/phases/phase_04_validate.md` §4-2, issue #512), so a race, an unprotected
-reduction into the state, or a loop whose result depends on the team size fails there.
+reduction into the state, or a loop whose result depends on the team size fails there. That holds
+for a region that takes the width the environment sets: a kernel that fixes a region's team
+itself (a `num_threads(...)` or `if(...)` clause, `omp_set_num_threads`) runs that region at
+one width under every launch, and nothing deterministic observes the width a region ran at —
+the producer is told not to and the `openmp` reviewer fragment makes it a `Generate.verify` G6
+finding.
