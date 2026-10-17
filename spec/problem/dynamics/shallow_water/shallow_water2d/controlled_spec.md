@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `shallow_water2d`
-- `spec_version`: `0.4.6`
+- `spec_version`: `0.4.7`
 - `status`: `controlled_draft`
 - `spec_kind`: `problem`
 - `domain`: `dynamics`
@@ -39,6 +39,8 @@ The coordinate system is 2D Cartesian coordinates, the coordinate names are `x`,
 - `eta`: free-surface elevation, `eta=h+z_b`, unit `m`
 
 The derived variables are `u=hu/h`, `v=hv/h`, and `c=sqrt(g*h)`. `h<=0` is invalid input.
+
+The equations of §1 are invariant under the exchange of the two axes, $(h, hu, hv)(x, y)\to(h, hv, hu)(y, x)$ with $z_b(x, y)\to z_b(y, x)$, under the reflection $x\to L_x-x$ with $hu\to-hu$, and under the reflection $y\to L_y-y$ with $hv\to-hv$, each with the bottom topography transformed the same way. The position of the cone of §6 is an input, `x_c_fraction` and `y_c_fraction`, so that the transformed configuration of each is a case of this `problem`, and §5 states the equivariance of the discretization under each ([issue #513](https://github.com/seiya/atmofab/issues/513)).
 
 ## 3. Type definition of domain and boundary conditions
 The domain is the orthogonal periodic domain $[0,L_x)\times[0,L_y)$. The grid is a uniform cell-centered finite-volume grid, and $dx=L_x/nx$, $dy=L_y/ny$.
@@ -109,6 +111,11 @@ The discretization holds the following invariants.
 - **Well-balanced (lake at rest).** When $\eta=h+z_b$ is uniform and $u=v=0$, the two reconstructed depths at each interface are equal and the flux difference cancels $S_b$. `h`, `hu`, and `hv` are unchanged up to round-off.
 - **Flat reduction.** When `topography_profile=flat`, $h^{*}=h$ and $S_b=0$, and the discretization is identical to the plain `p0` scheme.
 - **Mass conservation.** The mass component of $S_b$ is zero and the interface mass flux is single-valued, so $\sum_{i,j}h_{i,j}$ is conserved up to round-off.
+- **Axis-exchange equivariance.** The case with `nx` ↔ `ny`, `L_x` ↔ `L_y`, `x_c_fraction` ↔ `y_c_fraction` and the initial state transposed with its two momentum components exchanged ($(h, hu, hv)'_{i,j}=(h, hv, hu)_{j,i}$) has, at every step, the state of the original case transposed the same way, up to round-off: the domain is periodic in both directions, and every operation of steps 1 to 5 acts on the two array axes by the same rule, the `y`-interface with the roles of the two momentum components exchanged.
+- **Mirror equivariance in `x`.** The case with `x_c_fraction` → $1-$`x_c_fraction` (modulo 1) and the initial state reflected along `x` with `hu` sign-reversed ($(h, hu, hv)'_{i,j}=(h, -hu, hv)_{nx+1-i,j}$) has, at every step, the state of the original case reflected the same way, up to round-off: the hydrostatic reconstruction and the Rusanov flux treat the two sides of an interface by the same rule, and $S_b$ is the difference of the two reconstructed depths of the cell.
+- **Mirror equivariance in `y`.** The same with `y_c_fraction` → $1-$`y_c_fraction` (modulo 1), the reflection along `y` and `hv` sign-reversed.
+
+The round-off of the three equivariances is not zero in general: an initial state given by a closed form is reflected only to the rounding of its argument, and a contracted multiply-add or a vector remainder loop changes the last bit under a reordering.
 
 The $\max(0,\cdot)$ of step 2 is the definitional positivity guard of the reconstruction, and it does not activate while the wet-domain invariant holds. An interface at which the reconstruction yields $h^{*}\le 0$ is a violation of that invariant: it is a runtime error, and the run stops with an error before the value reaches the flux `component`, whose contract treats `h<=0` as an error. It must not be handled by clipping or flooring the state, by substituting a positive replacement depth, or by continuing with a zero-depth interface flux. Section 6 states the initial condition that establishes the invariant at $t=0$.
 
@@ -130,11 +137,11 @@ $$
 $$
 z_b(x,y)=h_s\max\left(0,1-\frac{r(x,y)}{r_0}\right)
 $$
-The default parameters are `x_c=3L_x/4`, `y_c=2L_y/3`, `r_0=min(L_x,L_y)/6`, and `h_s=0.2H_0`. The center position and radius are the value of Williamson et al. (1992) `Test Case 5` `(\lambda_c,\theta_c,R_0)=(3\pi/2,\pi/6,\pi/9)` mapped to the periodic orthogonal coordinates. After discretization, `z_b` must satisfy `z_b>0` in at least 1 cell. When `topography_profile=flat`, `z_b=0` in all cells.
+The centre is $x_c=\mathrm{x\_c\_fraction}\cdot L_x$, $y_c=\mathrm{y\_c\_fraction}\cdot L_y$, with the runtime inputs `x_c_fraction` and `y_c_fraction` in $[0,1)$, whose defaults are `3/4` and `2/3`. The parameters are `r_0=min(L_x,L_y)/6` and `h_s=0.2H_0`. The default centre and the radius are the value of Williamson et al. (1992) `Test Case 5` `(\lambda_c,\theta_c,R_0)=(3\pi/2,\pi/6,\pi/9)` mapped to the periodic orthogonal coordinates; a centre other than the default is the position of the cone in a transformed case of §5. After discretization, `z_b` must satisfy `z_b>0` in at least 1 cell. When `topography_profile=flat`, `z_b=0` in all cells.
 
 The runtime input requires the following.
 - `L_x`, `L_y`, `nx`, `ny`
-- `topography_profile`
+- `topography_profile`, and for `williamson_tc5_cone` its centre `x_c_fraction`, `y_c_fraction` (defaults `3/4`, `2/3`; a value outside $[0,1)$ is an error at setup)
 - `initial_condition` (`h`, `hu`, `hv`)
 - `t_start`, `t_end`
 - `dt_rule`
@@ -148,13 +155,15 @@ so that the reconstructed interface depth satisfies $h^{*}>0$ in the initial sta
 ## 7. Prohibitions
 Forbid non-periodic boundary, automatic switching of `topography_profile`, the introduction of a bottom-topography function or parameter other than the allowed values, the introduction of a forcing term other than the bottom-topography source term, and the runtime automatic switching of the discretization scheme. Forbid `clip` / `limiter` / `filter` on `h`. The $\max(0,\cdot)$ of the hydrostatic reconstruction of section 5 is applied to the reconstructed interface depth $h^{*}$, a derived quantity of the reconstruction of step 2, and never to the cell-centered state `h`; it is not a `clip` on `h`.
 
+Forbid computing a case by transposing or reflecting its state, its grid, its coordinates or its topography to the orientation of another case, computing there and transforming the result back: the kernel computes each case in its own orientation, from the inputs as given. `tests.md` compares the transformed cases of §5 with their originals as symmetry pairs (`docs/TESTS.md` §Symmetry pairs), and a kernel that maps one onto the other compares a code path with itself. Computing the `x` and the `y` direction of every case with one routine — the momentum components handed to it in the order normal, tangential, or the arrays transposed for the other direction — is not that mapping: it is applied the same way in every case, whatever the case's orientation.
+
 ## 8. Traceability
 The resolution result is recorded by the host: `<ir_ref>/ir_meta.json` carries the node's own `spec_kind` / `spec_id` / `spec_version`, and `<ir_ref>/dependency_graph.json` carries the resolved closure — `all_nodes` as `<spec_kind>/<spec_id>@<version>` for every node of it (this `spec` itself and the `component`; the runner harness is the target's, not a node of this closure), and `profiles[]` as the adopted `profile`, whose entry carries its own `node_key` for identity but is deliberately absent from `all_nodes`, because a `profile` is not a node.
 
-The reference basis is Williamson et al. (1992, JCP, DOI:10.1016/S0021-9991(05)80016-6), Audusse et al. (2004, SIAM J. Sci. Comput. 25(6), DOI:10.1137/S1064827503431090), LeVeque (2002), and Toro (2009).
+The reference basis is Williamson et al. (1992, JCP, DOI:10.1016/S0021-9991(05)80016-6), Audusse et al. (2004, SIAM J. Sci. Comput. 25(6), DOI:10.1137/S1064827503431090), LeVeque (2002), and Toro (2009). The centre of the cone as an input and the equivariances of §5 are those of [issue #513](https://github.com/seiya/atmofab/issues/513).
 
 ## 9. tests reference
-The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d/tests.md`, with `test_profile_version` of `0.5.0`.
+The corresponding `tests.md` is `spec/problem/dynamics/shallow_water/shallow_water2d/tests.md`, with `test_profile_version` of `0.6.0`.
 
 ## 10. AD preparation information
 `ad_readiness.enabled` is `true`. The state update is expressed in the form $U_{next}=F(U_{now}, params)$, and `max`, `abs`, `ceil`, and the periodic-index wrap are made explicit as non-differentiable operations.

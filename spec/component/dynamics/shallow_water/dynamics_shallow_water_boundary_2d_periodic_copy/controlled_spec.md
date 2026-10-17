@@ -92,13 +92,13 @@ procedures:
 ```
 
 ## 6. Prohibitions
-Forbid automatic fallback to a non-periodic boundary.
+Forbid automatic fallback to a non-periodic boundary. Forbid computing a call through another call: recognising that the supplied field is the transpose or the reversal of another field, mapping that field and transforming the result back. `tests.md` compares the transposed and reversed fields with the base as symmetry pairs, and a call computed through another compares a path with itself (`docs/TESTS.md` §Symmetry pairs). Mapping both axes of every call with one routine applied along each axis in turn — including a routine written along one axis and applied to the transposed array for the other, in every call — is not that mapping: each axis is still mapped along its own index as §3 states it.
 
 ## 7. Traceability
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_boundary_2d_periodic_copy/tests.md`, with `test_profile_version` of `0.2.0`.
+The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_boundary_2d_periodic_copy/tests.md`, with `test_profile_version` of `0.3.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. The periodic-index wrap is made explicit as a discrete operation.

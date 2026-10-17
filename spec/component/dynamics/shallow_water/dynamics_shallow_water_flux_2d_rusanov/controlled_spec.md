@@ -139,13 +139,13 @@ procedures:
 ```
 
 ## 6. Prohibitions
-Forbid reconstructing, limiting, or otherwise modifying the supplied interface states before the flux is evaluated, and forbid evaluating the flux at a state other than the two supplied. Forbid replacing the Rusanov wave speed of §3 by another estimate.
+Forbid reconstructing, limiting, or otherwise modifying the supplied interface states before the flux is evaluated, and forbid evaluating the flux at a state other than the two supplied. Forbid replacing the Rusanov wave speed of §3 by another estimate. Forbid computing a call through another call: recognising that the supplied states are the exchange or the reflection of another configuration (their momentum components exchanged, a momentum component reversed, the two sides of the interfaces exchanged), computing the fluxes of that configuration and transforming them back. `tests.md` compares the exchanged and the mirrored states with the base states as symmetry pairs, and a call computed through another compares a path with itself (`docs/TESTS.md` §Symmetry pairs). Evaluating the `x` and the `y` flux of every call with one routine written in the normal and the tangential momentum component — each interface's two states handed to it in the order `h`, normal, tangential and its result put back in the order `h`, `hu`, `hv` — is not that mapping: each flux is still evaluated from its own two states as §3 states it.
 
 ## 7. Traceability
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_flux_2d_rusanov/tests.md`, with `test_profile_version` of `0.2.0`.
+The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_flux_2d_rusanov/tests.md`, with `test_profile_version` of `0.3.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. `max` and `abs` are made explicit as non-differentiable operations.

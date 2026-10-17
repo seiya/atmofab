@@ -142,13 +142,13 @@ procedures:
 ```
 
 ## 6. Prohibitions
-Forbid replacing the `MC` limiter by another limiter (`minmod`, `van Leer`, `superbee`) or by the unlimited central difference, and forbid omitting the limiter. Forbid using a slope other than the cell's own on either of its faces (a slope taken from a neighbouring cell, or a slope evaluated from different inputs on the two faces of one cell; evaluating the same function of the same three cell values once per face is the same slope). Forbid reading a cell of `U_in` outside the padded columns $ng-1..ng+nx+2$ and the padded rows $ng-1..ng+ny+2$ of §2, and forbid re-deriving or overwriting a ghost value of `U_in` in place of the value the caller filled. Forbid dividing the slope by a grid spacing.
+Forbid replacing the `MC` limiter by another limiter (`minmod`, `van Leer`, `superbee`) or by the unlimited central difference, and forbid omitting the limiter. Forbid using a slope other than the cell's own on either of its faces (a slope taken from a neighbouring cell, or a slope evaluated from different inputs on the two faces of one cell; evaluating the same function of the same three cell values once per face is the same slope). Forbid reading a cell of `U_in` outside the padded columns $ng-1..ng+nx+2$ and the padded rows $ng-1..ng+ny+2$ of §2, and forbid re-deriving or overwriting a ghost value of `U_in` in place of the value the caller filled. Forbid dividing the slope by a grid spacing. Forbid computing a call through another call: recognising that `U_in` is the transpose or the reversal of another field, reconstructing that field and transforming the interface arrays back. `tests.md` compares the transposed and the reversed field with the base field as symmetry pairs, and a call computed through another compares a path with itself (`docs/TESTS.md` §Symmetry pairs). Reconstructing the `x` and the `y` faces of every call with one routine applied along each axis in turn — including a routine written along one axis and applied to the transposed array for the other, in every call — is not that mapping: each set of interface states is still reconstructed along its own axis as §3 states it.
 
 ## 7. Traceability
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_reconstruction_2d_muscl_mc/tests.md`, with `test_profile_version` of `0.2.0`.
+The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_reconstruction_2d_muscl_mc/tests.md`, with `test_profile_version` of `0.3.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. The limiter is a non-differentiable operation and is made explicit as one: the branch on the sign of $ab$, the `min` over the three slope candidates, and `sign` are the discrete operations of §3.

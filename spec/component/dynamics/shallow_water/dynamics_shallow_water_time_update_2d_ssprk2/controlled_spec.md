@@ -159,13 +159,13 @@ procedures:
 ```
 
 ## 6. Prohibitions
-Forbid automatic switching of the time-integration method.
+Forbid automatic switching of the time-integration method. Forbid computing a call through another call: recognising that the supplied fields are the axis exchange of other fields (transposed, their components, their extents or `dx` and `dy` exchanged), updating those and transforming the result back. The update runs over the extents and the arrays it receives; `tests.md` compares the axis-exchanged fields with the base as a symmetry pair, and a call computed through another compares a path with itself (`docs/TESTS.md` §Symmetry pairs).
 
 ## 7. Traceability
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_time_update_2d_ssprk2/tests.md`, with `test_profile_version` of `0.4.0`.
+The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_time_update_2d_ssprk2/tests.md`, with `test_profile_version` of `0.5.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. `ceil` (when used in the `dt` rule) is made explicit as a non-differentiable operation.

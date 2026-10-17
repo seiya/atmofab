@@ -78,13 +78,13 @@ procedures:
 ```
 
 ## 6. Prohibitions
-Forbid automatic fallback to a non-periodic boundary.
+Forbid automatic fallback to a non-periodic boundary. Forbid realising the mapping of a field through the mapping of its reversal — reversing the field, mapping it and reversing the result: the field is mapped as supplied, as §3 states it, because `tests.md` compares a field and its reversal as a symmetry pair and an implementation that derives one from the other compares a path with itself (`docs/TESTS.md` §Symmetry pairs).
 
 ## 7. Traceability
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/advection_diffusion/dynamics_advection_diffusion_boundary_1d_periodic_copy/tests.md`, with `test_profile_version` of `0.2.0`.
+The corresponding `tests.md` is `spec/component/dynamics/advection_diffusion/dynamics_advection_diffusion_boundary_1d_periodic_copy/tests.md`, with `test_profile_version` of `0.3.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. The periodic-index wrap is made explicit as a discrete operation.

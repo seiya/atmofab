@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `dynamics_advdiff_flux_1d_upwind_center2`
-- `spec_version`: `0.3.1`
+- `spec_version`: `0.4.0`
 - `status`: `controlled_draft`
 - `spec_kind`: `component`
 - `domain`: `dynamics`
@@ -21,15 +21,15 @@ The inputs are `nx`, `ng`, the ghost-extended field `u` (rank 1, holding `nx + 2
 ## 3. Operation definition
 The published `operation` is `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`. The advection flux is defined by first-order upwind, and the diffusion flux by second-order central, at every face $j+1/2$, $j=-1,\dots,nx-1$:
 $$
-F^{adv}_{j+1/2}=a\,u_j\quad(a>0)
+F^{adv}_{j+1/2}=\begin{cases}a\,u_j & (a>0)\\ a\,u_{j+1} & (a<0)\end{cases}
 $$
 $$
 F^{dif}_{j+1/2}=-\nu\frac{u_{j+1}-u_j}{dx}
 $$
-The cells read are $u_{-1}\dots u_{nx}$, so `ng>=1` suffices.
+The upwind cell is the one the flow comes from: the cell left of the face when `a` is positive, the cell right of it when `a` is negative. The side is chosen by the sign of `a` alone, never by the sign or the magnitude of `u`. The cells read are $u_{-1}\dots u_{nx}$ for either sign of `a`, so `ng>=1` suffices.
 
 ## 4. Failure conditions and constraints
-Treat `a<=0`, `dx<=0`, `dt<=0`, `nx<2`, and `ng<1` as invalid input and an error. The guard is evaluated before any element of `u` is read: when a condition holds, the operation sets `guard_pass` to false and returns without reading `u` and without computing a face flux; `flux_adv` and `flux_dif` are then undefined and the caller must not use them. When no condition holds, `guard_pass` is true.
+Treat `a=0`, `dx<=0`, `dt<=0`, `nx<2`, and `ng<1` as invalid input and an error. The guard is evaluated before any element of `u` is read: when a condition holds, the operation sets `guard_pass` to false and returns without reading `u` and without computing a face flux; `flux_adv` and `flux_dif` are then undefined and the caller must not use them. When no condition holds, `guard_pass` is true.
 
 ## 5. Public API and compatibility
 The only published `operation_id` is `dynamics_advdiff_flux_1d_upwind_center2__compute_flux`. On a `major` compatibility break, separate the `spec_id`.
@@ -114,13 +114,13 @@ procedures:
 ```
 
 ## 6. Prohibitions
-The discretization order must not be changed automatically. Forbid implicit completion of undefined input.
+The discretization order must not be changed automatically. Forbid implicit completion of undefined input. Forbid choosing the upwind side from anything other than the sign of `a`. Forbid normalising the sign of `a` away inside the operation — mapping an `a<0` input to the `a>0` path on the reversed field and reversing the result: each sign is evaluated on the field as supplied, as §3 states it, because `tests.md` compares the two signs as a symmetry pair and an implementation that derives one from the other compares a path with itself (`docs/TESTS.md` §Symmetry pairs).
 
 ## 7. Traceability
 This `operation_id` requires registration in `component_catalog.yaml`. The adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`) records the adopted `component_id@version`, written by the host.
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2/tests.md`, with `test_profile_version` of `0.3.0`.
+The corresponding `tests.md` is `spec/component/dynamics/advection_diffusion/dynamics_advdiff_flux_1d_upwind_center2/tests.md`, with `test_profile_version` of `0.4.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. It includes no non-differentiable operations.
