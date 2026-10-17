@@ -6,6 +6,10 @@
 # Validate run; the quality check re-runs the same cases as one process. A launcher target runs at
 # the local site only (docs/backends/parallel/mpi/LAUNCHER.md §4).
 #
+# `execution.process_grid` is the grid the Validate run's ranks are arranged in (issue #512): the
+# harness reads it from the launch environment; (2, 2) exercises both grid dimensions, the
+# corner halo exchange and the rank numbering, which a (ranks, 1) run cannot tell apart.
+#
 # A component or problem node built for this target is distributed over the ranks through the
 # harness (docs/backends/parallel/mpi/GENERATE_RULES.md), and its host-rendered runner gathers
 # the partitioned state onto rank 0 before it is captured (issue #316 PR-4).
@@ -23,6 +27,7 @@ parallel:
 execution:
   threads_per_rank: 1
   ranks: 4
+  process_grid: [2, 2]
 harness:
   infrastructure_id: harness_fortran_cpu_mpi
   version_constraint: ">=0.1.0 <1.0.0"

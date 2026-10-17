@@ -913,6 +913,16 @@ PINNED_RENDER: dict[str, str] = {
     # `mcp_servers/build_runtime_server.py`; nothing rendered moved. (Measured by diffing the tuple
     # against origin/main ef28faa1's.) The digest `render-9` shipped with at ef28faa1:
     "render-9@ef28faa1": "7d8a56413fd63d105b977996ce8a9db00a347c7caf687d1e6657a44119e956d9",
+    # render-10 (issue #512): the rendered Fortran runner over the distributed harness imports
+    # eight partition variables per bound array (`sb_<var>_axis<d>` / `_lo<d>` / `_hi<d>` /
+    # `_glo<d>`, one group per process-grid dimension) and calls every gather with both slots;
+    # its pinned harness interface is `harness_fortran_cpu_mpi@0.2.0`'s. Re-pinned in place
+    # (unshipped) by round 1 of the same branch: `tools/host_execution.py` hands a profile's
+    # process grid to the launch environment, which renders nothing, and the runner's shift
+    # lines are split onto a block `if`. (Measured by diffing `render_tuple()` against
+    # origin/main b60c642c's: those two rows.) Re-pinned in place again by the closing-run
+    # fix: the runner's ABI comment says a component's model names no harness operation.
+    "render-10": "1a8602441c121673af4819425483d766510e6f778121e9439f2ca5aea5b3792d",
     # Re-pinned (issue #469), behaviour-preserving: `make/control_file.py` gains
     # `CONTROL_FILE_BASENAMES`, the names `make` reads without `-f`, which `codegen_bundle`
     # derives its reserved bundle basenames from; nothing it renders moved. (Measured by diffing
@@ -1013,7 +1023,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "0c46f46b2434ec8f33b0ec597e2ae5e06a267cb63a6b5719b4a4bc9489ff1345",
+    "build-2": "e2559263012048780bff1a791db971827b07bacf974ae55c55eeb9a945bcd92f",
     # Re-pinned by issue #333 PR-3: two members moved. `tools/remote_execution.py` no longer
     # checks the site's C library in the job script (a binary is built at the site that runs
     # it), checks the machine only against a `JobRequest.machine` the caller names (a build
@@ -1122,6 +1132,11 @@ PINNED_BUILD: dict[str, str] = {
     # `build_tuple()` against origin/main 3502ee67's: that row and no other.) The digest
     # `build-2` shipped with at 3502ee67:
     "build-2@3502ee67": "8569e4f261029d575fc46fd2e426e2eac2e3231d718c724892c7881f7f29f1c3",
+    # Re-pinned (issue #512, PR-4a), behaviour-preserving for the build: `tools/host_execution.py`
+    # passes a profile's `execution.process_grid` to the launch environment, which no build
+    # reads. (Measured by diffing `build_tuple()` against origin/main b60c642c's: that row and
+    # no other.) The digest `build-2` shipped with at b60c642c:
+    "build-2@b60c642c": "0c46f46b2434ec8f33b0ec597e2ae5e06a267cb63a6b5719b4a4bc9489ff1345",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -1362,6 +1377,11 @@ PINNED_EXECUTE: dict[str, str] = {
     # (Measured by diffing `execute_tuple()` against origin/main f4158bfa's: that row and no
     # other.) The digest `execute-8` shipped with at f4158bfa:
     "execute-8@f4158bfa": "2006092142e7b93ec637d4c5589ba5b2f9aac95bad8565525cf02f1708bc9dce",
+    # execute-9 (issue #512, PR-4a): a launcher target's run is launched with the process grid
+    # its profile imposes (`execution.process_grid` -> `ATMOFAB_PROCESS_GRID` through the mpi
+    # backend's `execution_env`). Rows moved: `tools/host_execution.py` and the mpi
+    # `execution_env` module.
+    "execute-9": "498b82394e172d1a5c391e6a0e31e9596180770b52d29e5673cbf841cc165b52",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

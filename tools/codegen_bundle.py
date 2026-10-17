@@ -457,9 +457,11 @@ STATE_REGISTRATION_TOKEN = f"state_registration@{1}"
 # runner reads every snapshot variable straight from the module-level storage of the bundle's
 # checks module and serializes it through `__emit_*` / `__write_snapshot` at the two capture
 # points, before any callback of that case — the harness source needs no new operation for it,
-# so the harness version is unchanged. `distributed_state@1` (issue #316, R4-c) is defined as the
-# distributed-state operations of the providing harness's §3.3 — the rank queries, the
-# block partition, the halo exchange, the gather onto rank 0 with its tile check, and the global
+# so the harness version is unchanged. `distributed_state@2` (issue #512; `@1` was issue #316's,
+# R4-c, over one dimension) is defined as the distributed-state operations of the providing
+# harness's §3.3 — the rank queries, the process grid the host imposes and its queries, the
+# block partition and the halo exchange along one grid dimension, the gather onto rank 0 of an
+# array partitioned along up to two grid dimensions with its tile check, and the global
 # reductions — which the harness publishes after the `sync_single_case@1` block, together with
 # the rule that the writers are called on rank 0 only. Unlike `state_registration@1` it names
 # operations of the harness source, so its mechanical enforcer is the one `sync_single_case@1`
@@ -471,8 +473,8 @@ HARNESS_CAPABILITY_MANIFESTS: dict[str, frozenset[str]] = {
         {"sync_single_case@1", STATE_REGISTRATION_TOKEN}),
     "infrastructure/harness_cpp_gpu@0.1.0": frozenset(
         {"sync_single_case@1", STATE_REGISTRATION_TOKEN}),
-    "infrastructure/harness_fortran_cpu_mpi@0.1.0": frozenset(
-        {"sync_single_case@1", STATE_REGISTRATION_TOKEN, "distributed_state@1"}),
+    "infrastructure/harness_fortran_cpu_mpi@0.2.0": frozenset(
+        {"sync_single_case@1", STATE_REGISTRATION_TOKEN, "distributed_state@2"}),
 }
 
 

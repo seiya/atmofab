@@ -291,6 +291,27 @@ class LauncherLaunchTests(unittest.TestCase):
                          he.LOCAL_SITE)
         self.assertEqual(he.launch_shape(self.MPI4).site, he.LOCAL_SITE)
 
+    def test_an_imposed_process_grid_reaches_the_launch_environment(self) -> None:
+        """Issue #512: the profile's `execution.process_grid` is handed to the backend and comes
+        back as the launch environment (recorded with the launch); a profile imposing none
+        launches with the environment it had."""
+        grid = profile_with(parallel={"backend": "mpi"},
+                            execution={"threads_per_rank": 1, "ranks": 4,
+                                       "process_grid": [1, 4]})
+        shape = he.launch_shape(grid)
+        self.assertEqual(shape.env, {"ATMOFAB_PROCESS_GRID": "1,4"})
+        self.assertEqual(shape.record()["env"], {"ATMOFAB_PROCESS_GRID": "1,4"})
+        self.assertEqual(he.launch_shape(self.MPI4).env, {})
+        for backend in ("openmp", "none"):
+            with self.subTest(backend=backend):
+                profile = profile_with(parallel={"backend": backend},
+                                       execution={"threads_per_rank": 1,
+                                                  "process_grid": [1, 1]})
+                with self.assertRaises(he.LaunchUnavailable) as ctx:
+                    he.launch_shape(profile)
+                self.assertIn("execution.process_grid: a process grid arranges the ranks a "
+                              "launcher starts", str(ctx.exception))
+
     def test_more_ranks_than_one_need_a_launcher(self) -> None:
         for backend in ("openmp", "none"):
             with self.subTest(backend=backend):

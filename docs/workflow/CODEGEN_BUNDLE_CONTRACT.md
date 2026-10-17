@@ -422,8 +422,8 @@ the issue records this as a departure from `zero_base_architecture.md` §A4 as w
 ```
 "infrastructure/harness_fortran_cpu@0.7.0": {"sync_single_case@1", "state_registration@1"}
 "infrastructure/harness_cpp_gpu@0.1.0":     {"sync_single_case@1", "state_registration@1"}
-"infrastructure/harness_fortran_cpu_mpi@0.1.0": {"sync_single_case@1", "state_registration@1",
-                                                 "distributed_state@1"}
+"infrastructure/harness_fortran_cpu_mpi@0.2.0": {"sync_single_case@1", "state_registration@1",
+                                                 "distributed_state@2"}
 ```
 
 `state_registration@1` is defined as: the host-rendered runner reads every IR snapshot
@@ -437,29 +437,33 @@ The harness source needs no new operation for it, so the harness version is unch
 `harness_fortran_cpu@0.7.0` §5.1 (13 operations, 5 published types, `dp = float64`,
 `case_id_len = 64`), under the providing harness node's own `<spec_id>__` names and bound to its
 target language by that language's backend; `harness_cpp_gpu@0.1.0` §5.1 is the same block, and
-`harness_fortran_cpu_mpi@0.1.0` §5.1 begins with it.
+`harness_fortran_cpu_mpi@0.2.0` §5.1 begins with it.
 The mechanical enforcer of that definition remains
 the language backend's `assert_harness_pin` (reached through `tools/host_render.py`), which
 compares §5.1 against the certified
 harness IR's `public_api.signatures` and the generated harness source; this contract
 adds a name for the ABI, not a second checker of it.
 
-`distributed_state@1` ([issue #316](https://github.com/seiya/atmofab/issues/316)) is defined as
-the distributed-state operations of `harness_fortran_cpu_mpi@0.1.0` §3.3, which that harness
-publishes in its §5.1 after the `sync_single_case@1` block: the rank queries, the block partition
-of a global index range, the halo exchange of an array partitioned along one axis, the gather of
-such an array onto rank 0 — which stops the program unless the ranks' owned ranges tile the global
-range with neither overlap nor gap — and the global reductions. It carries one rule for every
-caller: the writers of the `sync_single_case@1` block are called on rank 0 only, with the global
+`distributed_state@2` ([issue #512](https://github.com/seiya/atmofab/issues/512)) is defined as
+the distributed-state operations of `harness_fortran_cpu_mpi@0.2.0` §3.3, which that harness
+publishes in its §5.1 after the `sync_single_case@1` block: the rank queries, the two-dimensional
+process grid the host imposes and its queries, the block partition of a global index range over
+the ranks along one grid dimension, the halo exchange of an array along one grid dimension, the
+gather onto rank 0 of an array partitioned along up to two grid dimensions — which stops the
+program unless the contributed blocks tile the global array with neither overlap nor gap — and the
+global reductions. (`distributed_state@1`, [issue #316](https://github.com/seiya/atmofab/issues/316),
+was the same set over a one-dimensional arrangement of the ranks, that harness's `0.1.0` §3.3; no
+harness in the manifest provides it now.) `distributed_state@2` carries one rule for
+every caller: the writers of the `sync_single_case@1` block are called on rank 0 only, with the global
 values. Like `sync_single_case@1` it names operations of the harness source, so the harness's own
 `Generate.static` pin of §5.1 enforces the operations, and so does the language backend's
 `assert_harness_pin` for the host-rendered runner over that harness (issue #316 PR-4), which
 starts and ends the runtime, gathers every partitioned bound array onto rank 0 before it is
 captured, and writes on rank 0 only. What a bundle states to be driven this way is
-`target_lowering_plan.state_residency: distributed` with `distributed_state@1` among its
+`target_lowering_plan.state_residency: distributed` with `distributed_state@2` among its
 `capability_requirements` (the residency coupling below); what its checks module publishes for
-each bound array — the axis it is partitioned along and which cells of the global array a rank
-contributes, with the global index of the first — is the language binding's (`docs/backends/language/<language>/CHECKS_ABI.md`),
+each bound array — for each grid dimension, the axis partitioned along it and which cells of the
+global array a rank contributes along that axis, with the global index of the first — is the language binding's (`docs/backends/language/<language>/CHECKS_ABI.md`),
 fixed by the same convention as the bound state itself, so the bundle carries no name of it.
 
 ### The manifest document
