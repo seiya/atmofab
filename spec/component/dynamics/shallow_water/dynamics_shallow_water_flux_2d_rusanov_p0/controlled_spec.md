@@ -133,13 +133,13 @@ procedures:
 ```
 
 ## 6. Prohibitions
-Forbid automatic switching of the reconstruction order and the implicit application of a limiter.
+Forbid automatic switching of the reconstruction order and the implicit application of a limiter. Forbid realising one interface or orientation through another — evaluating the `y` flux as the `x` flux of the states with their momentum components exchanged and exchanging the result back, or reversing a momentum component or exchanging the two sides of an interface and transforming the flux back: each flux is evaluated from its own two states as §3 states it, because `tests.md` compares the exchanged and the mirrored states with the base states as symmetry pairs and an implementation that derives one from the other compares a path with itself (`docs/TESTS.md` §Symmetry pairs).
 
 ## 7. Traceability
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_flux_2d_rusanov_p0/tests.md`, with `test_profile_version` of `0.2.0`.
+The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_flux_2d_rusanov_p0/tests.md`, with `test_profile_version` of `0.3.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. `max` and `abs` are made explicit as non-differentiable operations.

@@ -164,13 +164,13 @@ procedures:
 ```
 
 ## 6. Prohibitions
-Forbid automatic switching of the time-integration method, a change of the number of stages or of the stage weights, fewer than four `rhs` calls per step, the reuse of one stage's tendency for another stage, and the evaluation of `rhs` at a state or time other than those of §3. Forbid calling `rhs` when `guard_pass` is false.
+Forbid automatic switching of the time-integration method, a change of the number of stages or of the stage weights, fewer than four `rhs` calls per step, the reuse of one stage's tendency for another stage, and the evaluation of `rhs` at a state or time other than those of §3. Forbid calling `rhs` when `guard_pass` is false. Forbid realising one orientation of the state through another — transposing the state, exchanging its components or its extents, updating it in the base orientation and transforming the result back: the update runs over the extents and the array it receives, because `tests.md` compares the axis-exchanged state with the base as a symmetry pair and an implementation that derives one from the other compares a path with itself (`docs/TESTS.md` §Symmetry pairs).
 
 ## 7. Traceability
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_time_update_2d_rk4/tests.md`, with `test_profile_version` of `0.2.0`.
+The corresponding `tests.md` is `spec/component/dynamics/shallow_water/dynamics_shallow_water_time_update_2d_rk4/tests.md`, with `test_profile_version` of `0.3.0`.
 
 ## 9. AD preparation information
 `ad_readiness.enabled` is `true`. The update is a fixed composition of four tendency evaluations and holds no non-differentiable operation of its own; the differentiability of the step is that of the tendency the caller supplies.
