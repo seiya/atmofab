@@ -393,6 +393,12 @@ _EXECUTE_EXCERPT_TRUNCATION_MARK = "[... excerpt truncated to the last "
 _PURE_ATTEMPT_EXCERPT_MAX_CHARS = 400
 
 
+#: How much of a failed sweep shape's stderr `quality_check.json#shapes[].run_failure` keeps
+#: (issue #512): its last lines, bounded in characters, which the repair excerpt quotes.
+_SHAPE_STDERR_LINES = 15
+_SHAPE_STDERR_CHARS = 1500
+
+
 def _execute_failure_excerpt(text: str) -> str:
     """The bounded tail of an `[execute fail]` report, safe to render into a repair prompt."""
     tail = "\n".join(text.splitlines()[-_EXECUTE_EXCERPT_MAX_LINES:])
@@ -11286,7 +11292,9 @@ class Conductor:
         `shape_runs` holds one entry per shape the run launched — the certified shape first
         (`target_profile.TargetProfile.execution_shapes`) — as `{shape, dir, ok, command_id}`:
         its `ExecutionShape`, the directory the run wrote, whether `run_program` succeeded and
-        its log entry. Each shape is compared with the reference by the statuses of its
+        its log entry, with `failure` when it did not: `{return_code, error, stderr_tail}` for a
+        run that failed, `{not_run}` naming the command that stopped it for one that did not
+        run. The row records it as `run_failure`, and the repair excerpt quotes it. Each shape is compared with the reference by the statuses of its
         `diagnostics.json` checks, its verdict, and its captured state through the IR's
         cross-target predicates (`_shape_state_agreement`); a shape that failed to run is a
         mismatch. For a target whose backend declares a launcher (`launcher`), the process count
@@ -11317,6 +11325,7 @@ class Conductor:
             row: dict[str, Any] = {
                 **shape.record(), "command_id": entry.get("command_id"),
                 "run_ok": bool(entry["ok"]),
+                **({"run_failure": entry["failure"]} if entry.get("failure") else {}),
                 "verdict_available": bool(verdict) and bool(qc_verdict),
                 "diagnostics_match": bool(entry["ok"]) and _check_map(diag) == qc_checks,
                 "verdict_match": bool(entry["ok"]) and verdict == qc_verdict,
@@ -11384,11 +11393,20 @@ class Conductor:
                      f"process_grid={row.get('process_grid')}, "
                      f"threads_per_rank={row.get('threads_per_rank')})")
             if not row.get("run_ok"):
+                failure = row.get("run_failure") if isinstance(row.get("run_failure"), dict) \
+                    else {}
+                if "not_run" in failure:
+                    lines.append(f"[execute fail: quality_check] {where}: did not run: "
+                                 f"{failure['not_run']}")
+                    continue
                 lines.append(
-                    f"[execute fail: quality_check] {where}: "
-                    + ("the run failed (the same binary and cases ran under the certified shape)"
-                       if row.get("command_id") else
-                       "did not run: the serial reference re-run failed first"))
+                    f"[execute fail: quality_check] {where}: the run failed (rc="
+                    f"{failure.get('return_code')!r}"
+                    + (f", {failure['error']}" if failure.get("error") else "")
+                    + "); the same binary and cases ran under the certified shape"
+                    + (f"; its stderr ends:" if failure.get("stderr_tail") else ""))
+                lines += [f"    {ln}" for ln in
+                          str(failure.get("stderr_tail") or "").splitlines()]
                 continue
             for key in ("verdict_available", "diagnostics_match", "verdict_match",
                         "launch_match"):
@@ -11675,7 +11693,9 @@ class Conductor:
                                 cwd=f"{jdir}/src", record_cwd=str(src_dir), env=qc_env,
                                 timeout_sec=QUALITY_CHECKS_TIMEOUT_SEC,
                                 command_log_path=qc_cmd_log, capture_limit=_FULL_CAPTURE_LIMIT),
-                    # Each sweep shape after the quality check (issue #512), as locally.
+                    # Each sweep shape after the quality check (issue #512). Unlike the local
+                    # path, the job runs a command only after every earlier one exited 0, so a
+                    # shape after a failed one does not run; its row names the one that failed.
                     *(CommandSpec(tag=f"sweep_{shape.label}", tool_name="run_program",
                                   argv=tuple(argv), cwd=f"{jdir}/sweep/{shape.label}",
                                   record_cwd=str(sweep_tmp / shape.label),
@@ -11763,10 +11783,28 @@ class Conductor:
         qc_diag = _read_json(qc_tmp / "diagnostics.json") or {}
         shape_runs = [{"shape": target.certified_shape, "dir": run_tmp, "ok": True,
                        "command_id": res_run.get("command_id")}]
-        shape_runs += [{"shape": shape, "dir": sweep_tmp / shape.label,
-                        "ok": bool(res and res.get("ok")),
-                        "command_id": res.get("command_id") if res else None}
-                       for (shape, _l), res in zip(sweep, res_sweep)]
+        # A sweep shape that did not run names the command that stopped it: locally the
+        # quality check (each shape runs only after one that succeeded), at a remote site the
+        # first earlier command of the job that failed (the job runs a command only after every
+        # earlier one exited 0) — so a later shape is never blamed on a reference that passed.
+        earlier: list[tuple[str, dict[str, Any] | None]] = [
+            ("the serial reference re-run", res_qc)]
+        for (shape, _l), res in zip(sweep, res_sweep):
+            entry: dict[str, Any] = {"shape": shape, "dir": sweep_tmp / shape.label,
+                                     "ok": bool(res and res.get("ok")),
+                                     "command_id": res.get("command_id") if res else None}
+            if res is None:
+                stopped_by = next((name for name, r in earlier
+                                   if r is not None and not r.get("ok")), None)
+                entry["failure"] = {"not_run": f"{stopped_by} failed first"
+                                    if stopped_by else "not run"}
+            elif not res.get("ok"):
+                stderr_lines = (res.get("stderr") or "").splitlines()[-_SHAPE_STDERR_LINES:]
+                entry["failure"] = {
+                    "return_code": res.get("return_code"), "error": res.get("error"),
+                    "stderr_tail": "\n".join(stderr_lines)[-_SHAPE_STDERR_CHARS:]}
+            earlier.append((f"shape {shape.label}", res))
+            shape_runs.append(entry)
         qc_status = self._author_quality_check(
             node_dir, qc_diag, res_qc.get("command_id"), execute.QUALITY_CHECK_PRESET,
             ir=ir, reference_dir=qc_tmp, shape_runs=shape_runs,

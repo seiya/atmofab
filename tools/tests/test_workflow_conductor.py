@@ -22841,9 +22841,13 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
             shape_runs=runs, launcher=launcher)
         return status, json.loads((self.node / "quality_check.json").read_text())
 
-    def _runs(self, *dirs: Path, ok=(True, True), ids=("R", "S")) -> list[dict]:
-        return [{"shape": shape, "dir": d, "ok": o, "command_id": cid}
+    def _runs(self, *dirs: Path, ok=(True, True), ids=("R", "S"),
+              failure=None) -> list[dict]:
+        runs = [{"shape": shape, "dir": d, "ok": o, "command_id": cid}
                 for shape, d, o, cid in zip(self.shapes, dirs, ok, ids)]
+        if failure is not None:
+            runs[-1]["failure"] = failure
+        return runs
 
     def test_every_shape_agreeing_passes_and_is_recorded(self) -> None:
         status, doc = self._author(self._runs(self._run_dir("run", self.h),
@@ -22897,8 +22901,24 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
         self.assertTrue(all(doc["checks"].values()))
 
     def test_a_shape_that_failed_or_did_not_run_fails(self) -> None:
+        for ids, failure, needles in (
+                (("R", "S"), {"return_code": 3, "error": None, "stderr_tail": "boom\nat x"},
+                 ("the run failed (rc=3)", "    boom", "    at x")),
+                (("R", "S"), {"return_code": None, "error": "timeout: exceeded 9 sec",
+                              "stderr_tail": ""}, ("rc=None, timeout: exceeded 9 sec",)),
+                (("R", None), {"not_run": "shape grid_2x1 failed first"},
+                 ("did not run: shape grid_2x1 failed first",))):
+            with self.subTest(ids=ids, failure=failure):
+                status, doc = self._author(self._runs(
+                    self._run_dir(f"run_{ids[1]}_{len(needles)}_{failure.get('return_code')}",
+                                  self.h), self.root / "absent",
+                    ok=(True, False), ids=ids, failure=failure))
+                self.assertEqual(doc["shapes"][1]["run_failure"], failure)
+                lines = wc.Conductor._quality_check_failure_lines(self.node)
+                for needle in needles:
+                    self.assertTrue(any(needle in ln for ln in lines), (needle, lines))
         for ids, needle in ((("R", "S"), "the run failed"),
-                            (("R", None), "did not run")):
+                            (("R", None), "the run failed")):
             with self.subTest(ids=ids):
                 status, doc = self._author(self._runs(
                     self._run_dir(f"run_{ids[1]}", self.h), self.root / "absent",

@@ -43,9 +43,14 @@ _RUNNER = textwrap.dedent('''\
     cases = sys.argv[sys.argv.index("--cases") + 2:]
     json.dump({"verdict": {c: "pass" for c in cases}}, open("diagnostics.json", "w"))
     json.dump({}, open("perf.json", "w"))
-    json.dump({"argv": sys.argv, "cwd": os.getcwd()}, open("argv.json", "w"))
+    json.dump({"argv": sys.argv, "cwd": os.getcwd(),
+               "omp_num_threads": os.environ.get("OMP_NUM_THREADS")}, open("argv.json", "w"))
     print("runner out")
     print("runner err", file=sys.stderr)
+    if os.environ.get("FAIL_THREADS") and \
+            os.environ.get("OMP_NUM_THREADS") == os.environ["FAIL_THREADS"]:
+        print("boom under " + os.environ["FAIL_THREADS"] + " threads", file=sys.stderr)
+        sys.exit(3)
     sys.exit(int(os.environ.get("RUNNER_RC") or 0))
 ''')
 
@@ -283,6 +288,56 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
         self.assertEqual(env["execution_site"], {
             "site": "box", "host": "box", "scheduler": "none", "job_id": None,
             "remote_dir": job, "queue_wait_ms": 0})
+
+    def test_each_shape_runs_with_its_own_thread_count_and_the_reference_with_one(
+            self) -> None:
+        """Issue #512: at a site, the certified run takes the profile's thread count, each sweep
+        shape its own, and the quality check's serial reference one — the values the runner
+        read, not only the variable names the log records."""
+        n = self.n
+        self.assertEqual(n.execute()["returncode"], 0)
+        tmp = n.repo / "workspace" / "tmp" / "arid-1"
+
+        def threads(d: Path) -> str:
+            return json.loads((d / "argv.json").read_text())["omp_num_threads"]
+
+        self.assertEqual(threads(tmp / "run"), str(n.target.threads_per_rank))
+        self.assertEqual(threads(tmp / "qc_run"), "1")
+        self.assertGreater(n.target.threads_per_rank, 1)
+        for shape in n.target.sweep_shapes:
+            with self.subTest(shape=shape.label):
+                self.assertEqual(threads(tmp / "sweep" / shape.label),
+                                 str(shape.threads_per_rank))
+
+    def test_a_failing_shape_names_its_cause_and_the_job_stops_the_later_ones(self) -> None:
+        """Issue #512: a shape whose run fails is recorded with its exit status and the end of
+        its stderr, which the repair excerpt quotes; at a site the job then runs no later
+        command, and the later shape's row names the shape that stopped it — not the serial
+        reference, which passed. Locally the later shape runs and passes."""
+        shapes = self.n.target.sweep_shapes
+        self.assertGreaterEqual(len(shapes), 2)
+        fail = str(shapes[0].threads_per_rank)
+        for where in ("site", "local"):
+            with self.subTest(where=where), tempfile.TemporaryDirectory() as tmp:
+                n = _Node(tmp, site=None if where == "site" else Site(LOCAL_SITE, ("cpu",)))
+                self.assertEqual(n.execute(FAIL_THREADS=fail)["returncode"], 0)
+                quality = json.loads((n.node_dir / "quality_check.json").read_text())
+                rows = {r["label"]: r for r in quality["shapes"]}
+                failed = rows[shapes[0].label]
+                self.assertFalse(failed["run_ok"])
+                self.assertEqual(failed["run_failure"]["return_code"], 3)
+                self.assertIn(f"boom under {fail} threads", failed["run_failure"]["stderr_tail"])
+                later = rows[shapes[1].label]
+                if where == "site":
+                    self.assertEqual(later["run_failure"],
+                                     {"not_run": f"shape {shapes[0].label} failed first"})
+                else:
+                    self.assertEqual(later["status"], "pass")
+                trial = json.loads((n.node_dir / "trial_meta.json").read_text())
+                self.assertEqual(trial["status"], "fail")
+                self.assertIn("the run failed (rc=3)", trial["failure_excerpt"])
+                self.assertIn(f"boom under {fail} threads", trial["failure_excerpt"])
+                self.assertNotIn("serial reference re-run failed", trial["failure_excerpt"])
 
     def test_the_job_pre_creates_the_initial_capture_dir_only_for_a_host_rendered_runner(
             self) -> None:

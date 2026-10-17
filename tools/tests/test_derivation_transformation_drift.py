@@ -1403,7 +1403,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # Rows moved: `Conductor._execute_inproc`, `Conductor._author_quality_check`,
     # `tools/host_execution.py`, and the mpi and cuda `execution_env` modules (a thread count
     # other than one is refused).
-    "execute-10": "2e28207f87715adab599d77f769544448b7145474e85eba655058c9bdd52a234",
+    "execute-10": "dfe2123d036632dd48e515f8008d7b03761c899f91c55a4745e74d1c22d1bf87",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
