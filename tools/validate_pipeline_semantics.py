@@ -1936,6 +1936,7 @@ def _validate_launched_ranks(repo_root: Path, execution: NodeExecution,
         violations.append(
             f"{perf_path}: parallelism.process_grid is {grid!r} and target {target.target_id}'s "
             f"run {imposed}; the harness's grid or its performance record is wrong")
+    _validate_harness_reported_grid(repo_root, execution, target, expected_grid, violations)
     quality_path = execution.node_dir / "quality_check.json"
     try:
         quality = _read_json(quality_path)
@@ -1950,6 +1951,59 @@ def _validate_launched_ranks(repo_root: Path, execution: NodeExecution,
                 f"{quality_path}: comparison.{side}.ranks is {got!r}, expected {expected} "
                 f"(the run is under the launcher with the target's ranks; the make test re-run "
                 f"is one process)")
+
+
+#: The scalar snapshot variables the distributed harness's own self-test captures the grid
+#: `__grid_dims` reports in (the distributed harness's tests.md, `l0_process_grid_pass` and
+#: `l0_partition_tile_pass`). `tools/tests/test_validate_pipeline_semantics.py` couples the pair
+#: to that document.
+HARNESS_GRID_SNAPSHOT_VARIABLES: tuple[str, str] = ("p1", "p2")
+
+
+def _validate_harness_reported_grid(repo_root: Path, execution: NodeExecution, target: Any,
+                                    expected_grid: list[int], violations: list[str]) -> None:
+    """For the Validate run of the target's OWN harness (issue #512): every case snapshot that
+    captures the grid the harness reports (`HARNESS_GRID_SNAPSHOT_VARIABLES`) carries the grid
+    the run was launched on, and at least one does.
+
+    `perf.json#parallelism.process_grid` alone pins what `__write_perf` prints, and the harness
+    writes both: a harness that keeps one dimension but echoes the imposed grid into its perf
+    record passes that comparison (measured in round 2 of the issue's review). The self-test's
+    predicates check the partition, the exchange and the rank numbering for the grid
+    `__grid_dims` reports; this ties that grid to the launch, so the misreport has to go into
+    `__grid_dims`, where the `owner` predicate refuses it. A physics node's snapshots are not
+    read: its variable names are its own."""
+    from tools.target_profile import TargetProfileError, harness_node_key_for_target
+    try:
+        harness_nk = harness_node_key_for_target(repo_root, target)
+    except TargetProfileError:
+        return  # the launch gate refuses a target whose harness does not resolve
+    if execution.node_key != harness_nk:
+        return
+    snap_dir = execution.node_dir / "raw" / "state_snapshots"
+    first, second = HARNESS_GRID_SNAPSHOT_VARIABLES
+    seen = 0
+    for path in sorted(snap_dir.glob("*.json")) if snap_dir.is_dir() else []:
+        try:
+            doc = _read_json(path)
+        except (OSError, json.JSONDecodeError):
+            continue  # the snapshot gate reports an unreadable capture
+        if not isinstance(doc, dict) or (first not in doc and second not in doc):
+            continue
+        seen += 1
+        reported = [doc.get(first), doc.get(second)]
+        if not all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in reported) \
+                or reported != expected_grid:
+            violations.append(
+                f"{path}: the harness self-test reports the process grid "
+                f"({first}, {second}) = {tuple(reported)!r}, and the run was launched on "
+                f"{expected_grid} (perf.json#parallelism.process_grid states the same); the "
+                f"harness's grid queries do not report the grid it was handed")
+    if seen == 0:
+        violations.append(
+            f"{snap_dir}: no case snapshot of the harness self-test captures the grid it "
+            f"reports ({first}, {second}), so the grid the run was launched on is tied to "
+            f"nothing the self-test judged")
 
 
 def _execution_raw_source_source_id(execution: NodeExecution) -> str | None:

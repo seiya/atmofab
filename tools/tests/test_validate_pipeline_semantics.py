@@ -14827,6 +14827,77 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
             with self.subTest(target=target and target.parallel_backend):
                 self.assertEqual(run(target, {}, None), [])
 
+    def test_the_harness_self_test_reports_the_grid_it_was_launched_on(self) -> None:
+        """Issue #512 (round 2): on the Validate run of the target's own harness, every case
+        snapshot capturing the grid `__grid_dims` reports agrees with the launch grid, and one
+        does — so a harness that echoes the imposed grid into perf.json while arranging its
+        ranks another way is refused. A physics node's snapshots are not read."""
+        from unittest import mock
+
+        from tools import target_profile as tp_mod
+        from tools.tests.target_fixtures import profile_with
+        mpi22 = profile_with(parallel={"backend": "mpi"},
+                             execution={"threads_per_rank": 1, "ranks": 4,
+                                        "process_grid": [2, 2]})
+        harness = "infrastructure/harness_x@0.2.0"
+        perf = {"parallelism": {"mpi_ranks": 4, "process_grid": [2, 2]}}
+        quality = {"comparison": {"reference": {"ranks": 4}, "candidate": {"ranks": 1}}}
+        self.assertEqual(vps.HARNESS_GRID_SNAPSHOT_VARIABLES, ("p1", "p2"))
+
+        def run(snaps: dict, node_key: str = harness) -> list[str]:
+            with tempfile.TemporaryDirectory() as tmp:
+                node_dir = Path(tmp) / "node"
+                snap_dir = node_dir / "raw" / "state_snapshots"
+                (snap_dir / "initial").mkdir(parents=True)
+                _write_json(node_dir / "perf.json", perf)
+                _write_json(node_dir / "quality_check.json", quality)
+                for name, doc in snaps.items():
+                    _write_json(snap_dir / f"{name}.json", doc)
+                execution = vps.NodeExecution(node_key=node_key, node_dir=node_dir,
+                                              exec_dir=node_dir, pipeline_dir=Path(tmp))
+                violations: list[str] = []
+                with mock.patch.object(vps, "_pipeline_target", return_value=mpi22), \
+                        mock.patch.object(tp_mod, "harness_node_key_for_target",
+                                          return_value=harness):
+                    vps._validate_launched_ranks(Path(tmp), execution, violations)
+                return violations
+
+        good = {"l0_process_grid_pass": {"t": 0.0, "p1": 2.0, "p2": 2.0, "nranks": 4.0},
+                "l0_partition_tile_pass": {"t": 0.0, "p1": 2.0, "p2": 2.0},
+                "l0_reduce_pass": {"t": 0.0, "red_sum": 1.0}}
+        self.assertEqual(run(good), [])
+        # The two-faced harness: perf.json says [2, 2], the grid queries say (4, 1).
+        for case in ("l0_process_grid_pass", "l0_partition_tile_pass"):
+            for bad in ({"p1": 4.0, "p2": 1.0}, {"p1": 2.0}, {"p1": True, "p2": 2.0},
+                        {"p1": "2", "p2": 2.0}):
+                with self.subTest(case=case, bad=bad):
+                    snaps = {**good, case: {"t": 0.0, **bad}}
+                    violations = run(snaps)
+                    self.assertEqual(len(violations), 1, violations)
+                    self.assertIn(f"{case}.json: the harness self-test reports the process grid",
+                                  violations[0])
+                    self.assertIn("launched on [2, 2]", violations[0])
+        # A self-test that captures no grid at all ties the launch to nothing.
+        violations = run({"l0_reduce_pass": {"t": 0.0, "red_sum": 1.0}})
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("no case snapshot of the harness self-test captures the grid", violations[0])
+        # A physics node's snapshots are its own; a `p1` there is not a grid.
+        self.assertEqual(run({"c0": {"t": 0.0, "p1": 7.0, "p2": 0.5}},
+                             node_key="problem/x@0.1.0"), [])
+        self.assertEqual(run({}, node_key="problem/x@0.1.0"), [])
+
+    def test_the_harness_grid_variables_are_the_ones_its_self_test_captures(self) -> None:
+        """`HARNESS_GRID_SNAPSHOT_VARIABLES` against the harness's tests.md: both grid
+        test cases list them among their required raw variables."""
+        text = (Path(__file__).resolve().parents[2] / "spec/infrastructure/infra/harness/"
+                "harness_fortran_cpu_mpi/tests.md").read_text(encoding="utf-8")
+        for test_id in ("l0_process_grid_pass", "l0_partition_tile_pass"):
+            block = text.split(f"- `test_id`: `{test_id}`", 1)[1].split("- `test_id`:", 1)[0]
+            line = next(ln for ln in block.splitlines() if "`required_raw_variables`" in ln)
+            for name in vps.HARNESS_GRID_SNAPSHOT_VARIABLES:
+                with self.subTest(test_id=test_id, name=name):
+                    self.assertIn(f"`{name}`", line)
+
     def test_the_syntax_stage_of_a_wrapper_target_is_certified_through_its_wrapper(
             self) -> None:
         """Issue #316: the pipeline's target decides the program a stage's record must have run.
