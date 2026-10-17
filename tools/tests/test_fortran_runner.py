@@ -2832,6 +2832,22 @@ class DistributedRenderTest(unittest.TestCase):
                    *fortran_runner.PHYSICS_CALLABLE_DISTRIBUTED_OPS, "gather_r4"):
             self.assertLessEqual(len(op), longest, op)
 
+    def test_the_abi_comment_states_the_partition_variables_by_grid_dimension(self) -> None:
+        """Issue #512: the comment is the producer's source for the binding, so it names every
+        partition variable in its per-dimension form (derived from the suffixes the runner
+        imports) and the grid queries, and no longer the one-axis form."""
+        from tools.backends.language.fortran.runner import DISTRIBUTED_BINDING_SUFFIXES
+        comment = "\n".join(line for line in self._render().splitlines()
+                             if line.startswith("  !"))
+        flat = " ".join(comment.replace("!", " ").split())
+        for suffix in DISTRIBUTED_BINDING_SUFFIXES:
+            with self.subTest(suffix=suffix):
+                self.assertIn(f"sb_<var>_{suffix[:-1]}<d>", flat)
+        self.assertIn("grid_dims / grid_coord report it", flat)
+        self.assertIn("exchanging along one dimension and then the other fills the corner",
+                      flat)
+        self.assertNotIn("sb_<var>_axis,", flat)
+
     def test_the_abi_comment_states_the_operations_a_physics_source_may_call(self) -> None:
         from tools.backends.language.fortran.runner import PHYSICS_CALLABLE_DISTRIBUTED_OPS
         text = self._render()

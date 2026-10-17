@@ -25817,6 +25817,13 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
         self.assertEqual(len(v), 1, v)
         self.assertIn("declares state_residency 'host'", v[0])
         self.assertIn('"state_residency": "distributed"', v[0])
+        # The remedy names the token the target's harness provides, as the manifest lists it:
+        # a bundle that followed an older token would be `bundle_capability_unsatisfied`.
+        from tools.codegen_bundle import capability_name, harness_provided_capabilities
+        provided = harness_provided_capabilities(
+            "infrastructure/harness_fortran_cpu_mpi@0.2.0") or frozenset()
+        token = next(t for t in provided if capability_name(t) == "distributed_state")
+        self.assertIn(f"(with {token} in capability_requirements)", v[0])
         for model in ("none", "serial", "openmp"):
             with self.subTest(model=model):
                 self.assertEqual(self._run(plan={"precision": {}, "state_residency": "host",
