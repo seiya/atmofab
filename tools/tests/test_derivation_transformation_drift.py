@@ -43,6 +43,7 @@ from pathlib import Path
 import tools.derivation as d
 import tools.execution_sites as es
 import tools.orchestration_runtime as ort
+import tools.target_profile as tp
 import tools.workflow_conductor as wc
 
 _REPO = Path(wc.__file__).resolve().parents[1]
@@ -375,6 +376,19 @@ def execute_tuple() -> dict[str, str]:
         "Conductor._promote_run_evidence": _source_digest(wc.Conductor._promote_run_evidence),
         "Conductor._author_quality_check": _source_digest(wc.Conductor._author_quality_check),
         "Conductor._author_snapshot_schema": _source_digest(wc.Conductor._author_snapshot_schema),
+        # Issue #512: what the quality check compares each execution shape by (the state
+        # agreement), what it tells a repair (the failure lines and how much stderr they keep),
+        # and the shapes a profile names — the profile hash binds the YAML, not the code that
+        # turns it into shapes and labels.
+        "Conductor._shape_state_agreement": _source_digest(wc.Conductor._shape_state_agreement),
+        "Conductor._quality_check_failure_lines":
+            _source_digest(wc.Conductor._quality_check_failure_lines),
+        "workflow_conductor._SHAPE_STDERR_*":
+            json.dumps([wc._SHAPE_STDERR_LINES, wc._SHAPE_STDERR_CHARS]),
+        "target_profile.ExecutionShape": _source_digest(tp.ExecutionShape),
+        "target_profile.CERTIFIED_SHAPE_LABEL": tp.CERTIFIED_SHAPE_LABEL,
+        **{f"TargetProfile.{name}": _source_digest(getattr(tp.TargetProfile, name).fget)
+           for name in ("certified_shape", "sweep_shapes", "execution_shapes")},
     }
 
 
@@ -1403,7 +1417,11 @@ PINNED_EXECUTE: dict[str, str] = {
     # Rows moved: `Conductor._execute_inproc`, `Conductor._author_quality_check`,
     # `tools/host_execution.py`, and the mpi and cuda `execution_env` modules (a thread count
     # other than one is refused).
-    "execute-10": "dfe2123d036632dd48e515f8008d7b03761c899f91c55a4745e74d1c22d1bf87",
+    # Re-pinned in place (unshipped) by round 1: the tuple gained what decides the comparison
+    # and the shapes — `_shape_state_agreement`, `_quality_check_failure_lines` and its stderr
+    # bounds, `ExecutionShape`, `CERTIFIED_SHAPE_LABEL` and the three `TargetProfile` shape
+    # properties (a later edit to any of them moved no pin before); the failure record moved.
+    "execute-10": "d0cda1d0a0cd4e4ac2f7ef2505106abd5acfc2105443138a61299cbcb22b91a4",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
