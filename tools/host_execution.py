@@ -231,9 +231,11 @@ def launch_shape(profile: Any, site: Any = None, shape: Any = None) -> LaunchSha
     a site whose `executes` does not list the class, a parallel backend whose record does not
     declare `execution_env` (with the registry's own wording for the first and the third), a
     launcher backend at a site other than `local`, more ranks than one — or a process
-    grid — for a backend with no launcher, and a shape the backend's launch environment
-    refuses (a thread count its model does not run; the launch gate asks the same,
-    `target_profile._thread_count_violations`).
+    grid — for a backend with no launcher, and a shape the backend's PACKAGE launch
+    environment refuses (a thread count its model does not run). A backend whose launch
+    environment is the neutral core's empty one refuses no count here; the launch gate
+    refuses a count above one for it (`target_profile._thread_count_violations`), before
+    anything runs.
     """
     reason = registry.missing_capability_reason(
         "hardware", profile.hardware_class, "execution")

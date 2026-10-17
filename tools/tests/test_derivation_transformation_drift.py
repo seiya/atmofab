@@ -936,7 +936,7 @@ PINNED_RENDER: dict[str, str] = {
     # lines are split onto a block `if`. (Measured by diffing `render_tuple()` against
     # origin/main b60c642c's: those two rows.) Re-pinned in place again by the closing-run
     # fix: the runner's ABI comment says a component's model names no harness operation.
-    "render-10": "f0ac72cc15928f9cb8b493370d15d5f8a6c85f758de9934d89f283f43c7d6ad2",
+    "render-10": "fb0d829a614eb523bccb23ffd2eff096561cf5d6429baf5c474d909226da954f",
     # Re-pinned (issue #512, PR-4b), behaviour-preserving: `tools/host_execution.py` gains
     # `serial_execution_env` and an execution-shape argument to `launch_shape`; the renderers
     # read `perf_parallelism`, which is unchanged, and render nothing the module moved.
@@ -1043,7 +1043,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "af54b83d25eaa7ee64d46da7749c9d3170e99cfa9b46b039a1934e3ea1f0b3ce",
+    "build-2": "c5b68eea0102a6340392739d952dbbf13fda9698ba6634fb024eaae3f7785d11",
     # Re-pinned (issue #512, PR-4b), behaviour-preserving: `tools/host_execution.py` gains
     # `serial_execution_env` and an execution-shape argument to `launch_shape`, whose default is
     # the certified shape — the one the build's backstop call asks for, with the argv prefix,
@@ -1421,7 +1421,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # and the shapes — `_shape_state_agreement`, `_quality_check_failure_lines` and its stderr
     # bounds, `ExecutionShape`, `CERTIFIED_SHAPE_LABEL` and the three `TargetProfile` shape
     # properties (a later edit to any of them moved no pin before); the failure record moved.
-    "execute-10": "d0cda1d0a0cd4e4ac2f7ef2505106abd5acfc2105443138a61299cbcb22b91a4",
+    "execute-10": "e8f198f638e489959bea61c15b8c7db218975862868a03f094fb37f8e563dbde",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",
