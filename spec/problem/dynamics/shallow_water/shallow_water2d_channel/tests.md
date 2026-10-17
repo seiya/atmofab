@@ -145,6 +145,7 @@ The symmetry-pair cases of 2-11. The `base_case_id` of each is the base whose fi
 - `run.n_step`
 - `errors.initial_u.linf_rel`
 - `errors.initial_v.linf_rel`
+- `errors.initial_vel_cross.linf`
 - `errors.symmetry_h.l2_rel`
 - `xstructure.decay_ratio`
 - `errors.steady_<v>.<k>_rel_tend` (nine fields)
@@ -165,7 +166,7 @@ The symmetry-pair cases of 2-11. The `base_case_id` of each is the base whose fi
 - When a diagnostic item is incomputable or non-applicable, make the output value `null` and require `reason_na`.
 - `errors.initial_h.linf_rel` is `N/A` for `flow_profile=tc3_compact_jet` (its initial `h` is defined by the quadrature and has no independent closed form); it is computed for `tc2_zonal_uniform`, `tc2_zonal_perturbed` and `tc4_translating_low`.
 - `errors.initial_h.below_jet_rel` and `errors.initial_h.above_jet_rel` are `N/A` for anything other than `flow_profile=tc3_compact_jet`.
-- `errors.initial_u.linf_rel` and `errors.initial_v.linf_rel` are computed for every case.
+- `errors.initial_u.linf_rel` and `errors.initial_v.linf_rel` are computed for every case. `errors.initial_vel_cross.linf` is computed for the three unforced profiles, whose cross-channel velocity is zero by definition, and is `N/A` for `tc4_translating_low`.
 - `errors.symmetry_h.l2_rel` is `N/A` for anything other than the shifted case of the translation pair; it is carried by `chan_tc2_xpert_n064_dts100_sx025`, which sorts after its base case, and reads the base case's final state.
 - `xstructure.decay_ratio` is `N/A` for anything other than `flow_profile=tc2_zonal_perturbed`.
 - `errors.time_pair.h_l2_rel` is `N/A` for anything other than the halved-`dt` case of the time-refinement pair; it is carried by `chan_tc4_ref_n032_dts100_half`, which sorts after its base case, and reads the base case's final state.
@@ -198,7 +199,7 @@ $$
 \mathrm{initial\_u\_linf\_rel}=\frac{\max_{i,j}|u_{i,j}(0)-u_{ref,i,j}|}{U_s},\qquad
 \mathrm{initial\_v\_linf\_rel}=\frac{\max_{i,j}|v_{i,j}(0)-v_{ref,i,j}|}{U_s}
 $$
-They are emitted as `errors.initial_h.linf_rel`, `errors.initial_h.below_jet_rel`, `errors.initial_h.above_jet_rel`, `errors.initial_u.linf_rel` and `errors.initial_v.linf_rel`. With the constants of 2-1 and $L_r=8.0\times10^6\ \mathrm{m}$, $h_N=2436.2126\ \mathrm{m}$. `initial_h_below_jet_rel` pins the constant of integration of the `tc3_compact_jet` quadrature ($u_s=0$ on $[0,r]$ for every cell of $J_b$, so the integral is exactly zero and $h=h_0$); `initial_h_above_jet_rel` pins the complete integral, since every cell of $J_e$ carries it and $h_N$ is its closed form; the rule used inside the jet is not judged (2-4).
+They are emitted as `errors.initial_h.linf_rel`, `errors.initial_h.below_jet_rel`, `errors.initial_h.above_jet_rel`, `errors.initial_u.linf_rel` and `errors.initial_v.linf_rel`. For the three unforced profiles the cross-channel velocity of the initial state is in addition judged absolutely, $\mathrm{initial\_vel\_cross\_linf}=\max_{i,j}|u_{r,i,j}(0)|$ (`m/s`; $u_r=v$ for `channel_axis=x`, $u$ for `channel_axis=y`), emitted as `errors.initial_vel_cross.linf`: its reference is exactly zero and the discrete initial state sets the cross-channel momentum to zero, so a conforming kernel reads `0`, and the relative error normalised by $U_s$ alone would admit $3.9\times10^{-8}\ \mathrm{m/s}$. With the constants of 2-1 and $L_r=8.0\times10^6\ \mathrm{m}$, $h_N=2436.2126\ \mathrm{m}$. `initial_h_below_jet_rel` pins the constant of integration of the `tc3_compact_jet` quadrature ($u_s=0$ on $[0,r]$ for every cell of $J_b$, so the integral is exactly zero and $h=h_0$); `initial_h_above_jet_rel` pins the complete integral, since every cell of $J_e$ carries it and $h_N$ is its closed form; the rule used inside the jet is not judged (2-4).
 
 The steady-solution and manufactured-solution errors are defined in three norms over each state variable. With $q$ one of `h`, `hu`, `hv` at $t_{end}$, $q_{ref}$ its reference at $t_{end}$ (2-4: the initial state for `tc2_zonal_uniform` and `tc3_compact_jet`; the prescribed flow at $t_{end}$, $\tilde h$, $\tilde h\tilde u$, $\tilde h\tilde v$ evaluated from the closed forms of the Controlled Spec §6 with the case's inputs, for `tc4_translating_low`), the sums and the maximum over the interior cells, and
 $$
@@ -267,7 +268,7 @@ The thresholds are calibrated against an independent reference implementation of
 - $\mathrm{cfl.max} \le 1.0$, and `run.n_step` equals the §3 $\mathrm{n\_step}$ of the case (an integer; judged as $|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$)
 - `extrema.h.min` is $\ge 1.0e3$ for `tc2_zonal_uniform` and `tc2_zonal_perturbed`, $\ge 2.0e3$ for `tc3_compact_jet`, and $\ge 9.0e3$ for `tc4_translating_low` (`m`; the reference minimum over every `tc4_translating_low` case is `9193.9`)
 - $\mathrm{mass\_drift\_rel} \le 1.0e{-10}$ ($\le 5.0e{-10}$ for the two five-day cases)
-- `initial_h_linf_rel` $\le 1.0e{-9}$, `initial_h_below_jet_rel` $\le 1.0e{-9}$, `initial_h_above_jet_rel` $\le 1.0e{-9}$, `initial_u_linf_rel` $\le 1.0e{-9}$, `initial_v_linf_rel` $\le 1.0e{-9}$
+- `initial_h_linf_rel` $\le 1.0e{-9}$, `initial_h_below_jet_rel` $\le 1.0e{-9}$, `initial_h_above_jet_rel` $\le 1.0e{-9}$, `initial_u_linf_rel` $\le 1.0e{-9}$, `initial_v_linf_rel` $\le 1.0e{-9}$, `initial_vel_cross_linf` $\le 1.0e{-12}$ (`m/s`)
 - The steady-solution and manufactured-solution errors are judged as two-sided bands. The Controlled Spec §5 fixes every term of the spatial discretization (`p1` `MC` reconstruction, Rusanov flux, mirror ghost, explicit Coriolis source), which dominates the error against the reference at $t_{end}$ (the time integration is judged by 2-8), so that error is a property of the discretization — its truncation error and numerical diffusion — and not a free quantity: a value below the band is not a better scheme, it is a run that did not perform the §5 update (a state left at its initial value has zero error against a steady solution and passes an upper bound alone). The lower bound and the upper bound of every band are two DISTINCT judged quantities of the test — each names its own `quantity` and each requires its own host-evaluated corroborant over the captured state — not two thresholds on one quantity: a corroborant that reads only the upper bound leaves the lower bound to the checks module's own report, and a state left at its initial value with a reported value inside the band would then pass. The bands are, per family, level, variable and norm (reference values in parentheses):
 
 | case | variable | `l1` | `l2` | `linf` |
@@ -364,12 +365,12 @@ In every test, a judgment this section does not name as applied is not applied, 
   - `chan_tc2_ref_n064_dts100`
 - `expected_outcome`: `pass`
 - judgment conditions:
-  - The initial-state judgment is applied. The evaluation expressions are `errors.initial_h.linf_rel`, `errors.initial_u.linf_rel` and `errors.initial_v.linf_rel`, each with the threshold $\le 1.0e{-9}$.
+  - The initial-state judgment is applied. The evaluation expressions are `errors.initial_h.linf_rel`, `errors.initial_u.linf_rel` and `errors.initial_v.linf_rel`, each with the threshold $\le 1.0e{-9}$, and `errors.initial_vel_cross.linf` with the threshold $\le 1.0e{-12}$ (`m/s`).
   - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 1.0e3$.
   - The mass-conservation judgment is not applied. The non-application basis is "because the test judges the initial state and the conservation judgment belongs to 6-3".
   - The theoretical-comparison judgment is not applied. The non-application basis is "because the test judges the initial state and the steady-solution judgment belongs to 6-3".
-  - The wall-normal-velocity judgment at $t_{end}$ is not applied. The non-application basis is "because the test judges the initial state; the initial cross-channel velocity is judged by `errors.initial_v.linf_rel` above".
+  - The wall-normal-velocity judgment at $t_{end}$ is not applied. The non-application basis is "because the test judges the initial state; the initial cross-channel velocity is judged by `errors.initial_vel_cross.linf` above".
   - The translation-equivariance, along-channel-structure, restricted-reference, time-refinement and symmetry-pair judgments are not applied. The non-application basis is "because the case is not a member of a pair or of the perturbed family".
   - The manufactured-solution judgment is not applied. The non-application basis is "because `errors.mms_*` are `N/A` for a profile other than `tc4_translating_low` (5-3)".
   - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
@@ -381,12 +382,12 @@ In every test, a judgment this section does not name as applied is not applied, 
   - `chan_tc3_ref_n064_dts100`
 - `expected_outcome`: `pass`
 - judgment conditions:
-  - The initial-state judgment is applied. The evaluation expressions are `errors.initial_u.linf_rel`, `errors.initial_v.linf_rel`, `errors.initial_h.below_jet_rel` and `errors.initial_h.above_jet_rel`, each with the threshold $\le 1.0e{-9}$. `errors.initial_h.linf_rel` is not judged: it is `N/A` for this profile (5-3).
+  - The initial-state judgment is applied. The evaluation expressions are `errors.initial_u.linf_rel`, `errors.initial_v.linf_rel`, `errors.initial_h.below_jet_rel` and `errors.initial_h.above_jet_rel`, each with the threshold $\le 1.0e{-9}$, and `errors.initial_vel_cross.linf` with the threshold $\le 1.0e{-12}$ (`m/s`). `errors.initial_h.linf_rel` is not judged: it is `N/A` for this profile (5-3).
   - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 2.0e3$.
   - The mass-conservation judgment is not applied. The non-application basis is "because the test judges the initial state and the conservation judgment belongs to 6-4".
   - The theoretical-comparison judgment is not applied. The non-application basis is "because the test judges the initial state and the steady-solution judgment belongs to 6-4".
-  - The wall-normal-velocity judgment at $t_{end}$ is not applied. The non-application basis is "because the test judges the initial state; the initial cross-channel velocity is judged by `errors.initial_v.linf_rel` above".
+  - The wall-normal-velocity judgment at $t_{end}$ is not applied. The non-application basis is "because the test judges the initial state; the initial cross-channel velocity is judged by `errors.initial_vel_cross.linf` above".
   - The translation-equivariance, along-channel-structure, restricted-reference, time-refinement and symmetry-pair judgments are not applied. The non-application basis is "because the case is not a member of a pair or of the perturbed family".
   - The manufactured-solution judgment is not applied. The non-application basis is "because `errors.mms_*` are `N/A` for a profile other than `tc4_translating_low` (5-3)".
   - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
@@ -454,7 +455,7 @@ In every test, a judgment this section does not name as applied is not applied, 
   - `shifted` is `chan_tc2_xpert_n064_dts100_sx025`
 - `expected_outcome`: `pass`
 - judgment conditions:
-  - The initial-state judgment is applied to both cases. The evaluation expressions are `errors.initial_h.linf_rel` (against the closed form of 2-3 at the cell centres, shift included), `errors.initial_u.linf_rel` and `errors.initial_v.linf_rel`, each with the threshold $\le 1.0e{-9}$.
+  - The initial-state judgment is applied to both cases. The evaluation expressions are `errors.initial_h.linf_rel` (against the closed form of 2-3 at the cell centres, shift included), `errors.initial_u.linf_rel` and `errors.initial_v.linf_rel`, each with the threshold $\le 1.0e{-9}$, and `errors.initial_vel_cross.linf` with the threshold $\le 1.0e{-12}$ (`m/s`).
   - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 1.0e3$.
   - The mass-conservation judgment is applied. The evaluation expression is `metrics.mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
@@ -583,7 +584,7 @@ In every test, a judgment this section does not name as applied is not applied, 
   - `chan_tc2_xpert_n256_dts100`
 - `expected_outcome`: `pass`
 - judgment conditions:
-  - The initial-state judgment is applied to every case. The evaluation expressions are `errors.initial_h.linf_rel`, `errors.initial_u.linf_rel` and `errors.initial_v.linf_rel`, each with the threshold $\le 1.0e{-9}$.
+  - The initial-state judgment is applied to every case. The evaluation expressions are `errors.initial_h.linf_rel`, `errors.initial_u.linf_rel` and `errors.initial_v.linf_rel`, each with the threshold $\le 1.0e{-9}$, and `errors.initial_vel_cross.linf` with the threshold $\le 1.0e{-12}$ (`m/s`).
   - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 1.0e3$.
   - The mass-conservation judgment is applied. The evaluation expression is `metrics.mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
@@ -605,7 +606,7 @@ In every test, a judgment this section does not name as applied is not applied, 
 - `expected_outcome`: `pass`
 - judgment conditions:
   - The symmetry-pair judgment is applied to each transformed case. The evaluation expressions are `errors.axis_exchange.h_l2_rel`, `errors.axis_exchange.hu_l2_rel` and `errors.axis_exchange.hv_l2_rel`, each with the threshold $\le 2.0e{-11}$.
-  - The initial-state judgment is applied to each transformed case, against the closed form of 2-3 in the `y` orientation. The evaluation expressions are `errors.initial_u.linf_rel` and `errors.initial_v.linf_rel`, and `errors.initial_h.linf_rel` for the three cases whose profile has a closed-form depth, or `errors.initial_h.below_jet_rel` and `errors.initial_h.above_jet_rel` for `chan_tc3_ref_n064_dts100_axis`, each with the threshold $\le 1.0e{-9}$.
+  - The initial-state judgment is applied to each transformed case, against the closed form of 2-3 in the `y` orientation. The evaluation expressions are `errors.initial_u.linf_rel` and `errors.initial_v.linf_rel`, and `errors.initial_h.linf_rel` for the three cases whose profile has a closed-form depth, or `errors.initial_h.below_jet_rel` and `errors.initial_h.above_jet_rel` for `chan_tc3_ref_n064_dts100_axis`, each with the threshold $\le 1.0e{-9}$. On every transformed case whose profile is unforced, `errors.initial_vel_cross.linf` is judged in addition, with the threshold $\le 1.0e{-12}$ (`m/s`).
   - The `CFL` judgment is applied to each transformed case. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$; `883`, `567`, `886`, `1152`, the base's).
   - The depth-positivity judgment is applied to each transformed case. The evaluation expression is `extrema.h.min`, and the threshold is that of its profile in 5-5 ($\ge 1.0e3$, $\ge 2.0e3$, $\ge 1.0e3$, $\ge 9.0e3$).
   - The mass-conservation judgment is applied to each transformed case. The evaluation expression is `metrics.mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
@@ -624,7 +625,7 @@ In every test, a judgment this section does not name as applied is not applied, 
 - `expected_outcome`: `pass`
 - judgment conditions:
   - The symmetry-pair judgment is applied to each transformed case. The evaluation expressions are `errors.mirror_x.h_l2_rel`, `errors.mirror_x.hu_l2_rel` and `errors.mirror_x.hv_l2_rel`, each with the threshold $\le 2.0e{-11}$.
-  - The initial-state judgment is applied to each transformed case, against the closed form of 2-3 with the case's signs. The evaluation expressions are `errors.initial_u.linf_rel` and `errors.initial_v.linf_rel`, and `errors.initial_h.linf_rel` for the four cases whose profile has a closed-form depth, or `errors.initial_h.below_jet_rel` and `errors.initial_h.above_jet_rel` for `chan_tc3_ref_n064_dts100_xmir`, each with the threshold $\le 1.0e{-9}$.
+  - The initial-state judgment is applied to each transformed case, against the closed form of 2-3 with the case's signs. The evaluation expressions are `errors.initial_u.linf_rel` and `errors.initial_v.linf_rel`, and `errors.initial_h.linf_rel` for the four cases whose profile has a closed-form depth, or `errors.initial_h.below_jet_rel` and `errors.initial_h.above_jet_rel` for `chan_tc3_ref_n064_dts100_xmir`, each with the threshold $\le 1.0e{-9}$. On every transformed case whose profile is unforced, `errors.initial_vel_cross.linf` is judged in addition, with the threshold $\le 1.0e{-12}$ (`m/s`).
   - The `CFL` judgment is applied to each transformed case. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$; `883`, `567`, `1087`, `886`, `1152`, the base's).
   - The depth-positivity judgment is applied to each transformed case. The evaluation expression is `extrema.h.min`, and the threshold is that of its profile in 5-5 ($\ge 1.0e3$, $\ge 2.0e3$, $\ge 9.0e3$, $\ge 1.0e3$, $\ge 9.0e3$).
   - The mass-conservation judgment is applied to each transformed case. The evaluation expression is `metrics.mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
@@ -642,7 +643,7 @@ In every test, a judgment this section does not name as applied is not applied, 
 - `expected_outcome`: `pass`
 - judgment conditions:
   - The symmetry-pair judgment is applied to each transformed case. The evaluation expressions are `errors.mirror_y.h_l2_rel`, `errors.mirror_y.hu_l2_rel` and `errors.mirror_y.hv_l2_rel`, each with the threshold $\le 2.0e{-11}$.
-  - The initial-state judgment is applied to each transformed case, against the closed form of 2-3 with the case's signs and `gh0`. The evaluation expressions are `errors.initial_u.linf_rel` and `errors.initial_v.linf_rel`, and `errors.initial_h.linf_rel` for the three cases whose profile has a closed-form depth, or `errors.initial_h.below_jet_rel` and `errors.initial_h.above_jet_rel` for `chan_tc3_ref_n064_dts100_ymir` (whose depth before the jet is its own $h_0=23889.890819821492/g$ and beyond it its own $h_N$, the base's $h_0$), each with the threshold $\le 1.0e{-9}$.
+  - The initial-state judgment is applied to each transformed case, against the closed form of 2-3 with the case's signs and `gh0`. The evaluation expressions are `errors.initial_u.linf_rel` and `errors.initial_v.linf_rel`, and `errors.initial_h.linf_rel` for the three cases whose profile has a closed-form depth, or `errors.initial_h.below_jet_rel` and `errors.initial_h.above_jet_rel` for `chan_tc3_ref_n064_dts100_ymir` (whose depth before the jet is its own $h_0=23889.890819821492/g$ and beyond it its own $h_N$, the base's $h_0$), each with the threshold $\le 1.0e{-9}$. On every transformed case whose profile is unforced, `errors.initial_vel_cross.linf` is judged in addition, with the threshold $\le 1.0e{-12}$ (`m/s`).
   - The `CFL` judgment is applied to each transformed case. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$; `883`, `567`, `1087`, `886`, the base's).
   - The depth-positivity judgment is applied to each transformed case. The evaluation expression is `extrema.h.min`, and the threshold is that of its profile in 5-5 ($\ge 1.0e3$, $\ge 2.0e3$, $\ge 9.0e3$, $\ge 1.0e3$).
   - The mass-conservation judgment is applied to each transformed case. The evaluation expression is `metrics.mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
