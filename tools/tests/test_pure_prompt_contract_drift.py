@@ -1012,8 +1012,9 @@ PINNED: dict[str, str] = {
     # `generate_verify.txt` §checklist_g6_floor_scope. Re-pinned in place (unshipped) by round 3:
     # the `mpi` fragments say the sweep's runs start fewer than `execution.ranks` processes, and
     # the `openmp` fragments (§target_lowering_floor, §checklist_g6_floor_scope) say a region's
-    # team is never fixed inside the kernel — the thread sweep's comparison sees one width then.
-    "pure-79": "721deedaac8c3a38affeda95e4dd0a856b3c4b753fc35b7df1bb87983f0eadfe",
+    # team is never pinned to one thread or switched off on the test cases (round 4 corrected the
+    # rationale: each run's thread limit caps `num_threads(k)`, so only k = 1 or `if` defeats it).
+    "pure-79": "e2b9d6485c50322732b833372485f7a69ecc90cbbadae3bac3daa845c2aec521",
 }
 
 
