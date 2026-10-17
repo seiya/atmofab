@@ -92,7 +92,7 @@ procedures:
 ```
 
 ## 6. Prohibitions
-Forbid automatic fallback to a non-periodic boundary. Forbid realising one orientation or one reversal of the field through another — transposing or reversing the field, mapping it in the base orientation and transposing or reversing the result back: each axis is mapped along its own index as §3 states it, because `tests.md` compares the transposed and reversed fields with the base as symmetry pairs and an implementation that derives one from the other compares a path with itself (`docs/TESTS.md` §Symmetry pairs).
+Forbid automatic fallback to a non-periodic boundary. Forbid computing a call through another call: recognising that the supplied field is the transpose or the reversal of another field, mapping that field and transforming the result back. `tests.md` compares the transposed and reversed fields with the base as symmetry pairs, and a call computed through another compares a path with itself (`docs/TESTS.md` §Symmetry pairs). Mapping both axes of every call with one routine applied along each axis in turn — including a routine written along one axis and applied to the transposed array for the other, in every call — is not that mapping: each axis is still mapped along its own index as §3 states it.
 
 ## 7. Traceability
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).

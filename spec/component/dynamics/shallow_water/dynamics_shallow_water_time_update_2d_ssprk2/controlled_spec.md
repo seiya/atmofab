@@ -159,7 +159,7 @@ procedures:
 ```
 
 ## 6. Prohibitions
-Forbid automatic switching of the time-integration method. Forbid realising one orientation of the fields through another — transposing the fields, exchanging their components, their extents or `dx` and `dy`, updating in the base orientation and transforming the result back: the update runs over the extents and the arrays it receives, because `tests.md` compares the axis-exchanged fields with the base as a symmetry pair and an implementation that derives one from the other compares a path with itself (`docs/TESTS.md` §Symmetry pairs).
+Forbid automatic switching of the time-integration method. Forbid computing a call through another call: recognising that the supplied fields are the axis exchange of other fields (transposed, their components, their extents or `dx` and `dy` exchanged), updating those and transforming the result back. The update runs over the extents and the arrays it receives; `tests.md` compares the axis-exchanged fields with the base as a symmetry pair, and a call computed through another compares a path with itself (`docs/TESTS.md` §Symmetry pairs).
 
 ## 7. Traceability
 Require recording the adoption result in `component_catalog.yaml` and, by the host, in the adopting `spec`'s `<ir_ref>/dependency_graph.json` (`all_nodes`, at the resolved `version`).
