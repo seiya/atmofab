@@ -2741,6 +2741,12 @@ class DistributedRenderTest(unittest.TestCase):
                        "    call require_axis(sb_w_axis2, 2, &",
                        "    call require_axis(sb_q_axis1, 2, &",
                        "    if (sb_c_axis1 == 0 .and. &", "      sb_c_axis2 == 0) then",
+                       # A slot's shift reads that slot's axis, and only when it names one:
+                       # `lbound(a, 0)` is not a valid DIM (issue #512).
+                       "      if (sb_w_axis1 > 0) then\n        off1 = lbound(sb_w, &\n"
+                       "          sb_w_axis1) - 1\n      end if",
+                       "      if (sb_w_axis2 > 0) then\n        off2 = lbound(sb_w, &\n"
+                       "          sb_w_axis2) - 1\n      end if",
                        "  subroutine require_axis("):
             with self.subTest(needle=needle):
                 self.assertIn(needle, dist)
