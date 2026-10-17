@@ -19030,11 +19030,14 @@ class DeterministicBuildTest(unittest.TestCase):
                                           matching_diagnostics=True, sweep_result=timeout)
             quality = json.loads((repo / self._b1_refs().run_node_dir()
                                   / "quality_check.json").read_text())
-            sweep_rows = quality["shapes"][1:]
-            self.assertTrue(sweep_rows)
-            for row in sweep_rows:
-                self.assertEqual(row["run_failure"]["error"], "timeout: exceeded 3600 sec")
-                self.assertIsNone(row["run_failure"]["return_code"])
+            first, *later = quality["shapes"][1:]
+            self.assertTrue(later, "the checked-in target sweeps fewer than two shapes")
+            self.assertEqual(first["run_failure"]["error"], "timeout: exceeded 3600 sec")
+            self.assertIsNone(first["run_failure"]["return_code"])
+            # The shapes after it do not run (a hang under one would hang under the next).
+            for row in later:
+                self.assertEqual(row["run_failure"],
+                                 {"not_run": f"shape {first['label']} failed first"})
             self.assertIn("rc=None, timeout: exceeded 3600 sec", meta["failure_excerpt"])
         with tempfile.TemporaryDirectory() as td:
             repo = Path(td)

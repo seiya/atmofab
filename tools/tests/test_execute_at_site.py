@@ -312,11 +312,12 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
                 self.assertEqual(threads(tmp / "sweep" / shape.label),
                                  str(shape.threads_per_rank))
 
-    def test_a_failing_shape_names_its_cause_and_the_job_stops_the_later_ones(self) -> None:
+    def test_a_failing_shape_names_its_cause_and_the_later_ones_do_not_run(self) -> None:
         """Issue #512: a shape whose run fails is recorded with its exit status and the end of
         its stderr, which the repair excerpt quotes; at a site the job then runs no later
         command, and the later shape's row names the shape that stopped it — not the serial
-        reference, which passed. Locally the later shape runs and passes."""
+        reference, which passed. The local path stops the same way (a kernel that hangs under one
+        shape would otherwise hold the run for a timeout per later shape)."""
         shapes = self.n.target.sweep_shapes
         self.assertGreaterEqual(len(shapes), 2)
         fail = str(shapes[0].threads_per_rank)
@@ -340,11 +341,10 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
                     self.assertLessEqual(len(part), wc._SHAPE_STDERR_CHARS)
                 self.assertNotIn("frame 30 ", head + tail)
                 later = rows[shapes[1].label]
-                if where == "site":
-                    self.assertEqual(later["run_failure"],
-                                     {"not_run": f"shape {shapes[0].label} failed first"})
-                else:
-                    self.assertEqual(later["status"], "pass")
+                self.assertEqual(later["run_failure"],
+                                 {"not_run": f"shape {shapes[0].label} failed first"})
+                self.assertFalse((n.repo / "workspace" / "tmp" / "arid-1" / "sweep"
+                                  / shapes[1].label / "argv.json").exists())
                 trial = json.loads((n.node_dir / "trial_meta.json").read_text())
                 self.assertEqual(trial["status"], "fail")
                 self.assertIn("the run failed (rc=3)", trial["failure_excerpt"])

@@ -1424,7 +1424,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # and the shapes — `_shape_state_agreement`, `_quality_check_failure_lines` and its stderr
     # bounds, `ExecutionShape`, `CERTIFIED_SHAPE_LABEL` and the three `TargetProfile` shape
     # properties (a later edit to any of them moved no pin before); the failure record moved.
-    "execute-10": "18e7199a78a1cf7dcd208c21e1196d8e8a709150b8b67a8fbdfd414bcbe9ec15",
+    "execute-10": "18acf3de23c2f17f19b6d5056a755440bf205d5294315bec10a8c717762d206f",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

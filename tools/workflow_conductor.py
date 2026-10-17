@@ -11671,9 +11671,15 @@ class Conductor:
                 **attribution,
             }) if res_run.get("ok") and (res_trace is None or res_trace.get("ok")) else None
             # 3. Each sweep shape (issue #512): the same binary and cases once more per shape,
-            #    each in a directory of its own, after a quality check that ran.
+            #    each in a directory of its own, after a quality check that ran — and, as the
+            #    remote job runs them, only while every earlier one succeeded: one failure fails
+            #    the check, and a kernel that hangs under one grid would hang under the next
+            #    for a whole run timeout each.
             res_sweep: list[dict[str, Any] | None] = []
             for (shape, shape_launch), argv in zip(sweep, sweep_argvs):
+                if res_sweep and not (res_sweep[-1] and res_sweep[-1].get("ok")):
+                    res_sweep.append(None)
+                    continue
                 shape_dir = sweep_tmp / shape.label
                 shape_dir.joinpath(*run_raw_dirs).mkdir(parents=True, exist_ok=True)
                 res_sweep.append(tool_run_program({
@@ -11729,9 +11735,10 @@ class Conductor:
                                 cwd=f"{jdir}/src", record_cwd=str(src_dir), env=qc_env,
                                 timeout_sec=QUALITY_CHECKS_TIMEOUT_SEC,
                                 command_log_path=qc_cmd_log, capture_limit=_FULL_CAPTURE_LIMIT),
-                    # Each sweep shape after the quality check (issue #512). Unlike the local
-                    # path, the job runs a command only after every earlier one exited 0, so a
-                    # shape after a failed one does not run; its row names the one that failed.
+                    # Each sweep shape after the quality check (issue #512). The job runs a
+                    # command only after every earlier one exited 0, as the local path runs the
+                    # shapes, so a shape after a failed one does not run; its row names the one
+                    # that failed.
                     *(CommandSpec(tag=f"sweep_{shape.label}", tool_name="run_program",
                                   argv=tuple(argv), cwd=f"{jdir}/sweep/{shape.label}",
                                   record_cwd=str(sweep_tmp / shape.label),
@@ -11819,10 +11826,10 @@ class Conductor:
         qc_diag = _read_json(qc_tmp / "diagnostics.json") or {}
         shape_runs = [{"shape": target.certified_shape, "dir": run_tmp, "ok": True,
                        "command_id": res_run.get("command_id")}]
-        # A sweep shape that did not run names the command that stopped it: locally the
-        # quality check (each shape runs only after one that succeeded), at a remote site the
-        # first earlier command of the job that failed (the job runs a command only after every
-        # earlier one exited 0) — so a later shape is never blamed on a reference that passed.
+        # A sweep shape that did not run names the command that stopped it — the first earlier
+        # command that failed (the quality check's re-run or an earlier shape; both paths run a
+        # shape only after every earlier command succeeded) — so a later shape is never blamed
+        # on a reference that passed.
         earlier: list[tuple[str, dict[str, Any] | None]] = [
             ("the serial reference re-run", res_qc)]
         for (shape, _l), res in zip(sweep, res_sweep):
