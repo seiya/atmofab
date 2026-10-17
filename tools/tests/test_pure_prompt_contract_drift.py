@@ -1004,6 +1004,13 @@ PINNED: dict[str, str] = {
     # §checklist_g6_floor_scope). The gate that moved with them is the `mpi` presence floor
     # (a component model naming a harness operation is refused).
     "pure-78": "a0d57d208ea8c2bcecb186b96617927fcf75ce5ec1fa24d30afc418590f3e904",
+    # pure-79 (issue #512 PR-4b): the `mpi` producer and reviewer fragments state the replicate
+    # threshold as `p_d * m_d`, `m_d` the larger of `ng` and the smallest block extent the
+    # operations a case calls on a block accept — at `ng` alone a component whose operation
+    # refuses a one-cell block failed its guard under the grid (4, 1) the sweep runs, and
+    # deadlocked under (3, 1). Members moved: `generate_generate.txt` §target_lowering_floor,
+    # `generate_verify.txt` §checklist_g6_floor_scope.
+    "pure-79": "cb6d6c25057fffdb917125eccc010704ac2a8617418041e383440786e2642bf8",
 }
 
 
