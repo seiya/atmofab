@@ -14774,19 +14774,33 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
             return {"comparison": {"reference": {"ranks": reference},
                                    "candidate": {"ranks": candidate}}}
 
-        good_perf = {"parallelism": {"mpi_ranks": 4}}
+        good_perf = {"parallelism": {"mpi_ranks": 4, "process_grid": [4, 1]}}
         self.assertEqual(run(mpi, good_perf, quality(4, 1)), [])
-        for perf, needle in (({"parallelism": {"mpi_ranks": 1}}, "mpi_ranks is 1"),
-                             ({"parallelism": {"mpi_ranks": True}}, "mpi_ranks is True"),
-                             ({"parallelism": {}}, "mpi_ranks is None"),
-                             ({}, "mpi_ranks is None"),
-                             (None, "mpi_ranks is None"),
-                             ([4], "mpi_ranks is None")):
+        for perf, needle in (({"parallelism": {"mpi_ranks": 1, "process_grid": [4, 1]}},
+                              "mpi_ranks is 1"),
+                             ({"parallelism": {"mpi_ranks": True, "process_grid": [4, 1]}},
+                              "mpi_ranks is True"),
+                             ({"parallelism": {"process_grid": [4, 1]}}, "mpi_ranks is None")):
             with self.subTest(perf=perf):
                 violations = run(mpi, perf, quality(4, 1))
                 self.assertEqual(len(violations), 1, violations)
                 self.assertIn(needle, violations[0])
                 self.assertIn("runs 4 rank(s) under mpi's launcher", violations[0])
+        # Issue #512: the grid the harness arranged the ranks in, with none imposed, is
+        # `[ranks, 1]`; any other grid, shape or member type is refused.
+        for grid in ([1, 4], [2, 2], [4], [4, 1, 1], [4.0, 1], [4, True], "4,1", None):
+            with self.subTest(grid=grid):
+                violations = run(mpi, {"parallelism": {"mpi_ranks": 4, "process_grid": grid}},
+                                 quality(4, 1))
+                self.assertEqual(len(violations), 1, violations)
+                self.assertIn(f"parallelism.process_grid is {grid!r}", violations[0])
+                self.assertIn("which the harness arranges as [4, 1]", violations[0])
+        for perf in ({"parallelism": {}}, {}, None, [4]):
+            with self.subTest(perf=perf):
+                violations = run(mpi, perf, quality(4, 1))
+                self.assertEqual(len(violations), 2, violations)
+                self.assertIn("mpi_ranks is None", violations[0])
+                self.assertIn("process_grid is None", violations[1])
         for q, needle in ((quality(1, 1), "comparison.reference.ranks is 1, expected 4"),
                           (quality(4, 4), "comparison.candidate.ranks is 4, expected 1"),
                           (quality(4, True), "comparison.candidate.ranks is True"),
@@ -22614,11 +22628,14 @@ class DistributedChecksSourceGateTests(unittest.TestCase):
     nothing else. The single-process harness keeps both rules as they were."""
 
     _MPI = "harness_fortran_cpu_mpi"
-    _META = ("sb_u_axis", "sb_u_lo", "sb_u_hi", "sb_u_glo")
+    _META = ("sb_u_axis1", "sb_u_lo1", "sb_u_hi1", "sb_u_glo1",
+             "sb_u_axis2", "sb_u_lo2", "sb_u_hi2", "sb_u_glo2")
     _CHECKS = _CHECKS_OK.replace(
         "  public :: u\n",
-        "  public :: u, s\n  public :: sb_u_axis, sb_u_lo, sb_u_hi, sb_u_glo\n"
-        "  integer :: sb_u_axis, sb_u_lo, sb_u_hi, sb_u_glo\n  real(real64) :: s\n")
+        "  public :: u, s\n  public :: sb_u_axis1, sb_u_lo1, sb_u_hi1, sb_u_glo1, "
+        "sb_u_axis2, sb_u_lo2, sb_u_hi2, sb_u_glo2\n"
+        "  integer :: sb_u_axis1, sb_u_lo1, sb_u_hi1, sb_u_glo1, "
+        "sb_u_axis2, sb_u_lo2, sb_u_hi2, sb_u_glo2\n  real(real64) :: s\n")
 
     def _run(self, checks: str, *, harness: str | None = _MPI, model: str = _MODEL_OK,
              bound_state: object = None) -> list[str]:
@@ -22642,7 +22659,8 @@ class DistributedChecksSourceGateTests(unittest.TestCase):
         for hidden in self._META:
             with self.subTest(hidden=hidden):
                 v = self._run(self._CHECKS.replace(
-                    "  public :: sb_u_axis, sb_u_lo, sb_u_hi, sb_u_glo\n",
+                    "  public :: sb_u_axis1, sb_u_lo1, sb_u_hi1, sb_u_glo1, "
+                    "sb_u_axis2, sb_u_lo2, sb_u_hi2, sb_u_glo2\n",
                     "  public :: " + ", ".join(m for m in self._META if m != hidden) + "\n"))
                 self.assertEqual(len(v), 1, v)
                 self.assertIn(f"['{hidden}']", v[0])
@@ -25718,11 +25736,11 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
     _MODEL = ("module dep_base_model\n  use harness_fortran_cpu_mpi_model, only: "
               "harness_fortran_cpu_mpi__exchange_halo_r1\ncontains\n"
               "  subroutine dep_base__step(u)\n    real(8), intent(inout) :: u(:)\n"
-              "    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, .true.)\n"
+              "    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, .true.)\n"
               "  end subroutine\nend module\n")
     _CHECKS = ("module dep_base_checks\ncontains\n  subroutine case_setup(c, ok)\n"
-               "    call harness_fortran_cpu_mpi__partition(n, glo, ghi)\n"
-               "    sb_u_axis = 1\n  end subroutine\nend module\n")
+               "    call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)\n"
+               "    sb_u_axis1 = 1\n  end subroutine\nend module\n")
 
     def _run(self, model: str | None = None, checks: str | None = None, *,
              plan: object = None, node_key: str = "component/dep_base@0.1.0",
@@ -25772,10 +25790,10 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                 ("model", self._MODEL.replace("contains",
                                               "  use, non_intrinsic :: mpi\ncontains")),
                 ("model", self._MODEL.replace("contains", "  include 'mpif.h'\ncontains")),
-                ("checks", self._CHECKS.replace("sb_u_axis = 1",
-                                                "sb_u_axis = 1\n    call mpi_barrier(c, e)")),
-                ("checks", self._CHECKS.replace("sb_u_axis = 1",
-                                                "sb_u_axis = 1\n    t = MPI_Wtime()"))):
+                ("checks", self._CHECKS.replace("sb_u_axis1 = 1",
+                                                "sb_u_axis1 = 1\n    call mpi_barrier(c, e)")),
+                ("checks", self._CHECKS.replace("sb_u_axis1 = 1",
+                                                "sb_u_axis1 = 1\n    t = MPI_Wtime()"))):
             for plan in (None, declined):
                 with self.subTest(where=where, text=text[-60:], plan=plan):
                     v = self._run(**{where: text}, plan=plan)
@@ -25785,12 +25803,12 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                     self.assertIn(f"dep_base_{where}.f90", v[0])
 
     def test_names_that_only_look_like_the_library_pass(self) -> None:
-        for text in (self._CHECKS.replace("sb_u_axis = 1", "sb_u_axis = 1\n    use mpi_utils"),
-                     self._CHECKS.replace("sb_u_axis = 1", "sb_u_axis = 1\n    x = s%mpi_n(1)"),
-                     self._CHECKS.replace("sb_u_axis = 1",
-                                          "sb_u_axis = 1\n    ! call mpi_send(x)"),
-                     self._CHECKS.replace("sb_u_axis = 1",
-                                          "sb_u_axis = 1\n    m = 'call mpi_send('")):
+        for text in (self._CHECKS.replace("sb_u_axis1 = 1", "sb_u_axis1 = 1\n    use mpi_utils"),
+                     self._CHECKS.replace("sb_u_axis1 = 1", "sb_u_axis1 = 1\n    x = s%mpi_n(1)"),
+                     self._CHECKS.replace("sb_u_axis1 = 1",
+                                          "sb_u_axis1 = 1\n    ! call mpi_send(x)"),
+                     self._CHECKS.replace("sb_u_axis1 = 1",
+                                          "sb_u_axis1 = 1\n    m = 'call mpi_send('")):
             with self.subTest(text=text[-40:]):
                 self.assertEqual(self._run(checks=text), [])
 
@@ -25806,9 +25824,9 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
 
     def test_no_partition_or_halo_exchange_by_its_harness_name_is_refused(self) -> None:
         model = self._MODEL.replace(
-            "    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, .true.)\n", "")
+            "    call harness_fortran_cpu_mpi__exchange_halo_r1(u, 1, 1, .true.)\n", "")
         for checks in (self._CHECKS.replace(
-                "    call harness_fortran_cpu_mpi__partition(n, glo, ghi)\n", ""),
+                "    call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)\n", ""),
                 self._CHECKS.replace("call harness_fortran_cpu_mpi__partition", "call part"),
                 self._CHECKS.replace("call harness_fortran_cpu_mpi__partition",
                                      "! call harness_fortran_cpu_mpi__partition")):
@@ -25824,54 +25842,57 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                      "call harness_fortran_cpu_mpi__exchange_halo_r3(u, 1, 1, .true.)"):
             with self.subTest(call=call):
                 v = self._run(model=model, checks=self._CHECKS.replace(
-                    "call harness_fortran_cpu_mpi__partition(n, glo, ghi)", call))
+                    "call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)", call))
                 self.assertEqual(len(v), 1, v)
                 self.assertIn("neither the model nor the checks source calls", v[0])
         # The action of a one-line logical `if` is a call too.
         self.assertEqual(self._run(model=model, checks=self._CHECKS.replace(
-            "    call harness_fortran_cpu_mpi__partition(n, glo, ghi)\n",
-            "    if (n > 0) call harness_fortran_cpu_mpi__partition(n, glo, ghi)\n")), [])
+            "    call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)\n",
+            "    if (n > 0) call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)\n")), [])
         # Either one suffices, in either source.
         self.assertEqual(self._run(model=model), [])
         self.assertEqual(self._run(checks=self._CHECKS.replace(
-            "    call harness_fortran_cpu_mpi__partition(n, glo, ghi)\n", "")), [])
+            "    call harness_fortran_cpu_mpi__partition(n, 1, glo, ghi)\n", "")), [])
 
     def test_a_checks_module_that_sets_no_partition_axis_is_refused(self) -> None:
-        for assignment in ("sb_u_axis = 0", "sb_u_axis = 0_int32", "sb_u_axis = (0)",
-                           "if (sb_u_axis == 1) x = 1", "u_axis = 1", "x%sb_u_axis = 1",
+        for assignment in ("sb_u_axis1 = 0", "sb_u_axis1 = 0_int32", "sb_u_axis1 = (0)",
+                           "if (sb_u_axis1 == 1) x = 1", "u_axis = 1", "x%sb_u_axis1 = 1",
                            # the axis of a name that is not a bound array distributes nothing,
                            # nor does a scalar's
-                           "sb_tmp_axis = 1", "sb_t_axis = 1"):
+                           "sb_tmp_axis1 = 1", "sb_t_axis2 = 1",
+                           # the one-dimensional spelling of `distributed_state@1`, and a
+                           # third grid dimension, name no slot (issue #512)
+                           "sb_u_axis = 1", "sb_u_axis3 = 1"):
             with self.subTest(assignment=assignment):
-                v = self._run(checks=self._CHECKS.replace("sb_u_axis = 1", assignment))
+                v = self._run(checks=self._CHECKS.replace("sb_u_axis1 = 1", assignment))
                 self.assertEqual(len(v), 1, v)
-                self.assertIn("never sets the partition axis", v[0])
+                self.assertIn("never sets a partition axis", v[0])
                 self.assertIn("dep_base_checks.f90", v[0])
-        for assignment in ("sb_u_axis = 2", "sb_u_axis = k", "sb_v_axis = 0; sb_u_axis = 1",
-                           "sb_u_axis=1"):
+        for assignment in ("sb_u_axis1 = 2", "sb_u_axis1 = k", "sb_v_axis1 = 0; sb_u_axis1 = 1", "sb_u_axis2 = 2",
+                           "sb_u_axis1=1"):
             with self.subTest(assignment=assignment):
-                self.assertEqual(self._run(checks=self._CHECKS.replace("sb_u_axis = 1",
+                self.assertEqual(self._run(checks=self._CHECKS.replace("sb_u_axis1 = 1",
                                                                        assignment)), [])
         # The model module setting it does not count: the checks module owns the binding.
-        v = self._run(model=self._MODEL.replace("contains", "  integer :: sb_u_axis = 1\ncontains"),
-                      checks=self._CHECKS.replace("sb_u_axis = 1", "x = 0"))
+        v = self._run(model=self._MODEL.replace("contains", "  integer :: sb_u_axis1 = 1\ncontains"),
+                      checks=self._CHECKS.replace("sb_u_axis1 = 1", "x = 0"))
         self.assertEqual(len(v), 1, v)
-        self.assertIn("never sets the partition axis", v[0])
+        self.assertIn("never sets a partition axis", v[0])
         # The bound array's name is compared as Fortran compares identifiers, on both sides:
         # the corpus declares upper-case snapshot names (`U`, `U_in`).
-        self.assertEqual(self._run(checks=self._CHECKS.replace("sb_u_axis = 1", "SB_U_AXIS = 1")),
+        self.assertEqual(self._run(checks=self._CHECKS.replace("sb_u_axis1 = 1", "SB_U_AXIS1 = 1")),
                          [])
         self.assertEqual(self._run(array="U"), [])
         # A declaration's initializer is a setting too.
         self.assertEqual(self._run(checks=self._CHECKS.replace(
-            "sb_u_axis = 1", "x = 0").replace("contains", "  integer :: sb_u_axis = 1\ncontains")),
+            "sb_u_axis1 = 1", "x = 0").replace("contains", "  integer :: sb_u_axis1 = 1\ncontains")),
             [])
 
     def test_the_floor_is_not_asked_of_an_infrastructure_node(self) -> None:
         self.assertEqual(self._run(
             model=self._MODEL.replace("contains", "  use mpi_f08\ncontains"),
             plan={"precision": {}, "state_residency": "host"},
-            node_key="infrastructure/harness_fortran_cpu_mpi@0.1.0"), [])
+            node_key="infrastructure/harness_fortran_cpu_mpi@0.2.0"), [])
 
 
 class ExecutionModeContractCouplingGateTests(unittest.TestCase):

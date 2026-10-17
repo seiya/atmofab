@@ -167,7 +167,7 @@ _HARNESS_CORE_OPS = (
 )
 
 # The distributed-state operations the RUNNER calls on a harness that drives the program as
-# several ranks (`distributed_state@1`, issue #316): it starts and ends the runtime, asks its rank
+# several ranks (`distributed_state@2`, issues #316 and #512): it starts and ends the runtime, asks its rank
 # (only rank 0 writes) and the run's size (the perf record's rank count, observed rather than
 # configured), sums the ranks' updated-cell counts, and gathers each distributed bound array onto
 # rank 0 before it is serialized (`gather_r<k>`, added per array rank on demand).
@@ -179,16 +179,20 @@ _DISTRIBUTED_RUNNER_OPS = ("init", "finalize", "comm_rank", "comm_size", "reduce
 #: runtime and the gather are the capture's, and the writers and emitters are the runner's alone
 #: (Z6) — a physics source that reached them could write its own evidence.
 PHYSICS_CALLABLE_DISTRIBUTED_OPS: tuple[str, ...] = (
-    "comm_rank", "comm_size", "partition", "exchange_halo_r1", "exchange_halo_r2",
+    "comm_rank", "comm_size", "grid_dims", "grid_coord", "partition", "exchange_halo_r1",
+    "exchange_halo_r2",
     "reduce_sum", "reduce_max", "reduce_min", "reduce_sum_int",
 )
 
 #: The per-variable module variables a checks module publishes beside each bound ARRAY on a
-#: distributed harness (`docs/backends/language/fortran/CHECKS_ABI.md` §1-c): the
-#: axis the array is partitioned along (0 = replicated, rank 0's copy is the global value), the
-#: indices, in the array's own bounds, of the cells this rank contributes to the global array
-#: along it, and the global index of the first of them. Named `sb_<var>_<suffix>` in the checks module itself, and imported under that name.
-DISTRIBUTED_BINDING_SUFFIXES: tuple[str, ...] = ("axis", "lo", "hi", "glo")
+#: distributed harness (`docs/backends/language/fortran/CHECKS_ABI.md` §1-c), one group per
+#: dimension `<d>` of the process grid (issue #512): the axis of the array partitioned along
+#: grid dimension `<d>` (0 = not partitioned along it; 0 in both groups = replicated, rank 0's
+#: copy is the global value), the indices, in the array's own bounds, of the cells this rank
+#: contributes to the global array along that axis, and the global index of the first of them.
+#: Named `sb_<var>_<suffix>` in the checks module itself, and imported under that name.
+DISTRIBUTED_BINDING_SUFFIXES: tuple[str, ...] = (
+    "axis1", "lo1", "hi1", "glo1", "axis2", "lo2", "hi2", "glo2")
 
 
 def distributed_binding_names(variable: str) -> list[str]:
@@ -799,7 +803,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
         for r in array_ranks:
             a(f"    real(dp), allocatable :: g_r{r}({','.join(':' * r)})")
         if array_ranks:
-            a("    integer :: off")
+            a("    integer :: off1, off2")
     a(f"    allocate(out({len(bound_vars)}))")
     for k, v in enumerate(bound_vars, start=1):
         rank = _rank_of_shape(schema_vars[v], v)
@@ -907,19 +911,23 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
 
 def _render_distributed_capture(a: Any, H: Any, k: int, v: str, rank: int) -> None:
     """The capture of the bound array `v` (of rank `rank`, slot `k` of `out`) on a distributed
-    harness: replicated (`axis == 0`) → rank 0's copy; partitioned → gathered onto rank 0 by the
-    harness, whose tile check stops the run unless the ranks' owned ranges cover the global
-    extent exactly. Every rank reaches the gather (it is collective); only rank 0 serializes.
-    Each argument sits on its own line, so the longest bindable name stays under the lint limit."""
+    harness: replicated (both partitioned-axis slots `0`) → rank 0's copy; partitioned along one
+    or both grid dimensions → gathered onto rank 0 by the harness, whose tile check stops the run
+    unless the contributed blocks cover the global array exactly. Every rank reaches the gather
+    (it is collective); only rank 0 serializes. Each argument sits on its own line, so the
+    longest bindable name stays under the lint limit."""
     vlit = _flit(v)
     sb = f"{STATE_BINDING_PREFIX}{v}"
-    axis, lo, hi, glo = distributed_binding_names(v)
+    axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2 = distributed_binding_names(v)
     emit = H(f"emit_array_r{rank}")
     a(f"    call require_bound(allocated({sb}), &")
     a(f"      '{vlit}', cid)")
-    a(f"    call require_axis({axis}, {rank}, &")
+    a(f"    call require_axis({axis1}, {rank}, &")
     a(f"      '{vlit}', cid)")
-    a(f"    if ({axis} == 0) then")
+    a(f"    call require_axis({axis2}, {rank}, &")
+    a(f"      '{vlit}', cid)")
+    a(f"    if ({axis1} == 0 .and. &")
+    a(f"      {axis2} == 0) then")
     a("      if (rank == 0) then")
     a(f"        out({k}) = {H('box')}( &")
     a(f"          '{vlit}', &")
@@ -927,18 +935,26 @@ def _render_distributed_capture(a: Any, H: Any, k: int, v: str, rank: int) -> No
     a(f"            {sb}))")
     a("      end if")
     a("    else")
-    # `lo` / `hi` are indices in the array's OWN bounds along the axis (a leaf declares
+    # `lo<d>` / `hi<d>` are indices in the array's OWN bounds along the axis (a leaf declares
     # `u(0:n+1)` as readily as `u(n+2)`); the gather counts positions from 1, so the runner
-    # shifts them by the lower bound rather than asking the leaf to.
-    a(f"      off = lbound({sb}, &")
-    a(f"        {axis if rank >= 2 else 1}) - 1")
+    # shifts them by that axis's lower bound rather than asking the leaf to. A slot whose axis
+    # is 0 is not read by the gather, and its shift stays 0.
+    for slot, axis in ((1, axis1), (2, axis2)):
+        a(f"      off{slot} = 0")
+        a(f"      if ({axis} > 0) then")
+        a(f"        off{slot} = lbound({sb}, &")
+        a(f"          {axis if rank >= 2 else 1}) - 1")
+        a("      end if")
     a(f"      call {H(f'gather_r{rank}')}( &")
     a(f"        {sb}, &")
-    if rank >= 2:
-        a(f"        {axis}, &")
-    a(f"        {lo} - off, &")
-    a(f"        {hi} - off, &")
-    a(f"        {glo}, &")
+    a(f"        {axis1}, &")
+    a(f"        {lo1} - off1, &")
+    a(f"        {hi1} - off1, &")
+    a(f"        {glo1}, &")
+    a(f"        {axis2}, &")
+    a(f"        {lo2} - off2, &")
+    a(f"        {hi2} - off2, &")
+    a(f"        {glo2}, &")
     a(f"        g_r{rank})")
     a("      if (rank == 0) then")
     a(f"        out({k}) = {H('box')}( &")
@@ -954,27 +970,33 @@ def _render_distributed_abi_comment(a: Any, harness_spec_id: str) -> None:
     metadata of every bound array, and the harness operations a physics source may call, with
     their interfaces as the pin compares them."""
     for line in (
-        "  ! Distributed binding: this harness runs the program as several ranks. For every",
-        "  ! bound ARRAY <var> the checks module also publishes the default-integer module",
-        "  ! variables sb_<var>_axis, sb_<var>_lo, sb_<var>_hi and sb_<var>_glo, which",
-        "  ! case_setup sets on every rank for that rank's copy: the axis <var> is partitioned",
-        "  ! along (0 = replicated: every rank holds the global array and rank 0's is written),",
-        "  ! the indices lo..hi, in the array's own declared bounds, of the cells this rank",
-        "  ! contributes along it to the GLOBAL array - the array as the IR's shape_expr",
-        "  ! declares it - and the global index (from 1, in that shape) of the cell at lo.",
-        "  ! A halo cell (a copy of a neighbour's cell) is never contributed; when the",
-        "  ! declared shape includes the domain's boundary ghost cells, the first rank",
-        "  ! contributes the leading ones and the last rank the trailing ones. hi < lo when a",
-        "  ! rank contributes nothing, and the array is allocated all the same. Every other",
-        "  ! axis holds exactly the extent the declared shape gives it. capture_state gathers",
-        "  ! each partitioned array onto rank 0, and the harness's gather stops the run unless",
-        "  ! the contributed ranges tile the global extent. The halo exchange takes an array",
-        "  ! whose partitioned axis holds ng halo cells, the owned cells, then ng halo cells. A",
-        "  ! scalar is replicated. case_run reports the cells THIS rank updated (the runner",
-        "  ! sums them), and checks_compute / metric_compute run on every rank, rank 0's",
-        "  ! results being written. A physics source may use the harness module for these",
-        "  ! operations and no other (the direct use of the message-passing library is",
-        "  ! refused):",
+        "  ! Distributed binding: this harness runs the program as several ranks arranged in",
+        "  ! the p1 x p2 process grid the host imposes (grid_dims / grid_coord report it; the",
+        "  ! program never chooses it). For every bound ARRAY <var> the checks module also",
+        "  ! publishes eight default-integer module variables, which case_setup sets on every",
+        "  ! rank for that rank's copy, one group per grid dimension d = 1, 2: sb_<var>_axis<d>,",
+        "  ! the axis of <var> partitioned along grid dimension d (0 = not partitioned along d;",
+        "  ! 0 in both groups = replicated: every rank holds the global array and rank 0's is",
+        "  ! written), sb_<var>_lo<d> / sb_<var>_hi<d>, the indices, in the array's own declared",
+        "  ! bounds, of the cells this rank contributes along that axis to the GLOBAL array -",
+        "  ! the array as the IR's shape_expr declares it - and sb_<var>_glo<d>, the global",
+        "  ! index (from 1, in that shape) of the cell at lo<d>. A halo cell (a copy of a",
+        "  ! neighbour's cell) is never contributed; when the declared shape includes the",
+        "  ! domain's boundary ghost cells, the first rank along d contributes the leading ones",
+        "  ! and the last the trailing ones. hi<d> < lo<d> when a rank contributes nothing, and",
+        "  ! the array is allocated all the same. Along a dimension the array is not partitioned",
+        "  ! along, every rank of a line holds the same copy and only the coordinate 0 of that",
+        "  ! dimension contributes it. Every axis not partitioned holds exactly the extent the",
+        "  ! declared shape gives it. capture_state gathers each partitioned array onto rank 0,",
+        "  ! and the harness's gather stops the run unless the contributed blocks tile the",
+        "  ! global array. The halo exchange along dimension d takes an array whose partitioned",
+        "  ! axis holds ng halo cells, the owned cells, then ng halo cells, and fills them at",
+        "  ! every position of the other axis; exchanging along one dimension and then the other",
+        "  ! fills the corner halo cells too. A scalar is replicated. case_run reports the cells",
+        "  ! THIS rank updated (the runner sums them), and checks_compute / metric_compute run",
+        "  ! on every rank, rank 0's results being written. A physics source may use the harness",
+        "  ! module for these operations and no other (the direct use of the message-passing",
+        "  ! library is refused):",
     ):
         a(line)
     ops, _types, _ifaces, _errs = _parse_stanzas(_harness_pin(harness_spec_id).interface)
@@ -1258,7 +1280,7 @@ def _xfail_expr(case_ids: list[str], xfail: set[str]) -> str:
 
 EXPECTED_HARNESS_SPEC_ID = "harness_fortran_cpu"
 
-#: The harness that drives the program as several ranks (`distributed_state@1`).
+#: The harness that drives the program as several ranks (`distributed_state@2`).
 DISTRIBUTED_HARNESS_SPEC_ID = "harness_fortran_cpu_mpi"
 
 # Verbatim copy of the harness controlled_spec §5.1 canonical interface block (v3, harness
@@ -1386,7 +1408,7 @@ _HARNESS_V3_PARAMETERS: tuple[str, ...] = (
     f"integer, parameter :: case_id_len = {CASE_ID_LEN}",
 )
 
-# Verbatim copy of `harness_fortran_cpu_mpi@0.1.0` §5.1's distributed-state operations (§3.3),
+# Verbatim copy of `harness_fortran_cpu_mpi@0.2.0` §5.1's distributed-state operations (§3.3),
 # as the language backend renders them. That harness's §5.1 is `_HARNESS_V3_INTERFACE` under its
 # own `<spec_id>__` names followed by this block (its §5 says so), so its pinned interface is
 # composed below rather than copied twice.
@@ -1405,57 +1427,87 @@ function harness_fortran_cpu_mpi__comm_size() result(n)
   integer :: n
 end function harness_fortran_cpu_mpi__comm_size
 
-subroutine harness_fortran_cpu_mpi__partition(n_global, glo, ghi)
+subroutine harness_fortran_cpu_mpi__grid_dims(p1, p2)
+  integer, intent(out) :: p1
+  integer, intent(out) :: p2
+end subroutine harness_fortran_cpu_mpi__grid_dims
+
+subroutine harness_fortran_cpu_mpi__grid_coord(c1, c2)
+  integer, intent(out) :: c1
+  integer, intent(out) :: c2
+end subroutine harness_fortran_cpu_mpi__grid_coord
+
+subroutine harness_fortran_cpu_mpi__partition(n_global, dim, glo, ghi)
   integer, intent(in) :: n_global
+  integer, intent(in) :: dim
   integer, intent(out) :: glo
   integer, intent(out) :: ghi
 end subroutine harness_fortran_cpu_mpi__partition
 
-subroutine harness_fortran_cpu_mpi__exchange_halo_r1(a, ng, periodic)
+subroutine harness_fortran_cpu_mpi__exchange_halo_r1(a, dim, ng, periodic)
   real(dp), intent(inout) :: a(:)
+  integer, intent(in) :: dim
   integer, intent(in) :: ng
   logical, intent(in) :: periodic
 end subroutine harness_fortran_cpu_mpi__exchange_halo_r1
 
-subroutine harness_fortran_cpu_mpi__exchange_halo_r2(a, axis, ng, periodic)
+subroutine harness_fortran_cpu_mpi__exchange_halo_r2(a, axis, dim, ng, periodic)
   real(dp), intent(inout) :: a(:,:)
   integer, intent(in) :: axis
+  integer, intent(in) :: dim
   integer, intent(in) :: ng
   logical, intent(in) :: periodic
 end subroutine harness_fortran_cpu_mpi__exchange_halo_r2
 
-subroutine harness_fortran_cpu_mpi__gather_r1(a, lo, hi, glo, g)
+subroutine harness_fortran_cpu_mpi__gather_r1(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
   real(dp), intent(in) :: a(:)
-  integer, intent(in) :: lo
-  integer, intent(in) :: hi
-  integer, intent(in) :: glo
+  integer, intent(in) :: axis1
+  integer, intent(in) :: lo1
+  integer, intent(in) :: hi1
+  integer, intent(in) :: glo1
+  integer, intent(in) :: axis2
+  integer, intent(in) :: lo2
+  integer, intent(in) :: hi2
+  integer, intent(in) :: glo2
   real(dp), allocatable, intent(out) :: g(:)
 end subroutine harness_fortran_cpu_mpi__gather_r1
 
-subroutine harness_fortran_cpu_mpi__gather_r2(a, axis, lo, hi, glo, g)
+subroutine harness_fortran_cpu_mpi__gather_r2(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
   real(dp), intent(in) :: a(:,:)
-  integer, intent(in) :: axis
-  integer, intent(in) :: lo
-  integer, intent(in) :: hi
-  integer, intent(in) :: glo
+  integer, intent(in) :: axis1
+  integer, intent(in) :: lo1
+  integer, intent(in) :: hi1
+  integer, intent(in) :: glo1
+  integer, intent(in) :: axis2
+  integer, intent(in) :: lo2
+  integer, intent(in) :: hi2
+  integer, intent(in) :: glo2
   real(dp), allocatable, intent(out) :: g(:,:)
 end subroutine harness_fortran_cpu_mpi__gather_r2
 
-subroutine harness_fortran_cpu_mpi__gather_r3(a, axis, lo, hi, glo, g)
+subroutine harness_fortran_cpu_mpi__gather_r3(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
   real(dp), intent(in) :: a(:,:,:)
-  integer, intent(in) :: axis
-  integer, intent(in) :: lo
-  integer, intent(in) :: hi
-  integer, intent(in) :: glo
+  integer, intent(in) :: axis1
+  integer, intent(in) :: lo1
+  integer, intent(in) :: hi1
+  integer, intent(in) :: glo1
+  integer, intent(in) :: axis2
+  integer, intent(in) :: lo2
+  integer, intent(in) :: hi2
+  integer, intent(in) :: glo2
   real(dp), allocatable, intent(out) :: g(:,:,:)
 end subroutine harness_fortran_cpu_mpi__gather_r3
 
-subroutine harness_fortran_cpu_mpi__gather_r4(a, axis, lo, hi, glo, g)
+subroutine harness_fortran_cpu_mpi__gather_r4(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
   real(dp), intent(in) :: a(:,:,:,:)
-  integer, intent(in) :: axis
-  integer, intent(in) :: lo
-  integer, intent(in) :: hi
-  integer, intent(in) :: glo
+  integer, intent(in) :: axis1
+  integer, intent(in) :: lo1
+  integer, intent(in) :: hi1
+  integer, intent(in) :: glo1
+  integer, intent(in) :: axis2
+  integer, intent(in) :: lo2
+  integer, intent(in) :: hi2
+  integer, intent(in) :: glo2
   real(dp), allocatable, intent(out) :: g(:,:,:,:)
 end subroutine harness_fortran_cpu_mpi__gather_r4
 
@@ -1487,7 +1539,7 @@ class _HarnessPin:
 
     #: The §5.1 block the rendered glue is written against, under the harness's names.
     interface: str
-    #: Whether the harness drives the program as several ranks (`distributed_state@1`): the
+    #: Whether the harness drives the program as several ranks (`distributed_state@2`): the
     #: runner then starts and ends the runtime, gathers the partitioned state onto rank 0 and
     #: writes on rank 0 only.
     distributed: bool

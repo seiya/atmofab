@@ -2,7 +2,7 @@
 
 ## 0. Meta information
 - `spec_id`: `harness_fortran_cpu_mpi`
-- `spec_version`: `0.1.0`
+- `spec_version`: `0.2.0`
 - `status`: `controlled_draft`
 - `spec_kind`: `infrastructure`
 - `domain`: `infra`
@@ -11,9 +11,9 @@
 ## 1. Responsibility and scope
 This `infrastructure` node (R1 harness) is responsible for the shared **runner plumbing** that every Fortran/CPU physics node's runner is built against: argv / `--cases` parsing, the case-set loop driver, the JSON emission machinery (numeric / integer / boolean / rank-1..4 real-array tokens), and the standard runner-output writers (`raw/state_snapshots/<case_id>.json`, `raw/metrics_basis.json`, `diagnostics.json`, `perf.json`). It carries **no physics**: the per-case kernel and the per-test check logic are supplied by the consuming physics node (a `case_run` / `checks_compute` callback in the physics `*_checks.f90`), never here. It targets `(language=fortran, hardware=cpu, parallel=mpi)`: a program built against it runs as several processes (ranks) started by the target's launcher, and a different `(language, hardware, parallel)` target is a separate harness node.
 
-Beyond that plumbing, this node owns the program's **message-passing runtime**: it initializes and finalizes the runtime and publishes the distributed-state operations of §3.3 — the rank queries, a block partition of a global index range, the halo exchange of a partitioned array, the gather of a partitioned array onto rank 0, and the global reductions. It is the ONLY node of a program built for this target that calls the message-passing library: a consuming physics node never calls it directly and reaches the runtime only through these operations, and so does this node's own self-test runner. The library is reached from the Fortran model module alone, through its Fortran 2008 binding (the `mpi_f08` module); the program is compiled and linked by the target's compiler wrapper, never by naming the library's paths.
+Beyond that plumbing, this node owns the program's **message-passing runtime**: it initializes and finalizes the runtime, arranges the ranks in the two-dimensional **process grid** the host imposes (§3.3), and publishes the distributed-state operations of §3.3 — the rank and grid queries, a block partition of a global index range over the ranks along one grid dimension, the halo exchange of a partitioned array along one grid dimension, the gather onto rank 0 of an array partitioned along up to two grid dimensions, and the global reductions. It is the ONLY node of a program built for this target that calls the message-passing library: a consuming physics node never calls it directly and reaches the runtime only through these operations, and so does this node's own self-test runner. The library is reached from the Fortran model module alone, through its Fortran 2008 binding (the `mpi_f08` module); the program is compiled and linked by the target's compiler wrapper, never by naming the library's paths.
 
-The plumbing of §3.2 is **rank-agnostic**: the writers are pure I/O, they neither ask nor test which rank calls them, and they write their paths relative to the working directory, which every rank shares. Serializing the output is therefore the CALLER's duty: a runner calls the four writers on rank 0 only (a host-rendered physics runner and this node's self-test runner alike), and computes every value it hands them so that rank 0 holds the global value — through the gather and the reductions of §3.3. A program built against this node gives the same diagnostics whatever number of ranks runs it, one included: the target's quality check re-runs the program as a single process, and the run under the launcher must agree with it.
+The plumbing of §3.2 is **rank-agnostic**: the writers are pure I/O, they neither ask nor test which rank calls them, and they write their paths relative to the working directory, which every rank shares. Serializing the output is therefore the CALLER's duty: a runner calls the four writers on rank 0 only (a host-rendered physics runner and this node's self-test runner alike), and computes every value it hands them so that rank 0 holds the global value — through the gather and the reductions of §3.3. A program built against this node gives the same diagnostics whatever number of ranks runs it, one included, and whatever process grid those ranks are arranged in: the target's quality check re-runs the program as a single process, and the run under the launcher must agree with it.
 
 The node's own generated code is a `harness_fortran_cpu_mpi_model.f90` publishing the plumbing operations plus a self-test `harness_fortran_cpu_mpi_runner.f90` that exercises them and emits the standard runner outputs (so the harness is verified through the exact same Compile→Generate→Build→Validate path as any node; it is self-hosting — the self-test writes its evidence using its own emitters).
 
@@ -22,9 +22,9 @@ The published surface is a **binding, signature-level contract**: §5.1 gives th
 ## 2. input/output contract
 Input (to the self-test runner): the standard runner argv `--cases <spec.ir.yaml> <case_id>...` — the spec path is taken positionally and need not be read; the trailing tokens are the `case_id`s to run, one per `case.test_case_set[]`. The main program marshals the process argv into a token array and calls `harness_fortran_cpu_mpi__parse_cases` on it. Each `case_id` selects, by dispatching on the `case_id`, the plumbing aspect that case verifies. Every `case_id` is also the `test_id` of the single-target test that names it, but the converse does not hold: a **multi-target** test ranges over several existing cases and declares no case of its own (`l0_multi_case_evidence_pass` in `tests.md`). A missing `--cases` flag (no cases) makes `__parse_cases` return `ok = false` (the input guard); the guard case verifies this by calling `__parse_cases` on a length-0 token array.
 
-Output artifacts (produced by the writers, called on rank 0 only (§1), into the run node dir relative to `cwd=RUNDIR`; every value in them is the global one. The diagnostics and every snapshot variable but `owner` and `nranks` are identical whatever number of ranks ran; `owner`, `nranks` and `perf.json`'s `mpi_ranks` / `parallel_degree_total` record how the run was distributed, and `perf.json`'s timing and timestamp fields differ from run to run in any case):
+Output artifacts (produced by the writers, called on rank 0 only (§1), into the run node dir relative to `cwd=RUNDIR`; every value in them is the global one. The diagnostics and every snapshot variable but `owner`, `nranks`, `p1` and `p2` are identical whatever number of ranks ran and whatever process grid they formed; `owner`, `nranks`, `p1`, `p2` and `perf.json`'s `mpi_ranks` / `parallel_degree_total` / `process_grid` record how the run was distributed, and `perf.json`'s timing and timestamp fields differ from run to run in any case):
 - **`diagnostics.json`** — a JSON object with a top-level `checks` object holding one entry per `io_contract.diagnostics_contract.checks[].id` (each `{ "status": "pass"|"fail" }`), a top-level `verdict` object `{ "overall": "pass"|"fail", "failed_checks": [<check_id>...] }`, and a `per_case` map `{ <case_id>: { "checks": {...}, "verdict": { "overall", "failed_checks" }, "metrics": {...} } }` giving each case's own result. A check entry inside a `per_case` slice is `{ "status": "pass"|"fail"|"na" }`: the status the caller supplied (§3.1), written as its literal without the trailing blanks that pad it to the fixed width, so a status supplied as `'na  '` is written `"na"` and no written status ends in a blank. A check that is `na` in a case does not fail that case, and a check id that is `na` in every case is written `"pass"` in the top-level `checks` object, because a top-level status is `fail` only when the id fails in some case with `expected_xfail == false` (§3.2). The `post_execute` gate refuses any other status value. The assembly is done entirely inside `__write_diagnostics` from the caller-supplied per-case result records — the harness performs the fold, the caller supplies only the honest per-case check/metric data and each case's `expected_xfail` flag (§3). Top-level aggregation rule: `verdict.overall == fail` iff some case with `expected_xfail == false` has a failing per-case verdict; a per-case failure of a case with `expected_xfail == true` (the `input_guard` firing on the guard case) is EXCLUDED from the top-level `failed_checks`, so a run where the only failure is the expected guard reports top-level `{ "overall": "pass", "failed_checks": [] }` with `checks.input_guard.status == pass` (the guard behaved as expected). The per-case `input_guard` failure is confined to `per_case.<guard_case>`. The per-case `metrics` object holds one leaf per `h_metric` the caller supplied for that case (dotted-address key ⇒ numeric value; a `is_na` metric is written as `"<address>": null` plus a sibling `"<address>_reason_na": "<reason>"`). The object is produced by iterating that case's supplied array and writing exactly one leaf per record (a record with `is_na = false` emits its single key and no sibling); a `metrics` body that does not iterate the supplied array — one selected by `case_id`, or one emitting a fixed key set — is forbidden (§6) — the consuming physics nodes supply arbitrary records, so a body that reproduces one suite's expected keys is not an implementation of the fold. Exactly one self-test case supplies metrics: `l0_metric_leaf_pass` supplies the two sentinel `h_metric` records of §3, so the fold yields `"metrics": { "selftest.metric_leaf": 0.25, "selftest.metric_na": null, "selftest.metric_na_reason_na": "not_computed" }` for that case (an instance of the fold, not the writer's body; the numeric value is written as the round-trip-lossless token of the serialization rule below, abbreviated here for readability); every other case supplies a length-0 `metrics` array, so the same fold yields `{}`.
-- **`perf.json`** — one object with `case_id`, `target` (`"cpu"`), `walltime_sec`, `steps`, `cells_updated`, `throughput_cells_per_sec` (`= cells_updated / walltime_sec`), a `parallelism` object (`mpi_ranks`, `threads_per_rank`, `gpu_devices`, `parallel_degree_total = mpi_ranks*threads_per_rank*max(gpu_devices,1)`), and `timestamp_utc` (ISO-8601). `mpi_ranks` is the number of ranks the run started, as `__comm_size` reports it — never a constant: the Validate phase compares it with the target's `execution.ranks`.
+- **`perf.json`** — one object with `case_id`, `target` (`"cpu"`), `walltime_sec`, `steps`, `cells_updated`, `throughput_cells_per_sec` (`= cells_updated / walltime_sec`), a `parallelism` object (`mpi_ranks`, `threads_per_rank`, `gpu_devices`, `parallel_degree_total = mpi_ranks*threads_per_rank*max(gpu_devices,1)`, and `process_grid`, the two-element integer array `[p1, p2]` of the process grid `__init` arranged the ranks in, §3.3), and `timestamp_utc` (ISO-8601). `mpi_ranks` is the number of ranks the run started, as `__comm_size` reports it — never a constant: the Validate phase compares it with the target's `execution.ranks`, and `process_grid` with the grid the host imposed on the run (`[execution.ranks, 1]` when it imposed none).
 - **`raw/state_snapshots/<case_id>.json`** — exactly one per case, named at runtime as `'raw/state_snapshots/'//trim(case_id)//'.json'` (never a hardcoded/sequential literal). Each holds every variable in *that case's* `io_contract.test_evidence_requirements.required_raw_variables` plus the declared scalar `time_variable` `t` (value `0.0`; the self-test has a single `steps=1` step). The snapshot state variables (declared in `snapshot_schema.json` with their `shape_expr`) are, per case:
   - `l0_numeric_roundtrip_pass`: `x_in` (rank-1, `[3]` — the sentinel reals), `x_out` (rank-1, `[3]` — the values re-parsed from `__emit_real`'s tokens), `max_abs_deviation` (scalar).
   - `l0_boolean_literal_pass`: `bool_match` (scalar, `1.0` iff a `true` and a `false` boolean emitted the exact literals `true`/`false`).
@@ -34,11 +34,12 @@ Output artifacts (produced by the writers, called on rank 0 only (§1), into the
   - `l0_metric_leaf_pass`: `metric_count` (scalar — the number of `h_metric` records this case supplied to `__write_diagnostics`, `2.0`).
   - `l0_nonfinite_token_pass`: `nonfinite_match` (scalar, `1.0` iff the four non-finite reals of §3 emitted through `__emit_real` produced exactly the literals `NaN`, `NaN`, `Infinity`, `-Infinity`).
   - `l0_missing_cases_xfail`: `guard_fired` (scalar, `1.0` when `__parse_cases` on a length-0 token array returned `ok = false`). A guard case still emits its snapshot, shape-valid.
-  - `l0_partition_tile_pass`: `owned_index` (rank-1, `[14]` — the gathered global index of every cell of a 14-cell partition), `small_index` (rank-1, `[2]` — the same over a 2-cell partition, which leaves every rank above rank 1 empty), `owner` (rank-1, `[14]` — the gathered rank that owns each cell of the 14-cell partition), `nranks` (scalar — `__comm_size()`).
-  - `l0_halo_exchange_pass` and `l0_halo_periodic_pass`: `halo_diff_r1` (rank-1, `[12]`), `halo_diff_r2` (rank-2, `[3,12]`, partitioned along axis 2), `halo_diff_r2a1` (rank-2, `[12,3]`, partitioned along axis 1) — the gathered central difference, of the width of each array's ghost region, of a partitioned field quadratic in the global index, taken after a non-periodic (resp. periodic) halo exchange.
-  - `l0_gather_roundtrip_pass`: `g1` (rank-1, `[12]`), `g2` (rank-2, `[12,2]`), `g3_a1` … `g3_a3` (rank-3, `[4,4,4]`), `g4_a1` … `g4_a4` (rank-4, `[3,3,3,3]`) — the gathered global arrays, the rank-3 and rank-4 ones gathered along each of their axes in turn.
-  - `l0_reduce_pass`: `red_sum`, `red_max`, `red_min` (scalars — the global sum, maximum and minimum of a partitioned field), `red_count` (scalar — the global sum of the ranks' owned cell counts), `reduce_mismatch` (scalar — the global count of reduction results a rank received that differ from the reference, `0.0`).
-  A snapshot variable of the five distributed cases is the GLOBAL value rank 0 holds after a gather or a reduction. Every one of them except `owner` and `nranks` is independent of the number of ranks; those two are the record of how the run was distributed, and the host checks the one against the other.
+  - `l0_process_grid_pass`: `nranks` (scalar — `__comm_size()`), `p1`, `p2` (scalars — the grid dimensions `__grid_dims` returns), `coord_mismatch` (scalar — the global count of grid facts a rank found inconsistent, `0.0`).
+  - `l0_partition_tile_pass`: `owned_index` (rank-1, `[14]` — the gathered global index of every cell of a 14-cell range partitioned along grid dimension 1), `owned_index2` (rank-1, `[10]` — the same over a 10-cell range along grid dimension 2), `small_index` and `small_index2` (rank-1, `[2]` — the same over a 2-cell range along dimension 1 and along dimension 2, which leaves the ranks of coordinate `2` or more along that dimension empty), `owner` (rank-2, `[14,10]` — the gathered rank that owns each cell of the `14 × 10` array partitioned along both dimensions), `p1`, `p2` (scalars — `__grid_dims`).
+  - `l0_halo_exchange_pass` and `l0_halo_periodic_pass`: `halo_diff_r1` (rank-1, `[12]`, partitioned along dimension 1), `halo_diff_r1d2` (rank-1, `[12]`, along dimension 2), `halo_diff_r2` (rank-2, `[3,12]`, its axis 2 along dimension 1), `halo_diff_r2a1` (rank-2, `[12,3]`, its axis 1 along dimension 2), `halo_diff_2d` (rank-2, `[12,12]`, axis 1 along dimension 1 and axis 2 along dimension 2) — the gathered difference, of the width of each array's ghost region, of a partitioned field quadratic in the global indices, taken after a non-periodic (resp. periodic) halo exchange; `halo_diff_2d`'s difference reads the diagonal neighbours, so the corner ghost cells enter it.
+  - `l0_gather_roundtrip_pass`: `g1`, `g1d2` (rank-1, `[12]` — partitioned along dimension 1, resp. 2), `g2`, `g2t` (rank-2, `[12,6]` — axes 1 and 2 along dimensions 1 and 2, resp. 2 and 1), `g3_12`, `g3_23`, `g3_31` (rank-3, `[4,4,4]` — two of the array's axes along the two dimensions, the suffix naming the axis along dimension 1 then the axis along dimension 2), `g4_12`, `g4_23`, `g4_34`, `g4_41` (rank-4, `[3,3,3,3]`, named the same way) — the gathered global arrays.
+  - `l0_reduce_pass`: `red_sum`, `red_max`, `red_min` (scalars — the global sum, maximum and minimum of a field partitioned along both dimensions), `red_count` (scalar — the global sum of the ranks' owned cell counts), `reduce_mismatch` (scalar — the global count of reduction results a rank received that differ from the reference, `0.0`).
+  A snapshot variable of the six distributed cases is the GLOBAL value rank 0 holds after a gather or a reduction, or a value every rank holds. Every one of them except `owner`, `nranks`, `p1` and `p2` is independent of the number of ranks and of the process grid; those four are the record of how the run was distributed, and the host checks them against each other.
   Each case's `required_raw_variables` is exactly its listed variables above; a variable is declared once in `snapshot_schema.json` and emitted only by the cases that require it.
 - **`raw/metrics_basis.json`** — a `{ "per_test": [ <entry>, ... ] }` index holding only primary evidence (never a copy of `diagnostics.json`). Assembled inside `__write_metrics_basis` from the caller-supplied entry records (§3). There is exactly **one entry per (`test_id`, target `case_id`) pair**: a test's primary evidence is the evidence of every case its predicate ranges over, so a single-target test contributes one entry and a multi-target test one entry per targeted case. `(test_id, case_id)` is the unique entry key, and a single-target test carries its `case_id` too — there is no special case. Each entry is a **flat JSON object**: the `test_id` key, the `case_id` key, and every name in that test's `io_contract.test_evidence_requirements.required_raw_variables` as a **direct sibling key of `test_id`**, valued from that entry's own case. Wrapping the required variables under any nested object is forbidden — in particular under the literal key `values`, which is the Fortran component name of `harness_fortran_cpu_mpi__h_mb_entry` (§3.1) and never a JSON key. The `post_execute` gate rejects an entry that nests them under the unrecognized key `values` as `missing required_raw_variables`, and rejects an entry that omits `case_id`. One entry, with its numeric tokens abbreviated for readability (the serialization rule below governs their emitted form):
 
@@ -54,7 +55,7 @@ Output artifacts (produced by the writers, called on rank 0 only (§1), into the
   }
   ```
 
-  The wrapped form `{ "test_id": "l0_array_emit_pass", "values": { "a1": [1.0, 2.0], … } }` is rejected. The multi-target test `l0_multi_case_evidence_pass` contributes two entries, `{ "test_id": "l0_multi_case_evidence_pass", "case_id": "l0_array_emit_pass", "max_abs_deviation": 0.0 }` and the same with `"case_id": "l0_numeric_roundtrip_pass"`, so the self-test's index holds fifteen entries for its fourteen tests.
+  The wrapped form `{ "test_id": "l0_array_emit_pass", "values": { "a1": [1.0, 2.0], … } }` is rejected. The multi-target test `l0_multi_case_evidence_pass` contributes two entries, `{ "test_id": "l0_multi_case_evidence_pass", "case_id": "l0_array_emit_pass", "max_abs_deviation": 0.0 }` and the same with `"case_id": "l0_numeric_roundtrip_pass"`, so the self-test's index holds sixteen entries for its fifteen tests.
 
 Numeric serialization follows the abstract runner-output contract: a finite real as a round-trip-lossless exponential token, a non-finite real as the literal token `NaN` (whatever the sign bit), `Infinity` or `-Infinity` chosen by branching on the value (never handed to a numeric format, never written as `null`, and never a reason for the emitter to stop the program), an integer as its minimal decimal, a boolean as the literal token `true`/`false` — a truncating form (one that may drop a leading digit) and any language-specific boolean token are forbidden. The target-language realization (for Fortran: reals via `ES24.16E3` then `trim(adjustl())`, or a bounded `Fw.d`, never `F0`/`F0.d`; integers via `I0`; booleans by branching to the literal, never an `L`-family descriptor; non-finite reals by branching on `ieee_is_nan` / `ieee_is_finite` from the intrinsic module `ieee_arithmetic`, imported with an `only:` list) is canonical in `docs/backends/language/fortran/RUNNER_OUTPUT.md` §1, the Fortran binding of `docs/workflow/RUNNER_OUTPUT_CONTRACT.md §4`.
 
@@ -79,33 +80,37 @@ The module publishes five derived types (each named by its fully-qualified `harn
 - `harness_fortran_cpu_mpi__write_snapshot(case_id, values, time)` — write the per-case `raw/state_snapshots/<case_id>.json` (runtime-built filename) holding the boxed state variables in `values` (a rank-1 array of `harness_fortran_cpu_mpi__h_named`) plus the scalar time variable. The emitted object is **flat**: each boxed variable is written as a **top-level key of the snapshot object**, keyed by its `name` with its already-serialized `json` as the value, sibling to the time variable's key. `values` is the dummy-argument name of the boxed array; neither it nor any other wrapper key appears in the emitted JSON.
 - `harness_fortran_cpu_mpi__write_metrics_basis(entries, n)` — write `raw/metrics_basis.json` as the `per_test` index from `entries(1:n)` (a rank-1 array of `harness_fortran_cpu_mpi__h_mb_entry`); the harness assembles the `{ "per_test": [ ... ] }` envelope and, per entry, a **flat body**: the entry's `test_id` key, its `case_id` key, followed by one key per element of that entry's `values` array, each written under its `name` with its already-serialized `json` as a **direct sibling key of `test_id`**. `values` is the component name of `harness_fortran_cpu_mpi__h_mb_entry` (§3.1); neither it nor any other wrapper key appears in the emitted JSON (§2 gives the literal entry shape and the rejected shape). The writer emits one JSON entry per supplied record, in the caller's order, and neither deduplicates nor reorders: the caller owns the `(test_id, case_id)` product. **Data-driven plumbing**: the caller supplies the boxed evidence; the harness owns the JSON envelope.
 - `harness_fortran_cpu_mpi__write_diagnostics(results, n)` — write `diagnostics.json` from `results(1:n)` (a rank-1 array of `harness_fortran_cpu_mpi__h_case_result`). The harness computes every derived value: each case's per-case verdict (`overall == fail` iff any of that case's `checks` has `status == 'fail'`; `failed_checks` = those check ids), the top-level `checks` object (one entry per distinct check id; `status == fail` iff that id fails in some case with `expected_xfail == false`), and the top-level `verdict` (xfail-excluded fold per §2). It emits the full JSON: top-level `checks` / `verdict` and the `per_case` map (each case's `checks`, `verdict`, and `metrics` leaf object, the latter produced by iterating that case's supplied `metrics` array and writing one leaf per record, with an `is_na` metric encoded as `null` + a `_reason_na` sibling; a record's `value` is serialized through `__emit_real` whenever `is_na` is false, a non-finite value included, and `null` is written only for `is_na`). Each per-case check status is written as the supplied literal without the trailing blanks that pad it to the fixed width (`'na  '` is written `"na"`); each top-level status is the fold's `pass` or `fail`, never `na`. **Data-driven plumbing, not judgment**: the harness folds and serializes; the per-case check statuses, metric values, and each case's `expected_xfail` are computed by the (self-test or physics) caller and passed in. It embeds no per-test pass/fail decision of its own.
-- `harness_fortran_cpu_mpi__write_perf(case_id, target, steps, cells_updated, walltime_sec, mpi_ranks, threads_per_rank, gpu_devices)` — write `perf.json` with all required fields incl. the derived `throughput_cells_per_sec` and the `parallelism` object (`parallel_degree_total = mpi_ranks*threads_per_rank*max(gpu_devices,1)`). It writes `mpi_ranks`, `threads_per_rank` and `gpu_devices` exactly as its caller passes them, and queries nothing to replace them — like every operation of this section it is rank-agnostic (§1); the count of ranks is the caller's to obtain, from `__comm_size`.
+- `harness_fortran_cpu_mpi__write_perf(case_id, target, steps, cells_updated, walltime_sec, mpi_ranks, threads_per_rank, gpu_devices)` — write `perf.json` with all required fields incl. the derived `throughput_cells_per_sec` and the `parallelism` object (`parallel_degree_total = mpi_ranks*threads_per_rank*max(gpu_devices,1)`). It writes `mpi_ranks`, `threads_per_rank` and `gpu_devices` exactly as its caller passes them, and queries nothing to replace them — like every operation of this section it is rank-agnostic (§1); the count of ranks is the caller's to obtain, from `__comm_size`. It writes `parallelism.process_grid` as `[p1, p2]`, the process grid `__init` established (§3.3), read from this node's own state and not from the message-passing library.
 
 ### 3.3 Published distributed-state operations
 These operations reach the message-passing runtime; every other operation of this node is rank-agnostic (§1). Ranks are numbered from `0` to `size - 1` over all the processes the launcher started, and there is one communicator, the one holding every process. An operation marked **collective** is called by every rank, in the same order relative to every other collective operation, with arguments that agree across ranks where this section says so; a rank that skips a collective call, or calls collectives in a different order, is a program error this node does not diagnose.
 
-- `harness_fortran_cpu_mpi__init()` — initialize the runtime. A program calls it exactly once, before any other operation of this section and before `__parse_cases`. Collective.
+**The process grid.** The ranks form a two-dimensional grid of `p1 × p2` ranks, `p1 p2 = size`, which the HOST chooses and the program does not: `__init` reads it from the process environment variable `ATMOFAB_PROCESS_GRID`, whose value is the two positive decimal integers `p1,p2` separated by one comma. When the variable is unset or empty the grid is `(size, 1)` — every rank along dimension 1, the one-dimensional arrangement — and in particular a single process started without the launcher runs on the grid `(1, 1)`. Rank `r` has the grid coordinates `(c1, c2)` with `r = c1 * p2 + c2`, `0 <= c1 < p1`, `0 <= c2 < p2` (row-major: the coordinate along dimension 2 varies fastest), so the grid `(size, 1)` gives rank `r` the coordinates `(r, 0)`. The grid is fixed for the whole run. Along grid dimension `d` (`1` or `2`), the ranks whose OTHER coordinate is equal form a **line** of `p_d` ranks, and a rank's neighbours along `d` are the ranks of its line with coordinate `c_d - 1` and `c_d + 1`. An array is **partitioned** along a grid dimension `d` when one of its axes is split into blocks over the `p_d` ranks of each line along `d`; an array that is not partitioned along `d` is held whole, as the same copy, by every rank of such a line. The operations below take the dimension as an argument (`dim`, `1` or `2`) and never choose it themselves.
+
+- `harness_fortran_cpu_mpi__init()` — initialize the runtime and establish the process grid from `ATMOFAB_PROCESS_GRID` as stated above. A program calls it exactly once, before any other operation of this section and before `__parse_cases`. Collective.
 - `harness_fortran_cpu_mpi__finalize()` — finalize the runtime. A program calls it exactly once, after its last operation of this section and after the writers have returned; no operation of this section may follow it. Collective.
 - `harness_fortran_cpu_mpi__comm_rank() result(r)` — this process's rank, `0 <= r < size`.
 - `harness_fortran_cpu_mpi__comm_size() result(n)` — the number of ranks, `n >= 1`; `1` when the program was started as a single process without the launcher.
-- `harness_fortran_cpu_mpi__partition(n_global, glo, ghi)` — the block partition of the global index range `1..n_global` (`n_global >= 0`): with `b = n_global / size` (integer division) and `m = mod(n_global, size)`, rank `r` owns `c = b + 1` cells when `r < m` and `c = b` cells otherwise, starting at `glo = r*b + min(r, m) + 1`, and `ghi = glo + c - 1`. The owned ranges are contiguous, in rank order, disjoint, and together cover `1..n_global`; the remainder goes to the lowest ranks. A rank that owns nothing (`n_global < size`) gets `ghi = glo - 1`. It needs no communication.
-- `harness_fortran_cpu_mpi__exchange_halo_r1(a, ng, periodic)` and `harness_fortran_cpu_mpi__exchange_halo_r2(a, axis, ng, periodic)` — fill the ghost cells of a partitioned array from its neighbours' owned cells. `a` is this rank's local array: along the partitioned axis (`axis`, `1` or `2`; the rank-1 form has only axis `1`) it holds `ng` ghost cells, then its `nloc` owned cells, then `ng` ghost cells, so its extent there is `nloc + 2*ng`, and its owned cells are positions `ng+1 .. ng+nloc` counting from `1` (`a` is assumed-shape: the positions are those of the dummy, whatever bounds the caller declared). The owned cells are the rank's block as `__partition` assigns it, so the rank below owns the cells just before this rank's first owned cell and the rank above the cells just after its last. On return, the `ng` leading ghost cells hold the last `ng` owned cells of rank `r - 1`, and the `ng` trailing ghost cells hold the first `ng` owned cells of rank `r + 1`, each in its global order, over the whole extent of the other axis. With `periodic = .true.`, rank `0`'s leading neighbour is rank `size - 1` and rank `size - 1`'s trailing neighbour is rank `0`; with a single rank, the leading ghosts then hold the rank's own last `ng` owned cells and the trailing ghosts its own first `ng`. With `periodic = .false.`, rank `0`'s leading ghosts and rank `size - 1`'s trailing ghosts are left as the caller set them (the physical boundary is the caller's), and with a single rank nothing is changed. The owned cells are never changed. `ng = 0` returns without change. Every rank must own at least `ng` cells (`nloc >= ng`), and the extent of the other axis must be the same on every rank. Collective.
-- `harness_fortran_cpu_mpi__gather_r1(a, lo, hi, glo, g)` and `harness_fortran_cpu_mpi__gather_r2(a, axis, lo, hi, glo, g)` … `__gather_r4(a, axis, lo, hi, glo, g)` — assemble a partitioned array on rank 0. `a` is this rank's local array (assumed-shape, positions counted from `1`); along `axis` (`1..k` for the rank-`k` form; the rank-1 form has only axis `1`) its owned cells are positions `lo .. hi`, and position `lo` is global index `glo`. A rank that owns nothing passes `hi < lo`, and its `glo` is not read. The owned counts `c = max(hi - lo + 1, 0)` of all ranks define the global extent `n = sum(c)`. **Tile check:** the non-empty ranks' global ranges `glo .. glo + c - 1` must be pairwise disjoint and each lie within `1..n` — so together they cover `1..n` exactly, with neither overlap nor gap — and every rank's extents along the other axes must be equal; otherwise the operation stops the program (§4). On rank 0, `g` is allocated with `a`'s extents except `n` along `axis`, and holds every rank's owned cells at their global positions: position `glo + i` of `g` along `axis` is position `lo + i` of that rank's `a`, for `0 <= i < c`, at every position of the other axes. On every other rank `g` is returned unallocated. With a single rank the result is `a`'s owned slice. Collective.
-- `harness_fortran_cpu_mpi__reduce_sum(x) result(s)`, `__reduce_max(x) result(s)`, `__reduce_min(x) result(s)` — the sum, maximum and minimum of the `real (kind dp)` scalar `x` over all ranks, returned on EVERY rank. `__reduce_sum_int(i) result(s)` is the integer sum. Collective.
+- `harness_fortran_cpu_mpi__grid_dims(p1, p2)` — the process grid's dimensions, the same on every rank. It needs no communication.
+- `harness_fortran_cpu_mpi__grid_coord(c1, c2)` — this rank's grid coordinates, `r = c1 * p2 + c2`. It needs no communication.
+- `harness_fortran_cpu_mpi__partition(n_global, dim, glo, ghi)` — the block partition of the global index range `1..n_global` (`n_global >= 0`) over the `p = p_dim` ranks of this rank's line along grid dimension `dim`, for this rank's coordinate `c = c_dim`: with `b = n_global / p` (integer division) and `m = mod(n_global, p)`, the rank owns `k = b + 1` cells when `c < m` and `k = b` cells otherwise, starting at `glo = c*b + min(c, m) + 1`, and `ghi = glo + k - 1`. Along each line the owned ranges are contiguous, in coordinate order, disjoint, and together cover `1..n_global`; the remainder goes to the lowest coordinates; every rank of a line along the OTHER dimension gets the same range. A rank that owns nothing (`n_global < p` and `c >= n_global`) gets `ghi = glo - 1`. With `p_dim = 1` the rank owns the whole range. It needs no communication.
+- `harness_fortran_cpu_mpi__exchange_halo_r1(a, dim, ng, periodic)` and `harness_fortran_cpu_mpi__exchange_halo_r2(a, axis, dim, ng, periodic)` — fill the ghost cells of an array partitioned along grid dimension `dim` from the neighbours' owned cells. `a` is this rank's local array: along its partitioned axis (`axis`, `1` or `2`; the rank-1 form has only axis `1`) it holds `ng` ghost cells, then its `nloc` owned cells, then `ng` ghost cells, so its extent there is `nloc + 2*ng`, and its owned cells are positions `ng+1 .. ng+nloc` counting from `1` (`a` is assumed-shape: the positions are those of the dummy, whatever bounds the caller declared). The owned cells are the rank's block as `__partition` assigns it along `dim`, so the neighbour of coordinate `c_dim - 1` owns the cells just before this rank's first owned cell and the neighbour of coordinate `c_dim + 1` the cells just after its last. On return, the `ng` leading ghost cells hold the last `ng` owned cells of the neighbour `c_dim - 1`, and the `ng` trailing ghost cells hold the first `ng` owned cells of the neighbour `c_dim + 1`, each in its global order, at **every** position of the other axis — its ghost positions included, as that neighbour holds them when the call starts. So two successive exchanges of an array partitioned along both dimensions, the first along one dimension and the second along the other, fill its corner ghost cells too: the second carries the ghost cells the first filled. With `periodic = .true.`, the neighbour below coordinate `0` is the coordinate `p_dim - 1` of the line and the neighbour above `p_dim - 1` is `0`; with `p_dim = 1` the leading ghosts then hold the rank's own last `ng` owned cells and the trailing ghosts its own first `ng`. With `periodic = .false.`, the leading ghosts of the coordinate `0` and the trailing ghosts of the coordinate `p_dim - 1` are left as the caller set them (the physical boundary is the caller's), and with `p_dim = 1` nothing is changed. The owned cells are never changed, and neither is any cell outside the partitioned axis's ghost positions. `ng = 0` returns without change. Every rank must own at least `ng` cells along `dim` (`nloc >= ng`), and the extent of the other axis must be the same on every rank of a line. Collective (every rank calls it, with the same `dim`, `axis`, `ng` and `periodic`).
+- `harness_fortran_cpu_mpi__gather_r1(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)` … `__gather_r4(…)` (the same arguments, `a` and `g` of rank `k`) — assemble on rank 0 an array partitioned along up to two grid dimensions. `a` is this rank's local array (assumed-shape, positions counted from `1`). For grid dimension `d`, `axis<d>` is the axis of `a` partitioned along `d` (`1..k`), or `0` when `a` is not partitioned along `d`; the two non-zero values differ, and at least one is non-zero. Along a partitioned axis `axis<d>`, this rank's owned cells are positions `lo<d> .. hi<d>`, and position `lo<d>` is global index `glo<d>`; `lo<d>`, `hi<d>` and `glo<d>` are not read when `axis<d> = 0`. **Which ranks contribute:** along a dimension `d` with `axis<d> = 0` every rank of a line holds the same copy, and only the rank of coordinate `c_d = 0` contributes it; a rank whose coordinate is not `0` along such a dimension contributes nothing, and so does a rank whose owned count `max(hi<d> - lo<d> + 1, 0)` is `0` along a partitioned axis. A contributing rank's **block** is its owned positions along each partitioned axis and every position along every other axis. The global array's extent along a partitioned axis is the largest `glo<d> + (hi<d> - lo<d>)` over the contributing ranks, and along every other axis `a`'s extent there. **Tile check:** the contributing ranks' blocks, placed at their global positions, must be pairwise disjoint and each lie within the global array, their cell counts must sum to the global array's, and every contributing rank's extents along the axes that are not partitioned must be equal — so together they cover the global array exactly, with neither overlap nor gap; every rank must pass the same `axis1` and `axis2`; otherwise the operation stops the program (§4). On rank 0, `g` is allocated with the global array's extents and holds every contributing rank's block at its global position: position `glo<d> + i` of `g` along `axis<d>` is position `lo<d> + i` of that rank's `a`, for `0 <= i <= hi<d> - lo<d>`, and every other position of `g` is the same position of `a`. On every other rank `g` is returned unallocated. With a single rank the result is `a`'s owned block. Collective.
+- `harness_fortran_cpu_mpi__reduce_sum(x) result(s)`, `__reduce_max(x) result(s)`, `__reduce_min(x) result(s)` — the sum, maximum and minimum of the `real (kind dp)` scalar `x` over all ranks, returned on EVERY rank. `__reduce_sum_int(i) result(s)` is the integer sum. Collective. (A value that every rank of a line holds as the same copy is counted once per rank by these sums; a caller sums each owned cell on the one rank that owns it.)
 
 The operations of this section publish no derived type: their arguments are integers, logicals and `real (kind dp)` scalars and arrays.
 
-The self-test `harness_fortran_cpu_mpi_runner.f90` first calls `__init`, then `__parse_cases`, then for each `case_id` runs (dispatching on the `case_id`) the plumbing check that case names — verifying the emitter round-trips, the case fan-out, the input guard, and the five distributed operations of `tests.md` — and builds that case's `h_case_result` (its `checks`, its `metrics`, and `expected_xfail` from the case's expected outcome). Every rank runs every case, in the same order, so that every collective call of every case is made on every rank; a check's status is decided from values every rank holds (a reduction's result) or from values rank 0 holds (a gathered array), and rank 0's status is the one written. Only `l0_metric_leaf_pass` supplies metrics, so that the metric fold of `__write_diagnostics` is exercised inside this node rather than only by a consuming physics node: that case builds exactly two `harness_fortran_cpu_mpi__h_metric` records — `{ name = 'selftest.metric_leaf', value = 0.25, is_na = false, reason_na = '' }` (`0.25` is exactly representable in binary floating point, so the emitted token round-trips without deviation) and `{ name = 'selftest.metric_na', value = -1.0, is_na = true, reason_na = 'not_computed' }` (`-1.0` is an out-of-band value a correct writer never serializes, because an `is_na` metric is written as `null`) — and no third record, because the `"selftest.metric_na_reason_na"` key is derived by the writer from the second record's `reason_na`. Its `checks` array holds two records: `metric_leaf`, recorded as `pass` when it supplied both metric records, and `{ id = 'status_na', status = 'na  ' }` (`na` followed by two blanks, the four characters the width holds), a check that does not apply to any case and so exercises how `__write_diagnostics` writes a padded status. It emits `metric_count = 2.0` into its snapshot. Every other case supplies a length-0 `metrics` array. The `l0_nonfinite_token_pass` case obtains four non-finite reals AT RUN TIME from the language's IEEE facility (`ieee_value` with `ieee_quiet_nan` / `ieee_positive_inf` / `ieee_negative_inf`, and `ieee_copy_sign` for the sign bit) — a quiet NaN with the sign bit clear, a quiet NaN with the sign bit set, `+inf` and `-inf` — never from a literal division a compiler may refuse to fold; it emits each through `__emit_real`, compares the four strings with `NaN`, `NaN`, `Infinity`, `-Infinity`, records its `nonfinite_token` check as `pass` when all four match, and emits `nonfinite_match` (`1.0` when all four match, else `0.0`) into its snapshot. The four writers are called **on rank 0 only**, and no other rank writes a file. Rank 0 reads its clock before the first case and again after the last, and then calls `__write_perf` once, with that elapsed time as `walltime_sec`, or `1.0e-9` when the elapsed time it reads is not positive (a clock tick longer than the interval), `__comm_size()` as `mpi_ranks`, and `steps` and `cells_updated` both equal to the number of cases its `__parse_cases` call on the program's argv returned on rank 0: each case runs its one plumbing check as one step (`steps = 1`, `tests.md` §3) that updates one cell, so each value is the sum of the cases' steps, independent of any case's `grid` member and positive whenever a case ran; every rank runs every case, so the count is the one rank 0 ran and is not summed over ranks. With both quantities positive, the relative residual of the `tests.md` §6 `l0_perf_derived_pass` judgment is defined. Everything after that call is outside the measured interval. Only then does rank 0 run the `l0_perf_derived_pass` check, which re-parses the `perf.json` that call wrote. `__write_snapshot` is called once per case, inside the loop or after the `__write_perf` call — the `l0_perf_derived_pass` snapshot only after that check — and a check that needs every case's snapshot, such as a fan-out check that looks for each file, runs after the last snapshot is written. The `h_mb_entry` array over the `(test_id, case_id)` product of §2 (one entry per case each test targets, so a multi-target test yields several), whose `l0_perf_derived_pass` entry carries the re-parsed residual, is complete before `__write_metrics_basis` and `__write_diagnostics` are called, each once. Finally every rank calls `__finalize`. Because the writers use the emitters, a correct emitter is necessary for a correct output; the checks are the harness's own verification that its plumbing is faithful.
+The self-test `harness_fortran_cpu_mpi_runner.f90` first calls `__init`, then `__parse_cases`, then for each `case_id` runs (dispatching on the `case_id`) the plumbing check that case names — verifying the emitter round-trips, the case fan-out, the input guard, and the distributed operations through the six distributed cases of `tests.md` — and builds that case's `h_case_result` (its `checks`, its `metrics`, and `expected_xfail` from the case's expected outcome). Every rank runs every case, in the same order, so that every collective call of every case is made on every rank; a check's status is decided from values every rank holds (a reduction's result) or from values rank 0 holds (a gathered array), and rank 0's status is the one written. The self-test learns the process grid from `__grid_dims` and `__grid_coord`, as a consuming physics node does, and never reads `ATMOFAB_PROCESS_GRID` itself. Only `l0_metric_leaf_pass` supplies metrics, so that the metric fold of `__write_diagnostics` is exercised inside this node rather than only by a consuming physics node: that case builds exactly two `harness_fortran_cpu_mpi__h_metric` records — `{ name = 'selftest.metric_leaf', value = 0.25, is_na = false, reason_na = '' }` (`0.25` is exactly representable in binary floating point, so the emitted token round-trips without deviation) and `{ name = 'selftest.metric_na', value = -1.0, is_na = true, reason_na = 'not_computed' }` (`-1.0` is an out-of-band value a correct writer never serializes, because an `is_na` metric is written as `null`) — and no third record, because the `"selftest.metric_na_reason_na"` key is derived by the writer from the second record's `reason_na`. Its `checks` array holds two records: `metric_leaf`, recorded as `pass` when it supplied both metric records, and `{ id = 'status_na', status = 'na  ' }` (`na` followed by two blanks, the four characters the width holds), a check that does not apply to any case and so exercises how `__write_diagnostics` writes a padded status. It emits `metric_count = 2.0` into its snapshot. Every other case supplies a length-0 `metrics` array. The `l0_nonfinite_token_pass` case obtains four non-finite reals AT RUN TIME from the language's IEEE facility (`ieee_value` with `ieee_quiet_nan` / `ieee_positive_inf` / `ieee_negative_inf`, and `ieee_copy_sign` for the sign bit) — a quiet NaN with the sign bit clear, a quiet NaN with the sign bit set, `+inf` and `-inf` — never from a literal division a compiler may refuse to fold; it emits each through `__emit_real`, compares the four strings with `NaN`, `NaN`, `Infinity`, `-Infinity`, records its `nonfinite_token` check as `pass` when all four match, and emits `nonfinite_match` (`1.0` when all four match, else `0.0`) into its snapshot. The four writers are called **on rank 0 only**, and no other rank writes a file. Rank 0 reads its clock before the first case and again after the last, and then calls `__write_perf` once, with that elapsed time as `walltime_sec`, or `1.0e-9` when the elapsed time it reads is not positive (a clock tick longer than the interval), `__comm_size()` as `mpi_ranks`, and `steps` and `cells_updated` both equal to the number of cases its `__parse_cases` call on the program's argv returned on rank 0: each case runs its one plumbing check as one step (`steps = 1`, `tests.md` §3) that updates one cell, so each value is the sum of the cases' steps, independent of any case's `grid` member and positive whenever a case ran; every rank runs every case, so the count is the one rank 0 ran and is not summed over ranks. With both quantities positive, the relative residual of the `tests.md` §6 `l0_perf_derived_pass` judgment is defined. Everything after that call is outside the measured interval. Only then does rank 0 run the `l0_perf_derived_pass` check, which re-parses the `perf.json` that call wrote. `__write_snapshot` is called once per case, inside the loop or after the `__write_perf` call — the `l0_perf_derived_pass` snapshot only after that check — and a check that needs every case's snapshot, such as a fan-out check that looks for each file, runs after the last snapshot is written. The `h_mb_entry` array over the `(test_id, case_id)` product of §2 (one entry per case each test targets, so a multi-target test yields several), whose `l0_perf_derived_pass` entry carries the re-parsed residual, is complete before `__write_metrics_basis` and `__write_diagnostics` are called, each once. Finally every rank calls `__finalize`. Because the writers use the emitters, a correct emitter is necessary for a correct output; the checks are the harness's own verification that its plumbing is faithful.
 
 ## 4. Failure conditions and constraints
 A missing `--cases` flag (or no `case_id` after it) is a hard input error — `__parse_cases` returns `ok = false`, and the self-test's `l0_missing_cases_xfail` case exercises this guard by calling `__parse_cases` on a synthesized empty token list and confirming `ok = false` (recorded as the `input_guard` check firing, with the case's `h_case_result` carrying `expected_xfail = true`). A JSON emitter whose re-parsed token does not reproduce its input within an absolute tolerance of `1e-12` is a failure of the corresponding check.
 
-The operations of §3.3 stop the program with a non-zero exit status (`error stop`), so that the run fails rather than writing evidence from an inconsistent state, when: `__gather_r*`'s tile check fails (§3.3); an `axis` is outside `1..k` for a rank-`k` array; `__exchange_halo_r*` is given `ng < 0`, or `ng` larger than this rank's owned count; a gather's `lo .. hi` of a non-empty rank lies outside `a`'s extent along `axis`; `__partition` is given `n_global < 0`. A failure the message-passing library reports is left to its default handler, which aborts every rank. A stop on one rank ends the run as a failure, and the run's missing or partial outputs are then the Validate phase's to report; no rank attempts recovery.
+The operations of §3.3 stop the program with a non-zero exit status (`error stop`), so that the run fails rather than writing evidence from an inconsistent state, when: `ATMOFAB_PROCESS_GRID` is set, non-empty, and not two positive decimal integers separated by one comma, or names a grid whose `p1 p2` differs from `size` (`__init`); a `dim` is not `1` or `2`; `__gather_r*`'s tile check fails (§3.3); an `axis` is outside `1..k` for a rank-`k` array (`0` included, for the exchange); a gather's `axis1` and `axis2` are both `0`, or equal and non-zero; `__exchange_halo_r*` is given `ng < 0`, or `ng` larger than this rank's owned count along `dim`; a gather's `lo<d> .. hi<d>` of a contributing rank lies outside `a`'s extent along `axis<d>`; `__partition` is given `n_global < 0`. A failure the message-passing library reports is left to its default handler, which aborts every rank. A stop on one rank ends the run as a failure, and the run's missing or partial outputs are then the Validate phase's to report; no rank attempts recovery.
 
 ## 5. Public API and compatibility
-The published `operation_id`s are exactly: `harness_fortran_cpu_mpi__parse_cases`, `harness_fortran_cpu_mpi__emit_real`, `harness_fortran_cpu_mpi__emit_int`, `harness_fortran_cpu_mpi__emit_bool`, `harness_fortran_cpu_mpi__emit_array_r1`, `harness_fortran_cpu_mpi__emit_array_r2`, `harness_fortran_cpu_mpi__emit_array_r3`, `harness_fortran_cpu_mpi__emit_array_r4`, `harness_fortran_cpu_mpi__box`, `harness_fortran_cpu_mpi__write_snapshot`, `harness_fortran_cpu_mpi__write_metrics_basis`, `harness_fortran_cpu_mpi__write_diagnostics`, `harness_fortran_cpu_mpi__write_perf`, and the distributed-state operations of §3.3: `harness_fortran_cpu_mpi__init`, `harness_fortran_cpu_mpi__finalize`, `harness_fortran_cpu_mpi__comm_rank`, `harness_fortran_cpu_mpi__comm_size`, `harness_fortran_cpu_mpi__partition`, `harness_fortran_cpu_mpi__exchange_halo_r1`, `harness_fortran_cpu_mpi__exchange_halo_r2`, `harness_fortran_cpu_mpi__gather_r1`, `harness_fortran_cpu_mpi__gather_r2`, `harness_fortran_cpu_mpi__gather_r3`, `harness_fortran_cpu_mpi__gather_r4`, `harness_fortran_cpu_mpi__reduce_sum`, `harness_fortran_cpu_mpi__reduce_max`, `harness_fortran_cpu_mpi__reduce_min`, `harness_fortran_cpu_mpi__reduce_sum_int`. The module also publishes the derived types `harness_fortran_cpu_mpi__h_named`, `harness_fortran_cpu_mpi__h_check`, `harness_fortran_cpu_mpi__h_metric`, `harness_fortran_cpu_mpi__h_case_result`, and `harness_fortran_cpu_mpi__h_mb_entry`.
+The published `operation_id`s are exactly: `harness_fortran_cpu_mpi__parse_cases`, `harness_fortran_cpu_mpi__emit_real`, `harness_fortran_cpu_mpi__emit_int`, `harness_fortran_cpu_mpi__emit_bool`, `harness_fortran_cpu_mpi__emit_array_r1`, `harness_fortran_cpu_mpi__emit_array_r2`, `harness_fortran_cpu_mpi__emit_array_r3`, `harness_fortran_cpu_mpi__emit_array_r4`, `harness_fortran_cpu_mpi__box`, `harness_fortran_cpu_mpi__write_snapshot`, `harness_fortran_cpu_mpi__write_metrics_basis`, `harness_fortran_cpu_mpi__write_diagnostics`, `harness_fortran_cpu_mpi__write_perf`, and the distributed-state operations of §3.3: `harness_fortran_cpu_mpi__init`, `harness_fortran_cpu_mpi__finalize`, `harness_fortran_cpu_mpi__comm_rank`, `harness_fortran_cpu_mpi__comm_size`, `harness_fortran_cpu_mpi__grid_dims`, `harness_fortran_cpu_mpi__grid_coord`, `harness_fortran_cpu_mpi__partition`, `harness_fortran_cpu_mpi__exchange_halo_r1`, `harness_fortran_cpu_mpi__exchange_halo_r2`, `harness_fortran_cpu_mpi__gather_r1`, `harness_fortran_cpu_mpi__gather_r2`, `harness_fortran_cpu_mpi__gather_r3`, `harness_fortran_cpu_mpi__gather_r4`, `harness_fortran_cpu_mpi__reduce_sum`, `harness_fortran_cpu_mpi__reduce_max`, `harness_fortran_cpu_mpi__reduce_min`, `harness_fortran_cpu_mpi__reduce_sum_int`. The module also publishes the derived types `harness_fortran_cpu_mpi__h_named`, `harness_fortran_cpu_mpi__h_check`, `harness_fortran_cpu_mpi__h_metric`, `harness_fortran_cpu_mpi__h_case_result`, and `harness_fortran_cpu_mpi__h_mb_entry`.
 
-A change breaking compatibility of any signature (or of a published derived type's component layout) is a **breaking change released under a new `spec_version`**, not a rename. A change to how the published surface is CARRIED — the §5.1 / `IR public_api.signatures` REPRESENTATION — is likewise released under a new `spec_version` even when the ABI is byte-identical; an edit under an unchanged version is still re-derived by the derivation key (`docs/RUNBOOK.md` "Updating a shared dependency spec"). `0.1.0` is the first version: its §5.1 block is that of `harness_fortran_cpu@0.7.0` under this node's names, followed by the fifteen operations of §3.3; its self-test is that of `harness_fortran_cpu@0.7.0`, run on every rank with rank 0 writing, plus five cases for the distributed operations. Within `0.1.0` the self-test gained the case and test `l0_nonfinite_token_pass` (issue #315), which pins how `__emit_real` spells a non-finite real; the published signatures and types are unchanged, so no `spec_version` is released for it, and a certified `IR` that lacks the case is invalidated by its derivation key, which hashes this document and `tests.md`, not by its version. Within `0.1.0` the self-test's `steps` and `cells_updated` were fixed to the number of cases run, and a non-positive measured `walltime_sec` to `1.0e-9` (issue #394), so that the relative residual of `l0_perf_derived_pass` is defined; the published signatures and types are unchanged, so no `spec_version` is released for it, and every certified `IR` is re-derived, because its derivation key hashes this document and `tests.md`. Within `0.1.0` §2 and §3 state that a check status is written without the blanks that pad it to its width, and the self-test's `l0_metric_leaf_pass` case gained the check `status_na`, supplied padded, whose written value the `post_execute` gate reads (issue #437); the published signatures and types — including the width-4 `status` component of `harness_fortran_cpu_mpi__h_check` — are unchanged, so no `spec_version` is released for it, and every certified `IR` is re-derived, because its derivation key hashes this document and `tests.md`. Dependent nodes are not migrated by hand and need no content-free version bump of their own. The workflow enforces the skew mechanically at two points:
+A change breaking compatibility of any signature (or of a published derived type's component layout) is a **breaking change released under a new `spec_version`**, not a rename. A change to how the published surface is CARRIED — the §5.1 / `IR public_api.signatures` REPRESENTATION — is likewise released under a new `spec_version` even when the ABI is byte-identical; an edit under an unchanged version is still re-derived by the derivation key (`docs/RUNBOOK.md` "Updating a shared dependency spec"). `0.1.0` is the first version: its §5.1 block is that of `harness_fortran_cpu@0.7.0` under this node's names, followed by the fifteen operations of §3.3; its self-test is that of `harness_fortran_cpu@0.7.0`, run on every rank with rank 0 writing, plus five cases for the distributed operations. Within `0.1.0` the self-test gained the case and test `l0_nonfinite_token_pass` (issue #315), which pins how `__emit_real` spells a non-finite real; the published signatures and types are unchanged, so no `spec_version` is released for it, and a certified `IR` that lacks the case is invalidated by its derivation key, which hashes this document and `tests.md`, not by its version. Within `0.1.0` the self-test's `steps` and `cells_updated` were fixed to the number of cases run, and a non-positive measured `walltime_sec` to `1.0e-9` (issue #394), so that the relative residual of `l0_perf_derived_pass` is defined; the published signatures and types are unchanged, so no `spec_version` is released for it, and every certified `IR` is re-derived, because its derivation key hashes this document and `tests.md`. Within `0.1.0` §2 and §3 state that a check status is written without the blanks that pad it to its width, and the self-test's `l0_metric_leaf_pass` case gained the check `status_na`, supplied padded, whose written value the `post_execute` gate reads (issue #437); the published signatures and types — including the width-4 `status` component of `harness_fortran_cpu_mpi__h_check` — are unchanged, so no `spec_version` is released for it, and every certified `IR` is re-derived, because its derivation key hashes this document and `tests.md`. `0.2.0` (issue #512) arranges the ranks in the process grid the host imposes through `ATMOFAB_PROCESS_GRID`: it adds `__grid_dims` and `__grid_coord`, gives `__partition` and the two halo exchanges a grid dimension `dim`, gives every gather two partitioned-axis slots, one per grid dimension, and has `__write_perf` record `parallelism.process_grid`; the self-test gains `l0_process_grid_pass` and exercises every distributed operation along both dimensions. These signatures are a breaking change, released under this version; the capability it provides is `distributed_state@2`. Under the grid `(size, 1)` — the one a run gets when the host imposes none — `0.2.0`'s partition, exchange and gather along dimension 1 are `0.1.0`'s. Dependent nodes are not migrated by hand and need no content-free version bump of their own. The workflow enforces the skew mechanically at two points:
 
 - **Regeneration** — a node's certified dependency resolution is recorded in its `dependency_graph.json` sidecar; when the catalog moves the harness to a new version, every dependent's recorded resolution stops matching the one `deps.yaml` + `spec_catalog.yaml` derive, so the dependency-freshness readiness check reports it stale and `run_workflow.py --with-deps` re-certifies the closure bottom-up.
 - **Skew fail-close** — a consumer that would nonetheless render its runner glue against a drifted interface is stopped before Build by the renderer's signature pin (the language backend's `assert_harness_pin`, reached through `tools/host_render.py`), which compares this §5.1 block against the certified harness IR's `public_api.signatures` and its generated model source — for every operation the rendered runner calls, and for every operation of §3.3 the runner offers a consuming physics node.
@@ -448,9 +453,35 @@ procedures:
     spec:
       type: integer
 - kind: subroutine
+  name: harness_fortran_cpu_mpi__grid_dims
+  args:
+  - name: p1
+    intent: out
+    spec:
+      type: integer
+  - name: p2
+    intent: out
+    spec:
+      type: integer
+- kind: subroutine
+  name: harness_fortran_cpu_mpi__grid_coord
+  args:
+  - name: c1
+    intent: out
+    spec:
+      type: integer
+  - name: c2
+    intent: out
+    spec:
+      type: integer
+- kind: subroutine
   name: harness_fortran_cpu_mpi__partition
   args:
   - name: n_global
+    intent: in
+    spec:
+      type: integer
+  - name: dim
     intent: in
     spec:
       type: integer
@@ -471,6 +502,10 @@ procedures:
     spec:
       type: real
       kind: dp
+  - name: dim
+    intent: in
+    spec:
+      type: integer
   - name: ng
     intent: in
     spec:
@@ -492,6 +527,10 @@ procedures:
     intent: in
     spec:
       type: integer
+  - name: dim
+    intent: in
+    spec:
+      type: integer
   - name: ng
     intent: in
     spec:
@@ -509,15 +548,35 @@ procedures:
     spec:
       type: real
       kind: dp
-  - name: lo
+  - name: axis1
     intent: in
     spec:
       type: integer
-  - name: hi
+  - name: lo1
     intent: in
     spec:
       type: integer
-  - name: glo
+  - name: hi1
+    intent: in
+    spec:
+      type: integer
+  - name: glo1
+    intent: in
+    spec:
+      type: integer
+  - name: axis2
+    intent: in
+    spec:
+      type: integer
+  - name: lo2
+    intent: in
+    spec:
+      type: integer
+  - name: hi2
+    intent: in
+    spec:
+      type: integer
+  - name: glo2
     intent: in
     spec:
       type: integer
@@ -537,19 +596,35 @@ procedures:
     spec:
       type: real
       kind: dp
-  - name: axis
+  - name: axis1
     intent: in
     spec:
       type: integer
-  - name: lo
+  - name: lo1
     intent: in
     spec:
       type: integer
-  - name: hi
+  - name: hi1
     intent: in
     spec:
       type: integer
-  - name: glo
+  - name: glo1
+    intent: in
+    spec:
+      type: integer
+  - name: axis2
+    intent: in
+    spec:
+      type: integer
+  - name: lo2
+    intent: in
+    spec:
+      type: integer
+  - name: hi2
+    intent: in
+    spec:
+      type: integer
+  - name: glo2
     intent: in
     spec:
       type: integer
@@ -569,19 +644,35 @@ procedures:
     spec:
       type: real
       kind: dp
-  - name: axis
+  - name: axis1
     intent: in
     spec:
       type: integer
-  - name: lo
+  - name: lo1
     intent: in
     spec:
       type: integer
-  - name: hi
+  - name: hi1
     intent: in
     spec:
       type: integer
-  - name: glo
+  - name: glo1
+    intent: in
+    spec:
+      type: integer
+  - name: axis2
+    intent: in
+    spec:
+      type: integer
+  - name: lo2
+    intent: in
+    spec:
+      type: integer
+  - name: hi2
+    intent: in
+    spec:
+      type: integer
+  - name: glo2
     intent: in
     spec:
       type: integer
@@ -601,19 +692,35 @@ procedures:
     spec:
       type: real
       kind: dp
-  - name: axis
+  - name: axis1
     intent: in
     spec:
       type: integer
-  - name: lo
+  - name: lo1
     intent: in
     spec:
       type: integer
-  - name: hi
+  - name: hi1
     intent: in
     spec:
       type: integer
-  - name: glo
+  - name: glo1
+    intent: in
+    spec:
+      type: integer
+  - name: axis2
+    intent: in
+    spec:
+      type: integer
+  - name: lo2
+    intent: in
+    spec:
+      type: integer
+  - name: hi2
+    intent: in
+    spec:
+      type: integer
+  - name: glo2
     intent: in
     spec:
       type: integer
@@ -686,9 +793,10 @@ procedures:
 - The message-passing library is used by the model module `harness_fortran_cpu_mpi_model` alone, through its Fortran 2008 binding. The self-test runner calls none of the library's procedures and imports none of its modules: it reaches the runtime through §3.3 only, as a consuming physics node's runner does.
 - No file is written by a rank other than rank 0, and no writer of §3.2 is called by one: the output is serialized by the caller's rank-0 guard alone (§1).
 - No operation of §3.2 calls the message-passing library, and none of §3.3 writes a file.
+- The process grid is the host's: `__init` arranges the ranks in the grid `ATMOFAB_PROCESS_GRID` names, or `(size, 1)` when it names none, and in no other — never one chosen from the rank count, a factorization of it, or a preference of the library — and no operation of §3.3 partitions, exchanges or gathers along a dimension other than the one its arguments name.
 
 ## 7. Traceability
 Record the harness adoption in `component_catalog.yaml` (as the `(language, hardware, parallel)` = `(fortran, cpu, mpi)` runner harness) and the resolved harness version each dependent physics node was certified against.
 
 ## 8. tests reference
-The corresponding `tests.md` is `spec/infrastructure/infra/harness/harness_fortran_cpu_mpi/tests.md`, with `test_profile_version` of `0.5.0`.
+The corresponding `tests.md` is `spec/infrastructure/infra/harness/harness_fortran_cpu_mpi/tests.md`, with `test_profile_version` of `0.6.0`.

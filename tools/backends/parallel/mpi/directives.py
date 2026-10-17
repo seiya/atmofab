@@ -12,8 +12,8 @@ carries it):
   `include` of its header, no call of a procedure of its namespace — whatever the plan says;
 * unless the bundle's `target_lowering_plan.parallelization` explicitly declines MPI, the plan
   declares `state_residency: distributed`, at least one source calls the harness's partition or
-  halo exchange, and the checks module sets at least one bound array's partition axis
-  (`sb_<var>_axis`) to something other than a literal zero.
+  halo exchange, and the checks module sets at least one bound array's partition axis along a
+  grid dimension (`sb_<var>_axis1` / `sb_<var>_axis2`) to something other than a literal zero.
 
 It is a PRESENCE floor: whether the decomposition is right, whether each rank computes only what
 it owns, and whether the global quantities go through the reductions is `Generate.verify` G6's
@@ -64,9 +64,11 @@ def _distributing_call_re(harness_spec_id: str) -> re.Pattern[str]:
         rf"^(?:if\s*\(.*\)\s*)?call\s+{re.escape(harness_spec_id)}__"
         rf"(?:partition|exchange_halo_r[12])\b", re.IGNORECASE)
 
-# An assignment (or a declaration's initializer) of a bound array's partition axis; `(?!=)`
-# keeps a comparison `sb_u_axis == 0` out. The value is read up to the next top-level comma.
-_AXIS_ASSIGNMENT_RE = re.compile(r"(?<![\w%])sb_(\w+)_axis\s*=(?!=)\s*([^,;]*)", re.IGNORECASE)
+# An assignment (or a declaration's initializer) of a bound array's partition axis along either
+# grid dimension (issue #512: `sb_<var>_axis1`, `sb_<var>_axis2`); `(?!=)` keeps a comparison
+# `sb_u_axis1 == 0` out. The value is read up to the next top-level comma.
+_AXIS_ASSIGNMENT_RE = re.compile(r"(?<![\w%])sb_(\w+)_axis[12]\s*=(?!=)\s*([^,;]*)",
+                                 re.IGNORECASE)
 # A literal zero, with an optional kind suffix and any enclosing parentheses.
 _ZERO_LITERAL_RE = re.compile(r"^\(*\s*[+]?0+(?:_\w+)?\s*\)*$")
 
@@ -141,7 +143,7 @@ def _fortran_cpu_violations(*, model_texts: dict[Path, str], checks_texts: dict[
             f"{first}: the target profile resolves to MPI (parallel.backend=mpi) and the "
             "bundle's target_lowering_plan.parallelization does not decline MPI, but the plan "
             f"declares state_residency {residency!r}: a kernel distributed over the ranks "
-            "declares \"state_residency\": \"distributed\" (with distributed_state@1 in "
+            "declares \"state_residency\": \"distributed\" (with distributed_state@2 in "
             "capability_requirements). Only when the kernel genuinely cannot be distributed is "
             "\"model\": \"none\" in the plan's parallelization the answer, with the reason "
             "stated; the independent reviewer holds that declaration to the kernel")
@@ -168,13 +170,13 @@ def _fortran_cpu_violations(*, model_texts: dict[Path, str], checks_texts: dict[
         where = next(iter(checks_texts), first)
         out.append(
             f"{where}: the plan declares distributed state, but the checks module never sets "
-            "the partition axis (`sb_<var>_axis`) of a bound array "
+            "a partition axis (`sb_<var>_axis1` / `sb_<var>_axis2`) of a bound array "
             f"({', '.join(sorted(arrays)) or 'none declared'}) to anything but 0, so every "
             "bound array is captured as replicated and nothing the run records is "
-            "distributed. Set `sb_<var>_axis` to the axis a partitioned array is split along, "
-            "with `sb_<var>_lo` / `sb_<var>_hi` / `sb_<var>_glo` describing the cells this rank "
-            "contributes to the global array (the host-rendered runner's comment states the "
-            "binding)")
+            "distributed. Set `sb_<var>_axis<d>` to the axis a partitioned array is split along "
+            "grid dimension <d>, with `sb_<var>_lo<d>` / `sb_<var>_hi<d>` / `sb_<var>_glo<d>` "
+            "describing the cells this rank contributes along it to the global array (the "
+            "host-rendered runner's comment states the binding)")
     return out
 
 

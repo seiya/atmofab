@@ -49,7 +49,7 @@ HARNESS_SPEC = (
 CONTROLLED_SPEC_DOC = REPO_ROOT / "docs/CONTROLLED_SPEC.md"
 
 
-#: The fifteen distributed-state operations of `harness_fortran_cpu_mpi@0.1.0` §3.3, as the Fortran
+#: The seventeen distributed-state operations of `harness_fortran_cpu_mpi@0.2.0` §3.3, as the Fortran
 #: backend renders its §5.1 block. Written out so that a change to any of them — a name, an
 #: argument's order, type, rank or intent, a result — is a visible edit here (issue #316, R4-c
 #: PR-3 round 2: eight such mutants of §5.1 survived the suite when only a count was pinned). The
@@ -69,57 +69,87 @@ function harness_fortran_cpu_mpi__comm_size() result(n)
   integer :: n
 end function harness_fortran_cpu_mpi__comm_size
 
-subroutine harness_fortran_cpu_mpi__partition(n_global, glo, ghi)
+subroutine harness_fortran_cpu_mpi__grid_dims(p1, p2)
+  integer, intent(out) :: p1
+  integer, intent(out) :: p2
+end subroutine harness_fortran_cpu_mpi__grid_dims
+
+subroutine harness_fortran_cpu_mpi__grid_coord(c1, c2)
+  integer, intent(out) :: c1
+  integer, intent(out) :: c2
+end subroutine harness_fortran_cpu_mpi__grid_coord
+
+subroutine harness_fortran_cpu_mpi__partition(n_global, dim, glo, ghi)
   integer, intent(in) :: n_global
+  integer, intent(in) :: dim
   integer, intent(out) :: glo
   integer, intent(out) :: ghi
 end subroutine harness_fortran_cpu_mpi__partition
 
-subroutine harness_fortran_cpu_mpi__exchange_halo_r1(a, ng, periodic)
+subroutine harness_fortran_cpu_mpi__exchange_halo_r1(a, dim, ng, periodic)
   real(dp), intent(inout) :: a(:)
+  integer, intent(in) :: dim
   integer, intent(in) :: ng
   logical, intent(in) :: periodic
 end subroutine harness_fortran_cpu_mpi__exchange_halo_r1
 
-subroutine harness_fortran_cpu_mpi__exchange_halo_r2(a, axis, ng, periodic)
+subroutine harness_fortran_cpu_mpi__exchange_halo_r2(a, axis, dim, ng, periodic)
   real(dp), intent(inout) :: a(:,:)
   integer, intent(in) :: axis
+  integer, intent(in) :: dim
   integer, intent(in) :: ng
   logical, intent(in) :: periodic
 end subroutine harness_fortran_cpu_mpi__exchange_halo_r2
 
-subroutine harness_fortran_cpu_mpi__gather_r1(a, lo, hi, glo, g)
+subroutine harness_fortran_cpu_mpi__gather_r1(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
   real(dp), intent(in) :: a(:)
-  integer, intent(in) :: lo
-  integer, intent(in) :: hi
-  integer, intent(in) :: glo
+  integer, intent(in) :: axis1
+  integer, intent(in) :: lo1
+  integer, intent(in) :: hi1
+  integer, intent(in) :: glo1
+  integer, intent(in) :: axis2
+  integer, intent(in) :: lo2
+  integer, intent(in) :: hi2
+  integer, intent(in) :: glo2
   real(dp), allocatable, intent(out) :: g(:)
 end subroutine harness_fortran_cpu_mpi__gather_r1
 
-subroutine harness_fortran_cpu_mpi__gather_r2(a, axis, lo, hi, glo, g)
+subroutine harness_fortran_cpu_mpi__gather_r2(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
   real(dp), intent(in) :: a(:,:)
-  integer, intent(in) :: axis
-  integer, intent(in) :: lo
-  integer, intent(in) :: hi
-  integer, intent(in) :: glo
+  integer, intent(in) :: axis1
+  integer, intent(in) :: lo1
+  integer, intent(in) :: hi1
+  integer, intent(in) :: glo1
+  integer, intent(in) :: axis2
+  integer, intent(in) :: lo2
+  integer, intent(in) :: hi2
+  integer, intent(in) :: glo2
   real(dp), allocatable, intent(out) :: g(:,:)
 end subroutine harness_fortran_cpu_mpi__gather_r2
 
-subroutine harness_fortran_cpu_mpi__gather_r3(a, axis, lo, hi, glo, g)
+subroutine harness_fortran_cpu_mpi__gather_r3(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
   real(dp), intent(in) :: a(:,:,:)
-  integer, intent(in) :: axis
-  integer, intent(in) :: lo
-  integer, intent(in) :: hi
-  integer, intent(in) :: glo
+  integer, intent(in) :: axis1
+  integer, intent(in) :: lo1
+  integer, intent(in) :: hi1
+  integer, intent(in) :: glo1
+  integer, intent(in) :: axis2
+  integer, intent(in) :: lo2
+  integer, intent(in) :: hi2
+  integer, intent(in) :: glo2
   real(dp), allocatable, intent(out) :: g(:,:,:)
 end subroutine harness_fortran_cpu_mpi__gather_r3
 
-subroutine harness_fortran_cpu_mpi__gather_r4(a, axis, lo, hi, glo, g)
+subroutine harness_fortran_cpu_mpi__gather_r4(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
   real(dp), intent(in) :: a(:,:,:,:)
-  integer, intent(in) :: axis
-  integer, intent(in) :: lo
-  integer, intent(in) :: hi
-  integer, intent(in) :: glo
+  integer, intent(in) :: axis1
+  integer, intent(in) :: lo1
+  integer, intent(in) :: hi1
+  integer, intent(in) :: glo1
+  integer, intent(in) :: axis2
+  integer, intent(in) :: lo2
+  integer, intent(in) :: hi2
+  integer, intent(in) :: glo2
   real(dp), allocatable, intent(out) :: g(:,:,:,:)
 end subroutine harness_fortran_cpu_mpi__gather_r4
 
@@ -197,7 +227,7 @@ class RoundTripRealArtifactsTest(unittest.TestCase):
         self.assertIsNone(err, err)
         rendered = render_signatures_to_fortran(published)
         struct = self._assert_round_trip(rendered)
-        self.assertEqual(len(struct["procedures"]), 28)
+        self.assertEqual(len(struct["procedures"]), 30)
         self.assertEqual(len(struct["types"]), 5)
         for rank in (1, 2, 3, 4):
             dims = ",".join([":"] * rank)

@@ -154,7 +154,7 @@ class CheckedInProfileTests(unittest.TestCase):
         self.assertEqual(profile.toolchain["language"], "fortran")
         self.assertNotIn("compiler", profile.toolchain)  # a wrapper target pins no compiler
         harness = tp.harness_node_key_for_target(REPO_ROOT, profile)
-        self.assertEqual(harness, "infrastructure/harness_fortran_cpu_mpi@0.1.0")
+        self.assertEqual(harness, "infrastructure/harness_fortran_cpu_mpi@0.2.0")
         for phase in sorted(tp.NON_EXECUTING_PHASES) + ["validate"]:
             self.assertEqual(tp.target_profile_violations(
                 REPO_ROOT, profile, node_key=harness, until_phase=phase), [], phase)

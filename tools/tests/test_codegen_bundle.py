@@ -288,9 +288,14 @@ class CapabilityNegotiationTest(unittest.TestCase):
         # Issue #316 (R4-c PR-3): a `distributed` bundle's requirement set is satisfied by the
         # harness of the process-parallel target and by no other; the single-process harnesses
         # keep the set they had, so their consumers' negotiation is unchanged.
-        distributed = ["sync_single_case@1", "distributed_state@1", cb.STATE_REGISTRATION_TOKEN]
-        mpi = cb.harness_provided_capabilities("infrastructure/harness_fortran_cpu_mpi@0.1.0")
+        distributed = ["sync_single_case@1", "distributed_state@2", cb.STATE_REGISTRATION_TOKEN]
+        mpi = cb.harness_provided_capabilities("infrastructure/harness_fortran_cpu_mpi@0.2.0")
         self.assertEqual(cb.unsatisfied_capability_requirements(distributed, mpi), [])
+        # Issue #512: `@2` replaced `@1` (the one-dimensional arrangement); a bundle still
+        # asking for `@1` is not satisfied by the two-dimensional harness.
+        self.assertEqual(cb.unsatisfied_capability_requirements(
+            ["sync_single_case@1", "distributed_state@1", cb.STATE_REGISTRATION_TOKEN], mpi),
+            ["distributed_state@1"])
         for single in (HARNESS, "infrastructure/harness_cpp_gpu@0.1.0"):
             with self.subTest(harness=single):
                 provided = cb.harness_provided_capabilities(single)
@@ -298,7 +303,7 @@ class CapabilityNegotiationTest(unittest.TestCase):
                                  frozenset({"sync_single_case@1", cb.STATE_REGISTRATION_TOKEN}))
                 self.assertEqual(
                     cb.unsatisfied_capability_requirements(distributed, provided),
-                    ["distributed_state@1"])
+                    ["distributed_state@2"])
 
     def test_version_skew_is_unsatisfied_no_ordering_is_assumed(self) -> None:
         # @2 is NOT satisfied by a harness providing @1: compatibility is declared by
@@ -3365,7 +3370,8 @@ class PureStateBindingLayerTests(unittest.TestCase):
         the checks module to publishing it — resolved from the harness the caller names, and
         asked only for an array (the IR's `shape_expr`)."""
         vars_ = [{"name": "q", "shape_expr": "[8]"}, {"name": "s", "shape_expr": "scalar"}]
-        meta = ("sb_q_axis", "sb_q_lo", "sb_q_hi", "sb_q_glo")
+        meta = ("sb_q_axis1", "sb_q_lo1", "sb_q_hi1", "sb_q_glo1",
+                "sb_q_axis2", "sb_q_lo2", "sb_q_hi2", "sb_q_glo2")
         with_s = self._CHECKS.replace("  public :: q\n", "  public :: q, s\n")
         published = with_s.replace("  public :: q, s\n",
                                    "  public :: q, s\n  public :: " + ", ".join(meta) + "\n")
@@ -3380,7 +3386,7 @@ class PureStateBindingLayerTests(unittest.TestCase):
                 harness_label=harness, build_graph=lambda d: None,
                 ir_published_operations=None)
 
-        mpi = "infrastructure/harness_fortran_cpu_mpi@0.1.0"
+        mpi = "infrastructure/harness_fortran_cpu_mpi@0.2.0"
         # What the two production callers pass (`snapshot_variable_entries_from_ir`), not a
         # hand-built list: round 1 found the callers passing bare names, which left this layer
         # with no array to ask about — `test_the_conductor_passes_the_shapes` pins the caller.
@@ -3415,7 +3421,7 @@ class PureStateBindingLayerTests(unittest.TestCase):
                     {"artifact": "state_snapshots", "schema": {"variables": vars_}}]}}}))
             holder = SimpleNamespace(
                 repo_root=root,
-                _pure_harness_node_key=lambda nk: "infrastructure/harness_fortran_cpu_mpi@0.1.0",
+                _pure_harness_node_key=lambda nk: "infrastructure/harness_fortran_cpu_mpi@0.2.0",
                 _bundle_shape=lambda refs: "m3c",
                 _read_toolchain=lambda refs: {"language": "fortran"},
                 _runner_basename=lambda refs: "bx_runner.f90",
@@ -3426,7 +3432,7 @@ class PureStateBindingLayerTests(unittest.TestCase):
                 wc.Conductor._pure_bundle_violations(holder, refs, {})
         self.assertEqual(spy.call_args.kwargs["ir_snapshot_variables"], vars_)
         self.assertEqual(spy.call_args.kwargs["harness_label"],
-                         "infrastructure/harness_fortran_cpu_mpi@0.1.0")
+                         "infrastructure/harness_fortran_cpu_mpi@0.2.0")
 
     def test_bound_variable_must_be_published_by_the_checks_module(self) -> None:
         # The ABI layer: a binding whose storage the module does not `public ::` is a `use`

@@ -984,6 +984,18 @@ PINNED: dict[str, str] = {
     # certified at pure-75 or earlier stops being offered, and an orchestration whose
     # `generate` ran under pure-75 cannot be `--resume`d across this bump.
     "pure-76": "f977f2c14da9b20bcc4880ee82dbe356ae212db6dbb284401f65bedbeeb8b478",
+    # pure-77 (issue #512): the process grid the host imposes. Members moved: the `mpi`
+    # fragments (`parallel/mpi/generate_generate.txt` §target_lowering_floor: the grid queries,
+    # the partition / halo exchange along a grid dimension, the eight partition variables per
+    # bound array, the corner exchange order, the replication threshold per dimension,
+    # `distributed_state@2`; `generate_verify.txt` §checklist_g6_floor_scope: the same held to
+    # the kernel) and `pure_generate_generate.txt` (its capability example names
+    # `distributed_state@2` as the manifest lists it). The gates that moved with them are the
+    # `mpi` presence floor (`sb_<var>_axis1` / `_axis2`) and the checks-source gate's required
+    # metadata. Side effects as before: an exemplar certified at pure-76 or earlier stops being
+    # offered, and an orchestration whose `generate` ran under pure-76 cannot be `--resume`d
+    # across this bump.
+    "pure-77": "af6350bf9f141f8ff4b2a019d41a36ba1a86a2505da0121f0b2ac811728c7738",
 }
 
 

@@ -1889,7 +1889,9 @@ def _validate_launched_ranks(repo_root: Path, execution: NodeExecution,
                              violations: list[str]) -> None:
     """For a pipeline whose target's parallel backend declares `launcher` (issue #316): the run's
     performance record states the process count the target runs (`execution.ranks`), and the
-    quality check records the run as that many ranks and its `make test` re-run as one.
+    quality check records the run as that many ranks and its `make test` re-run as one. The
+    record also states the process grid the harness arranged the ranks in (issue #512), which
+    is `[ranks, 1]` for a run launched with no grid imposed.
 
     The comparison is worth what `parallelism.mpi_ranks`'s WRITER counts. It detects a launch
     that started the binary as independent one-process runs — a launcher of another
@@ -1918,6 +1920,19 @@ def _validate_launched_ranks(repo_root: Path, execution: NodeExecution,
             f"{perf_path}: parallelism.mpi_ranks is {reported!r} and target {target.target_id} "
             f"runs {ranks} rank(s) under {target.parallel_backend}'s launcher; the runner's "
             f"performance record or the launch is wrong")
+    # Issue #512: the harness arranges the ranks in the process grid the host imposes, and
+    # records the grid it used. The run is launched with no grid imposed, which the harness
+    # arranges as `[ranks, 1]` (the distributed harness's §3.3); a harness that chose another
+    # grid of its own — or ignored the one imposed — is caught here, by the record its writer
+    # makes from the grid it established (`__write_perf`, §3.2).
+    expected_grid = [ranks, 1]
+    grid = parallelism.get("process_grid") if isinstance(parallelism, dict) else None
+    if not (isinstance(grid, list) and all(type(g) is int for g in grid)
+            and grid == expected_grid):
+        violations.append(
+            f"{perf_path}: parallelism.process_grid is {grid!r} and target {target.target_id}'s "
+            f"run imposes no process grid on its {ranks} rank(s), which the harness arranges "
+            f"as {expected_grid}; the harness's grid or its performance record is wrong")
     quality_path = execution.node_dir / "quality_check.json"
     try:
         quality = _read_json(quality_path)

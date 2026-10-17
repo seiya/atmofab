@@ -2320,9 +2320,10 @@ from tools.tests.test_parallel_mpi import _require_mpi_pair
 
 
 def _distributed_ir() -> dict:
-    """A problem IR over the four capture shapes of the distributed runner: a rank-1 array
-    partitioned along its only axis, a rank-2 array partitioned along axis 2, a replicated
-    rank-1 array (axis 0), and a scalar."""
+    """A problem IR over the capture shapes of the distributed runner: a rank-1 array
+    partitioned along grid dimension 1, a rank-2 array whose axis 2 is partitioned along grid
+    dimension 2, a rank-2 array partitioned along both, a replicated rank-1 array, and a
+    scalar."""
     return {
         "meta": {"spec_id": DIST_SID, "spec_kind": "problem"},
         "case": {"test_case_set": [{"case_id": "c0"}]},
@@ -2332,6 +2333,7 @@ def _distributed_ir() -> dict:
                     "variables": [
                         {"name": "u", "shape_expr": "[10]"},
                         {"name": "w", "shape_expr": "[3, 10]"},
+                        {"name": "q", "shape_expr": "[6, 8]"},
                         {"name": "c", "shape_expr": "[2]"},
                         {"name": "s", "shape_expr": "scalar"},
                     ],
@@ -2339,7 +2341,7 @@ def _distributed_ir() -> dict:
                 }},
             ]},
             "test_evidence_requirements": [
-                {"test_id": "c0", "required_raw_variables": ["u", "w", "c", "s"]},
+                {"test_id": "c0", "required_raw_variables": ["u", "w", "q", "c", "s"]},
             ],
             "diagnostics_contract": {
                 "checks": [{"id": "sum_u"}],
@@ -2356,21 +2358,31 @@ def _distributed_ir() -> dict:
 # The single-process harness stub under the distributed harness's names, plus the operations the
 # distributed runner and the checks stub below call, over the library's `mpi` module (the one
 # binding every installation ships for this compiler; the certified harness uses `mpi_f08`, which
-# is its own business). The gathers place each rank's slab by its `glo`, as §3.3 requires; the
+# is its own business). It reads the process grid from `ATMOFAB_PROCESS_GRID` as §3.3 of the
+# harness spec states, and its gathers place each contributing rank's block by its `glo<d>`; the
 # tile check is not reproduced — it is the harness's, not the runner's.
 _DIST_HARNESS_STUB = _HARNESS_STUB.replace("harness_fortran_cpu", DIST_HARNESS).replace(
     "  private\n",
     "  private\n"
+    "  integer :: grid_p1 = 1, grid_p2 = 1\n"
     f"  public :: {DIST_HARNESS}__init, {DIST_HARNESS}__finalize\n"
     f"  public :: {DIST_HARNESS}__comm_rank, {DIST_HARNESS}__comm_size\n"
+    f"  public :: {DIST_HARNESS}__grid_dims, {DIST_HARNESS}__grid_coord\n"
     f"  public :: {DIST_HARNESS}__partition, {DIST_HARNESS}__reduce_sum\n"
     f"  public :: {DIST_HARNESS}__reduce_sum_int\n"
     f"  public :: {DIST_HARNESS}__gather_r1, {DIST_HARNESS}__gather_r2\n", 1).replace(
     f"end module {DIST_HARNESS}_model\n",
     textwrap.indent(textwrap.dedent(f"""\
       subroutine {DIST_HARNESS}__init()
-        integer :: ierr
+        integer :: ierr, n, ln, st
+        character(len=64) :: val
         call mpi_init(ierr)
+        call mpi_comm_size(mpi_comm_world, n, ierr)
+        grid_p1 = n
+        grid_p2 = 1
+        call get_environment_variable('ATMOFAB_PROCESS_GRID', val, ln, st)
+        if (st == 0 .and. ln > 0) read(val, *) grid_p1, grid_p2
+        if (grid_p1 * grid_p2 /= n) error stop 3
       end subroutine {DIST_HARNESS}__init
       subroutine {DIST_HARNESS}__finalize()
         integer :: ierr
@@ -2384,18 +2396,29 @@ _DIST_HARNESS_STUB = _HARNESS_STUB.replace("harness_fortran_cpu", DIST_HARNESS).
         integer :: n, ierr
         call mpi_comm_size(mpi_comm_world, n, ierr)
       end function {DIST_HARNESS}__comm_size
-      subroutine {DIST_HARNESS}__partition(n_global, glo, ghi)
-        integer, intent(in) :: n_global
+      subroutine {DIST_HARNESS}__grid_dims(p1, p2)
+        integer, intent(out) :: p1, p2
+        p1 = grid_p1
+        p2 = grid_p2
+      end subroutine {DIST_HARNESS}__grid_dims
+      subroutine {DIST_HARNESS}__grid_coord(c1, c2)
+        integer, intent(out) :: c1, c2
+        c1 = {DIST_HARNESS}__comm_rank() / grid_p2
+        c2 = mod({DIST_HARNESS}__comm_rank(), grid_p2)
+      end subroutine {DIST_HARNESS}__grid_coord
+      subroutine {DIST_HARNESS}__partition(n_global, dim, glo, ghi)
+        integer, intent(in) :: n_global, dim
         integer, intent(out) :: glo, ghi
-        integer :: r, n, b, m, c
-        r = {DIST_HARNESS}__comm_rank()
-        n = {DIST_HARNESS}__comm_size()
-        b = n_global / n
-        m = mod(n_global, n)
-        c = b
-        if (r < m) c = b + 1
-        glo = r * b + min(r, m) + 1
-        ghi = glo + c - 1
+        integer :: c1, c2, c, p, b, m, k
+        call {DIST_HARNESS}__grid_coord(c1, c2)
+        c = merge(c1, c2, dim == 1)
+        p = merge(grid_p1, grid_p2, dim == 1)
+        b = n_global / p
+        m = mod(n_global, p)
+        k = b
+        if (c < m) k = b + 1
+        glo = c * b + min(c, m) + 1
+        ghi = glo + k - 1
       end subroutine {DIST_HARNESS}__partition
       function {DIST_HARNESS}__reduce_sum(x) result(s)
         real(dp), intent(in) :: x
@@ -2408,117 +2431,166 @@ _DIST_HARNESS_STUB = _HARNESS_STUB.replace("harness_fortran_cpu", DIST_HARNESS).
         integer :: s, ierr
         call mpi_allreduce(i, s, 1, mpi_integer, mpi_sum, mpi_comm_world, ierr)
       end function {DIST_HARNESS}__reduce_sum_int
-      subroutine gather_slabs(buf, c, glo, width, g)
-        real(dp), intent(in) :: buf(:)
-        integer, intent(in) :: c, glo, width
+      subroutine {DIST_HARNESS}__gather_r2(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
+        real(dp), intent(in) :: a(:, :)
+        integer, intent(in) :: axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2
         real(dp), allocatable, intent(out) :: g(:, :)
-        integer :: n, k, ierr, total
-        integer, allocatable :: cs(:), glos(:), counts(:), displs(:)
-        real(dp), allocatable :: all(:)
+        integer :: lo(2), hi(2), st(2), cnt(2), meta(4), n, k, ierr, c1, c2
+        integer, allocatable :: all_meta(:, :), counts(:), displs(:)
+        real(dp), allocatable :: buf(:), all(:)
+        lo = 1
+        hi = shape(a)
+        st = 1
+        if (axis1 > 0) then
+          lo(axis1) = lo1
+          hi(axis1) = hi1
+          st(axis1) = glo1
+        end if
+        if (axis2 > 0) then
+          lo(axis2) = lo2
+          hi(axis2) = hi2
+          st(axis2) = glo2
+        end if
+        cnt = max(hi - lo + 1, 0)
+        call {DIST_HARNESS}__grid_coord(c1, c2)
+        if ((axis1 == 0 .and. c1 /= 0) .or. (axis2 == 0 .and. c2 /= 0)) cnt = 0
+        if (any(cnt == 0)) cnt = 0
+        meta = [st, cnt]
         n = {DIST_HARNESS}__comm_size()
-        allocate(cs(n), glos(n), counts(n), displs(n))
-        call mpi_allgather(c, 1, mpi_integer, cs, 1, mpi_integer, mpi_comm_world, ierr)
-        call mpi_allgather(glo, 1, mpi_integer, glos, 1, mpi_integer, mpi_comm_world, ierr)
-        counts = cs * width
+        allocate(all_meta(4, n), counts(n), displs(n))
+        call mpi_allgather(meta, 4, mpi_integer, all_meta, 4, mpi_integer, mpi_comm_world, ierr)
+        counts = all_meta(3, :) * all_meta(4, :)
         displs(1) = 0
         do k = 2, n
           displs(k) = displs(k - 1) + counts(k - 1)
         end do
-        total = sum(counts)
-        allocate(all(max(total, 1)))
-        call mpi_gatherv(buf, c * width, mpi_double_precision, all, counts, displs, &
+        allocate(buf(max(product(cnt), 1)), all(max(sum(counts), 1)))
+        if (product(cnt) > 0) buf(1:product(cnt)) = &
+          reshape(a(lo(1):hi(1), lo(2):hi(2)), [product(cnt)])
+        call mpi_gatherv(buf, product(cnt), mpi_double_precision, all, counts, displs, &
           mpi_double_precision, 0, mpi_comm_world, ierr)
         if ({DIST_HARNESS}__comm_rank() /= 0) return
-        allocate(g(width, sum(cs)))
+        allocate(g(maxval(all_meta(1, :) + all_meta(3, :) - 1), &
+          maxval(all_meta(2, :) + all_meta(4, :) - 1)))
         do k = 1, n
-          if (cs(k) > 0) g(:, glos(k):glos(k) + cs(k) - 1) = &
-            reshape(all(displs(k) + 1:displs(k) + counts(k)), [width, cs(k)])
+          if (counts(k) > 0) g(all_meta(1, k):all_meta(1, k) + all_meta(3, k) - 1, &
+            all_meta(2, k):all_meta(2, k) + all_meta(4, k) - 1) = &
+            reshape(all(displs(k) + 1:displs(k) + counts(k)), all_meta(3:4, k))
         end do
-      end subroutine gather_slabs
-      subroutine {DIST_HARNESS}__gather_r1(a, lo, hi, glo, g)
+      end subroutine {DIST_HARNESS}__gather_r2
+      subroutine {DIST_HARNESS}__gather_r1(a, axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2, g)
         real(dp), intent(in) :: a(:)
-        integer, intent(in) :: lo, hi, glo
+        integer, intent(in) :: axis1, lo1, hi1, glo1, axis2, lo2, hi2, glo2
         real(dp), allocatable, intent(out) :: g(:)
         real(dp), allocatable :: g2(:, :)
-        call gather_slabs(a(lo:max(hi, lo - 1)), max(hi - lo + 1, 0), glo, 1, g2)
-        if (allocated(g2)) g = g2(1, :)
+        call {DIST_HARNESS}__gather_r2(reshape(a, [size(a), 1]), axis1, lo1, hi1, glo1, &
+          axis2, lo2, hi2, glo2, g2)
+        if (allocated(g2)) g = g2(:, 1)
       end subroutine {DIST_HARNESS}__gather_r1
-      subroutine {DIST_HARNESS}__gather_r2(a, axis, lo, hi, glo, g)
-        real(dp), intent(in) :: a(:, :)
-        integer, intent(in) :: axis, lo, hi, glo
-        real(dp), allocatable, intent(out) :: g(:, :)
-        real(dp), allocatable :: g2(:, :)
-        integer :: c
-        c = max(hi - lo + 1, 0)
-        if (axis == 2) then
-          call gather_slabs(reshape(a(:, lo:lo + c - 1), [size(a, 1) * c]), c, glo, &
-            size(a, 1), g)
-        else
-          call gather_slabs(reshape(transpose(a(lo:lo + c - 1, :)), [size(a, 2) * c]), c, &
-            glo, size(a, 2), g2)
-          if (allocated(g2)) g = transpose(g2)
-        end if
-      end subroutine {DIST_HARNESS}__gather_r2
     """), "  ") + f"end module {DIST_HARNESS}_model\n", 1).replace(
     "  use, intrinsic :: iso_fortran_env, only: real64\n",
     "  use, intrinsic :: iso_fortran_env, only: real64\n  use mpi\n", 1)
 
 # The checks stub of `_distributed_ir`: `u` holds one ghost cell at each end around this rank's
-# owned block of 10 cells, `w` holds its owned columns of a 3 x 10 array, and each owned cell holds
-# its GLOBAL index (plus 100 per row of `w`), so the gathered arrays are known exactly whatever
-# the rank count. `c` is replicated. `case_run` reports this rank's own cell count.
+# owned block of 10 cells along grid dimension 1, `w` holds its owned columns of a 3 x 10 array
+# along grid dimension 2, `q` its owned block of a 6 x 8 array along both dimensions, and each
+# owned cell holds its GLOBAL index (plus 100 per row of `w`, plus 100 per column of `q`), so the
+# gathered arrays are known exactly whatever the grid. `c` is replicated. `case_run` reports this
+# rank's own cell count.
 _DIST_CHECKS_STUB = textwrap.dedent(f"""\
     module {DIST_SID}_checks
       use, intrinsic :: iso_fortran_env, only: real64
       use {DIST_HARNESS}_model, only: {DIST_HARNESS}__partition, &
-        {DIST_HARNESS}__reduce_sum
+        {DIST_HARNESS}__reduce_sum, {DIST_HARNESS}__grid_coord
       ! allow(C003)
       implicit none
       private
       integer, parameter :: dp = real64
-      real(dp), allocatable :: u(:), w(:, :), c(:)
+      real(dp), allocatable :: u(:), w(:, :), q(:, :), c(:)
       real(dp) :: s = 0.0_dp
-      integer :: sb_u_axis, sb_u_lo, sb_u_hi, sb_u_glo
-      integer :: sb_w_axis, sb_w_lo, sb_w_hi, sb_w_glo
-      integer :: sb_c_axis, sb_c_lo, sb_c_hi, sb_c_glo
-      integer :: nloc = 0
+      integer :: sb_u_axis1, sb_u_lo1, sb_u_hi1, sb_u_glo1
+      integer :: sb_u_axis2, sb_u_lo2, sb_u_hi2, sb_u_glo2
+      integer :: sb_w_axis1, sb_w_lo1, sb_w_hi1, sb_w_glo1
+      integer :: sb_w_axis2, sb_w_lo2, sb_w_hi2, sb_w_glo2
+      integer :: sb_q_axis1, sb_q_lo1, sb_q_hi1, sb_q_glo1
+      integer :: sb_q_axis2, sb_q_lo2, sb_q_hi2, sb_q_glo2
+      integer :: sb_c_axis1, sb_c_lo1, sb_c_hi1, sb_c_glo1
+      integer :: sb_c_axis2, sb_c_lo2, sb_c_hi2, sb_c_glo2
+      integer :: nloc = 0, c2 = 0
       public :: case_setup, case_run, get_time, checks_compute, metric_compute
-      public :: u, w, c, s
-      public :: sb_u_axis, sb_u_lo, sb_u_hi, sb_u_glo
-      public :: sb_w_axis, sb_w_lo, sb_w_hi, sb_w_glo
-      public :: sb_c_axis, sb_c_lo, sb_c_hi, sb_c_glo
+      public :: u, w, q, c, s
+      public :: sb_u_axis1, sb_u_lo1, sb_u_hi1, sb_u_glo1
+      public :: sb_u_axis2, sb_u_lo2, sb_u_hi2, sb_u_glo2
+      public :: sb_w_axis1, sb_w_lo1, sb_w_hi1, sb_w_glo1
+      public :: sb_w_axis2, sb_w_lo2, sb_w_hi2, sb_w_glo2
+      public :: sb_q_axis1, sb_q_lo1, sb_q_hi1, sb_q_glo1
+      public :: sb_q_axis2, sb_q_lo2, sb_q_hi2, sb_q_glo2
+      public :: sb_c_axis1, sb_c_lo1, sb_c_hi1, sb_c_glo1
+      public :: sb_c_axis2, sb_c_lo2, sb_c_hi2, sb_c_glo2
     contains
       subroutine case_setup(case_id, ok)
         character(len=*), intent(in) :: case_id
         logical, intent(out) :: ok
-        integer :: glo, ghi, i, j
-        call {DIST_HARNESS}__partition(10, glo, ghi)
+        integer :: glo, ghi, wlo, whi, ql1, qh1, ql2, qh2, c1, i, j
+        call {DIST_HARNESS}__grid_coord(c1, c2)
+        call {DIST_HARNESS}__partition(10, 1, glo, ghi)
+        call {DIST_HARNESS}__partition(10, 2, wlo, whi)
+        call {DIST_HARNESS}__partition(6, 1, ql1, qh1)
+        call {DIST_HARNESS}__partition(8, 2, ql2, qh2)
         nloc = ghi - glo + 1
         if (allocated(u)) deallocate(u)
         if (allocated(w)) deallocate(w)
+        if (allocated(q)) deallocate(q)
         if (allocated(c)) deallocate(c)
-        allocate(u(nloc + 2), w(3, nloc), c(2))
+        allocate(u(nloc + 2), w(3, whi - wlo + 1), q(qh1 - ql1 + 1, qh2 - ql2 + 1), c(2))
         u = -1.0_dp
         do i = 1, nloc
           u(i + 1) = real(glo + i - 1, dp)
+        end do
+        do i = 1, whi - wlo + 1
           do j = 1, 3
-            w(j, i) = real(100 * j + glo + i - 1, dp)
+            w(j, i) = real(100 * j + wlo + i - 1, dp)
+          end do
+        end do
+        do j = 1, qh2 - ql2 + 1
+          do i = 1, qh1 - ql1 + 1
+            q(i, j) = real(ql1 + i - 1 + 100 * (ql2 + j - 1), dp)
           end do
         end do
         c = [7.0_dp, 8.0_dp]
         s = 5.0_dp
-        sb_u_axis = 1
-        sb_u_lo = 2
-        sb_u_hi = nloc + 1
-        sb_u_glo = glo
-        sb_w_axis = 2
-        sb_w_lo = 1
-        sb_w_hi = nloc
-        sb_w_glo = glo
-        sb_c_axis = 0
-        sb_c_lo = 1
-        sb_c_hi = 2
-        sb_c_glo = 1
+        sb_u_axis1 = 1
+        sb_u_lo1 = 2
+        sb_u_hi1 = nloc + 1
+        sb_u_glo1 = glo
+        sb_u_axis2 = 0
+        sb_u_lo2 = 0
+        sb_u_hi2 = 0
+        sb_u_glo2 = 0
+        sb_w_axis1 = 0
+        sb_w_lo1 = 0
+        sb_w_hi1 = 0
+        sb_w_glo1 = 0
+        sb_w_axis2 = 2
+        sb_w_lo2 = 1
+        sb_w_hi2 = whi - wlo + 1
+        sb_w_glo2 = wlo
+        sb_q_axis1 = 1
+        sb_q_lo1 = 1
+        sb_q_hi1 = qh1 - ql1 + 1
+        sb_q_glo1 = ql1
+        sb_q_axis2 = 2
+        sb_q_lo2 = 1
+        sb_q_hi2 = qh2 - ql2 + 1
+        sb_q_glo2 = ql2
+        sb_c_axis1 = 0
+        sb_c_lo1 = 1
+        sb_c_hi1 = 2
+        sb_c_glo1 = 1
+        sb_c_axis2 = 0
+        sb_c_lo2 = 0
+        sb_c_hi2 = 0
+        sb_c_glo2 = 0
         ok = len_trim(case_id) > 0
       end subroutine case_setup
       subroutine case_run(case_id, steps, cells_updated, ok)
@@ -2537,9 +2609,13 @@ _DIST_CHECKS_STUB = textwrap.dedent(f"""\
         character(len=*), intent(in) :: case_id
         character(len=*), intent(in) :: check_id
         character(len=4), intent(out) :: status
+        real(dp) :: part
         status = 'fail'
+        ! `u` is held whole by every rank of a line along dimension 2; count it once.
+        part = 0.0_dp
+        if (c2 == 0) part = sum(u(2:nloc + 1))
         if (len_trim(case_id) > 0 .and. check_id == 'sum_u' .and. &
-            {DIST_HARNESS}__reduce_sum(sum(u(2:nloc + 1))) == 55.0_dp) status = 'pass'
+            {DIST_HARNESS}__reduce_sum(part) == 55.0_dp) status = 'pass'
       end subroutine checks_compute
       subroutine metric_compute(case_id, name, val, is_na, reason_na, found)
         character(len=*), intent(in) :: case_id
@@ -2559,9 +2635,10 @@ _DIST_CHECKS_STUB = textwrap.dedent(f"""\
 
 class DistributedRunnerSmokeTest(unittest.TestCase):
     """The distributed runner compiled with the wrapper and run under the launcher at one and
-    at four processes: the gathered arrays are the global ones either way, the replicated and
-    scalar values are rank 0's, only one set of outputs is written, and the check that reduces
-    over the ranks passes."""
+    at four processes, on each process grid the host may impose on four (issue #512): the
+    gathered arrays are the global ones every time, the replicated and scalar values are rank
+    0's, only one set of outputs is written, and the check that reduces over the ranks
+    passes."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -2583,50 +2660,66 @@ class DistributedRunnerSmokeTest(unittest.TestCase):
              f"{DIST_SID}_runner.o", "-o", "runner"], cwd=d, capture_output=True, text=True)
         self.assertEqual(link.returncode, 0, link.stderr)
 
-    def _run(self, d: Path, argv_prefix: list[str]) -> None:
+    def _run(self, d: Path, argv_prefix: list[str], grid: str | None) -> None:
+        env = {k: v for k, v in os.environ.items() if k != "ATMOFAB_PROCESS_GRID"}
+        if grid is not None:
+            env["ATMOFAB_PROCESS_GRID"] = grid
         run = subprocess.run([*argv_prefix, "./runner", "--cases", "spec.ir.yaml", "c0"],
-                             cwd=d, capture_output=True, text=True, timeout=120)
+                             cwd=d, capture_output=True, text=True, timeout=120, env=env)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         for name in ("initial/c0.json", "c0.json"):
             snap = json.loads((d / "raw" / "state_snapshots" / name).read_text())
             self.assertEqual(snap["u"], [float(i) for i in range(1, 11)], name)
             self.assertEqual(snap["w"], [[float(100 * j + i) for i in range(1, 11)]
                                          for j in (1, 2, 3)], name)
+            self.assertEqual(snap["q"], [[float(i + 100 * j) for j in range(1, 9)]
+                                         for i in range(1, 7)], name)
             self.assertEqual(snap["c"], [7.0, 8.0], name)
             self.assertEqual(snap["s"], 5.0, name)
         # The stub's writer is not a JSON writer; the per-case status line is what it states.
         self.assertIn('"sum_u": "pass"', (d / "diagnostics.json").read_text())
 
     def test_one_process_and_four_ranks_capture_the_same_global_state(self) -> None:
-        # Four ranks over 10 cells (blocks of 3, 3, 2, 2) — no launcher option beyond
-        # `-n`, which every implementation shares; a host with fewer CPUs runs one process only.
-        prefixes: list[list[str]] = [[]]
+        # Four ranks over 10 cells (blocks of 3, 3, 2, 2) along one dimension, or 5 + 5 along
+        # each of two — no launcher option beyond `-n`, which every implementation shares; a
+        # host with fewer CPUs runs one process only.
+        shapes: list[tuple[list[str], str | None]] = [([], None)]
         if len(os.sched_getaffinity(0)) >= 4:
-            prefixes.append([f"{_MPI_PAIR}/mpirun", "-n", "4"])
-        # The same binding with `u` declared from 0 (`u(0:nloc+1)`): `sb_u_lo` / `sb_u_hi` are
+            mpirun = [f"{_MPI_PAIR}/mpirun", "-n", "4"]
+            shapes += [(mpirun, None), (mpirun, "2,2"), (mpirun, "1,4")]
+        # The same binding with `u` declared from 0 (`u(0:nloc+1)`): `sb_u_lo1` / `sb_u_hi1` are
         # indices in the array's own bounds, which the runner shifts to the gather's positions.
         zero_based = _DIST_CHECKS_STUB
-        # `w` is declared from 0 along its PARTITIONED axis (2), so the shift must read the lower
-        # bound along the binding's axis, not along axis 1 (round-2 mutant M1).
-        for old, new in (("allocate(u(nloc + 2), w(3, nloc), c(2))",
-                          "allocate(u(0:nloc + 1), w(3, 0:nloc - 1), c(2))"),
+        # `w` is declared from 0 along its PARTITIONED axis (2), and `q` from 0 along its axis 2
+        # only, so each shift must read the lower bound along its own slot's axis, not along
+        # axis 1 (round-2 mutant M1 of issue #316).
+        for old, new in ((("allocate(u(nloc + 2), w(3, whi - wlo + 1), "
+                           "q(qh1 - ql1 + 1, qh2 - ql2 + 1), c(2))"),
+                          ("allocate(u(0:nloc + 1), w(3, 0:whi - wlo), "
+                           "q(qh1 - ql1 + 1, 0:qh2 - ql2), c(2))")),
                          ("u(i + 1) = real(glo + i - 1, dp)", "u(i) = real(glo + i - 1, dp)"),
-                         ("w(j, i) = real(100 * j + glo + i - 1, dp)",
-                          "w(j, i - 1) = real(100 * j + glo + i - 1, dp)"),
-                         ("sb_u_lo = 2", "sb_u_lo = 1"), ("sb_u_hi = nloc + 1", "sb_u_hi = nloc"),
-                         ("sb_w_lo = 1", "sb_w_lo = 0"), ("sb_w_hi = nloc", "sb_w_hi = nloc - 1"),
+                         ("w(j, i) = real(100 * j + wlo + i - 1, dp)",
+                          "w(j, i - 1) = real(100 * j + wlo + i - 1, dp)"),
+                         ("q(i, j) = real(ql1 + i - 1 + 100 * (ql2 + j - 1), dp)",
+                          "q(i, j - 1) = real(ql1 + i - 1 + 100 * (ql2 + j - 1), dp)"),
+                         ("sb_u_lo1 = 2", "sb_u_lo1 = 1"),
+                         ("sb_u_hi1 = nloc + 1", "sb_u_hi1 = nloc"),
+                         ("sb_w_lo2 = 1", "sb_w_lo2 = 0"),
+                         ("sb_w_hi2 = whi - wlo + 1", "sb_w_hi2 = whi - wlo"),
+                         ("sb_q_lo2 = 1", "sb_q_lo2 = 0"),
+                         ("sb_q_hi2 = qh2 - ql2 + 1", "sb_q_hi2 = qh2 - ql2"),
                          ("sum(u(2:nloc + 1))", "sum(u(1:nloc))")):
             self.assertEqual(zero_based.count(old), 1, old)
             zero_based = zero_based.replace(old, new)
         for checks_name, checks in (("one-based", _DIST_CHECKS_STUB),
                                     ("zero-based", zero_based)):
-            for argv_prefix in prefixes:
-                with self.subTest(checks=checks_name, argv_prefix=argv_prefix), \
+            for argv_prefix, grid in shapes:
+                with self.subTest(checks=checks_name, argv_prefix=argv_prefix, grid=grid), \
                         tempfile.TemporaryDirectory() as td:
                     d = Path(td)
                     self._build(d, checks)
                     (d / "raw" / "state_snapshots" / "initial").mkdir(parents=True)
-                    self._run(d, argv_prefix)
+                    self._run(d, argv_prefix, grid)
 
 
 class DistributedRenderTest(unittest.TestCase):
@@ -2644,8 +2737,11 @@ class DistributedRenderTest(unittest.TestCase):
                        f"cells_total = {DIST_HARNESS}__reduce_sum_int(cells_total)",
                        f"{DIST_HARNESS}__comm_size(), {_TARGET_PROFILE.threads_per_rank}, 0)",
                        f"call {DIST_HARNESS}__gather_r1( &", f"call {DIST_HARNESS}__gather_r2( &",
-                       "    sb_u_axis, &", "    sb_w_glo, &", "    sb_c_hi, &",
-                       "    call require_axis(sb_w_axis, 2, &", "  subroutine require_axis("):
+                       "        sb_u_axis1, &", "        sb_w_glo2, &", "        sb_q_glo1, &",
+                       "    call require_axis(sb_w_axis2, 2, &",
+                       "    call require_axis(sb_q_axis1, 2, &",
+                       "    if (sb_c_axis1 == 0 .and. &", "      sb_c_axis2 == 0) then",
+                       "  subroutine require_axis("):
             with self.subTest(needle=needle):
                 self.assertIn(needle, dist)
                 self.assertNotIn(needle.replace(DIST_HARNESS, "harness_fortran_cpu"), single)
@@ -2665,8 +2761,18 @@ class DistributedRenderTest(unittest.TestCase):
         # Walk the block `if`s: each pushes whether it is the rank-0 guard.
         stack: list[bool] = []
         guarded, collective = [], []
+        # One statement per entry: a condition the renderer continues over two lines (the
+        # replicated test of a long binding name) is one `if`.
+        statements: list[str] = []
+        pending = ""
         for line in self._render().splitlines():
-            code = line.strip()
+            code = pending + line.strip()
+            if code.endswith("&") and not code.startswith("!"):
+                pending = code[:-1].rstrip() + " "
+                continue
+            pending = ""
+            statements.append(code)
+        for code in statements:
             if code.startswith("if (") and code.endswith(" then"):
                 stack.append(code == "if (rank == 0) then")
                 continue
@@ -2690,26 +2796,26 @@ class DistributedRenderTest(unittest.TestCase):
     def test_a_distributed_binding_name_that_cannot_be_published_is_refused(self) -> None:
         ir = _distributed_ir()
         schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
-        long_name = "v" * 56   # `sb_<v>` fits, `sb_<v>_axis` does not
+        long_name = "v" * 55   # `sb_<v>` fits, `sb_<v>_axis1` does not
         schema["variables"].append({"name": long_name, "shape_expr": "[10]"})
         ir["io_contract"]["test_evidence_requirements"][0]["required_raw_variables"].append(
             long_name)
         with self.assertRaises(RenderError) as cm:
             self._render(ir=ir)
-        self.assertIn(f"its distributed binding 'sb_{long_name}_axis' exceeds the 63-char "
+        self.assertIn(f"its distributed binding 'sb_{long_name}_axis1' exceeds the 63-char "
                       "identifier limit", str(cm.exception))
         self.assertFalse(cm.exception.identity)
         # The longest name whose metadata fits renders (each argument has its own line).
-        schema["variables"][-1]["name"] = "v" * 55
+        schema["variables"][-1]["name"] = "v" * 54
         ir["io_contract"]["test_evidence_requirements"][0]["required_raw_variables"][-1] = \
-            "v" * 55
-        self.assertIn("sb_" + "v" * 55 + "_axis", self._render(ir=ir))
+            "v" * 54
+        self.assertIn("sb_" + "v" * 54 + "_axis1", self._render(ir=ir))
         # A bound name that IS another's metadata cannot be published beside it.
         ir = _distributed_ir()
         schema = ir["io_contract"]["raw_requirements"]["required_evidence"][0]["schema"]
-        schema["variables"].append({"name": "sb_u_lo", "shape_expr": "scalar"})
+        schema["variables"].append({"name": "sb_u_lo2", "shape_expr": "scalar"})
         ir["io_contract"]["test_evidence_requirements"][0]["required_raw_variables"].append(
-            "sb_u_lo")
+            "sb_u_lo2")
         with self.assertRaises(RenderError) as cm:
             self._render(ir=ir)
         self.assertIn("is one identifier with another bound name", str(cm.exception))
@@ -2804,7 +2910,9 @@ class HarnessPinTableTest(unittest.TestCase):
             f"{DIST_HARNESS}__{op}" for op in fortran_runner.PHYSICS_CALLABLE_DISTRIBUTED_OPS))
         self.assertEqual(fortran_runner.physics_harness_uses("harness_fortran_cpu"), {})
         self.assertEqual(fortran_runner.distributed_state_names(DIST_HARNESS, ["u", "w"]),
-                         ["sb_u_axis", "sb_u_lo", "sb_u_hi", "sb_u_glo",
-                          "sb_w_axis", "sb_w_lo", "sb_w_hi", "sb_w_glo"])
+                         ["sb_u_axis1", "sb_u_lo1", "sb_u_hi1", "sb_u_glo1",
+                          "sb_u_axis2", "sb_u_lo2", "sb_u_hi2", "sb_u_glo2",
+                          "sb_w_axis1", "sb_w_lo1", "sb_w_hi1", "sb_w_glo1",
+                          "sb_w_axis2", "sb_w_lo2", "sb_w_hi2", "sb_w_glo2"])
         self.assertEqual(fortran_runner.distributed_state_names("harness_fortran_cpu", ["u"]),
                          [])

@@ -112,20 +112,23 @@ published unless a `private ::` names it. A rejected guard / xfail case still le
 
 ### 1-c. The distributed binding in Fortran
 
-On a target whose harness provides `distributed_state@1` (issue #316) every rank holds its own
-copy of the module's storage, and the runner gathers each partitioned array onto rank 0 before
-it serializes it. Beside every bound ARRAY `<name>` the module publishes (`public ::`, imported
-under the same names) four default-integer variables, which `case_setup` sets on every rank for
-every case, a rejected one included: `sb_<name>_axis`, the axis `<name>` is partitioned along
-(`0` = replicated: every rank holds the whole array, and rank 0's copy is written);
-`sb_<name>_lo` / `sb_<name>_hi`, the indices along it, in the array's own declared bounds, of
-the cells this rank contributes to the GLOBAL array — the array as the IR's `shape_expr`
-declares it — and `sb_<name>_glo`, the global index (from `1`, in that shape) of the cell at
-`lo`. A halo cell (a copy of a neighbour's) is never contributed; when the declared shape
-includes the domain's boundary ghost cells, the first rank contributes the leading ones and the
-last rank the trailing ones. `hi < lo` when a rank contributes nothing (the array still
-allocated), and every other axis holds exactly its declared extent. A scalar is replicated. The
-harness's gather stops the run unless the contributed ranges tile the global extent. `case_run` reports the
+On a target whose harness provides `distributed_state@2` (issue #512) every rank holds its
+own copy of the module's storage, the ranks form the process grid the host imposes, and the
+runner gathers each partitioned array onto
+rank 0 before it serializes it. Beside every bound ARRAY `<name>` the module publishes (`public
+::`, imported under the same names) eight default-integer variables, which `case_setup` sets on
+every rank for every case, a rejected one included — four per grid dimension `<d>` (`1`, `2`):
+`sb_<name>_axis<d>`, the axis of `<name>` partitioned along dimension `<d>` (`0` = not
+partitioned along it; `0` in both = replicated, rank 0's copy is written); `sb_<name>_lo<d>` /
+`sb_<name>_hi<d>`, the indices along that axis, in the array's own declared bounds, of the
+cells this rank contributes to the GLOBAL array — the array as the IR's `shape_expr` declares
+it — and `sb_<name>_glo<d>`, the global index (from `1`, in that shape) of the cell at
+`lo<d>`. A halo cell is never contributed; when the declared shape includes the domain's
+boundary ghost cells, the first rank along `<d>` contributes the leading ones and the last the
+trailing ones. `hi<d> < lo<d>` when a rank contributes nothing (the array still allocated);
+along a dimension the array is not partitioned along, only the coordinate `0` contributes its
+copy; an axis not partitioned holds its declared extent. A scalar is replicated. The
+harness's gather stops the run unless the contributed blocks tile the global array. `case_run` reports the
 cells THIS rank updated; `checks_compute` / `metric_compute` run on every rank and rank 0's
 result is written, so a whole-field value is a harness reduction. A physics source `use`s the
 harness only with an `only:` list of its distributed-state operations

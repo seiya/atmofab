@@ -24,6 +24,10 @@ make test                                                           # the qualit
   started that way runs as one process (a singleton), which makes the re-run the serial
   reference the run is compared against (`phase_04_validate.md` §4-2). The comparison records
   both counts (`quality_check.json#comparison.{reference,candidate}.ranks`).
+- The ranks form a process grid that the host, not the program, chooses: the harness reads it
+  from the environment variable `ATMOFAB_PROCESS_GRID` (`p1,p2`) and arranges the ranks as
+  `(ranks, 1)` when it is unset (`harness_fortran_cpu_mpi` §3.3, issue #512). The launch shape
+  sets no grid, so the run is on `(execution.ranks, 1)` and the singleton re-run on `(1, 1)`.
 - The build control file pins its compiler variable to `mpif90`, and the `Generate.gate` syntax
   stage of the compiler the wrapper runs (`WRAPPED_COMPILER`, `gfortran`) runs with `mpif90` at
   `argv[0]`. The compiler's adapter — its flags and its diagnostics — is unchanged. A target
@@ -39,6 +43,7 @@ make test                                                           # the qualit
 | `trial_meta.json#environment.ranks` | the profile's `execution.ranks` |
 | `trial_meta.json#environment.platform.parallel_runtime` | the first line of `mpirun --version`, `null` when it cannot be read; recorded, not interpreted |
 | `perf.json#parallelism.mpi_ranks` | the process count the runner writes; the post-execute gate requires it to equal `execution.ranks`. It detects a launch that started independent one-process runs only when the runner writes the count the harness observes at run time, which the distributed runner a launcher target runs does (issue #316 PR-4) |
+| `perf.json#parallelism.process_grid` | `[p1, p2]`, the grid the harness arranged the ranks in; the post-execute gate requires `[execution.ranks, 1]`, the grid of a run launched with none imposed (issue #512). The harness writes it from the grid it established, so a harness that chose a grid of its own is refused here |
 | `quality_check.json#comparison.reference.ranks` / `.candidate.ranks` | `execution.ranks` / `1`; the post-execute gate requires both |
 | build key `toolchain.compiler_wrapper` / `toolchain.parallel_runtime` / `toolchain.compiler_version` | `mpif90`; the first line of `mpif90 -show`, the runtime installation the binary links against; and the compiler's version asked as `mpif90 --version`, which the wrapper passes to the compiler it is configured with. A change of installation or of that compiler is another build. The syntax stage's recorded `compiler_version` is asked the same way |
 

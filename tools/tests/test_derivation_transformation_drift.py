@@ -913,6 +913,11 @@ PINNED_RENDER: dict[str, str] = {
     # `mcp_servers/build_runtime_server.py`; nothing rendered moved. (Measured by diffing the tuple
     # against origin/main ef28faa1's.) The digest `render-9` shipped with at ef28faa1:
     "render-9@ef28faa1": "7d8a56413fd63d105b977996ce8a9db00a347c7caf687d1e6657a44119e956d9",
+    # render-10 (issue #512): the rendered Fortran runner over the distributed harness imports
+    # eight partition variables per bound array (`sb_<var>_axis<d>` / `_lo<d>` / `_hi<d>` /
+    # `_glo<d>`, one group per process-grid dimension) and calls every gather with both slots;
+    # its pinned harness interface is `harness_fortran_cpu_mpi@0.2.0`'s.
+    "render-10": "2399a310e475b784258038741b694f6487efde2edac2bb1f612a5a6ed31c9701",
     # Re-pinned (issue #469), behaviour-preserving: `make/control_file.py` gains
     # `CONTROL_FILE_BASENAMES`, the names `make` reads without `-f`, which `codegen_bundle`
     # derives its reserved bundle basenames from; nothing it renders moved. (Measured by diffing
