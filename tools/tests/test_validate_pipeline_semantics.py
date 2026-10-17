@@ -14862,6 +14862,8 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
             "observed grid": (mpi, edited(mpi, 1, observed_process_grid=[1, 4]),
                               "process_grid=[1, 4]"),
             "observed bool": (mpi, edited(mpi, 0, observed_mpi_ranks=True), "mpi_ranks=True"),
+            "declared bool": (FORTRAN_CPU, edited(FORTRAN_CPU, 0, ranks=True),
+                              "shapes[certified].ranks is True"),
         }
         for name, (target, shapes, needle) in refused.items():
             with self.subTest(row=name):
