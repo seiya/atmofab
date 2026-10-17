@@ -22,7 +22,7 @@ The constants are those of the Controlled Spec §6, in SI units: `g=9.80616`, `O
 ### 2-3. Flow profile (initial condition)
 The profiles are those of the Controlled Spec §6, written in the along- and cross-channel coordinates $(s, r)$ and the orientation sign $\sigma$; on every case but the axis-exchange cases of 4-3, $(s, r)=(x, y)$ and $\sigma=+1$.
 - `tc2_zonal_uniform`: $u_s=u_0$, $u_r=0$, $h(r)=h_0-\sigma\dfrac{u_0}{g}\left[f_0\,(r-L_r/2)+\dfrac{\beta}{2}\,(r-L_r/2)^2\right]$, with `L_x=L_y=6.0e6`.
-- `tc3_compact_jet`: $r_b=L_r/8$, $r_e=7L_r/8$, $x_e=0.3$, $\zeta=x_e\,(r-r_b)/(r_e-r_b)$, $b(\zeta)=0$ ($\zeta\le0$), $e^{-1/\zeta}$ ($\zeta>0$), $u_s(r)=u_0\,b(\zeta)\,b(x_e-\zeta)\,e^{4/x_e}$, $u_r=0$, $h(r)=h_0-\dfrac{\sigma}{g}\int_0^r f\,u_s\,dr'$ by the composite Simpson quadrature of the Controlled Spec §6, with `L_x=L_y=8.0e6`. The branch-free form $b(\zeta)=\exp(-1/\max(\zeta,10^{-300}))$ of the Controlled Spec §6 is equal to $b(\zeta)$ at every cell centre of the sweep.
+- `tc3_compact_jet`: $r_b=L_r/8$, $r_e=7L_r/8$, $x_e=0.3$, $\zeta=x_e\,(r-r_b)/(r_e-r_b)$, $b(\zeta)=0$ ($\zeta\le0$), $e^{-1/\zeta}$ ($\zeta>0$), $u_s(r)=u_0\,b(\zeta)\,b(x_e-\zeta)\,e^{4/x_e}$, $u_r=0$, $h(r)=h_0-\dfrac{\sigma}{g}\int_0^r f\,u_s\,dr'$ by the composite Simpson quadrature of the Controlled Spec §6, with `L_x=L_y=8.0e6` (the rectangular case `chan_tc3_ref_n064_dts100_rect` of 4-3 carries `L_x=6.0e6`, `ny=48`, and its transposed case `L_x=8.0e6`, `L_y=6.0e6`, `nx=48`, `ny=64`). The branch-free form $b(\zeta)=\exp(-1/\max(\zeta,10^{-300}))$ of the Controlled Spec §6 is equal to $b(\zeta)$ at every cell centre of the sweep.
 - `tc2_zonal_perturbed`: $h(s,r)=h_{TC2}(r)+\eta_0\sin\left(2\pi\,(s/L_s-\mathrm{shift\_x\_fraction})\right)$ with $h_{TC2}$ the `tc2_zonal_uniform` depth, $u_s=u_0$, $u_r=0$, `eta0=30.0` (`m`), with `L_x=L_y=6.0e6`.
 - `tc4_translating_low`: the prescribed flow of the Controlled Spec §6 at $t=0$, $h=\tilde h$, $u=\tilde u$, $v=\tilde v$, with `L_x=L_y=8.0e6` (the rectangular case of 2-10 carries `L_x=6.0e6`, `ny=48`): $\tilde h=\bar h+f\psi/g$, with the background $\bar u=U_j\sin^2(\pi r/L_r)$ along the channel and the closed-form $\bar h$ referred to the channel centre ($\bar h(L_r/2)=h_0$), and $\psi$, $\psi_x$, $\psi_y$ of that section. The background depth ranges from $10882\ \mathrm{m}$ at the wall $r=0$ to $9199\ \mathrm{m}$ at the wall $r=L_r$; the low's depth anomaly is $-306\ \mathrm{m}$ at its centre and its streamfunction at the walls is at most $1.1\times10^{-7}\,|\psi_0|$ in magnitude ($L_r/2=4R_{low}$).
 
@@ -105,13 +105,14 @@ Each override case references a `base_case_id` and overrides only the inputs lis
 - The `base_case_id` references `chan_tc2_xpert_n064_dts100`, and overrides only `shift_x_fraction` to `0.25` (a shift of 16 cells at `nx=64`).
 - Add the `case_id` `chan_tc4_ref_n064_dts100_rect`.
 - The `base_case_id` references `chan_tc4_ref_n064_dts100`, and overrides only `ny` to `48` and `L_x` to `6.0e6` (the rectangular case of 2-10).
+- Add the `case_id` `chan_tc3_ref_n064_dts100_rect`.
+- The `base_case_id` references `chan_tc3_ref_n064_dts100`, and overrides only `ny` to `48` and `L_x` to `6.0e6` (a rectangular `tc3_compact_jet` channel, the base of the axis-exchange case `chan_tc3_ref_n064_dts100_rectaxis` of 2-11; its cross-channel extent `48` is a multiple of 8, so $r_b$ and $r_e$ lie on cell edges).
 
 The symmetry-pair cases of 2-11. The `base_case_id` of each is the base whose final state it reads (2-11, 5-4), and the overrides are relative to that base; `-7.292e-5` is `-Omega` and `-0.7853981633974483` is the double-precision value of `-pi/4`.
 - Axis exchange (`channel_axis=y`, `Omega=-7.292e-5`, the extents and lengths exchanged):
   - `chan_tc2_ref_n064_dts100_axis`: the `base_case_id` references `chan_tc2_ref_n064_dts100`; overrides only `channel_axis` to `y` and `Omega` to `-7.292e-5` (`nx=ny`, `L_x=L_y`, so the exchange of the extents and lengths leaves them unchanged).
   - `chan_tc3_ref_n064_dts100_axis`: the `base_case_id` references `chan_tc3_ref_n064_dts100`; overrides only `channel_axis` to `y` and `Omega` to `-7.292e-5`.
   - `chan_tc2_xpert_n064_dts100_sx025_axis`: the `base_case_id` references `chan_tc2_xpert_n064_dts100_sx025`; overrides only `channel_axis` to `y` and `Omega` to `-7.292e-5`.
-  - `chan_tc3_ref_n064_dts100_rect`: the `base_case_id` references `chan_tc3_ref_n064_dts100`; overrides only `ny` to `48` and `L_x` to `6.0e6` (the base of the next case, a rectangular `tc3_compact_jet` channel whose cross-channel extent `48` is a multiple of 8, so $r_b$ and $r_e$ lie on cell edges).
   - `chan_tc3_ref_n064_dts100_rectaxis`: the `base_case_id` references `chan_tc3_ref_n064_dts100_rect`; overrides only `nx` to `48`, `ny` to `64`, `L_x` to `8.0e6`, `L_y` to `6.0e6`, `channel_axis` to `y` and `Omega` to `-7.292e-5` (the transpose of `chan_tc3_ref_n064_dts100_rect`).
   - `chan_tc4_ref_n064_dts100_rectaxis`: the `base_case_id` references `chan_tc4_ref_n064_dts100_rect`; overrides only `nx` to `48`, `ny` to `64`, `L_x` to `8.0e6`, `L_y` to `6.0e6`, `channel_axis` to `y` and `Omega` to `-7.292e-5` (the transpose of `_rect`).
 - Mirror along the channel (`Omega=-7.292e-5`, `zonal_sign=-1`):
@@ -293,6 +294,9 @@ The thresholds are calibrated against an independent reference implementation of
 | `chan_tc3_ref_n128_dts100` | `h` | $[5.6e{-5},\ 1.7e{-4}]$ (`1.122e-4`) | $[9.4e{-5},\ 2.8e{-4}]$ (`1.889e-4`) | $[2.2e{-4},\ 6.9e{-4}]$ (`4.559e-4`) |
 | | `hu` | $[6.1e{-3},\ 1.9e{-2}]$ (`1.233e-2`) | $[5.4e{-3},\ 1.7e{-2}]$ (`1.089e-2`) | $[7.2e{-3},\ 2.2e{-2}]$ (`1.441e-2`) |
 | | `hv` | $[1.3e{-4},\ 4.2e{-4}]$ (`2.773e-4`) | $[8.5e{-5},\ 2.6e{-4}]$ (`1.709e-4`) | $[6.5e{-5},\ 2.0e{-4}]$ (`1.306e-4`) |
+| `chan_tc3_ref_n064_dts100_rect` | `h` | $[6.4e{-4},\ 2.0e{-3}]$ (`1.300e-3`) | $[1.1e{-3},\ 3.5e{-3}]$ (`2.309e-3`) | $[2.8e{-3},\ 8.7e{-3}]$ (`5.789e-3`) |
+| | `hu` | $[6.0e{-2},\ 1.9e{-1}]$ (`1.205e-1`) | $[5.5e{-2},\ 1.7e{-1}]$ (`1.104e-1`) | $[6.0e{-2},\ 1.9e{-1}]$ (`1.212e-1`) |
+| | `hv` | $[9.3e{-4},\ 2.9e{-3}]$ (`1.872e-3`) | $[5.2e{-4},\ 1.6e{-3}]$ (`1.040e-3`) | $[3.0e{-4},\ 9.3e{-4}]$ (`6.140e-4`) |
 | `chan_tc4_ref_n032_dts100` | `h` | $[5.1e{-4},\ 1.6e{-3}]$ (`1.028e-3`) | $[1.1e{-3},\ 3.5e{-3}]$ (`2.294e-3`) | $[8.8e{-3},\ 2.7e{-2}]$ (`1.767e-2`) |
 | | `hu` | $[2.9e{-2},\ 8.9e{-2}]$ (`5.869e-2`) | $[5.1e{-2},\ 1.6e{-1}]$ (`1.033e-1`) | $[1.3e{-1},\ 4.1e{-1}]$ (`2.685e-1`) |
 | | `hv` | $[2.9e{-1},\ 9.0e{-1}]$ (`5.938e-1`) | $[2.7e{-1},\ 8.3e{-1}]$ (`5.521e-1`) | $[3.2e{-1},\ 9.7e{-1}]$ (`6.407e-1`) |
@@ -306,7 +310,7 @@ The thresholds are calibrated against an independent reference implementation of
 | | `hu` | $[1.7e{-2},\ 5.3e{-2}]$ (`3.502e-2`) | $[2.7e{-2},\ 8.2e{-2}]$ (`5.424e-2`) | $[6.1e{-2},\ 1.9e{-1}]$ (`1.239e-1`) |
 | | `hv` | $[1.0e{-1},\ 3.2e{-1}]$ (`2.105e-1`) | $[9.2e{-2},\ 2.8e{-1}]$ (`1.853e-1`) | $[1.1e{-1},\ 3.5e{-1}]$ (`2.290e-1`) |
 
-  The five-day cases and the halved-`dt` case are judged in the `l2` norm of `h`: $[7.2e{-4},\ 2.1e{-3}]$ for `chan_tc2_ref_n128_dts100_tend5d` (reference `1.430e-3`), $[1.2e{-4},\ 3.9e{-4}]$ for `chan_tc4_ref_n128_dts100_tend5d` (reference `2.550e-4`), and the `nx=32` band $[1.1e{-3},\ 3.5e{-3}]$ for `chan_tc4_ref_n032_dts100_half` (reference `2.294e-3`, equal to its base's to five digits). The rectangular `tc3_compact_jet` base `chan_tc3_ref_n064_dts100_rect` is judged in the `l2` norm of `h` by the band $[1.1e{-3},\ 3.5e{-3}]$ (reference `2.309e-3`). The first-order `p0` reconstruction gives `5.2e-2` in the `l2` norm of `h` at `chan_tc2_ref` `nx=32` and fails the upper bound.
+  The five-day cases and the halved-`dt` case are judged in the `l2` norm of `h`: $[7.2e{-4},\ 2.1e{-3}]$ for `chan_tc2_ref_n128_dts100_tend5d` (reference `1.430e-3`), $[1.2e{-4},\ 3.9e{-4}]$ for `chan_tc4_ref_n128_dts100_tend5d` (reference `2.550e-4`), and the `nx=32` band $[1.1e{-3},\ 3.5e{-3}]$ for `chan_tc4_ref_n032_dts100_half` (reference `2.294e-3`, equal to its base's to five digits). The first-order `p0` reconstruction gives `5.2e-2` in the `l2` norm of `h` at `chan_tc2_ref` `nx=32` and fails the upper bound.
 - `convergence_order` requires the following lower bounds (reference orders in parentheses; the reasons for the orders below `1.5` are stated in 2-12):
 
 | family, pair | variable | `l1` | `l2` | `linf` |
@@ -350,7 +354,7 @@ The thresholds are calibrated against an independent reference implementation of
 | | `hu` | $\ge 1.8$ (`2.15`) | $\ge 1.5$ (`1.83`) | $\ge 1.2$ (`1.51`) |
 | | `hv` | $\ge 1.7$ (`2.07`) | $\ge 1.4$ (`1.71`) | $\ge 0.8$ (`1.17`) |
 
-- `v_cross_max_abs` (`m/s`) for `chan_tc2_ref` is $\le 4.0$ for `nx=32`, $\le 2.6$ for `nx=64`, and $\le 1.5$ for `nx=128`; for `chan_tc3_ref` it is $\le 0.090$, $\le 0.025$, and $\le 0.0080$; for the five-day case `chan_tc2_ref_n128_dts100_tend5d` it is $\le 1.2$
+- `v_cross_max_abs` (`m/s`) for `chan_tc2_ref` is $\le 4.0$ for `nx=32`, $\le 2.6$ for `nx=64`, and $\le 1.5$ for `nx=128`; for `chan_tc3_ref` it is $\le 0.090$, $\le 0.025$, and $\le 0.0080$, and $\le 0.035$ for `chan_tc3_ref_n064_dts100_rect`; for the five-day case `chan_tc2_ref_n128_dts100_tend5d` it is $\le 1.2$
 - `time_pair_h_l2_rel` is judged as a two-sided band $[2.482e{-8},\ 2.488e{-8}]$ on `chan_tc4_ref_n032_dts100_half` (reference `2.4847e-8`; 0.999 and 1.001 times it, rounded outward at four digits — far narrower than the other bands, because the value moves only by round-off under a conforming implementation, 2-8), as two distinct judged quantities, each with its own host-evaluated corroborant.
 - `symmetry_h_l2_rel` $\le 2.0e{-11}$ (the shift is a whole number of cells and every operation of the scheme is translation-covariant, so the residual is round-off)
 - Every symmetry-pair residual `errors.axis_exchange.*`, `errors.mirror_x.*` and `errors.mirror_y.*` is $\le 2.0e{-11}$ for each of `h`, `hu` and `hv` (2-11; the reference implementation reads at most `5.2e-15`)
@@ -420,15 +424,16 @@ In every test, a judgment this section does not name as applied is not applied, 
   - `chan_tc3_ref_n032_dts100`
   - `chan_tc3_ref_n064_dts100`
   - `chan_tc3_ref_n128_dts100`
+  - `chan_tc3_ref_n064_dts100_rect`
 - `expected_outcome`: `pass`
 - judgment conditions:
   - The `CFL` judgment is applied. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$).
   - The depth-positivity judgment is applied. The evaluation expression is `extrema.h.min`, and the threshold is $\ge 2.0e3$.
   - The mass-conservation judgment is applied. The evaluation expression is `metrics.mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
-  - The theoretical-comparison judgment is applied. Each of the nine `errors.steady_<v>.<k>_rel_tend` of each case applies its band of the 5-5 table (rows `chan_tc3_ref_n032_dts100`, `_n064_dts100`, `_n128_dts100`) as two judged quantities, and each of the nine `convergence.n032_to_n064.*_order` fields (carried by `chan_tc3_ref_n064_dts100`) and the nine `convergence.n064_to_n128.*_order` fields (carried by `chan_tc3_ref_n128_dts100`) applies its lower bound of the 5-5 order table (rows `chan_tc3_ref`).
-  - The wall-normal-velocity judgment is applied. The evaluation expression is `extrema.v_cross.max_abs`, and the per-case threshold is $\le 0.090$, $\le 0.025$, $\le 0.0080$.
+  - The theoretical-comparison judgment is applied. Each of the nine `errors.steady_<v>.<k>_rel_tend` of each case applies its band of the 5-5 table (rows `chan_tc3_ref_n032_dts100`, `_n064_dts100`, `_n128_dts100`, `_n064_dts100_rect`) as two judged quantities, and each of the nine `convergence.n032_to_n064.*_order` fields (carried by `chan_tc3_ref_n064_dts100`) and the nine `convergence.n064_to_n128.*_order` fields (carried by `chan_tc3_ref_n128_dts100`) applies its lower bound of the 5-5 order table (rows `chan_tc3_ref`).
+  - The wall-normal-velocity judgment is applied. The evaluation expression is `extrema.v_cross.max_abs`, and the per-case threshold is $\le 0.090$, $\le 0.025$, $\le 0.0080$, and $\le 0.035$ for `chan_tc3_ref_n064_dts100_rect` (reference `2.33e-2`).
   - The initial-state judgment is not applied. The non-application basis is "because it belongs to 6-2".
-  - The translation-equivariance, along-channel-structure, restricted-reference, time-refinement and symmetry-pair judgments are not applied. The non-application basis is "because the cases are not members of a pair or of the perturbed family; the pairs whose base is `chan_tc3_ref_n064_dts100` are judged in 6-14 to 6-16".
+  - The translation-equivariance, along-channel-structure, restricted-reference, time-refinement and symmetry-pair judgments are not applied. The non-application basis is "because the cases are not members of a pair or of the perturbed family; the pairs whose base is `chan_tc3_ref_n064_dts100` are judged in 6-14 to 6-16, and the pair whose base is `chan_tc3_ref_n064_dts100_rect` in 6-14; `chan_tc3_ref_n064_dts100_rect` is not a refinement level and carries no `convergence` field".
   - The manufactured-solution judgment is not applied. The non-application basis is "because `errors.mms_*` are `N/A` for a profile other than `tc4_translating_low` (5-3)".
   - The cross-target judgment is applied. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
@@ -609,13 +614,12 @@ In every test, a judgment this section does not name as applied is not applied, 
 - `expected_outcome`: `pass`
 - judgment conditions:
   - The symmetry-pair judgment is applied to each transformed case. The evaluation expressions are `errors.axis_exchange.h_l2_rel`, `errors.axis_exchange.hu_l2_rel` and `errors.axis_exchange.hv_l2_rel`, each with the threshold $\le 2.0e{-11}$.
-  - The initial-state judgment is applied to each transformed case, against the closed form of 2-3 in the `y` orientation. The evaluation expressions are `errors.initial_u.linf_rel` and `errors.initial_v.linf_rel`, and `errors.initial_h.linf_rel` for the three cases whose profile has a closed-form depth, or `errors.initial_h.below_jet_rel` and `errors.initial_h.above_jet_rel` for `chan_tc3_ref_n064_dts100_axis` and `chan_tc3_ref_n064_dts100_rectaxis`, each with the threshold $\le 1.0e{-9}$. On every transformed case whose profile is unforced, `errors.initial_vel_cross.linf` is judged in addition, with the threshold $\le 1.0e{-12}$ (`m/s`). The base `chan_tc3_ref_n064_dts100_rect`, which no other test judges, is judged by every judgment of this test that applies to a transformed case except the symmetry-pair judgment.
+  - The initial-state judgment is applied to each transformed case, against the closed form of 2-3 in the `y` orientation. The evaluation expressions are `errors.initial_u.linf_rel` and `errors.initial_v.linf_rel`, and `errors.initial_h.linf_rel` for the three cases whose profile has a closed-form depth, or `errors.initial_h.below_jet_rel` and `errors.initial_h.above_jet_rel` for `chan_tc3_ref_n064_dts100_axis` and `chan_tc3_ref_n064_dts100_rectaxis`, each with the threshold $\le 1.0e{-9}$. On every transformed case whose profile is unforced, `errors.initial_vel_cross.linf` is judged in addition, with the threshold $\le 1.0e{-12}$ (`m/s`).
   - The `CFL` judgment is applied to each transformed case. The evaluation expression is `cfl.max`, and the threshold is $\le 1.0$; `run.n_step` is judged equal to the §3 $\mathrm{n\_step}$ of the case ($|\mathrm{run.n\_step}-\mathrm{n\_step}| \le 0.5$; `883`, `567`, `886`, `606`, `1152`, the base's).
   - The depth-positivity judgment is applied to each transformed case. The evaluation expression is `extrema.h.min`, and the threshold is that of its profile in 5-5 ($\ge 1.0e3$, $\ge 2.0e3$, $\ge 1.0e3$, $\ge 2.0e3$, $\ge 9.0e3$).
   - The mass-conservation judgment is applied to each transformed case. The evaluation expression is `metrics.mass_drift_rel`, and the threshold is $\le 1.0e{-10}$.
-  - The theoretical-comparison judgment is applied to `chan_tc3_ref_n064_dts100_rect`. The evaluation expression is `errors.steady_h.l2_rel_tend`, and the band is $[1.1e{-3},\ 3.5e{-3}]$ as two judged quantities (reference `2.309e-3`, 5-5). It is not applied to the transformed cases. The non-application basis is "because each transformed case equals its base, whose bands are judged in 6-3, 6-4, 6-6, 6-12 and this test, to the round-off the pair judgment bounds".
-  - The manufactured-solution, restricted-reference, wall-normal-velocity, translation-equivariance, along-channel-structure and time-refinement judgments are not applied. The non-application basis is "because each transformed case equals its base to the round-off the pair judgment bounds, and the bases' own judgments of these kinds belong to 6-3 to 6-13".
-  - The cross-target judgment is applied to each transformed case and to `chan_tc3_ref_n064_dts100_rect`. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
+  - The theoretical-comparison, manufactured-solution, restricted-reference, wall-normal-velocity, translation-equivariance, along-channel-structure and time-refinement judgments are not applied. The non-application basis is "because each transformed case equals its base, whose bands are judged in 6-3, 6-4, 6-6 and 6-12, to the round-off the pair judgment bounds".
+  - The cross-target judgment is applied to each transformed case. The evaluation expression is `cross_target_state_agreement` over `h`, `hu`, and `hv`, and the threshold is $\le 1.0e{-10}$ for each.
 
 ### 6-15. `l3_along_channel_mirror_pairs`
 - `level`: `L3`
