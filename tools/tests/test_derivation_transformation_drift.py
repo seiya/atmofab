@@ -920,8 +920,9 @@ PINNED_RENDER: dict[str, str] = {
     # (unshipped) by round 1 of the same branch: `tools/host_execution.py` hands a profile's
     # process grid to the launch environment, which renders nothing, and the runner's shift
     # lines are split onto a block `if`. (Measured by diffing `render_tuple()` against
-    # origin/main b60c642c's: those two rows.)
-    "render-10": "ddbaaab039d9f09b7ee87e0ee203d25fc17eee37285bd16fe0ca0e56a3bf2160",
+    # origin/main b60c642c's: those two rows.) Re-pinned in place again by the closing-run
+    # fix: the runner's ABI comment says a component's model names no harness operation.
+    "render-10": "1a8602441c121673af4819425483d766510e6f778121e9439f2ca5aea5b3792d",
     # Re-pinned (issue #469), behaviour-preserving: `make/control_file.py` gains
     # `CONTROL_FILE_BASENAMES`, the names `make` reads without `-f`, which `codegen_bundle`
     # derives its reserved bundle basenames from; nothing it renders moved. (Measured by diffing

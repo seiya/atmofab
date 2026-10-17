@@ -25902,6 +25902,8 @@ class MpiPresenceFloorGateTests(unittest.TestCase):
                 ("  use harness_fortran_cpu_mpi_model, only: harness_fortran_cpu_mpi__comm_size\n",
                  True),
                 ("    n = harness_fortran_cpu_mpi__reduce_max(x)\n", True),
+                # Fortran names are case-insensitive, and the statement reader keeps the case.
+                ("    CALL HARNESS_FORTRAN_CPU_MPI__PARTITION(N, 1, GLO, GHI)\n", True),
                 ("    ! harness_fortran_cpu_mpi__partition is the checks module's\n", False),
                 ("    msg = 'harness_fortran_cpu_mpi__partition'\n", False),
                 ("    x = my_harness_fortran_cpu_mpi__partition\n", False)):

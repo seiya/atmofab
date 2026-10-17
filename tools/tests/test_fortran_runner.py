@@ -2853,6 +2853,9 @@ class DistributedRenderTest(unittest.TestCase):
         self.assertIn("exchanging along one dimension and then the other fills the corner",
                       flat)
         self.assertNotIn("sb_<var>_axis,", flat)
+        # Issue #512 (closing run): the operations a physics source may call are the checks
+        # module's and a problem's model's; a component's model names none.
+        self.assertIn("A component's model names none", flat)
 
     def test_the_abi_comment_states_the_operations_a_physics_source_may_call(self) -> None:
         from tools.backends.language.fortran.runner import PHYSICS_CALLABLE_DISTRIBUTED_OPS

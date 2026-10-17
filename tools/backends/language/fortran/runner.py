@@ -994,9 +994,11 @@ def _render_distributed_abi_comment(a: Any, harness_spec_id: str) -> None:
         "  ! every position of the other axis; exchanging along one dimension and then the other",
         "  ! fills the corner halo cells too. A scalar is replicated. case_run reports the cells",
         "  ! THIS rank updated (the runner sums them), and checks_compute / metric_compute run",
-        "  ! on every rank, rank 0's results being written. A physics source may use the harness",
-        "  ! module for these operations and no other (the direct use of the message-passing",
-        "  ! library is refused):",
+        "  ! on every rank, rank 0's results being written. A checks module, and a problem's",
+        "  ! model, may use the harness module for these operations and no other (the direct",
+        "  ! use of the message-passing library is refused). A component's model names none:",
+        "  ! consumers call its operations on their own rank's block, so the component",
+        "  ! distributes its cases in its checks module around the unmodified operations:",
     ):
         a(line)
     ops, _types, _ifaces, _errs = _parse_stanzas(_harness_pin(harness_spec_id).interface)
