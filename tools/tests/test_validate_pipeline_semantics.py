@@ -14801,6 +14801,19 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
                 self.assertEqual(len(violations), 2, violations)
                 self.assertIn("mpi_ranks is None", violations[0])
                 self.assertIn("process_grid is None", violations[1])
+        # A profile that imposes a grid is held to it (the checked-in `fortran_cpu_mpi` imposes
+        # [2, 2]); the arrangement with none imposed is then the refused one.
+        mpi22 = profile_with(parallel={"backend": "mpi"},
+                             execution={"threads_per_rank": 1, "ranks": 4,
+                                        "process_grid": [2, 2]})
+        self.assertEqual(run(mpi22, {"parallelism": {"mpi_ranks": 4, "process_grid": [2, 2]}},
+                             quality(4, 1)), [])
+        for grid in ([4, 1], [1, 4], [2, 2, 1]):
+            with self.subTest(imposed=grid):
+                violations = run(mpi22, {"parallelism": {"mpi_ranks": 4, "process_grid": grid}},
+                                 quality(4, 1))
+                self.assertEqual(len(violations), 1, violations)
+                self.assertIn("imposes the process grid [2, 2] on its 4 rank(s)", violations[0])
         for q, needle in ((quality(1, 1), "comparison.reference.ranks is 1, expected 4"),
                           (quality(4, 4), "comparison.candidate.ranks is 4, expected 1"),
                           (quality(4, True), "comparison.candidate.ranks is True"),
@@ -22681,7 +22694,9 @@ class DistributedChecksSourceGateTests(unittest.TestCase):
         ok = (f"{use}harness_fortran_cpu_mpi__partition, harness_fortran_cpu_mpi__reduce_sum\n",
               f"{use}part => harness_fortran_cpu_mpi__partition\n",
               "  use :: harness_fortran_cpu_mpi_model, only: harness_fortran_cpu_mpi__comm_rank\n",
-              f"{use}HARNESS_FORTRAN_CPU_MPI__EXCHANGE_HALO_R2\n")
+              f"{use}HARNESS_FORTRAN_CPU_MPI__EXCHANGE_HALO_R2\n",
+              # Issue #512: the grid queries the mpi producer fragment tells a kernel to ask.
+              f"{use}harness_fortran_cpu_mpi__grid_dims, harness_fortran_cpu_mpi__grid_coord\n")
         refused = (
             ("  use harness_fortran_cpu_mpi_model\n", "has no `only:` list"),
             (f"{use}harness_fortran_cpu_mpi__write_snapshot\n", "__write_snapshot`"),

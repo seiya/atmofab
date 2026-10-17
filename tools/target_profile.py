@@ -82,7 +82,7 @@ PROFILE_SHAPE: dict[str, tuple[frozenset[str], frozenset[str]]] = {
     "toolchain": (frozenset({"language", "standard", "build_system"}),
                   frozenset({"compiler", "linker"})),
     "parallel": (frozenset({"backend"}), frozenset()),
-    "execution": (frozenset({"threads_per_rank"}), frozenset({"ranks"})),
+    "execution": (frozenset({"threads_per_rank"}), frozenset({"ranks", "process_grid"})),
     "harness": (frozenset({"infrastructure_id", "version_constraint"}), frozenset()),
 }
 
@@ -128,6 +128,23 @@ class TargetProfile:
         none, which is every profile written before it existed — so their documents, and the
         sha256 taken over them, are unchanged."""
         return int(self.doc["execution"].get("ranks", 1))
+
+    @property
+    def declares_process_grid(self) -> bool:
+        """Whether the profile imposes a process grid on its run (`execution.process_grid`,
+        issue #512); a profile that imposes none leaves its document, and its sha256, as they
+        were."""
+        return "process_grid" in self.doc["execution"]
+
+    @property
+    def process_grid(self) -> tuple[int, int]:
+        """The `(p1, p2)` grid the run's ranks are arranged in: the profile's
+        `execution.process_grid`, or `(ranks, 1)` — the arrangement a harness gives a run on
+        which none is imposed — when it states none."""
+        grid = self.doc["execution"].get("process_grid")
+        if grid is None:
+            return (self.ranks, 1)
+        return (int(grid[0]), int(grid[1]))
 
     @property
     def harness(self) -> dict[str, str]:
@@ -313,6 +330,16 @@ def _shape_violations(doc: Any) -> list[str]:
         ranks = execution["ranks"]
         if isinstance(ranks, bool) or not isinstance(ranks, int) or ranks < 1:
             out.append(f"execution.ranks: must be an integer >= 1, got {ranks!r}")
+    if isinstance(execution, dict) and "process_grid" in execution:
+        grid = execution["process_grid"]
+        ranks = execution.get("ranks", 1)
+        if not (isinstance(grid, list) and len(grid) == 2
+                and all(type(p) is int and p >= 1 for p in grid)):
+            out.append(f"execution.process_grid: must be a list of two integers >= 1, "
+                       f"got {grid!r}")
+        elif type(ranks) is int and grid[0] * grid[1] != ranks:
+            out.append(f"execution.process_grid: {grid!r} arranges {grid[0] * grid[1]} "
+                       f"rank(s), and execution.ranks is {ranks!r}")
     harness = doc.get("harness")
     if isinstance(harness, dict) and "version_constraint" in harness:
         constraint = harness["version_constraint"]
@@ -496,7 +523,8 @@ def hardware_violations(profile: TargetProfile, *, until_phase: str | None = Non
     `execution.ranks` above 1 needs a parallel backend that declares `launcher` (issue #316):
     without one the binary runs as one process whatever the profile says, and the run would be
     recorded as the rank count nothing ran with. Asked of every run, since the count is part of
-    what the target is.
+    what the target is. `execution.process_grid` needs one too (issue #512): it arranges the
+    ranks the launcher starts.
 
     The EXECUTION half is asked of every run except one whose `until_phase` is in
     `NON_EXECUTING_PHASES` — None, the stricter question, is asked it. It
@@ -531,6 +559,11 @@ def hardware_violations(profile: TargetProfile, *, until_phase: str | None = Non
             "parallel", profile.parallel_backend, "launcher"):
         out.append(f"execution.ranks: {profile.ranks} ranks need a launcher, and parallel "
                    f"backend {profile.parallel_backend} declares none")
+    if profile.declares_process_grid and backend_registry.unimplemented_reason(
+            "parallel", profile.parallel_backend) is None and not backend_registry.provides(
+            "parallel", profile.parallel_backend, "launcher"):
+        out.append(f"execution.process_grid: a process grid arranges the ranks a launcher "
+                   f"starts, and parallel backend {profile.parallel_backend} declares none")
     if str(until_phase or "").strip().lower() not in NON_EXECUTING_PHASES:
         for axis, value, capability, where in (
                 ("hardware", hardware_class, "execution", "hardware.class"),

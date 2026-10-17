@@ -27,6 +27,7 @@
   - `threads_per_rank`: the number of threads per rank (1 when single-threaded)
   - `gpu_devices`: the number of GPU devices used (0 for CPU-only)
   - `parallel_degree_total`: the total parallelism. Defined as `mpi_ranks * threads_per_rank * max(gpu_devices,1)`
+  - `process_grid`: `[p1, p2]`, the process grid a harness that arranges its ranks in one used (issue #512). Under a launcher the post-execute gate requires it to equal the target profile's `execution.process_grid`, or `[ranks, 1]` when the profile imposes none
 - `timestamp_utc`: ISO8601 (may be optional but recommended)
 
 ## 3. Recommended fields (if possible)

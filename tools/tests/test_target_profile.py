@@ -151,6 +151,10 @@ class CheckedInProfileTests(unittest.TestCase):
         profile = tp.load_target_profile(REPO_ROOT, "fortran_cpu_mpi")
         self.assertEqual((profile.hardware_class, profile.parallel_backend, profile.ranks,
                           profile.threads_per_rank), ("cpu", "mpi", 4, 1))
+        # Issue #512: its Validate run is on a grid with both dimensions above 1, the only kind
+        # that tells the harness's rank numbering and corner exchange apart.
+        self.assertTrue(profile.declares_process_grid)
+        self.assertEqual(profile.process_grid, (2, 2))
         self.assertEqual(profile.toolchain["language"], "fortran")
         self.assertNotIn("compiler", profile.toolchain)  # a wrapper target pins no compiler
         harness = tp.harness_node_key_for_target(REPO_ROOT, profile)
@@ -320,6 +324,29 @@ class LoaderTests(unittest.TestCase):
                 self.assertIn("execution.ranks: must be an integer >= 1",
                               self._refusal(execution__ranks=bad))
 
+    def test_the_process_grid_is_optional_two_positive_integers_multiplying_to_the_ranks(
+            self) -> None:
+        """Issue #512: `execution.process_grid` defaults to `(ranks, 1)` and declares nothing;
+        when stated it is two integers >= 1 whose product is `execution.ranks`."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            repo.write("t1", execution__ranks=4)
+            profile = tp.load_target_profile(repo.root, "t1")
+            self.assertEqual((profile.declares_process_grid, profile.process_grid),
+                             (False, (4, 1)))
+            repo.write("t1", execution__ranks=4, execution__process_grid=[1, 4])
+            profile = tp.load_target_profile(repo.root, "t1")
+            self.assertEqual((profile.declares_process_grid, profile.process_grid),
+                             (True, (1, 4)))
+        for bad in ([4], [2, 2, 1], [0, 4], [2.0, 2], [True, 4], "2,2", None):
+            with self.subTest(grid=bad):
+                self.assertIn("execution.process_grid: must be a list of two integers >= 1",
+                              self._refusal(execution__ranks=4, execution__process_grid=bad))
+        self.assertIn("execution.process_grid: [3, 1] arranges 3 rank(s), and execution.ranks "
+                      "is 4", self._refusal(execution__ranks=4, execution__process_grid=[3, 1]))
+        self.assertIn("execution.process_grid: [2, 2] arranges 4 rank(s), and execution.ranks "
+                      "is 1", self._refusal(execution__process_grid=[2, 2]))
+
     def test_a_bool_is_not_an_integer(self) -> None:
         """`True == 1` in Python, so an `isinstance(int)` check alone accepts it."""
         self.assertIn("target_profile_version", self._refusal(target_profile_version=True))
@@ -423,6 +450,18 @@ class LaunchGateTests(unittest.TestCase):
                     with self.subTest(backend="mpi", ranks=ranks):
                         self.assertEqual(tp.target_profile_violations(repo.root, self._profile(
                             repo, parallel__backend="mpi", execution__ranks=ranks)), [])
+                self.assertEqual(tp.target_profile_violations(repo.root, self._profile(
+                    repo, parallel__backend="mpi", execution__ranks=4,
+                    execution__process_grid=[2, 2])), [])
+            # Issue #512: a process grid arranges the ranks a launcher starts, so it needs one
+            # too — a one-rank grid included, which the count check alone admits.
+            for backend in ("openmp", "none"):
+                profile = self._profile(repo, parallel__backend=backend,
+                                        execution__process_grid=[1, 1])
+                with self.subTest(backend=backend, grid=True):
+                    self.assertIn(f"execution.process_grid: a process grid arranges the ranks a "
+                                  f"launcher starts, and parallel backend {backend} declares "
+                                  f"none", tp.target_profile_violations(repo.root, profile))
 
     def test_the_backend_and_the_harness_agree_on_processes(self) -> None:
         """Issue #316 (R4-c PR-4): a backend that declares a launcher needs a harness that

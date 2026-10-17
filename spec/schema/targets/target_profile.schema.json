@@ -50,7 +50,8 @@
       "required": ["threads_per_rank"],
       "properties": {
         "threads_per_rank": {"type": "integer", "minimum": 1, "maximum": 1},
-        "ranks": {"type": "integer", "minimum": 1, "description": "The processes a run starts; 1 when absent. Above 1 it needs a parallel backend that declares `launcher` (checked by the launch gate, `target_profile.hardware_violations`, not by this schema)."}
+        "ranks": {"type": "integer", "minimum": 1, "description": "The processes a run starts; 1 when absent. Above 1 it needs a parallel backend that declares `launcher` (checked by the launch gate, `target_profile.hardware_violations`, not by this schema)."},
+        "process_grid": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 1}, "description": "The [p1, p2] process grid a run's ranks are arranged in (issue #512); [ranks, 1] when absent. Its product must equal `ranks` (the loader checks it), and it needs a parallel backend that declares `launcher` (the launch gate)."}
       }
     },
     "harness": {

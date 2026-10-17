@@ -107,7 +107,8 @@ class LaunchShape:
         return {"argv_prefix": list(self.argv_prefix), "env": dict(sorted(self.env.items()))}
 
 
-def _execution_env(parallel_backend: str, threads_per_rank: int) -> dict[str, str]:
+def _execution_env(parallel_backend: str, threads_per_rank: int,
+                   process_grid: tuple[int, int] | None = None) -> dict[str, str]:
     """The environment a binary built for `parallel_backend` is launched with.
 
     A value whose record carries `execution_env` in its PACKAGE is asked through
@@ -116,6 +117,10 @@ def _execution_env(parallel_backend: str, threads_per_rank: int) -> dict[str, st
     such a record asserts (`tools/backends/registry.py`). A value that declares neither is
     refused: running it with whatever the host process carries is the silent answer this seam
     replaced.
+
+    `process_grid` is the grid a profile imposes on its ranks (issue #512); it is handed to the
+    backend only when given, so a backend whose launches take no grid keeps its one-argument
+    contract.
     """
     reason = registry.missing_capability_reason("parallel", parallel_backend, "execution_env")
     if reason is not None:
@@ -124,7 +129,8 @@ def _execution_env(parallel_backend: str, threads_per_rank: int) -> dict[str, st
     if "execution_env" not in record.backend_provides:
         return {}
     module = registry.capability_module("parallel", parallel_backend, "execution_env")
-    env = module.environment(threads_per_rank)
+    env = (module.environment(threads_per_rank) if process_grid is None
+           else module.environment(threads_per_rank, process_grid=process_grid))
     return {str(k): str(v) for k, v in env.items()}
 
 
@@ -211,8 +217,8 @@ def launch_shape(profile: Any, site: Any = None) -> LaunchShape:
     Refuses (`LaunchUnavailable`) a hardware class whose record does not declare `execution`,
     a site whose `executes` does not list the class, a parallel backend whose record does not
     declare `execution_env` (with the registry's own wording for the first and the third), a
-    launcher backend at a site other than `local`, and more ranks than one for a backend with no
-    launcher.
+    launcher backend at a site other than `local`, and more ranks than one — or a process
+    grid — for a backend with no launcher.
     """
     reason = registry.missing_capability_reason(
         "hardware", profile.hardware_class, "execution")
@@ -238,7 +244,12 @@ def launch_shape(profile: Any, site: Any = None) -> LaunchShape:
         raise LaunchUnavailable(
             f"execution.ranks: {profile.ranks} ranks need a launcher, and parallel backend "
             f"{backend} declares none")
-    env = _execution_env(backend, profile.threads_per_rank)
+    if profile.declares_process_grid and not declares_launcher(backend):
+        raise LaunchUnavailable(
+            f"execution.process_grid: a process grid arranges the ranks a launcher starts, and "
+            f"parallel backend {backend} declares none")
+    env = _execution_env(backend, profile.threads_per_rank,
+                         profile.process_grid if profile.declares_process_grid else None)
     trace_prefix, trace = _device_trace(backend)
     return LaunchShape(argv_prefix=(*_launcher(backend, profile.ranks), *trace_prefix), env=env,
                        site=site_id, platform_probe=_platform_probe(profile.hardware_class),
