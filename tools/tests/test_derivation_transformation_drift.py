@@ -383,8 +383,11 @@ def execute_tuple() -> dict[str, str]:
         "Conductor._shape_state_agreement": _source_digest(wc.Conductor._shape_state_agreement),
         "Conductor._quality_check_failure_lines":
             _source_digest(wc.Conductor._quality_check_failure_lines),
-        "workflow_conductor._SHAPE_STDERR_*":
-            json.dumps([wc._SHAPE_STDERR_LINES, wc._SHAPE_STDERR_CHARS]),
+        "workflow_conductor._SHAPE_STDERR_* / _EXCERPT_*":
+            json.dumps([wc._SHAPE_STDERR_LINES, wc._SHAPE_STDERR_CHARS,
+                        wc._EXCERPT_STDERR_HEAD, wc._EXCERPT_STDERR_TAIL,
+                        wc._EXCERPT_LINE_CHARS]),
+        "workflow_conductor._stderr_head_and_tail": _source_digest(wc._stderr_head_and_tail),
         "target_profile.ExecutionShape": _source_digest(tp.ExecutionShape),
         "target_profile.CERTIFIED_SHAPE_LABEL": tp.CERTIFIED_SHAPE_LABEL,
         **{f"TargetProfile.{name}": _source_digest(getattr(tp.TargetProfile, name).fget)
@@ -1421,7 +1424,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # and the shapes — `_shape_state_agreement`, `_quality_check_failure_lines` and its stderr
     # bounds, `ExecutionShape`, `CERTIFIED_SHAPE_LABEL` and the three `TargetProfile` shape
     # properties (a later edit to any of them moved no pin before); the failure record moved.
-    "execute-10": "e8f198f638e489959bea61c15b8c7db218975862868a03f094fb37f8e563dbde",
+    "execute-10": "18e7199a78a1cf7dcd208c21e1196d8e8a709150b8b67a8fbdfd414bcbe9ec15",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

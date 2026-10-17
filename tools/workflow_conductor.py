@@ -394,9 +394,27 @@ _PURE_ATTEMPT_EXCERPT_MAX_CHARS = 400
 
 
 #: How much of a failed sweep shape's stderr `quality_check.json#shapes[].run_failure` keeps
-#: (issue #512): its last lines, bounded in characters, which the repair excerpt quotes.
-_SHAPE_STDERR_LINES = 15
-_SHAPE_STDERR_CHARS = 1500
+#: (issue #512): its first and its last lines, each bounded in characters — the cause is often
+#: at the top (a runtime's `ERROR STOP`) and a launcher's summary at the bottom.
+_SHAPE_STDERR_LINES = 10
+_SHAPE_STDERR_CHARS = 1000
+#: How much of it the repair excerpt quotes (`_quality_check_failure_lines`): the first failed
+#: shape's first and last lines, every other failed shape's first non-blank line, each clipped,
+#: so that several failing shapes leave room in the bounded excerpt for the gate's report.
+_EXCERPT_STDERR_HEAD = 5
+_EXCERPT_STDERR_TAIL = 3
+_EXCERPT_LINE_CHARS = 160
+
+
+def _stderr_head_and_tail(stderr: str) -> dict[str, str]:
+    """`{stderr_head, stderr_tail}` of a failed run's stderr: its first `_SHAPE_STDERR_LINES`
+    lines and, when there are more than twice that many, its last ones (else `""`), each
+    bounded to `_SHAPE_STDERR_CHARS` characters from the end that joins the two."""
+    lines = stderr.splitlines()
+    if len(lines) <= 2 * _SHAPE_STDERR_LINES:
+        return {"stderr_head": "\n".join(lines)[:2 * _SHAPE_STDERR_CHARS], "stderr_tail": ""}
+    return {"stderr_head": "\n".join(lines[:_SHAPE_STDERR_LINES])[:_SHAPE_STDERR_CHARS],
+            "stderr_tail": "\n".join(lines[-_SHAPE_STDERR_LINES:])[-_SHAPE_STDERR_CHARS:]}
 
 
 def _execute_failure_excerpt(text: str) -> str:
@@ -11386,6 +11404,12 @@ class Conductor:
         disagrees — the case, the quantity, the value and its bound."""
         doc = _read_json(node_dir / "quality_check.json") or {}
         lines: list[str] = []
+        quoted = False  # the first failed run's stderr is quoted at length, the others briefly
+
+        def clip(line: str) -> str:
+            return line if len(line) <= _EXCERPT_LINE_CHARS else \
+                line[:_EXCERPT_LINE_CHARS - 3] + "..."
+
         for row in doc.get("shapes") or []:
             if not isinstance(row, dict) or row.get("status") == "pass":
                 continue
@@ -11399,14 +11423,26 @@ class Conductor:
                     lines.append(f"[execute fail: quality_check] {where}: did not run: "
                                  f"{failure['not_run']}")
                     continue
+                head = str(failure.get("stderr_head") or "").splitlines()
+                tail = str(failure.get("stderr_tail") or "").splitlines()
                 lines.append(
                     f"[execute fail: quality_check] {where}: the run failed (rc="
                     f"{failure.get('return_code')!r}"
                     + (f", {failure['error']}" if failure.get("error") else "")
                     + "); the same binary and cases ran under the certified shape"
-                    + (f"; its stderr ends:" if failure.get("stderr_tail") else ""))
-                lines += [f"    {ln}" for ln in
-                          str(failure.get("stderr_tail") or "").splitlines()]
+                    + ("; its stderr:" if head or tail else ""))
+                if not quoted:
+                    quoted = True
+                    shown = head[:_EXCERPT_STDERR_HEAD]
+                    rest = head[_EXCERPT_STDERR_HEAD:] + tail
+                    if len(rest) > _EXCERPT_STDERR_TAIL:
+                        shown += ["..."]
+                    shown += rest[-_EXCERPT_STDERR_TAIL:]
+                    lines += [f"    {clip(ln)}" for ln in shown]
+                else:
+                    first = next((ln for ln in head if ln.strip()), None)
+                    if first is not None:
+                        lines.append(f"    {clip(first)}")
                 continue
             for key in ("verdict_available", "diagnostics_match", "verdict_match",
                         "launch_match"):
@@ -11799,10 +11835,9 @@ class Conductor:
                 entry["failure"] = {"not_run": f"{stopped_by} failed first"
                                     if stopped_by else "not run"}
             elif not res.get("ok"):
-                stderr_lines = (res.get("stderr") or "").splitlines()[-_SHAPE_STDERR_LINES:]
-                entry["failure"] = {
-                    "return_code": res.get("return_code"), "error": res.get("error"),
-                    "stderr_tail": "\n".join(stderr_lines)[-_SHAPE_STDERR_CHARS:]}
+                entry["failure"] = {"return_code": res.get("return_code"),
+                                    "error": res.get("error"),
+                                    **_stderr_head_and_tail(res.get("stderr") or "")}
             earlier.append((f"shape {shape.label}", res))
             shape_runs.append(entry)
         qc_status = self._author_quality_check(

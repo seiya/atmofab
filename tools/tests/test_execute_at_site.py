@@ -50,6 +50,9 @@ _RUNNER = textwrap.dedent('''\
     if os.environ.get("FAIL_THREADS") and \
             os.environ.get("OMP_NUM_THREADS") == os.environ["FAIL_THREADS"]:
         print("boom under " + os.environ["FAIL_THREADS"] + " threads", file=sys.stderr)
+        for i in range(60):
+            print("frame %02d " % i + "x" * 300, file=sys.stderr)
+        print("launcher summary: one process exited", file=sys.stderr)
         sys.exit(3)
     sys.exit(int(os.environ.get("RUNNER_RC") or 0))
 ''')
@@ -325,8 +328,17 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
                 rows = {r["label"]: r for r in quality["shapes"]}
                 failed = rows[shapes[0].label]
                 self.assertFalse(failed["run_ok"])
-                self.assertEqual(failed["run_failure"]["return_code"], 3)
-                self.assertIn(f"boom under {fail} threads", failed["run_failure"]["stderr_tail"])
+                record = failed["run_failure"]
+                self.assertEqual(record["return_code"], 3)
+                # The cause is at the top of a long stderr and a summary at the bottom: the
+                # record keeps both ends, each bounded (`_SHAPE_STDERR_LINES` / `_CHARS`).
+                head, tail = record["stderr_head"], record["stderr_tail"]
+                self.assertIn(f"boom under {fail} threads", head.splitlines()[:2])
+                self.assertTrue(tail.endswith("launcher summary: one process exited"), tail)
+                for part in (head, tail):
+                    self.assertLessEqual(len(part.splitlines()), wc._SHAPE_STDERR_LINES)
+                    self.assertLessEqual(len(part), wc._SHAPE_STDERR_CHARS)
+                self.assertNotIn("frame 30 ", head + tail)
                 later = rows[shapes[1].label]
                 if where == "site":
                     self.assertEqual(later["run_failure"],
@@ -337,6 +349,10 @@ class ExecuteAtARemoteSiteTests(unittest.TestCase):
                 self.assertEqual(trial["status"], "fail")
                 self.assertIn("the run failed (rc=3)", trial["failure_excerpt"])
                 self.assertIn(f"boom under {fail} threads", trial["failure_excerpt"])
+                self.assertIn("launcher summary: one process exited", trial["failure_excerpt"])
+                self.assertFalse(any(len(ln) > wc._EXCERPT_LINE_CHARS + 4
+                                     for ln in trial["failure_excerpt"].splitlines()
+                                     if ln.startswith("    ")))
                 self.assertNotIn("serial reference re-run failed", trial["failure_excerpt"])
 
     def test_the_job_pre_creates_the_initial_capture_dir_only_for_a_host_rendered_runner(

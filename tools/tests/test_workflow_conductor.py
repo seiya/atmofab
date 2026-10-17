@@ -22959,6 +22959,41 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
         # The certified shape still matches, and the top-level checks are its own.
         self.assertTrue(all(doc["checks"].values()))
 
+    def test_many_failing_shapes_leave_room_for_the_gate_report(self) -> None:
+        """Six sweep shapes that each failed with a 71-line stderr whose cause is its first
+        line: the record keeps each one's head and tail; the excerpt quotes the first shape's
+        head and tail and every other shape's first line, each clipped, so the block stays
+        well inside the bounded excerpt (`_execute_failure_excerpt`) beside the gate's report."""
+        from tools.target_profile import ExecutionShape
+        self.shapes = [ExecutionShape("certified", 1, 4, (2, 2))] + [
+            ExecutionShape(f"grid_{i}x1", 1, i, (i, 1)) for i in (1, 2, 3, 5, 6, 7)]
+        stderr = "\n".join([f"ERROR STOP cause of shape {{}}"]
+                           + [f"#{i} 0x7f backtrace frame " + "y" * 250 for i in range(69)]
+                           + ["mpirun detected that one or more processes exited"])
+        runs = [{"shape": self.shapes[0], "dir": self._run_dir("run_many", self.h), "ok": True,
+                 "command_id": "R"}]
+        for shape in self.shapes[1:]:
+            runs.append({"shape": shape, "dir": self.root / "absent", "ok": False,
+                         "command_id": f"S{shape.label}",
+                         "failure": {"return_code": 1, "error": None,
+                                     **wc._stderr_head_and_tail(stderr.format(shape.label))}})
+        status, doc = self._author(runs)
+        self.assertEqual(status, "fail")
+        first = doc["shapes"][1]["run_failure"]
+        self.assertTrue(first["stderr_head"].startswith("ERROR STOP cause of shape grid_1x1"))
+        self.assertTrue(first["stderr_tail"].endswith("one or more processes exited"))
+        self.assertGreater(len(stderr), 2 * wc._SHAPE_STDERR_CHARS)
+        lines = wc.Conductor._quality_check_failure_lines(self.node)
+        block = "\n".join(lines)
+        for shape in self.shapes[1:]:
+            self.assertIn(f"ERROR STOP cause of shape {shape.label}", block)
+        self.assertEqual(block.count("one or more processes exited"), 1)
+        self.assertTrue(all(len(ln) <= wc._EXCERPT_LINE_CHARS + 4 for ln in lines
+                            if ln.startswith("    ")))
+        # Room for the gate's report: the excerpt keeps 4000 characters / 50 lines.
+        self.assertLess(len(block), 3200)
+        self.assertLess(len(lines), 25)
+
     def test_a_state_comparison_that_cannot_be_evaluated_fails(self) -> None:
         """A shape that ran but left no capture, or a capture the predicates cannot read, is
         `unevaluable` — a failure, never an agreement."""
@@ -23001,10 +23036,12 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
 
     def test_a_shape_that_failed_or_did_not_run_fails(self) -> None:
         for ids, failure, needles in (
-                (("R", "S"), {"return_code": 3, "error": None, "stderr_tail": "boom\nat x"},
+                (("R", "S"), {"return_code": 3, "error": None, "stderr_head": "boom\nat x",
+                              "stderr_tail": ""},
                  ("the run failed (rc=3)", "    boom", "    at x")),
                 (("R", "S"), {"return_code": None, "error": "timeout: exceeded 9 sec",
-                              "stderr_tail": ""}, ("rc=None, timeout: exceeded 9 sec",)),
+                              "stderr_head": "", "stderr_tail": ""},
+                 ("rc=None, timeout: exceeded 9 sec",)),
                 (("R", None), {"not_run": "shape grid_2x1 failed first"},
                  ("did not run: shape grid_2x1 failed first",))):
             with self.subTest(ids=ids, failure=failure):
