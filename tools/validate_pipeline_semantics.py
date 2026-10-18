@@ -2865,6 +2865,18 @@ def _validate_parallel_presence_floor(
         return  # no bundle (or an unreadable one, which the bundle tamper gate reports)
     if not isinstance(bundle, dict):
         return
+    # The launch-configuration half (issue #512, the CUDA backend's): asked of every leaf source,
+    # whatever the plan and the loop count, before anything below may return.
+    launch_violations = getattr(floor, "launch_violations", None)
+    if launch_violations is not None:
+        spec_id = _spec_id_from_node_key(execution.node_key)
+        facts = _language_module(language, "bundle_facts", src_dir, [])
+        checks_path = (src_dir / facts.checks_basename(spec_id)
+                       if facts is not None and spec_id else None)
+        leaf_files = [*model_files, *([checks_path] if checks_path is not None
+                                      and checks_path.is_file() else [])]
+        violations.extend(launch_violations(
+            {f: f.read_text(encoding="utf-8", errors="ignore") for f in leaf_files}))
     # A floor that is a WHOLE-NODE judgment (the MPI one, issue #316: the checks module holds the
     # partition, the model the halo exchange, and a forbidden direct use of the library does not
     # depend on the plan) states its findings itself, over the model sources and the checks

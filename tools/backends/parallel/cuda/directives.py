@@ -22,6 +22,16 @@ from typing import Any
 # text, so a comment naming `__global__` would satisfy a plain pattern. The pattern is therefore
 # applied by `KernelPattern.search` to the masked text (comments and literal contents blanked).
 _KERNEL_RE = re.compile(r"\b__global__\b|<<<")
+# A launch, and the name of the threads per block the host imposed on the run (issue #512,
+# `docs/backends/language/cuda_cpp/GENERATE_RULES.md` §7), both read over the CODE view.
+_LAUNCH_RE = re.compile(r"<<<")
+_LAUNCH_BLOCK_NAME = "launch_block_size"
+_LAUNCH_BLOCK_RE = re.compile(rf"\b{_LAUNCH_BLOCK_NAME}\b")
+# A write to it: an assignment, plain or compound, or an increment / decrement on either side;
+# `==` and the relational and shift operators are reads.
+_LAUNCH_BLOCK_WRITE_RE = re.compile(
+    rf"(?:\+\+|--)\s*(?:\w+\s*::\s*)*{_LAUNCH_BLOCK_NAME}\b"
+    rf"|\b{_LAUNCH_BLOCK_NAME}\s*(?:\+\+|--|(?:<<|>>|[-+*/%&|^])?=(?!=))")
 
 _NO_PARALLELISM_VALUES = frozenset({"none", "off", "serial", "sequential", "false", "disabled"})
 _LOWERING_PARALLELIZATION_MODEL_KEYS = frozenset({"model", "method", "scheme", "kind"})
@@ -39,12 +49,45 @@ class KernelPattern:
         return _KERNEL_RE.search(reader.code_view(text))
 
 
+def launch_violations(texts: dict[Path, str]) -> list[str]:
+    """The launch-configuration floor (issue #512): a leaf source that launches a kernel (`<<<`,
+    in code) reads the run's threads per block, `atmofab::launch_block_size`, somewhere in its
+    code, and no source writes it. A NECESSARY condition only: a source that names the variable
+    and still launches some kernel with a literal block passes, and is `generate.verify` G6's
+    finding. What it catches is the source that never takes the host's block at all — the shape
+    of the `cpp_gpu` problem models certified before the block was imposed (`const int kBlock =
+    256;`), under which the block-size sweep runs one configuration and records it as several.
+    Asked of every launch whatever the lowering plan says: a plan may decline CUDA for a loop,
+    never choose the threads per block."""
+    from tools.backends import registry
+    reader = registry.capability_module("language", "cuda_cpp", "source_reading")
+    out: list[str] = []
+    for path, text in texts.items():
+        code = reader.code_view(text)
+        if _LAUNCH_BLOCK_WRITE_RE.search(code):
+            out.append(
+                f"{path}: writes `atmofab::launch_block_size`, the threads per block the host "
+                "imposed on the run (the host-rendered runner sets it before the first case); "
+                "read it, never write it — the host runs the binary once per block size of the "
+                "target's sweep, and a source that sets its own block makes those runs one")
+        if _LAUNCH_RE.search(code) and not _LAUNCH_BLOCK_RE.search(code):
+            out.append(
+                f"{path}: launches a kernel (`<<<`) and never reads `atmofab::launch_block_size`, "
+                "the threads per block the host imposed on the run — launch every kernel with it "
+                "as the block and a grid computed from it ((n + block - 1) / block blocks for n "
+                "elements), never with a literal or a block chosen from the device")
+    return out
+
+
 @dataclass(frozen=True)
 class PresenceFloor:
-    """What the floor asks of one (language, hardware class) pair."""
+    """What the floor asks of one (language, hardware class) pair. `launch_violations`, when
+    set, is asked of every leaf source of the node (the model sources and the checks source)
+    whatever the plan and the loop count."""
 
     directive: Any
     remedy: Any
+    launch_violations: Any = None
 
 
 def _cuda_cpp_gpu_remedy(model_file: Path, counted: int) -> str:
@@ -59,7 +102,8 @@ def _cuda_cpp_gpu_remedy(model_file: Path, counted: int) -> str:
 
 
 _FLOORS: dict[tuple[str, str], PresenceFloor] = {
-    ("cuda_cpp", "gpu"): PresenceFloor(directive=KernelPattern(), remedy=_cuda_cpp_gpu_remedy),
+    ("cuda_cpp", "gpu"): PresenceFloor(directive=KernelPattern(), remedy=_cuda_cpp_gpu_remedy,
+                                       launch_violations=launch_violations),
 }
 
 

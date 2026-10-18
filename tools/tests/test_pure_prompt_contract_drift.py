@@ -1024,8 +1024,10 @@ PINNED: dict[str, str] = {
     # `cuda_cpp/generate_generate.txt` §target_lowering_floor, `cuda_cpp/generate_verify.txt`
     # §checklist_g6_floor_scope. Re-pinned in place (unshipped) by round 1: the producer
     # fragment's repair sentence and its plan-override sentence no longer leave the threads per
-    # block to the leaf or its plan, and the admitted sizes are named as such.
-    "pure-80": "a270aea57bdc83afebf134c5e65dfaa04ae4daff41c85b29d9fd413a45d58e5b",
+    # block to the leaf or its plan, and the admitted sizes are named as such. Round 2: both
+    # fragments say the `Generate.gate` floor refuses a launching source that never names
+    # `atmofab::launch_block_size` and a source that writes it.
+    "pure-80": "e2cb59b0e95db042a74a781313ab6664830b8414dba57cdad310b4320a707b24",
 }
 
 
