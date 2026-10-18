@@ -302,7 +302,7 @@ makes the sweep compare runs of one configuration. Choosing the block size is no
 optimization flow: `execution.block_size` is the one target-profile field a `Tune` variant may
 override (`docs/TUNING_WORKFLOW.md` §The override-allowed boundary), so a variant that tries
 another block runs every launch at it, is measured and selected like any other, and is still
-compared across the rest of the profile's block sizes; what §6 leaves to a plan's
+compared across every other block size the profile names (its certified one and its sweep's); what §6 leaves to a plan's
 `accelerator_mapping` is how the work maps onto blocks and grid, not the threads per block.
 
 The `Generate.gate` static check holds a necessary condition of B.1

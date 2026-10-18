@@ -1027,8 +1027,10 @@ PINNED: dict[str, str] = {
     # block to the leaf or its plan, and the admitted sizes are named as such. Round 2: both
     # fragments say the `Generate.gate` floor refuses a launching source that never names
     # `atmofab::launch_block_size` and a source that writes it; the inlined
-    # `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` lists `parallelism.block_size`.
-    "pure-80": "c84e08fcb582dfa6362fab0702e4232bc055a3b11871fe1a3c6afde7e8084e16",
+    # `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` lists `parallelism.block_size`. Round 3: the
+    # producer's launch paragraph is scoped to component / problem nodes and compares captured
+    # state only where the IR's cross-target predicates do.
+    "pure-80": "22eaae8f1d9f3fe821ebd80a34b9c66d8feefd6c19f8126d436b7ff590120b53",
 }
 
 

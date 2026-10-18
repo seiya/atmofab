@@ -23,7 +23,7 @@ Fix the candidate-generation responsibility of the Tune stage, and create perfor
 
 ## Operations Rules
 1. Issue an `impl_hash` per candidate, and do not re-run a duplicate candidate. `impl_hash` is computed from the target profile (with the candidate's `execution.block_size` when it overrides one) and the final value of the candidate's `target_lowering_plan` (after the override; `docs/PERFORMANCE_DIAGNOSTICS.md` §3).
-2. After candidate generation, save the variant lowering plan to a separate path, and run the same `Generate` / `Build` / `Validate` as the core workflow with the same `case` and the same target profile.
+2. After candidate generation, save the variant lowering plan to a separate path, and run the same `Generate` / `Build` / `Validate` as the core workflow with the same `case` and the same target profile (with the candidate's `execution.block_size` when it overrides one, and a block-size sweep of every other block size the profile names; `docs/TUNING_WORKFLOW.md` §The override-allowed boundary).
 3. Make `debug_mode=false` the standard, and do not save failed-attempt artifacts.
 4. On a candidate-generation failure, update `last_fail_reason` and hand it to verify.
 
