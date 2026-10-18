@@ -555,7 +555,8 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         # environment of its own, and `tools/host_execution.py` answers that as an empty mapping.
         Backend("parallel", "none", None,
                 core_provides=frozenset({"parallel_directives", "execution_env"})),
-        # CUDA (issue #289, R4-b PR-4): its launch environment is empty, and its presence floor
+        # CUDA (issue #289, R4-b PR-4): its launch environment sets the thread-block size a profile
+        # imposes (issue #512) and is otherwise empty, and its presence floor
         # asks a GPU model source with counted loops for a kernel. Since issue #307 its binary
         # runs under a device trace whose per-kernel summary `Validate.execute` keeps.
         Backend(

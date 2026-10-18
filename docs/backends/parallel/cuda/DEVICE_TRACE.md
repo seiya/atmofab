@@ -20,8 +20,9 @@ make test    # the quality check, unchanged and untraced
 <binary> --cases <spec.ir.yaml> <case_id>...   # once per block size of execution.sweep, untraced
 ```
 
-Every one of these runs with `ATMOFAB_CUDA_BLOCK` set (issue #512): the profiled run and
-`make test` to the profile's `execution.block_size`, each sweep run to its own block size. The
+Every run of the binary carries `ATMOFAB_CUDA_BLOCK` (issue #512): the profiled run and
+`make test` the profile's `execution.block_size`, each sweep run its own block size; the summary
+command runs no binary and is handed no environment of its own. The
 trace runs on the certified shape alone: the gate of §5 reads one summary, the certifying run's,
 and a sweep shape is compared with the reference by its state
 (`docs/workflow/phases/phase_04_validate.md` §4-2), not by its kernels.
