@@ -2114,6 +2114,35 @@ class Section51StanzaLayerTests(unittest.TestCase):
         self.assertEqual(with_name, bare)
 
 
+class HarnessTestsMdStatesTheThreadQueryTest(unittest.TestCase):
+    """The harness Generate PRODUCER is handed `tests.md` and not `controlled_spec.md`, so the
+    `l0_perf_derived_pass` judgment is the one place it is told how `__write_perf` obtains the
+    thread count (issue #512 round 2). A writer that records a constant still fails the Validate
+    sweep; what this pins is that the producer is told how not to, so the sweep is not paid for
+    as a repair turn."""
+
+    TESTS_MD = (REPO_ROOT / "spec" / "infrastructure" / "infra" / "harness"
+                / "harness_fortran_cpu" / "tests.md")
+
+    def _perf_judgment(self) -> str:
+        lines = self.TESTS_MD.read_text(encoding="utf-8").splitlines()
+        heads = [i for i, ln in enumerate(lines) if "l0_perf_derived_pass" in ln
+                 and ln.lstrip().startswith(("-", "#"))]
+        for i in heads:
+            for ln in lines[i:i + 12]:
+                if ln.lstrip().startswith("- `judgment`:"):
+                    return ln
+        self.fail(f"no `judgment` line under an l0_perf_derived_pass item in {self.TESTS_MD}")
+
+    def test_the_judgment_states_the_conditional_runtime_query(self) -> None:
+        judgment = self._perf_judgment()
+        # The bound: this is the perf judgment, not another item that mentions the test id.
+        self.assertIn("throughput_residual", judgment)
+        for needle in ("takes no thread count", "omp_get_max_threads", "`!$`",
+                       "unconditional assignment of `1`"):
+            self.assertIn(needle, judgment)
+
+
 if __name__ == "__main__":
     unittest.main()
 
