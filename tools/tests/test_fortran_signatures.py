@@ -209,12 +209,17 @@ class RoundTripRealArtifactsTest(unittest.TestCase):
         published = _real_section51_struct()
         struct = self._assert_round_trip(render_signatures_to_fortran(published))
         # sanity on the parsed shape (the real harness surface): the 13 operations of the
-        # `sync_single_case@1` block, then the thread count (`0.8.0` §3.3, issue #512), which
-        # renders as the copy the host-rendered runner's pin carries.
-        self.assertEqual(len(struct["procedures"]), 14)
-        self.assertEqual(
-            render_signatures_to_fortran({"procedures": published["procedures"][13:]}),
-            _SINGLE_PROCESS_INTERFACE)
+        # `sync_single_case@1` block, its `__write_perf` without the `threads_per_rank` argument
+        # (`0.8.0` §3.2, issue #512), and the whole surface renders as the copy the
+        # host-rendered runner's pin carries.
+        self.assertEqual(len(struct["procedures"]), 13)
+        self.assertEqual(normalized_stanza_index(render_signatures_to_fortran(published)),
+                         normalized_stanza_index(_SINGLE_PROCESS_INTERFACE))
+        perf = next(p for p in published["procedures"]
+                    if p["name"] == "harness_fortran_cpu__write_perf")
+        self.assertEqual([a["name"] for a in perf["args"]],
+                         ["case_id", "target", "steps", "cells_updated", "walltime_sec",
+                          "mpi_ranks", "gpu_devices"])
         self.assertEqual(len(struct["types"]), 5)
         self.assertEqual(
             {mp["name"] for mp in struct["module_parameters"]}, {"dp", "case_id_len"}
@@ -246,13 +251,24 @@ class RoundTripRealArtifactsTest(unittest.TestCase):
             "harness_fortran_cpu__", "harness_fortran_cpu_mpi__"))
         self.assertEqual(published["types"], renamed["types"])
         self.assertEqual(published["module_parameters"], renamed["module_parameters"])
-        # The `sync_single_case@1` block; the single-process harness's thread count after it is
-        # not the distributed one's to publish (a launcher target runs one thread per rank).
-        self.assertEqual(published["procedures"][:13], renamed["procedures"][:13])
-        self.assertEqual([p["name"] for p in renamed["procedures"][13:]],
-                         ["harness_fortran_cpu_mpi__thread_count"])
-        self.assertNotIn("harness_fortran_cpu_mpi__thread_count",
-                         {p["name"] for p in published["procedures"]})
+        # The `sync_single_case@1` block, but for one argument: the single-process harness's
+        # `__write_perf` obtains the thread count itself (`0.8.0` §3.2, issue #512), while the
+        # distributed one's takes it from its runner (a launcher target runs one thread per
+        # rank), as `0.7.0`'s did.
+        self.assertEqual(len(renamed["procedures"]), 13)
+        name = "harness_fortran_cpu_mpi__write_perf"
+        for mine, single_p in zip(published["procedures"][:13], renamed["procedures"]):
+            with self.subTest(procedure=mine["name"]):
+                if mine["name"] != name:
+                    self.assertEqual(mine, single_p)
+                    continue
+                self.assertEqual(single_p["name"], name)
+                self.assertEqual([a["name"] for a in mine["args"]][-2:],
+                                 ["threads_per_rank", "gpu_devices"])
+                self.assertEqual([a for a in mine["args"] if a["name"] != "threads_per_rank"],
+                                 single_p["args"])
+                self.assertEqual({k: v for k, v in mine.items() if k != "args"},
+                                 {k: v for k, v in single_p.items() if k != "args"})
 
     def test_round_trip_backend_runner_hardcoded_copy(self) -> None:
         # The third copy of the signatures (the fortran backend runner's _HARNESS_V3_INTERFACE) must lower and

@@ -450,12 +450,15 @@ STATE_REGISTRATION_TOKEN = f"state_registration@{1}"
 # `sync_single_case@1` is defined as exactly the canonical interface block of
 # `harness_fortran_cpu@0.7.0` §5.1 (13 operations, 5 published types, `dp = float64`,
 # `case_id_len = 64`), under the providing harness node's own `<spec_id>__` names and bound to
-# its target language by that language's backend: §5.1 of the `0.8.0` release of the harness
-# named above is the block followed by `__thread_count`, the threads the run's shared-memory
-# runtime gives the program (issue #512), and `harness_cpp_gpu@0.2.0` §5.1 begins with the same
-# block (issue #289, R4-b PR-5), followed by `__block_size`, the threads per block the host
-# imposes on the program's kernels (issue #512); each runner calls its harness's extra operation, and its
-# `assert_harness_pin` pins it like the block's operations. Its mechanical enforcer remains
+# its target language by that language's backend. One difference from that block is admitted,
+# in the performance-record writer, which no bundle's code calls (it is the host-rendered
+# runner's, `docs/workflow/CHECKS_MODULE_CONTRACT.md` §4): §5.1 of the `0.8.0` release of the
+# harness named above is the block with a `__write_perf` that takes no `threads_per_rank`
+# argument, because it writes the thread count the run's shared-memory runtime gives the program
+# itself (issue #512). `harness_cpp_gpu@0.2.0` §5.1 begins with the block (issue #289, R4-b
+# PR-5), followed by `__block_size`, the threads per block the host imposes on the program's
+# kernels (issue #512), which the CUDA C++ runner calls. Each runner's `assert_harness_pin` pins
+# its harness's §5.1 as that harness publishes it. Its mechanical enforcer remains
 # the language backend's `assert_harness_pin`; this contract names the ABI, it does not
 # re-check it. `state_registration@1` (`STATE_REGISTRATION_TOKEN`) is defined as: the rendered
 # runner reads every snapshot variable straight from the module-level storage of the bundle's

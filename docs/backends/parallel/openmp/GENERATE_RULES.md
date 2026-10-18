@@ -97,26 +97,31 @@ region ran at — the producer is told not to and the `openmp` reviewer fragment
 ## 5. The thread count a run records
 
 A run's `perf.json#parallelism.threads_per_rank` on an `openmp` target is the count the OpenMP
-runtime gives the program, read when it runs: the single-process Fortran harness publishes it as
-`harness_fortran_cpu__thread_count()` (`harness_fortran_cpu@0.8.0` §3.3), its self-test passes it
-to `__write_perf`, and so does the host-rendered runner of every node built on it
-(`tools/backends/language/fortran/runner.py`). The quality check compares it with each execution
-shape's thread count (`thread_match`, `docs/workflow/phases/phase_04_validate.md` §4-2), so a
-writer that records a constant fails on the first shape whose count differs. In Fortran the
-query is:
+runtime gives the program, read when it runs: the single-process Fortran harness's
+`harness_fortran_cpu__write_perf` takes no thread count and obtains it itself
+(`harness_fortran_cpu@0.8.0` §3.2), so its self-test and the host-rendered runner of every node
+built on it (`tools/backends/language/fortran/runner.py`) record it through the same writer. The
+quality check compares it with each execution shape's thread count (`thread_match`,
+`docs/workflow/phases/phase_04_validate.md` §4-2), so a writer that records a constant fails on
+the first shape whose count differs, on the harness's own Validate run before any consumer's. In
+Fortran the query inside the writer is:
 
 ```fortran
-function harness_fortran_cpu__thread_count() result(n)
+subroutine harness_fortran_cpu__write_perf(case_id, target, steps, cells_updated, &
+    walltime_sec, mpi_ranks, gpu_devices)
 !$ use omp_lib, only: omp_get_max_threads
-  integer :: n
-  n = 1
-!$ n = omp_get_max_threads()
-end function harness_fortran_cpu__thread_count
+  ! ... the dummy arguments' declarations ...
+  integer :: threads_per_rank
+  threads_per_rank = 1
+!$ threads_per_rank = omp_get_max_threads()
+  ! ... write perf.json with threads_per_rank, and parallel_degree_total from it ...
+end subroutine harness_fortran_cpu__write_perf
 ```
 
 `omp_get_max_threads()` is the team size a parallel region without a `num_threads(...)` clause
 would get, which §4's `OMP_NUM_THREADS` sets. Both `!$` lines are conditional compilation: a
 compile with `-fopenmp` (every compile on this backend, §1) keeps them, and one without it reads
-them as comments, so the function returns `1`. Measured with gfortran 11.4 under
-`-std=f2008 -O2`: with `-fopenmp` it returned 1, 2, 3 and 4 under `OMP_NUM_THREADS` = 1 to 4,
-and without it, 1 under each.
+them as comments, so the writer records `1`. Measured with gfortran 11.4 on a module holding a
+writer of this shape, under `-std=f2008 -O2`: with `-fopenmp` it recorded 1, 2, 3 and 4 under
+`OMP_NUM_THREADS` = 1 to 4, and without it, 1 under each; the module passed `fortitude` 0.8.0
+over the rule set the `Generate.gate` lint check selects.
