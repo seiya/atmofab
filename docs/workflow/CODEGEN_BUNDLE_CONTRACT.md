@@ -421,7 +421,7 @@ the issue records this as a departure from `zero_base_architecture.md` §A4 as w
 
 ```
 "infrastructure/harness_fortran_cpu@0.7.0": {"sync_single_case@1", "state_registration@1"}
-"infrastructure/harness_cpp_gpu@0.1.0":     {"sync_single_case@1", "state_registration@1"}
+"infrastructure/harness_cpp_gpu@0.2.0":     {"sync_single_case@1", "state_registration@1"}
 "infrastructure/harness_fortran_cpu_mpi@0.2.0": {"sync_single_case@1", "state_registration@1",
                                                  "distributed_state@2"}
 ```
@@ -436,8 +436,10 @@ The harness source needs no new operation for it, so the harness version is unch
 `sync_single_case@1` is defined as exactly the canonical interface block of
 `harness_fortran_cpu@0.7.0` §5.1 (13 operations, 5 published types, `dp = float64`,
 `case_id_len = 64`), under the providing harness node's own `<spec_id>__` names and bound to its
-target language by that language's backend; `harness_cpp_gpu@0.1.0` §5.1 is the same block, and
-`harness_fortran_cpu_mpi@0.2.0` §5.1 begins with it.
+target language by that language's backend; `harness_cpp_gpu@0.2.0` §5.1 begins with it,
+followed by `__block_size` (the threads per block the host imposes on the program's kernels,
+issue #512, which the CUDA C++ runner calls), and `harness_fortran_cpu_mpi@0.2.0` §5.1 begins
+with it.
 The mechanical enforcer of that definition remains
 the language backend's `assert_harness_pin` (reached through `tools/host_render.py`), which
 compares §5.1 against the certified

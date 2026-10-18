@@ -296,7 +296,7 @@ class CapabilityNegotiationTest(unittest.TestCase):
         self.assertEqual(cb.unsatisfied_capability_requirements(
             ["sync_single_case@1", "distributed_state@1", cb.STATE_REGISTRATION_TOKEN], mpi),
             ["distributed_state@1"])
-        for single in (HARNESS, "infrastructure/harness_cpp_gpu@0.1.0"):
+        for single in (HARNESS, "infrastructure/harness_cpp_gpu@0.2.0"):
             with self.subTest(harness=single):
                 provided = cb.harness_provided_capabilities(single)
                 self.assertEqual(provided,

@@ -11304,7 +11304,8 @@ class Conductor:
     @staticmethod
     def _author_quality_check(node_dir: Path, qc_diag: dict[str, Any], qc_cmd_id: str | None,
                               preset: str, *, ir: dict[str, Any], reference_dir: Path,
-                              shape_runs: list[dict[str, Any]], launcher: bool) -> str:
+                              shape_runs: list[dict[str, Any]], launcher: bool,
+                              block_imposed: bool = False) -> str:
         """quality_check.json = the run of every execution shape compared with the serial
         reference: the quality-check preset's re-run, one process with one thread (per phase_04
         §4-1 / §4-2; issue #512). Returns the top-level status.
@@ -11318,7 +11319,9 @@ class Conductor:
         `diagnostics.json` checks, its verdict, and its captured state through the IR's
         cross-target predicates (`_shape_state_agreement`); a shape that failed to run is a
         mismatch. For a target whose backend declares a launcher (`launcher`), the process count
-        and grid the shape's harness reports in `perf.json` must be the shape's. The top-level
+        and grid the shape's harness reports in `perf.json` must be the shape's; for one whose
+        backend imposes a thread-block size (`block_imposed`), the block size it reports must be
+        the shape's whenever the shape imposes one. The top-level
         `checks` and `comparison` are the certified shape's, which the post-execute gate reads
         as it did before the sweep."""
         def _object(path: Path) -> dict[str, Any]:
@@ -11356,17 +11359,22 @@ class Conductor:
             parallelism = parallelism if isinstance(parallelism, dict) else {}
             row["observed_mpi_ranks"] = parallelism.get("mpi_ranks")
             row["observed_process_grid"] = parallelism.get("process_grid")
+            row["observed_block_size"] = parallelism.get("block_size")
             if launcher:
                 expected_grid = list(shape.process_grid or (shape.ranks, 1))
                 row["launch_match"] = (type(row["observed_mpi_ranks"]) is int
                                        and row["observed_mpi_ranks"] == shape.ranks
                                        and row["observed_process_grid"] == expected_grid)
+            if block_imposed and shape.block_size is not None:
+                row["block_match"] = (type(row["observed_block_size"]) is int
+                                      and row["observed_block_size"] == shape.block_size)
             row["state_agreement"] = (
                 Conductor._shape_state_agreement(ir, reference_dir, shape.label, shape_dir)
                 if entry["ok"] else {"status": "not_run"})
             row["status"] = "pass" if (
                 row["run_ok"] and row["verdict_available"] and row["diagnostics_match"]
                 and row["verdict_match"] and row.get("launch_match", True)
+                and row.get("block_match", True)
                 and row["state_agreement"]["status"] in ("agree", "not_applicable")) else "fail"
             shapes.append(row)
         certified = shapes[0]
@@ -11417,7 +11425,9 @@ class Conductor:
                 continue
             where = (f"shape {row.get('label')} (ranks={row.get('ranks')}, "
                      f"process_grid={row.get('process_grid')}, "
-                     f"threads_per_rank={row.get('threads_per_rank')})")
+                     f"threads_per_rank={row.get('threads_per_rank')}"
+                     + (f", block_size={row['block_size']}"
+                        if row.get("block_size") is not None else "") + ")")
             if not row.get("run_ok"):
                 failure = row.get("run_failure") if isinstance(row.get("run_failure"), dict) \
                     else {}
@@ -11447,14 +11457,17 @@ class Conductor:
                         lines.append(f"    {clip(first)}")
                 continue
             for key in ("verdict_available", "diagnostics_match", "verdict_match",
-                        "launch_match"):
+                        "launch_match", "block_match"):
                 if row.get(key) is False:
                     lines.append(f"[execute fail: quality_check] {where}: {key} is false "
                                  f"against the serial reference (one process, one thread)"
                                  + (f"; harness reported mpi_ranks="
                                     f"{row.get('observed_mpi_ranks')!r}, process_grid="
                                     f"{row.get('observed_process_grid')!r}"
-                                    if key == "launch_match" else ""))
+                                    if key == "launch_match" else "")
+                                 + (f"; harness reported block_size="
+                                    f"{row.get('observed_block_size')!r}"
+                                    if key == "block_match" else ""))
             agreement = row.get("state_agreement") or {}
             if agreement.get("status") == "disagree":
                 for f in agreement.get("failures") or []:
@@ -11507,6 +11520,7 @@ class Conductor:
         # (`host_execution.serial_execution_env`).
         from tools.host_execution import (
             declares_launcher,
+            imposes_block_size,
             launch_shape,
             local_platform_record,
             serial_execution_env,
@@ -11632,7 +11646,7 @@ class Conductor:
             the already-built binary."""
             argv = [binary_path, "--cases", spec_path, *case_ids]
             run_argv = launch.command(argv)
-            qc_env = {**serial_execution_env(target.parallel_backend),
+            qc_env = {**serial_execution_env(target.parallel_backend, target.block_size),
                       **execute.quality_check_env(obj_path, bin_path, qc_path, str(exe),
                                                   spec_path, case_ids)}
             return run_argv, qc_env, [shape_launch.command(argv) for _s, shape_launch in sweep]
@@ -11852,7 +11866,8 @@ class Conductor:
         qc_status = self._author_quality_check(
             node_dir, qc_diag, res_qc.get("command_id"), execute.QUALITY_CHECK_PRESET,
             ir=ir, reference_dir=qc_tmp, shape_runs=shape_runs,
-            launcher=declares_launcher(target.parallel_backend))
+            launcher=declares_launcher(target.parallel_backend),
+            block_imposed=imposes_block_size(target.parallel_backend))
 
         (node_dir / "stdout.log").write_text(stdout, encoding="utf-8")
         (node_dir / "stderr.log").write_text(stderr, encoding="utf-8")
@@ -11924,7 +11939,7 @@ class Conductor:
                           for shape, shape_launch in sweep],
                 # The serial reference's launch environment (the quality check's re-run).
                 "serial_reference_env": dict(sorted(serial_execution_env(
-                    target.parallel_backend).items())),
+                    target.parallel_backend, target.block_size).items())),
                 # The host this evidence was produced on (issue #250): RECORDED, not keyed —
                 # no verdict predicate depends on the machine yet, and the day a perf or
                 # cross-target predicate does, the execute inputs gain one line and read this.

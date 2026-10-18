@@ -1015,6 +1015,15 @@ PINNED: dict[str, str] = {
     # team is never pinned to one thread or switched off on the test cases (round 4 corrected the
     # rationale: each run's thread limit caps `num_threads(k)`, so only k = 1 or `if` defeats it).
     "pure-79": "e2b9d6485c50322732b833372485f7a69ecc90cbbadae3bac3daa845c2aec521",
+    # pure-80 (issue #512 PR-4c): the CUDA C++ producer and reviewer fragments state the launch
+    # configuration the host imposes — every kernel launches with `atmofab::launch_block_size`
+    # threads per block (the host-rendered header declares it, the host-rendered runner sets it
+    # from the harness's `__block_size`), its grid, shared memory and grid-stride loops follow
+    # from it, and a literal or device-chosen block size is a G6 finding — because the host now
+    # runs the binary once more per block size of `execution.sweep.block_size`. Members moved:
+    # `cuda_cpp/generate_generate.txt` §target_lowering_floor, `cuda_cpp/generate_verify.txt`
+    # §checklist_g6_floor_scope.
+    "pure-80": "0c34a4880900eb70fce6477b0cfcec3a69bff05e455b4baf57f6402c826ed40c",
 }
 
 

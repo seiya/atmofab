@@ -448,6 +448,54 @@ class ExecutionShapeLaunchTests(unittest.TestCase):
         self.assertEqual(he.serial_execution_env("mpi"), {"ATMOFAB_PROCESS_GRID": "1,1"})
         self.assertEqual(he.serial_execution_env("cuda"), {})
         self.assertEqual(he.serial_execution_env("none"), {})
+        # A device backend's kernels have no serial launch: the reference runs them in the
+        # certified shape's block (issue #512, PR-4c).
+        self.assertEqual(he.serial_execution_env("cuda", 256), {"ATMOFAB_CUDA_BLOCK": "256"})
+
+    def test_a_block_shape_launches_its_kernels_in_its_block(self) -> None:
+        """Issue #512 (PR-4c): the profile's `execution.block_size` reaches the certified
+        launch, each `execution.sweep.block_size` value its shape's, and the sweep shapes run
+        without the device trace."""
+        from tools.execution_sites import Site
+        gpu = profile_with(hardware={"class": "gpu", "architecture": "sm_90"},
+                           parallel={"backend": "cuda"},
+                           execution={"threads_per_rank": 1, "block_size": 256,
+                                      "sweep": {"block_size": [64, 128]}})
+        site = Site("gpu_box", ("gpu",), host="box", workdir="/w")
+        certified = he.launch_shape(gpu, site)
+        self.assertEqual(certified.env, {"ATMOFAB_CUDA_BLOCK": "256"})
+        self.assertIsNotNone(certified.trace)
+        for shape, block in zip(gpu.sweep_shapes, ("64", "128")):
+            with self.subTest(shape=shape.label):
+                launch = he.launch_shape(gpu, site, shape)
+                self.assertEqual(launch.env, {"ATMOFAB_CUDA_BLOCK": block})
+                self.assertIsNone(launch.trace)
+        self.assertTrue(he.imposes_block_size("cuda"))
+        for backend in ("openmp", "mpi", "none"):
+            with self.subTest(backend=backend):
+                self.assertFalse(he.imposes_block_size(backend))
+
+    def test_a_block_size_for_a_backend_that_imposes_none_is_unavailable(self) -> None:
+        """The backstop of the launch gate's `_block_size_violations`: a shape that imposes a
+        block size on a backend whose launch environment imposes none, or a value the backend
+        does not admit, is refused rather than run under a configuration nothing applied."""
+        from tools.execution_sites import Site
+        from tools.target_profile import ExecutionShape
+        cpu = profile_with()
+        with self.assertRaises(he.LaunchUnavailable) as ctx:
+            he.launch_shape(cpu, None, ExecutionShape("block_64", cpu.threads_per_rank, 1,
+                                                      None, 64))
+        self.assertIn("imposes none", str(ctx.exception))
+        gpu = profile_with(hardware={"class": "gpu", "architecture": "sm_90"},
+                           parallel={"backend": "cuda"})
+        site = Site("gpu_box", ("gpu",), host="box", workdir="/w")
+        with self.assertRaises(he.LaunchUnavailable) as ctx:
+            he.launch_shape(gpu, site, ExecutionShape("block_100", 1, 1, None, 100))
+        self.assertIn("execution shape block_100", str(ctx.exception))
+        module = registry.capability_module("parallel", "cuda", "execution_env")
+        for bad in (100, 0, 2048, True, "64"):
+            with self.subTest(block=bad), self.assertRaises(ValueError):
+                module.environment(1, block_size=bad)
 
     def test_a_shape_the_backend_refuses_is_unavailable(self) -> None:
         from tools.target_profile import ExecutionShape

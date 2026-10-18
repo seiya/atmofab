@@ -17,7 +17,14 @@ nsys profile -t cuda -o kernel_trace --force-overwrite=true <binary> --cases <sp
 sh -c '<frame>' kernel-trace-summary kernel_trace_cuda_gpu_kern_sum.csv kernel_trace.sqlite \
   nsys stats -r cuda_gpu_kern_sum -f csv -o kernel_trace --force-export=true --force-overwrite=true kernel_trace.nsys-rep
 make test    # the quality check, unchanged and untraced
+<binary> --cases <spec.ir.yaml> <case_id>...   # once per block size of execution.sweep, untraced
 ```
+
+Every one of these runs with `ATMOFAB_CUDA_BLOCK` set (issue #512): the profiled run and
+`make test` to the profile's `execution.block_size`, each sweep run to its own block size. The
+trace runs on the certified shape alone: the gate of §5 reads one summary, the certifying run's,
+and a sweep shape is compared with the reference by its state
+(`docs/workflow/phases/phase_04_validate.md` §4-2), not by its kernels.
 
 - `nsys profile` returns the binary's exit code, so a runner that fails is the content failure it
   was before. The summary runs only after a run that exited 0, and the quality check only after a

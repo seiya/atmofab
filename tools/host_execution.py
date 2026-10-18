@@ -108,7 +108,8 @@ class LaunchShape:
 
 
 def _execution_env(parallel_backend: str, threads_per_rank: int,
-                   process_grid: tuple[int, int] | None = None) -> dict[str, str]:
+                   process_grid: tuple[int, int] | None = None,
+                   block_size: int | None = None) -> dict[str, str]:
     """The environment a binary built for `parallel_backend` is launched with.
 
     A value whose record carries `execution_env` in its PACKAGE is asked through
@@ -118,9 +119,9 @@ def _execution_env(parallel_backend: str, threads_per_rank: int,
     refused: running it with whatever the host process carries is the silent answer this seam
     replaced.
 
-    `process_grid` is the grid a profile imposes on its ranks (issue #512); it is handed to the
-    backend only when given, so a backend whose launches take no grid keeps its one-argument
-    contract.
+    `process_grid` is the grid a profile imposes on its ranks, and `block_size` the threads per
+    block it imposes on the kernel launches (issue #512); each is handed to the backend only when
+    given, so a backend whose launches take neither keeps its one-argument contract.
     """
     reason = registry.missing_capability_reason("parallel", parallel_backend, "execution_env")
     if reason is not None:
@@ -129,8 +130,12 @@ def _execution_env(parallel_backend: str, threads_per_rank: int,
     if "execution_env" not in record.backend_provides:
         return {}
     module = registry.capability_module("parallel", parallel_backend, "execution_env")
-    env = (module.environment(threads_per_rank) if process_grid is None
-           else module.environment(threads_per_rank, process_grid=process_grid))
+    imposed: dict[str, Any] = {}
+    if process_grid is not None:
+        imposed["process_grid"] = process_grid
+    if block_size is not None:
+        imposed["block_size"] = block_size
+    env = module.environment(threads_per_rank, **imposed)
     return {str(k): str(v) for k, v in env.items()}
 
 
@@ -156,6 +161,18 @@ def _device_trace(parallel_backend: str) -> tuple[tuple[str, ...], TraceShape | 
     return prefix, TraceShape(
         summary_argv=tuple(str(a) for a in module.summary_argv(KERNEL_TRACE_STEM)),
         summary_file=str(module.summary_file(KERNEL_TRACE_STEM)))
+
+
+def imposes_block_size(parallel_backend: str) -> bool:
+    """Whether the host imposes a thread-block size on the kernel launches of a binary built for
+    `parallel_backend`: its `execution_env` package declares the values it admits
+    (`BLOCK_SIZES`, `registry.CAPABILITIES["execution_env"]`). A value with no record, or whose
+    launch environment is the neutral core's, answers False."""
+    if not registry.provides("parallel", parallel_backend, "execution_env") or \
+            "execution_env" not in registry.get("parallel", parallel_backend).backend_provides:
+        return False
+    module = registry.capability_module("parallel", parallel_backend, "execution_env")
+    return getattr(module, "BLOCK_SIZES", None) is not None
 
 
 def declares_launcher(parallel_backend: str) -> bool:
@@ -205,16 +222,20 @@ def _runtime_probe(parallel_backend: str) -> tuple[str, ...] | None:
     return tuple(str(a) for a in module.RUNTIME_PROBE)
 
 
-def serial_execution_env(parallel_backend: str) -> dict[str, str]:
+def serial_execution_env(parallel_backend: str,
+                         block_size: int | None = None) -> dict[str, str]:
     """The environment the quality check's serial reference runs with (issue #512): the parallel
     backend's launch environment for one thread and — for a backend that declares a launcher,
     whose binary the re-run starts as one process without it — the process grid `(1, 1)`, so
     the variables that backend sets cannot reach the reference from the host process at other
-    values. A variable the backend does not set (a thread variable under `mpi`; anything under
+    values. A device backend's kernels have no serial launch: the reference runs them in blocks
+    of `block_size` threads, the certified shape's (`TargetProfile.block_size`), when that is
+    given. A variable the backend does not set (a thread variable under `mpi`; anything under
     a backend whose environment is empty) is inherited, as it is by every run. Refused like
     `launch_shape`'s for a backend with no launch environment."""
     return _execution_env(parallel_backend, 1,
-                          (1, 1) if declares_launcher(parallel_backend) else None)
+                          (1, 1) if declares_launcher(parallel_backend) else None,
+                          block_size)
 
 
 def launch_shape(profile: Any, site: Any = None, shape: Any = None) -> LaunchShape:
@@ -227,13 +248,14 @@ def launch_shape(profile: Any, site: Any = None, shape: Any = None) -> LaunchSha
     declares one, then its device trace's when it declares one (`launch_argv_prefix`); `trace` is
     the trace's summary half; a sweep shape is launched without the trace. The environment is
     the backend's for the shape's threads per rank and, when the shape imposes one, its process
-    grid (issue #512).
+    grid and its thread-block size (issue #512).
 
     Refuses (`LaunchUnavailable`) a hardware class whose record does not declare `execution`,
     a site whose `executes` does not list the class, a parallel backend whose record does not
     declare `execution_env` (with the registry's own wording for the first and the third), a
     launcher backend at a site other than `local`, more ranks than one — or a process
-    grid — for a backend with no launcher, and a shape the backend's PACKAGE launch
+    grid — for a backend with no launcher, a block size for a backend that imposes none
+    (`imposes_block_size`), and a shape the backend's PACKAGE launch
     environment refuses (a thread count its model does not run). A backend whose launch
     environment is the neutral core's empty one refuses no count here; the launch gate
     refuses a count above one for it (`target_profile._thread_count_violations`), before
@@ -268,8 +290,13 @@ def launch_shape(profile: Any, site: Any = None, shape: Any = None) -> LaunchSha
         raise LaunchUnavailable(
             f"execution.process_grid: a process grid arranges the ranks a launcher starts, and "
             f"parallel backend {backend} declares none")
+    if shape.block_size is not None and not imposes_block_size(backend):
+        raise LaunchUnavailable(
+            f"execution.block_size: a block size configures the kernel launches of a backend "
+            f"whose launch environment imposes one, and parallel backend {backend} imposes none")
     try:
-        env = _execution_env(backend, shape.threads_per_rank, shape.process_grid)
+        env = _execution_env(backend, shape.threads_per_rank, shape.process_grid,
+                             shape.block_size)
     except ValueError as exc:
         raise LaunchUnavailable(f"execution shape {shape.label}: parallel backend {backend} "
                                 f"refuses it ({exc})") from exc

@@ -1967,7 +1967,9 @@ def _validate_execution_shapes(repo_root: Path, execution: NodeExecution,
     that order, each with the shape's ranks, process grid and threads per rank, and each
     comparison holding — the run succeeded, its verdict and every check status equal the
     reference's, its captured state agrees (`SHAPE_STATE_AGREEMENT_HOLDS`), and, for a target
-    whose backend declares a launcher, the harness reported the shape's rank count and grid.
+    whose backend declares a launcher, the harness reported the shape's rank count and grid —
+    for one whose backend imposes a thread-block size, the block size of a shape that imposes
+    one.
 
     The conductor writes the record and fails the run on a comparison that does not hold, so
     the gate reads the same facts twice: a record missing a declared shape — a sweep the
@@ -1998,10 +2000,11 @@ def _validate_execution_shapes(repo_root: Path, execution: NodeExecution,
             f"execution.sweep's); every shape runs and is compared with the serial reference")
         return
     launcher = host_execution.declares_launcher(target.parallel_backend)
+    block_imposed = host_execution.imposes_block_size(target.parallel_backend)
     for shape, row in zip(expected, rows):
         where = f"{quality_path}: shapes[{shape.label}]"
         declared = shape.record()
-        for key in ("threads_per_rank", "ranks", "process_grid"):
+        for key in ("threads_per_rank", "ranks", "process_grid", "block_size"):
             if row.get(key) != declared[key] or isinstance(row.get(key), bool):
                 violations.append(f"{where}.{key} is {row.get(key)!r}, and the shape's is "
                                   f"{declared[key]!r}")
@@ -2023,6 +2026,14 @@ def _validate_execution_shapes(repo_root: Path, execution: NodeExecution,
                     f"{where}: the harness reported mpi_ranks={observed[0]!r} and "
                     f"process_grid={observed[1]!r}, and the shape launched {shape.ranks} rank(s) "
                     f"in {grid}")
+        if block_imposed and shape.block_size is not None:
+            observed_block = row.get("observed_block_size")
+            if type(observed_block) is not int or observed_block != shape.block_size:
+                violations.append(
+                    f"{where}: the harness reported block_size={observed_block!r}, and the shape "
+                    f"launched its kernels in blocks of {shape.block_size}")
+    if block_imposed and target.block_size is not None:
+        _validate_harness_reported_block(repo_root, execution, target, violations)
 
 
 #: The scalar snapshot variables the distributed harness's own self-test captures the grid
@@ -2030,6 +2041,53 @@ def _validate_execution_shapes(repo_root: Path, execution: NodeExecution,
 #: `l0_partition_tile_pass`). `tools/tests/test_validate_pipeline_semantics.py` couples the pair
 #: to that document.
 HARNESS_GRID_SNAPSHOT_VARIABLES: tuple[str, str] = ("p1", "p2")
+
+
+#: The scalar snapshot variable the device harness's own self-test captures the block size
+#: `__block_size` reports in (the device harness's tests.md, `l0_block_size_pass`).
+#: `tools/tests/test_validate_pipeline_semantics.py` couples it to that document.
+HARNESS_BLOCK_SNAPSHOT_VARIABLE = "block_size"
+
+
+def _validate_harness_reported_block(repo_root: Path, execution: NodeExecution, target: Any,
+                                     violations: list[str]) -> None:
+    """For the Validate run of the target's OWN harness (issue #512), on a target that imposes a
+    thread-block size: every case snapshot of the certified run that captures the block size
+    the harness reports (`HARNESS_BLOCK_SNAPSHOT_VARIABLE`) carries the block the run was
+    launched with, and at least one does — the tie `_validate_harness_reported_grid` makes for
+    the grid. `perf.json#parallelism.block_size` alone pins what `__write_perf` prints; this ties
+    it to what `__block_size` returns, which is what the host-rendered runner hands a consuming
+    node's kernels. A physics node's snapshots are not read: its variable names are its own."""
+    from tools.target_profile import TargetProfileError, harness_node_key_for_target
+    try:
+        harness_nk = harness_node_key_for_target(repo_root, target)
+    except TargetProfileError:
+        return  # the launch gate refuses a target whose harness does not resolve
+    if execution.node_key != harness_nk:
+        return
+    snap_dir = execution.node_dir / "raw" / "state_snapshots"
+    name = HARNESS_BLOCK_SNAPSHOT_VARIABLE
+    seen = 0
+    for path in sorted(snap_dir.glob("*.json")) if snap_dir.is_dir() else []:
+        try:
+            doc = _read_json(path)
+        except (OSError, json.JSONDecodeError):
+            continue  # the snapshot gate reports an unreadable capture
+        if not isinstance(doc, dict) or name not in doc:
+            continue
+        seen += 1
+        reported = doc.get(name)
+        if not isinstance(reported, (int, float)) or isinstance(reported, bool) \
+                or reported != target.block_size:
+            violations.append(
+                f"{path}: the harness self-test reports the block size {name} = {reported!r}, "
+                f"and the run was launched with {target.block_size}; the harness's block-size "
+                f"query does not report the block it was handed")
+    if seen == 0:
+        violations.append(
+            f"{snap_dir}: no case snapshot of the harness self-test captures the block size it "
+            f"reports ({name}), so the block the run was launched with is tied to nothing the "
+            f"self-test judged")
 
 
 def _validate_harness_reported_grid(repo_root: Path, execution: NodeExecution, target: Any,

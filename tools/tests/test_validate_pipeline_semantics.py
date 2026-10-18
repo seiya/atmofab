@@ -14871,6 +14871,31 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
                 self.assertTrue(any(needle in v for v in violations), violations)
         # A target without a launcher is not asked what its harness observed.
         self.assertEqual(run(FORTRAN_CPU, edited(FORTRAN_CPU, 1, observed_mpi_ranks=9)), [])
+        # Issue #512 (PR-4c): a backend that imposes a thread-block size — each shape's declared
+        # block, and the block its harness reported. The harness's own snapshot tie is not this
+        # driver's (no harness node here; `_validate_harness_reported_block` has its own).
+        gpu = profile_with(hardware={"class": "gpu", "architecture": "sm_90"},
+                           parallel={"backend": "cuda"},
+                           execution={"threads_per_rank": 1, "block_size": 256,
+                                      "sweep": {"block_size": [64, 128]}})
+        with mock.patch.object(vps, "_validate_harness_reported_block"):
+            self.assertEqual(run(gpu, passing_shape_rows(gpu)), [])
+            for name, (shapes, needle) in {
+                    "declared": (edited(gpu, 1, block_size=128), "shapes[block_64].block_size"),
+                    "declared absent": (edited(gpu, 0, block_size=_ABSENT),
+                                        "shapes[certified].block_size is None"),
+                    "observed": (edited(gpu, 2, observed_block_size=256),
+                                 "shapes[block_128]: the harness reported block_size=256"),
+                    "observed absent": (edited(gpu, 0, observed_block_size=_ABSENT),
+                                        "block_size=None"),
+                    "observed real": (edited(gpu, 1, observed_block_size=64.0),
+                                      "block_size=64.0"),
+                    }.items():
+                with self.subTest(row=name):
+                    violations = run(gpu, shapes)
+                    self.assertTrue(any(needle in v for v in violations), violations)
+            # A backend that imposes no block size is not asked what its harness observed.
+            self.assertEqual(run(FORTRAN_CPU, edited(FORTRAN_CPU, 1, observed_block_size=64)), [])
 
     def test_a_launcher_run_reports_the_targets_rank_count(self) -> None:
         """Issue #316: under a launcher, the run's performance record states the target's rank
@@ -15013,6 +15038,70 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
         self.assertEqual(run({"c0": {"t": 0.0, "p1": 7.0, "p2": 0.5}},
                              node_key="problem/x@0.1.0"), [])
         self.assertEqual(run({}, node_key="problem/x@0.1.0"), [])
+
+    def test_the_device_harness_self_test_reports_the_block_it_was_launched_with(self) -> None:
+        """Issue #512 (PR-4c): on the Validate run of the target's own harness, on a target that
+        imposes a thread-block size, every case snapshot capturing the block size
+        `__block_size` reports carries the certified run's block, and one does — so a harness
+        that echoes the imposed block into perf.json while returning another from
+        `__block_size` (what the runner hands a consuming node's kernels) is refused. A physics
+        node's snapshots are not read."""
+        from unittest import mock
+
+        from tools import target_profile as tp_mod
+        from tools.tests.target_fixtures import passing_shape_rows, profile_with
+        gpu = profile_with(hardware={"class": "gpu", "architecture": "sm_90"},
+                           parallel={"backend": "cuda"},
+                           execution={"threads_per_rank": 1, "block_size": 256})
+        harness = "infrastructure/harness_y@0.2.0"
+        self.assertEqual(vps.HARNESS_BLOCK_SNAPSHOT_VARIABLE, "block_size")
+
+        def run(snaps: dict, node_key: str = harness, target=gpu) -> list[str]:
+            with tempfile.TemporaryDirectory() as tmp:
+                node_dir = Path(tmp) / "node"
+                snap_dir = node_dir / "raw" / "state_snapshots"
+                (snap_dir / "initial").mkdir(parents=True)
+                _write_json(node_dir / "quality_check.json",
+                            {"status": "pass", "shapes": passing_shape_rows(target)})
+                for name, doc in snaps.items():
+                    _write_json(snap_dir / f"{name}.json", doc)
+                execution = vps.NodeExecution(node_key=node_key, node_dir=node_dir,
+                                              exec_dir=node_dir, pipeline_dir=Path(tmp))
+                violations: list[str] = []
+                with mock.patch.object(vps, "_pipeline_target", return_value=target), \
+                        mock.patch.object(tp_mod, "harness_node_key_for_target",
+                                          return_value=harness):
+                    vps._validate_execution_shapes(Path(tmp), execution, violations)
+                return violations
+
+        good = {"l0_block_size_pass": {"t": 0.0, "block_size": 256.0, "block_valid": 1.0},
+                "l0_case_fanout_pass": {"t": 0.0, "case_index": 2.0}}
+        self.assertEqual(run(good), [])
+        for bad in (64.0, None, True, "256"):
+            with self.subTest(bad=bad):
+                violations = run({**good, "l0_block_size_pass": {"t": 0.0, "block_size": bad}})
+                self.assertEqual(len(violations), 1, violations)
+                self.assertIn("l0_block_size_pass.json: the harness self-test reports the block "
+                              "size", violations[0])
+                self.assertIn("launched with 256", violations[0])
+        violations = run({"l0_case_fanout_pass": {"t": 0.0, "case_index": 2.0}})
+        self.assertEqual(len(violations), 1, violations)
+        self.assertIn("no case snapshot of the harness self-test captures the block size",
+                      violations[0])
+        # A physics node's snapshots are its own; neither is a target that imposes no block.
+        self.assertEqual(run({"c0": {"t": 0.0, "block_size": 7.0}}, node_key="problem/x@0.1.0"),
+                         [])
+        unimposed = profile_with(hardware={"class": "gpu", "architecture": "sm_90"},
+                                 parallel={"backend": "cuda"})
+        self.assertEqual(run({}, target=unimposed), [])
+
+    def test_the_harness_block_variable_is_the_one_its_self_test_captures(self) -> None:
+        """`HARNESS_BLOCK_SNAPSHOT_VARIABLE` against the device harness's tests.md."""
+        text = (Path(__file__).resolve().parents[2] / "spec/infrastructure/infra/harness/"
+                "harness_cpp_gpu/tests.md").read_text(encoding="utf-8")
+        block = text.split("- `test_id`: `l0_block_size_pass`", 1)[1].split("- `test_id`:", 1)[0]
+        line = next(ln for ln in block.splitlines() if "`required_raw_variables`" in ln)
+        self.assertIn(f"`{vps.HARNESS_BLOCK_SNAPSHOT_VARIABLE}`", line)
 
     def test_the_harness_grid_variables_are_the_ones_its_self_test_captures(self) -> None:
         """`HARNESS_GRID_SNAPSHOT_VARIABLES` against the harness's tests.md: both grid

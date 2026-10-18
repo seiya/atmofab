@@ -63,7 +63,7 @@
     {
       "harness_capability_abi_version": 1,
       "manifests": [
-        {"node_key": "infrastructure/harness_cpp_gpu@0.1.0",
+        {"node_key": "infrastructure/harness_cpp_gpu@0.2.0",
          "provides": ["state_registration@1", "sync_single_case@1"]},
         {"node_key": "infrastructure/harness_fortran_cpu@0.7.0",
          "provides": ["state_registration@1", "sync_single_case@1"]},
