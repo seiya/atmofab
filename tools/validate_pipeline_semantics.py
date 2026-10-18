@@ -1953,6 +1953,78 @@ def _validate_launched_ranks(repo_root: Path, execution: NodeExecution,
                 f"is one process)")
 
 
+#: The answers of `quality_check.json#shapes[].state_agreement.status` under which a shape's
+#: comparison with the serial reference holds (issue #512): the state agrees under the IR's
+#: cross-target predicates, or the IR declares none.
+SHAPE_STATE_AGREEMENT_HOLDS = frozenset({"agree", "not_applicable"})
+
+
+def _validate_execution_shapes(repo_root: Path, execution: NodeExecution,
+                               violations: list[str]) -> None:
+    """The quality check compared every execution shape of the run with the serial reference
+    (issue #512): `quality_check.json#shapes` lists exactly the target's shapes
+    (`TargetProfile.execution_shapes`: the certified one, then each of `execution.sweep`'s), in
+    that order, each with the shape's ranks, process grid and threads per rank, and each
+    comparison holding — the run succeeded, its verdict and every check status equal the
+    reference's, its captured state agrees (`SHAPE_STATE_AGREEMENT_HOLDS`), and, for a target
+    whose backend declares a launcher, the harness reported the shape's rank count and grid.
+
+    The conductor writes the record and fails the run on a comparison that does not hold, so
+    the gate reads the same facts twice: a record missing a declared shape — a sweep the
+    conductor did not run — or naming one the profile does not declare is the defect this
+    catches. A target that does not load is refused by `_validate_pipeline_targets_resolve`."""
+    target = _pipeline_target(repo_root, execution.pipeline_dir)
+    if target is None:
+        return
+    quality_path = execution.node_dir / "quality_check.json"
+    try:
+        quality = _read_json(quality_path)
+    except (OSError, json.JSONDecodeError):
+        return  # `_validate_raw_evidence` / `_validate_execution_json_outputs` report it
+    if not isinstance(quality, dict):
+        return
+    rows = quality.get("shapes")
+    expected = target.execution_shapes
+    if not (isinstance(rows, list) and all(isinstance(r, dict) for r in rows)):
+        violations.append(
+            f"{quality_path}: shapes must be a list of objects, one per execution shape of "
+            f"target {target.target_id} ({[s.label for s in expected]}), got {rows!r}")
+        return
+    labels = [r.get("label") for r in rows]
+    if labels != [s.label for s in expected]:
+        violations.append(
+            f"{quality_path}: shapes are {labels!r}, and target {target.target_id}'s execution "
+            f"shapes are {[s.label for s in expected]!r} (the certified shape, then "
+            f"execution.sweep's); every shape runs and is compared with the serial reference")
+        return
+    launcher = host_execution.declares_launcher(target.parallel_backend)
+    for shape, row in zip(expected, rows):
+        where = f"{quality_path}: shapes[{shape.label}]"
+        declared = shape.record()
+        for key in ("threads_per_rank", "ranks", "process_grid"):
+            if row.get(key) != declared[key] or isinstance(row.get(key), bool):
+                violations.append(f"{where}.{key} is {row.get(key)!r}, and the shape's is "
+                                  f"{declared[key]!r}")
+        for key in ("run_ok", "verdict_available", "diagnostics_match", "verdict_match"):
+            if row.get(key) is not True:
+                violations.append(f"{where}.{key} must be true (the shape's run compared with "
+                                  f"the serial reference), got {row.get(key)!r}")
+        agreement = row.get("state_agreement")
+        status = agreement.get("status") if isinstance(agreement, dict) else None
+        if status not in SHAPE_STATE_AGREEMENT_HOLDS:
+            violations.append(f"{where}.state_agreement.status is {status!r}; the captured "
+                              f"state must agree with the serial reference's under the IR's "
+                              f"cross-target predicates ({sorted(SHAPE_STATE_AGREEMENT_HOLDS)})")
+        if launcher:
+            grid = list(shape.process_grid or (shape.ranks, 1))
+            observed = (row.get("observed_mpi_ranks"), row.get("observed_process_grid"))
+            if type(observed[0]) is not int or observed[0] != shape.ranks or observed[1] != grid:
+                violations.append(
+                    f"{where}: the harness reported mpi_ranks={observed[0]!r} and "
+                    f"process_grid={observed[1]!r}, and the shape launched {shape.ranks} rank(s) "
+                    f"in {grid}")
+
+
 #: The scalar snapshot variables the distributed harness's own self-test captures the grid
 #: `__grid_dims` reports in (the distributed harness's tests.md, `l0_process_grid_pass` and
 #: `l0_partition_tile_pass`). `tools/tests/test_validate_pipeline_semantics.py` couples the pair
@@ -11184,6 +11256,7 @@ def _validate_impl(
         _validate_trial_meta(repo_root, execution, violations)
         _validate_execution_json_outputs(execution, violations)
         _validate_launched_ranks(repo_root, execution, violations)
+        _validate_execution_shapes(repo_root, execution, violations)
         _validate_raw_evidence(repo_root, execution, violations)
         _validate_metrics_basis_not_trivial(execution, violations)
         in_scope_src_dir = _execution_in_scope_src_dir(execution, violations)

@@ -10445,6 +10445,7 @@ class TargetProfileLaunchTests(unittest.TestCase):
                                  .read_text(encoding="utf-8"))
             doc = yaml.safe_load(path.read_text(encoding="utf-8"))
             doc["toolchain"], doc["parallel"] = gpu["toolchain"], gpu["parallel"]
+            doc["execution"] = gpu["execution"]  # the parallel model's own thread shape
             path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
             required = [item.executable for item in required_host_executables(
                 resolve_launch_axis_selection(load_target_profile(repo_root, "t_g")))]
@@ -10494,6 +10495,7 @@ class TargetProfileLaunchTests(unittest.TestCase):
                                  .read_text(encoding="utf-8"))
             doc = yaml.safe_load(path.read_text(encoding="utf-8"))
             doc["toolchain"], doc["parallel"] = gpu["toolchain"], gpu["parallel"]
+            doc["execution"] = gpu["execution"]  # the parallel model's own thread shape
             path.write_text(yaml.safe_dump(doc, sort_keys=False), encoding="utf-8")
             (repo_root / "sites.yaml").write_text(
                 "sites_version: 1\nsites:\n  local:\n    executes: [cpu, gpu]\n",

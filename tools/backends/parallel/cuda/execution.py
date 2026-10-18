@@ -10,8 +10,13 @@ from __future__ import annotations
 
 def environment(threads_per_rank: int) -> dict[str, str]:
     """No overrides. `threads_per_rank` is validated like the OpenMP backend validates it, so a
-    malformed profile value is refused the same way whichever model the profile names."""
+    malformed profile value is refused the same way whichever model the profile names; a count
+    other than one is refused, since the host side of a CUDA binary runs one thread and nothing
+    here would make it run more (the launch gate asks this, `target_profile.
+    _thread_count_violations`)."""
     if isinstance(threads_per_rank, bool) or not isinstance(threads_per_rank, int) \
             or threads_per_rank < 1:
         raise ValueError(f"threads_per_rank must be an integer >= 1, got {threads_per_rank!r}")
+    if threads_per_rank != 1:
+        raise ValueError(f"the host side runs one thread, got threads_per_rank={threads_per_rank}")
     return {}

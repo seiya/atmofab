@@ -1004,6 +1004,17 @@ PINNED: dict[str, str] = {
     # §checklist_g6_floor_scope). The gate that moved with them is the `mpi` presence floor
     # (a component model naming a harness operation is refused).
     "pure-78": "a0d57d208ea8c2bcecb186b96617927fcf75ce5ec1fa24d30afc418590f3e904",
+    # pure-79 (issue #512 PR-4b): the `mpi` producer and reviewer fragments state the replicate
+    # threshold as `p_d * m_d`, `m_d` the larger of `ng` and the smallest block extent the
+    # operations a case calls on a block accept — at `ng` alone a component whose operation
+    # refuses a one-cell block failed its guard under the grid (4, 1) the sweep runs, and
+    # deadlocked under (3, 1). Members moved: `generate_generate.txt` §target_lowering_floor,
+    # `generate_verify.txt` §checklist_g6_floor_scope. Re-pinned in place (unshipped) by round 3:
+    # the `mpi` fragments say the sweep's runs start fewer than `execution.ranks` processes, and
+    # the `openmp` fragments (§target_lowering_floor, §checklist_g6_floor_scope) say a region's
+    # team is never pinned to one thread or switched off on the test cases (round 4 corrected the
+    # rationale: each run's thread limit caps `num_threads(k)`, so only k = 1 or `if` defeats it).
+    "pure-79": "e2b9d6485c50322732b833372485f7a69ecc90cbbadae3bac3daa845c2aec521",
 }
 
 

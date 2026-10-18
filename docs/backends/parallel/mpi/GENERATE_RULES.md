@@ -61,9 +61,14 @@ apart: `perf.json#cells_updated` does come out larger (each rank reports the who
 runner sums the ranks' reports), but it is the kernel's own report and nothing compares it. Its sibling reports a partition only in a
 branch no case reaches — every case computed replicated, "too small to distribute", with
 `sb_<var>_axis<d>` set non-zero in the unreached branch, which the floor counts. The producer IS told
-to replicate a case whose grid cannot give every rank the `ng` cells the halo exchange needs
-along every partitioned axis (fewer than `p_d * ng` cells along the axis partitioned along grid
-dimension `d`), so the reviewer is told the same threshold and holds the kernel to it. A third
+to replicate a case whose grid cannot give every rank `m_d` cells along every partitioned axis
+(fewer than `p_d * m_d` cells along the axis partitioned along grid dimension `d`), `m_d` the
+larger of the `ng` cells the halo exchange needs and the smallest block extent the operations
+the case calls on a block accept — a block smaller than an operation's own precondition makes
+that rank's call fail while another rank's succeeds, so the ranks disagree or stop at different
+collectives (issue #512: a flux component refusing `nx < 2`, distributed at the halo threshold
+alone, failed its guard under the grid `(4, 1)` and deadlocked under `(3, 1)`) — so the reviewer
+is told the same threshold and holds the kernel to it. A third
 member of the class partitions a two-dimensional state along grid dimension 1 only: on a grid
 with `p2 > 1` every rank of a line along dimension 2 computes the same copy, the gather reads
 coordinate `0`'s, and the state agrees; the reviewer is told that the second spatial axis is

@@ -205,20 +205,39 @@ def _runtime_probe(parallel_backend: str) -> tuple[str, ...] | None:
     return tuple(str(a) for a in module.RUNTIME_PROBE)
 
 
-def launch_shape(profile: Any, site: Any = None) -> LaunchShape:
+def serial_execution_env(parallel_backend: str) -> dict[str, str]:
+    """The environment the quality check's serial reference runs with (issue #512): the parallel
+    backend's launch environment for one thread and — for a backend that declares a launcher,
+    whose binary the re-run starts as one process without it — the process grid `(1, 1)`, so
+    the variables that backend sets cannot reach the reference from the host process at other
+    values. A variable the backend does not set (a thread variable under `mpi`; anything under
+    a backend whose environment is empty) is inherited, as it is by every run. Refused like
+    `launch_shape`'s for a backend with no launch environment."""
+    return _execution_env(parallel_backend, 1,
+                          (1, 1) if declares_launcher(parallel_backend) else None)
+
+
+def launch_shape(profile: Any, site: Any = None, shape: Any = None) -> LaunchShape:
     """The launch shape of a binary built for `profile` (a `target_profile.TargetProfile`) at
     `site` (an `execution_sites.Site`; None is the local site with its default `executes`, the
-    configuration with no `sites.yaml`).
+    configuration with no `sites.yaml`) in the execution `shape` (a `target_profile.
+    ExecutionShape`; None is the profile's certified shape, `profile.certified_shape`).
 
-    The argv prefix is the parallel backend's launcher with the profile's `ranks` when it
+    The argv prefix is the parallel backend's launcher with the shape's `ranks` when it
     declares one, then its device trace's when it declares one (`launch_argv_prefix`); `trace` is
-    the trace's summary half.
+    the trace's summary half; a sweep shape is launched without the trace. The environment is
+    the backend's for the shape's threads per rank and, when the shape imposes one, its process
+    grid (issue #512).
 
     Refuses (`LaunchUnavailable`) a hardware class whose record does not declare `execution`,
     a site whose `executes` does not list the class, a parallel backend whose record does not
     declare `execution_env` (with the registry's own wording for the first and the third), a
-    launcher backend at a site other than `local`, and more ranks than one — or a process
-    grid — for a backend with no launcher.
+    launcher backend at a site other than `local`, more ranks than one — or a process
+    grid — for a backend with no launcher, and a shape the backend's PACKAGE launch
+    environment refuses (a thread count its model does not run). A backend whose launch
+    environment is the neutral core's empty one refuses no count here; the launch gate
+    refuses a count above one for it (`target_profile._thread_count_violations`), before
+    anything runs.
     """
     reason = registry.missing_capability_reason(
         "hardware", profile.hardware_class, "execution")
@@ -240,18 +259,25 @@ def launch_shape(profile: Any, site: Any = None) -> LaunchShape:
         raise LaunchUnavailable(
             f"parallel.backend: {backend} runs its binary under a launcher, whose ranks a remote "
             f"site does not place yet; site {site_id} is not {LOCAL_SITE}")
-    if profile.ranks != 1 and not declares_launcher(backend):
+    shape = profile.certified_shape if shape is None else shape
+    if shape.ranks != 1 and not declares_launcher(backend):
         raise LaunchUnavailable(
-            f"execution.ranks: {profile.ranks} ranks need a launcher, and parallel backend "
+            f"execution.ranks: {shape.ranks} ranks need a launcher, and parallel backend "
             f"{backend} declares none")
-    if profile.declares_process_grid and not declares_launcher(backend):
+    if shape.process_grid is not None and not declares_launcher(backend):
         raise LaunchUnavailable(
             f"execution.process_grid: a process grid arranges the ranks a launcher starts, and "
             f"parallel backend {backend} declares none")
-    env = _execution_env(backend, profile.threads_per_rank,
-                         profile.process_grid if profile.declares_process_grid else None)
-    trace_prefix, trace = _device_trace(backend)
-    return LaunchShape(argv_prefix=(*_launcher(backend, profile.ranks), *trace_prefix), env=env,
+    try:
+        env = _execution_env(backend, shape.threads_per_rank, shape.process_grid)
+    except ValueError as exc:
+        raise LaunchUnavailable(f"execution shape {shape.label}: parallel backend {backend} "
+                                f"refuses it ({exc})") from exc
+    # The device trace runs on the certified shape alone: its summary is read once, by the
+    # post-execute gate, of the run that certifies; a sweep shape is compared by its state.
+    trace_prefix, trace = _device_trace(backend) if shape == profile.certified_shape \
+        else ((), None)
+    return LaunchShape(argv_prefix=(*_launcher(backend, shape.ranks), *trace_prefix), env=env,
                        site=site_id, platform_probe=_platform_probe(profile.hardware_class),
                        trace=trace, runtime_probe=_runtime_probe(backend))
 

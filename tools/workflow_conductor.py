@@ -393,6 +393,32 @@ _EXECUTE_EXCERPT_TRUNCATION_MARK = "[... excerpt truncated to the last "
 _PURE_ATTEMPT_EXCERPT_MAX_CHARS = 400
 
 
+#: How much of a failed sweep shape's stderr `quality_check.json#shapes[].run_failure` keeps
+#: (issue #512): its first and its last lines, each bounded in characters — the cause is often
+#: at the top (a runtime's `ERROR STOP`) and a launcher's summary at the bottom.
+_SHAPE_STDERR_LINES = 10
+_SHAPE_STDERR_CHARS = 1000
+#: How much of it the repair excerpt quotes (`_quality_check_failure_lines`): the first failed
+#: shape's first and last lines, every other failed shape's first non-blank line, each clipped,
+#: so that several failing shapes leave room in the bounded excerpt for the gate's report.
+_EXCERPT_STDERR_HEAD = 5
+_EXCERPT_STDERR_TAIL = 3
+_EXCERPT_LINE_CHARS = 160
+
+
+def _stderr_head_and_tail(stderr: str) -> dict[str, str]:
+    """`{stderr_head, stderr_tail}` of a failed run's stderr. One of at most
+    2 × `_SHAPE_STDERR_LINES` lines is kept whole as the head, bounded to 2 ×
+    `_SHAPE_STDERR_CHARS` characters, and the tail is `""`. A longer one keeps its first
+    `_SHAPE_STDERR_LINES` lines as the head and its last as the tail, each bounded to
+    `_SHAPE_STDERR_CHARS` characters from the end that joins the two."""
+    lines = stderr.splitlines()
+    if len(lines) <= 2 * _SHAPE_STDERR_LINES:
+        return {"stderr_head": "\n".join(lines)[:2 * _SHAPE_STDERR_CHARS], "stderr_tail": ""}
+    return {"stderr_head": "\n".join(lines[:_SHAPE_STDERR_LINES])[:_SHAPE_STDERR_CHARS],
+            "stderr_tail": "\n".join(lines[-_SHAPE_STDERR_LINES:])[-_SHAPE_STDERR_CHARS:]}
+
+
 def _execute_failure_excerpt(text: str) -> str:
     """The bounded tail of an `[execute fail]` report, safe to render into a repair prompt."""
     tail = "\n".join(text.splitlines()[-_EXECUTE_EXCERPT_MAX_LINES:])
@@ -11223,50 +11249,223 @@ class Conductor:
         )
 
     @staticmethod
-    def _author_quality_check(node_dir: Path, run_diag: dict[str, Any],
-                              qc_diag: dict[str, Any], run_cmd_id: str | None,
-                              qc_cmd_id: str | None, preset: str,
-                              threads: int, ranks: int = 1) -> str:
-        """quality_check.json = deterministic value-equality of run_program vs the
-        quality-check preset's re-run (per phase_04 §4-1). Returns the top-level status.
+    def _shape_state_agreement(ir: dict[str, Any], reference_dir: Path, label: str,
+                               shape_dir: Path) -> dict[str, Any]:
+        """Whether the state one execution shape captured agrees with the serial reference's,
+        under the IR's cross-target predicates (issue #512): the comparison those predicates
+        state between two targets' runs of one node holds between two shapes of one run too —
+        the cell-wise state does not depend on how the work was divided, while a reduction's
+        summation order does, which is why the statuses and not the diagnostic values are
+        compared beside it. A harness self-test declares none (its captures name the ranks), so
+        the answer is `not_applicable`.
 
-        `ranks` is the process count the run was launched with (the target's
-        `execution.ranks`, issue #316); the quality-check re-run starts the binary without a
-        launcher, so it is one process — the serial reference the parallel run is compared
-        against (phase_04 §4-2)."""
+        `status` is `agree`, `disagree` (a comparison failed: `failures` names the case, the
+        quantity and the value), `unevaluable` (an evaluation error, or no capture; `error`) or
+        `not_applicable`. `worst` lists the five comparisons nearest their bound, for the
+        record."""
+        from tools.primary_evidence import (
+            ComparandEvidence,
+            PrimaryEvidenceError,
+            comparand_evidence_sha256,
+            cross_target_predicates,
+            evaluate_primary_predicates,
+        )
+        if not cross_target_predicates(ir):
+            return {"status": "not_applicable"}
+        try:
+            comparand = ComparandEvidence(target_id=label, pipeline_ref="", run_id="",
+                                          run_dir=shape_dir,
+                                          evidence=comparand_evidence_sha256(shape_dir))
+            records = evaluate_primary_predicates(ir, reference_dir, comparands=[comparand],
+                                                  cross_target_only=True)
+        except PrimaryEvidenceError as exc:
+            return {"status": "unevaluable", "error": str(exc)[:400]}
+        evaluated = [(r, ev) for r in records for ev in (r.get("evaluated") or [])
+                     if isinstance(ev, dict)]
+        structural = [ev for r, ev in evaluated if r.get("kind") == "structural"
+                      and not ev.get("satisfied")]
+        if structural:
+            return {"status": "unevaluable",
+                    "error": str(structural[0].get("error") or "not evaluated")[:400],
+                    "records_count": len(records)}
+        failures = [{"case": ev.get("case"), "quantity": r.get("quantity"),
+                     **({"value": ev["value"], "rhs": ev.get("rhs")} if "value" in ev
+                        else {"reason": ev.get("reason"), "error": ev.get("error")})}
+                    for r, ev in evaluated if not ev.get("satisfied")]
+        scored = [(abs(float(ev["value"])) / abs(float(ev["rhs"])), r, ev)
+                  for r, ev in evaluated if "value" in ev and isinstance(ev.get("rhs"), (int, float))
+                  and ev.get("rhs") not in (0, 0.0) and isinstance(ev["value"], (int, float))]
+        scored.sort(key=lambda t: -t[0])
+        worst = [{"case": ev.get("case"), "quantity": r.get("quantity"), "value": ev["value"],
+                  "rhs": ev.get("rhs")} for _ratio, r, ev in scored[:5]]
+        return {"status": "disagree" if failures else "agree", "records_count": len(records),
+                "failures": failures[:5], "worst": worst}
+
+    @staticmethod
+    def _author_quality_check(node_dir: Path, qc_diag: dict[str, Any], qc_cmd_id: str | None,
+                              preset: str, *, ir: dict[str, Any], reference_dir: Path,
+                              shape_runs: list[dict[str, Any]], launcher: bool) -> str:
+        """quality_check.json = the run of every execution shape compared with the serial
+        reference: the quality-check preset's re-run, one process with one thread (per phase_04
+        §4-1 / §4-2; issue #512). Returns the top-level status.
+
+        `shape_runs` holds one entry per shape the run launched — the certified shape first
+        (`target_profile.TargetProfile.execution_shapes`) — as `{shape, dir, ok, command_id}`:
+        its `ExecutionShape`, the directory the run wrote, whether `run_program` succeeded and
+        its log entry, with `failure` when it did not: `{return_code, error, stderr_head,
+        stderr_tail}` (`_stderr_head_and_tail`) for a run that failed, `{not_run}` naming the command that stopped it for one that did not
+        run. The row records it as `run_failure`, and the repair excerpt quotes it. Each shape is compared with the reference by the statuses of its
+        `diagnostics.json` checks, its verdict, and its captured state through the IR's
+        cross-target predicates (`_shape_state_agreement`); a shape that failed to run is a
+        mismatch. For a target whose backend declares a launcher (`launcher`), the process count
+        and grid the shape's harness reports in `perf.json` must be the shape's. The top-level
+        `checks` and `comparison` are the certified shape's, which the post-execute gate reads
+        as it did before the sweep."""
+        def _object(path: Path) -> dict[str, Any]:
+            # A runner output that is unreadable, not UTF-8, not JSON or not an object reads as
+            # empty: the comparison then fails, and the post-execute gate names the file.
+            try:
+                doc = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                return {}
+            return doc if isinstance(doc, dict) else {}
+
         def _check_map(d: dict[str, Any]) -> dict[str, Any]:
+            checks = d.get("checks")
             return {k: (v.get("status") if isinstance(v, dict) else v)
-                    for k, v in (d.get("checks") or {}).items()}
+                    for k, v in (checks.items() if isinstance(checks, dict) else ())}
 
-        run_checks, qc_checks = _check_map(run_diag), _check_map(qc_diag)
-        run_verdict, qc_verdict = run_diag.get("verdict"), qc_diag.get("verdict")
-        verdict_available = bool(run_verdict) and bool(qc_verdict)
-        diagnostics_match = run_checks == qc_checks
-        verdict_match = run_verdict == qc_verdict
-        status = "pass" if (verdict_available and diagnostics_match and verdict_match) else "fail"
+        qc_diag = qc_diag if isinstance(qc_diag, dict) else {}
+        qc_checks, qc_verdict = _check_map(qc_diag), qc_diag.get("verdict")
+        shapes: list[dict[str, Any]] = []
+        for entry in shape_runs:
+            shape, shape_dir = entry["shape"], Path(entry["dir"])
+            diag = _object(shape_dir / "diagnostics.json") if entry["ok"] else {}
+            verdict = diag.get("verdict")
+            row: dict[str, Any] = {
+                **shape.record(), "command_id": entry.get("command_id"),
+                "run_ok": bool(entry["ok"]),
+                **({"run_failure": entry["failure"]} if entry.get("failure") else {}),
+                "verdict_available": bool(verdict) and bool(qc_verdict),
+                "diagnostics_match": bool(entry["ok"]) and _check_map(diag) == qc_checks,
+                "verdict_match": bool(entry["ok"]) and verdict == qc_verdict,
+                "verdict": verdict,
+            }
+            perf = _object(shape_dir / "perf.json") if entry["ok"] else {}
+            parallelism = perf.get("parallelism")
+            parallelism = parallelism if isinstance(parallelism, dict) else {}
+            row["observed_mpi_ranks"] = parallelism.get("mpi_ranks")
+            row["observed_process_grid"] = parallelism.get("process_grid")
+            if launcher:
+                expected_grid = list(shape.process_grid or (shape.ranks, 1))
+                row["launch_match"] = (type(row["observed_mpi_ranks"]) is int
+                                       and row["observed_mpi_ranks"] == shape.ranks
+                                       and row["observed_process_grid"] == expected_grid)
+            row["state_agreement"] = (
+                Conductor._shape_state_agreement(ir, reference_dir, shape.label, shape_dir)
+                if entry["ok"] else {"status": "not_run"})
+            row["status"] = "pass" if (
+                row["run_ok"] and row["verdict_available"] and row["diagnostics_match"]
+                and row["verdict_match"] and row.get("launch_match", True)
+                and row["state_agreement"]["status"] in ("agree", "not_applicable")) else "fail"
+            shapes.append(row)
+        certified = shapes[0]
+        status = "pass" if all(r["status"] == "pass" for r in shapes) else "fail"
+        threads, ranks = certified["threads_per_rank"], certified["ranks"]
         doc = {
             "status": status,
             "preset": preset,
             "checks": {
-                "verdict_available": verdict_available,
-                "diagnostics_match": diagnostics_match,
-                "verdict_match": verdict_match,
+                "verdict_available": certified["verdict_available"],
+                "diagnostics_match": certified["diagnostics_match"],
+                "verdict_match": certified["verdict_match"],
             },
             "comparison": {
-                "reference": {"source": "run_program", "command_id": run_cmd_id,
+                "reference": {"source": "run_program", "command_id": certified["command_id"],
                               "threads_per_rank": threads, "ranks": ranks,
-                              "verdict": run_verdict},
+                              "verdict": certified["verdict"]},
                 "candidate": {"source": f"run_quality_checks/{preset}", "command_id": qc_cmd_id,
-                              "threads_per_rank": "make_default", "ranks": 1,
+                              "threads_per_rank": 1, "ranks": 1,
                               "verdict": qc_verdict},
             },
-            "notes": (f"conductor in-process: run_program (threads_per_rank={threads}, "
-                      f"ranks={ranks}) and {preset} re-run (one process) diagnostics checks "
-                      f"and verdicts compared."),
+            "state_agreement_applies": certified["state_agreement"]["status"] != "not_applicable",
+            "shapes": shapes,
+            "notes": (f"conductor in-process: every execution shape's run_program "
+                      f"({', '.join(r['label'] for r in shapes)}) compared with the {preset} "
+                      f"re-run (one process, one thread): diagnostics check statuses, verdicts "
+                      f"and the captured state under the IR's cross-target predicates."),
         }
         (node_dir / "quality_check.json").write_text(
             json.dumps(doc, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         return status
+
+    @staticmethod
+    def _quality_check_failure_lines(node_dir: Path) -> list[str]:
+        """What a failed quality check failed on, per shape, for the repair excerpt (issue
+        #512): the shape, then whether it ran, which comparison failed and — for a state that
+        disagrees — the case, the quantity, the value and its bound."""
+        doc = _read_json(node_dir / "quality_check.json") or {}
+        lines: list[str] = []
+        quoted = False  # the first failed run's stderr is quoted at length, the others briefly
+
+        def clip(line: str) -> str:
+            return line if len(line) <= _EXCERPT_LINE_CHARS else \
+                line[:_EXCERPT_LINE_CHARS - 3] + "..."
+
+        for row in doc.get("shapes") or []:
+            if not isinstance(row, dict) or row.get("status") == "pass":
+                continue
+            where = (f"shape {row.get('label')} (ranks={row.get('ranks')}, "
+                     f"process_grid={row.get('process_grid')}, "
+                     f"threads_per_rank={row.get('threads_per_rank')})")
+            if not row.get("run_ok"):
+                failure = row.get("run_failure") if isinstance(row.get("run_failure"), dict) \
+                    else {}
+                if "not_run" in failure:
+                    lines.append(f"[execute fail: quality_check] {where}: did not run: "
+                                 f"{failure['not_run']}")
+                    continue
+                head = str(failure.get("stderr_head") or "").splitlines()
+                tail = str(failure.get("stderr_tail") or "").splitlines()
+                lines.append(
+                    f"[execute fail: quality_check] {where}: the run failed (rc="
+                    f"{failure.get('return_code')!r}"
+                    + (f", {failure['error']}" if failure.get("error") else "")
+                    + "); the same binary and cases ran under the certified shape"
+                    + ("; its stderr:" if head or tail else ""))
+                if not quoted:
+                    quoted = True
+                    shown = head[:_EXCERPT_STDERR_HEAD]
+                    rest = head[_EXCERPT_STDERR_HEAD:] + tail
+                    if len(rest) > _EXCERPT_STDERR_TAIL:
+                        shown += ["..."]
+                    shown += rest[-_EXCERPT_STDERR_TAIL:]
+                    lines += [f"    {clip(ln)}" for ln in shown]
+                else:
+                    first = next((ln for ln in head if ln.strip()), None)
+                    if first is not None:
+                        lines.append(f"    {clip(first)}")
+                continue
+            for key in ("verdict_available", "diagnostics_match", "verdict_match",
+                        "launch_match"):
+                if row.get(key) is False:
+                    lines.append(f"[execute fail: quality_check] {where}: {key} is false "
+                                 f"against the serial reference (one process, one thread)"
+                                 + (f"; harness reported mpi_ranks="
+                                    f"{row.get('observed_mpi_ranks')!r}, process_grid="
+                                    f"{row.get('observed_process_grid')!r}"
+                                    if key == "launch_match" else ""))
+            agreement = row.get("state_agreement") or {}
+            if agreement.get("status") == "disagree":
+                for f in agreement.get("failures") or []:
+                    lines.append(f"[execute fail: quality_check] {where}: the captured state "
+                                 f"disagrees with the serial reference: case {f.get('case')} "
+                                 f"{f.get('quantity')} = {f.get('value', f.get('reason'))} "
+                                 f"(bound {f.get('rhs', f.get('error'))})")
+            elif agreement.get("status") == "unevaluable":
+                lines.append(f"[execute fail: quality_check] {where}: the state comparison "
+                             f"could not be evaluated: {agreement.get('error')}")
+        return lines
 
     def _rel(self, path: Path) -> str:
         """repo-root-relative POSIX path for canonical refs."""
@@ -11301,13 +11500,24 @@ class Conductor:
         # WHERE it runs is the execution site's (issue #293): `self.site`, which the driver
         # resolved from the operator's `sites.yaml`. The seam refuses a site that does not
         # execute the target's class, as the backstop of the launch gate's site half.
-        from tools.host_execution import launch_shape, local_platform_record
+        #
+        # In WHICH SHAPES it runs is the target's too (issue #512): the certified shape, then each
+        # shape `execution.sweep` names, every one compared with the quality check's serial
+        # reference — the `make test` re-run, one process with one thread
+        # (`host_execution.serial_execution_env`).
+        from tools.host_execution import (
+            declares_launcher,
+            launch_shape,
+            local_platform_record,
+            serial_execution_env,
+        )
 
         target = self.target
         target_class = target.hardware_class
         threads = target.threads_per_rank
         site = self.site
         launch = launch_shape(target, site)
+        sweep = [(shape, launch_shape(target, site, shape)) for shape in target.sweep_shapes]
         build_system = self._read_toolchain(refs)["build_system"]
         execute = self._require_build_execute(build_system, "validate.execute")
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
@@ -11320,6 +11530,7 @@ class Conductor:
         ir_spec = (self.repo_root / refs.ir_ref / "spec.ir.yaml").resolve()
         run_tmp = self.repo_root / "workspace" / "tmp" / child_arid / "run"
         qc_tmp = self.repo_root / "workspace" / "tmp" / child_arid / "qc_run"
+        sweep_tmp = self.repo_root / "workspace" / "tmp" / child_arid / "sweep"
         obj_tmp = self.repo_root / "workspace" / "tmp" / child_arid / "build"
         cmd_log = node_dir / "command_log.jsonl"
         qc_cmd_log = src_dir / "command_log.jsonl"
@@ -11408,25 +11619,30 @@ class Conductor:
         run_raw_dirs = ("raw", "state_snapshots", *(("initial",) if authors_runner else ()))
 
         def commands(binary_path: str, spec_path: str, bin_path: str, qc_path: str,
-                     obj_path: str) -> tuple[list[str], dict[str, str]]:
-            """The run's argv and the quality check's environment, from one set of paths — the
-            local ones or the site's — so the two sites cannot run different commands.
+                     obj_path: str) -> tuple[list[str], dict[str, str], list[list[str]]]:
+            """The run's argv, the quality check's environment and each sweep shape's argv,
+            from one set of paths — the local ones or the site's — so the two sites cannot run
+            different commands.
 
             The quality check's variables are the build system's
-            (`execute.quality_check_env`, whose docstring says why each is imposed). No
+            (`execute.quality_check_env`, whose docstring says why each is imposed) over the
+            serial reference's (one thread, and the grid `(1, 1)` for a launcher backend), so the
+            re-run inherits neither from the conductor's own environment. No
             dependency-source staging here (unlike _build_inproc): the quality check only runs
             the already-built binary."""
-            run_argv = launch.command([binary_path, "--cases", spec_path, *case_ids])
-            qc_env = execute.quality_check_env(obj_path, bin_path, qc_path, str(exe),
-                                               spec_path, case_ids)
-            return run_argv, qc_env
+            argv = [binary_path, "--cases", spec_path, *case_ids]
+            run_argv = launch.command(argv)
+            qc_env = {**serial_execution_env(target.parallel_backend),
+                      **execute.quality_check_env(obj_path, bin_path, qc_path, str(exe),
+                                                  spec_path, case_ids)}
+            return run_argv, qc_env, [shape_launch.command(argv) for _s, shape_launch in sweep]
 
         res_qc: dict[str, Any] | None
         if site is None or site.is_local:
             run_tmp.joinpath(*run_raw_dirs).mkdir(parents=True, exist_ok=True)
             qc_tmp.mkdir(parents=True, exist_ok=True)
-            run_argv, qc_env = commands(str(binary), str(ir_spec), str(bin_dir), str(qc_tmp),
-                                        str(obj_tmp))
+            run_argv, qc_env, sweep_argvs = commands(str(binary), str(ir_spec), str(bin_dir),
+                                                     str(qc_tmp), str(obj_tmp))
             # 1. run_program (primary evidence) — include spec.ir.yaml.case per phase_04 §4-1.
             res_run = tool_run_program({
                 "project_dir": str(run_tmp),
@@ -11456,6 +11672,26 @@ class Conductor:
                 "capture_limit": _FULL_CAPTURE_LIMIT,
                 **attribution,
             }) if res_run.get("ok") and (res_trace is None or res_trace.get("ok")) else None
+            # 3. Each sweep shape (issue #512): the same binary and cases once more per shape,
+            #    each in a directory of its own, after a quality check that ran — and, as the
+            #    remote job runs them, only while every earlier one succeeded: one failure fails
+            #    the check, and a kernel that hangs under one grid would hang under the next
+            #    for a whole run timeout each.
+            res_sweep: list[dict[str, Any] | None] = []
+            for (shape, shape_launch), argv in zip(sweep, sweep_argvs):
+                if res_sweep and not (res_sweep[-1] and res_sweep[-1].get("ok")):
+                    res_sweep.append(None)
+                    continue
+                shape_dir = sweep_tmp / shape.label
+                shape_dir.joinpath(*run_raw_dirs).mkdir(parents=True, exist_ok=True)
+                res_sweep.append(tool_run_program({
+                    "project_dir": str(shape_dir),
+                    "command": argv,
+                    "env": dict(shape_launch.env),
+                    "command_log_path": str(cmd_log),
+                    "capture_limit": _FULL_CAPTURE_LIMIT,
+                    **attribution,
+                }) if res_qc is not None and res_qc.get("ok") else None)
             platform_record = local_platform_record(launch.platform_probe,
                                                     runtime_probe=launch.runtime_probe)
             site_record: dict[str, Any] = _local_site_record()
@@ -11475,8 +11711,9 @@ class Conductor:
 
             jdir = job_dir(site, self.orchestration_id, child_arid)
             control_file = str(self._control_file_module(build_system).CONTROL_FILE_BASENAME)
-            run_argv, qc_env = commands(f"{jdir}/bin/{exe}", f"{jdir}/ir/spec.ir.yaml",
-                                        f"{jdir}/bin", f"{jdir}/qc_run", f"{jdir}/build")
+            run_argv, qc_env, sweep_argvs = commands(
+                f"{jdir}/bin/{exe}", f"{jdir}/ir/spec.ir.yaml", f"{jdir}/bin", f"{jdir}/qc_run",
+                f"{jdir}/build")
             # The device trace's summary runs between the two, in the run's directory (issue
             # #307); the job runs a command only after every earlier one exited 0.
             trace_commands = () if launch.trace is None else (
@@ -11500,23 +11737,39 @@ class Conductor:
                                 cwd=f"{jdir}/src", record_cwd=str(src_dir), env=qc_env,
                                 timeout_sec=QUALITY_CHECKS_TIMEOUT_SEC,
                                 command_log_path=qc_cmd_log, capture_limit=_FULL_CAPTURE_LIMIT),
+                    # Each sweep shape after the quality check (issue #512). The job runs a
+                    # command only after every earlier one exited 0, as the local path runs the
+                    # shapes, so a shape after a failed one does not run; its row names the one
+                    # that failed.
+                    *(CommandSpec(tag=f"sweep_{shape.label}", tool_name="run_program",
+                                  argv=tuple(argv), cwd=f"{jdir}/sweep/{shape.label}",
+                                  record_cwd=str(sweep_tmp / shape.label),
+                                  env=dict(shape_launch.env), timeout_sec=RUN_PROGRAM_TIMEOUT_SEC,
+                                  command_log_path=cmd_log, capture_limit=_FULL_CAPTURE_LIMIT)
+                      for (shape, shape_launch), argv in zip(sweep, sweep_argvs)),
                 ),
-                dirs=("/".join(("run", *run_raw_dirs)), "qc_run", "build"),
+                dirs=("/".join(("run", *run_raw_dirs)), "qc_run", "build",
+                      *("/".join(("sweep", shape.label, *run_raw_dirs)) for shape, _l in sweep)),
                 platform_probe=launch.platform_probe,
                 attribution=attribution,
                 machine=built_machine,
             ), local_tmp=run_tmp.parent / "site")
             # The collected job directory holds each command's working directory; they become
             # the local run and quality-check directories every later step reads.
-            for name, dest in (("run", run_tmp), ("qc_run", qc_tmp)):
+            for name, dest in (("run", run_tmp), ("qc_run", qc_tmp),
+                               *((f"sweep/{shape.label}", sweep_tmp / shape.label)
+                                 for shape, _l in sweep)):
                 if dest.exists():
                     shutil.rmtree(dest)
+                dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(result.collected / name), str(dest))
+            leading = 2 if launch.trace is None else 3
             if launch.trace is None:
-                res_run, res_qc = result.results
+                res_run, res_qc = result.results[:leading]
                 res_trace = None
             else:
-                res_run, res_trace, res_qc = result.results
+                res_run, res_trace, res_qc = result.results[:leading]
+            res_sweep = list(result.results[leading:])
             platform_record = result.platform
             site_record = result.site_record
 
@@ -11573,9 +11826,33 @@ class Conductor:
 
         run_diag = _read_json(run_tmp / "diagnostics.json") or {}
         qc_diag = _read_json(qc_tmp / "diagnostics.json") or {}
+        shape_runs = [{"shape": target.certified_shape, "dir": run_tmp, "ok": True,
+                       "command_id": res_run.get("command_id")}]
+        # A sweep shape that did not run names the command that stopped it — the first earlier
+        # command that failed (the quality check's re-run or an earlier shape; both paths run a
+        # shape only after every earlier command succeeded) — so a later shape is never blamed
+        # on a reference that passed.
+        earlier: list[tuple[str, dict[str, Any] | None]] = [
+            ("the serial reference re-run", res_qc)]
+        for (shape, _l), res in zip(sweep, res_sweep):
+            entry: dict[str, Any] = {"shape": shape, "dir": sweep_tmp / shape.label,
+                                     "ok": bool(res and res.get("ok")),
+                                     "command_id": res.get("command_id") if res else None}
+            if res is None:
+                stopped_by = next((name for name, r in earlier
+                                   if r is not None and not r.get("ok")), None)
+                entry["failure"] = {"not_run": f"{stopped_by} failed first"
+                                    if stopped_by else "not run"}
+            elif not res.get("ok"):
+                entry["failure"] = {"return_code": res.get("return_code"),
+                                    "error": res.get("error"),
+                                    **_stderr_head_and_tail(res.get("stderr") or "")}
+            earlier.append((f"shape {shape.label}", res))
+            shape_runs.append(entry)
         qc_status = self._author_quality_check(
-            node_dir, run_diag, qc_diag, res_run.get("command_id"),
-            res_qc.get("command_id"), execute.QUALITY_CHECK_PRESET, threads, target.ranks)
+            node_dir, qc_diag, res_qc.get("command_id"), execute.QUALITY_CHECK_PRESET,
+            ir=ir, reference_dir=qc_tmp, shape_runs=shape_runs,
+            launcher=declares_launcher(target.parallel_backend))
 
         (node_dir / "stdout.log").write_text(stdout, encoding="utf-8")
         (node_dir / "stderr.log").write_text(stderr, encoding="utf-8")
@@ -11641,6 +11918,13 @@ class Conductor:
                 # was, for every parallel model rather than one, and read off the shape that
                 # ran rather than restated beside it.
                 "launch": launch.record(),
+                # Every further shape the binary ran in (issue #512), with its launch; the
+                # comparison of each with the serial reference is `quality_check.json#shapes`.
+                "sweep": [{**shape.record(), "launch": shape_launch.record()}
+                          for shape, shape_launch in sweep],
+                # The serial reference's launch environment (the quality check's re-run).
+                "serial_reference_env": dict(sorted(serial_execution_env(
+                    target.parallel_backend).items())),
                 # The host this evidence was produced on (issue #250): RECORDED, not keyed —
                 # no verdict predicate depends on the machine yet, and the day a perf or
                 # cross-target predicate does, the execute inputs gain one line and read this.
@@ -11681,6 +11965,12 @@ class Conductor:
             # present while the candidate's is absent isolates the target's form as the cause
             # rather than a buggy runner. The binding is the build system's control-file
             # document, §2.
+            # Each shape that disagreed with the serial reference, and how (issue #512) — when
+            # the reference itself emitted a verdict; when it emitted none, every shape fails
+            # against it and the cause is the reference's, named below.
+            if qc_status != "pass" and qc_diag.get("verdict"):
+                block += "".join(f"\n{line}" for line in
+                                 self._quality_check_failure_lines(node_dir))
             if qc_status != "pass" and not qc_diag.get("verdict") and run_diag.get("verdict"):
                 block += (
                     f"\n[execute fail: quality_check] the {execute.QUALITY_CHECK_PRESET} re-run "
