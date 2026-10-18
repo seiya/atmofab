@@ -593,6 +593,24 @@ class HarnessPinTest(unittest.TestCase):
         with self.assertRaisesRegex(RenderError, "omits 'harness_cpp_gpu__box'"):
             self._pin(signatures=sigs)
 
+    def test_a_harness_without_the_block_size_is_refused(self) -> None:
+        """Issue #512 (PR-4c): every runner calls `__block_size`, so a certified harness that
+        does not publish it — `harness_cpp_gpu@0.1.0` — is refused before render, in its IR and
+        in its model source alike, whatever ranks the node binds."""
+        sigs = [s for s in _harness_signatures() if s["symbol"] != "harness_cpp_gpu__block_size"]
+        self.assertLess(len(sigs), len(_harness_signatures()))
+        for ir in (_smoke_ir(), _boundary_ir()):
+            self.ir = ir
+            with self.subTest(sid=sorted(ir)), self.assertRaisesRegex(
+                    RenderError, "omits 'harness_cpp_gpu__block_size'"):
+                self._pin(signatures=sigs)
+        head, tail = self.source.split("int harness_cpp_gpu__block_size() {")
+        cut = head + tail.split("\n}\n", 1)[1]
+        self.assertNotIn("int harness_cpp_gpu__block_size()", cut)
+        with self.assertRaisesRegex(RenderError,
+                                    "model source omits 'harness_cpp_gpu__block_size'"):
+            self._pin(source=cut)
+
     def test_source_drift_is_refused(self) -> None:
         drifted = self.source.replace(
             "void harness_cpp_gpu__write_snapshot(const std::string& case_id,",
