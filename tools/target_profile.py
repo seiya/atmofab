@@ -20,8 +20,8 @@ resolve the harness or ask the registry. The launch gate (``target_profile_viola
 ``resolve_run_target``) refuses a harness the catalog cannot resolve and a hardware class,
 language, build system, parallel backend or pinned compiler the host does not implement; a
 ``hardware.architecture`` its class's ``perf_facts`` does not admit; a thread count, a rank count,
-a process grid or an ``execution.sweep`` member the parallel backend does not run (issues #316,
-#512); and, for a run that reaches ``Validate``, a hardware class this host cannot launch on or a
+a process grid, a thread-block size or an ``execution.sweep`` member the parallel backend does not
+run (issues #316, #512); and, for a run that reaches ``Validate``, a hardware class this host cannot launch on or a
 parallel backend it has no launch environment for (issue #289). ``toolchain.standard`` and ``toolchain.linker`` are recorded tokens
 it does not check. A profile the host would have to guess about is a run nobody can reproduce.
 """
@@ -84,14 +84,15 @@ PROFILE_SHAPE: dict[str, tuple[frozenset[str], frozenset[str]]] = {
                   frozenset({"compiler", "linker"})),
     "parallel": (frozenset({"backend"}), frozenset()),
     "execution": (frozenset({"threads_per_rank"}),
-                  frozenset({"ranks", "process_grid", "sweep"})),
+                  frozenset({"ranks", "process_grid", "block_size", "sweep"})),
     "harness": (frozenset({"infrastructure_id", "version_constraint"}), frozenset()),
 }
 
 #: The members `execution.sweep` may name (issue #512): each is a list of values the execution
 #: shape takes in turn, one more run of the binary per value. `grids` varies the process grid
-#: (a launcher backend's), `threads_per_rank` the threads of each rank.
-SWEEP_KEYS = frozenset({"grids", "threads_per_rank"})
+#: (a launcher backend's), `threads_per_rank` the threads of each rank, `block_size` the
+#: thread-block size of the kernel launches (a backend whose launches the host configures).
+SWEEP_KEYS = frozenset({"grids", "threads_per_rank", "block_size"})
 
 #: The label of the shape the certifying run takes — the profile's own `execution` — among the
 #: shapes `TargetProfile.execution_shapes` lists.
@@ -102,18 +103,21 @@ CERTIFIED_SHAPE_LABEL = "certified"
 class ExecutionShape:
     """One shape a Validate run launches the binary in (issue #512): `threads_per_rank` threads
     in each of `ranks` processes, the ranks arranged in `process_grid` when the shape imposes
-    one (None: the harness's own arrangement, `(ranks, 1)`). `label` names it in the records
-    (`quality_check.json#shapes`), and is unique among a profile's shapes."""
+    one (None: the harness's own arrangement, `(ranks, 1)`), its kernels launched in blocks of
+    `block_size` threads when the shape imposes one (None: the harness's default). `label` names
+    it in the records (`quality_check.json#shapes`), and is unique among a profile's shapes."""
 
     label: str
     threads_per_rank: int
     ranks: int
     process_grid: tuple[int, int] | None
+    block_size: int | None = None
 
     def record(self) -> dict[str, Any]:
         return {"label": self.label, "threads_per_rank": self.threads_per_rank,
                 "ranks": self.ranks,
-                "process_grid": None if self.process_grid is None else list(self.process_grid)}
+                "process_grid": None if self.process_grid is None else list(self.process_grid),
+                "block_size": self.block_size}
 
 
 class TargetProfileError(ValueError):
@@ -176,24 +180,39 @@ class TargetProfile:
         return (int(grid[0]), int(grid[1]))
 
     @property
+    def block_size(self) -> int | None:
+        """The threads per block the run's kernels are launched with (`execution.block_size`,
+        issue #512); None when the profile imposes none — the harness's default then applies,
+        and the document and its sha256 are as they were."""
+        value = self.doc["execution"].get("block_size")
+        return None if value is None else int(value)
+
+    @property
     def certified_shape(self) -> ExecutionShape:
         """The shape the certifying run takes: the profile's own `execution`."""
         return ExecutionShape(CERTIFIED_SHAPE_LABEL, self.threads_per_rank, self.ranks,
-                              self.process_grid if self.declares_process_grid else None)
+                              self.process_grid if self.declares_process_grid else None,
+                              self.block_size)
 
     @property
     def sweep_shapes(self) -> list[ExecutionShape]:
         """The further shapes `execution.sweep` names (issue #512), in the order it names them:
         one per process grid (`grid_<p1>x<p2>`: `p1 p2` ranks in that grid, the certified
-        threads per rank), then one per thread count (`threads_<t>`: the certified ranks and
-        grid). Empty when the profile declares no sweep."""
+        threads per rank and block size), then one per thread count (`threads_<t>`: the
+        certified ranks, grid and block size), then one per block size (`block_<b>`: the
+        certified ranks, grid and threads per rank). Empty when the profile declares no
+        sweep."""
         sweep = self.doc["execution"].get("sweep") or {}
-        out = [ExecutionShape(f"grid_{p1}x{p2}", self.threads_per_rank, p1 * p2, (p1, p2))
-               for p1, p2 in ((int(g[0]), int(g[1])) for g in sweep.get("grids") or ())]
         certified = self.certified_shape
+        out = [ExecutionShape(f"grid_{p1}x{p2}", self.threads_per_rank, p1 * p2, (p1, p2),
+                              certified.block_size)
+               for p1, p2 in ((int(g[0]), int(g[1])) for g in sweep.get("grids") or ())]
         out += [ExecutionShape(f"threads_{int(t)}", int(t), certified.ranks,
-                               certified.process_grid)
+                               certified.process_grid, certified.block_size)
                 for t in sweep.get("threads_per_rank") or ()]
+        out += [ExecutionShape(f"block_{int(b)}", certified.threads_per_rank, certified.ranks,
+                               certified.process_grid, int(b))
+                for b in sweep.get("block_size") or ()]
         return out
 
     @property
@@ -389,6 +408,10 @@ def _shape_violations(doc: Any) -> list[str]:
         elif type(ranks) is int and grid[0] * grid[1] != ranks:
             out.append(f"execution.process_grid: {grid!r} arranges {grid[0] * grid[1]} "
                        f"rank(s), and execution.ranks is {ranks!r}")
+    if isinstance(execution, dict) and "block_size" in execution:
+        block = execution["block_size"]
+        if type(block) is not int or block < 1:
+            out.append(f"execution.block_size: must be an integer >= 1, got {block!r}")
     if isinstance(execution, dict) and "sweep" in execution:
         out += _sweep_violations(execution)
     harness = doc.get("harness")
@@ -406,8 +429,11 @@ def _sweep_violations(execution: dict[str, Any]) -> list[str]:
     `execution.ranks` ranks — the machine the profile is written for runs that many — other than
     `[1, 1]`, the serial reference every run already takes, and other than the certified run's
     own grid. A thread count is an integer >= 2 other than the certified `threads_per_rank`
-    (one thread is the serial reference). Which backends admit each member is the launch gate's
-    (`hardware_violations`)."""
+    (one thread is the serial reference). A block size is an integer >= 1 other than the
+    certified `execution.block_size`, which a block sweep requires the profile to declare: the
+    shapes vary the block the certified run is launched with, so that block is named rather
+    than left to a default the profile does not state. Which backends admit each member, and
+    which values, is the launch gate's (`hardware_violations`)."""
     sweep = execution["sweep"]
     if not isinstance(sweep, dict) or not sweep:
         return [f"execution.sweep: must be a non-empty mapping of {sorted(SWEEP_KEYS)}, "
@@ -450,6 +476,22 @@ def _sweep_violations(execution: dict[str, Any]) -> list[str]:
                 elif t == execution.get("threads_per_rank"):
                     out.append(f"execution.sweep.threads_per_rank: {t} is the certified run's "
                                f"own threads_per_rank")
+    if "block_size" in sweep:
+        blocks = sweep["block_size"]
+        if not (isinstance(blocks, list) and blocks
+                and all(type(b) is int and b >= 1 for b in blocks)):
+            out.append(f"execution.sweep.block_size: must be a non-empty list of integers >= 1, "
+                       f"got {blocks!r}")
+        elif "block_size" not in execution:
+            out.append("execution.sweep.block_size: a block sweep varies the block size the "
+                       "certified run is launched with, and execution.block_size declares none")
+        else:
+            for i, b in enumerate(blocks):
+                if b in blocks[:i]:
+                    out.append(f"execution.sweep.block_size: {b} is listed twice")
+                elif b == execution["block_size"]:
+                    out.append(f"execution.sweep.block_size: {b} is the certified run's own "
+                               f"block_size")
     return out
 
 
@@ -630,7 +672,9 @@ def hardware_violations(profile: TargetProfile, *, until_phase: str | None = Non
     what the target is. `execution.process_grid` needs one too (issue #512): it arranges the
     ranks the launcher starts; so does `execution.sweep.grids`. Every thread count the profile
     runs a rank with — `threads_per_rank` and `execution.sweep.threads_per_rank` — must be one
-    the backend's launch environment admits (`_thread_count_violations`).
+    the backend's launch environment admits (`_thread_count_violations`), and so must every
+    thread-block size — `execution.block_size` and `execution.sweep.block_size`
+    (`_block_size_violations`).
 
     The EXECUTION half is asked of every run except one whose `until_phase` is in
     `NON_EXECUTING_PHASES` — None, the stricter question, is asked it. It
@@ -677,6 +721,7 @@ def hardware_violations(profile: TargetProfile, *, until_phase: str | None = Non
         out.append(f"execution.sweep.grids: a process grid arranges the ranks a launcher "
                    f"starts, and parallel backend {profile.parallel_backend} declares none")
     out += _thread_count_violations(profile)
+    out += _block_size_violations(profile)
     if str(until_phase or "").strip().lower() not in NON_EXECUTING_PHASES:
         for axis, value, capability, where in (
                 ("hardware", hardware_class, "execution", "hardware.class"),
@@ -720,6 +765,42 @@ def _thread_count_violations(profile: TargetProfile) -> list[str]:
         except ValueError as exc:
             out.append(f"{where}: parallel backend {backend} does not run {count} threads per "
                        f"rank ({exc})")
+    return out
+
+
+def _block_size_violations(profile: TargetProfile) -> list[str]:
+    """Every thread-block size the profile launches the kernels with — `execution.block_size`
+    and each of `execution.sweep.block_size` (issue #512) — must be one the parallel backend's
+    launch environment admits: its `execution_env` package declares the values it admits
+    (`BLOCK_SIZES`) and answers each, or refuses it (`ValueError`). A backend that declares no
+    `BLOCK_SIZES` configures no kernel launch, so a block size it would be handed is a run
+    recorded under a configuration nothing applied; a backend this repository does not
+    implement is refused in its own words elsewhere."""
+    from tools.backends import registry as backend_registry
+
+    execution = profile.doc["execution"]
+    blocks = ([("execution.block_size", int(execution["block_size"]))]
+              if "block_size" in execution else [])
+    blocks += [("execution.sweep.block_size", int(b))
+               for b in (execution.get("sweep") or {}).get("block_size") or ()]
+    backend = profile.parallel_backend
+    if not blocks or backend_registry.missing_capability_reason(
+            "parallel", backend, "execution_env") is not None:
+        return []
+    module = (backend_registry.capability_module("parallel", backend, "execution_env")
+              if "execution_env" in backend_registry.get("parallel", backend).backend_provides
+              else None)
+    if module is None or getattr(module, "BLOCK_SIZES", None) is None:
+        return [f"{where}: a block size configures the kernel launches of a backend whose launch "
+                f"environment imposes one, and parallel backend {backend} imposes none"
+                for where, _b in blocks]
+    out: list[str] = []
+    for where, block in blocks:
+        try:
+            module.environment(1, block_size=block)
+        except ValueError as exc:
+            out.append(f"{where}: parallel backend {backend} does not launch blocks of {block} "
+                       f"threads ({exc})")
     return out
 
 

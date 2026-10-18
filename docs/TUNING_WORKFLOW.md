@@ -13,16 +13,16 @@ The tuner is separated from the generator, and the following loop is the standar
 5. Fix the best candidate and move to regression monitoring
 
 ## The override-allowed boundary (must read)
-The range `Tune` can override via `tuning.spec` is **limited to the lowering plan** (`target_lowering_plan`, `docs/workflow/CODEGEN_BUNDLE_CONTRACT.md`). Until R4-a PR-3 (issue #284) the boundary was drawn inside an IR `impl_defaults` section; the IR no longer carries one.
+The range `Tune` can override via `tuning.spec` is **limited to the lowering plan** (`target_lowering_plan`, `docs/workflow/CODEGEN_BUNDLE_CONTRACT.md`), plus ONE field of the target profile: `execution.block_size`, the threads per block the host imposes on a run's kernel launches (issue #512). Until R4-a PR-3 (issue #284) the boundary was drawn inside an IR `impl_defaults` section; the IR no longer carries one.
 
 | crossing-forbidden (fixed) | override-allowed (knob) |
 |---|---|
 | `spec.ir.yaml` (every section) | `target_lowering_plan.parallelization` (model, loop scope, schedule, chunk size, collapse) |
-| the target profile: `hardware.*` / `toolchain.*` / `parallel.backend` / `execution.*` / `harness` | `target_lowering_plan.data_layout` / `decomposition` / `communication` / `accelerator_mapping` (the intent of layout / loop fusion / tiling / vectorization, etc.) and `fusion` (which unit members are fused) |
+| the target profile: `hardware.*` / `toolchain.*` / `parallel.backend` / `execution.*` except `execution.block_size` / `harness` | `execution.block_size` (a value the target's parallel backend admits; the variant's certified run is launched with it, and its block-size sweep is every other block size the profile names — its `execution.block_size` and its `execution.sweep.block_size` — so every variant is still compared across the same block sizes); `target_lowering_plan.data_layout` / `decomposition` / `communication` / `accelerator_mapping` (the intent of layout / loop fusion / tiling / vectorization, etc.) and `fusion` (which unit members are fused) |
 
 The plan's `parallelization.model` names a parallel model the target's `parallel.backend` supports, or `"none"`. A variant whose plan the source does not follow is a `Generate.verify` G6 fail, exactly as in the core workflow. Introducing a NEW member inside an optional plan section is unrestricted — the interior of an optional section is a target-backend extension point — and that is the exploration space.
 
-When `tuning.spec` includes an entry that overrides the IR or the target profile, `Tune` shall **stop with fail_closed at launch**, and must not generate a variant inside `Tune`. This guarantees that Tune does not break the structure of `spec.ir.yaml` or change the target.
+When `tuning.spec` includes an entry that overrides the IR or the target profile (other than `execution.block_size`), `Tune` shall **stop with fail_closed at launch**, and must not generate a variant inside `Tune`. This guarantees that Tune does not break the structure of `spec.ir.yaml` or change the target.
 
 To build for new hardware or a new compiler, author or select another target profile and run the core workflow for it (`--target <target_id>`). The IR is target-free, so this does not re-run `Compile`. This is not the responsibility of Tune.
 

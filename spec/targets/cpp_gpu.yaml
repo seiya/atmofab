@@ -19,6 +19,14 @@ parallel:
   backend: cuda
 execution:
   threads_per_rank: 1
+  # The threads per block every kernel is launched with (issue #512): the harness reads it at start,
+  # and the sweep runs the binary once more per value and compares each run with the reference.
+  # The certified block is NOT the harness's default (256, harness_cpp_gpu §3.3): the post-execute
+  # gate ties the harness self-test's captured block to the certified run's, and at the default a
+  # harness that ignored the variable would satisfy that tie.
+  block_size: 128
+  sweep:
+    block_size: [64, 256]
 harness:
   infrastructure_id: harness_cpp_gpu
   version_constraint: ">=0.1.0 <1.0.0"

@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -85,6 +86,7 @@ def _harness_stub() -> str:
         #include "harness_cpp_gpu_model.cuh"
 
         #include <cstdio>
+        #include <cstdlib>
         #include <fstream>
 
         namespace harness_cpp_gpu_model {
@@ -199,7 +201,12 @@ def _harness_stub() -> str:
                 + (walltime_sec > 0.0 ? "true" : "false") + ", \\"mpi_ranks\\": "
                 + std::to_string(mpi_ranks) + ", \\"threads_per_rank\\": "
                 + std::to_string(threads_per_rank) + ", \\"gpu_devices\\": "
-                + std::to_string(gpu_devices) + "}");
+                + std::to_string(gpu_devices) + ", \\"block_size\\": "
+                + std::to_string(harness_cpp_gpu__block_size()) + "}");
+        }
+        int harness_cpp_gpu__block_size() {
+          const char* value = std::getenv("ATMOFAB_CUDA_BLOCK");
+          return value != nullptr && *value != '\\0' ? std::atoi(value) : 256;
         }
         }  // namespace harness_cpp_gpu_model
         """).replace("EMITTERS\n", "".join(emitters))
@@ -329,6 +336,18 @@ class RenderShapeTest(unittest.TestCase):
         for write in ("harness_cpp_gpu__write_snapshot(", "harness_cpp_gpu__write_metrics_basis(",
                       "harness_cpp_gpu__write_diagnostics(", "harness_cpp_gpu__write_perf("):
             self.assertGreater(self.text.index(write), last_callback, write)
+
+    def test_the_imposed_block_size_is_set_before_any_callback(self) -> None:
+        """Issue #512 (PR-4c): the harness's `__block_size` is called once, after the case set
+        is parsed and before the first `case_setup`, and its value is stored where the node's
+        sources read it (`atmofab::launch_block_size`, declared by the rendered header)."""
+        call = "  atmofab::launch_block_size = hm::harness_cpp_gpu__block_size();\n"
+        self.assertEqual(1, self.text.count(call))
+        self.assertEqual(1, self.text.count("harness_cpp_gpu__block_size("))
+        self.assertLess(self.text.index("harness_cpp_gpu__parse_cases("), self.text.index(call))
+        self.assertLess(self.text.index(call), self.text.index("ck::case_setup(cid, setup_ok);"))
+        header = cpp_header.render(HARNESS, _harness_public_api(), spec_kind="infrastructure")
+        self.assertIn("inline int launch_block_size = 0;", header)
 
     def test_every_check_id_and_metric_is_driven_with_an_escaped_literal(self) -> None:
         self.assertIn('ck::checks_compute(cid, "c1", cstatus);', self.text)
@@ -574,6 +593,24 @@ class HarnessPinTest(unittest.TestCase):
         with self.assertRaisesRegex(RenderError, "omits 'harness_cpp_gpu__box'"):
             self._pin(signatures=sigs)
 
+    def test_a_harness_without_the_block_size_is_refused(self) -> None:
+        """Issue #512 (PR-4c): every runner calls `__block_size`, so a certified harness that
+        does not publish it — `harness_cpp_gpu@0.1.0` — is refused before render, in its IR and
+        in its model source alike, whatever ranks the node binds."""
+        sigs = [s for s in _harness_signatures() if s["symbol"] != "harness_cpp_gpu__block_size"]
+        self.assertLess(len(sigs), len(_harness_signatures()))
+        for ir in (_smoke_ir(), _boundary_ir()):
+            self.ir = ir
+            with self.subTest(sid=sorted(ir)), self.assertRaisesRegex(
+                    RenderError, "omits 'harness_cpp_gpu__block_size'"):
+                self._pin(signatures=sigs)
+        head, tail = self.source.split("int harness_cpp_gpu__block_size() {")
+        cut = head + tail.split("\n}\n", 1)[1]
+        self.assertNotIn("int harness_cpp_gpu__block_size()", cut)
+        with self.assertRaisesRegex(RenderError,
+                                    "model source omits 'harness_cpp_gpu__block_size'"):
+            self._pin(source=cut)
+
     def test_source_drift_is_refused(self) -> None:
         drifted = self.source.replace(
             "void harness_cpp_gpu__write_snapshot(const std::string& case_id,",
@@ -672,7 +709,31 @@ class NvccSmokeTest(unittest.TestCase):
             perf = json.loads((d / "perf.json").read_text())
             self.assertEqual({"case_id": "c1_xfail", "target": "gpu", "steps": 4,
                               "cells_updated": 16, "walltime_positive": True, "mpi_ranks": 1,
-                              "threads_per_rank": 3, "gpu_devices": 1}, perf)
+                              "threads_per_rank": 3, "gpu_devices": 1, "block_size": 256}, perf)
+
+    def test_the_runner_hands_the_imposed_block_size_to_the_node_s_sources(self) -> None:
+        """Issue #512 (PR-4c): the runner sets `atmofab::launch_block_size` from the harness's
+        `__block_size` before the first case, so a node's `case_setup` already reads the block
+        the host imposed through `ATMOFAB_CUDA_BLOCK`; the node's sources never name the
+        harness."""
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td)
+            self._tree(d, _smoke_ir(), RANK_SID)
+            checks = d / f"{RANK_SID}_checks.cu"
+            text = checks.read_text()
+            self.assertIn("  s = 1.5;", text)
+            checks.write_text(text.replace("  s = 1.5;", "  s = atmofab::launch_block_size;"))
+            self._build(d, RANK_SID)
+            for env, block in (({}, 256), ({"ATMOFAB_CUDA_BLOCK": "64"}, 64)):
+                with self.subTest(block=block):
+                    r = subprocess.run(["./runner", "--cases", "spec.yaml", "c0", "c1_xfail"],
+                                       cwd=d, capture_output=True, text=True, check=False,
+                                       env={**os.environ, "ATMOFAB_CUDA_BLOCK": "", **env})
+                    self.assertEqual(0, r.returncode, r.stdout + r.stderr)
+                    initial = json.loads((d / "raw/state_snapshots/initial/c0.json").read_text())
+                    self.assertEqual(float(block), initial["s"])
+                    perf = json.loads((d / "perf.json").read_text())
+                    self.assertEqual(block, perf["block_size"])
 
     def test_no_leaf_code_runs_after_the_harness_writes(self) -> None:
         """Round 3 of this change's review: a leaf source's namespace-scope destructor and exit

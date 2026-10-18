@@ -109,7 +109,7 @@ _HARNESS_TYPES = (
 )
 _HARNESS_CORE_OPS = (
     "parse_cases", "box", "write_snapshot",
-    "write_metrics_basis", "write_diagnostics", "write_perf",
+    "write_metrics_basis", "write_diagnostics", "write_perf", "block_size",
 )
 
 #: The target a DRY render is given: `ir_content_violations` renders only to learn whether the
@@ -197,7 +197,7 @@ def _used_harness_ops(ir: dict[str, Any]) -> list[str]:
         ops.append("emit_real")
     ops += [f"emit_array_r{r}" for r in sorted(r for r in ranks if r >= 1)]
     ops += ["box", "write_snapshot", "write_metrics_basis",
-            "write_diagnostics", "write_perf"]
+            "write_diagnostics", "write_perf", "block_size"]
     return ops
 
 
@@ -475,6 +475,12 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     a("    finish(1);")
     a("  }")
     a("")
+    # The block size the host imposed on the run (issue #512, harness §3.3), handed to the
+    # node's sources through the rendered header before any of their code runs: their kernels
+    # launch with it, and never name the harness.
+    a("  // --- the threads per block the host imposed on this run's kernels (harness §3.3) ----")
+    a(f"  atmofab::launch_block_size = {H('block_size')}();")
+    a("")
     a("  std::vector<CaseResult> results;")
     a("  std::vector<std::vector<Named>> initial_cache;")
     a("  std::vector<double> initial_time;")
@@ -628,7 +634,7 @@ def checks_abi_dummy_violation(text: str, spec_id: str) -> str | None:
 EXPECTED_HARNESS_SPEC_ID = "harness_cpp_gpu"
 
 # Verbatim copy of spec/infrastructure/infra/harness/harness_cpp_gpu/controlled_spec.md §5.1
-# (spec_version 0.1.0). If a harness recert changes §5.1, THIS block and the render template must
+# (spec_version 0.2.0). If a harness recert changes §5.1, THIS block and the render template must
 # be updated together (the pin message says so).
 _HARNESS_V1_INTERFACE = """\
 module_parameters:
@@ -946,6 +952,12 @@ procedures:
       type: integer
   - name: gpu_devices
     intent: in
+    spec:
+      type: integer
+- kind: function
+  name: harness_cpp_gpu__block_size
+  result:
+    name: n
     spec:
       type: integer
 """

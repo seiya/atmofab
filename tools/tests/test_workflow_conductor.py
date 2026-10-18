@@ -17680,6 +17680,10 @@ class DeterministicBuildTest(unittest.TestCase):
                 perf = {} if grid is None else {"parallelism": {
                     "mpi_ranks": int(grid.split(",")[0]) * int(grid.split(",")[1]),
                     "process_grid": [int(g) for g in grid.split(",")]}}
+                # And an honest device harness the block size it was launched with (PR-4c).
+                block = (args.get("env") or {}).get("ATMOFAB_CUDA_BLOCK")
+                if block is not None:
+                    perf = {"parallelism": {"block_size": int(block)}}
                 (run_tmp / "perf.json").write_text(json.dumps(perf), encoding="utf-8")
                 return {"ok": run_ok, "command_id": "S" if sweep else "R",
                         "return_code": 0 if run_ok else 1}
@@ -17776,6 +17780,38 @@ class DeterministicBuildTest(unittest.TestCase):
                          ["grid_4x1", "grid_1x3"])
         self.assertEqual(trial["environment"]["serial_reference_env"],
                          {"ATMOFAB_PROCESS_GRID": "1,1"})
+
+    def test_execute_inproc_runs_each_block_size_of_the_sweep(self) -> None:
+        """Issue #512 (PR-4c): a target that imposes a thread-block size runs the certified
+        binary with it — under the device trace — and once more per block size of
+        `execution.sweep`, each without the trace and with its block in the environment; the
+        quality check's reference re-run runs the kernels in the certified block, and
+        `quality_check.json#shapes` records the block each shape's harness reported."""
+        from tools.tests.target_fixtures import profile_with
+        target = profile_with(parallel={"backend": "cuda"},
+                              execution={"threads_per_rank": 1, "block_size": 256,
+                                         "sweep": {"block_size": [64, 128]}})
+        result, calls, node_dir, _shape, _repo, _refs = self._drive_traced_execute(target)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([tag for tag, _ in calls], ["run", "trace", "qc", "sweep", "sweep"])
+        self.assertEqual(calls[0][1]["env"], {"ATMOFAB_CUDA_BLOCK": "256"})
+        self.assertEqual(calls[2][1]["env"]["ATMOFAB_CUDA_BLOCK"], "256")
+        for (_tag, call), block in zip(calls[3:], ("64", "128")):
+            with self.subTest(block=block):
+                self.assertEqual(call["env"], {"ATMOFAB_CUDA_BLOCK": block})
+                self.assertEqual(Path(call["project_dir"]).name, f"block_{block}")
+        quality = json.loads((node_dir / "quality_check.json").read_text("utf-8"))
+        self.assertEqual(quality["status"], "pass", quality)
+        self.assertEqual([(r["label"], r["block_size"], r["observed_block_size"],
+                           r["block_match"]) for r in quality["shapes"]],
+                         [("certified", 256, 256, True), ("block_64", 64, 64, True),
+                          ("block_128", 128, 128, True)])
+        trial = json.loads((node_dir / "trial_meta.json").read_text("utf-8"))
+        self.assertEqual(trial["environment"]["serial_reference_env"],
+                         {"ATMOFAB_CUDA_BLOCK": "256"})
+        self.assertEqual([(s["label"], s["launch"]["env"]) for s in trial["environment"]["sweep"]],
+                         [("block_64", {"ATMOFAB_CUDA_BLOCK": "64"}),
+                          ("block_128", {"ATMOFAB_CUDA_BLOCK": "128"})])
 
     def test_execute_inproc_a_sweep_shape_that_fails_routes_back_to_generate(self) -> None:
         """A shape whose run fails, or whose harness reports another grid, fails the quality
@@ -22939,12 +22975,12 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
         return d
 
     def _author(self, runs: list[dict], *, ir=None, launcher: bool = False,
-                qc_diag=None) -> tuple[str, dict]:
+                qc_diag=None, block_imposed: bool = False) -> tuple[str, dict]:
         ir = self.tpe._ir([self.tpe.CROSS]) if ir is None else ir
         status = wc.Conductor._author_quality_check(
             self.node, self.diag if qc_diag is None else qc_diag, "Q", "make_test", ir=ir,
             reference_dir=self.ref,
-            shape_runs=runs, launcher=launcher)
+            shape_runs=runs, launcher=launcher, block_imposed=block_imposed)
         return status, json.loads((self.node / "quality_check.json").read_text())
 
     def _runs(self, *dirs: Path, ok=(True, True), ids=("R", "S"),
@@ -23185,6 +23221,45 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
             self._run_dir("run_n", self.h), self._run_dir("g_n", self.h, perf=bad["ranks"])))
         self.assertEqual(status, "pass")
         self.assertNotIn("launch_match", doc["shapes"][1])
+
+    def test_a_block_shape_must_report_its_block_size(self) -> None:
+        """Issue #512 (PR-4c): for a backend that imposes a thread-block size, the block size
+        the harness reports in `perf.json` must be the one the shape launched its kernels with —
+        a harness that ignored the imposed block would make the sweep compare runs of one
+        configuration."""
+        from tools.target_profile import ExecutionShape
+        self.shapes = [ExecutionShape("certified", 1, 1, None, 256),
+                       ExecutionShape("block_64", 1, 1, None, 64)]
+        status, doc = self._author(self._runs(
+            self._run_dir("run", self.h, perf={"block_size": 256}),
+            self._run_dir("b", self.h, perf={"block_size": 64})), block_imposed=True)
+        self.assertEqual(status, "pass")
+        self.assertEqual([(r["block_size"], r["observed_block_size"], r["block_match"])
+                          for r in doc["shapes"]], [(256, 256, True), (64, 64, True)])
+        for name, perf in (("default", {"block_size": 256}), ("absent", {}),
+                           ("real", {"block_size": 64.0}), ("bool", {"block_size": True})):
+            with self.subTest(name):
+                status, doc = self._author(self._runs(
+                    self._run_dir(f"run_{name}", self.h, perf={"block_size": 256}),
+                    self._run_dir(f"b_{name}", self.h, perf=perf)), block_imposed=True)
+                self.assertEqual(status, "fail")
+                self.assertFalse(doc["shapes"][1]["block_match"])
+                lines = wc.Conductor._quality_check_failure_lines(self.node)
+                self.assertTrue(any("block_match" in ln and "block_size=64)" in ln
+                                    for ln in lines), lines)
+        # A backend that imposes no block size, or a shape that imposes none, is not asked.
+        for block_imposed, shapes in (
+                (False, self.shapes),
+                (True, [ExecutionShape("certified", 1, 1, None),
+                        ExecutionShape("threads_2", 2, 1, None)])):
+            with self.subTest(block_imposed=block_imposed):
+                self.shapes = shapes
+                status, doc = self._author(self._runs(
+                    self._run_dir(f"run_n{block_imposed}", self.h),
+                    self._run_dir(f"b_n{block_imposed}", self.h, perf={"block_size": 32})),
+                    block_imposed=block_imposed)
+                self.assertEqual(status, "pass")
+                self.assertNotIn("block_match", doc["shapes"][1])
 
 
 class VerifyMetaSchemaGateTests(unittest.TestCase):
@@ -24874,7 +24949,7 @@ class CudaCppPhysicsHostFilesTest(unittest.TestCase):
 
     SID = "boundary_x"
     DEP = "component/dep_a@0.1.0"
-    HARNESS = "infrastructure/harness_cpp_gpu@0.1.0"
+    HARNESS = "infrastructure/harness_cpp_gpu@0.2.0"
 
     def _conductor(self, repo: Path, target: str = "cpp_gpu") -> _FakeConductor:
         from tools import target_profile as tp

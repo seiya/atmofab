@@ -292,7 +292,10 @@ CAPABILITIES: dict[str, tuple[tuple[str, ...], str]] = {
         "The host knows the environment overrides a binary built for this parallel model is "
         "launched with (`tools/host_execution.py`; `run_program` merges them over the host "
         "process's own environment), and, for a launcher backend, how it imposes a target's "
-        "process grid on the ranks (`environment(threads_per_rank, process_grid=)`). A thread "
+        "process grid on the ranks (`environment(threads_per_rank, process_grid=)`), and, for a "
+        "backend whose kernel launches the host configures, the thread-block size it imposes on "
+        "them (a module-level `BLOCK_SIZES`, the values it admits, and "
+        "`environment(threads_per_rank, block_size=)`; issue #512). A thread "
         "count the model does not run is refused with `ValueError`, which the launch gate asks "
         "of every count a profile names (`target_profile._thread_count_violations`). An empty set is an answer — the binary inherits the host's "
         "environment unchanged — and a value that does not declare this job has no answer: the "
@@ -552,7 +555,8 @@ _BACKENDS: dict[tuple[str, str], Backend] = {
         # environment of its own, and `tools/host_execution.py` answers that as an empty mapping.
         Backend("parallel", "none", None,
                 core_provides=frozenset({"parallel_directives", "execution_env"})),
-        # CUDA (issue #289, R4-b PR-4): its launch environment is empty, and its presence floor
+        # CUDA (issue #289, R4-b PR-4): its launch environment sets the thread-block size a profile
+        # imposes (issue #512) and is otherwise empty, and its presence floor
         # asks a GPU model source with counted loops for a kernel. Since issue #307 its binary
         # runs under a device trace whose per-kernel summary `Validate.execute` keeps.
         Backend(

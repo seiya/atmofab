@@ -450,8 +450,10 @@ STATE_REGISTRATION_TOKEN = f"state_registration@{1}"
 # `sync_single_case@1` is defined as exactly the canonical interface block of
 # `harness_fortran_cpu@0.7.0` §5.1 (13 operations, 5 published types, `dp = float64`,
 # `case_id_len = 64`), under the providing harness node's own `<spec_id>__` names and bound to
-# its target language by that language's backend: `harness_cpp_gpu@0.1.0` §5.1 is the same block
-# (issue #289, R4-b PR-5). Its mechanical enforcer remains
+# its target language by that language's backend: `harness_cpp_gpu@0.2.0` §5.1 begins with the
+# same block (issue #289, R4-b PR-5), followed by `__block_size`, the threads per block the host
+# imposes on the program's kernels (issue #512), which the CUDA C++ runner calls and its
+# `assert_harness_pin` pins like the block's operations. Its mechanical enforcer remains
 # the language backend's `assert_harness_pin`; this contract names the ABI, it does not
 # re-check it. `state_registration@1` (`STATE_REGISTRATION_TOKEN`) is defined as: the rendered
 # runner reads every snapshot variable straight from the module-level storage of the bundle's
@@ -471,7 +473,7 @@ STATE_REGISTRATION_TOKEN = f"state_registration@{1}"
 HARNESS_CAPABILITY_MANIFESTS: dict[str, frozenset[str]] = {
     "infrastructure/harness_fortran_cpu@0.7.0": frozenset(
         {"sync_single_case@1", STATE_REGISTRATION_TOKEN}),
-    "infrastructure/harness_cpp_gpu@0.1.0": frozenset(
+    "infrastructure/harness_cpp_gpu@0.2.0": frozenset(
         {"sync_single_case@1", STATE_REGISTRATION_TOKEN}),
     "infrastructure/harness_fortran_cpu_mpi@0.2.0": frozenset(
         {"sync_single_case@1", STATE_REGISTRATION_TOKEN, "distributed_state@2"}),

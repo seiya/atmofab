@@ -811,6 +811,95 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
         self.assertTrue(any("not one kernel" in v for v in floor("cuda")), floor("cuda"))
         self.assertEqual([], floor("none"))
 
+    def test_every_launch_reads_the_imposed_block_and_none_writes_it(self) -> None:
+        """Issue #512 (PR-4c, round 2): a leaf source that launches a kernel must read
+        `atmofab::launch_block_size` somewhere in its code, and no leaf source may write it — the
+        model sources and the checks source, under any plan and any loop count. The shape it
+        refuses is the real corpus's: every `cpp_gpu` problem model certified before the block
+        was imposed launched with a literal block of its own. Reads in every operator form pass,
+        and so does a local, a parameter or a member that merely shares the name (round 3: only a
+        qualified write is refused); a launch or a write inside a comment or a string is not
+        code."""
+        import json
+
+        from tools import validate_pipeline_semantics as vps
+        from tools.backends.parallel.cuda import directives as cd
+        from tools.tests.target_fixtures import install_target_profile, pipe_ref, profile_with
+
+        read = "const int b = atmofab::launch_block_size;\n"
+        launch = "k<<<(n + b - 1) / b, b>>>(d, n);\n"
+        literal = "const int kBlock = 256;\nk<<<(n + kBlock - 1) / kBlock, kBlock>>>(d, n);\n"
+        refused = {
+            "a literal block": literal,
+            "an assignment": read + launch + "void s() { atmofab::launch_block_size = 128; }\n",
+            "a compound assignment": "void s() { atmofab::launch_block_size *= 2; }\n",
+            "a shift assignment": "void s() { atmofab::launch_block_size >>= 1; }\n",
+            "a pre-increment": "void s() { ++atmofab::launch_block_size; }\n",
+            "a post-decrement": "void s() { atmofab::launch_block_size--; }\n",
+            "a write through an alias": "namespace a = atmofab;\nvoid s() { a::launch_block_size = 1; }\n",
+            "a name that only contains it": "const int my_launch_block_size = 256;\n"
+                                            "k<<<(n + my_launch_block_size - 1) / my_launch_block_size, "
+                                            "my_launch_block_size>>>(d, n);\n",
+        }
+        admitted = {
+            "a read and a launch": read + launch,
+            "no launch": "void f() {}\n",
+            "comparisons": "".join(f"bool z{i}(int b) {{ return atmofab::launch_block_size {op} b; }}\n"
+                                   for i, op in enumerate(("==", "!=", "<=", ">=", "<", ">"))),
+            "a shift read": "int z() { return atmofab::launch_block_size << 1; }\n",
+            "a local copy of the same name": "void f(double* d, long n) {\n"
+                "  const int launch_block_size = atmofab::launch_block_size;\n"
+                "  k<<<(n + launch_block_size - 1) / launch_block_size, launch_block_size>>>(d, n);\n}\n",
+            "a parameter default": "void go(double* d, int n, int launch_block_size = "
+                                   "atmofab::launch_block_size);\n",
+            "a member": "struct C { int launch_block_size; };\n"
+                        "void f(C& c) { c.launch_block_size = atmofab::launch_block_size; }\n",
+            "comment and string": "// k<<<g, 256>>>(); atmofab::launch_block_size = 1;\n"
+                                  "const char* s = \"<<< launch_block_size = 2\";\n",
+        }
+        for name, text in refused.items():
+            with self.subTest(refused=name):
+                self.assertTrue(cd.launch_violations({Path("m.cu"): text}), name)
+        for name, text in admitted.items():
+            with self.subTest(admitted=name):
+                self.assertEqual([], cd.launch_violations({Path("m.cu"): text}))
+
+        def gate(model: str, checks: str, plan_model: str, backend: str = "cuda") -> list[str]:
+            with tempfile.TemporaryDirectory() as t:
+                repo = Path(t)
+                install_target_profile(repo, profile_with(
+                    hardware={"class": "gpu"},
+                    toolchain={"language": "cuda_cpp", "compiler": "nvcc"},
+                    parallel={"backend": backend}))
+                pipe = repo / pipe_ref("component__c__0.1.0", "c_20260101_001")
+                src = pipe / "source" / "src_20260101_001" / "src"
+                src.mkdir(parents=True)
+                (src.parent / "codegen_bundle.json").write_text(json.dumps({
+                    "target_lowering_plan": {"precision": {}, "state_residency": "host",
+                                             "parallelization": {"model": plan_model}}}))
+                (src / "c_model.cu").write_text(model)
+                (src / "c_checks.cu").write_text(checks)
+                out: list[str] = []
+                vps._validate_parallel_presence_floor(
+                    repo, vps._stub_execution(pipe, "component/c@0.1.0"), src,
+                    [src / "c_model.cu"], out)
+                return out
+
+        good = "__global__ void k(double* d, long n) {}\nvoid f(double* d, long n) {\n" \
+            + read + launch + "}\n"
+        bad = "__global__ void k(double* d, long n) {}\nvoid f(double* d, long n) {\n" \
+            + literal + "}\n"
+        self.assertEqual([], gate(good, "void c() {}\n", "cuda"))
+        for plan_model in ("cuda", "none"):
+            with self.subTest(plan=plan_model):
+                found = gate(bad, "void c() {}\n", plan_model)
+                self.assertTrue(any("c_model.cu" in v and "launch_block_size" in v
+                                    for v in found), found)
+        found = gate(good, "void c(double* d, long n) {\n" + literal + "}\n", "cuda")
+        self.assertTrue(any("c_checks.cu" in v for v in found), found)
+        # A parallel backend that states no launch floor is not asked.
+        self.assertEqual([], gate(bad, bad, "none", backend="none"))
+
     def test_a_consumer_is_shown_the_pair_unqualified(self) -> None:
         facts = cs.published_interface(_POINTWISE_MODEL, "c__flux")
         self.assertEqual("__host__ __device__ void c__flux(atmofab::View<const c_model::dp,1> u, "

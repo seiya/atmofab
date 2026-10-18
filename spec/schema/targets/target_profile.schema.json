@@ -52,14 +52,16 @@
         "threads_per_rank": {"type": "integer", "minimum": 1, "description": "The threads each rank of the certified run runs. Above 1 it needs a parallel backend whose launch environment admits the count (the launch gate, `target_profile._thread_count_violations`)."},
         "ranks": {"type": "integer", "minimum": 1, "description": "The processes a run starts; 1 when absent. Above 1 it needs a parallel backend that declares `launcher` (checked by the launch gate, `target_profile.hardware_violations`, not by this schema)."},
         "process_grid": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 1}, "description": "The [p1, p2] process grid a run's ranks are arranged in (issue #512); [ranks, 1] when absent. Its product must equal `ranks` (the loader checks it), and it needs a parallel backend that declares `launcher` (the launch gate)."},
+        "block_size": {"type": "integer", "minimum": 1, "description": "The threads per block every kernel of a run is launched with (issue #512); the harness's default when absent. It needs a parallel backend whose launch environment imposes a block size and admits the value (the launch gate, `target_profile._block_size_violations`)."},
         "sweep": {
           "type": "object",
           "additionalProperties": false,
           "minProperties": 1,
-          "description": "The further execution shapes a Validate run launches the binary in (issue #512), each compared with the quality check's serial reference (one process, one thread) by its check statuses, its verdict and its captured state under the IR's cross-target predicates. The loader refuses a repeated value, `[1, 1]`, the certified grid, a grid of more than `execution.ranks` ranks, and the certified thread count; the launch gate refuses `grids` for a backend that declares no `launcher` and a thread count the backend's launch environment does not admit.",
+          "description": "The further execution shapes a Validate run launches the binary in (issue #512), each compared with the quality check's serial reference (one process, one thread) by its check statuses, its verdict and its captured state under the IR's cross-target predicates. The loader refuses a repeated value, `[1, 1]`, the certified grid, a grid of more than `execution.ranks` ranks, the certified thread count, the certified block size, and `block_size` when `execution.block_size` is absent; the launch gate refuses `grids` for a backend that declares no `launcher`, a thread count the backend's launch environment does not admit, and a block size for a backend that imposes none or a value it does not admit.",
           "properties": {
             "grids": {"type": "array", "minItems": 1, "items": {"type": "array", "minItems": 2, "maxItems": 2, "items": {"type": "integer", "minimum": 1}}, "description": "Process grids [p1, p2], each run with p1 p2 ranks."},
-            "threads_per_rank": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 2}, "description": "Thread counts, each run with the certified ranks and grid."}
+            "threads_per_rank": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 2}, "description": "Thread counts, each run with the certified ranks, grid and block size."},
+            "block_size": {"type": "array", "minItems": 1, "items": {"type": "integer", "minimum": 1}, "description": "Thread-block sizes, each run with the certified ranks, grid and threads per rank."}
           }
         }
       }

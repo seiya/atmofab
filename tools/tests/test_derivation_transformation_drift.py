@@ -946,6 +946,13 @@ PINNED_RENDER: dict[str, str] = {
     # (Measured by diffing `render_tuple()` against origin/main 79e90e32's: that row and no
     # other.) The digest `render-10` shipped with at 79e90e32:
     "render-10@79e90e32": "1a8602441c121673af4819425483d766510e6f778121e9439f2ca5aea5b3792d",
+    # render-11 (issue #512, PR-4c): the CUDA C++ runner calls the harness's `__block_size`
+    # before the first case and stores it in `atmofab::launch_block_size`, which the rendered
+    # header now declares for every source of the program; the renderer's pin gains the
+    # operation (`harness_cpp_gpu@0.2.0` §5.1). Rows moved: `cuda_cpp/runner.py`,
+    # `cuda_cpp/header.py`, and `tools/host_execution.py` (the block size reaches the launch
+    # environment; the renderers read `perf_parallelism`, which is unchanged).
+    "render-11": "7ba0b330c74f399d05d15a2f1dd60e05a266bcee996e0e6fe9c6cc9b58524c2a",
     # Re-pinned (issue #469), behaviour-preserving: `make/control_file.py` gains
     # `CONTROL_FILE_BASENAMES`, the names `make` reads without `-f`, which `codegen_bundle`
     # derives its reserved bundle basenames from; nothing it renders moved. (Measured by diffing
@@ -1046,7 +1053,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "5b48ee7cbac94d7dc27fc8c8ccdcc95f6c7dbc10787aa2551418723669df71bf",
+    "build-2": "af361cddb5c06ef041a7038f6651a7c393fbc7eb08aa425731fcf8fedba36597",
     # Re-pinned (issue #512, PR-4b), behaviour-preserving: `tools/host_execution.py` gains
     # `serial_execution_env` and an execution-shape argument to `launch_shape`, whose default is
     # the certified shape — the one the build's backstop call asks for, with the argv prefix,
@@ -1166,6 +1173,12 @@ PINNED_BUILD: dict[str, str] = {
     # reads. (Measured by diffing `build_tuple()` against origin/main b60c642c's: that row and
     # no other.) The digest `build-2` shipped with at b60c642c:
     "build-2@b60c642c": "0c46f46b2434ec8f33b0ec597e2ae5e06a267cb63a6b5719b4a4bc9489ff1345",
+    # Re-pinned (issue #512, PR-4c), behaviour-preserving for the build: `tools/host_execution.py`
+    # passes a shape's thread-block size to the launch environment and refuses one for a backend
+    # that imposes none, which no build reads — the build's backstop call asks for the certified
+    # shape's site half only. (Measured by diffing `build_tuple()` against origin/main
+    # f661ee31's: that row and no other.) The digest `build-2` shipped with at f661ee31:
+    "build-2@f661ee31": "5b48ee7cbac94d7dc27fc8c8ccdcc95f6c7dbc10787aa2551418723669df71bf",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -1427,6 +1440,14 @@ PINNED_EXECUTE: dict[str, str] = {
     # Round 2 added `_stderr_head_and_tail` and the excerpt bounds (`_EXCERPT_*`) to the
     # tuple; round 3 stopped the local sweep at its first failing shape.
     "execute-10": "c274efe8a29659110643cae39921cfb18b0e79ab4a050802f650fb6d9909df80",
+    # execute-11 (issue #512, PR-4c): a target whose parallel backend imposes a thread-block
+    # size runs each shape in its block (`ExecutionShape.block_size`, the `block_<b>` sweep
+    # shapes), the serial reference in the certified one, and `quality_check.json#shapes` gains
+    # `block_size`, `observed_block_size` and `block_match`, which the post-execute gate reads.
+    # Rows moved: `Conductor._execute_inproc`, `_author_quality_check`,
+    # `_quality_check_failure_lines`, `ExecutionShape`, `TargetProfile.certified_shape` /
+    # `sweep_shapes`, `tools/host_execution.py`, the cuda `execution_env` module.
+    "execute-11": "d9d01da9e609546a75ec48a4090f6f7385f5467e3d5e2a78e7f590d0d13a17fa",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

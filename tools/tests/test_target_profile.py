@@ -151,6 +151,25 @@ class CheckedInProfileTests(unittest.TestCase):
         self.assertTrue(counts and all(c > 1 for c in counts), counts)
         self.assertEqual(tp.hardware_violations(profile), [])
 
+    def test_the_checked_in_gpu_profile_imposes_a_block_size_and_sweeps_it(self) -> None:
+        """Issue #512 (PR-4c): `cpp_gpu`'s certified run imposes a block size and its sweep varies
+        it, so a kernel whose state depends on the block meets the reference run. The certified
+        block is not the harness's default (round 1 of the PR's review): the post-execute gate
+        ties the harness self-test's captured block to the certified run's, and at the default a
+        harness that ignores `ATMOFAB_CUDA_BLOCK` satisfies the tie. The default is read from
+        the harness spec's §3.3, so a change of either side is red here."""
+        import re
+        profile = tp.load_target_profile(REPO_ROOT, "cpp_gpu")
+        self.assertIsNotNone(profile.block_size)
+        spec = (REPO_ROOT / "spec/infrastructure/infra/harness/harness_cpp_gpu/"
+                "controlled_spec.md").read_text(encoding="utf-8")
+        defaults = re.findall(r"unset or empty the block size is `(\d+)`", spec)
+        self.assertEqual(len(defaults), 1, defaults)
+        self.assertNotEqual(profile.block_size, int(defaults[0]))
+        blocks = [s.block_size for s in profile.sweep_shapes]
+        self.assertTrue(blocks and profile.block_size not in blocks, blocks)
+        self.assertEqual(tp.hardware_violations(profile), [])
+
     def test_the_checked_in_mpi_profile_launches_four_ranks_over_its_own_harness(self) -> None:
         """Issue #316 (R4-c PR-3): `fortran_cpu_mpi` names the `mpi` parallel backend with four
         ranks and the distributed-state harness, and passes the launch gate for that harness at
@@ -190,9 +209,10 @@ class CheckedInProfileTests(unittest.TestCase):
         target — moves. The digests are the ones at origin/main fcced0b6, before the key
         existed; a profile edited on purpose updates its row here: `fortran_cpu` was, by issue
         #512 PR-4b (four threads per rank and a thread sweep), which re-derives its Generates, Builds
-        and Validates (the profile hash is in the generate and validate keys)."""
+        and Validates (the profile hash is in the generate and validate keys), and `cpp_gpu` by
+        PR-4c (a block size and a block-size sweep), the same way."""
         expected = {
-            "cpp_gpu": "sha256:5d7efb15cbc7c40eb63a9c541bce3600e9c418e7f444813a8456ec13a7d4140b",
+            "cpp_gpu": "sha256:746e56a4f5c478771f14cb444ee5d3738219b74d2ad0f8553756fd94e489518f",
             "fortran_cpu": "sha256:826abe218051af61ab1f2541ab7ed40f3d4b227c435489653b9edbd1ae149e55",
         }
         got = {tid: tp.load_target_profile(REPO_ROOT, tid).sha256 for tid in expected}
@@ -352,6 +372,11 @@ class LoaderTests(unittest.TestCase):
             "empty threads": ({"threads_per_rank": []}, "integers >= 2"),
             "repeated threads": ({"threads_per_rank": [3, 3]}, "listed twice"),
             "certified threads": ({"threads_per_rank": [2]}, "certified run's own"),
+            "block without a certified block": ({"block_size": [64]},
+                                                "execution.block_size declares none"),
+            "empty blocks": ({"block_size": []}, "non-empty list of integers >= 1"),
+            "zero block": ({"block_size": [0]}, "non-empty list of integers >= 1"),
+            "bool block": ({"block_size": [True]}, "non-empty list of integers >= 1"),
         }
         base = {"threads_per_rank": 2, "ranks": 4, "process_grid": [2, 2]}
         for name, (sweep, needle) in refused.items():
@@ -363,11 +388,14 @@ class LoaderTests(unittest.TestCase):
                                                           "threads_per_rank": [3]}})
             profile = tp.load_target_profile(repo.root, "t1")
             self.assertEqual([s.record() for s in profile.execution_shapes], [
-                {"label": "certified", "threads_per_rank": 2, "ranks": 4, "process_grid": [2, 2]},
-                {"label": "grid_4x1", "threads_per_rank": 2, "ranks": 4, "process_grid": [4, 1]},
-                {"label": "grid_1x3", "threads_per_rank": 2, "ranks": 3, "process_grid": [1, 3]},
+                {"label": "certified", "threads_per_rank": 2, "ranks": 4, "process_grid": [2, 2],
+                 "block_size": None},
+                {"label": "grid_4x1", "threads_per_rank": 2, "ranks": 4, "process_grid": [4, 1],
+                 "block_size": None},
+                {"label": "grid_1x3", "threads_per_rank": 2, "ranks": 3, "process_grid": [1, 3],
+                 "block_size": None},
                 {"label": "threads_3", "threads_per_rank": 3, "ranks": 4,
-                 "process_grid": [2, 2]}])
+                 "process_grid": [2, 2], "block_size": None}])
             # Without an imposed grid the certified one is (ranks, 1), and a thread shape
             # imposes none either.
             repo.write("t1", execution={"threads_per_rank": 1, "ranks": 2,
@@ -377,7 +405,41 @@ class LoaderTests(unittest.TestCase):
             profile = tp.load_target_profile(repo.root, "t1")
             self.assertEqual(profile.sweep_shapes[0].record(),
                              {"label": "threads_2", "threads_per_rank": 2, "ranks": 2,
-                              "process_grid": None})
+                              "process_grid": None, "block_size": None})
+
+    def test_the_block_size_is_optional_and_its_sweep_varies_it(self) -> None:
+        """Issue #512 (PR-4c): `execution.block_size` is optional (None: the harness's default)
+        and, when stated, an integer >= 1; each value of `execution.sweep.block_size` is one more
+        shape, `block_<b>`, with the certified threads, ranks and grid, and never the certified
+        block or a value listed twice. Every other shape carries the certified block."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            repo.write("t1")
+            self.assertIsNone(tp.load_target_profile(repo.root, "t1").block_size)
+            repo.write("t1", execution={"threads_per_rank": 2, "block_size": 256,
+                                        "sweep": {"threads_per_rank": [3],
+                                                  "block_size": [64, 128]}})
+            profile = tp.load_target_profile(repo.root, "t1")
+            self.assertEqual(profile.block_size, 256)
+            self.assertEqual([s.record() for s in profile.execution_shapes], [
+                {"label": "certified", "threads_per_rank": 2, "ranks": 1, "process_grid": None,
+                 "block_size": 256},
+                {"label": "threads_3", "threads_per_rank": 3, "ranks": 1, "process_grid": None,
+                 "block_size": 256},
+                {"label": "block_64", "threads_per_rank": 2, "ranks": 1, "process_grid": None,
+                 "block_size": 64},
+                {"label": "block_128", "threads_per_rank": 2, "ranks": 1, "process_grid": None,
+                 "block_size": 128}])
+        for bad in (0, -32, True, 64.0, "64", None):
+            with self.subTest(block_size=bad):
+                self.assertIn("execution.block_size: must be an integer >= 1",
+                              self._refusal(execution={"threads_per_rank": 1,
+                                                       "block_size": bad}))
+        base = {"threads_per_rank": 1, "block_size": 256}
+        for sweep, needle in (({"block_size": [64, 64]}, "64 is listed twice"),
+                              ({"block_size": [256]}, "256 is the certified run's own")):
+            with self.subTest(sweep=sweep):
+                self.assertIn(needle, self._refusal(execution={**base, "sweep": sweep}))
 
     def test_the_rank_count_is_optional_and_a_positive_integer(self) -> None:
         """Issue #316: `execution.ranks` defaults to 1 and, when stated, is an integer >= 1."""
@@ -523,6 +585,35 @@ class LaunchGateTests(unittest.TestCase):
                 with self.subTest(backend=backend, threads=1):
                     self.assertFalse(any("threads" in v for v in tp.hardware_violations(
                         self._profile(repo, parallel__backend=backend))))
+
+    def test_a_block_size_needs_a_backend_that_imposes_one_and_admits_it(self) -> None:
+        """Issue #512 (PR-4c): every thread-block size the profile launches the kernels with —
+        `execution.block_size` and each of `execution.sweep.block_size` — must be one the
+        parallel backend's launch environment admits. CUDA admits the powers of two from 32 to
+        1024; a backend that declares no `BLOCK_SIZES` (OpenMP, MPI, the neutral `none`)
+        configures no kernel launch and refuses any. The refusal names the member."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = _ScratchRepo(tmp)
+            admitted = {"threads_per_rank": 1, "block_size": 256,
+                        "sweep": {"block_size": [32, 1024]}}
+            self.assertEqual(tp.hardware_violations(self._profile(
+                repo, parallel__backend="cuda", execution=admitted)), [])
+            for execution, where in (
+                    ({"threads_per_rank": 1, "block_size": 100}, "execution.block_size: "),
+                    ({"threads_per_rank": 1, "block_size": 256, "sweep": {"block_size": [2048]}},
+                     "execution.sweep.block_size: ")):
+                with self.subTest(execution=execution):
+                    violations = tp.hardware_violations(self._profile(
+                        repo, parallel__backend="cuda", execution=execution))
+                    self.assertTrue(any(v.startswith(where) and "does not launch blocks" in v
+                                        for v in violations), violations)
+            for backend in ("openmp", "mpi", "none"):
+                with self.subTest(backend=backend):
+                    violations = tp.hardware_violations(self._profile(
+                        repo, parallel__backend=backend, execution=admitted))
+                    for where in ("execution.block_size: ", "execution.sweep.block_size: "):
+                        self.assertTrue(any(v.startswith(where) and "imposes none" in v
+                                            for v in violations), violations)
 
     def test_a_grid_sweep_needs_a_launcher(self) -> None:
         """Issue #512: a sweep of process grids arranges ranks a launcher starts."""

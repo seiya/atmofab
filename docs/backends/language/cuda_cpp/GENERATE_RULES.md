@@ -107,8 +107,8 @@ reduction, a copy that only reshapes host state), not about a gate or a run in w
 not execute. How a loop of the checks module is lowered is not G6's to judge (issue #400); the rules above
 that hold for the checks module, the ban on a host fallback among them, still do. The
 producer is told the same, and told that a kernel the trace never saw is launched where the cases
-reach it with a launch configuration the device accepts, and removed only when its work is not
-needed, never moved to a host loop (issue #307 PR-3).
+reach it, in blocks of the run's `atmofab::launch_block_size` threads (§7) with a grid computed from
+it, and removed only when its work is not needed, never moved to a host loop (issue #307 PR-3).
 
 ## 5. The `problem` model gates
 
@@ -266,3 +266,56 @@ variants ran their whole suites in 232.6 s and 7.2 s.
 device-residency step (`state_residency: device`, which needs a harness providing
 `async_device_resident`). It is not a runtime bound. It does not touch the Fortran binding or the
 IR.
+
+## 7. The launch configuration
+
+The threads per block of every kernel launch is the host's (issue #512). The target profile
+names it (`execution.block_size`) and its execution-shape sweep varies it
+(`execution.sweep.block_size`); `Validate.execute` runs the binary once per shape, each with
+`ATMOFAB_CUDA_BLOCK` set to the shape's block size (`tools/backends/parallel/cuda/execution.py`),
+and the quality check compares each run's checks, verdict and captured state with the reference
+run under the IR's cross-target predicates (`docs/workflow/phases/phase_04_validate.md`). A
+kernel whose result depends on the block it ran in — a race between blocks, a shared-memory tile
+or a reduction that is correct at one block size — is caught there, at the shape it fails under.
+
+The harness reads the variable and publishes the value (`harness_cpp_gpu` §3.3,
+`__block_size`); the host-rendered runner calls it once, before the first case, and stores it in
+`atmofab::launch_block_size`, which the host-rendered header declares for every source of the
+program (`tools/backends/language/cuda_cpp/header.py`). The node's sources read that variable:
+they never name the harness (§3's rule is unchanged), and never assign it.
+
+- **B.1 Launch with the imposed block.** Every `<<<grid, block>>>` launch takes
+  `atmofab::launch_block_size` threads per block, read when the operation runs: a
+  namespace-scope copy initialized before `main` runs holds `0`, which the device refuses.
+- **B.2 The grid follows from the block.** The launch's grid covers the range with that block:
+  `(n + block - 1) / block` blocks for `n` elements, and a kernel guards the threads past `n`. A
+  two- or three-dimensional launch puts the whole block along its fastest axis, or splits it
+  over its axes as a product equal to the block size; its grid follows the same way.
+- **B.3 Shared memory and loop strides follow the block.** A shared-memory array or a
+  block-level reduction is sized from the block size at run time (dynamic shared memory, the
+  launch's third configuration argument), and a grid-stride loop strides by
+  `gridDim.x * blockDim.x`, never by a literal.
+
+A literal block size, a block size chosen from the device's properties or an occupancy query, or
+a block size that differs between launches is `generate.verify`'s finding (checklist G6): it
+makes the sweep compare runs of one configuration. Choosing the block size is not taken from the
+optimization flow: `execution.block_size` is the one target-profile field a `Tune` variant may
+override (`docs/TUNING_WORKFLOW.md` §The override-allowed boundary), so a variant that tries
+another block runs every launch at it, is measured and selected like any other, and is still
+compared across every other block size the profile names (its certified one and its sweep's); what §6 leaves to a plan's
+`accelerator_mapping` is how the work maps onto blocks and grid, not the threads per block.
+
+The `Generate.gate` static check holds a necessary condition of B.1
+(`tools/backends/parallel/cuda/directives.py` `launch_violations`, asked of every model source and
+the checks source of a `component` / `problem` node, whatever the plan and the loop count): a
+source whose code launches a kernel (`<<<`) and never names `atmofab::launch_block_size` is
+refused, and so is a source that writes it through its qualified name (an assignment, compound or
+plain, or an increment; a local, parameter or member that merely shares the name is not refused,
+and a write through `using` or a reference is G6's). That is the shape every `cpp_gpu` problem
+model certified before the block was imposed had: each launched with a literal block of its own
+(`const int block = 128;`, `constexpr int kBlock = 256;`, ...). Beyond it no gate reads B.1–B.3: a source that names the variable and
+still launches one kernel with a literal passes the floor, because a launch's configuration is an
+expression a pattern over the source does not evaluate, and that launch is G6's. What the run
+records is the block size the harness reports (`perf.json#parallelism.block_size`), which the
+`post_execute` gate compares with each shape's; it says the harness read the variable, not that
+every kernel used it.
