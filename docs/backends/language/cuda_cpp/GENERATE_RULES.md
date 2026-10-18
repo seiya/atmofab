@@ -309,9 +309,11 @@ The `Generate.gate` static check holds a necessary condition of B.1
 (`tools/backends/parallel/cuda/directives.py` `launch_violations`, asked of every model source and
 the checks source of a `component` / `problem` node, whatever the plan and the loop count): a
 source whose code launches a kernel (`<<<`) and never names `atmofab::launch_block_size` is
-refused, and so is a source that writes it (an assignment, compound or plain, or an increment).
-That is the shape every `cpp_gpu` problem model certified before the block was imposed had
-(`const int kBlock = 256;`). Beyond it no gate reads B.1–B.3: a source that names the variable and
+refused, and so is a source that writes it through its qualified name (an assignment, compound or
+plain, or an increment; a local, parameter or member that merely shares the name is not refused,
+and a write through `using` or a reference is G6's). That is the shape every `cpp_gpu` problem
+model certified before the block was imposed had: each launched with a literal block of its own
+(`const int block = 128;`, `constexpr int kBlock = 256;`, ...). Beyond it no gate reads B.1–B.3: a source that names the variable and
 still launches one kernel with a literal passes the floor, because a launch's configuration is an
 expression a pattern over the source does not evaluate, and that launch is G6's. What the run
 records is the block size the harness reports (`perf.json#parallelism.block_size`), which the

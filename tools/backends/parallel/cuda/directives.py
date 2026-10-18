@@ -27,11 +27,16 @@ _KERNEL_RE = re.compile(r"\b__global__\b|<<<")
 _LAUNCH_RE = re.compile(r"<<<")
 _LAUNCH_BLOCK_NAME = "launch_block_size"
 _LAUNCH_BLOCK_RE = re.compile(rf"\b{_LAUNCH_BLOCK_NAME}\b")
-# A write to it: an assignment, plain or compound, or an increment / decrement on either side;
-# `==` and the relational and shift operators are reads.
+# A write to it, through a QUALIFIED name (`atmofab::`, or a namespace alias of it): an
+# assignment, plain or compound, or an increment / decrement on either side; `==` and the
+# relational and shift operators are reads. A bare `launch_block_size = ...` is not refused: it is
+# how a function-local copy of the same name, a parameter's default or a member is spelled
+# (round 3 of the PR's review), and a write that reaches the variable through `using` is the
+# reviewer's, as a literal block is.
+_QUALIFIED_BLOCK = rf"\w+\s*::\s*{_LAUNCH_BLOCK_NAME}\b"
 _LAUNCH_BLOCK_WRITE_RE = re.compile(
-    rf"(?:\+\+|--)\s*(?:\w+\s*::\s*)*{_LAUNCH_BLOCK_NAME}\b"
-    rf"|\b{_LAUNCH_BLOCK_NAME}\s*(?:\+\+|--|(?:<<|>>|[-+*/%&|^])?=(?!=))")
+    rf"(?:\+\+|--)\s*{_QUALIFIED_BLOCK}"
+    rf"|{_QUALIFIED_BLOCK}\s*(?:\+\+|--|(?:<<|>>|[-+*/%&|^])?=(?!=))")
 
 _NO_PARALLELISM_VALUES = frozenset({"none", "off", "serial", "sequential", "false", "disabled"})
 _LOWERING_PARALLELIZATION_MODEL_KEYS = frozenset({"model", "method", "scheme", "kind"})
@@ -55,8 +60,9 @@ def launch_violations(texts: dict[Path, str]) -> list[str]:
     code, and no source writes it. A NECESSARY condition only: a source that names the variable
     and still launches some kernel with a literal block passes, and is `generate.verify` G6's
     finding. What it catches is the source that never takes the host's block at all — the shape
-    of the `cpp_gpu` problem models certified before the block was imposed (`const int kBlock =
-    256;`), under which the block-size sweep runs one configuration and records it as several.
+    of every `cpp_gpu` problem model certified before the block was imposed, each launching with a
+    literal block of its own (`const int block = 128;`, `constexpr int kBlock = 256;`, ...), under
+    which the block-size sweep runs one configuration and records it as several.
     Asked of every launch whatever the lowering plan says: a plan may decline CUDA for a loop,
     never choose the threads per block."""
     from tools.backends import registry

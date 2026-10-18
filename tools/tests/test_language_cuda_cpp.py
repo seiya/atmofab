@@ -816,8 +816,10 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
         `atmofab::launch_block_size` somewhere in its code, and no leaf source may write it — the
         model sources and the checks source, under any plan and any loop count. The shape it
         refuses is the real corpus's: every `cpp_gpu` problem model certified before the block
-        was imposed launched with `const int kBlock = 256;`. Reads in every operator form pass;
-        a launch or a write inside a comment or a string is not code."""
+        was imposed launched with a literal block of its own. Reads in every operator form pass,
+        and so does a local, a parameter or a member that merely shares the name (round 3: only a
+        qualified write is refused); a launch or a write inside a comment or a string is not
+        code."""
         import json
 
         from tools import validate_pipeline_semantics as vps
@@ -833,7 +835,11 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
             "a compound assignment": "void s() { atmofab::launch_block_size *= 2; }\n",
             "a shift assignment": "void s() { atmofab::launch_block_size >>= 1; }\n",
             "a pre-increment": "void s() { ++atmofab::launch_block_size; }\n",
-            "a post-decrement": "void s() { launch_block_size--; }\n",
+            "a post-decrement": "void s() { atmofab::launch_block_size--; }\n",
+            "a write through an alias": "namespace a = atmofab;\nvoid s() { a::launch_block_size = 1; }\n",
+            "a name that only contains it": "const int my_launch_block_size = 256;\n"
+                                            "k<<<(n + my_launch_block_size - 1) / my_launch_block_size, "
+                                            "my_launch_block_size>>>(d, n);\n",
         }
         admitted = {
             "a read and a launch": read + launch,
@@ -841,6 +847,13 @@ class DeviceCallablePointwiseTests(unittest.TestCase):
             "comparisons": "".join(f"bool z{i}(int b) {{ return atmofab::launch_block_size {op} b; }}\n"
                                    for i, op in enumerate(("==", "!=", "<=", ">=", "<", ">"))),
             "a shift read": "int z() { return atmofab::launch_block_size << 1; }\n",
+            "a local copy of the same name": "void f(double* d, long n) {\n"
+                "  const int launch_block_size = atmofab::launch_block_size;\n"
+                "  k<<<(n + launch_block_size - 1) / launch_block_size, launch_block_size>>>(d, n);\n}\n",
+            "a parameter default": "void go(double* d, int n, int launch_block_size = "
+                                   "atmofab::launch_block_size);\n",
+            "a member": "struct C { int launch_block_size; };\n"
+                        "void f(C& c) { c.launch_block_size = atmofab::launch_block_size; }\n",
             "comment and string": "// k<<<g, 256>>>(); atmofab::launch_block_size = 1;\n"
                                   "const char* s = \"<<< launch_block_size = 2\";\n",
         }
