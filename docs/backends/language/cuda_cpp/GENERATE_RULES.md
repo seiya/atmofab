@@ -299,10 +299,11 @@ they never name the harness (§3's rule is unchanged), and never assign it.
 A literal block size, a block size chosen from the device's properties or an occupancy query, or
 a block size that differs between launches is `generate.verify`'s finding (checklist G6): it
 makes the sweep compare runs of one configuration. Choosing the block size is not taken from the
-optimization flow: a `Tune` variant that tries another block does it through the target profile's
-`execution.block_size`, the value every launch then reads, and is measured and compared like any
-other run; what §6 leaves to a plan's `accelerator_mapping` is how the work maps onto blocks and
-grid, not the threads per block.
+optimization flow: `execution.block_size` is the one target-profile field a `Tune` variant may
+override (`docs/TUNING_WORKFLOW.md` §The override-allowed boundary), so a variant that tries
+another block runs every launch at it, is measured and selected like any other, and is still
+compared across the rest of the profile's block sizes; what §6 leaves to a plan's
+`accelerator_mapping` is how the work maps onto blocks and grid, not the threads per block.
 
 The `Generate.gate` static check holds a necessary condition of B.1
 (`tools/backends/parallel/cuda/directives.py` `launch_violations`, asked of every model source and
