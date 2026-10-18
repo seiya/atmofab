@@ -1022,8 +1022,10 @@ PINNED: dict[str, str] = {
     # from it, and a literal or device-chosen block size is a G6 finding — because the host now
     # runs the binary once more per block size of `execution.sweep.block_size`. Members moved:
     # `cuda_cpp/generate_generate.txt` §target_lowering_floor, `cuda_cpp/generate_verify.txt`
-    # §checklist_g6_floor_scope.
-    "pure-80": "0c34a4880900eb70fce6477b0cfcec3a69bff05e455b4baf57f6402c826ed40c",
+    # §checklist_g6_floor_scope. Re-pinned in place (unshipped) by round 1: the producer
+    # fragment's repair sentence and its plan-override sentence no longer leave the threads per
+    # block to the leaf or its plan, and the admitted sizes are named as such.
+    "pure-80": "6ebc74922f1344a89a8aa67ddcfc6e9944c938613240b20575ea3d3e94651801",
 }
 
 

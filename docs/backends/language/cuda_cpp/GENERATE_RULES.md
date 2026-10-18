@@ -298,7 +298,11 @@ they never name the harness (§3's rule is unchanged), and never assign it.
 
 A literal block size, a block size chosen from the device's properties or an occupancy query, or
 a block size that differs between launches is `generate.verify`'s finding (checklist G6): it
-makes the sweep compare runs of one configuration. No gate reads B.1–B.3: a launch's
+makes the sweep compare runs of one configuration. Choosing the block size is not taken from the
+optimization flow: a `Tune` variant that tries another block does it through the target profile's
+`execution.block_size`, the value every launch then reads, and is measured and compared like any
+other run; what §6 leaves to a plan's `accelerator_mapping` is how the work maps onto blocks and
+grid, not the threads per block. No gate reads B.1–B.3: a launch's
 configuration is an expression, which a pattern over the source does not evaluate; what the run
 records is the block size the harness reports (`perf.json#parallelism.block_size`), which the
 `post_execute` gate compares with each shape's.
