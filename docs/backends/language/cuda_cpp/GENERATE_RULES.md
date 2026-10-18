@@ -107,8 +107,8 @@ reduction, a copy that only reshapes host state), not about a gate or a run in w
 not execute. How a loop of the checks module is lowered is not G6's to judge (issue #400); the rules above
 that hold for the checks module, the ban on a host fallback among them, still do. The
 producer is told the same, and told that a kernel the trace never saw is launched where the cases
-reach it with a launch configuration the device accepts, and removed only when its work is not
-needed, never moved to a host loop (issue #307 PR-3).
+reach it, in blocks of the run's `atmofab::launch_block_size` threads (§7) with a grid computed from
+it, and removed only when its work is not needed, never moved to a host loop (issue #307 PR-3).
 
 ## 5. The `problem` model gates
 

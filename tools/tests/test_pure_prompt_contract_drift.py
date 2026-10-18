@@ -1026,8 +1026,9 @@ PINNED: dict[str, str] = {
     # fragment's repair sentence and its plan-override sentence no longer leave the threads per
     # block to the leaf or its plan, and the admitted sizes are named as such. Round 2: both
     # fragments say the `Generate.gate` floor refuses a launching source that never names
-    # `atmofab::launch_block_size` and a source that writes it.
-    "pure-80": "e2cb59b0e95db042a74a781313ab6664830b8414dba57cdad310b4320a707b24",
+    # `atmofab::launch_block_size` and a source that writes it; the inlined
+    # `docs/workflow/RUNNER_OUTPUT_CONTRACT.md` lists `parallelism.block_size`.
+    "pure-80": "c84e08fcb582dfa6362fab0702e4232bc055a3b11871fe1a3c6afde7e8084e16",
 }
 
 

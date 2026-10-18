@@ -64,7 +64,8 @@ gate, which mandatorily verifies `walltime_sec` / `throughput_cells_per_sec` /
 - `parallelism` (required object): `mpi_ranks` / `threads_per_rank` /
   `gpu_devices` / `parallel_degree_total`
   (`= mpi_ranks * threads_per_rank * max(gpu_devices,1)`); a process-grid harness
-  adds `process_grid` (`[p1, p2]`, issue #512)
+  adds `process_grid` (`[p1, p2]`), a device harness `block_size` (threads
+  per block; #512)
 - `timestamp_utc`: ISO8601 (recommended)
 
 A `perf.json` missing `parallelism` is invalid/unjudgeable.

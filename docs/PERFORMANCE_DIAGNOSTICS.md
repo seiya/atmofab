@@ -28,6 +28,7 @@
   - `gpu_devices`: the number of GPU devices used (0 for CPU-only)
   - `parallel_degree_total`: the total parallelism. Defined as `mpi_ranks * threads_per_rank * max(gpu_devices,1)`
   - `process_grid`: `[p1, p2]`, the process grid a harness that arranges its ranks in one used (issue #512). Under a launcher the post-execute gate requires it to equal the target profile's `execution.process_grid`, or `[ranks, 1]` when the profile imposes none; on the harness's own Validate run it also requires the grid the self-test's snapshots capture (`p1`, `p2`) to be that grid
+  - `block_size`: the threads per block a harness whose kernel launches the host configures read at start (issue #512). For a parallel backend that imposes one, the post-execute gate requires it to equal each execution shape's block size (`quality_check.json#shapes[].observed_block_size`); on the harness's own Validate run it also requires the block the self-test's snapshots capture (`block_size`) to be the certified run's
 - `timestamp_utc`: ISO8601 (may be optional but recommended)
 
 ## 3. Recommended fields (if possible)
