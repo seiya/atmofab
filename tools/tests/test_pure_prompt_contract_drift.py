@@ -1025,7 +1025,7 @@ PINNED: dict[str, str] = {
     # §checklist_g6_floor_scope. Re-pinned in place (unshipped) by round 1: the producer
     # fragment's repair sentence and its plan-override sentence no longer leave the threads per
     # block to the leaf or its plan, and the admitted sizes are named as such.
-    "pure-80": "6ebc74922f1344a89a8aa67ddcfc6e9944c938613240b20575ea3d3e94651801",
+    "pure-80": "a270aea57bdc83afebf134c5e65dfaa04ae4daff41c85b29d9fd413a45d58e5b",
 }
 
 
