@@ -1969,7 +1969,8 @@ def _validate_execution_shapes(repo_root: Path, execution: NodeExecution,
     reference's, its captured state agrees (`SHAPE_STATE_AGREEMENT_HOLDS`), and, for a target
     whose backend declares a launcher, the harness reported the shape's rank count and grid —
     for one whose backend imposes a thread-block size, the block size of a shape that imposes
-    one.
+    one — and, for one some shape of which runs more than one thread per rank
+    (`TargetProfile.thread_count_observable`), the shape's thread count.
 
     The conductor writes the record and fails the run on a comparison that does not hold, so
     the gate reads the same facts twice: a record missing a declared shape — a sweep the
@@ -2001,6 +2002,7 @@ def _validate_execution_shapes(repo_root: Path, execution: NodeExecution,
         return
     launcher = host_execution.declares_launcher(target.parallel_backend)
     block_imposed = host_execution.imposes_block_size(target.parallel_backend)
+    threads_checked = target.thread_count_observable
     for shape, row in zip(expected, rows):
         where = f"{quality_path}: shapes[{shape.label}]"
         declared = shape.record()
@@ -2032,6 +2034,12 @@ def _validate_execution_shapes(repo_root: Path, execution: NodeExecution,
                 violations.append(
                     f"{where}: the harness reported block_size={observed_block!r}, and the shape "
                     f"launched its kernels in blocks of {shape.block_size}")
+        if threads_checked:
+            observed_threads = row.get("observed_threads_per_rank")
+            if type(observed_threads) is not int or observed_threads != shape.threads_per_rank:
+                violations.append(
+                    f"{where}: the harness reported threads_per_rank={observed_threads!r}, and "
+                    f"the shape ran {shape.threads_per_rank} thread(s) per rank")
     if block_imposed and target.block_size is not None:
         _validate_harness_reported_block(repo_root, execution, target, violations)
 

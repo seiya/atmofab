@@ -38,7 +38,8 @@ from tools.backends.language.fortran.signatures import (
     source_atoms,
     stanza_atoms,
 )
-from tools.backends.language.fortran.runner import _HARNESS_V3_INTERFACE, _HARNESS_V3_PARAMETERS
+from tools.backends.language.fortran.runner import (
+    _HARNESS_V3_INTERFACE, _HARNESS_V3_PARAMETERS, _SINGLE_PROCESS_INTERFACE)
 from tools.validate_pipeline_semantics import _FENCED_BLOCK_RE
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -207,8 +208,13 @@ class RoundTripRealArtifactsTest(unittest.TestCase):
     def test_round_trip_harness_controlled_spec_section51(self) -> None:
         published = _real_section51_struct()
         struct = self._assert_round_trip(render_signatures_to_fortran(published))
-        # sanity on the parsed shape (the real harness surface)
-        self.assertEqual(len(struct["procedures"]), 13)
+        # sanity on the parsed shape (the real harness surface): the 13 operations of the
+        # `sync_single_case@1` block, then the thread count (`0.8.0` §3.3, issue #512), which
+        # renders as the copy the host-rendered runner's pin carries.
+        self.assertEqual(len(struct["procedures"]), 14)
+        self.assertEqual(
+            render_signatures_to_fortran({"procedures": published["procedures"][13:]}),
+            _SINGLE_PROCESS_INTERFACE)
         self.assertEqual(len(struct["types"]), 5)
         self.assertEqual(
             {mp["name"] for mp in struct["module_parameters"]}, {"dp", "case_id_len"}
@@ -240,7 +246,13 @@ class RoundTripRealArtifactsTest(unittest.TestCase):
             "harness_fortran_cpu__", "harness_fortran_cpu_mpi__"))
         self.assertEqual(published["types"], renamed["types"])
         self.assertEqual(published["module_parameters"], renamed["module_parameters"])
-        self.assertEqual(published["procedures"][:13], renamed["procedures"])
+        # The `sync_single_case@1` block; the single-process harness's thread count after it is
+        # not the distributed one's to publish (a launcher target runs one thread per rank).
+        self.assertEqual(published["procedures"][:13], renamed["procedures"][:13])
+        self.assertEqual([p["name"] for p in renamed["procedures"][13:]],
+                         ["harness_fortran_cpu_mpi__thread_count"])
+        self.assertNotIn("harness_fortran_cpu_mpi__thread_count",
+                         {p["name"] for p in published["procedures"]})
 
     def test_round_trip_backend_runner_hardcoded_copy(self) -> None:
         # The third copy of the signatures (the fortran backend runner's _HARNESS_V3_INTERFACE) must lower and

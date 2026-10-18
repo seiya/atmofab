@@ -391,7 +391,8 @@ def execute_tuple() -> dict[str, str]:
         "target_profile.ExecutionShape": _source_digest(tp.ExecutionShape),
         "target_profile.CERTIFIED_SHAPE_LABEL": tp.CERTIFIED_SHAPE_LABEL,
         **{f"TargetProfile.{name}": _source_digest(getattr(tp.TargetProfile, name).fget)
-           for name in ("certified_shape", "sweep_shapes", "execution_shapes")},
+           for name in ("certified_shape", "sweep_shapes", "execution_shapes",
+                        "thread_count_observable")},
     }
 
 
@@ -953,6 +954,12 @@ PINNED_RENDER: dict[str, str] = {
     # `cuda_cpp/header.py`, and `tools/host_execution.py` (the block size reaches the launch
     # environment; the renderers read `perf_parallelism`, which is unchanged).
     "render-11": "7ba0b330c74f399d05d15a2f1dd60e05a266bcee996e0e6fe9c6cc9b58524c2a",
+    # render-12 (issue #512): the single-process Fortran runner passes the harness's
+    # `__thread_count()` as perf's `threads_per_rank` instead of the profile's count, and imports
+    # it; the renderer's pin gains the operation (`harness_fortran_cpu@0.8.0` §5.1). Rows moved:
+    # `fortran/runner.py`, and the docstrings of `tools/host_execution.py` (`perf_parallelism`)
+    # and `tools/host_render.py` (`render_runner`).
+    "render-12": "67b1fc03b8bb7302980a9bb83cdfa6c96d7b7eb4fff58b002aee3d4def28f60e",
     # Re-pinned (issue #469), behaviour-preserving: `make/control_file.py` gains
     # `CONTROL_FILE_BASENAMES`, the names `make` reads without `-f`, which `codegen_bundle`
     # derives its reserved bundle basenames from; nothing it renders moved. (Measured by diffing
@@ -1053,7 +1060,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "af361cddb5c06ef041a7038f6651a7c393fbc7eb08aa425731fcf8fedba36597",
+    "build-2": "d433f6d56bd91b7f5d0f6be70f3f84a608127098f5de89c248d0acdb3225e177",
     # Re-pinned (issue #512, PR-4b), behaviour-preserving: `tools/host_execution.py` gains
     # `serial_execution_env` and an execution-shape argument to `launch_shape`, whose default is
     # the certified shape — the one the build's backstop call asks for, with the argv prefix,
@@ -1179,6 +1186,12 @@ PINNED_BUILD: dict[str, str] = {
     # shape's site half only. (Measured by diffing `build_tuple()` against origin/main
     # f661ee31's: that row and no other.) The digest `build-2` shipped with at f661ee31:
     "build-2@f661ee31": "5b48ee7cbac94d7dc27fc8c8ccdcc95f6c7dbc10787aa2551418723669df71bf",
+    # Re-pinned (issue #512, the thread-count tie), behaviour-preserving for the build: only the
+    # `perf_parallelism` docstring of `tools/host_execution.py` changed (it says which count a
+    # runner observes instead of passing). (Measured by diffing `build_tuple()` against
+    # origin/main ea903073's: that row and no other.) The digest `build-2` shipped with at
+    # ea903073:
+    "build-2@ea903073": "af361cddb5c06ef041a7038f6651a7c393fbc7eb08aa425731fcf8fedba36597",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -1448,6 +1461,13 @@ PINNED_EXECUTE: dict[str, str] = {
     # `_quality_check_failure_lines`, `ExecutionShape`, `TargetProfile.certified_shape` /
     # `sweep_shapes`, `tools/host_execution.py`, the cuda `execution_env` module.
     "execute-11": "d9d01da9e609546a75ec48a4090f6f7385f5467e3d5e2a78e7f590d0d13a17fa",
+    # execute-12 (issue #512): `quality_check.json#shapes` records `observed_threads_per_rank`
+    # on every shape and, on a target some shape of which runs more than one thread per rank
+    # (`TargetProfile.thread_count_observable`, a new row of the tuple), `thread_match`, which
+    # fails the shape and the post-execute gate reads. Rows moved: `_author_quality_check`,
+    # `_quality_check_failure_lines`, `Conductor._execute_inproc`, the new row, and
+    # `tools/host_execution.py` (the `perf_parallelism` docstring).
+    "execute-12": "50a5dff01cc9a055babe15d075bae10e3dc7f7a14411d09ebb4fc26fc2423430",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

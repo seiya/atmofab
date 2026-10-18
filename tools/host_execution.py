@@ -312,8 +312,11 @@ def launch_shape(profile: Any, site: Any = None, shape: Any = None) -> LaunchSha
 def perf_parallelism(target: dict[str, Any]) -> tuple[int, int, int]:
     """`(mpi_ranks, threads_per_rank, gpu_devices)` a run of `target` (a target profile DOCUMENT,
     `TargetProfile.doc`) states in its performance record — what a host-rendered runner passes the
-    harness's `write_perf`. The rank count is the profile's `execution.ranks` (1 when it states
-    none, issue #316): a CONFIGURED value, which a runner of a launcher target must not pass —
+    harness's `write_perf`, except for a count the harness observes at run time instead: the
+    thread count where the harness publishes one (issue #512: the single-process CPU harness's
+    `__thread_count()`, which its runner passes, since Validate runs one binary at several
+    counts), and the rank count under a launcher (below). The rank count is the profile's
+    `execution.ranks` (1 when it states none, issue #316): a CONFIGURED value, which a runner of a launcher target must not pass —
     the post-execute gate compares the recorded count with this same value, so it has to be the
     count the harness observes at run time (`validate_pipeline_semantics.
     _validate_launched_ranks`). The CUDA C++ runner passes it for a backend with no launcher,

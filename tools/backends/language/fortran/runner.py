@@ -166,6 +166,12 @@ _HARNESS_CORE_OPS = (
     "write_metrics_basis", "write_diagnostics", "write_perf",
 )
 
+# The operation the RUNNER calls on the single-process harness (`harness_fortran_cpu@0.8.0` §3.3,
+# issue #512): the thread count the run's shared-memory runtime gives the program, which the perf
+# record states — observed at run time, so a Validate run at another thread count records its own
+# count rather than the profile's.
+_SINGLE_PROCESS_RUNNER_OPS = ("thread_count",)
+
 # The distributed-state operations the RUNNER calls on a harness that drives the program as
 # several ranks (`distributed_state@2`, issues #316 and #512): it starts and ends the runtime, asks its rank
 # (only rank 0 writes) and the run's size (the perf record's rank count, observed rather than
@@ -296,7 +302,10 @@ def _checks(ir: dict[str, Any]) -> list[str]:
 def _threads(target: dict[str, Any]) -> int:
     """The threads per rank the run executes with — the target profile's `execution`, which
     is what `run_program` is told. Until R4-a PR-2 this read the IR's
-    `backend_overrides.openmp.num_threads`, a count the run never used."""
+    `backend_overrides.openmp.num_threads`, a count the run never used. Only the DISTRIBUTED
+    variant's perf record writes it (a launcher target runs one thread per rank, so every
+    shape's count is 1); the single-process variant passes the harness's `__thread_count()`,
+    observed at run time (issue #512)."""
     return int(target["execution"]["threads_per_rank"])
 
 
@@ -351,9 +360,9 @@ def _ranks_used(ir: dict[str, Any]) -> set[int]:
 
 def _used_harness_ops(ir: dict[str, Any], *, distributed: bool = False) -> list[str]:
     """Unqualified harness op names the rendered glue calls (deterministic order):
-    the core writers/plumbing plus only the emitters for the ranks in use — and, on a
-    distributed harness, the runner's distributed-state operations plus only the gathers for
-    the array ranks in use."""
+    the core writers/plumbing plus only the emitters for the ranks in use — then, on the
+    single-process harness, its thread count, and on a distributed harness, the runner's
+    distributed-state operations plus only the gathers for the array ranks in use."""
     ranks = _ranks_used(ir)
     array_ranks = sorted(r for r in ranks if r >= 1)
     ops = ["parse_cases"]
@@ -364,6 +373,8 @@ def _used_harness_ops(ir: dict[str, Any], *, distributed: bool = False) -> list[
             "write_diagnostics", "write_perf"]
     if distributed:
         ops += [*_DISTRIBUTED_RUNNER_OPS, *(f"gather_r{r}" for r in array_ranks)]
+    else:
+        ops += list(_SINGLE_PROCESS_RUNNER_OPS)
     return ops
 
 
@@ -380,9 +391,9 @@ def _check_identifier_lengths(spec_id: str, harness_spec_id: str) -> None:
             raise RenderError(
                 f"identifier {derived!r} is {len(derived)} chars (>{bundle.IDENTIFIER_MAX})",
                 identity=True)
-    # The distributed operations need no bound of their own: each name is shorter than
-    # `write_metrics_basis`, so a harness id they would not fit has already been refused here
-    # (`test_fortran_runner.DistributedRenderTest` pins the ordering).
+    # The distributed operations and the thread count need no bound of their own: each name is
+    # shorter than `write_metrics_basis`, so a harness id they would not fit has already been
+    # refused here (`test_fortran_runner.DistributedRenderTest` pins the ordering).
     for sym in (*_HARNESS_TYPES, *_HARNESS_CORE_OPS):
         name = _hname(harness_spec_id, sym)
         if len(name) > bundle.IDENTIFIER_MAX:
@@ -482,7 +493,10 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     # rank count is never the configured one, which the post-execute gate compares it with: the
     # single-process variant runs one process and writes 1, and the distributed variant passes
     # the size of the run it observes (`__comm_size`). (Round 3 of the PR's review: writing the
-    # profile's count here made that comparison hold by construction.)
+    # profile's count here made that comparison hold by construction.) The thread count is the
+    # same kind of fact for the single-process variant: it passes `__thread_count()`, the count
+    # the shared-memory runtime gives the run, because Validate runs one binary at several
+    # thread counts and compares each run's record with its own (issue #512).
     _, _, devices = perf_parallelism(target)
     distributed = _is_distributed_harness(harness_spec_id)
 
@@ -511,6 +525,8 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     if distributed:
         harness_syms += [H(op) for op in _DISTRIBUTED_RUNNER_OPS]
         harness_syms += [H(f"gather_r{r}") for r in array_ranks]
+    else:
+        harness_syms += [H(op) for op in _SINGLE_PROCESS_RUNNER_OPS]
     checks_syms = ["case_setup", "case_run", "get_time", "checks_compute"]
     if metrics:  # metric_compute is only called when the node declares metrics
         checks_syms.append("metric_compute")
@@ -787,7 +803,8 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
         a("")
         a(f"  call {H('finalize')}()")
     else:
-        a(f"    steps_total, cells_total, walltime, 1, {threads}, {devices})")
+        a("    steps_total, cells_total, walltime, 1, &")
+        a(f"    {H('thread_count')}(), {devices})")
     a("")
     a("contains")
     a("")
@@ -1535,6 +1552,16 @@ end function harness_fortran_cpu_mpi__reduce_sum_int
 """
 
 
+# Verbatim copy of `harness_fortran_cpu@0.8.0` §5.1's thread-count operation (§3.3, issue #512),
+# as the language backend renders it. That harness's §5.1 is `_HARNESS_V3_INTERFACE` followed by
+# this block; the distributed harness does not publish it.
+_SINGLE_PROCESS_INTERFACE = """\
+function harness_fortran_cpu__thread_count() result(n)
+  integer :: n
+end function harness_fortran_cpu__thread_count
+"""
+
+
 @dataclass(frozen=True)
 class _HarnessPin:
     """What the renderer expects of one harness it targets."""
@@ -1551,7 +1578,8 @@ class _HarnessPin:
 #: `codegen_bundle.HARNESS_CAPABILITY_MANIFESTS`' fact; `test_fortran_runner` couples the
 #: `distributed` column to it, so the two cannot disagree about which harness is distributed.
 _HARNESS_PINS: dict[str, _HarnessPin] = {
-    EXPECTED_HARNESS_SPEC_ID: _HarnessPin(interface=_HARNESS_V3_INTERFACE, distributed=False),
+    EXPECTED_HARNESS_SPEC_ID: _HarnessPin(
+        interface=_HARNESS_V3_INTERFACE + "\n" + _SINGLE_PROCESS_INTERFACE, distributed=False),
     DISTRIBUTED_HARNESS_SPEC_ID: _HarnessPin(
         interface=_HARNESS_V3_INTERFACE.replace(
             f"{EXPECTED_HARNESS_SPEC_ID}__", f"{DISTRIBUTED_HARNESS_SPEC_ID}__")
@@ -1584,7 +1612,8 @@ def _parse_stanzas(block: str) -> tuple[Any, Any, Any, Any]:
 _PIN_DRIFT_HINT = (
     "the certified harness interface no longer matches the renderer's pinned "
     "expectation — a harness recert changed its published surface; update the "
-    "renderer pin (_HARNESS_V3_INTERFACE / _HARNESS_V3_PARAMETERS) AND the "
+    "renderer pin (_HARNESS_V3_INTERFACE / _SINGLE_PROCESS_INTERFACE / "
+    "_HARNESS_V3_PARAMETERS) AND the "
     "render template together, then re-certify dependent nodes")
 
 

@@ -420,7 +420,7 @@ source, so a spec-side `§capabilities` section would be a copy with no reader; 
 the issue records this as a departure from `zero_base_architecture.md` §A4 as written.
 
 ```
-"infrastructure/harness_fortran_cpu@0.7.0": {"sync_single_case@1", "state_registration@1"}
+"infrastructure/harness_fortran_cpu@0.8.0": {"sync_single_case@1", "state_registration@1"}
 "infrastructure/harness_cpp_gpu@0.2.0":     {"sync_single_case@1", "state_registration@1"}
 "infrastructure/harness_fortran_cpu_mpi@0.2.0": {"sync_single_case@1", "state_registration@1",
                                                  "distributed_state@2"}
@@ -436,7 +436,10 @@ The harness source needs no new operation for it, so the harness version is unch
 `sync_single_case@1` is defined as exactly the canonical interface block of
 `harness_fortran_cpu@0.7.0` §5.1 (13 operations, 5 published types, `dp = float64`,
 `case_id_len = 64`), under the providing harness node's own `<spec_id>__` names and bound to its
-target language by that language's backend; `harness_cpp_gpu@0.2.0` §5.1 begins with it,
+target language by that language's backend; §5.1 of the `0.8.0` release of the harness named
+above is it followed by `__thread_count` (the threads the run's shared-memory runtime gives the
+program, issue #512, which its single-process runner calls), `harness_cpp_gpu@0.2.0` §5.1 begins
+with it,
 followed by `__block_size` (the threads per block the host imposes on the program's kernels,
 issue #512, which the CUDA C++ runner calls), and `harness_fortran_cpu_mpi@0.2.0` §5.1 begins
 with it.

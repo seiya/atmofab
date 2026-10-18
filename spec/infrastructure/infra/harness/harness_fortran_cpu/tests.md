@@ -2,11 +2,11 @@
 
 ## 0. Meta information
 - `test_profile_id`: `harness_fortran_cpu_l0`
-- `test_profile_version`: `0.9.0`
+- `test_profile_version`: `0.10.0`
 - `status`: `draft`
 - `spec_ref.spec_kind`: `infrastructure`
 - `spec_ref.spec_id`: `harness_fortran_cpu`
-- `spec_ref.spec_version`: `0.7.0`
+- `spec_ref.spec_version`: `0.8.0`
 - `spec_ref.controlled_spec_path`: `spec/infrastructure/infra/harness/harness_fortran_cpu/controlled_spec.md`
 
 ## 1. Test purpose
@@ -80,7 +80,7 @@ Because `raw/metrics_basis.json` carries one entry per (`test_id`, target `case_
   - `operation_id`: `harness_fortran_cpu__write_perf`
   - `expected_outcome`: `pass`
   - `required_raw_variables`: `throughput_residual` (scalar)
-  - `judgment`: `perf.json` carries all required fields and `throughput_cells_per_sec == cells_updated / walltime_sec` within a relative tolerance of `1e-9`: `throughput_residual = |throughput_cells_per_sec - cells_updated / walltime_sec| / throughput_cells_per_sec <= 1e-9` (the RELATIVE residual, so the snapshot value is judged against the tolerance alone), and `checks.perf_derived.status == pass`. The `steps`, `cells_updated` and `walltime_sec` the self-test passes to `__write_perf` are the run totals `controlled_spec.md` §3 fixes for it (not the per-case `steps = 1` of §3 of this document), all positive, so the throughput the residual divides by is positive and the residual is defined.
+  - `judgment`: `perf.json` carries all required fields and `throughput_cells_per_sec == cells_updated / walltime_sec` within a relative tolerance of `1e-9`: `throughput_residual = |throughput_cells_per_sec - cells_updated / walltime_sec| / throughput_cells_per_sec <= 1e-9` (the RELATIVE residual, so the snapshot value is judged against the tolerance alone), and `checks.perf_derived.status == pass`. The `steps`, `cells_updated` and `walltime_sec` the self-test passes to `__write_perf` are the run totals `controlled_spec.md` §3 fixes for it (not the per-case `steps = 1` of §3 of this document), all positive, so the throughput the residual divides by is positive and the residual is defined. The parallelism it passes is `mpi_ranks = 1`, `gpu_devices = 0` and, as `threads_per_rank`, the value `harness_fortran_cpu__thread_count()` returns when the self-test runs — the count the run's shared-memory parallel runtime gives the program, never a constant (`controlled_spec.md` §3.3): the Validate phase runs the self-test at several thread counts and compares `perf.json#parallelism.threads_per_rank` with the count each run was launched with.
   - `quantity`: `perf_derived` on both `pass_when` conditions.
   - `primary_predicate` (quantity `perf_derived`, `per_case: true`): `final.throughput_residual <= 1.0e-9`.
 - `test_id`: `l0_metric_leaf_pass`

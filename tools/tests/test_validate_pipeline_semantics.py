@@ -14896,6 +14896,43 @@ shallow_water2d_checks.o shallow_water2d_checks.mod: shallow_water2d_checks.f90 
                     self.assertTrue(any(needle in v for v in violations), violations)
             # A backend that imposes no block size is not asked what its harness observed.
             self.assertEqual(run(FORTRAN_CPU, edited(FORTRAN_CPU, 1, observed_block_size=64)), [])
+        # Issue #512: on a target some shape of which runs more than one thread per rank, each
+        # shape's harness reports that shape's thread count — a constant (the profile's count, or
+        # 1) fails on every shape whose count differs. A target whose every shape runs one thread
+        # per rank cannot tell a constant 1 from an observation, and is not asked.
+        self.assertTrue(FORTRAN_CPU.thread_count_observable)
+        self.assertEqual(
+            sorted({s.threads_per_rank for s in FORTRAN_CPU.execution_shapes}), [2, 3, 4])
+        # A certified run at one thread with a swept count is observable too.
+        from_one = profile_with(execution={"threads_per_rank": 1,
+                                           "sweep": {"threads_per_rank": [2]}})
+        self.assertTrue(from_one.thread_count_observable)
+        for name, (target, shapes, needle) in {
+                "the profile's count": (FORTRAN_CPU,
+                                        edited(FORTRAN_CPU, 1, observed_threads_per_rank=4),
+                                        "shapes[threads_2]: the harness reported "
+                                        "threads_per_rank=4, and the shape ran 2"),
+                "one": (FORTRAN_CPU, edited(FORTRAN_CPU, 0, observed_threads_per_rank=1),
+                        "shapes[certified]: the harness reported threads_per_rank=1"),
+                "absent": (FORTRAN_CPU, edited(FORTRAN_CPU, 2, observed_threads_per_rank=_ABSENT),
+                           "shapes[threads_3]: the harness reported threads_per_rank=None"),
+                "real": (FORTRAN_CPU, edited(FORTRAN_CPU, 2, observed_threads_per_rank=3.0),
+                         "threads_per_rank=3.0"),
+                "bool": (from_one, edited(from_one, 0, observed_threads_per_rank=True),
+                         "threads_per_rank=True"),
+                "constant 1 under a sweep from one": (
+                    from_one, edited(from_one, 1, observed_threads_per_rank=1),
+                    "shapes[threads_2]: the harness reported threads_per_rank=1"),
+                }.items():
+            with self.subTest(row=f"threads {name}"):
+                self.assertEqual(run(target, passing_shape_rows(target)), [])
+                violations = run(target, shapes)
+                self.assertTrue(any(needle in v for v in violations), violations)
+        one_thread = profile_with(execution={"threads_per_rank": 1})
+        self.assertFalse(one_thread.thread_count_observable)
+        self.assertFalse(mpi.thread_count_observable)
+        self.assertEqual(run(one_thread, edited(one_thread, 0, observed_threads_per_rank=7)), [])
+        self.assertEqual(run(mpi, edited(mpi, 1, observed_threads_per_rank=_ABSENT)), [])
 
     def test_a_launcher_run_reports_the_targets_rank_count(self) -> None:
         """Issue #316: under a launcher, the run's performance record states the target's rank

@@ -29,8 +29,10 @@ from tools.backends.language.fortran.runner import (
     EXPECTED_HARNESS_SPEC_ID,
     METRIC_COMPUTE_DEFERRED_LENGTH_DUMMY,
     METRIC_COMPUTE_DUMMIES,
+    _HARNESS_PINS,
     _HARNESS_V3_PARAMETERS,
     _HARNESS_V3_INTERFACE,
+    _SINGLE_PROCESS_INTERFACE,
     assert_harness_pin,
     checks_abi_dummy_violation,
     ir_content_violations,
@@ -277,7 +279,7 @@ _RANK_CHECKS_STUB = textwrap.dedent(f"""\
 
 def _harness_signatures() -> list[dict]:
     """The certified harness IR public_api.signatures, synthesized from §5.1."""
-    struct = parse_signatures_from_fortran(_HARNESS_V3_INTERFACE)
+    struct = parse_signatures_from_fortran(_HARNESS_PINS[EXPECTED_HARNESS_SPEC_ID].interface)
     return [
         {"symbol": signature["name"], "signature": signature}
         for signature in [*struct["procedures"], *struct["types"]]
@@ -329,6 +331,7 @@ _HARNESS_STUB = textwrap.dedent("""\
       public :: harness_fortran_cpu__box, harness_fortran_cpu__write_snapshot
       public :: harness_fortran_cpu__write_metrics_basis
       public :: harness_fortran_cpu__write_diagnostics, harness_fortran_cpu__write_perf
+      public :: harness_fortran_cpu__thread_count
     contains
       subroutine harness_fortran_cpu__parse_cases(tokens, ntokens, case_ids, ncases, ok)
         character(len=*), intent(in) :: tokens(:)
@@ -486,9 +489,16 @@ _HARNESS_STUB = textwrap.dedent("""\
         integer :: u
         open(newunit=u, file='perf.json', status='replace')
         write(u, '(A)') '{ "case_id": "'//trim(case_id)//'", "target": "'//trim(target)// &
-          '", "steps": '//harness_fortran_cpu__emit_int(steps)//' }'
+          '", "steps": '//harness_fortran_cpu__emit_int(steps)//', "parallelism": '// &
+          '{ "threads_per_rank": '//harness_fortran_cpu__emit_int(threads_per_rank)//' } }'
         close(u)
       end subroutine harness_fortran_cpu__write_perf
+      function harness_fortran_cpu__thread_count() result(n)
+    !$  use omp_lib, only: omp_get_max_threads
+        integer :: n
+        n = 1
+    !$  n = omp_get_max_threads()
+      end function harness_fortran_cpu__thread_count
     end module harness_fortran_cpu_model
     """)
 
@@ -717,9 +727,18 @@ class RenderShapeTest(unittest.TestCase):
         self.assertIn("call harness_fortran_cpu__write_metrics_basis(mb_entries, 3)", self.txt)
         self.assertIn("call harness_fortran_cpu__write_diagnostics(results, ncases)", self.txt)
         self.assertIn("harness_fortran_cpu__write_perf(", self.txt)
-        # perf parallelism: mpi=1, the target profile's threads per rank, gpu=0
-        self.assertIn(f"steps_total, cells_total, walltime, 1, "
-                      f"{_TARGET_PROFILE.threads_per_rank}, 0)", self.txt)
+        # perf parallelism: mpi=1, the thread count the harness observes at run time (issue
+        # #512: Validate runs the binary at several counts, so the profile's is the wrong one
+        # for every sweep shape), gpu=0.
+        self.assertIn("steps_total, cells_total, walltime, 1, &\n"
+                      "    harness_fortran_cpu__thread_count(), 0)", self.txt)
+        self.assertIn("    harness_fortran_cpu__thread_count\n", self.txt)  # the `use` list
+        # The perf line carries no thread count of the profile's: a render under another
+        # count is the same text.
+        other = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target={
+            **_TARGET_PROFILE.doc, "execution": {"threads_per_rank": 7}})
+        self.assertNotEqual(_TARGET_PROFILE.threads_per_rank, 7)
+        self.assertEqual(self.txt, other)
 
     def test_no_forbidden_outputs(self) -> None:
         for forbidden in ("verdict.json", "aggregate_verdict", "summary.json", "trial_meta"):
@@ -811,16 +830,17 @@ class MetricsRenderTest(unittest.TestCase):
         self.assertIn("call metric_compute(trim(case_ids(ci)), 'error.linf',", txt)
         self.assertIn("allocate(case_metrics(2))", txt)
         self.assertIn("results(ci)%metrics = case_metrics(1:mcount)", txt)
-        # The TARGET's threads per rank flow through to perf (issue #284) — not the IR's
-        # `backend_overrides.openmp.num_threads` (4 here), which nothing runs with.
-        self.assertIn(f"walltime, 1, {_TARGET_PROFILE.threads_per_rank}, 0)", txt)
+        # The thread count perf records is the harness's run-time count (issue #512) — neither
+        # the profile's nor the IR's `backend_overrides.openmp.num_threads`, which nothing runs
+        # with.
+        self.assertIn("walltime, 1, &\n    harness_fortran_cpu__thread_count(), 0)", txt)
         other = {**_TARGET_PROFILE.doc, "execution": {"threads_per_rank": 7},
                  "hardware": {"class": "gpu", "architecture": "a"}}
         other_txt = render_runner(_metrics_ir(), "prob_x", HARNESS, target=other)
         # The rank and device counts are `host_execution.perf_parallelism`'s (issue #316): a
         # class whose backend states one device per rank records it, where the renderer used
         # to write 0 for every class.
-        self.assertIn("walltime, 1, 7, 1)", other_txt)
+        self.assertIn("walltime, 1, &\n    harness_fortran_cpu__thread_count(), 1)", other_txt)
         self.assertIn("'gpu', &", other_txt)
         # rank-1 snapshot var -> bound `sb_u` + emit_array_r1
         self.assertIn("    sb_u => u", txt)
@@ -1479,6 +1499,24 @@ class HarnessPinTest(unittest.TestCase):
         self.assertIn("carries no interface prototype", str(cm.exception))
         self.assertIn("ghost", str(cm.exception))
 
+    def test_a_certified_harness_without_the_thread_count_fails_the_pin(self) -> None:
+        """Issue #512: the single-process runner calls `__thread_count` (`harness_fortran_cpu@0.8.0`
+        §3.3), so a certified harness that does not publish it — a `0.7.0` one — is refused
+        before Build, in its IR signatures and in its model source alike, naming the symbol."""
+        sym = "harness_fortran_cpu__thread_count"
+        no_sig = [e for e in self.sigs if e["symbol"] != sym]
+        self.assertEqual(len(no_sig), len(self.sigs) - 1)
+        with self.assertRaises(RenderError) as cm:
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, no_sig, self.src)
+        self.assertIn(f"omits {sym!r}", str(cm.exception))
+        start = self.src.index(f"  function {sym}()")
+        end = self.src.index(f"end function {sym}\n") + len(f"end function {sym}\n")
+        no_def = self.src[:start] + self.src[end:]
+        self.assertNotIn(f"function {sym}", no_def)
+        with self.assertRaises(RenderError) as cm:
+            assert_harness_pin(self.ir, BOUNDARY_SID, HARNESS, self.sigs, no_def)
+        self.assertIn(sym, str(cm.exception))
+
     def test_ir_signature_drift(self) -> None:
         bad = copy.deepcopy(self.sigs)
         for e in bad:
@@ -1796,6 +1834,43 @@ class GfortranSmokeTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         _require_gfortran()
+
+    def test_the_perf_record_carries_the_thread_count_the_run_was_launched_with(self) -> None:
+        """Issue #512: one binary runs at several thread counts in Validate, and the perf record
+        of each run states that run's count — the harness's `__thread_count()`, which the
+        rendered runner passes — not the profile's. Built with the OpenMP backend's flag and
+        launched in its environment at two counts other than the profile's; built without the
+        flag, the query compiles away and the record states 1."""
+        from tools.backends.language.fortran import control_file
+        from tools.backends.parallel.openmp import execution as omp_execution
+        runner = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
+        omp_flags = control_file.flags("f2008", "openmp").split(" -J")[0].split()
+        self.assertIn("-fopenmp", omp_flags)
+        for flags, counts in ((omp_flags, {2: 2, 3: 3}),
+                              (control_file.flags("f2008", "none").split(" -J")[0].split(),
+                               {3: 1})):
+            with tempfile.TemporaryDirectory() as td:
+                d = Path(td)
+                (d / "harness_fortran_cpu_model.f90").write_text(_HARNESS_STUB)
+                (d / f"{BOUNDARY_SID}_checks.f90").write_text(_CHECKS_STUB)
+                (d / f"{BOUNDARY_SID}_runner.f90").write_text(runner)
+                build = subprocess.run(
+                    ["gfortran", *flags, "harness_fortran_cpu_model.f90",
+                     f"{BOUNDARY_SID}_checks.f90", f"{BOUNDARY_SID}_runner.f90", "-o", "runner"],
+                    cwd=d, capture_output=True, text=True)
+                self.assertEqual(build.returncode, 0, build.stderr)
+                (d / "raw" / "state_snapshots" / "initial").mkdir(parents=True)
+                for launched, recorded in counts.items():
+                    self.assertNotEqual(launched, _TARGET_PROFILE.threads_per_rank)
+                    run = subprocess.run(
+                        ["./runner", "--cases", "spec.ir.yaml", "l0_periodic_x_wrap_pass",
+                         "l0_periodic_y_wrap_pass", "l0_invalid_ny_xfail"],
+                        cwd=d, capture_output=True, text=True,
+                        env={**os.environ, **omp_execution.environment(launched)})
+                    self.assertEqual(run.returncode, 0, run.stderr)
+                    perf = json.loads((d / "perf.json").read_text())
+                    with self.subTest(flags=flags, launched=launched):
+                        self.assertEqual(perf["parallelism"]["threads_per_rank"], recorded)
 
     def test_rendered_runner_compiles_and_runs(self) -> None:
         runner = render_runner(_boundary_ir(), BOUNDARY_SID, HARNESS, target=_TARGET_PROFILE.doc)
@@ -2758,10 +2833,13 @@ class DistributedRenderTest(unittest.TestCase):
         # count, which the post-execute gate compares the record with (round 3).
         three = render_runner(_distributed_ir(), DIST_SID, "harness_fortran_cpu", target={
             **_TARGET_PROFILE.doc, "execution": {"threads_per_rank": 1, "ranks": 3}})
-        self.assertIn("walltime, 1, 1, 0)", three)
-        # A scalar has no partition to import; the single-process perf line keeps its literal.
+        self.assertIn("walltime, 1, &\n    harness_fortran_cpu__thread_count(), 0)", three)
         self.assertNotIn("sb_s_axis", dist)
-        self.assertIn(f"walltime, 1, {_TARGET_PROFILE.threads_per_rank}, 0)", single)
+        # The single-process variant asks its harness for the thread count (issue #512); the
+        # distributed one runs one thread per rank and neither imports nor calls the query,
+        # which its harness does not publish.
+        self.assertIn("walltime, 1, &\n    harness_fortran_cpu__thread_count(), 0)", single)
+        self.assertNotIn("thread_count", dist)
         self.assertNotIn("comm_size", single)
 
     def test_every_write_is_rank_0s_and_every_collective_is_every_ranks(self) -> None:
