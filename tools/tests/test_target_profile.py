@@ -153,9 +153,19 @@ class CheckedInProfileTests(unittest.TestCase):
 
     def test_the_checked_in_gpu_profile_imposes_a_block_size_and_sweeps_it(self) -> None:
         """Issue #512 (PR-4c): `cpp_gpu`'s certified run imposes a block size and its sweep varies
-        it, so a kernel whose state depends on the block meets the reference run."""
+        it, so a kernel whose state depends on the block meets the reference run. The certified
+        block is not the harness's default (round 1 of the PR's review): the post-execute gate
+        ties the harness self-test's captured block to the certified run's, and at the default a
+        harness that ignores `ATMOFAB_CUDA_BLOCK` satisfies the tie. The default is read from
+        the harness spec's §3.3, so a change of either side is red here."""
+        import re
         profile = tp.load_target_profile(REPO_ROOT, "cpp_gpu")
         self.assertIsNotNone(profile.block_size)
+        spec = (REPO_ROOT / "spec/infrastructure/infra/harness/harness_cpp_gpu/"
+                "controlled_spec.md").read_text(encoding="utf-8")
+        defaults = re.findall(r"unset or empty the block size is `(\d+)`", spec)
+        self.assertEqual(len(defaults), 1, defaults)
+        self.assertNotEqual(profile.block_size, int(defaults[0]))
         blocks = [s.block_size for s in profile.sweep_shapes]
         self.assertTrue(blocks and profile.block_size not in blocks, blocks)
         self.assertEqual(tp.hardware_violations(profile), [])
@@ -202,7 +212,7 @@ class CheckedInProfileTests(unittest.TestCase):
         and Validates (the profile hash is in the generate and validate keys), and `cpp_gpu` by
         PR-4c (a block size and a block-size sweep), the same way."""
         expected = {
-            "cpp_gpu": "sha256:4cf5e9cd6f18a37323243defa2f9c6593ad429c0cc86ad73c23d98152a281aab",
+            "cpp_gpu": "sha256:746e56a4f5c478771f14cb444ee5d3738219b74d2ad0f8553756fd94e489518f",
             "fortran_cpu": "sha256:826abe218051af61ab1f2541ab7ed40f3d4b227c435489653b9edbd1ae149e55",
         }
         got = {tid: tp.load_target_profile(REPO_ROOT, tid).sha256 for tid in expected}

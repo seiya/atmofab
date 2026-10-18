@@ -2057,7 +2057,11 @@ def _validate_harness_reported_block(repo_root: Path, execution: NodeExecution, 
     launched with, and at least one does — the tie `_validate_harness_reported_grid` makes for
     the grid. `perf.json#parallelism.block_size` alone pins what `__write_perf` prints; this ties
     it to what `__block_size` returns, which is what the host-rendered runner hands a consuming
-    node's kernels. A physics node's snapshots are not read: its variable names are its own."""
+    node's kernels. The tie discriminates only because the certified block is not the harness's
+    default (`spec/targets/cpp_gpu.yaml`; `tools/tests/test_target_profile.py` holds the two
+    apart): a harness that ignores the variable returns the default, and a sweep shape's
+    snapshots are not read. A physics node's snapshots are not read: its variable names are its
+    own."""
     from tools.target_profile import TargetProfileError, harness_node_key_for_target
     try:
         harness_nk = harness_node_key_for_target(repo_root, target)
