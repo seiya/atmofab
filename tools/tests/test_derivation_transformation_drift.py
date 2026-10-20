@@ -960,7 +960,7 @@ PINNED_RENDER: dict[str, str] = {
     # profile's count; the renderer's pin of that harness carries the seven-argument writer.
     # Rows moved: `fortran/runner.py`, and the docstrings of `tools/host_execution.py`
     # (`perf_parallelism`) and `tools/host_render.py` (`render_runner`).
-    "render-12": "b263c396423bdc6cff440dbd096f4f3bf45806be7e5a292c496225cd070d07f7",
+    "render-12": "67911b82b871d27a4b45aeaf8679f736cdd7aebf115970e5a43378cfafd33e90",
     # Re-pinned (issue #469), behaviour-preserving: `make/control_file.py` gains
     # `CONTROL_FILE_BASENAMES`, the names `make` reads without `-f`, which `codegen_bundle`
     # derives its reserved bundle basenames from; nothing it renders moved. (Measured by diffing

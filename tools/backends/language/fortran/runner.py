@@ -1295,11 +1295,15 @@ EXPECTED_HARNESS_SPEC_ID = "harness_fortran_cpu"
 #: The harness that drives the program as several ranks (`distributed_state@2`).
 DISTRIBUTED_HARNESS_SPEC_ID = "harness_fortran_cpu_mpi"
 
-# Verbatim copy of the harness controlled_spec §5.1 canonical interface block (v3, harness
-# spec_version 0.3.0: `h_mb_entry` gained the `case_id` component so metrics-basis evidence is
-# keyed by (test_id, case_id) and a multi-target test records every targeted case — the pin
-# compares signatures, not versions). If a harness recert changes §5.1, THIS block and the
-# render template must be updated together (the pin message says so).
+# The shared harness interface block (v3, harness spec_version 0.3.0: `h_mb_entry` gained the
+# `case_id` component so metrics-basis evidence is keyed by (test_id, case_id) and a multi-target
+# test records every targeted case — the pin compares signatures, not versions). It is the
+# eight-argument `__write_perf` form the distributed harness still publishes; the single-process
+# harness's pin, `_SINGLE_PROCESS_INTERFACE` below, is derived from it by replacing that one
+# stanza (harness_fortran_cpu 0.8.0's writer takes no thread count), so an edit to the
+# `write_perf` stanza here must keep that replacement applying. If a harness recert changes §5.1,
+# the pin it is compared with and the render template must be updated together (the pin message
+# says so).
 _HARNESS_V3_INTERFACE = """\
 type :: harness_fortran_cpu__h_named
   character(len=:), allocatable :: name

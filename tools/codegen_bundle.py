@@ -451,8 +451,9 @@ STATE_REGISTRATION_TOKEN = f"state_registration@{1}"
 # `harness_fortran_cpu@0.7.0` §5.1 (13 operations, 5 published types, `dp = float64`,
 # `case_id_len = 64`), under the providing harness node's own `<spec_id>__` names and bound to
 # its target language by that language's backend. One difference from that block is admitted,
-# in the performance-record writer, which no bundle's code calls (it is the host-rendered
-# runner's, `docs/workflow/CHECKS_MODULE_CONTRACT.md` §4): §5.1 of the `0.8.0` release of the
+# in the performance-record writer, which no consuming node's bundle code calls (the host-
+# rendered runner calls it, `docs/workflow/CHECKS_MODULE_CONTRACT.md` §4, and so does the
+# providing harness's own self-test): §5.1 of the `0.8.0` release of the
 # harness named above is the block with a `__write_perf` that takes no `threads_per_rank`
 # argument, because it writes the thread count the run's shared-memory runtime gives the program
 # itself (issue #512). `harness_cpp_gpu@0.2.0` §5.1 begins with the block (issue #289, R4-b
