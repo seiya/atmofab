@@ -5,8 +5,8 @@ The correctness contract is a round-trip driven by the REAL published interfaces
 fixture — a hand-built struct could pass while the real §5.1 shape breaks; see the fixture-fiction
 lesson): loading the real harness structured §5.1 block and rendering/reparsing it through Fortran
 must preserve the struct and the exact NORMALIZED stanza lines the current gates compare. The same must hold for
-`the fortran backend runner's _HARNESS_V3_INTERFACE`, the third hardcoded copy of the harness signatures the
-renderer pin uses. Drift tests confirm the structured form keeps the gate's discriminating power
+`the fortran backend runner's _HARNESS_V3_INTERFACE`, the hardcoded block the renderer pins are built from
+(the distributed harness's pin uses it as is; the single-process pin replaces its `write_perf` stanza). Drift tests confirm the structured form keeps the gate's discriminating power
 (a changed intent / rank / type / name changes the normalized index).
 """
 
@@ -38,7 +38,8 @@ from tools.backends.language.fortran.signatures import (
     source_atoms,
     stanza_atoms,
 )
-from tools.backends.language.fortran.runner import _HARNESS_V3_INTERFACE, _HARNESS_V3_PARAMETERS
+from tools.backends.language.fortran.runner import (
+    _HARNESS_V3_INTERFACE, _HARNESS_V3_PARAMETERS, _SINGLE_PROCESS_INTERFACE)
 from tools.validate_pipeline_semantics import _FENCED_BLOCK_RE
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -207,8 +208,18 @@ class RoundTripRealArtifactsTest(unittest.TestCase):
     def test_round_trip_harness_controlled_spec_section51(self) -> None:
         published = _real_section51_struct()
         struct = self._assert_round_trip(render_signatures_to_fortran(published))
-        # sanity on the parsed shape (the real harness surface)
+        # sanity on the parsed shape (the real harness surface): the 13 operations of the
+        # `sync_single_case@1` block, its `__write_perf` without the `threads_per_rank` argument
+        # (`0.8.0` §3.2, issue #512), and the whole surface renders as the copy the
+        # host-rendered runner's pin carries.
         self.assertEqual(len(struct["procedures"]), 13)
+        self.assertEqual(normalized_stanza_index(render_signatures_to_fortran(published)),
+                         normalized_stanza_index(_SINGLE_PROCESS_INTERFACE))
+        perf = next(p for p in published["procedures"]
+                    if p["name"] == "harness_fortran_cpu__write_perf")
+        self.assertEqual([a["name"] for a in perf["args"]],
+                         ["case_id", "target", "steps", "cells_updated", "walltime_sec",
+                          "mpi_ranks", "gpu_devices"])
         self.assertEqual(len(struct["types"]), 5)
         self.assertEqual(
             {mp["name"] for mp in struct["module_parameters"]}, {"dp", "case_id_len"}
@@ -240,10 +251,27 @@ class RoundTripRealArtifactsTest(unittest.TestCase):
             "harness_fortran_cpu__", "harness_fortran_cpu_mpi__"))
         self.assertEqual(published["types"], renamed["types"])
         self.assertEqual(published["module_parameters"], renamed["module_parameters"])
-        self.assertEqual(published["procedures"][:13], renamed["procedures"])
+        # The `sync_single_case@1` block, but for one argument: the single-process harness's
+        # `__write_perf` obtains the thread count itself (`0.8.0` §3.2, issue #512), while the
+        # distributed one's takes it from its runner (a launcher target runs one thread per
+        # rank), as `0.7.0`'s did.
+        self.assertEqual(len(renamed["procedures"]), 13)
+        name = "harness_fortran_cpu_mpi__write_perf"
+        for mine, single_p in zip(published["procedures"][:13], renamed["procedures"]):
+            with self.subTest(procedure=mine["name"]):
+                if mine["name"] != name:
+                    self.assertEqual(mine, single_p)
+                    continue
+                self.assertEqual(single_p["name"], name)
+                self.assertEqual([a["name"] for a in mine["args"]][-2:],
+                                 ["threads_per_rank", "gpu_devices"])
+                self.assertEqual([a for a in mine["args"] if a["name"] != "threads_per_rank"],
+                                 single_p["args"])
+                self.assertEqual({k: v for k, v in mine.items() if k != "args"},
+                                 {k: v for k, v in single_p.items() if k != "args"})
 
     def test_round_trip_backend_runner_hardcoded_copy(self) -> None:
-        # The third copy of the signatures (the fortran backend runner's _HARNESS_V3_INTERFACE) must lower and
+        # The hardcoded block the renderer pins are built from (the fortran backend runner's _HARNESS_V3_INTERFACE) must lower and
         # round-trip identically, so B.3 can single-source the renderer pin through this backend.
         self._assert_round_trip(_HARNESS_V3_INTERFACE)
 
@@ -2084,6 +2112,35 @@ class Section51StanzaLayerTests(unittest.TestCase):
             ["type :: hx__t", "  integer :: a", "end type hx__t"])
         bare = stanza_atoms(["type :: hx__t", "  integer :: a", "end type"])
         self.assertEqual(with_name, bare)
+
+
+class HarnessTestsMdStatesTheThreadQueryTest(unittest.TestCase):
+    """The harness Generate PRODUCER is handed `tests.md` and not `controlled_spec.md`, so the
+    `l0_perf_derived_pass` judgment is the one place it is told how `__write_perf` obtains the
+    thread count (issue #512 round 2). A writer that records a constant still fails the Validate
+    sweep; what this pins is that the producer is told how not to, so the sweep is not paid for
+    as a repair turn."""
+
+    TESTS_MD = (REPO_ROOT / "spec" / "infrastructure" / "infra" / "harness"
+                / "harness_fortran_cpu" / "tests.md")
+
+    def _perf_judgment(self) -> str:
+        lines = self.TESTS_MD.read_text(encoding="utf-8").splitlines()
+        heads = [i for i, ln in enumerate(lines) if "l0_perf_derived_pass" in ln
+                 and ln.lstrip().startswith(("-", "#"))]
+        for i in heads:
+            for ln in lines[i:i + 12]:
+                if ln.lstrip().startswith("- `judgment`:"):
+                    return ln
+        self.fail(f"no `judgment` line under an l0_perf_derived_pass item in {self.TESTS_MD}")
+
+    def test_the_judgment_states_the_conditional_runtime_query(self) -> None:
+        judgment = self._perf_judgment()
+        # The bound: this is the perf judgment, not another item that mentions the test id.
+        self.assertIn("throughput_residual", judgment)
+        for needle in ("takes no thread count", "omp_get_max_threads", "`!$`",
+                       "unconditional assignment of `1`"):
+            self.assertIn(needle, judgment)
 
 
 if __name__ == "__main__":

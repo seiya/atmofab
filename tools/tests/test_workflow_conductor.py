@@ -18869,6 +18869,11 @@ class DeterministicBuildTest(unittest.TestCase):
             # checked-in target sweeps its thread count, each shape in a directory of its own).
             Path(args["project_dir"], "diagnostics.json").write_text(json.dumps(diag),
                                                                     encoding="utf-8")
+            # An honest harness reports the thread count the shape was launched with (#512).
+            threads = (args.get("env") or {}).get("OMP_NUM_THREADS")
+            if threads is not None:
+                Path(args["project_dir"], "perf.json").write_text(json.dumps(
+                    {"parallelism": {"threads_per_rank": int(threads)}}), encoding="utf-8")
             if captures is not None:
                 captures(Path(args["project_dir"]), "run")
             if calls is not None:
@@ -19057,6 +19062,56 @@ class DeterministicBuildTest(unittest.TestCase):
                 if expected == "fail":
                     self.assertEqual(meta["failure_category"], "quality_check_mismatch")
                     self.assertIn("disagrees with the serial reference", meta["failure_excerpt"])
+
+    def test_execute_inproc_refuses_a_thread_count_the_shape_did_not_run(self) -> None:
+        """Issue #512, through `_execute_inproc` on the checked-in `fortran_cpu` profile (its
+        shapes run 4, 2 and 3 threads): a harness that reports the profile's count under every
+        shape — the host-rendered runner's literal before this change — fails the quality check
+        on each sweep shape, with the reported count in the excerpt; one that reports what each
+        launch gave it passes. A one-thread target is not compared."""
+        import tempfile
+        from tools.tests.target_fixtures import FORTRAN_CPU, profile_with
+        self.assertTrue(FORTRAN_CPU.thread_count_observable)
+        self.assertFalse(profile_with(execution={"threads_per_rank": 1}).thread_count_observable)
+        self.assertFalse(profile_with(
+            parallel={"backend": "mpi"},
+            execution={"threads_per_rank": 1, "ranks": 4, "process_grid": [2, 2],
+                       "sweep": {"grids": [[4, 1]]}}).thread_count_observable)
+        constant = FORTRAN_CPU.threads_per_rank
+
+        def literal(d: Path, role: str) -> None:
+            if role == "run":
+                (d / "perf.json").write_text(json.dumps(
+                    {"parallelism": {"threads_per_rank": constant}}), encoding="utf-8")
+
+        for captures, expected in ((literal, "fail"), (None, "pass")):
+            with self.subTest(expected=expected), tempfile.TemporaryDirectory() as td:
+                repo = Path(td)
+                _out, meta = self._b1_execute(repo, self._B1_IR_CLEAN_VERDICT,
+                                              gate_result=(0, ""), matching_diagnostics=True,
+                                              captures=captures)
+                quality = json.loads((repo / self._b1_refs().run_node_dir()
+                                      / "quality_check.json").read_text())
+                self.assertEqual(quality["status"], expected, quality)
+                rows = {r["label"]: r for r in quality["shapes"]}
+                self.assertEqual({lbl: r["thread_match"] for lbl, r in rows.items()},
+                                 {s.label: expected == "pass" or s.threads_per_rank == constant
+                                  for s in FORTRAN_CPU.execution_shapes})
+                if expected == "fail":
+                    self.assertEqual(meta["failure_category"], "quality_check_mismatch")
+                    for s in FORTRAN_CPU.sweep_shapes:
+                        self.assertIn(f"shape {s.label} (ranks=1, process_grid=None, "
+                                      f"threads_per_rank={s.threads_per_rank}): thread_match "
+                                      f"is false against the shape's launch",
+                                      meta["failure_excerpt"])
+                    self.assertIn(f"harness reported threads_per_rank={constant}",
+                                  meta["failure_excerpt"])
+                    # The tie is with the shape's launch; naming the serial reference's one
+                    # thread would point a repair at the wrong count (round 3).
+                    self.assertNotIn("thread_match is false against the serial reference",
+                                     meta["failure_excerpt"])
+                else:
+                    self.assertEqual(meta["status"], "pass")
 
     def test_execute_inproc_records_a_sweep_timeout_and_a_failed_reference(self) -> None:
         """Issue #512, through `_execute_inproc`: a sweep shape that timed out is recorded with
@@ -22975,12 +23030,14 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
         return d
 
     def _author(self, runs: list[dict], *, ir=None, launcher: bool = False,
-                qc_diag=None, block_imposed: bool = False) -> tuple[str, dict]:
+                qc_diag=None, block_imposed: bool = False,
+                threads_checked: bool = False) -> tuple[str, dict]:
         ir = self.tpe._ir([self.tpe.CROSS]) if ir is None else ir
         status = wc.Conductor._author_quality_check(
             self.node, self.diag if qc_diag is None else qc_diag, "Q", "make_test", ir=ir,
             reference_dir=self.ref,
-            shape_runs=runs, launcher=launcher, block_imposed=block_imposed)
+            shape_runs=runs, launcher=launcher, block_imposed=block_imposed,
+            threads_checked=threads_checked)
         return status, json.loads((self.node / "quality_check.json").read_text())
 
     def _runs(self, *dirs: Path, ok=(True, True), ids=("R", "S"),
@@ -23261,6 +23318,138 @@ class AuthorQualityCheckShapesTests(unittest.TestCase):
                 self.assertEqual(status, "pass")
                 self.assertNotIn("block_match", doc["shapes"][1])
 
+
+    def test_a_thread_shape_must_report_its_thread_count(self) -> None:
+        """Issue #512: on a target some shape of which runs more than one thread per rank, the
+        thread count the harness reports in `perf.json` must be the one the shape ran with — a
+        runner that wrote the profile's count, or a self-test that supplied 1, records the same
+        number under every shape, and the sweep would then compare runs it cannot tell apart."""
+        self.assertEqual([s.threads_per_rank for s in self.shapes], [4, 2])
+        status, doc = self._author(self._runs(
+            self._run_dir("run", self.h, perf={"threads_per_rank": 4}),
+            self._run_dir("t", self.h, perf={"threads_per_rank": 2})), threads_checked=True)
+        self.assertEqual(status, "pass")
+        self.assertEqual([(r["threads_per_rank"], r["observed_threads_per_rank"],
+                           r["thread_match"]) for r in doc["shapes"]],
+                         [(4, 4, True), (2, 2, True)])
+        self.assertEqual(wc.Conductor._quality_check_failure_lines(self.node), [])
+        for name, perf in (("the profile's", {"threads_per_rank": 4}), ("one", {"threads_per_rank": 1}),
+                           ("absent", {}), ("real", {"threads_per_rank": 2.0}),
+                           ("bool", {"threads_per_rank": True})):
+            with self.subTest(name):
+                status, doc = self._author(self._runs(
+                    self._run_dir(f"run_{name}", self.h, perf={"threads_per_rank": 4}),
+                    self._run_dir(f"t_{name}", self.h, perf=perf)), threads_checked=True)
+                self.assertEqual(status, "fail")
+                self.assertTrue(doc["shapes"][0]["thread_match"])
+                self.assertFalse(doc["shapes"][1]["thread_match"])
+                self.assertEqual(doc["shapes"][1]["status"], "fail")
+                lines = wc.Conductor._quality_check_failure_lines(self.node)
+                self.assertTrue(any("thread_match is false" in ln and "threads_per_rank=2)" in ln
+                                    and f"harness reported threads_per_rank="
+                                        f"{perf.get('threads_per_rank')!r}" in ln
+                                    for ln in lines), lines)
+        # A target whose shapes are not compared records the observation and no `thread_match`,
+        # whatever its perf record says.
+        status, doc = self._author(self._runs(
+            self._run_dir("run_n", self.h, perf={"threads_per_rank": 9}),
+            self._run_dir("t_n", self.h, perf={"threads_per_rank": 9})))
+        self.assertEqual(status, "pass")
+        self.assertEqual([r["observed_threads_per_rank"] for r in doc["shapes"]], [9, 9])
+        self.assertTrue(all("thread_match" not in r for r in doc["shapes"]))
+
+    def test_the_harness_self_tests_own_writer_is_what_the_thread_sweep_checks(self) -> None:
+        """Issue #512, round 1 of its review: the thread count `perf.json` records is obtained
+        INSIDE the harness's `__write_perf` (`harness_fortran_cpu@0.8.0` §3.2), so the harness
+        node's own Validate sweep runs the code every consumer records the count through. A
+        self-test program built with the OpenMP backend's flags around a writer that records a
+        constant fails the quality check of the harness's own run (an IR without cross-target
+        predicates, as a self-test's is) on the checked-in profile's shapes whose count differs;
+        the writer that asks the runtime passes. Each shape runs in the environment the host
+        launches it in (`host_execution.launch_shape`)."""
+        import shutil
+        import subprocess
+        import textwrap
+
+        from tools.backends.language.fortran import control_file
+        from tools.host_execution import launch_shape
+        from tools.tests.target_fixtures import FORTRAN_CPU
+
+        if shutil.which("gfortran") is None:
+            raise AssertionError("gfortran is not on PATH; install gfortran (docs/RUNBOOK.md#0-1)")
+        self.assertEqual(FORTRAN_CPU.parallel_backend, "openmp")
+        self.assertTrue(FORTRAN_CPU.thread_count_observable)
+        self.shapes = list(FORTRAN_CPU.execution_shapes)
+        counts = [s.threads_per_rank for s in self.shapes]
+        self.assertIn(2, counts)
+        constant = counts[0]
+        flags = control_file.flags("f2008", FORTRAN_CPU.parallel_backend).split(" -J")[0].split()
+        self.assertIn("-fopenmp", flags)
+        queried = "!$  threads_per_rank = omp_get_max_threads()"
+        writer = textwrap.dedent(f"""\
+            module selftest_perf
+              implicit none
+              private
+              public :: selftest_perf__write_perf
+            contains
+              subroutine selftest_perf__write_perf(mpi_ranks, gpu_devices)
+            !$  use omp_lib, only: omp_get_max_threads
+                integer, intent(in) :: mpi_ranks
+                integer, intent(in) :: gpu_devices
+                integer :: u, threads_per_rank
+                threads_per_rank = 1
+            {queried}
+                open(newunit=u, file='perf.json', status='replace')
+                write(u, '(A,I0,A,I0,A,I0,A)') '{{"parallelism": {{"mpi_ranks": ', mpi_ranks, &
+                  ', "threads_per_rank": ', threads_per_rank, ', "parallel_degree_total": ', &
+                  mpi_ranks*threads_per_rank*max(gpu_devices, 1), '}}}}'
+                close(u)
+              end subroutine selftest_perf__write_perf
+            end module selftest_perf
+            program selftest
+              use selftest_perf, only: selftest_perf__write_perf
+              implicit none
+              call selftest_perf__write_perf(1, 0)
+            end program selftest
+            """)
+        self.assertEqual(writer.count(queried), 1)
+        for name, source, expected in (
+                ("constant", writer.replace(queried, f"    threads_per_rank = {constant}"), "fail"),
+                ("queried", writer, "pass")):
+            with self.subTest(name):
+                build = self.root / f"build_{name}"
+                build.mkdir()
+                (build / "selftest.f90").write_text(source)
+                done = subprocess.run(["gfortran", *flags, "selftest.f90", "-o", "selftest"],
+                                      cwd=build, capture_output=True, text=True)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                dirs = []
+                for shape in self.shapes:
+                    d = self._run_dir(f"{name}_{shape.label}", self.h)
+                    ran = subprocess.run(
+                        [str(build / "selftest")], cwd=d, capture_output=True, text=True,
+                        env={**os.environ, **launch_shape(FORTRAN_CPU, shape=shape).env})
+                    self.assertEqual(ran.returncode, 0, ran.stderr)
+                    dirs.append(d)
+                status, doc = self._author(
+                    self._runs(*dirs, ok=(True,) * len(dirs),
+                               ids=tuple(f"R{i}" for i in range(len(dirs)))),
+                    ir=self.tpe._ir([]), threads_checked=FORTRAN_CPU.thread_count_observable)
+                self.assertEqual(status, expected)
+                self.assertEqual(
+                    [(r["label"], r["observed_threads_per_rank"], r["thread_match"])
+                     for r in doc["shapes"]],
+                    [(s.label, constant if name == "constant" else s.threads_per_rank,
+                      name == "queried" or s.threads_per_rank == constant)
+                     for s in self.shapes])
+                lines = wc.Conductor._quality_check_failure_lines(self.node)
+                if expected == "fail":
+                    self.assertTrue(any(
+                        "threads_per_rank=2)" in ln and "thread_match is false" in ln
+                        and f"harness reported threads_per_rank={constant}" in ln
+                        for ln in lines), lines)
+                else:
+                    self.assertEqual(lines, [])
 
 class VerifyMetaSchemaGateTests(unittest.TestCase):
     """A verify leaf that authors a CONTRACT-VIOLATING stage meta (canonically:

@@ -127,8 +127,9 @@ def composed_pure_template(key: str, profile: TargetProfile = FORTRAN_CPU) -> st
 def passing_shape_rows(profile: TargetProfile = FORTRAN_CPU) -> list[dict]:
     """`quality_check.json#shapes` of a run of `profile` whose every execution shape agreed with
     the serial reference (issue #512): one passing row per `profile.execution_shapes`, in order,
-    with the rank count and grid a harness of a launcher target reports, and the block size a
-    harness of a backend that imposes one reports."""
+    with the rank count and grid a harness of a launcher target reports, the block size a
+    harness of a backend that imposes one reports, and the thread count every harness reports
+    (the shape's own: the count it observes at run time)."""
     rows = []
     for shape in profile.execution_shapes:
         rows.append({**shape.record(), "command_id": f"cmd_{shape.label}", "run_ok": True,
@@ -137,5 +138,6 @@ def passing_shape_rows(profile: TargetProfile = FORTRAN_CPU) -> list[dict]:
                      "observed_mpi_ranks": shape.ranks,
                      "observed_process_grid": list(shape.process_grid or (shape.ranks, 1)),
                      "observed_block_size": shape.block_size,
+                     "observed_threads_per_rank": shape.threads_per_rank,
                      "state_agreement": {"status": "agree"}, "status": "pass"})
     return rows

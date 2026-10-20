@@ -223,6 +223,16 @@ class TargetProfile:
         return [self.certified_shape, *self.sweep_shapes]
 
     @property
+    def thread_count_observable(self) -> bool:
+        """Whether some execution shape runs more than one thread per rank (issue #512): the one
+        configuration in which the thread count a run's harness reports
+        (`perf.json#parallelism.threads_per_rank`) can be told apart from a constant `1`, so the
+        quality check (`thread_match`) and the post-execute gate compare it with each shape's
+        count. A target whose every shape runs one thread per rank — a launcher target, a
+        device target — is not compared."""
+        return any(s.threads_per_rank > 1 for s in self.execution_shapes)
+
+    @property
     def harness(self) -> dict[str, str]:
         return dict(self.doc["harness"])
 

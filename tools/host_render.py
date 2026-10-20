@@ -133,7 +133,8 @@ def render_runner(language: Any, ir: dict[str, Any], spec_id: str, harness_spec_
     `target` is the run's target profile document (`TargetProfile.doc`, issue #284): the
     runner's performance record names the hardware class, threads per rank and devices the run
     is executed with, which are the target's and not the IR's (the rank count is the run's own,
-    issue #316). Deterministic and pure. Raises
+    issue #316, and so is the thread count where the harness observes it at run time, issue
+    #512). Deterministic and pure. Raises
     `RenderError` for an IR the backend cannot faithfully render, and `RunnerRenderUnavailable`
     when `language` declares no renderer.
     """

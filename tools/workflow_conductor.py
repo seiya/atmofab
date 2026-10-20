@@ -403,6 +403,10 @@ _SHAPE_STDERR_CHARS = 1000
 #: so that several failing shapes leave room in the bounded excerpt for the gate's report.
 _EXCERPT_STDERR_HEAD = 5
 _EXCERPT_STDERR_TAIL = 3
+
+#: The quality-check shape keys that compare the harness's own report (ranks and grid, block
+#: size, thread count) with the shape's launch rather than with the serial reference.
+_LAUNCH_TIE_KEYS = frozenset({"launch_match", "block_match", "thread_match"})
 _EXCERPT_LINE_CHARS = 160
 
 
@@ -11305,7 +11309,8 @@ class Conductor:
     def _author_quality_check(node_dir: Path, qc_diag: dict[str, Any], qc_cmd_id: str | None,
                               preset: str, *, ir: dict[str, Any], reference_dir: Path,
                               shape_runs: list[dict[str, Any]], launcher: bool,
-                              block_imposed: bool = False) -> str:
+                              block_imposed: bool = False,
+                              threads_checked: bool = False) -> str:
         """quality_check.json = the run of every execution shape compared with the serial
         reference: the quality-check preset's re-run, one process with one thread (per phase_04
         §4-1 / §4-2; issue #512). Returns the top-level status.
@@ -11321,7 +11326,9 @@ class Conductor:
         mismatch. For a target whose backend declares a launcher (`launcher`), the process count
         and grid the shape's harness reports in `perf.json` must be the shape's; for one whose
         backend imposes a thread-block size (`block_imposed`), the block size it reports must be
-        the shape's whenever the shape imposes one. The top-level
+        the shape's whenever the shape imposes one; and for one some shape of which runs more than
+        one thread per rank (`threads_checked`, `TargetProfile.thread_count_observable`), the
+        thread count it reports must be the shape's. The top-level
         `checks` and `comparison` are the certified shape's, which the post-execute gate reads
         as it did before the sweep."""
         def _object(path: Path) -> dict[str, Any]:
@@ -11360,6 +11367,7 @@ class Conductor:
             row["observed_mpi_ranks"] = parallelism.get("mpi_ranks")
             row["observed_process_grid"] = parallelism.get("process_grid")
             row["observed_block_size"] = parallelism.get("block_size")
+            row["observed_threads_per_rank"] = parallelism.get("threads_per_rank")
             if launcher:
                 expected_grid = list(shape.process_grid or (shape.ranks, 1))
                 row["launch_match"] = (type(row["observed_mpi_ranks"]) is int
@@ -11368,13 +11376,17 @@ class Conductor:
             if block_imposed and shape.block_size is not None:
                 row["block_match"] = (type(row["observed_block_size"]) is int
                                       and row["observed_block_size"] == shape.block_size)
+            if threads_checked:
+                row["thread_match"] = (type(row["observed_threads_per_rank"]) is int
+                                       and row["observed_threads_per_rank"]
+                                       == shape.threads_per_rank)
             row["state_agreement"] = (
                 Conductor._shape_state_agreement(ir, reference_dir, shape.label, shape_dir)
                 if entry["ok"] else {"status": "not_run"})
             row["status"] = "pass" if (
                 row["run_ok"] and row["verdict_available"] and row["diagnostics_match"]
                 and row["verdict_match"] and row.get("launch_match", True)
-                and row.get("block_match", True)
+                and row.get("block_match", True) and row.get("thread_match", True)
                 and row["state_agreement"]["status"] in ("agree", "not_applicable")) else "fail"
             shapes.append(row)
         certified = shapes[0]
@@ -11457,17 +11469,25 @@ class Conductor:
                         lines.append(f"    {clip(first)}")
                 continue
             for key in ("verdict_available", "diagnostics_match", "verdict_match",
-                        "launch_match", "block_match"):
+                        "launch_match", "block_match", "thread_match"):
                 if row.get(key) is False:
+                    # The three launch ties compare what the harness reported with the shape's
+                    # own launch, not with the serial reference; naming the reference's "one
+                    # thread" there would point a repair at the wrong count.
+                    against = ("against the shape's launch" if key in _LAUNCH_TIE_KEYS
+                               else "against the serial reference (one process, one thread)")
                     lines.append(f"[execute fail: quality_check] {where}: {key} is false "
-                                 f"against the serial reference (one process, one thread)"
+                                 f"{against}"
                                  + (f"; harness reported mpi_ranks="
                                     f"{row.get('observed_mpi_ranks')!r}, process_grid="
                                     f"{row.get('observed_process_grid')!r}"
                                     if key == "launch_match" else "")
                                  + (f"; harness reported block_size="
                                     f"{row.get('observed_block_size')!r}"
-                                    if key == "block_match" else ""))
+                                    if key == "block_match" else "")
+                                 + (f"; harness reported threads_per_rank="
+                                    f"{row.get('observed_threads_per_rank')!r}"
+                                    if key == "thread_match" else ""))
             agreement = row.get("state_agreement") or {}
             if agreement.get("status") == "disagree":
                 for f in agreement.get("failures") or []:
@@ -11867,7 +11887,8 @@ class Conductor:
             node_dir, qc_diag, res_qc.get("command_id"), execute.QUALITY_CHECK_PRESET,
             ir=ir, reference_dir=qc_tmp, shape_runs=shape_runs,
             launcher=declares_launcher(target.parallel_backend),
-            block_imposed=imposes_block_size(target.parallel_backend))
+            block_imposed=imposes_block_size(target.parallel_backend),
+            threads_checked=target.thread_count_observable)
 
         (node_dir / "stdout.log").write_text(stdout, encoding="utf-8")
         (node_dir / "stderr.log").write_text(stderr, encoding="utf-8")

@@ -28,7 +28,7 @@ from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 
 ADV = "problem/adv1d@0.1.0"
 FLUX = "component/adv_flux@0.1.0"
-HARNESS = "infrastructure/harness_fortran_cpu@0.7.0"
+HARNESS = "infrastructure/harness_fortran_cpu@0.8.0"
 
 
 def _module_name(path: str) -> str:
@@ -394,7 +394,7 @@ class DeterministicBuildGraphTest(unittest.TestCase):
 
     def test_graph_carries_no_command_slot(self) -> None:
         graph = cb.derive_build_graph(
-            _minimal_bundle(), dependency_closure=("infrastructure/harness_fortran_cpu@0.7.0",),
+            _minimal_bundle(), dependency_closure=("infrastructure/harness_fortran_cpu@0.8.0",),
             toolchain={"language": "fortran", "build_system": "make"},
             host_glue_sources=("adv1d_runner.f90",))
         blob = json.dumps(graph, sort_keys=True)
@@ -1120,7 +1120,7 @@ class FieldGrammarTest(unittest.TestCase):
 
     def test_graph_strings_hold_no_shell_metacharacters(self) -> None:
         graph = cb.derive_build_graph(
-            _minimal_bundle(), dependency_closure=("infrastructure/harness_fortran_cpu@0.7.0",),
+            _minimal_bundle(), dependency_closure=("infrastructure/harness_fortran_cpu@0.8.0",),
             toolchain={"build_system": "make", "language": "fortran"}, host_glue_sources=("adv1d_runner.f90",))
         for unit in graph["compile_units"]:
             for value in (unit["source"], unit["object"], *unit["prerequisite_objects"]):
@@ -1208,7 +1208,7 @@ class ClosedObjectTest(unittest.TestCase):
         # spec_id and a prerelease/short version the rest of the workflow accepts must not be
         # rejected by this contract.
         for good in ("component/adv.flux@0.1.0", "component/foo@1.0.0-rc1",
-                     "problem/adv1d@1.2", "infrastructure/harness_fortran_cpu@0.7.0"):
+                     "problem/adv1d@1.2", "infrastructure/harness_fortran_cpu@0.8.0"):
             with self.subTest(node_key=good):
                 doc = _minimal_bundle()
                 doc["optimization_unit"]["members"] = [good]
@@ -1677,7 +1677,7 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
         # A component / infrastructure node publishes an API of one or more operations (the
         # harness ABI is many), so the exactly-one rule must not apply to it.
         for member, mod in (("component/adv_flux@0.1.0", "adv_flux"),
-                            ("infrastructure/harness_fortran_cpu@0.7.0", "harness_fortran_cpu")):
+                            ("infrastructure/harness_fortran_cpu@0.8.0", "harness_fortran_cpu")):
             with self.subTest(member=member):
                 doc = _multi_node_bundle()
                 doc["optimization_unit"]["members"] = [member]
@@ -2015,7 +2015,7 @@ class ContractPlumbingTest(unittest.TestCase):
 
         samples = [
             "problem/adv1d@0.1.0", "component/adv.flux@0.1.0", "component/foo@1.0.0-rc1",
-            "problem/adv1d@1.2", "infrastructure/harness_fortran_cpu@0.7.0",
+            "problem/adv1d@1.2", "infrastructure/harness_fortran_cpu@0.8.0",
             "problem/Adv1d@0.1.0", "problem/adv-1d@0.1.0", "problem/.adv1d@0.1.0",
             "problem/adv1d@", "problem/adv1d", "garbage",
             # the one kind the codegen pattern is deliberately narrower on: a non-catalogued
@@ -3399,7 +3399,7 @@ class PureStateBindingLayerTests(unittest.TestCase):
         self.assertEqual(r[0], "bundle_checks_abi_violation")
         self.assertIn("naming them): " + ", ".join(meta) + ".", r[1])
         # The single-process harness, an unnamed one and an unparseable label ask none of it.
-        for harness in ("infrastructure/harness_fortran_cpu@0.7.0", None, "harness_fortran_cpu_mpi"):
+        for harness in ("infrastructure/harness_fortran_cpu@0.8.0", None, "harness_fortran_cpu_mpi"):
             with self.subTest(harness=harness):
                 self.assertIsNone(run(with_s, harness))
 

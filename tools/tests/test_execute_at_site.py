@@ -42,7 +42,10 @@ _RUNNER = textwrap.dedent('''\
     import json, os, sys
     cases = sys.argv[sys.argv.index("--cases") + 2:]
     json.dump({"verdict": {c: "pass" for c in cases}}, open("diagnostics.json", "w"))
-    json.dump({}, open("perf.json", "w"))
+    # An honest harness reports the thread count the run was launched with (issue #512).
+    threads = os.environ.get("OMP_NUM_THREADS")
+    json.dump({} if threads is None else {"parallelism": {"threads_per_rank": int(threads)}},
+              open("perf.json", "w"))
     json.dump({"argv": sys.argv, "cwd": os.getcwd(),
                "omp_num_threads": os.environ.get("OMP_NUM_THREADS")}, open("argv.json", "w"))
     print("runner out")

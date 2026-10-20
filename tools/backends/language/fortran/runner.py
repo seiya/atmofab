@@ -296,7 +296,11 @@ def _checks(ir: dict[str, Any]) -> list[str]:
 def _threads(target: dict[str, Any]) -> int:
     """The threads per rank the run executes with — the target profile's `execution`, which
     is what `run_program` is told. Until R4-a PR-2 this read the IR's
-    `backend_overrides.openmp.num_threads`, a count the run never used."""
+    `backend_overrides.openmp.num_threads`, a count the run never used. Only the DISTRIBUTED
+    variant's perf record writes it (a launcher target runs one thread per rank, so every
+    shape's count is 1); the single-process harness's `__write_perf` takes no thread count and
+    writes the one the run's shared-memory runtime gives the program, obtained at run time
+    (`harness_fortran_cpu@0.8.0` §3.2, issue #512)."""
     return int(target["execution"]["threads_per_rank"])
 
 
@@ -439,7 +443,8 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     ``harness_spec_id`` is the certified plumbing module's spec_id (a key of
     ``_HARNESS_PINS``); it selects the variant — the distributed one over a harness that runs the
     program as several ranks. ``target`` is the run's target profile document, read for the perf
-    record's hardware class, threads per rank and device count
+    record's hardware class, threads per rank (the distributed variant's alone: the
+    single-process harness's writer obtains its own) and device count
     (``host_execution.perf_parallelism``). See module docstring for the
     render-error matrix. The returned text is the complete Fortran source (trailing newline
     included).
@@ -482,7 +487,12 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
     # rank count is never the configured one, which the post-execute gate compares it with: the
     # single-process variant runs one process and writes 1, and the distributed variant passes
     # the size of the run it observes (`__comm_size`). (Round 3 of the PR's review: writing the
-    # profile's count here made that comparison hold by construction.)
+    # profile's count here made that comparison hold by construction.) The thread count is the
+    # same kind of fact for the single-process variant, and it passes none: that harness's
+    # `__write_perf` obtains the count the shared-memory runtime gives the run itself, because
+    # Validate runs one binary at several thread counts and compares each run's record with its
+    # own, and the harness's own Validate run then checks the code every consumer records it
+    # through (`harness_fortran_cpu@0.8.0` §3.2, issue #512).
     _, _, devices = perf_parallelism(target)
     distributed = _is_distributed_harness(harness_spec_id)
 
@@ -787,7 +797,7 @@ def render_runner(ir: dict[str, Any], spec_id: str, harness_spec_id: str,
         a("")
         a(f"  call {H('finalize')}()")
     else:
-        a(f"    steps_total, cells_total, walltime, 1, {threads}, {devices})")
+        a(f"    steps_total, cells_total, walltime, 1, {devices})")
     a("")
     a("contains")
     a("")
@@ -1285,11 +1295,15 @@ EXPECTED_HARNESS_SPEC_ID = "harness_fortran_cpu"
 #: The harness that drives the program as several ranks (`distributed_state@2`).
 DISTRIBUTED_HARNESS_SPEC_ID = "harness_fortran_cpu_mpi"
 
-# Verbatim copy of the harness controlled_spec §5.1 canonical interface block (v3, harness
-# spec_version 0.3.0: `h_mb_entry` gained the `case_id` component so metrics-basis evidence is
-# keyed by (test_id, case_id) and a multi-target test records every targeted case — the pin
-# compares signatures, not versions). If a harness recert changes §5.1, THIS block and the
-# render template must be updated together (the pin message says so).
+# The shared harness interface block (v3, harness spec_version 0.3.0: `h_mb_entry` gained the
+# `case_id` component so metrics-basis evidence is keyed by (test_id, case_id) and a multi-target
+# test records every targeted case — the pin compares signatures, not versions). It is the
+# eight-argument `__write_perf` form the distributed harness still publishes; the single-process
+# harness's pin, `_SINGLE_PROCESS_INTERFACE` below, is derived from it by replacing that one
+# stanza (harness_fortran_cpu 0.8.0's writer takes no thread count), so an edit to the
+# `write_perf` stanza here must keep that replacement applying. If a harness recert changes §5.1,
+# the pin it is compared with and the render template must be updated together (the pin message
+# says so).
 _HARNESS_V3_INTERFACE = """\
 type :: harness_fortran_cpu__h_named
   character(len=:), allocatable :: name
@@ -1535,6 +1549,38 @@ end function harness_fortran_cpu_mpi__reduce_sum_int
 """
 
 
+# `harness_fortran_cpu@0.8.0` §5.1's `__write_perf` (§3.2, issue #512), as the language backend
+# renders it: the stanza of `_HARNESS_V3_INTERFACE` without the `threads_per_rank` argument,
+# because that harness's writer obtains the thread count itself, at run time. Its §5.1 is
+# `_HARNESS_V3_INTERFACE` with this stanza in place of that one; the distributed harness keeps
+# the eight-argument writer (its runner passes the count, one thread per rank).
+_V3_WRITE_PERF_THREADS = """\
+subroutine harness_fortran_cpu__write_perf(case_id, target, steps, cells_updated, walltime_sec, mpi_ranks, threads_per_rank, gpu_devices)
+  character(len=*), intent(in) :: case_id
+  character(len=*), intent(in) :: target
+  integer, intent(in) :: steps
+  integer, intent(in) :: cells_updated
+  real(dp), intent(in) :: walltime_sec
+  integer, intent(in) :: mpi_ranks
+  integer, intent(in) :: threads_per_rank
+  integer, intent(in) :: gpu_devices
+end subroutine harness_fortran_cpu__write_perf
+"""
+_SINGLE_PROCESS_WRITE_PERF = """\
+subroutine harness_fortran_cpu__write_perf(case_id, target, steps, cells_updated, walltime_sec, mpi_ranks, gpu_devices)
+  character(len=*), intent(in) :: case_id
+  character(len=*), intent(in) :: target
+  integer, intent(in) :: steps
+  integer, intent(in) :: cells_updated
+  real(dp), intent(in) :: walltime_sec
+  integer, intent(in) :: mpi_ranks
+  integer, intent(in) :: gpu_devices
+end subroutine harness_fortran_cpu__write_perf
+"""
+_SINGLE_PROCESS_INTERFACE = _HARNESS_V3_INTERFACE.replace(
+    _V3_WRITE_PERF_THREADS, _SINGLE_PROCESS_WRITE_PERF)
+
+
 @dataclass(frozen=True)
 class _HarnessPin:
     """What the renderer expects of one harness it targets."""
@@ -1551,7 +1597,7 @@ class _HarnessPin:
 #: `codegen_bundle.HARNESS_CAPABILITY_MANIFESTS`' fact; `test_fortran_runner` couples the
 #: `distributed` column to it, so the two cannot disagree about which harness is distributed.
 _HARNESS_PINS: dict[str, _HarnessPin] = {
-    EXPECTED_HARNESS_SPEC_ID: _HarnessPin(interface=_HARNESS_V3_INTERFACE, distributed=False),
+    EXPECTED_HARNESS_SPEC_ID: _HarnessPin(interface=_SINGLE_PROCESS_INTERFACE, distributed=False),
     DISTRIBUTED_HARNESS_SPEC_ID: _HarnessPin(
         interface=_HARNESS_V3_INTERFACE.replace(
             f"{EXPECTED_HARNESS_SPEC_ID}__", f"{DISTRIBUTED_HARNESS_SPEC_ID}__")
@@ -1584,7 +1630,8 @@ def _parse_stanzas(block: str) -> tuple[Any, Any, Any, Any]:
 _PIN_DRIFT_HINT = (
     "the certified harness interface no longer matches the renderer's pinned "
     "expectation — a harness recert changed its published surface; update the "
-    "renderer pin (_HARNESS_V3_INTERFACE / _HARNESS_V3_PARAMETERS) AND the "
+    "renderer pin (_HARNESS_V3_INTERFACE / _SINGLE_PROCESS_INTERFACE / "
+    "_HARNESS_V3_PARAMETERS) AND the "
     "render template together, then re-certify dependent nodes")
 
 
