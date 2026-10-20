@@ -188,7 +188,7 @@ specs:
 
   - spec_kind: profile
     spec_id: dynamics_shallow_water_profile_2d_channel_p0_rk4
-    spec_version: 0.1.0
+    spec_version: 0.2.0
     status: controlled_draft
     domain: dynamics
     family: shallow_water
@@ -198,7 +198,7 @@ specs:
 
   - spec_kind: profile
     spec_id: dynamics_shallow_water_profile_2d_channel_p1_rk4
-    spec_version: 0.1.0
+    spec_version: 0.2.0
     status: controlled_draft
     domain: dynamics
     family: shallow_water
