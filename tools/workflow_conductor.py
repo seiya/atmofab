@@ -403,6 +403,10 @@ _SHAPE_STDERR_CHARS = 1000
 #: so that several failing shapes leave room in the bounded excerpt for the gate's report.
 _EXCERPT_STDERR_HEAD = 5
 _EXCERPT_STDERR_TAIL = 3
+
+#: The quality-check shape keys that compare the harness's own report (ranks and grid, block
+#: size, thread count) with the shape's launch rather than with the serial reference.
+_LAUNCH_TIE_KEYS = frozenset({"launch_match", "block_match", "thread_match"})
 _EXCERPT_LINE_CHARS = 160
 
 
@@ -11467,8 +11471,13 @@ class Conductor:
             for key in ("verdict_available", "diagnostics_match", "verdict_match",
                         "launch_match", "block_match", "thread_match"):
                 if row.get(key) is False:
+                    # The three launch ties compare what the harness reported with the shape's
+                    # own launch, not with the serial reference; naming the reference's "one
+                    # thread" there would point a repair at the wrong count.
+                    against = ("against the shape's launch" if key in _LAUNCH_TIE_KEYS
+                               else "against the serial reference (one process, one thread)")
                     lines.append(f"[execute fail: quality_check] {where}: {key} is false "
-                                 f"against the serial reference (one process, one thread)"
+                                 f"{against}"
                                  + (f"; harness reported mpi_ranks="
                                     f"{row.get('observed_mpi_ranks')!r}, process_grid="
                                     f"{row.get('observed_process_grid')!r}"

@@ -1468,7 +1468,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # fails the shape and the post-execute gate reads. Rows moved: `_author_quality_check`,
     # `_quality_check_failure_lines`, `Conductor._execute_inproc`, the new row, and
     # `tools/host_execution.py` (the `perf_parallelism` docstring).
-    "execute-12": "1d54ea203e034128e5274091eec34b234d294ace8d6c8e586d28f9c397f08204",
+    "execute-12": "7d0bf312f0768f31579cf210435a16f781c9d38531db52f9d782225123a0da42",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

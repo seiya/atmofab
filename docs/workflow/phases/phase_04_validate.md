@@ -143,7 +143,7 @@ Classification convention for `failure_category` (evaluated in this order). The 
 - `device_kernels_absent`: exit code 6 — the traced run executed none of the kernels the node's sources define (issue #307; a target whose parallel backend declares `device_trace`).
 - `post_execute_violation`: any other non-zero exit of `validate_pipeline_semantics --stage post_execute`.
 - `snapshot_deliverable_gap`: a required `raw/state_snapshots/<case_id>.json` is missing or misnamed.
-- `quality_check_mismatch`: `quality_check.json#status != pass` while the `post_execute` gate passed (a sweep shape's run failed or did not run, or a shape disagrees with the `make test` serial reference in a check status, the verdict, its captured state, or, under a launcher, the ranks and grid its harness reports; §4-2). The gate requires `status` to be `pass` and each shape to hold, so a run whose gate ran records `post_execute_violation` for the same failure; the route is the same.
+- `quality_check_mismatch`: `quality_check.json#status != pass` while the `post_execute` gate passed (a sweep shape's run failed or did not run, or a shape disagrees with the `make test` serial reference in a check status, the verdict, its captured state, or in what its harness reports against the shape's own launch — under a launcher the ranks and grid, under an imposed block size the block size, and where a shape runs more than one thread the thread count; §4-2). The gate requires `status` to be `pass` and each shape to hold, so a run whose gate ran records `post_execute_violation` for the same failure; the route is the same.
 
 | `failure_category` | `repair_strategy` | basis |
 |---|---|---|

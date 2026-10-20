@@ -19102,9 +19102,14 @@ class DeterministicBuildTest(unittest.TestCase):
                     for s in FORTRAN_CPU.sweep_shapes:
                         self.assertIn(f"shape {s.label} (ranks=1, process_grid=None, "
                                       f"threads_per_rank={s.threads_per_rank}): thread_match "
-                                      f"is false", meta["failure_excerpt"])
+                                      f"is false against the shape's launch",
+                                      meta["failure_excerpt"])
                     self.assertIn(f"harness reported threads_per_rank={constant}",
                                   meta["failure_excerpt"])
+                    # The tie is with the shape's launch; naming the serial reference's one
+                    # thread would point a repair at the wrong count (round 3).
+                    self.assertNotIn("thread_match is false against the serial reference",
+                                     meta["failure_excerpt"])
                 else:
                     self.assertEqual(meta["status"], "pass")
 
