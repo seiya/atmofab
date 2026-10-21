@@ -7331,7 +7331,7 @@ class Conductor:
                 non_object_findings=("the reply parsed to a non-object JSON value (expected "
                                      "the verification document)"),
                 accept_noun=f"verification part {test_id}",
-                pure_shape="verification", reopen_warm=False)
+                pure_shape="verification", reopen_warm=False, pure_part=test_id)
             outcome = self._run_pure_producer_substep(
                 refs, "compile", "generate",
                 self._compile_part_repair(repair, previous_parts, test_id),
@@ -7795,6 +7795,10 @@ class Conductor:
         #: first turn is the cold repair instead, which re-states the whole launch body. The
         #: loop's own repair turns are unaffected: inside one loop the inputs do not move.
         reopen_warm: bool = True
+        #: The test a `compile.generate` verification part authors, stamped on every launch
+        #: request of the loop (`pure_part`) so a record's reader can tell the part's launches
+        #: from a retry. "" for every other loop.
+        pure_part: str = ""
 
     class _PureReviewerSpec(NamedTuple):
         """The phase-specific half of the pure REVIEWER loop."""
@@ -8223,6 +8227,8 @@ class Conductor:
             )
             if repair_payload is not None and not warm and prior_document:
                 request["prior_document"] = prior_document
+            if spec.pure_part:
+                request["pure_part"] = spec.pure_part
             turn = self._spawn_pure_turn(
                 request, entry, child_arid=child_arid, phase=phase, substep=substep,
                 node_key=refs.node_key, resume_session_id=resume_session_id, warm=warm)

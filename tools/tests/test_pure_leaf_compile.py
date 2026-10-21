@@ -1544,6 +1544,33 @@ class PureCompilePartsTests(_Fixture):
                 # template has no slot that would render one.
                 self.assertNotIn("dependency_surface", req)
 
+    def test_every_launch_of_a_part_names_its_test_and_no_other_launch_does(self) -> None:
+        """`pure_part` is what a record's reader tells a part's launch from a retry by, so it
+        is on EVERY launch of the part — its warm repair turn included, which carries no
+        context to read the test from — and on no launch of the core."""
+        c = self.conductor(_envelope(_doc()), _envelope(_part("t_beta")),
+                           _envelope(_part("t_alpha")), _envelope(_part("t_beta")))
+        c.run_substep(self.refs, "compile", "generate")
+        reqs = _requests(c)
+        self.assertEqual([r.get("pure_part") for r in reqs],
+                         [None, "t_alpha", "t_alpha", "t_beta"])
+        self.assertTrue(reqs[2]["warm_resume"])
+        self.assertNotIn("pure_context", reqs[2])
+        for req in reqs:
+            ort._validate_launch_request_payload(ort.prepare_launch_request_payload(
+                dict(req, dependency_ref=f"{self.refs.spec_path}/deps.yaml")))
+
+    def test_a_pure_part_is_refused_off_the_verification_shape(self) -> None:
+        c = self.conductor(_envelope(_doc()), _envelope(_part("t_alpha")),
+                           _envelope(_part("t_beta")))
+        c.run_substep(self.refs, "compile", "generate")
+        core_req, part_req, _ = _requests(c)
+        for req, part in ((core_req, "t_alpha"), (part_req, ""), (part_req, 3)):
+            with self.subTest(part=part, shape=req.get("pure_shape")):
+                with self.assertRaises(ValueError) as caught:
+                    ort._validate_pure_launch_request_payload(dict(req, pure_part=part))
+                self.assertIn("pure_part", str(caught.exception))
+
     def test_a_part_naming_another_test_is_repaired(self) -> None:
         c = self.conductor(_envelope(_doc()), _envelope(_part("t_beta")),
                            _envelope(_part("t_alpha")), _envelope(_part("t_beta")))

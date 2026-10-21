@@ -10825,6 +10825,17 @@ def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> No
         raise ValueError(
             f"pure launch request pure_parallel must be a non-empty string when present; "
             f"got {parallel!r}")
+    # The test a `compile.generate` verification part authors (issue #526), on EVERY request of
+    # that part — a warm repair carries no `pure_context`, so the context's test id cannot say
+    # which part a record belongs to. Read by the records' readers (the audit's repeated-substep
+    # table, the attempt-cost report), never by the renderer. Only that shape carries it.
+    part = request_payload.get("pure_part")
+    if part is not None and not (isinstance(part, str) and part.strip()
+                                 and shape_key == ("compile", "generate", "verification")):
+        raise ValueError(
+            f"pure launch request pure_part must be a non-empty string, on a "
+            f"(compile, generate, verification) request only; got {part!r} on "
+            f"(step={step!r}, substep={substep!r}, pure_shape={shape!r})")
     if key not in PURE_CONTEXT_REQUIRED_KEYS:
         # The admissible pairs are SPELLED FROM THE TABLE, never restated: a pair added to
         # `PURE_CONTEXT_REQUIRED_KEYS` must not leave this message naming the old set.

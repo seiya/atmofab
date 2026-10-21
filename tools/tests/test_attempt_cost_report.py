@@ -116,18 +116,23 @@ class AttemptCostReportTests(unittest.TestCase):
         d = self._orch("orch_p", rows)
         (d / "launches").mkdir()
         for arid, req in (
-                ("pa", {"pure_shape": "verification",
-                        "pure_context": {"verification_test_document": "t_a"}}),
-                ("pb1", {"pure_shape": "verification",
-                         "pure_context": {"verification_test_document": "t_b"}}),
-                ("pb2", {"pure_shape": "verification", "warm_resume": True,
-                         "repair_target_agent_run_id": "pb1"})):
+                ("pa", {"pure_shape": "verification", "pure_part": "t_a"}),
+                ("pb1", {"pure_shape": "verification", "pure_part": "t_b"}),
+                # A codex warm repair names the THREAD it resumed, not an agent_run_id, so
+                # the part is read from the request's own stamp, not from its target.
+                ("pb2", {"pure_shape": "verification", "pure_part": "t_b",
+                         "warm_resume": True,
+                         "repair_target_agent_run_id": "019a-codex-thread"})):
             (d / "launches" / f"{arid}.request.json").write_text(json.dumps(req),
                                                                 encoding="utf-8")
         report = self._report()
         self.assertEqual((report["totals"]["first"]["n"], report["totals"]["retry"]["n"]),
                          (3, 1))
         self.assertEqual(report["totals"]["retry"]["output_tokens"], 12)
+        # The parts are their own table row, so compile.generate's first launch is the core's.
+        self.assertEqual(report["per_substep"]["compile.generate"]["first"]["n"], 1)
+        self.assertEqual(report["per_substep"]["compile.generate[verification]"]["first"]["n"],
+                         2)
 
     def test_a_marker_is_not_a_zero_and_still_ranks_the_launch(self):
         # The first launch died with no usage frame: it is not counted, but the one after it is

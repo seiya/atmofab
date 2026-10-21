@@ -31,10 +31,12 @@ use every row of the segment, so a window edge does not turn a retry into a firs
 
 PART: since issue #526 one `compile.generate` substep run is several leaf launches by design --
 the IR core, then one `verification` part per test -- so the earliest row of EACH part is a first
-launch too. A row's part is read from its launch request (`launches/<agent_run_id>.request.json`):
-`pure_shape: verification` names it, its test is `pure_context.verification_test_document`, and a
-warm repair turn, which carries no context, takes the part of the turn it resumed. A row with no
-readable request is the substep's own (the core's, for `compile.generate`).
+launch too, and the part's rows are a substep of their own in the table
+(`compile.generate[verification]`), so `compile.generate`'s first-launch median stays the core's.
+A row's part is the `pure_part` its launch request (`launches/<agent_run_id>.request.json`)
+carries; the conductor stamps it on every launch of a part, warm repair turns included. A row with
+no readable request, or none carrying it, is the substep's own. Across the issue #526 boundary the
+`compile.generate` figure changes meaning (the whole IR before, the core after).
 
 CAUSE: a retry is attributed to the most recent non-`pass` substep row of the same node in the
 same segment that precedes it -- the proximate failure that sent the run back, not necessarily
@@ -187,17 +189,11 @@ def decumulate(rows, orch_dir):
 
 def mark_parts(rows, orch_dir):
     """Set `_part` on each row of a `compile.generate` verification part (see PART above)."""
-    part_of = {}
-    for row in sorted(rows, key=lambda r: r["started_at"]):
+    for row in rows:
         request = _request(orch_dir, row.get("agent_run_id"))
-        if not request or request.get("pure_shape") != "verification":
-            continue
-        context = request.get("pure_context")
-        test = context.get("verification_test_document") if isinstance(context, dict) else None
-        part = (f"verification:{test}" if isinstance(test, str) and test
-                else part_of.get(request.get("repair_target_agent_run_id"), "verification:?"))
-        part_of[row.get("agent_run_id")] = part
-        row["_part"] = part
+        part = request.get("pure_part") if request else None
+        if isinstance(part, str) and part:
+            row["_part"] = part
 
 
 def load_rows(root, since=None, until=None, nodes=None):
@@ -257,6 +253,8 @@ def analyze(by_node):
         seen = set()
         for i, row in enumerate(rows):
             label = f"{row.get('step')}.{row.get('substep')}"
+            if row.get("_part"):
+                label += "[verification]"
             usage = measured(row)
             launch = (label, row.get("_part"))
             is_retry = launch in seen
