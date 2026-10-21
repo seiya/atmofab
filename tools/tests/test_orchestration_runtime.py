@@ -21870,6 +21870,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # input is a document violation retried like any producer failure): bumped 99000->99600;
         # measured 99487 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump. Round 1
         # (§Acceptance of retry from Validate names `compile_fail`): measured 99479, no bump.
+        # Round 3 (§1-1 lists a `compile_fail` beside a non-null `ir`): measured 99507, no bump.
         "docs/workflow/phases/phase_01_compile.md": 99600,
     }
 
