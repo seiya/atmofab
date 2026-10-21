@@ -7305,7 +7305,7 @@ class Conductor:
             write_meta=collect_meta("core", None), write_declared_fail=write_declared_fail,
             prior_document=self._pure_ir_core_prior_document, accept_noun="IR core")
         outcome = self._run_pure_producer_substep(
-            refs, "compile", "generate", self._compile_part_repair(repair, previous_parts, "core"),
+            refs, "compile", "generate", self._compile_part_repair(repair, previous_parts, None),
             resolved_dependencies, core_spec, dependency_surface)
         if outcome.status != "pass":
             return outcome
@@ -7349,12 +7349,15 @@ class Conductor:
                                   len(shared_attempts))
         return SubstepOutcome(outcome.agent_run_id, "pass", [], 0, None, len(shared_attempts))
 
-    def _previous_compile_parts(self, repair: dict[str, str] | None) -> dict[str, str]:
+    def _previous_compile_parts(self, repair: dict[str, str] | None
+                                ) -> dict[str | None, str]:
         """On a `reuse` reopen, the previous run's `compile_generate_meta.json#parts[]` as
-        `{part: agent_run_id}`, read from the directory the repair target's own launch record
-        names (`_ensure_fresh_producer_id` has rotated `refs` away from it). Empty when there is
-        no such reopen, no record, or no readable `parts[]` — every loop then keeps the target
-        it was given."""
+        `{test_id: agent_run_id}` — the core under `None` — read from the directory the repair
+        target's own launch record names (`_ensure_fresh_producer_id` has rotated `refs` away
+        from it). Keyed by `test_id` rather than by the `part` label, because a test may be
+        called `core` (the tests.md grammar reserves no id), and a label key would let that
+        part's row stand for the core's. Empty when there is no such reopen, no record, or no
+        readable `parts[]`."""
         if not (repair and str(repair.get("repair_strategy", "")).strip() == "reuse"):
             return {}
         target = str(repair.get("repair_target_agent_run_id") or "").strip()
@@ -7372,18 +7375,19 @@ class Conductor:
         except (OSError, UnicodeError, ValueError):
             return {}
         rows = meta.get("parts") if isinstance(meta, dict) else None
-        return {str(row["part"]): str(row["agent_run_id"])
+        return {row["test_id"]: row["agent_run_id"]
                 for row in (rows if isinstance(rows, list) else [])
-                if isinstance(row, dict) and isinstance(row.get("part"), str)
+                if isinstance(row, dict)
+                and (row.get("test_id") is None or isinstance(row.get("test_id"), str))
                 and isinstance(row.get("agent_run_id"), str) and row["agent_run_id"].strip()}
 
     @staticmethod
-    def _compile_part_repair(repair: dict[str, str] | None, previous: dict[str, str],
-                             name: str) -> dict[str, str] | None:
-        """The `repair` one loop of a reopened `compile.generate` runs with: the outer repair
-        with its target replaced by THAT loop's own last attempt from the previous run, so each
-        loop warm-resumes its own session and reads back its own prior document. The findings
-        are the same for every loop.
+    def _compile_part_repair(repair: dict[str, str] | None, previous: dict[str | None, str],
+                             test_id: str | None) -> dict[str, str] | None:
+        """The `repair` one loop of a reopened `compile.generate` runs with — `test_id` None for
+        the core: the outer repair with its target replaced by THAT loop's own last attempt from
+        the previous run, so each loop resumes its own session and reads back its own prior
+        document. The findings are the same for every loop.
 
         A loop with no row of its own runs WITHOUT the repair (a cold launch), because the outer
         target is another loop's session: resuming it would continue a conversation about a
@@ -7393,9 +7397,9 @@ class Conductor:
         target is that loop's."""
         if repair is None:
             return None
-        if name in previous:
-            return {**repair, "repair_target_agent_run_id": previous[name]}
-        return repair if (name == "core" and not previous) else None
+        if test_id in previous:
+            return {**repair, "repair_target_agent_run_id": previous[test_id]}
+        return repair if (test_id is None and not previous) else None
 
     def _write_declared_compile_fail(self, refs: NodeRefs, reason: str, *,
                                      attempts: int) -> None:

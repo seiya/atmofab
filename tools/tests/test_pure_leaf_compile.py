@@ -1652,7 +1652,20 @@ class PureCompilePartsTests(_Fixture):
 
     _PRIOR = {"core": "prior-core", "t_alpha": "prior-alpha"}
 
-    def stage_previous_run(self, parts: dict[str, str]) -> str:
+    def test_a_test_named_core_does_not_take_the_cores_session(self) -> None:
+        """`core` is a legal test id (the tests.md grammar reserves none), and the core loop's
+        `part` label is `core` too; the previous run's rows are keyed by `test_id`, so on a
+        reopen the core resumes the core and the test resumes the test."""
+        (self.repo / self.refs.spec_path / "tests.md").write_text(
+            "## 6. Tests\n\n### 6-1. `core`\n\nA test called core.\n", encoding="utf-8")
+        self.TESTS = ("core",)
+        self.stage_previous_run({}, rows=[("core", None, "prior-core"),
+                                          ("core", "core", "prior-test")])
+        core, part = self.reopen(warm=True)
+        self.assertEqual(core["repair_target_agent_run_id"], "prior-core")
+        self.assertEqual(part["repair_target_agent_run_id"], "prior-test")
+
+    def stage_previous_run(self, parts: dict[str, str], rows=None) -> str:
         """The directory a previous `compile.generate` wrote into, its meta's `parts[]`, its
         IR, and one launch record per previous loop naming it."""
         prior_ref = f"{self.refs.ir_ref.rsplit('/', 1)[0]}/advdiff-uc2_20260101_000"
@@ -1660,12 +1673,14 @@ class PureCompilePartsTests(_Fixture):
         prior.mkdir(parents=True, exist_ok=True)
         (prior / "spec.ir.yaml").write_text(
             yaml.safe_dump(_assembled_ir(*self.TESTS), sort_keys=False), encoding="utf-8")
+        rows = rows if rows is not None else [
+            (k, None if k == "core" else k, v) for k, v in parts.items()]
         (prior / "compile_generate_meta.json").write_text(json.dumps({
-            "result": "fail", "parts": [{"part": k, "agent_run_id": v}
-                                        for k, v in parts.items()]}), encoding="utf-8")
+            "result": "fail", "parts": [{"part": k, "test_id": t, "agent_run_id": v}
+                                        for k, t, v in rows]}), encoding="utf-8")
         launches = self.repo / "workspace" / "orchestrations" / "o" / "launches"
         launches.mkdir(parents=True, exist_ok=True)
-        for arid in parts.values():
+        for _part_name, _test_id, arid in rows:
             (launches / f"{arid}.request.json").write_text(json.dumps(
                 {"ir_ref": prior_ref, "pipeline_ref": self.refs.pipeline_ref,
                  "agent_run_id": arid}), encoding="utf-8")
@@ -1674,8 +1689,10 @@ class PureCompilePartsTests(_Fixture):
     def reopen(self, *, warm: bool):
         c = self.conductor(_envelope(_doc()), *(_envelope(_part(t)) for t in self.TESTS))
         c._claude_session_resumable = lambda arid, **kw: warm  # type: ignore[assignment]
+        launches = self.repo / "workspace" / "orchestrations" / "o" / "launches"
+        target = sorted(p.name for p in launches.glob("prior-*.request.json"))[-1]
         repair = {"issue_severity": "major", "repair_strategy": "reuse",
-                  "repair_target_agent_run_id": self._PRIOR["t_alpha"],
+                  "repair_target_agent_run_id": target.removesuffix(".request.json"),
                   "repair_reason": "compile_static_compile_static_violation",
                   "repair_findings": "io_contract.primary_predicates[1]: reads no state"}
         outcome = c.run_substep(self.refs, "compile", "generate", repair=repair)
