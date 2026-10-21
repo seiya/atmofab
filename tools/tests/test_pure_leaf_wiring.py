@@ -2052,7 +2052,7 @@ class PureRenderTests(unittest.TestCase):
         refs = wc.NodeRefs(**self._RENDER_REFS)
         pure_pairs = sorted(LLM_LEAF_SUBSTEPS)
         self.assertTrue(pure_pairs, "no LLM leaf substeps; this renders nothing")
-        # `compile.generate`'s per-test part (issue #526) is a shape of a pair this sweep
+        # `compile.generate`'s verification part (issue #526) is a shape of a pair this sweep
         # already walks, rendered on this node like its default shape. (The `harness` shapes
         # are a different NODE, an `infrastructure` one, and are not in this sweep.)
         for step, substep, pure_shape in ([(st, ss, "") for st, ss in pure_pairs]
