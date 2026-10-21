@@ -139,9 +139,23 @@ def _latest_fail_closed_at(phase_log: list[dict[str, Any]]) -> str | None:
     return fail_entries[-1][1]
 
 
+def _launch_part(root: Path | None, agent_run_id: Any) -> str | None:
+    """The `pure_part` of a launch request, or None (no root, no request, none stamped)."""
+    if root is None or not isinstance(agent_run_id, str) or not agent_run_id:
+        return None
+    try:
+        request = json.loads((root / "launches" / f"{agent_run_id}.request.json")
+                             .read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    part = request.get("pure_part") if isinstance(request, dict) else None
+    return part if isinstance(part, str) and part else None
+
+
 def collect_agent_run_summary(
     agent_runs: list[dict[str, Any]],
     invalid_runs: list[dict[str, Any]] | None = None,
+    root: Path | None = None,
 ) -> dict[str, Any]:
     """Aggregate per-status counts across both terminal records and
     fail-validation fallback records.
@@ -167,10 +181,17 @@ def collect_agent_run_summary(
     build`, `substep: None`) and is keyed with `substep=None`; a row without a `node_key`
     and a `step` (the conductor's own `orchestration` row) is not an attempt at anything
     and is left out.
+
+    One substep makes several launches BY DESIGN: `compile.generate` is an IR core and one
+    `verification` part per test (issue #526), so its rows are keyed by part too — a clean run
+    over T tests is 1 + T rows and no redo. A row's part is the `pure_part` its launch request
+    (`<root>/launches/<agent_run_id>.request.json`) carries, which the conductor stamps on every
+    launch of a part; the key then carries `part`. Without `root`, or for a row whose request
+    is unreadable, no part is read and the row keys as the substep's own.
     """
     status_counts: Counter = Counter()
     missing_entries: list[str] = []
-    attempts: dict[tuple[str, str, str | None], list[tuple[str, str]]] = {}
+    attempts: dict[tuple[str, str, str | None, str | None], list[tuple[str, str]]] = {}
     for run in agent_runs:
         status = run.get("status", "unknown")
         status_counts[status] += 1
@@ -187,11 +208,13 @@ def collect_agent_run_summary(
         node_key, step, substep = (run.get(k) for k in ("node_key", "step", "substep"))
         if not (isinstance(node_key, str) and node_key and isinstance(step, str) and step):
             continue
-        key = (node_key, step, substep if isinstance(substep, str) and substep else None)
+        key = (node_key, step, substep if isinstance(substep, str) and substep else None,
+               _launch_part(root, run.get("agent_run_id")))
         attempts.setdefault(key, []).append(
             (str(run.get("status", "unknown")), str(run.get("agent_run_id") or "?")))
     repeated = [
         {"node_key": k[0], "step": k[1], "substep": k[2],
+         **({"part": k[3]} if k[3] is not None else {}),
          "attempts": len(v), "statuses": [st for st, _ in v],
          "agent_run_ids": [arid for _, arid in v]}
         for k, v in attempts.items() if len(v) > 1
@@ -909,7 +932,7 @@ def audit(repo_root: Path, orchestration_id: str) -> dict[str, Any]:
         "failure_analysis": failure_analysis,
         "sandbox_violations": sandbox_violations,
         "launch_incident": launch_incident,
-        "agent_run_summary": collect_agent_run_summary(agent_runs, invalid_runs),
+        "agent_run_summary": collect_agent_run_summary(agent_runs, invalid_runs, root),
         "token_cost_summary": token_cost_summary,
         "pure_leaf_ab_summary": pure_leaf_ab_summary,
         "invalid_run_count": len(invalid_runs),
@@ -1463,6 +1486,8 @@ def _render_markdown(result: dict[str, Any]) -> str:
             step = row.get("step")
             if row.get("substep"):
                 step = f"{step}.{row['substep']}"
+            if row.get("part"):
+                step = f"{step} (verification part {row['part']})"
             lines.append(f"- `{row.get('node_key')}` {step}: {row.get('attempts')} attempts")
             for st, arid in zip(row.get("statuses") or [], row.get("agent_run_ids") or []):
                 lines.append(f"  - `{st}` `{arid}`")

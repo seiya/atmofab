@@ -2016,6 +2016,33 @@ class InRepoRecordSectionTests(unittest.TestCase):
                       md)
         self.assertNotIn("None", md.split("Repeated substeps")[1])
 
+    def test_each_compile_part_is_its_own_key_and_a_clean_run_is_no_redo(self) -> None:
+        """Issue #526: compile.generate is a core launch and one launch per test. Read through
+        each launch request's `pure_part`, a clean core + two parts is no redo; a part's own
+        repair turn is listed as that part's two attempts."""
+        runs = [{"agent_run_id": a, "node_key": "n", "step": "compile", "substep": "generate",
+                 "status": st, "started_at": f"2026-09-05T00:0{i}:00Z", "finished_at": "x"}
+                for i, (a, st) in enumerate((("core", "pass"), ("pa", "pass"),
+                                             ("pb1", "fail"), ("pb2", "pass")))]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = self._root(tmp)
+            (root / "launches").mkdir(exist_ok=True)
+            for arid, part in (("pa", "t_a"), ("pb1", "t_b"), ("pb2", "t_b")):
+                (root / "launches" / f"{arid}.request.json").write_text(
+                    json.dumps({"pure_shape": "verification", "pure_part": part}),
+                    encoding="utf-8")
+            (root / "launches" / "core.request.json").write_text("{}", encoding="utf-8")
+            summary = collect_agent_run_summary(runs, None, root)
+            self.assertEqual(summary["repeated_substeps"], [
+                {"node_key": "n", "step": "compile", "substep": "generate", "part": "t_b",
+                 "attempts": 2, "statuses": ["fail", "pass"],
+                 "agent_run_ids": ["pb1", "pb2"]}])
+            _write_jsonl(root / "agent_runs.jsonl", runs)
+            _result, md = self._rendered(tmp)
+        self.assertIn("- `n` compile.generate (verification part t_b): 2 attempts", md)
+        # Without the requests, every launch is the substep's own: four rows, one key.
+        self.assertEqual(collect_agent_run_summary(runs)["repeated_substeps"][0]["attempts"], 4)
+
     def test_no_repeat_renders_no_heading(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = self._root(tmp)
