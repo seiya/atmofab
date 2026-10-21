@@ -6926,14 +6926,19 @@ class Conductor:
         no input it was given is the leaf giving up on a document it could have written, and
         that must reach the repair loop and, past it, the producer-failure route — not the
         operator as a spec defect. The check is the shape alone; a declaration naming an input
-        that is in fact sound is not detected, and a leaf gains nothing by one (the run stops)."""
+        that is in fact sound is not detected. A leaf taking that exit is no closer to its
+        substep passing — the run stops `fail_closed` — but the record then blames a sound input,
+        which is why the finding text below says what a declaration claims; the host has no
+        check that tells it from a real one."""
         admissible = cls._compile_fail_inputs(shape)
         finding = (
             "`compile_fail` must be JSON null, or an object of EXACTLY the keys `input` (one of: "
             + ", ".join(f"`{name}`" for name in admissible)
             + "), `where` (the section of that input) and `what` (what is absent, "
             "self-contradictory or insufficient there). A section you could not finish writing "
-            "is not a defect of an input: return the document. There is no third answer")
+            "is not a defect of an input: return the document, and do not restate that reason "
+            "under an input's name — a declaration tells the operator the named input is "
+            "defective, and sends them to repair it. There is no third answer")
         if not isinstance(value, dict):
             return (COMPILE_IR_DOCUMENT_VIOLATION,
                     f"{finding}; got {type(value).__name__}")

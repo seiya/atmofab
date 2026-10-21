@@ -1304,6 +1304,7 @@ class PureCompileFailDeclarationTests(_Fixture):
                 # The finding is an instruction that converges: it names the admissible inputs
                 # and says the other answer is the document.
                 self.assertIn("return the document", result[1])
+                self.assertIn("do not restate that reason under an input's name", result[1])
                 for name in wc.Conductor._compile_fail_inputs(""):
                     self.assertIn(f"`{name}`", result[1])
 
