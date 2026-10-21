@@ -1050,8 +1050,9 @@ PINNED: dict[str, str] = {
     # core, the old rule (5) obligations, and a `compile_fail` whose inputs exclude the core).
     # Re-pinned in place (unshipped) by round 1: both templates gain a "Repair turns on the
     # whole IR" paragraph saying which findings of a gate on the assembled IR are each turn's,
-    # and the part's names the host's locator note.
-    "pure-82": "a6577d1628477922155bea3de16539f881653a0103614355f9300389cf9a8222",
+    # and the part's names the host's locator note. Round 2: the paragraphs name the reviewer
+    # and the later phases as sources of whole-IR findings too, and the core's lists a metric.
+    "pure-82": "9977b4093fff55fbb7e818acb18cb9aaaabeb0a3ef0d45c3b4708b75315b3be0",
 }
 
 
