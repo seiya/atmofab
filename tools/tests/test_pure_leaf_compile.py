@@ -641,6 +641,9 @@ class PureIrDocumentViolationTests(_Fixture):
             ("extra key", dict(_doc(), notes="hello")),
             ("missing key", {"ir": _valid_ir()}),
             ("the old key", {"ir": None, "last_fail_reason": "tests.md is empty"}),
+            # The old key BESIDE the new envelope: an allowed-key set that kept it would accept
+            # the reply and drop the value unread.
+            ("the old key beside the new", dict(_doc(), last_fail_reason="tests.md is empty")),
             # The family must STRADDLE the `isinstance(ir, dict)` guard, and it did not: a
             # STRING is iterable, so the section check below it (`k not in ir`, a substring
             # test) produces a violation anyway and the guard could be deleted with this row
