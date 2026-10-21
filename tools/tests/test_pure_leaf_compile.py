@@ -1452,6 +1452,10 @@ def _requests(conductor) -> list[dict]:
     return [cap["--request-json"] for s, cap in conductor.calls if s == "record-launch"]
 
 
+def c_core_violations(case: "_Fixture", doc: dict):
+    return case.conductor()._pure_ir_core_violations(case.refs, doc)
+
+
 class PureCompilePartsTests(_Fixture):
     TESTS = ("t_alpha", "t_beta")
 
@@ -1676,8 +1680,10 @@ class PureCompilePartsTests(_Fixture):
     def test_a_cold_reopen_carries_each_part_its_own_entries(self) -> None:
         self.stage_previous_run(self._PRIOR)
         core, alpha, _ = self.reopen(warm=False)
-        self.assertEqual(json.loads(core["prior_document"]),
-                         {"ir": _assembled_ir(*self.TESTS), "compile_fail": None})
+        # The core's copy is the assembled IR WITHOUT the three lists: it is refused for
+        # carrying them, so they must not come back to it as its own document.
+        self.assertEqual(json.loads(core["prior_document"]), _doc())
+        self.assertIsNone(c_core_violations(self, json.loads(core["prior_document"])))
         self.assertEqual(json.loads(alpha["prior_document"]),
                          {"verification": _entries("t_alpha"), "compile_fail": None})
 

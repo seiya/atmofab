@@ -7155,6 +7155,22 @@ class Conductor:
 
         return violations
 
+    def _pure_ir_core_prior_document(self, record: dict[str, Any]) -> str | None:
+        """The core's cold-repair `prior_document`: `_pure_ir_prior_document` with the three
+        per-test lists taken out of `io_contract`. The file it reads is the ASSEMBLED IR, and
+        the core is refused for carrying those lists (`_pure_ir_core_violations`), so handing
+        them back as "your prior document — correct it" would spend a repair turn on removing
+        what the leaf never wrote. NEVER raises; None when the base reader returns None."""
+        text = self._pure_ir_prior_document(record)
+        if text is None:
+            return None
+        doc = json.loads(text)
+        io_contract = doc["ir"].get("io_contract")
+        if isinstance(io_contract, dict):
+            for key in self._PURE_IR_VERIFICATION_LISTS:
+                io_contract.pop(key, None)
+        return json.dumps(doc, indent=2, ensure_ascii=False)
+
     def _pure_ir_verification_prior_document(
             self, test_id: str) -> Callable[[dict[str, Any]], str | None]:
         """The `prior_document` of one part's cold repair: the IR the repair target's attempt
@@ -7280,7 +7296,7 @@ class Conductor:
         core_spec = base._replace(
             violations=self._pure_ir_core_violations, write_artifacts=stash_core,
             write_meta=collect_meta("core", None), write_declared_fail=write_declared_fail,
-            accept_noun="IR core")
+            prior_document=self._pure_ir_core_prior_document, accept_noun="IR core")
         outcome = self._run_pure_producer_substep(
             refs, "compile", "generate", self._compile_part_repair(repair, previous_parts, "core"),
             resolved_dependencies, core_spec, dependency_surface)
