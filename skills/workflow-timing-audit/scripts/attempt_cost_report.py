@@ -29,6 +29,13 @@ that phase to run; every later one is a retry. The retry figure is therefore a l
 the rework inside a run. `--since` / `--until` choose which rows are COUNTED; ranking and causes
 use every row of the segment, so a window edge does not turn a retry into a first launch.
 
+PART: since issue #526 one `compile.generate` substep run is several leaf launches by design --
+the IR core, then one `verification` part per test -- so the earliest row of EACH part is a first
+launch too. A row's part is read from its launch request (`launches/<agent_run_id>.request.json`):
+`pure_shape: verification` names it, its test is `pure_context.verification_test_document`, and a
+warm repair turn, which carries no context, takes the part of the turn it resumed. A row with no
+readable request is the substep's own (the core's, for `compile.generate`).
+
 CAUSE: a retry is attributed to the most recent non-`pass` substep row of the same node in the
 same segment that precedes it -- the proximate failure that sent the run back, not necessarily
 the root. The deterministic substeps (`compile.static`, `generate.gate`, ...) are counted here
@@ -178,6 +185,21 @@ def decumulate(rows, orch_dir):
         row["usage"] = fixed
 
 
+def mark_parts(rows, orch_dir):
+    """Set `_part` on each row of a `compile.generate` verification part (see PART above)."""
+    part_of = {}
+    for row in sorted(rows, key=lambda r: r["started_at"]):
+        request = _request(orch_dir, row.get("agent_run_id"))
+        if not request or request.get("pure_shape") != "verification":
+            continue
+        context = request.get("pure_context")
+        test = context.get("verification_test_document") if isinstance(context, dict) else None
+        part = (f"verification:{test}" if isinstance(test, str) and test
+                else part_of.get(request.get("repair_target_agent_run_id"), "verification:?"))
+        part_of[row.get("agent_run_id")] = part
+        row["_part"] = part
+
+
 def load_rows(root, since=None, until=None, nodes=None):
     """Every `substep` row, keyed by (orchestration_id, segment, node_key).
 
@@ -193,6 +215,7 @@ def load_rows(root, since=None, until=None, nodes=None):
         rows = [r for r in _jsonl(path)
                 if r.get("agent_role") == "substep" and r.get("started_at")]
         decumulate(rows, orch_dir)
+        mark_parts(rows, orch_dir)
         for row in rows:
             started = row["started_at"]
             row["_outside"] = bool((since and started < since) or (until and started >= until)
@@ -235,8 +258,9 @@ def analyze(by_node):
         for i, row in enumerate(rows):
             label = f"{row.get('step')}.{row.get('substep')}"
             usage = measured(row)
-            is_retry = label in seen
-            seen.add(label)
+            launch = (label, row.get("_part"))
+            is_retry = launch in seen
+            seen.add(launch)
             if usage is None or row.get("_outside"):
                 continue
             orchestrations.add(orch)

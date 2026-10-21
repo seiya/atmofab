@@ -103,6 +103,32 @@ class AttemptCostReportTests(unittest.TestCase):
         self.assertEqual(list(causes), ["generate.gate fail -> generate.generate"])
         self.assertNotIn("generate.gate", self._report()["per_substep"])
 
+    def test_each_compile_part_s_first_launch_is_a_first_launch(self):
+        """Issue #526: compile.generate is a core launch and one launch per test. Each part's
+        earliest row is a first launch; a warm repair of a part (no context on its request)
+        is a retry of THAT part."""
+        rows = [_row("compile", "generate", "2026-09-01T00:01:00Z", out=100),
+                _row("compile", "generate", "2026-09-01T00:02:00Z", out=10),
+                _row("compile", "generate", "2026-09-01T00:03:00Z", status="fail", out=11),
+                _row("compile", "generate", "2026-09-01T00:04:00Z", out=12)]
+        for row, arid in zip(rows, ("core", "pa", "pb1", "pb2")):
+            row["agent_run_id"] = arid
+        d = self._orch("orch_p", rows)
+        (d / "launches").mkdir()
+        for arid, req in (
+                ("pa", {"pure_shape": "verification",
+                        "pure_context": {"verification_test_document": "t_a"}}),
+                ("pb1", {"pure_shape": "verification",
+                         "pure_context": {"verification_test_document": "t_b"}}),
+                ("pb2", {"pure_shape": "verification", "warm_resume": True,
+                         "repair_target_agent_run_id": "pb1"})):
+            (d / "launches" / f"{arid}.request.json").write_text(json.dumps(req),
+                                                                encoding="utf-8")
+        report = self._report()
+        self.assertEqual((report["totals"]["first"]["n"], report["totals"]["retry"]["n"]),
+                         (3, 1))
+        self.assertEqual(report["totals"]["retry"]["output_tokens"], 12)
+
     def test_a_marker_is_not_a_zero_and_still_ranks_the_launch(self):
         # The first launch died with no usage frame: it is not counted, but the one after it is
         # still a retry, not a first launch with a small cost.
