@@ -727,16 +727,18 @@ COMPILE_DOCUMENT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 }
 
 # The producer's THIRD exit, deliberately absent from the routing table above: a schema-valid
-# document whose `compile_fail` is an object naming one of the inputs the host inlined is the
-# leaf DECLARING that the Compile phase cannot be completed from the inputs it was given
-# (`phase_01_compile.md` §Compile fail — schema insufficiency / missing input). A declaration
-# that names no admissible input is not this exit: it is an `ir_document_violation`, repaired in
-# the warm loop and, once that budget is spent, routed by the table above like any other
-# producer failure (issue #526) — a section the leaf found too large to author is not a defect of
-# the spec, and the operator must not be sent to look for one. It is neither a pass nor a repairable document defect,
-# so it must not be routed to a retry: `classify_failure` recognizes the token, declines the
-# table, and stops the phase `fail_closed` in both workflow modes with the token as the reason
-# (issue #355), which is what the launch contract's "handed to the operator, not retried" says.
+# document whose `compile_fail` is an object naming one of the inputs the host inlined (with a
+# null `ir`) is the leaf DECLARING that the Compile phase cannot be completed from the inputs it
+# was given (`phase_01_compile.md` §Compile fail — schema insufficiency / missing input). Such a
+# declaration is neither a pass nor a repairable document defect, so it must not be routed to a
+# retry: `classify_failure` recognizes the token, declines the table, and stops the phase
+# `fail_closed` in both workflow modes with the token as the reason (issue #355), which is what
+# the launch contract's "handed to the operator, not retried" says. A `compile_fail` that names
+# no admissible input, leaves `where` / `what` empty, or sits beside a non-null `ir` is NOT this
+# exit (issue #526): it is an `ir_document_violation`, repaired in the warm loop and, once that
+# budget is spent, routed by the table above like any other producer failure — a section the
+# leaf found too large to author is not a defect of the spec. Only the shape is checked: a
+# give-up written under an admissible input's name still reaches this exit.
 # Until #355 it fell through to the verify-severity gate (dev fail_closed, prod escalate), to
 # match the agentic leaf's own `Compile fail` declaration; that leaf went in Z4 (issue #171),
 # and the prod escalation could hand the declaration back to the leaf as repair findings.
@@ -7851,9 +7853,9 @@ class Conductor:
 
             # The THIRD exit: a schema-VALID document can still carry the leaf's own
             # declaration that this phase cannot be completed from the inputs it was given
-            # (`compile.generate`'s `compile_fail`, naming an input). It is neither a pass nor a repairable
-            # document defect, so `category` stays None (nothing to repair, nothing to route)
-            # while the substep's status is `fail`.
+            # (`compile.generate`'s `compile_fail`, naming an input). It is neither a pass nor a
+            # repairable document defect, so `category` stays None (nothing to repair, nothing to
+            # route) while the substep's status is `fail`.
             declared_fail = (
                 spec.declared_fail(accepted_doc)
                 if (accepted_doc is not None and spec.declared_fail is not None) else None)
