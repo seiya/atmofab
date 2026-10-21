@@ -85,11 +85,14 @@ phases:
         # Sizes the ARTIFACT, over a NAMED population: the 7 `shallow_water2d` IRs under the
         # live `workspace/` run 42,721 to 63,009 bytes of YAML (widen the scope to the
         # archived `workspace_2026*/` snapshots and it is 25 from 20,850; the MAXIMUM is
-        # 63,009 either way). The JSON document carrying one is larger again. 32768 is a
-        # BOUND taken from that population, not a requirement — re-measure against the node
-        # you run.
-        max_output_tokens: 32768
-        timeout_s: 2400
+        # 63,009 either way). The JSON document carrying one is larger again. Since issue #526
+        # one call writes the IR without its per-test verification lists (each test's entries
+        # are a call of their own), and that core sizes this cap: the
+        # `shallow_water2d_channel` 0.2.4 core measured 60,447 bytes of JSON (about 50k
+        # tokens). 65536 is a BOUND taken from that measurement, not a requirement —
+        # re-measure against the node you run. The timeout moves with it.
+        max_output_tokens: 65536
+        timeout_s: 4800
       # PURE: the IR reviewer. Returns the same verdict document the generate reviewer does.
       verify:
         provider: anthropic_api

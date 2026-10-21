@@ -21871,7 +21871,10 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # measured 99487 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump. Round 1
         # (§Acceptance of retry from Validate names `compile_fail`): measured 99479, no bump.
         # Round 3 (§1-1 lists a `compile_fail` beside a non-null `ir`): measured 99507, no bump.
-        "docs/workflow/phases/phase_01_compile.md": 99600,
+        # Issue #526 PR-2 (the substep-14 bullet says the host assembles the IR from a core call
+        # and one call per test): bumped 99600->99800; measured 99636 at the commit that takes
+        # this bump.
+        "docs/workflow/phases/phase_01_compile.md": 99800,
     }
 
     def test_child_context_docs_within_budget(self) -> None:

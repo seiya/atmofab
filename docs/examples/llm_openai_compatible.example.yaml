@@ -126,15 +126,20 @@ phases:
         # the scope to the archived `workspace_2026*/` snapshots and it is 25 IRs from 20,850;
         # the MAXIMUM — the number that sizes this cap — is 63,009 either way.) The JSON
         # document carrying one is larger again, since the YAML is what the host writes from
-        # it. A truncated IR is a wasted turn, not a repairable one, so 32768 is a BOUND taken
-        # from that population and not a requirement — re-measure against the node and the
-        # model you run, and read the writer's budget note under `generate.generate` below,
-        # which explains why a reasoning model needs more than the artifact's own size.
-        max_output_tokens: 32768
+        # it. Since issue #526 one call writes the IR WITHOUT its per-test verification lists
+        # (each test's entries are a call of their own, far smaller), and that core is what
+        # sizes this cap: the `shallow_water2d_channel` 0.2.4 IR measured 60,447 bytes of core
+        # JSON (about 50k tokens) beside 89,685 of verification lists, already above the 32768
+        # this entry carried before. A truncated IR is a wasted turn, not a repairable one, so
+        # 65536 is a BOUND taken from that measurement and not a requirement — re-measure
+        # against the node and the model you run, and read the writer's budget note under
+        # `generate.generate` below, which explains why a reasoning model needs more than the
+        # artifact's own size.
+        max_output_tokens: 65536
         # Declared rather than defaulted, on the same ground as `generate.generate` below: the
-        # pair moves together, this endpoint has not been measured, and the value is generous
-        # rather than derived.
-        timeout_s: 2400
+        # pair moves together (doubled with the ceiling), this endpoint has not been measured,
+        # and the value is generous rather than derived.
+        timeout_s: 4800
       # PURE: the IR reviewer. Returns the same verdict document the generate reviewer does.
       verify:
         provider: openai_compatible

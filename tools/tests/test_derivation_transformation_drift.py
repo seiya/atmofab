@@ -702,6 +702,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # `compile_fail` / `compile_fail: null` (it still said `last_fail_reason`). Round 3: §1-1
     # lists a `compile_fail` beside a non-null `ir` among the document violations.
     "compile-docs-17": "167765a8988a2442684bcb81217f30cc42aa0d5c17c6139d8743126136b74661",
+    # compile-docs-18 (issue #526 PR-2): the substep bullet of phase_01 says the host assembles
+    # `Compile.generate`'s IR from a core call and one call per test. A bump: the producer and
+    # every part read that document whole.
+    "compile-docs-18": "d9566c8944870b7d944906add3ee4f7b4fdd2c140871226c9ad661374b4d64c0",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
