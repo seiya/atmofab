@@ -1372,12 +1372,21 @@ class PureCompileFailDeclarationTests(_Fixture):
         its statement position and compared element by element, in order."""
         tpl = (Path(ort.__file__).resolve().parent / "prompt_templates"
                / "pure_compile_generate.txt").read_text(encoding="utf-8")
-        head = "the input at fault, which is one of these names and nothing else: "
+        head = ("the input at fault, which is one of these names and nothing else (they name "
+                "the documents inlined below, in the order they appear there, then the "
+                "catalog): ")
         self.assertEqual(tpl.count(head), 1)
         statement = tpl.split(head, 1)[1].split(";", 1)[0]
         self.assertLess(len(statement), 400, "the reader ran past the enumeration")
         listed = re.findall(r"`([a-z0-9_]+)`", statement)
         self.assertEqual(tuple(listed), wc.Conductor._compile_fail_inputs(""))
+        # The names are not shown beside the documents they name, so the sentence tells the leaf
+        # they follow the order of the inlined documents — which must then be true.
+        slots = [k.removesuffix("_document")
+                 for k in re.findall(r"^<(\w+_document)>$", tpl, flags=re.MULTILINE)]
+        self.assertEqual(tuple(slots) + ("published_operations",), tuple(listed))
+        self.assertLess(tpl.index("<checks_module_contract_document>"),
+                        tpl.index("<dependency_facts>"))
 
     def test_the_inputs_are_the_inlined_documents_plus_the_catalog(self) -> None:
         names = wc.Conductor._compile_fail_inputs("")

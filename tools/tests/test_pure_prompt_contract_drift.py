@@ -1037,8 +1037,9 @@ PINNED: dict[str, str] = {
     # declaration naming no such input is a document violation and comes back as a repair turn,
     # because a section the leaf could not finish writing is not a defect of an input. Member
     # moved: `pure_compile_generate.txt` (output contract). Re-pinned in place (unshipped) by
-    # round 1: a `compile_fail` beside a non-null `ir` is refused too, and the template says so.
-    "pure-81": "d40d148dfefe6dff54861ce5cfd63c25b3c18f6a583c868bb5ee2a3b36404b2a",
+    # round 1: a `compile_fail` beside a non-null `ir` is refused too, and the template says so;
+    # the enumeration says its names follow the order of the inlined documents.
+    "pure-81": "a88a0ac34ec5541ddd430d7fb633dd2bc6dceb24aee3bb24f8c543dd9f6c5c1b",
 }
 
 
