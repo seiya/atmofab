@@ -107,8 +107,9 @@ phases:
       # without its per-test verification lists, and one further call per test returns that
       # test's entries (issue #526). Such a call is shown the controlled spec, the tests, the
       # phase contract, the checks-module contract and the IR core (about 60 KB on the
-      # channel node), so its context is the producer's minus the dependency and example
-      # documents plus the core. THE CONTEXT IS LARGE, and these are BOUNDS rather than constants: most of the total is
+      # channel node), so its context is the producer's minus the dependency declaration, the
+      # profile specification, the dependency graph, the example documents and the
+      # published-operations catalog, plus the core. THE CONTEXT IS LARGE, and these are BOUNDS rather than constants: most of the total is
       # `docs/workflow/phases/phase_01_compile.md` inlined in full, so it moves whenever that
       # document is edited, and the reviewer's additionally carries the IR under review, so it
       # moves per node AND per attempt. Measured on `problem/shallow_water2d@0.4.0` with
@@ -133,10 +134,11 @@ phases:
         # it. Since issue #526 one call writes the IR WITHOUT its per-test verification lists
         # (each test's entries are a call of their own, far smaller), and that core is what
         # sizes this cap: the `shallow_water2d_channel` 0.2.4 IR measured 60,447 bytes of core
-        # JSON beside 89,685 of verification lists. That whole IR, 168,735 bytes of JSON, was
-        # written at about 85k output tokens with thinking included (claude-opus-5-5), so the
+        # JSON (its per-test verification lists, measured one test at a time, sum to 89,685).
+        # That whole IR, 168,735 bytes of JSON, was written at 85,325 output tokens as the
+        # CLI result envelope reported them (claude-opus-5-5), so the
         # core is roughly 30k on that ratio — at the 32768 this entry carried before, with no
-        # room left for reasoning. A truncated IR is a wasted turn, not a repairable one, so
+        # headroom left. A truncated IR is a wasted turn, not a repairable one, so
         # 65536 is a BOUND taken from that measurement and not a requirement — re-measure
         # against the node and the model you run, and read the writer's budget note under
         # `generate.generate` below, which explains why a reasoning model needs more than the
