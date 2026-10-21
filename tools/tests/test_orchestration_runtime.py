@@ -21873,7 +21873,8 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Round 3 (§1-1 lists a `compile_fail` beside a non-null `ir`): measured 99507, no bump.
         # Issue #526 PR-2 (the substep-14 bullet says the host assembles the IR from a core call
         # and one call per test): bumped 99600->99800; measured 99636 at the commit that takes
-        # this bump.
+        # this bump. Round 1 (§1-1's declaration bullet names the inputs the launch prompt
+        # lists): measured 99610, no bump.
         "docs/workflow/phases/phase_01_compile.md": 99800,
     }
 

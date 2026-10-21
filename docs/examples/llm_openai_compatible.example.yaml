@@ -103,8 +103,12 @@ phases:
   compile:
     substeps:
       # PURE: the IR producer. The host inlines the controlled spec, the tests, the dependency
-      # declaration and the phase contract; the leaf returns one JSON document holding the IR.
-      # THE CONTEXT IS LARGE, and these are BOUNDS rather than constants: most of the total is
+      # declaration and the phase contract; the leaf returns one JSON document holding the IR
+      # without its per-test verification lists, and one further call per test returns that
+      # test's entries (issue #526). Such a call is shown the controlled spec, the tests, the
+      # phase contract, the checks-module contract and the IR core (about 60 KB on the
+      # channel node), so its context is the producer's minus the dependency and example
+      # documents plus the core. THE CONTEXT IS LARGE, and these are BOUNDS rather than constants: most of the total is
       # `docs/workflow/phases/phase_01_compile.md` inlined in full, so it moves whenever that
       # document is edited, and the reviewer's additionally carries the IR under review, so it
       # moves per node AND per attempt. Measured on `problem/shallow_water2d@0.4.0` with

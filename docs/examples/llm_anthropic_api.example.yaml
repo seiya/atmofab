@@ -70,8 +70,10 @@ phases:
   compile:
     substeps:
       # PURE: the IR producer. The host inlines the controlled spec, the tests, the dependency
-      # declaration and the phase contract; the leaf returns one JSON document holding the IR.
-      # The inlined context is a BOUND, not a constant: most of it is
+      # declaration and the phase contract; the leaf returns one JSON document holding the IR
+      # without its per-test verification lists, and one further call per test returns that
+      # test's entries (issue #526), shown the core in place of the dependency and example
+      # documents. The inlined context is a BOUND, not a constant: most of it is
       # `docs/workflow/phases/phase_01_compile.md` in full (so it moves whenever that document
       # is edited) and the reviewer's also carries the IR under review (so it moves per node and
       # per attempt). Measured on `problem/shallow_water2d@0.4.0` with that document at

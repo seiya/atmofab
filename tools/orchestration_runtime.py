@@ -9857,7 +9857,7 @@ def _render_launch_prompt_template(request_payload: dict[str, Any]) -> str:
     * DETERMINISTIC — the minimal identity prompt for an in-process substep, which no leaf
       reads (it exists so a deterministic launch records the same kind of artifact as any
       other).
-    * PURE — the host-mediated closed context, per `(step, substep)` and bundle shape, with
+    * PURE — the host-mediated closed context, per `(step, substep)` and declared shape, with
       its own repair variant.
 
     Anything else is refused. The `step agent` / `substep agent` / `common boilerplate`

@@ -4201,7 +4201,8 @@ class Conductor:
 
         **Repair replay.** The CLI pure loops repair by reopening the prior session
         (`--resume --fork-session`); an HTTP provider has no session to reopen, so the
-        conversation is kept HERE, in memory, for the life of one substep run: each turn sends
+        conversation is kept HERE, in memory, for the life of one producer loop (a substep run;
+        one per core and per part for `compile.generate`, issue #526): each turn sends
         the prior user prompts and assistant replies plus this turn's prompt. That is the same
         thing a forked resume gives the model — its own prior answer and the critique of it —
         so the repair turn renders the WARM (slim) prompt rather than re-inlining a context the
@@ -7952,7 +7953,8 @@ class Conductor:
 
         `shape` is the node's CodegenBundle shape (`_bundle_shape`) and is consulted only for
         `generate`, where the two shapes differ in what the leaf is shown and what it authors.
-        Compile has no shape."""
+        The compile spec is the IR core's base; `_run_pure_compile_producer` derives the core's
+        and each `verification` part's spec from it (issue #526)."""
         if phase == "compile":
             return self._PureProducerSpec(
                 build_context=self._build_pure_compile_context,
@@ -8049,9 +8051,11 @@ class Conductor:
         WHICH document and WHICH artifacts are the `spec`'s, not this loop's: `generate` returns
         a CodegenBundle (validated and assembly-preflighted by `_pure_bundle_violations`, written
         as `files[]` + `codegen_bundle.json` + the control file + `bundle_meta.json`), `compile`
-        returns `{ir, compile_fail}` (shape-validated by `_pure_ir_document_violations`,
-        written as `spec.ir.yaml` + `ir_meta.json` + `compile_generate_meta.json`). Nothing below
-        names either.
+        returns `{ir, compile_fail}` (shape-validated by `_pure_ir_document_violations`, and
+        since issue #526 run as an IR core and per-test `verification` parts whose specs hold
+        their documents for `_run_pure_compile_producer` to assemble and write as
+        `spec.ir.yaml` + `ir_meta.json` + `compile_generate_meta.json`). Nothing below names
+        either.
 
         The finalize-before-write ordering is kept, and its REASON changed with issue #171
         PR-2. It used to be load-bearing against the terminal FS-diff: the pure capability's
@@ -15324,8 +15328,9 @@ class SubstepOutcome:
     # whenever the marker sat past the truncation point.
     infra_error: tuple[str, str] | None = None
     # How many times run_substep launched this substep, counting the surviving/last attempt
-    # (1 = no retry). >1 means a transient LLM-infrastructure failure was retried in place; the
-    # dead attempts are tombstoned and not carried here.
+    # (1 = no retry). >1 means a transient LLM-infrastructure failure was retried in place or a
+    # repair turn ran — or, for `compile.generate`, that the substep made one launch per part
+    # (issue #526); the dead attempts are tombstoned and not carried here.
     attempts: int = 1
 
 
