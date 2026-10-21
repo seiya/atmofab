@@ -7551,7 +7551,8 @@ class Conductor:
         if failure_excerpt:
             meta["failure_excerpt"] = failure_excerpt
         # `compile.generate`'s loops, one row each (issue #526). Added, not reshaping a key, so
-        # `_summarize_one_pure_meta` and `_read_repair_findings` read the file unchanged.
+        # `_read_repair_findings` reads the file unchanged; `_summarize_one_pure_meta` reads it
+        # to count one first launch per loop rather than one in all.
         if parts is not None:
             meta["parts"] = parts
         path = self.repo_root / (parent or refs.ir_ref) / basename

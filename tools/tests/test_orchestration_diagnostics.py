@@ -604,6 +604,19 @@ class SummarizePureLeafMetasTest(unittest.TestCase):
         self.assertEqual(row["usage_total"]["input_tokens"], 0)  # True is not 1 token
         self.assertEqual(row["usage_total"]["output_tokens"], 5)
 
+    def test_each_compile_part_s_first_launch_is_not_a_repair_turn(self) -> None:
+        """`compile_generate_meta.json` concatenates one loop per part (issue #526): a clean
+        core + two parts is three launches and no repair turn; one repaired part is one."""
+        def meta(n_rows: int, parts: int) -> dict:
+            return {"result": "pass", "attempts": n_rows,
+                    "per_attempt": [{"usage": {}} for _ in range(n_rows)],
+                    "parts": [{"part": f"p{i}"} for i in range(parts)]}
+        self.assertEqual(diag._summarize_one_pure_meta(meta(3, 3))["repair_turns"], 0)
+        self.assertEqual(diag._summarize_one_pure_meta(meta(4, 3))["repair_turns"], 1)
+        # A record with no `parts[]` is one loop, as before.
+        self.assertEqual(diag._summarize_one_pure_meta(
+            {"result": "pass", "attempts": 2, "per_attempt": [{}, {}]})["repair_turns"], 1)
+
     def test_non_list_per_attempt_does_not_raise(self) -> None:
         # A corrupt scalar per_attempt must degrade, not TypeError out of the
         # "never raises" contract.

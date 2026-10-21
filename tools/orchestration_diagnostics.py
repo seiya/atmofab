@@ -544,7 +544,10 @@ def _summarize_one_pure_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
     from `per_attempt` (no separate counter is persisted): a `pure_transport`
     attempt that is NOT the terminating (last) row is a re-launch in place — a
     transport death that is neither retried nor waited is terminal, hence always
-    the last row. `found=False` when the file is absent, unparseable, or not
+    the last row. `compile_generate_meta.json` is the one record that also carries
+    `parts[]` (issue #526): its substep runs one pure loop per part, each launching its own
+    first turn, so those first launches are not repair turns either — one per `parts[]` row
+    is subtracted rather than one in all. `found=False` when the file is absent, unparseable, or not
     a pure-leaf meta envelope (see `_PURE_META_PAYLOAD_KEY`). When `attempts` is
     absent or corrupt it falls back to the count of structurally valid (dict)
     attempt entries.
@@ -566,11 +569,14 @@ def _summarize_one_pure_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
     relaunch_rows = sum(
         1 for a in per_attempt[:-1]
         if isinstance(a, dict) and a.get("failure_category") == "pure_transport")
+    parts = meta.get("parts")
+    loops = max(sum(1 for row in parts if isinstance(row, dict)), 1) \
+        if isinstance(parts, list) else 1
     return {
         "found": True,
         "result": meta.get("result"),
         "attempts": attempts,
-        "repair_turns": max(attempts - 1 - relaunch_rows, 0),
+        "repair_turns": max(attempts - loops - relaunch_rows, 0),
         "failure_category": meta.get("failure_category"),
         "prompt_contract_version": meta.get("prompt_contract_version"),
         "usage_total": usage_total,
