@@ -1612,6 +1612,17 @@ class PureCompilePartsTests(_Fixture):
         self.assertIsNone(self.conductor()._pure_ir_core_violations(self.refs, _doc()))
         self.assertIsNone(self.conductor()._pure_ir_core_violations(self.refs, _declared()))
 
+    def test_an_id_declared_twice_is_one_part(self) -> None:
+        """The host's part list is `_parse_test_ids_from_tests_md`, which keeps the first of
+        an id declared in both forms; without that, the test's entries would be authored twice
+        and assembled twice, and the gate would refuse the duplicate."""
+        (self.repo / self.refs.spec_path / "tests.md").write_text(
+            "## 6. Tests\n\n### 6-1. `t_alpha`\n\n- `test_id`: `t_alpha`\n\n"
+            "### 6-2. `t_beta`\n", encoding="utf-8")
+        c, outcome = self.run_clean()
+        self.assertEqual(outcome.status, "pass")
+        self.assertEqual([r["part"] for r in self.meta()["parts"]], ["core", *self.TESTS])
+
     def test_a_tests_document_with_no_test_id_launches_nothing(self) -> None:
         (self.repo / self.refs.spec_path / "tests.md").write_text(
             "## 6. Tests\n\n- test_id: written without the backticks\n", encoding="utf-8")
@@ -1746,6 +1757,19 @@ class PureCompilePartsTests(_Fixture):
         self.assertEqual(alpha["repair_target_agent_run_id"], "prior-alpha")
         self.assertNotIn("Host note", alpha["repair_findings"])
         self.assertEqual(beta["repair_strategy"], "none")
+
+    def test_a_part_with_no_entries_in_the_previous_ir_gets_no_prior_document(self) -> None:
+        """A previous IR without this test's entries (one written before issue #526, or one
+        whose tests changed) has nothing to correct: no prior document, not three empty lists
+        presented as the leaf's own."""
+        prior_ref = self.stage_previous_run(self._PRIOR)
+        ir = _assembled_ir("t_beta")
+        (self.repo / prior_ref / "spec.ir.yaml").write_text(
+            yaml.safe_dump(ir, sort_keys=False), encoding="utf-8")
+        record = {"ir_ref": prior_ref}
+        c = self.conductor()
+        self.assertIsNone(c._pure_ir_verification_prior_document("t_alpha")(record))
+        self.assertIsNotNone(c._pure_ir_verification_prior_document("t_beta")(record))
 
     def test_a_cold_reopen_carries_each_part_its_own_entries(self) -> None:
         self.stage_previous_run(self._PRIOR)
