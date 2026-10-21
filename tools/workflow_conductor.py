@@ -704,7 +704,8 @@ SEMANTIC_REVIEW_DOCUMENT_VIOLATION = "semantic_review_document_violation"
 
 # --- Z1 pure-leaf IR-document routing (issue #168) -----------------------------
 # The pure `compile.generate` producer returns exactly one IR document
-# (`{"ir": <object>, "last_fail_reason": null | string}`); the host validates its SHAPE
+# (`{"ir": <object|null>, "compile_fail": null | {input, where, what}}`); the host validates its
+# SHAPE
 # (transport parse, `_pure_ir_document_violations`) and repairs a violation in a bounded
 # in-conversation warm-resume loop (MAX_BUNDLE_REPAIR_TURNS). The document's MEANING is not
 # judged in that loop — `Compile.static` is the single semantic gate and already routes its own
@@ -726,12 +727,18 @@ COMPILE_DOCUMENT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 }
 
 # The producer's THIRD exit, deliberately absent from the routing table above: a schema-valid
-# document whose `last_fail_reason` is non-null is the leaf DECLARING that the Compile phase
-# cannot be completed from the inputs it was given (`phase_01_compile.md` §Compile fail —
-# schema insufficiency / missing input). It is neither a pass nor a repairable document defect,
-# so it must not be routed to a retry: `classify_failure` recognizes the token, declines the
-# table, and stops the phase `fail_closed` in both workflow modes with the token as the reason
-# (issue #355), which is what the launch contract's "handed to the operator, not retried" says.
+# document whose `compile_fail` is an object naming one of the inputs the host inlined (with a
+# null `ir`) is the leaf DECLARING that the Compile phase cannot be completed from the inputs it
+# was given (`phase_01_compile.md` §Compile fail — schema insufficiency / missing input). Such a
+# declaration is neither a pass nor a repairable document defect, so it must not be routed to a
+# retry: `classify_failure` recognizes the token, declines the table, and stops the phase
+# `fail_closed` in both workflow modes with the token as the reason (issue #355), which is what
+# the launch contract's "handed to the operator, not retried" says. A `compile_fail` that names
+# no admissible input, leaves `where` / `what` empty, or sits beside a non-null `ir` is NOT this
+# exit (issue #526): it is an `ir_document_violation`, repaired in the warm loop and, once that
+# budget is spent, routed by the table above like any other producer failure — a section the
+# leaf found too large to author is not a defect of the spec. Only the shape is checked: a
+# give-up written under an admissible input's name still reaches this exit.
 # Until #355 it fell through to the verify-severity gate (dev fail_closed, prod escalate), to
 # match the agentic leaf's own `Compile fail` declaration; that leaf went in Z4 (issue #171),
 # and the prod escalation could hand the declaration back to the leaf as repair findings.
@@ -6822,8 +6829,8 @@ class Conductor:
         choosing which floor it is held to."""
         if not isinstance(doc, dict):
             return (COMPILE_IR_DOCUMENT_VIOLATION, "the reply is not a JSON object")
-        extra = sorted(set(doc) - {"ir", "last_fail_reason"})
-        missing = sorted({"ir", "last_fail_reason"} - set(doc))
+        extra = sorted(set(doc) - {"ir", "compile_fail"})
+        missing = sorted({"ir", "compile_fail"} - set(doc))
         if extra or missing:
             clauses = []
             if missing:
@@ -6831,16 +6838,19 @@ class Conductor:
             if extra:
                 clauses.append(f"unexpected top-level key(s): {', '.join(extra)}")
             return (COMPILE_IR_DOCUMENT_VIOLATION,
-                    ("the document must carry EXACTLY the keys `ir` and `last_fail_reason`; "
+                    ("the document must carry EXACTLY the keys `ir` and `compile_fail`; "
                      + "; ".join(clauses)))
-        reason = doc.get("last_fail_reason")
-        if reason is not None and not (isinstance(reason, str) and reason.strip()):
-            return (COMPILE_IR_DOCUMENT_VIOLATION,
-                    ("`last_fail_reason` must be JSON null or a non-empty string; got "
-                     f"{type(reason).__name__}"))
-        if reason is not None:
-            # A declaration that the phase cannot be completed. There is no `ir` to shape-check.
-            return None
+        declaration = doc.get("compile_fail")
+        if declaration is not None:
+            # A declaration that the phase cannot be completed — when it names an input. It says
+            # there is no IR, so a reply that also carries one has given both answers, and taking
+            # either would discard what the leaf meant by the other.
+            if doc.get("ir") is not None:
+                return (COMPILE_IR_DOCUMENT_VIOLATION,
+                        ("the document carries both an `ir` and a `compile_fail`, and they are "
+                         "two different answers: return the IR with `compile_fail` null, or "
+                         "declare with `ir` null"))
+            return self._compile_fail_violation(declaration, "")
         ir = doc.get("ir")
         if not isinstance(ir, dict):
             return (COMPILE_IR_DOCUMENT_VIOLATION,
@@ -6896,11 +6906,67 @@ class Conductor:
         return None
 
     @staticmethod
+    def _compile_fail_inputs(shape: str) -> tuple[str, ...]:
+        """The names a `compile_fail` declaration may give as its `input`: the documents the host
+        inlines for this launch shape (`PURE_CONTEXT_REQUIRED_KEYS`'s keys, `_document` dropped)
+        plus `published_operations`, the `<dependency_facts>` catalog the renderer appends. The
+        list is defined here and nowhere else; the template's enumeration is coupled to it by
+        `test_pure_leaf_compile`."""
+        from tools.orchestration_runtime import PURE_CONTEXT_REQUIRED_KEYS
+        if shape:
+            raise ValueError(f"no compile.generate shape {shape!r}")
+        keys = PURE_CONTEXT_REQUIRED_KEYS[("compile", "generate")]
+        return tuple(k.removesuffix("_document") for k in keys) + ("published_operations",)
+
+    @classmethod
+    def _compile_fail_violation(cls, value: Any, shape: str) -> tuple[str, str] | None:
+        """None when `value` is a well-formed declaration — an object of EXACTLY `input` (one of
+        `_compile_fail_inputs(shape)`), `where` and `what` (non-empty strings) — else the
+        document violation whose text tells the leaf the only two answers it has.
+
+        The point of the structure is the classification (issue #526): a declaration that names
+        no input it was given is the leaf giving up on a document it could have written, and
+        that must reach the repair loop and, past it, the producer-failure route — not the
+        operator as a spec defect. The check is the shape alone; a declaration naming an input
+        that is in fact sound is not detected. A leaf taking that exit is no closer to its
+        substep passing — the run stops `fail_closed` — but the record then blames a sound input,
+        which is why the finding text below says what a declaration claims; the host has no
+        check that tells it from a real one."""
+        admissible = cls._compile_fail_inputs(shape)
+        finding = (
+            "`compile_fail` must be JSON null, or an object of EXACTLY the keys `input` (one of: "
+            + ", ".join(f"`{name}`" for name in admissible)
+            + "), `where` (the section of that input) and `what` (what is absent, "
+            "self-contradictory or insufficient there). A section you could not finish writing "
+            "is not a defect of an input: return the document, and do not restate that reason "
+            "under an input's name — a declaration tells the operator the named input is "
+            "defective, and sends them to repair it. There is no third answer")
+        if not isinstance(value, dict):
+            return (COMPILE_IR_DOCUMENT_VIOLATION,
+                    f"{finding}; got {type(value).__name__}")
+        if set(value) != {"input", "where", "what"}:
+            return (COMPILE_IR_DOCUMENT_VIOLATION,
+                    f"{finding}; got the key(s) {', '.join(sorted(map(str, value))) or 'none'}")
+        if value.get("input") not in admissible:
+            return (COMPILE_IR_DOCUMENT_VIOLATION,
+                    f"{finding}; got `input` {value.get('input')!r}")
+        for key in ("where", "what"):
+            text = value.get(key)
+            if not (isinstance(text, str) and text.strip()):
+                return (COMPILE_IR_DOCUMENT_VIOLATION,
+                        f"{finding}; `{key}` is empty or not a string")
+        return None
+
+    @staticmethod
     def _pure_ir_declared_fail(doc: dict[str, Any]) -> str | None:
-        """The producer's own `Compile fail` declaration, or None. Read only from an already
-        shape-validated document, so the type is settled."""
-        reason = doc.get("last_fail_reason")
-        return reason.strip() if isinstance(reason, str) and reason.strip() else None
+        """The producer's own `Compile fail` declaration as the one-line reason the host records
+        (`<input> <where>: <what>`), or None. Read only from an already shape-validated
+        document, so the type is settled."""
+        declaration = doc.get("compile_fail")
+        if not isinstance(declaration, dict):
+            return None
+        return (f"{declaration['input']} {declaration['where'].strip()}: "
+                f"{declaration['what'].strip()}")
 
     @staticmethod
     def _pure_ir_yaml(ir: dict[str, Any]) -> str:
@@ -6943,9 +7009,9 @@ class Conductor:
         `record` is that attempt's own launch request (`launches/<arid>.request.json`): the
         directory it wrote into is named there and nowhere else once `_ensure_fresh_producer_id`
         has rotated `refs.ir_ref` to a fresh empty one. The producer's document is
-        `{ir, last_fail_reason}` (`_pure_ir_document_violations`) and only the `ir` half is
+        `{ir, compile_fail}` (`_pure_ir_document_violations`) and only the `ir` half is
         persisted, so the other half is reconstructed: an accepted IR has no declared failure, so
-        `last_fail_reason` is null. `_pure_ir_yaml`'s round trip is probed before any document is
+        `compile_fail` is null. `_pure_ir_yaml`'s round trip is probed before any document is
         accepted, so re-reading it reproduces the object the leaf returned. The serialization is
         the loop's own (`json.dumps(..., indent=2, ensure_ascii=False)`).
 
@@ -6963,7 +7029,7 @@ class Conductor:
         if not isinstance(ir, dict):
             return None
         try:
-            return json.dumps({"ir": ir, "last_fail_reason": None}, indent=2,
+            return json.dumps({"ir": ir, "compile_fail": None}, indent=2,
                               ensure_ascii=False)
         except (TypeError, ValueError):
             return None
@@ -7535,7 +7601,7 @@ class Conductor:
         WHICH document and WHICH artifacts are the `spec`'s, not this loop's: `generate` returns
         a CodegenBundle (validated and assembly-preflighted by `_pure_bundle_violations`, written
         as `files[]` + `codegen_bundle.json` + the control file + `bundle_meta.json`), `compile`
-        returns `{ir, last_fail_reason}` (shape-validated by `_pure_ir_document_violations`,
+        returns `{ir, compile_fail}` (shape-validated by `_pure_ir_document_violations`,
         written as `spec.ir.yaml` + `ir_meta.json` + `compile_generate_meta.json`). Nothing below
         names either.
 
@@ -7787,9 +7853,9 @@ class Conductor:
 
             # The THIRD exit: a schema-VALID document can still carry the leaf's own
             # declaration that this phase cannot be completed from the inputs it was given
-            # (`compile.generate`'s `last_fail_reason`). It is neither a pass nor a repairable
-            # document defect, so `category` stays None (nothing to repair, nothing to route)
-            # while the substep's status is `fail`.
+            # (`compile.generate`'s `compile_fail`, naming an input). It is neither a pass nor a
+            # repairable document defect, so `category` stays None (nothing to repair, nothing to
+            # route) while the substep's status is `fail`.
             declared_fail = (
                 spec.declared_fail(accepted_doc)
                 if (accepted_doc is not None and spec.declared_fail is not None) else None)

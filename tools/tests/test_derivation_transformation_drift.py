@@ -694,6 +694,14 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # errors line names an axis outside the rank and a non-dividing factor (values the gate does
     # not check).
     "compile-docs-16": "2189cbe5f154c9bfe02a6ef295716b020116705173ea5ccc3bf7937dcd6e7c63",
+    # compile-docs-17 (issue #526 PR-1): §1-1 and the schema block state a `Compile fail` as the
+    # structured `compile_fail` object (`input` / `where` / `what`), and say that a declaration
+    # naming no admissible input is a document violation, repaired and retried like any producer
+    # failure. A bump: the producer reads it as the contract of its third exit. Re-pinned in
+    # place (unshipped) by round 1: §Acceptance of retry from Validate's producer line says
+    # `compile_fail` / `compile_fail: null` (it still said `last_fail_reason`). Round 3: §1-1
+    # lists a `compile_fail` beside a non-null `ir` among the document violations.
+    "compile-docs-17": "167765a8988a2442684bcb81217f30cc42aa0d5c17c6139d8743126136b74661",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
