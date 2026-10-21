@@ -1711,6 +1711,9 @@ INLINED_DOCUMENT_CLASS: dict[str, str] = {
     "dependency_surface_document": "derived",  # from the closure members' certified IRs
     "ir_document": "input",                    # the compile output hash
     "bundle_document": "same-phase",           # the producer's bundle (the reviewer's subject)
+    # The compile producer's own IR core, shown to each verification part (issue #526).
+    "ir_core_document": "same-phase",
+    "verification_test_document": "input",     # one test id of tests.md, which is hashed
     "harness_capabilities": "input",           # `harness.manifest`
     "target_profile": "input",                 # the target profile's hash (`target.profile`)
     "runner_document": "derived",              # RENDER_VERSION over the IR + harness outputs

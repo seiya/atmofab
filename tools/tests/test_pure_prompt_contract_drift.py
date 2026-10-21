@@ -100,6 +100,7 @@ from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, PURE_SYSTEM_PROMPT
 
 _TEMPLATE_FILES = (
     "pure_compile_generate.txt",
+    "pure_compile_generate_verification.txt",
     "pure_compile_verify.txt",
     "pure_generate_generate.txt",
     "pure_generate_verify.txt",
@@ -1040,6 +1041,14 @@ PINNED: dict[str, str] = {
     # round 1: a `compile_fail` beside a non-null `ir` is refused too, and the template says so;
     # the enumeration says its names follow the order of the inlined documents.
     "pure-81": "a88a0ac34ec5541ddd430d7fb633dd2bc6dceb24aee3bb24f8c543dd9f6c5c1b",
+    # pure-82 (issue #526 PR-2): `compile.generate` runs as the IR CORE plus one `verification`
+    # part per test the tests document declares, and the host assembles the IR. Members moved:
+    # `pure_compile_generate.txt` (the output contract leaves the three per-test lists out of
+    # `io_contract`; rule (5) is the diagnostics contract and the instruction to declare every
+    # case and state variable the parts read) and the new
+    # `pure_compile_generate_verification.txt` (one test's three lists against the inlined
+    # core, the old rule (5) obligations, and a `compile_fail` whose inputs exclude the core).
+    "pure-82": "86a0393e0cc1e06122cb429992313de8e20337744ed709d23aae8d35470c1a19",
 }
 
 

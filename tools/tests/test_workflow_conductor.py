@@ -1354,6 +1354,13 @@ class _FakeConductor(wc.Conductor):
                                    dependency_surface=()):
         return self._fake_pure_leaf_substep(refs, phase, substep, repair)
 
+    # `compile.generate` runs its loops through this wrapper since issue #526 (a core and one
+    # verification part per test, assembled by the host); it reads the node's tests document
+    # before any loop, which no fake `repo_root` has, so the wrapper is faked as one loop.
+    def _run_pure_compile_producer(self, refs, repair,  # type: ignore[override]
+                                   resolved_dependencies=(), dependency_surface=()):
+        return self._fake_pure_leaf_substep(refs, "compile", "generate", repair)
+
     def _run_pure_reviewer_substep(self, refs, phase, substep,  # type: ignore[override]
                                    resolved_dependencies=(), spec=None):
         return self._fake_pure_leaf_substep(refs, phase, substep, None)

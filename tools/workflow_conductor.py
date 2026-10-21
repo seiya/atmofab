@@ -1858,7 +1858,11 @@ def build_launch_request(
     # Rendered through the same `<dependency_facts>` placeholder (compile branch of
     # `_build_dependency_facts`). compile.verify reads the same snapshot as the
     # `dependency_surface.json` file itself (`dependency_surface_document`), not through this.
-    if dependency_surface and step == "compile" and substep == "generate":
+    # Not on the `verification` part (issue #526): it transcribes no operation name, its
+    # template has no `<dependency_facts>` slot, and a declaration naming the catalog is not
+    # admissible there, so a catalog on its request would be a payload nothing renders.
+    if (dependency_surface and step == "compile" and substep == "generate"
+            and pure_shape != "verification"):
         req["dependency_surface"] = list(dependency_surface)
     # R5: a conductor-resolved certified sibling exemplar, injected ONLY for the sole authoring
     # leaf (generate.generate). Prior art to raise first-attempt pass rate; the `<exemplar>`
@@ -6911,8 +6915,19 @@ class Conductor:
         inlines for this launch shape (`PURE_CONTEXT_REQUIRED_KEYS`'s keys, `_document` dropped)
         plus `published_operations`, the `<dependency_facts>` catalog the renderer appends. The
         list is defined here and nowhere else; the template's enumeration is coupled to it by
-        `test_pure_leaf_compile`."""
-        from tools.orchestration_runtime import PURE_CONTEXT_REQUIRED_KEYS
+        `test_pure_leaf_compile`.
+
+        The `verification` part (issue #526) is shown four of those documents plus two values
+        that are not inputs of the phase: the IR core, which is this phase's own output (a
+        core that lacks what a test needs is refused by `Compile.static` on the assembled IR and
+        authored again, so it is never the operator's to repair), and the test id the host
+        assigned. Neither is admissible, and the part receives no catalog."""
+        from tools.orchestration_runtime import (PURE_CONTEXT_REQUIRED_KEYS,
+                                                 PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE)
+        if shape == "verification":
+            keys = PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[("compile", "generate", shape)]
+            return tuple(k.removesuffix("_document") for k in keys
+                         if k not in ("ir_core_document", "verification_test_document"))
         if shape:
             raise ValueError(f"no compile.generate shape {shape!r}")
         keys = PURE_CONTEXT_REQUIRED_KEYS[("compile", "generate")]
@@ -7034,6 +7049,334 @@ class Conductor:
         except (TypeError, ValueError):
             return None
 
+    #: The three per-test lists of `io_contract` (issue #526). The core producer leaves them out;
+    #: one `verification` part per test authors that test's entries, and the host assembles them.
+    _PURE_IR_VERIFICATION_LISTS: tuple[str, ...] = (
+        "test_evidence_requirements", "test_predicates", "primary_predicates")
+    #: `io_contract`'s key order in the phase contract's schema block; the assembled section
+    #: follows it, and any key it does not name follows in the core's own order.
+    _PURE_IR_IO_CONTRACT_ORDER: tuple[str, ...] = (
+        "inputs", "outputs", "raw_requirements", "test_evidence_requirements",
+        "diagnostics_contract", "semantic_dependency", "test_predicates", "primary_predicates")
+
+    def _pure_ir_core_violations(self, refs: NodeRefs, doc: Any) -> tuple[str, str] | None:
+        """The core producer's document: `_pure_ir_document_violations`, and on an accepted IR
+        an `io_contract` object that does NOT carry the three per-test lists. A core that
+        carried them would have its entries silently replaced (or duplicated) by the parts', so
+        it is refused as the one-turn repair it is."""
+        found = self._pure_ir_document_violations(refs, doc)
+        if found is not None or doc.get("compile_fail") is not None:
+            return found
+        io_contract = doc["ir"].get("io_contract")
+        if not isinstance(io_contract, dict):
+            return (COMPILE_IR_DOCUMENT_VIOLATION,
+                    ("`ir.io_contract` must be a JSON object; got "
+                     f"{type(io_contract).__name__}"))
+        carried = [k for k in self._PURE_IR_VERIFICATION_LISTS if k in io_contract]
+        if carried:
+            return (COMPILE_IR_DOCUMENT_VIOLATION,
+                    (f"`ir.io_contract` carries {', '.join(f'`{k}`' for k in carried)}: the "
+                     "three per-test verification lists are authored by a separate turn per "
+                     "test and assembled by the host, so this IR must leave them out"))
+        return None
+
+    def _pure_ir_verification_violations(
+            self, test_id: str) -> Callable[[NodeRefs, Any], tuple[str, str] | None]:
+        """The validator of ONE `verification` part's document, for the test it was assigned.
+
+        The shape alone, as for the core: the envelope `{verification, compile_fail}`, a
+        declaration by `_compile_fail_violation`'s rule for this shape, the three lists, every
+        entry an object naming THIS test, one evidence entry and one predicate entry (the
+        schema holds one of each per test) and at least one primary predicate, and the
+        serialize/parse round trip. What the entries MEAN — the grammar, the coverage, the
+        target cases — is `Compile.static`'s, on the assembled IR; repeating it here would be a
+        second gate (the principle `_pure_ir_document_violations` states)."""
+        lists = self._PURE_IR_VERIFICATION_LISTS
+
+        def violations(refs: NodeRefs, doc: Any) -> tuple[str, str] | None:
+            if not isinstance(doc, dict):
+                return (COMPILE_IR_DOCUMENT_VIOLATION, "the reply is not a JSON object")
+            if set(doc) != {"verification", "compile_fail"}:
+                return (COMPILE_IR_DOCUMENT_VIOLATION,
+                        ("the document must carry EXACTLY the keys `verification` and "
+                         "`compile_fail`; got "
+                         + (", ".join(sorted(map(str, doc))) or "none")))
+            declaration = doc.get("compile_fail")
+            if declaration is not None:
+                if doc.get("verification") is not None:
+                    return (COMPILE_IR_DOCUMENT_VIOLATION,
+                            ("the document carries both a `verification` and a "
+                             "`compile_fail`, and they are two different answers: return the "
+                             "entries with `compile_fail` null, or declare with "
+                             "`verification` null"))
+                return self._compile_fail_violation(declaration, "verification")
+            body = doc.get("verification")
+            if not isinstance(body, dict) or set(body) != set(lists):
+                got = (", ".join(sorted(map(str, body))) or "none") if isinstance(body, dict) \
+                    else type(body).__name__
+                return (COMPILE_IR_DOCUMENT_VIOLATION,
+                        ("`verification` must be a JSON object of EXACTLY the keys "
+                         + ", ".join(f"`{k}`" for k in lists) + f"; got {got}"))
+            for key in lists:
+                entries = body[key]
+                if not isinstance(entries, list):
+                    return (COMPILE_IR_DOCUMENT_VIOLATION,
+                            f"`verification.{key}` must be a JSON array; got "
+                            f"{type(entries).__name__}")
+                for i, entry in enumerate(entries):
+                    if not isinstance(entry, dict) or entry.get("test_id") != test_id:
+                        got = (entry.get("test_id") if isinstance(entry, dict)
+                               else type(entry).__name__)
+                        return (COMPILE_IR_DOCUMENT_VIOLATION,
+                                (f"`verification.{key}[{i}]` must be an object whose `test_id` "
+                                 f"is {test_id!r}, the one test this turn authors; got {got!r}"))
+                if key == "primary_predicates" and not entries:
+                    return (COMPILE_IR_DOCUMENT_VIOLATION,
+                            ("`verification.primary_predicates` must hold at least one entry "
+                             f"for {test_id!r}: every condition of the test needs a "
+                             "corroborant"))
+                if key != "primary_predicates" and len(entries) != 1:
+                    return (COMPILE_IR_DOCUMENT_VIOLATION,
+                            (f"`verification.{key}` must hold EXACTLY one entry, the one for "
+                             f"{test_id!r}; got {len(entries)}"))
+            try:
+                round_tripped = yaml.safe_load(self._pure_ir_yaml(body))
+            except Exception as exc:  # noqa: BLE001 — any serializer/parser refusal is the finding
+                return (COMPILE_IR_DOCUMENT_VIOLATION,
+                        ("`verification` cannot be serialized as part of the IR document the "
+                         f"host writes ({type(exc).__name__}: {exc}); re-emit it using plain "
+                         "JSON values only"))
+            if round_tripped != body:
+                return (COMPILE_IR_DOCUMENT_VIOLATION,
+                        ("`verification` does not survive the host's serialize/parse round "
+                         "trip unchanged; re-emit it using plain JSON values only (no value "
+                         "whose text form re-reads as a different type)"))
+            return None
+
+        return violations
+
+    def _pure_ir_verification_prior_document(
+            self, test_id: str) -> Callable[[dict[str, Any]], str | None]:
+        """The `prior_document` of one part's cold repair: the IR the repair target's attempt
+        wrote, its three lists filtered to `test_id`. The same file `_pure_ir_prior_document`
+        reads, because the assembled IR is the only place a part's entries were persisted.
+        NEVER raises; None when the file, the section or the lists are not there."""
+        lists = self._PURE_IR_VERIFICATION_LISTS
+
+        def prior(record: dict[str, Any]) -> str | None:
+            ir_ref = str(record.get("ir_ref") or "").strip()
+            if not ir_ref:
+                return None
+            try:
+                ir = yaml.safe_load((self.repo_root / ir_ref / "spec.ir.yaml")
+                                    .read_text(encoding="utf-8"))
+            except (OSError, UnicodeError, ValueError, yaml.YAMLError):
+                return None
+            io_contract = ir.get("io_contract") if isinstance(ir, dict) else None
+            if not isinstance(io_contract, dict):
+                return None
+            body = {key: [e for e in (io_contract.get(key) or [])
+                          if isinstance(e, dict) and e.get("test_id") == test_id]
+                    for key in lists}
+            if not any(body.values()):
+                return None
+            try:
+                return json.dumps({"verification": body, "compile_fail": None}, indent=2,
+                                  ensure_ascii=False)
+            except (TypeError, ValueError):
+                return None
+
+        return prior
+
+    def _assemble_pure_ir(self, core: dict[str, Any],
+                          parts: list[dict[str, Any]]) -> dict[str, Any]:
+        """The IR the host writes: the core with each part's three lists concatenated into its
+        `io_contract`, parts in the order given (the tests document's), and `io_contract`'s keys
+        in the schema block's order. The core is not modified."""
+        ir = json.loads(json.dumps(core))
+        io_contract = ir["io_contract"]
+        for key in self._PURE_IR_VERIFICATION_LISTS:
+            io_contract[key] = [entry for part in parts for entry in part[key]]
+        order = [k for k in self._PURE_IR_IO_CONTRACT_ORDER if k in io_contract]
+        order += [k for k in io_contract if k not in order]
+        ir["io_contract"] = {k: io_contract[k] for k in order}
+        return ir
+
+    def _run_pure_compile_producer(self, refs: NodeRefs, repair: dict[str, str] | None,
+                                   resolved_dependencies: tuple[dict[str, str], ...],
+                                   dependency_surface: tuple[dict[str, Any], ...]
+                                   ) -> "SubstepOutcome":
+        """Run `compile.generate` as 1 + T pure producer loops (issue #526): the IR CORE, then
+        one `verification` part per test the node's tests document declares, in its order. The
+        host assembles the IR from them and writes it once, after the last part passes; the
+        deterministic `Compile.static` gate then runs on the whole IR exactly as before.
+
+        Each loop is `_run_pure_producer_substep` unchanged, so each has its own bounded warm
+        repair. The first loop that does not pass ends the substep with ITS outcome: a declared
+        fail, an exhausted document repair or a transport death is reported for the part that
+        produced it, and no later loop runs. `compile_generate_meta.json` is written once, by
+        whichever loop ended the substep or by the assembly: `per_attempt` is every loop's rows
+        concatenated (each tagged with its `part`), `attempts` their count, and `parts[]` one
+        row per loop that ran.
+
+        A reopen re-runs every loop. The core may change on a repair, and every part reads it,
+        so a part kept from the previous run could name a case or variable the new core does
+        not declare. Each loop warm-resumes ITS OWN session from the previous run when one is
+        recorded (`_compile_part_repair`)."""
+        from tools.validate_pipeline_semantics import _parse_test_ids_from_tests_md
+        # The part list is a fact of the context, so a tests document the host cannot read, or
+        # one that declares no test id, is the context-assembly failure the producer loop
+        # reports for any other document (no leaf runs): the same outcome, its own name.
+        try:
+            self._pure_node_document(f"{refs.spec_path}/tests.md", "tests")
+            test_ids = _parse_test_ids_from_tests_md(
+                self.repo_root / refs.spec_path / "tests.md")
+            if not test_ids:
+                raise RuntimeError(
+                    f"pure_tests_document_no_test_ids: {refs.spec_path}/tests.md declares no "
+                    "test id the host reads (a `### <n>-<m>. `<id>`` heading or a "
+                    "`- `test_id`: `<id>`` bullet), so there is no verification part to run")
+        except Exception as exc:  # noqa: BLE001 — the loop's own context-assembly recovery
+            self.emit("pure_context_assembly_failed", node_key=refs.node_key,
+                      detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
+            return SubstepOutcome(
+                self.new_agent_run_id(), "fail", [], 1,
+                ("pure_context_assembly_failed", _pure_assembly_detail(exc)), 1)
+        shared_attempts: list[dict[str, Any]] = []
+        parts: list[dict[str, Any]] = []
+        core_ir: dict[str, Any] = {}
+        entries: dict[str, dict[str, Any]] = {}
+        previous_parts = self._previous_compile_parts(repair)
+
+        def collect_meta(name: str, test_id: str | None) -> Callable[..., None]:
+            def write_meta(refs: NodeRefs, *, result: str, failure_category: str | None,
+                           failure_excerpt: str | None, attempts: int,
+                           per_attempt: list[dict[str, Any]]) -> None:
+                shared_attempts.extend({**row, "part": name} for row in per_attempt)
+                parts.append({"part": name, "test_id": test_id,
+                              "agent_run_id": per_attempt[-1]["agent_run_id"],
+                              "attempts": attempts, "result": result,
+                              "failure_category": failure_category})
+                if result != "pass":
+                    self._write_compile_generate_meta(
+                        refs, result=result, failure_category=failure_category,
+                        failure_excerpt=failure_excerpt, attempts=len(shared_attempts),
+                        per_attempt=shared_attempts, parts=parts)
+            return write_meta
+
+        def write_declared_fail(refs: NodeRefs, reason: str, *, attempts: int) -> None:
+            self._write_declared_compile_fail(refs, reason,
+                                              attempts=len(shared_attempts) + attempts)
+
+        def stash_core(refs: NodeRefs, doc: dict[str, Any], *, attempts: int) -> None:
+            core_ir.update(doc["ir"])
+
+        def stash_part(test_id: str) -> Callable[..., None]:
+            def stash(refs: NodeRefs, doc: dict[str, Any], *, attempts: int) -> None:
+                entries[test_id] = doc["verification"]
+            return stash
+
+        base = self._pure_producer_spec("compile")
+        core_spec = base._replace(
+            violations=self._pure_ir_core_violations, write_artifacts=stash_core,
+            write_meta=collect_meta("core", None), write_declared_fail=write_declared_fail,
+            accept_noun="IR core")
+        outcome = self._run_pure_producer_substep(
+            refs, "compile", "generate", self._compile_part_repair(repair, previous_parts, "core"),
+            resolved_dependencies, core_spec, dependency_surface)
+        if outcome.status != "pass":
+            return outcome
+        core_text = json.dumps(core_ir, indent=2, ensure_ascii=False)
+        for test_id in test_ids:
+            part_spec = base._replace(
+                build_context=(lambda refs, test_id=test_id: {
+                    **{k: v for k, v in self._build_pure_compile_context(refs).items()
+                       if k in ("controlled_spec_document", "tests_document",
+                                "phase_contract_document", "checks_module_contract_document")},
+                    "ir_core_document": core_text,
+                    "verification_test_document": test_id}),
+                violations=self._pure_ir_verification_violations(test_id),
+                write_artifacts=stash_part(test_id),
+                write_meta=collect_meta(test_id, test_id),
+                write_declared_fail=write_declared_fail,
+                prior_document=self._pure_ir_verification_prior_document(test_id),
+                non_object_findings=("the reply parsed to a non-object JSON value (expected "
+                                     "the verification document)"),
+                accept_noun=f"verification part {test_id}",
+                pure_shape="verification")
+            outcome = self._run_pure_producer_substep(
+                refs, "compile", "generate",
+                self._compile_part_repair(repair, previous_parts, test_id),
+                resolved_dependencies, part_spec)
+            if outcome.status != "pass":
+                return outcome
+        try:
+            ir = self._assemble_pure_ir(core_ir, [entries[t] for t in test_ids])
+            doc = {"ir": ir, "compile_fail": None}
+            # The host's own consistency check on what it assembled: every part passed its
+            # own validator, so a violation here is the assembly's defect, not a leaf's.
+            found = self._pure_ir_document_violations(refs, doc)
+            if found is not None:
+                raise RuntimeError(f"the assembled IR fails its own shape check: {found[1]}")
+            self._write_pure_ir_artifacts(refs, doc, attempts=len(shared_attempts))
+            self._write_compile_generate_meta(
+                refs, result="pass", failure_category=None, failure_excerpt=None,
+                attempts=len(shared_attempts), per_attempt=shared_attempts, parts=parts)
+        except Exception as exc:  # noqa: BLE001 — any host-write failure must recover
+            return SubstepOutcome(outcome.agent_run_id, "fail", [], 1,
+                                  ("pure_compile_host_write_failed",
+                                   f"{type(exc).__name__}: {exc}"),
+                                  len(shared_attempts))
+        return SubstepOutcome(outcome.agent_run_id, "pass", [], 0, None, len(shared_attempts))
+
+    def _previous_compile_parts(self, repair: dict[str, str] | None) -> dict[str, str]:
+        """On a `reuse` reopen, the previous run's `compile_generate_meta.json#parts[]` as
+        `{part: agent_run_id}`, read from the directory the repair target's own launch record
+        names (`_ensure_fresh_producer_id` has rotated `refs` away from it). Empty when there is
+        no such reopen, no record, or no readable `parts[]` — every loop then keeps the target
+        it was given."""
+        if not (repair and str(repair.get("repair_strategy", "")).strip() == "reuse"):
+            return {}
+        target = str(repair.get("repair_target_agent_run_id") or "").strip()
+        if not target or target == "none":
+            return {}
+        from tools.orchestration_runtime import _read_launch_request_payload
+        record = _read_launch_request_payload(
+            self.repo_root, self.orchestration_id, agent_run_id=target)
+        ir_ref = str((record or {}).get("ir_ref") or "").strip()
+        if not ir_ref:
+            return {}
+        try:
+            meta = json.loads((self.repo_root / ir_ref / "compile_generate_meta.json")
+                              .read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError):
+            return {}
+        rows = meta.get("parts") if isinstance(meta, dict) else None
+        return {str(row["part"]): str(row["agent_run_id"])
+                for row in (rows if isinstance(rows, list) else [])
+                if isinstance(row, dict) and isinstance(row.get("part"), str)
+                and isinstance(row.get("agent_run_id"), str) and row["agent_run_id"].strip()}
+
+    @staticmethod
+    def _compile_part_repair(repair: dict[str, str] | None, previous: dict[str, str],
+                             name: str) -> dict[str, str] | None:
+        """The `repair` one loop of a reopened `compile.generate` runs with: the outer repair
+        with its target replaced by THAT loop's own last attempt from the previous run, so each
+        loop warm-resumes its own session and reads back its own prior document. The findings
+        are the same for every loop.
+
+        A loop with no row of its own runs WITHOUT the repair (a cold launch), because the outer
+        target is another loop's session: resuming it would continue a conversation about a
+        different document. That is a part the previous run never reached, and every loop when
+        the previous run left no `parts[]` — except the core in that last case, which keeps the
+        outer repair: a run from before issue #526 had one loop, the core's predecessor, and its
+        target is that loop's."""
+        if repair is None:
+            return None
+        if name in previous:
+            return {**repair, "repair_target_agent_run_id": previous[name]}
+        return repair if (name == "core" and not previous) else None
+
     def _write_declared_compile_fail(self, refs: NodeRefs, reason: str, *,
                                      attempts: int) -> None:
         """Project a producer's `Compile fail` declaration onto `ir_meta.json`, and write NO
@@ -7097,7 +7440,8 @@ class Conductor:
     def _write_pure_attempt_meta(self, refs: NodeRefs, basename: str, *, result: str,
                                  failure_category: str | None, failure_excerpt: str | None,
                                  attempts: int, per_attempt: list[dict[str, Any]],
-                                 parent: str | None = None) -> None:
+                                 parent: str | None = None,
+                                 parts: list[dict[str, Any]] | None = None) -> None:
         """Author `<parent>/<basename>` — the per-attempt record of a pure substep, `<ir_ref>` by
         default. Byte for byte the key set `_write_bundle_meta` / `_write_verdict_meta` author, so
         `orchestration_diagnostics._summarize_one_pure_meta` reads it unchanged. For the compile
@@ -7114,6 +7458,10 @@ class Conductor:
         }
         if failure_excerpt:
             meta["failure_excerpt"] = failure_excerpt
+        # `compile.generate`'s loops, one row each (issue #526). Added, not reshaping a key, so
+        # `_summarize_one_pure_meta` and `_read_repair_findings` read the file unchanged.
+        if parts is not None:
+            meta["parts"] = parts
         path = self.repo_root / (parent or refs.ir_ref) / basename
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -12276,6 +12624,10 @@ class Conductor:
             # The pure producer. `dependency_surface` is threaded through for the compile
             # producer, whose `<dependency_facts>` block is the published-operation catalog it
             # must transcribe verbatim; `build_launch_request` attaches it to that substep only.
+            # Compile runs as a core and one part per test, and the host assembles the IR.
+            if phase == "compile":
+                return self._run_pure_compile_producer(
+                    refs, repair, resolved_dependencies, dependency_surface)
             return self._run_pure_producer_substep(
                 refs, phase, substep, repair, resolved_dependencies,
                 self._pure_producer_spec(phase, self._shape_for_spec(refs, phase)),

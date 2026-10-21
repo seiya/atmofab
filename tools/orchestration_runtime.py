@@ -8959,6 +8959,10 @@ _PROMPT_TEMPLATE_FILES = {
     # (step, substep); the repair template is substep-agnostic. Their line 0 is
     # PURE_PROMPT_SENTINEL (parity-tested against the module constant).
     "pure compile.generate": "pure_compile_generate.txt",
+    # The `compile.generate` VERIFICATION part (issue #526): the leaf that authors one test's
+    # three verification lists against the IR core the default-shape leaf returned. The host
+    # runs it once per test the node's tests document declares and assembles the IR.
+    "pure compile.generate.verification": "pure_compile_generate_verification.txt",
     "pure compile.verify": "pure_compile_verify.txt",
     "pure generate.generate": "pure_generate_generate.txt",
     "pure generate.verify": "pure_generate_verify.txt",
@@ -9460,14 +9464,16 @@ PURE_CONTEXT_REQUIRED_KEYS: dict[tuple[str, str], tuple[str, ...]] = {
     **{pair: ("diagnosis_document",) for pair in sorted(DIAGNOSE_LAUNCH_PAIRS)},
 }
 
-#: The non-default bundle SHAPES a launch request may declare (`pure_shape`). The default shape
+#: The non-default SHAPES a launch request may declare (`pure_shape`). The default shape
 #: names itself with the empty string and uses the tables keyed by `(step, substep)` above; a
 #: request that declares one of these uses the by-shape tables instead. A closed vocabulary: an
 #: unknown value is refused rather than falling back to the default, because the shape decides
 #: which template the leaf is sent and which context keys it must carry.
-#: Kept equal to the non-default values of `codegen_bundle.BUNDLE_SHAPES` — the acceptance
-#: layer's vocabulary — by `test_pure_leaf_wiring`.
-PURE_LAUNCH_SHAPES: frozenset[str] = frozenset({"harness"})
+#: Two families share it. The shapes declared on the `generate` pairs are kept equal to the
+#: non-default values of `codegen_bundle.BUNDLE_SHAPES` — the acceptance layer's vocabulary — by
+#: `test_pure_leaf_wiring`; `verification` is `compile.generate`'s per-test part (issue #526),
+#: which has no bundle and is declared on that pair alone.
+PURE_LAUNCH_SHAPES: frozenset[str] = frozenset({"harness", "verification"})
 
 #: Required `pure_context` keys for a `(step, substep, pure_shape)` that declares a shape. The
 #: pairs listed here are exactly the pairs a shape may be declared on; a `pure_shape` on any
@@ -9491,6 +9497,16 @@ PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE: dict[tuple[str, str, str], tuple[str, ...]]
                                         "ir_document", "target_profile",
                                         "runner_output_contract_document",
                                         "severity_rubric_document", "bundle_document"),
+    # One `compile.generate` verification part (issue #526): the four documents the default
+    # compile producer is shown that bear on a test's verification lists, then the IR core the
+    # host accepted from that producer and the one test id this part authors. The two per-part
+    # values come LAST, in template slot order, so every part of a node renders the same prompt
+    # prefix.
+    ("compile", "generate", "verification"): ("controlled_spec_document", "tests_document",
+                                              "phase_contract_document",
+                                              "checks_module_contract_document",
+                                              "ir_core_document",
+                                              "verification_test_document"),
 }
 
 

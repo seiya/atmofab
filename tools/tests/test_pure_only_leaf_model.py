@@ -83,6 +83,13 @@ class _DispatchProbe(_PureFakeConductor):
         self.__dict__.setdefault("dispatch", []).append(("producer", phase, substep))
         return wc.SubstepOutcome("child-p", "pass", [], 0, None, 1)
 
+    def _run_pure_compile_producer(self, refs, *a, **kw):  # type: ignore[override]
+        # `compile.generate`'s producer since issue #526: every loop it runs is
+        # `_run_pure_producer_substep` (`test_pure_leaf_compile` drives it to its launches), so
+        # reaching it is reaching the pure producer.
+        self.__dict__.setdefault("dispatch", []).append(("producer", "compile", "generate"))
+        return wc.SubstepOutcome("child-p", "pass", [], 0, None, 1)
+
     def _run_pure_reviewer_substep(self, refs, phase, substep, *a, **kw):  # type: ignore[override]
         self.__dict__.setdefault("dispatch", []).append(("reviewer", phase, substep))
         return wc.SubstepOutcome("child-r", "pass", [], 0, None, 1)

@@ -286,8 +286,12 @@ class PurePayloadValidationTests(unittest.TestCase):
         same way — a triple added without a fixture context is red here."""
         for step, substep, shape in sorted(ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE):
             with self.subTest(triple=f"{step}.{substep}.{shape}"):
+                # As in the default-shape row above: a Compile request names the spec's
+                # `deps.yaml` (issue #526 put a shape on a compile pair).
+                dep_ref = ("spec/problem/dynamics/shallow_water/shallow_water2d/deps.yaml"
+                           if step == "compile" else _DEP_REF)
                 req = _pure_request(
-                    substep, step=step, dependency_ref=_DEP_REF,
+                    substep, step=step, dependency_ref=dep_ref,
                     pure_context=_pure_context_by_shape(step, substep, shape))
                 req["pure_shape"] = shape
                 ort._validate_launch_request_payload(
@@ -339,10 +343,20 @@ class PurePayloadValidationTests(unittest.TestCase):
         """One vocabulary, two readers: the launch validator's non-default shapes and the
         acceptance contract's `BUNDLE_SHAPES`. A shape the acceptance layer knows and the
         transport does not cannot be launched; the reverse renders a template against a layer
-        that would refuse it."""
+        that would refuse it.
+
+        Read off the shapes DECLARED on the `generate` pairs, because the vocabulary also holds
+        `compile.generate`'s `verification` part (issue #526), which has no bundle; that one is
+        pinned to be declared on that pair and nowhere else."""
         import tools.codegen_bundle as cb
-        self.assertEqual(ort.PURE_LAUNCH_SHAPES,
-                         frozenset(cb.BUNDLE_SHAPES) - {"m3c"})
+        by_step: dict[str, set[str]] = {}
+        for step, _substep, shape in ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE:
+            by_step.setdefault(step, set()).add(shape)
+        self.assertEqual(by_step["generate"], set(cb.BUNDLE_SHAPES) - {"m3c"})
+        self.assertEqual(
+            {k for k in ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE if k[2] == "verification"},
+            {("compile", "generate", "verification")})
+        self.assertEqual(ort.PURE_LAUNCH_SHAPES, frozenset(set().union(*by_step.values())))
 
     def test_every_shape_triple_has_a_template(self) -> None:
         """`_pure_launch_template_name` composes the key; this pins that every key it can
@@ -1370,6 +1384,9 @@ class PureRenderTests(unittest.TestCase):
         # every other one is.
         ("tools/prompt_templates/pure_compile_verify.txt", None, None),
         ("tools/prompt_templates/pure_compile_generate.txt", None, None),
+        # Issue #526: the per-test verification part of `compile.generate`, scanned for the
+        # reason its parent template is.
+        ("tools/prompt_templates/pure_compile_generate_verification.txt", None, None),
         # Round 2 of issue #143 added this: the AGENTIC transport, which was then the ONLY one
         # `Compile.verify` had. The pure template was here from issue #143 and its agentic
         # counterpart was not, which was survivable while the rubric governed `Generate.verify`
@@ -2035,14 +2052,19 @@ class PureRenderTests(unittest.TestCase):
         refs = wc.NodeRefs(**self._RENDER_REFS)
         pure_pairs = sorted(LLM_LEAF_SUBSTEPS)
         self.assertTrue(pure_pairs, "no LLM leaf substeps; this renders nothing")
-        for step, substep in pure_pairs:
-            ctx = _pure_context_for(step, substep)
+        # `compile.generate`'s per-test part (issue #526) is a shape of a pair this sweep
+        # already walks, rendered on this node like its default shape. (The `harness` shapes
+        # are a different NODE, an `infrastructure` one, and are not in this sweep.)
+        for step, substep, pure_shape in ([(st, ss, "") for st, ss in pure_pairs]
+                                          + [("compile", "generate", "verification")]):
+            ctx = (_pure_context_by_shape(step, substep, pure_shape) if pure_shape
+                   else _pure_context_for(step, substep))
             reason = ("pure_bundle_repair" if (step, substep) == ("generate", "generate")
                       else "pure_ir_document_repair" if (step, substep) == ("compile", "generate")
                       else "pure_ir_verdict_repair" if step == "compile"
                       else "pure_verdict_repair")
             for shape in (*self._RENDER_COLD_SHAPES, "pure-repair-warm", "pure-repair-cold"):
-                kw = dict(self._RENDER_COMMON, pure_leaf=True,
+                kw = dict(self._RENDER_COMMON, pure_leaf=True, pure_shape=pure_shape,
                           runner_host_authored=True,
                           # The conductor names the target language on a generate launch only.
                           pure_language=("fortran" if step == "generate" else ""),
@@ -2074,7 +2096,8 @@ class PureRenderTests(unittest.TestCase):
                     # `prior_document` is threaded onto the request by the producer repair loop
                     # AFTER the build; `build_launch_request` has no kwarg for it.
                     req["prior_document"] = '{"files": []}'
-                reqs.append((f"{step}.{substep}/{shape}", req))
+                reqs.append((f"{step}.{substep}{'.' + pure_shape if pure_shape else ''}"
+                             f"/{shape}", req))
         return reqs
 
     @staticmethod
@@ -2207,7 +2230,9 @@ class PureRenderTests(unittest.TestCase):
             # (a) every pair of both code tables was rendered in all of its shapes.
             self.assertEqual(
                 seen_shapes,
-                {(f"{s}.{ss}", shape) for s, ss in LLM_LEAF_SUBSTEPS
+                {(pair, shape)
+                 for pair in ([f"{s}.{ss}" for s, ss in LLM_LEAF_SUBSTEPS]
+                              + ["compile.generate.verification"])
                  for shape in (*self._RENDER_COLD_SHAPES,
                                "pure-repair-warm", "pure-repair-cold")},
                 "the rendered configurations do not cover the substep tables the conductor "
