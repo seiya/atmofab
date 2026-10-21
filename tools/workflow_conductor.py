@@ -7302,10 +7302,15 @@ class Conductor:
                 entries[test_id] = doc["verification"]
             return stash
 
-        def ended(outcome: SubstepOutcome) -> SubstepOutcome:
+        def ended(outcome: SubstepOutcome, rows_before: int) -> SubstepOutcome:
             # The loop's outcome, counting every launch of the substep rather than the last
             # loop's: `attempts` is the substep's launch count on every exit, as on the pass.
-            return replace(outcome, attempts=max(len(shared_attempts), outcome.attempts))
+            # A loop that recorded its rows (`collect_meta`) is in `shared_attempts` already;
+            # one whose host write raised before that (a declared fail's projection) is not,
+            # and its own count is added.
+            recorded = len(parts) > rows_before
+            return replace(outcome, attempts=len(shared_attempts)
+                           + (0 if recorded else outcome.attempts))
 
         base = self._pure_producer_spec("compile")
         core_spec = base._replace(
@@ -7316,7 +7321,7 @@ class Conductor:
             refs, "compile", "generate", self._compile_part_repair(repair, previous_parts, None),
             resolved_dependencies, core_spec, dependency_surface)
         if outcome.status != "pass":
-            return ended(outcome)
+            return ended(outcome, 0)
         core_text = json.dumps(core_ir, indent=2, ensure_ascii=False)
         for test_id in test_ids:
             part_spec = base._replace(
@@ -7332,12 +7337,13 @@ class Conductor:
                                      "the verification document)"),
                 accept_noun=f"verification part {test_id}",
                 pure_shape="verification", reopen_warm=False, pure_part=test_id)
+            rows_before = len(parts)
             outcome = self._run_pure_producer_substep(
                 refs, "compile", "generate",
                 self._compile_part_repair(repair, previous_parts, test_id),
                 resolved_dependencies, part_spec)
             if outcome.status != "pass":
-                return ended(outcome)
+                return ended(outcome, rows_before)
         try:
             ir = self._assemble_pure_ir(core_ir, [entries[t] for t in test_ids])
             doc = {"ir": ir, "compile_fail": None}

@@ -1609,11 +1609,27 @@ class PureCompilePartsTests(_Fixture):
         self.assertEqual((decision.action, decision.reason),
                          ("fail_closed", wc.COMPILE_DECLARED_FAIL))
 
+    def test_a_declared_fail_whose_host_write_fails_still_counts_every_launch(self) -> None:
+        """The declared-fail projection is written before the loop records its rows, so when
+        that write raises, the loop's launch is in no shared row: it is added on its own."""
+        declared = {"verification": None,
+                    "compile_fail": {"input": "tests", "where": "§6-2", "what": "x"}}
+        c = self.conductor(_envelope(_doc()), _envelope(_part("t_alpha")), _envelope(declared))
+
+        def boom(*a, **k):
+            raise OSError("no space left on device")
+
+        c._write_declared_compile_fail = boom  # type: ignore[assignment]
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual(outcome.infra_error[0], "pure_compile_host_write_failed")
+        self.assertEqual(outcome.attempts, 3)
+
     def test_a_core_that_never_passes_launches_no_part(self) -> None:
         c = self.conductor(_envelope({"ir": _valid_ir()}))
         outcome = c.run_substep(self.refs, "compile", "generate")
         self.assertEqual(outcome.status, "fail")
         self.assertEqual(len(_requests(c)), 1 + ort_repair_turns())
+        self.assertEqual(outcome.attempts, 1 + ort_repair_turns())
         self.assertTrue(all("pure_shape" not in r for r in _requests(c)))
         meta = self.meta()
         self.assertEqual(meta["failure_category"], wc.COMPILE_IR_DOCUMENT_VIOLATION)
