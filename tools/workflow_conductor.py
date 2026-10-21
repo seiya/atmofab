@@ -7301,6 +7301,11 @@ class Conductor:
                 entries[test_id] = doc["verification"]
             return stash
 
+        def ended(outcome: SubstepOutcome) -> SubstepOutcome:
+            # The loop's outcome, counting every launch of the substep rather than the last
+            # loop's: `attempts` is the substep's launch count on every exit, as on the pass.
+            return replace(outcome, attempts=max(len(shared_attempts), outcome.attempts))
+
         base = self._pure_producer_spec("compile")
         core_spec = base._replace(
             violations=self._pure_ir_core_violations, write_artifacts=stash_core,
@@ -7310,7 +7315,7 @@ class Conductor:
             refs, "compile", "generate", self._compile_part_repair(repair, previous_parts, None),
             resolved_dependencies, core_spec, dependency_surface)
         if outcome.status != "pass":
-            return outcome
+            return ended(outcome)
         core_text = json.dumps(core_ir, indent=2, ensure_ascii=False)
         for test_id in test_ids:
             part_spec = base._replace(
@@ -7331,7 +7336,7 @@ class Conductor:
                 self._compile_part_repair(repair, previous_parts, test_id),
                 resolved_dependencies, part_spec)
             if outcome.status != "pass":
-                return outcome
+                return ended(outcome)
         try:
             ir = self._assemble_pure_ir(core_ir, [entries[t] for t in test_ids])
             doc = {"ir": ir, "compile_fail": None}

@@ -1574,6 +1574,8 @@ class PureCompilePartsTests(_Fixture):
         meta = self.meta()
         self.assertEqual((meta["result"], meta["failure_category"], meta["attempts"]),
                          ("fail", wc.COMPILE_DECLARED_FAIL, 3))
+        # The substep's launch count on a failing exit too, not the last loop's.
+        self.assertEqual(outcome.attempts, 3)
         self.assertEqual(meta["parts"][-1]["part"], "t_beta")
         self.assertEqual(meta["parts"][-1]["result"], "fail")
         decision = c.classify_failure(self.refs, "compile", [outcome])
