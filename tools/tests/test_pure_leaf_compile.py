@@ -1665,7 +1665,8 @@ class PureCompilePartsTests(_Fixture):
         self.assertEqual(core["repair_target_agent_run_id"], "prior-core")
         self.assertEqual(part["repair_target_agent_run_id"], "prior-test")
 
-    def stage_previous_run(self, parts: dict[str, str], rows=None) -> str:
+    def stage_previous_run(self, parts: dict[str, str], rows=None,
+                           failed: str | None = None) -> str:
         """The directory a previous `compile.generate` wrote into, its meta's `parts[]`, its
         IR, and one launch record per previous loop naming it."""
         prior_ref = f"{self.refs.ir_ref.rsplit('/', 1)[0]}/advdiff-uc2_20260101_000"
@@ -1676,8 +1677,10 @@ class PureCompilePartsTests(_Fixture):
         rows = rows if rows is not None else [
             (k, None if k == "core" else k, v) for k, v in parts.items()]
         (prior / "compile_generate_meta.json").write_text(json.dumps({
-            "result": "fail", "parts": [{"part": k, "test_id": t, "agent_run_id": v}
-                                        for k, t, v in rows]}), encoding="utf-8")
+            "result": "fail" if failed else "pass",
+            "parts": [{"part": k, "test_id": t, "agent_run_id": v,
+                       "result": "fail" if k == failed else "pass"}
+                      for k, t, v in rows]}), encoding="utf-8")
         launches = self.repo / "workspace" / "orchestrations" / "o" / "launches"
         launches.mkdir(parents=True, exist_ok=True)
         for _part_name, _test_id, arid in rows:
@@ -1704,7 +1707,8 @@ class PureCompilePartsTests(_Fixture):
         core, alpha, beta = self.reopen(warm=True)
         self.assertEqual(core["repair_target_agent_run_id"], "prior-core")
         self.assertEqual(alpha["repair_target_agent_run_id"], "prior-alpha")
-        self.assertEqual(core["repair_findings"], alpha["repair_findings"])
+        # The same findings; a part's copy adds the host's locator note (its own row).
+        self.assertTrue(alpha["repair_findings"].startswith(core["repair_findings"]))
         # The core resumes its session; a part does not, even when its session is resumable:
         # that session holds the previous core, and a warm repair re-sends no context. Its cold
         # repair carries the core this reopen produced.
@@ -1716,6 +1720,30 @@ class PureCompilePartsTests(_Fixture):
         # is another loop's session.
         self.assertEqual(beta["repair_strategy"], "none")
         self.assertFalse(beta.get("warm_resume"))
+
+    def test_a_gate_finding_reaches_every_part_with_where_its_entries_sat(self) -> None:
+        """Every loop passed, so the findings come from a gate on the whole IR, which names an
+        entry by its index; each part's copy closes with the host's note of its own indices."""
+        self.stage_previous_run(self._PRIOR)
+        core, alpha, _ = self.reopen(warm=True)
+        self.assertNotIn("Host note", core["repair_findings"])
+        self.assertTrue(alpha["repair_findings"].startswith(
+            "io_contract.primary_predicates[1]: reads no state\n\nHost note: "))
+        self.assertIn("test 't_alpha' were io_contract.test_evidence_requirements[0]; "
+                      "io_contract.test_predicates[0]; io_contract.primary_predicates[0]",
+                      alpha["repair_findings"])
+
+    def test_a_loop_that_ended_the_run_is_the_only_one_handed_its_refusal(self) -> None:
+        """The previous run ENDED on t_alpha's document violation, so the findings are that
+        part's own refusal: handing them to the core as "correct exactly these violations" is
+        an instruction its validator refuses. The core starts fresh; t_alpha repairs."""
+        self.stage_previous_run(self._PRIOR, failed="t_alpha")
+        core, alpha, beta = self.reopen(warm=True)
+        self.assertEqual(core["repair_strategy"], "none")
+        self.assertNotIn("repair_findings", core)
+        self.assertEqual(alpha["repair_target_agent_run_id"], "prior-alpha")
+        self.assertNotIn("Host note", alpha["repair_findings"])
+        self.assertEqual(beta["repair_strategy"], "none")
 
     def test_a_cold_reopen_carries_each_part_its_own_entries(self) -> None:
         self.stage_previous_run(self._PRIOR)

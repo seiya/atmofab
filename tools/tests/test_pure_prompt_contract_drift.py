@@ -1048,7 +1048,10 @@ PINNED: dict[str, str] = {
     # case and state variable the parts read) and the new
     # `pure_compile_generate_verification.txt` (one test's three lists against the inlined
     # core, the old rule (5) obligations, and a `compile_fail` whose inputs exclude the core).
-    "pure-82": "86a0393e0cc1e06122cb429992313de8e20337744ed709d23aae8d35470c1a19",
+    # Re-pinned in place (unshipped) by round 1: both templates gain a "Repair turns on the
+    # whole IR" paragraph saying which findings of a gate on the assembled IR are each turn's,
+    # and the part's names the host's locator note.
+    "pure-82": "a6577d1628477922155bea3de16539f881653a0103614355f9300389cf9a8222",
 }
 
 

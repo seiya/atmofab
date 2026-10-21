@@ -7351,57 +7351,118 @@ class Conductor:
                                   len(shared_attempts))
         return SubstepOutcome(outcome.agent_run_id, "pass", [], 0, None, len(shared_attempts))
 
+    class _PreviousCompileRun(NamedTuple):
+        """What a reopened `compile.generate` reads back of the run it reopens."""
+
+        #: `{test_id: agent_run_id}` of each loop's last attempt, the core under `None`.
+        arids: dict[str | None, str]
+        #: The `test_id` of the loop that ENDED that run by failing (`None` for the core), or
+        #: `_PASSED` when every loop passed and the reopen comes from a gate on the whole IR.
+        failed: Any
+        #: The IR that run assembled and wrote, when it got that far; else `{}`.
+        ir: dict[str, Any]
+
+    #: `_PreviousCompileRun.failed` when no loop failed.
+    _PASSED: ClassVar[object] = object()
+
     def _previous_compile_parts(self, repair: dict[str, str] | None
-                                ) -> dict[str | None, str]:
-        """On a `reuse` reopen, the previous run's `compile_generate_meta.json#parts[]` as
-        `{test_id: agent_run_id}` — the core under `None` — read from the directory the repair
-        target's own launch record names (`_ensure_fresh_producer_id` has rotated `refs` away
-        from it). Keyed by `test_id` rather than by the `part` label, because a test may be
-        called `core` (the tests.md grammar reserves no id), and a label key would let that
-        part's row stand for the core's. Empty when there is no such reopen, no record, or no
-        readable `parts[]`."""
+                                ) -> "Conductor._PreviousCompileRun":
+        """On a `reuse` reopen, the previous run's `compile_generate_meta.json#parts[]` and IR,
+        read from the directory the repair target's own launch record names
+        (`_ensure_fresh_producer_id` has rotated `refs` away from it). The rows are keyed by
+        `test_id` rather than by the `part` label, because a test may be called `core` (the
+        tests.md grammar reserves no id), and a label key would let that part's row stand for
+        the core's. Empty when there is no such reopen, no record, or no readable `parts[]`."""
+        empty = self._PreviousCompileRun({}, self._PASSED, {})
         if not (repair and str(repair.get("repair_strategy", "")).strip() == "reuse"):
-            return {}
+            return empty
         target = str(repair.get("repair_target_agent_run_id") or "").strip()
         if not target or target == "none":
-            return {}
+            return empty
         from tools.orchestration_runtime import _read_launch_request_payload
         record = _read_launch_request_payload(
             self.repo_root, self.orchestration_id, agent_run_id=target)
         ir_ref = str((record or {}).get("ir_ref") or "").strip()
         if not ir_ref:
-            return {}
+            return empty
         try:
             meta = json.loads((self.repo_root / ir_ref / "compile_generate_meta.json")
                               .read_text(encoding="utf-8"))
         except (OSError, UnicodeError, ValueError):
-            return {}
+            return empty
         rows = meta.get("parts") if isinstance(meta, dict) else None
-        return {row["test_id"]: row["agent_run_id"]
-                for row in (rows if isinstance(rows, list) else [])
+        rows = [row for row in (rows if isinstance(rows, list) else [])
                 if isinstance(row, dict)
                 and (row.get("test_id") is None or isinstance(row.get("test_id"), str))
-                and isinstance(row.get("agent_run_id"), str) and row["agent_run_id"].strip()}
+                and isinstance(row.get("agent_run_id"), str) and row["agent_run_id"].strip()]
+        if not rows:
+            return empty
+        failed = rows[-1]["test_id"] if rows[-1].get("result") != "pass" else self._PASSED
+        try:
+            ir = yaml.safe_load((self.repo_root / ir_ref / "spec.ir.yaml")
+                                .read_text(encoding="utf-8"))
+        except (OSError, UnicodeError, ValueError, yaml.YAMLError):
+            ir = {}
+        return self._PreviousCompileRun({row["test_id"]: row["agent_run_id"] for row in rows},
+                                        failed, ir if isinstance(ir, dict) else {})
 
-    @staticmethod
-    def _compile_part_repair(repair: dict[str, str] | None, previous: dict[str | None, str],
+    def _compile_part_repair(self, repair: dict[str, str] | None,
+                             previous: "Conductor._PreviousCompileRun",
                              test_id: str | None) -> dict[str, str] | None:
         """The `repair` one loop of a reopened `compile.generate` runs with — `test_id` None for
         the core: the outer repair with its target replaced by THAT loop's own last attempt from
-        the previous run, so each loop resumes its own session and reads back its own prior
-        document. The findings are the same for every loop.
+        the previous run, so each loop repairs its own document.
+
+        WHICH loops get it follows from what the findings are about. When a loop ENDED the
+        previous run by failing, the findings are that loop's own refusal (its document
+        violation), so only that loop repairs, and every other loop starts fresh: a findings
+        text about one test's document handed to another as "correct exactly these violations"
+        is an instruction its own validator refuses. When every loop passed, the findings come
+        from a gate on the whole assembled IR, which names an entry by its index in the
+        assembled lists and does not say which turn wrote it; every loop with a previous attempt
+        repairs, and a part's findings close with the host's note of where its own entries sat
+        (`_verification_locator`), so it can tell its findings from another test's.
 
         A loop with no row of its own runs WITHOUT the repair (a cold launch), because the outer
-        target is another loop's session: resuming it would continue a conversation about a
-        different document. That is a part the previous run never reached, and every loop when
-        the previous run left no `parts[]` — except the core in that last case, which keeps the
-        outer repair: a run from before issue #526 had one loop, the core's predecessor, and its
-        target is that loop's."""
+        target is another loop's session. That is a part the previous run never reached, and
+        every loop when the previous run left no `parts[]` — except the core in that last case,
+        which keeps the outer repair: a run from before issue #526 had one loop, the core's
+        predecessor, and its target is that loop's."""
         if repair is None:
             return None
-        if test_id in previous:
-            return {**repair, "repair_target_agent_run_id": previous[test_id]}
-        return repair if (test_id is None and not previous) else None
+        if not previous.arids:
+            return repair if test_id is None else None
+        if test_id not in previous.arids:
+            return None
+        if previous.failed is not self._PASSED and previous.failed != test_id:
+            return None
+        repaired = {**repair, "repair_target_agent_run_id": previous.arids[test_id]}
+        findings = str(repair.get("repair_findings") or "").strip()
+        locator = (self._verification_locator(previous.ir, test_id)
+                   if test_id is not None and previous.failed is self._PASSED else None)
+        if findings and locator:
+            repaired["repair_findings"] = f"{findings}\n\n{locator}"
+        return repaired
+
+    def _verification_locator(self, ir: dict[str, Any], test_id: str) -> str | None:
+        """The host's note of where `test_id`'s entries sat in the assembled IR a gate finding
+        was raised on: the indices of its entries in each of the three lists. None when the IR
+        holds none of them."""
+        io_contract = ir.get("io_contract") if isinstance(ir, dict) else None
+        if not isinstance(io_contract, dict):
+            return None
+        places = []
+        for key in self._PURE_IR_VERIFICATION_LISTS:
+            entries = io_contract.get(key)
+            at = [i for i, e in enumerate(entries if isinstance(entries, list) else [])
+                  if isinstance(e, dict) and e.get("test_id") == test_id]
+            if at:
+                places.append(f"io_contract.{key}[{', '.join(map(str, at))}]")
+        if not places:
+            return None
+        return (f"Host note: in the assembled IR these findings were raised on, the entries of "
+                f"test {test_id!r} were " + "; ".join(places) + ". A finding about any other "
+                "index of those lists is about another test's entries.")
 
     def _write_declared_compile_fail(self, refs: NodeRefs, reason: str, *,
                                      attempts: int) -> None:
