@@ -1495,6 +1495,23 @@ class PureCompilePartsTests(_Fixture):
         self.assertEqual((ir_meta["verification_status"], ir_meta["attempt_count"]),
                          ("pending", 3))
 
+    def test_the_assembled_io_contract_follows_the_schema_order(self) -> None:
+        """The three lists are not appended at the end: the evidence list sits after
+        `raw_requirements` and the two predicate lists after `semantic_dependency`, as the
+        phase contract's schema block orders them, and a key the block does not name keeps its
+        place after them. The fixture core above carries none of the keys between, so only a
+        core that does can tell the reorder from an append."""
+        core = _valid_ir()
+        core["io_contract"] = {"notes": "kept", "semantic_dependency": {"required_sources": ["q"]},
+                               "diagnostics_contract": {"checks": []}, "raw_requirements": {},
+                               "outputs": [], "inputs": []}
+        assembled = self.conductor()._assemble_pure_ir(core, [_entries(t) for t in self.TESTS])
+        self.assertEqual(list(assembled["io_contract"]),
+                         ["inputs", "outputs", "raw_requirements", "test_evidence_requirements",
+                          "diagnostics_contract", "semantic_dependency", "test_predicates",
+                          "primary_predicates", "notes"])
+        self.assertEqual(list(core["io_contract"])[0], "notes", "the core was modified")
+
     def test_each_part_is_a_verification_launch_with_the_core_and_its_test(self) -> None:
         c = self.conductor(_envelope(_doc()), *(_envelope(_part(t)) for t in self.TESTS))
         surface = ({"node_key": _NODE, "published_operations": [f"{_SPEC_ID}__apply"],
