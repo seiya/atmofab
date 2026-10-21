@@ -21868,7 +21868,8 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # that takes this bump. Issue #526 PR-1 (§1-1 and the schema block state a `Compile fail`
         # as the structured `compile_fail` object, and that a declaration naming no admissible
         # input is a document violation retried like any producer failure): bumped 99000->99600;
-        # measured 99487 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
+        # measured 99487 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump. Round 1
+        # (§Acceptance of retry from Validate names `compile_fail`): measured 99479, no bump.
         "docs/workflow/phases/phase_01_compile.md": 99600,
     }
 

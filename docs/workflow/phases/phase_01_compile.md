@@ -535,7 +535,7 @@ The conductor never routes a `Validate.judge` `fail` to `Compile` by itself: the
 
 What a leaf does on such a re-run depends on WHICH substep it is, and the two are opposite — this document is inlined in full into both prompts, so read only your own line:
 
-- **`Compile.generate` (the producer).** Your `last_fail_reason` is not a repair note: it is the terminal "this phase cannot be completed from these inputs" declaration of §1-1, handed to the operator and never retried. Author the IR from the context you were given, using the finding text the prompt carries, and return `last_fail_reason: null`.
+- **`Compile.generate` (the producer).** Your `compile_fail` is not a repair note: it is the terminal "this phase cannot be completed from these inputs" declaration of §1-1, handed to the operator and never retried. Author the IR from the context you were given, using the finding text the prompt carries, and return `compile_fail: null`.
 - **`Compile.verify` (the reviewer).** You do not author the IR under any circumstance, and your `last_fail_reason` is the ORDINARY verify-fail channel — the host projects it onto `ir_meta.json` beside `verification_status: "fail"`, and the phase routes it by §Severity of a finding exactly as it routes any other fail. `null` is the PASS invariant of your output contract, so returning it is a verdict of pass and nothing else. A re-submission after a Validate finding is a node whose IR was already judged at fault downstream; review it on its merits.
 
 ## Design trade-offs
