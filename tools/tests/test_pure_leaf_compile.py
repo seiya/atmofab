@@ -1920,6 +1920,10 @@ class PureCompilePartGroupTests(_Fixture):
             self.assertEqual(c._verification_part_groups(["a", "b"], {"a": 11, "b": 11}),
                              [("a",), ("b",)])
             self.assertEqual(c._verification_part_groups([], {}), [])
+            # A new part starts counting from its own first test.
+            self.assertEqual(c._verification_part_groups(["a", "b", "c"],
+                                                         {"a": 6, "b": 6, "c": 3}),
+                             [("a",), ("b", "c")])
 
     def test_a_group_reopen_resumes_the_group_it_was(self) -> None:
         """The previous run's rows are keyed by the group's ids, so the same group resumes its
