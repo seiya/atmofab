@@ -2735,13 +2735,14 @@ class PureColdRepairPromptTests(unittest.TestCase):
         key with its label stranded elsewhere. The expected lines are read off the template
         independently of how the renderer trims it."""
         from tools.pure_leaf import PURE_DOC_FENCE_BEGIN
-        self.assertEqual(len(self._repair_loop_pairs()), 7)
+        # Issue #526 added the eighth: `compile.generate`'s per-test `verification` part.
+        self.assertEqual(len(self._repair_loop_pairs()), 8)
         for step, substep, shape in self._repair_loop_pairs():
             with self.subTest(pair=f"{step}.{substep}{('.' + shape) if shape else ''}"):
                 keys = (ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[(step, substep, shape)]
                         if shape else ort.PURE_CONTEXT_REQUIRED_KEYS[(step, substep)])
                 req = {"leaf_mode": "pure", "step": step, "substep": substep,
-                       "node_key": _HARNESS if shape else _NODE,
+                       "node_key": _HARNESS if shape == "harness" else _NODE,
                        "orchestration_id": "o", "agent_run_id": "c",
                        "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
                        "repair_findings": "x is missing", "prior_document": '{"k": 1}',

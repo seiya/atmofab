@@ -8959,6 +8959,10 @@ _PROMPT_TEMPLATE_FILES = {
     # (step, substep); the repair template is substep-agnostic. Their line 0 is
     # PURE_PROMPT_SENTINEL (parity-tested against the module constant).
     "pure compile.generate": "pure_compile_generate.txt",
+    # The `compile.generate` VERIFICATION part (issue #526): the leaf that authors one test's
+    # three verification lists against the IR core the default-shape leaf returned. The host
+    # runs it once per test the node's tests document declares and assembles the IR.
+    "pure compile.generate.verification": "pure_compile_generate_verification.txt",
     "pure compile.verify": "pure_compile_verify.txt",
     "pure generate.generate": "pure_generate_generate.txt",
     "pure generate.verify": "pure_generate_verify.txt",
@@ -9460,14 +9464,16 @@ PURE_CONTEXT_REQUIRED_KEYS: dict[tuple[str, str], tuple[str, ...]] = {
     **{pair: ("diagnosis_document",) for pair in sorted(DIAGNOSE_LAUNCH_PAIRS)},
 }
 
-#: The non-default bundle SHAPES a launch request may declare (`pure_shape`). The default shape
+#: The non-default SHAPES a launch request may declare (`pure_shape`). The default shape
 #: names itself with the empty string and uses the tables keyed by `(step, substep)` above; a
 #: request that declares one of these uses the by-shape tables instead. A closed vocabulary: an
 #: unknown value is refused rather than falling back to the default, because the shape decides
 #: which template the leaf is sent and which context keys it must carry.
-#: Kept equal to the non-default values of `codegen_bundle.BUNDLE_SHAPES` — the acceptance
-#: layer's vocabulary — by `test_pure_leaf_wiring`.
-PURE_LAUNCH_SHAPES: frozenset[str] = frozenset({"harness"})
+#: Two families share it. The shapes declared on the `generate` pairs are kept equal to the
+#: non-default values of `codegen_bundle.BUNDLE_SHAPES` — the acceptance layer's vocabulary — by
+#: `test_pure_leaf_wiring`; `verification` is `compile.generate`'s per-test part (issue #526),
+#: which has no bundle and is declared on that pair alone.
+PURE_LAUNCH_SHAPES: frozenset[str] = frozenset({"harness", "verification"})
 
 #: Required `pure_context` keys for a `(step, substep, pure_shape)` that declares a shape. The
 #: pairs listed here are exactly the pairs a shape may be declared on; a `pure_shape` on any
@@ -9491,6 +9497,16 @@ PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE: dict[tuple[str, str, str], tuple[str, ...]]
                                         "ir_document", "target_profile",
                                         "runner_output_contract_document",
                                         "severity_rubric_document", "bundle_document"),
+    # One `compile.generate` verification part (issue #526): the four documents the default
+    # compile producer is shown that bear on a test's verification lists, then the IR core the
+    # host accepted from that producer and the one test id this part authors. The two per-part
+    # values come LAST, in template slot order, so every part of a node renders the same prompt
+    # prefix.
+    ("compile", "generate", "verification"): ("controlled_spec_document", "tests_document",
+                                              "phase_contract_document",
+                                              "checks_module_contract_document",
+                                              "ir_core_document",
+                                              "verification_test_document"),
 }
 
 
@@ -9841,7 +9857,7 @@ def _render_launch_prompt_template(request_payload: dict[str, Any]) -> str:
     * DETERMINISTIC — the minimal identity prompt for an in-process substep, which no leaf
       reads (it exists so a deterministic launch records the same kind of artifact as any
       other).
-    * PURE — the host-mediated closed context, per `(step, substep)` and bundle shape, with
+    * PURE — the host-mediated closed context, per `(step, substep)` and declared shape, with
       its own repair variant.
 
     Anything else is refused. The `step agent` / `substep agent` / `common boilerplate`
@@ -10809,6 +10825,17 @@ def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> No
         raise ValueError(
             f"pure launch request pure_parallel must be a non-empty string when present; "
             f"got {parallel!r}")
+    # The test a `compile.generate` verification part authors (issue #526), on EVERY request of
+    # that part — a warm repair carries no `pure_context`, so the context's test id cannot say
+    # which part a record belongs to. Read by the records' readers (the audit's repeated-substep
+    # table, the attempt-cost report), never by the renderer. Only that shape carries it.
+    part = request_payload.get("pure_part")
+    if part is not None and not (isinstance(part, str) and part.strip()
+                                 and shape_key == ("compile", "generate", "verification")):
+        raise ValueError(
+            f"pure launch request pure_part must be a non-empty string, on a "
+            f"(compile, generate, verification) request only; got {part!r} on "
+            f"(step={step!r}, substep={substep!r}, pure_shape={shape!r})")
     if key not in PURE_CONTEXT_REQUIRED_KEYS:
         # The admissible pairs are SPELLED FROM THE TABLE, never restated: a pair added to
         # `PURE_CONTEXT_REQUIRED_KEYS` must not leave this message naming the old set.

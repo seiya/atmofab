@@ -21871,7 +21871,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # measured 99487 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump. Round 1
         # (§Acceptance of retry from Validate names `compile_fail`): measured 99479, no bump.
         # Round 3 (§1-1 lists a `compile_fail` beside a non-null `ir`): measured 99507, no bump.
-        "docs/workflow/phases/phase_01_compile.md": 99600,
+        # Issue #526 PR-2 (the substep-14 bullet says the host assembles the IR from a core call
+        # and one call per test): bumped 99600->99800; measured 99636 at the commit that takes
+        # this bump. Round 1 (§1-1's declaration bullet names the inputs the launch prompt
+        # lists): measured 99610, no bump.
+        "docs/workflow/phases/phase_01_compile.md": 99800,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
@@ -27810,14 +27814,15 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/pure_compile_generate.txt:61dcd996a8724358":
+        "tools/prompt_templates/pure_compile_generate.txt:ada2f1d75e4db710":
             "rule 3: read the WHOLE derived set; deps.yaml alone is rejected; the runner "
             "harness is the target's and is not in the set (issue #284, which also removed "
             "rules 5-6 and renumbered 7-9 of the same paragraph; issue #346 appended rule 8, "
             "case input routing, and left rule 3 unchanged; issue #358 rewrote rule 7's "
             "empty-`profiles` sentence; rule 3 unchanged; issue #483 extended rule 5's "
             "primary-predicate obligations; rule 3 unchanged; issue #486 extended rule 4 with "
-            "the catalog's published ABI; rule 3 unchanged)",
+            "the catalog's published ABI; rule 3 unchanged; issue #526 moved rule 5's "
+            "verification lists to the per-test part template; rule 3 unchanged)",
         "docs/workflow/phases/phase_01_compile.md:8669240102ee7090":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
             "infrastructure node in it (issue #284)",

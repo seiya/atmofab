@@ -51,7 +51,7 @@ This document defines the reference conventions for the `skills` used in the pro
 Every row is host-side: either a `pure-function leaf` reading one template, or a deterministic
 substep the conductor runs in-process. No row names a `SKILL`.
 
-- `Compile generate`: `tools/prompt_templates/pure_compile_generate.txt`, with `phase_01_compile.md` and the node's `spec` documents inlined (`_build_pure_compile_context`)
+- `Compile generate`: `tools/prompt_templates/pure_compile_generate.txt` for the IR core, with `phase_01_compile.md` and the node's `spec` documents inlined (`_build_pure_compile_context`), then `pure_compile_generate_verification.txt` once per `tests.md` test (issue #526)
 - `Compile static`: conductor in-process (deterministic `validate_workspace_root` + `validate_pipeline_semantics --stage compile`, see `docs/workflow/phases/phase_01_compile.md`)
 - `Compile verify`: `tools/prompt_templates/pure_compile_verify.txt` (`_build_pure_compile_verify_context`)
 - `Generate generate`: `tools/prompt_templates/pure_generate_generate.txt` on the `m3c` bundle shape, `pure_generate_generate_harness.txt` on the `harness` shape

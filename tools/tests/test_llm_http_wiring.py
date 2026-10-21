@@ -719,14 +719,15 @@ class ColdOuterReopenTests(_HttpServeMixin, unittest.TestCase):
 
     def test_an_outer_reuse_reopen_on_an_http_compile_entry_carries_the_gate_excerpt_cold(
             self) -> None:
-        from tools.tests.test_pure_leaf_compile import _doc
+        from tools.tests.test_pure_leaf_compile import _doc, _part
         refs = self._compile_fixture()
-        sent = self._serve([json.dumps(_doc())])
+        sent = self._serve([json.dumps(_doc()), json.dumps(_part())])
         c = self._conductor(_COMPILE_HTTP_CONFIG)
         outcome = c.run_substep(refs, "compile", "generate",
                                 repair=self._repair())
         self.assertEqual(outcome.status, "pass")
-        self.assertEqual(outcome.attempts, 1)
+        # The core's one turn and the one verification part's (issue #526).
+        self.assertEqual(outcome.attempts, 2)
         # What the provider actually received on the FIRST turn.
         body = sent[0]["messages"][-1]["content"]
         self.assertIn(_EXCERPT, body)
@@ -752,9 +753,9 @@ class ColdOuterReopenTests(_HttpServeMixin, unittest.TestCase):
         """The artifact holds only the `ir` half; the document the leaf is asked to correct is
         the one it returned, so the host reconstructs the other half rather than handing back a
         shape the output contract rejects."""
-        from tools.tests.test_pure_leaf_compile import _doc
+        from tools.tests.test_pure_leaf_compile import _doc, _part
         refs = self._compile_fixture()
-        self._serve([json.dumps(_doc())])
+        self._serve([json.dumps(_doc()), json.dumps(_part())])
         c = self._conductor(_COMPILE_HTTP_CONFIG)
         c.run_substep(refs, "compile", "generate", repair=self._repair())
         prior = json.loads(c.requests[0]["prior_document"])
@@ -766,9 +767,9 @@ class ColdOuterReopenTests(_HttpServeMixin, unittest.TestCase):
             self) -> None:
         """The bundle- / IR-document repair-exhaustion routes reopen with NO accepted artifact.
         The findings are the whole carry-forward there, and must not be dropped with it."""
-        from tools.tests.test_pure_leaf_compile import _doc
+        from tools.tests.test_pure_leaf_compile import _doc, _part
         refs = self._compile_fixture(stage_prior=False)
-        sent = self._serve([json.dumps(_doc())])
+        sent = self._serve([json.dumps(_doc()), json.dumps(_part())])
         c = self._conductor(_COMPILE_HTTP_CONFIG)
         outcome = c.run_substep(refs, "compile", "generate", repair=self._repair())
         self.assertEqual(outcome.status, "pass")
@@ -790,12 +791,12 @@ class ColdOuterReopenTests(_HttpServeMixin, unittest.TestCase):
         Non-UTF-8 bytes rather than malformed JSON, because malformed JSON was already caught and
         would pass against the narrow spelling too.
         """
-        from tools.tests.test_pure_leaf_compile import _doc
+        from tools.tests.test_pure_leaf_compile import _doc, _part
         refs = self._compile_fixture()
         (self.repo / "workspace" / "orchestrations" / "o" / "launches"
          / f"{_PRIOR_ARID}.request.json").write_bytes(
             b'{"ir_ref": "a", "pipeline_ref": "b", "source_id": "\xff\xfe"}')
-        sent = self._serve([json.dumps(_doc())])
+        sent = self._serve([json.dumps(_doc()), json.dumps(_part())])
         c = self._conductor(_COMPILE_HTTP_CONFIG)
         outcome = c.run_substep(refs, "compile", "generate", repair=self._repair())
         self.assertEqual(outcome.status, "pass")
@@ -814,9 +815,9 @@ class ColdOuterReopenTests(_HttpServeMixin, unittest.TestCase):
         earlier version of this docstring claimed the opposite ("the prior artifact IS on disk
         here"), and the dead branch it justified is gone.
         """
-        from tools.tests.test_pure_leaf_compile import _doc
+        from tools.tests.test_pure_leaf_compile import _doc, _part
         refs = self._compile_fixture()
-        sent = self._serve([json.dumps(_doc())])
+        sent = self._serve([json.dumps(_doc()), json.dumps(_part())])
         c = self._conductor(_COMPILE_HTTP_CONFIG)
         outcome = c.run_substep(refs, "compile", "generate",
                                 repair=self._repair(target="none"))
@@ -835,9 +836,9 @@ class ColdOuterReopenTests(_HttpServeMixin, unittest.TestCase):
     def test_an_outer_reopen_without_findings_still_renders_the_launch_prompt(self) -> None:
         """The seed's other guard: no excerpt, nothing to repair, so the reopen is a launch and
         no `pure_reopen_cold` is emitted at all."""
-        from tools.tests.test_pure_leaf_compile import _doc
+        from tools.tests.test_pure_leaf_compile import _doc, _part
         refs = self._compile_fixture()
-        self._serve([json.dumps(_doc())])
+        self._serve([json.dumps(_doc()), json.dumps(_part())])
         c = self._conductor(_COMPILE_HTTP_CONFIG)
         c.run_substep(refs, "compile", "generate", repair=self._repair(findings=None))
         self.assertEqual(c.requests[0]["repair_strategy"], "none")
@@ -854,12 +855,12 @@ class ColdOuterReopenTests(_HttpServeMixin, unittest.TestCase):
         The probe is invalid YAML rather than a missing file, because a missing file is already
         covered above and exercises only the `record is None` arm.
         """
-        from tools.tests.test_pure_leaf_compile import _doc
+        from tools.tests.test_pure_leaf_compile import _doc, _part
         refs = self._compile_fixture()
         prior_ref = f"{refs.ir_ref.rsplit('/', 1)[0]}/advdiff-uc2_20260101_000"
         (self.repo / prior_ref / "spec.ir.yaml").write_text(
             "meta:\n\tspec_id: tab-indented, which YAML refuses\n", encoding="utf-8")
-        sent = self._serve([json.dumps(_doc())])
+        sent = self._serve([json.dumps(_doc()), json.dumps(_part())])
         c = self._conductor(_COMPILE_HTTP_CONFIG)
         outcome = c.run_substep(refs, "compile", "generate", repair=self._repair())
         self.assertEqual(outcome.status, "pass")

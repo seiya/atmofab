@@ -91,7 +91,7 @@ def _write_compile_node(repo: Path, *, kind: str = "component", profile: bool = 
         f"# {spec_id}\n\n## 5. Published interface\n"
         f"The only published `operation_id` is `{spec_id}__apply`.\n", encoding="utf-8")
     (spec_dir / "tests.md").write_text(
-        "## 1. Tests\n- test_id: t_basic\n  judgment: the metric is under the threshold\n",
+        "## 1. Tests\n- `test_id`: `t_basic`\n  judgment: the metric is under the threshold\n",
         encoding="utf-8")
     deps: dict = {"spec_id": spec_id, "spec_kind": kind,
                   "dependencies": {"components": [], "profiles": [],
@@ -179,6 +179,44 @@ def _valid_ir(kind: str = "component") -> dict:
 
 def _doc(ir: dict | None = None) -> dict:
     return {"ir": ir if ir is not None else _valid_ir(), "compile_fail": None}
+
+
+#: The one test id the fixture's tests document declares, so the one verification part.
+_TEST_ID = "t_basic"
+
+
+def _entries(test_id: str = _TEST_ID) -> dict:
+    """One test's three verification lists, the shape a part returns them in (issue #526)."""
+    return {
+        "test_evidence_requirements": [{"test_id": test_id, "required_raw_variables": ["q"]}],
+        "test_predicates": [{"test_id": test_id, "expected_outcome": "pass",
+                             "target_cases": ["c1"],
+                             "pass_when": {"all": [{"ref": "verdict.overall", "op": "eq",
+                                                    "value": "pass", "quantity": "q"}]}}],
+        "primary_predicates": [{"test_id": test_id, "quantity": "q",
+                                "target_cases": ["c1"], "expr": "max(final.q)",
+                                "op": "le", "value": 1.0}],
+    }
+
+
+def _part(test_id: str = _TEST_ID) -> dict:
+    return {"verification": _entries(test_id), "compile_fail": None}
+
+
+def _assembled_ir(*test_ids: str) -> dict:
+    """`_valid_ir()` as the host writes it once every part passed: each test's entries in the
+    order given, in `io_contract`'s schema order (`inputs`, `outputs`, the evidence list, then
+    the two predicate lists — the core carries no other `io_contract` key)."""
+    ir = _valid_ir()
+    parts = [_entries(t) for t in (test_ids or (_TEST_ID,))]
+    io = ir["io_contract"]
+    ir["io_contract"] = {
+        "inputs": io["inputs"], "outputs": io["outputs"],
+        "test_evidence_requirements": [e for p in parts for e in p["test_evidence_requirements"]],
+        "test_predicates": [e for p in parts for e in p["test_predicates"]],
+        "primary_predicates": [e for p in parts for e in p["primary_predicates"]],
+    }
+    return ir
 
 
 def _declared(input_name: str = "tests", where: str = "§6",
@@ -799,7 +837,7 @@ class PureIrDocumentViolationTests(_Fixture):
 # ======================================================================================
 class PureCompileProducerTests(_Fixture):
     def test_a_clean_document_is_written_by_the_host_after_the_window_closes(self) -> None:
-        c = self.conductor(_envelope(_doc()))
+        c = self.conductor(_envelope(_doc()), _envelope(_part()))
         outcome = c.run_substep(self.refs, "compile", "generate")
         self.assertEqual(outcome.status, "pass")
         # The leaf holds no write authority, so its terminal row carries no output_refs and
@@ -807,7 +845,7 @@ class PureCompileProducerTests(_Fixture):
         self.assertEqual(outcome.output_refs, [])
         ir_dir = self.repo / self.refs.ir_ref
         self.assertEqual(yaml.safe_load((ir_dir / "spec.ir.yaml").read_text(encoding="utf-8")),
-                         _valid_ir())
+                         _assembled_ir())
         meta = json.loads((ir_dir / "ir_meta.json").read_text(encoding="utf-8"))
         self.assertEqual(meta["verification_status"], "pending")
         self.assertEqual(meta["ir_id"], self.refs.ir_id)
@@ -816,13 +854,15 @@ class PureCompileProducerTests(_Fixture):
         self.assertTrue(meta["context_isolated"])
         gmeta = json.loads((ir_dir / "compile_generate_meta.json").read_text(encoding="utf-8"))
         self.assertEqual(gmeta["result"], "pass")
-        self.assertEqual(gmeta["attempts"], 1)
+        # One attempt per loop: the core and the one part.
+        self.assertEqual(gmeta["attempts"], 2)
+        self.assertEqual(meta["attempt_count"], 2)
         self.assertEqual(gmeta["prompt_contract_version"], ort.PURE_PROMPT_CONTRACT_VERSION)
 
     def test_the_pending_status_is_not_read_as_a_certified_dependency(self) -> None:
         """`"pending"` satisfies the meta contract's non-empty-string requirement and is not
         `"pass"`, which is what every dependency-certification reader compares against."""
-        c = self.conductor(_envelope(_doc()))
+        c = self.conductor(_envelope(_doc()), _envelope(_part()))
         c.run_substep(self.refs, "compile", "generate")
         meta = json.loads((self.repo / self.refs.ir_ref
                            / "ir_meta.json").read_text(encoding="utf-8"))
@@ -833,7 +873,7 @@ class PureCompileProducerTests(_Fixture):
         list transcribed here — `_stage_meta_contract_findings` runs the same functions inside
         `classify_failure`, so a meta that fails them escalates every compile failure."""
         import tools.meta_contracts as mc
-        c = self.conductor(_envelope(_doc()))
+        c = self.conductor(_envelope(_doc()), _envelope(_part()))
         c.run_substep(self.refs, "compile", "generate")
         meta = json.loads((self.repo / self.refs.ir_ref
                            / "ir_meta.json").read_text(encoding="utf-8"))
@@ -854,10 +894,12 @@ class PureCompileProducerTests(_Fixture):
                          set(ort.PURE_CONTEXT_REQUIRED_KEYS[("compile", "generate")]))
 
     def test_a_document_violation_is_repaired_within_budget(self) -> None:
-        c = self.conductor(_envelope({"ir": _valid_ir()}), _envelope(_doc()))
+        c = self.conductor(_envelope({"ir": _valid_ir()}), _envelope(_doc()),
+                           _envelope(_part()))
         outcome = c.run_substep(self.refs, "compile", "generate")
         self.assertEqual(outcome.status, "pass")
-        self.assertEqual(outcome.attempts, 2)
+        # Two core attempts and the part's one.
+        self.assertEqual(outcome.attempts, 3)
         gmeta = json.loads((self.repo / self.refs.ir_ref
                             / "compile_generate_meta.json").read_text(encoding="utf-8"))
         self.assertEqual(gmeta["result"], "pass")
@@ -960,7 +1002,7 @@ class PureCompileProducerTests(_Fixture):
         self.assertEqual(gmeta["failure_category"], "pure_transport")
 
     def test_a_host_write_failure_recovers_as_a_transport_fail_closed(self) -> None:
-        c = self.conductor(_envelope(_doc()))
+        c = self.conductor(_envelope(_doc()), _envelope(_part()))
 
         def boom(*a, **k):
             raise OSError("no space left on device")
@@ -1098,12 +1140,14 @@ class PureCompileSpecValueTests(_Fixture):
     """
 
     def test_the_producer_pass_summary_names_the_compile_artifact(self) -> None:
-        c = self.conductor(_envelope(_doc()))
+        c = self.conductor(_envelope(_doc()), _envelope(_part()))
         c.run_substep(self.refs, "compile", "generate")
-        row = _finalized(c)[-1]
-        self.assertEqual(row["status"], "pass")
-        self.assertEqual(row["result_summary"],
-                         "pure_compile_pass: IR accepted (attempts=1)")
+        rows = _finalized(c)
+        self.assertEqual([r["status"] for r in rows], ["pass", "pass"])
+        self.assertEqual([r["result_summary"] for r in rows],
+                         ["pure_compile_pass: IR core accepted (attempts=1)",
+                          f"pure_compile_pass: verification part {_TEST_ID} accepted "
+                          "(attempts=1)"])
 
     def test_the_producer_failure_summary_and_event_name_the_compile_pair(self) -> None:
         c = self.conductor(_envelope({"ir": _valid_ir()}))
@@ -1321,19 +1365,19 @@ class PureCompileFailDeclarationTests(_Fixture):
                 self.assertEqual(result[0], wc.COMPILE_IR_DOCUMENT_VIOLATION)
                 self.assertIn("two different answers", result[1])
         doc = {"ir": _valid_ir(), "compile_fail": _declared()["compile_fail"]}
-        c = self.conductor(_envelope(doc), _envelope(_doc()))
+        c = self.conductor(_envelope(doc), _envelope(_doc()), _envelope(_part()))
         outcome = c.run_substep(self.refs, "compile", "generate")
-        self.assertEqual((outcome.status, outcome.attempts), ("pass", 2))
+        self.assertEqual((outcome.status, outcome.attempts), ("pass", 3))
         ir_dir = self.repo / self.refs.ir_ref
         meta = json.loads((ir_dir / "ir_meta.json").read_text(encoding="utf-8"))
         self.assertEqual(meta["verification_status"], "pending")
 
     def test_a_give_up_is_repaired_into_a_document(self) -> None:
         give_up = {"ir": None, "compile_fail": "no input is missing; the IR is too large"}
-        c = self.conductor(_envelope(give_up), _envelope(_doc()))
+        c = self.conductor(_envelope(give_up), _envelope(_doc()), _envelope(_part()))
         outcome = c.run_substep(self.refs, "compile", "generate")
         self.assertEqual(outcome.status, "pass")
-        self.assertEqual(outcome.attempts, 2)
+        self.assertEqual(outcome.attempts, 3)
         ir_dir = self.repo / self.refs.ir_ref
         self.assertTrue((ir_dir / "spec.ir.yaml").exists())
         gmeta = json.loads((ir_dir / "compile_generate_meta.json").read_text(encoding="utf-8"))
@@ -1398,6 +1442,478 @@ class PureCompileFailDeclarationTests(_Fixture):
         self.assertEqual(names[-1], "published_operations")
         with self.assertRaises(ValueError):
             wc.Conductor._compile_fail_inputs("harness")
+
+
+# ======================================================================================
+# The verification parts (issue #526): a core loop, then one loop per test, then assembly
+# ======================================================================================
+def _requests(conductor) -> list[dict]:
+    """The `--request-json` of every `record-launch`, in order."""
+    return [cap["--request-json"] for s, cap in conductor.calls if s == "record-launch"]
+
+
+def c_core_violations(case: "_Fixture", doc: dict):
+    return case.conductor()._pure_ir_core_violations(case.refs, doc)
+
+
+class PureCompilePartsTests(_Fixture):
+    TESTS = ("t_alpha", "t_beta")
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.repo / self.refs.spec_path / "tests.md").write_text(
+            "## 6. Tests\n\n### 6-1. `t_alpha`\n\nThe first judgment.\n\n"
+            "### 6-2. `t_beta`\n\nThe second judgment.\n", encoding="utf-8")
+
+    def meta(self) -> dict:
+        return json.loads((self.repo / self.refs.ir_ref / "compile_generate_meta.json")
+                          .read_text(encoding="utf-8"))
+
+    def run_clean(self):
+        c = self.conductor(_envelope(_doc()), *(_envelope(_part(t)) for t in self.TESTS))
+        return c, c.run_substep(self.refs, "compile", "generate")
+
+    def test_the_host_assembles_the_core_and_every_part_in_the_tests_order(self) -> None:
+        c, outcome = self.run_clean()
+        self.assertEqual((outcome.status, outcome.attempts), ("pass", 3))
+        written = yaml.safe_load((self.repo / self.refs.ir_ref / "spec.ir.yaml")
+                                 .read_text(encoding="utf-8"))
+        self.assertEqual(written, _assembled_ir(*self.TESTS))
+        # The schema block's order, not the order the lists were added in.
+        self.assertEqual(list(written["io_contract"]),
+                         ["inputs", "outputs", "test_evidence_requirements",
+                          "test_predicates", "primary_predicates"])
+        self.assertEqual([e["test_id"] for e in written["io_contract"]["test_predicates"]],
+                         list(self.TESTS))
+        meta = self.meta()
+        self.assertEqual((meta["result"], meta["attempts"]), ("pass", 3))
+        self.assertEqual([r["part"] for r in meta["per_attempt"]], ["core", *self.TESTS])
+        self.assertEqual(
+            [(r["part"], r["test_id"], r["agent_run_id"], r["attempts"], r["result"])
+             for r in meta["parts"]],
+            [("core", None, "child-1", 1, "pass"), ("t_alpha", "t_alpha", "child-2", 1, "pass"),
+             ("t_beta", "t_beta", "child-3", 1, "pass")])
+        self.assertEqual(outcome.agent_run_id, "child-3")
+        ir_meta = json.loads((self.repo / self.refs.ir_ref / "ir_meta.json")
+                             .read_text(encoding="utf-8"))
+        self.assertEqual((ir_meta["verification_status"], ir_meta["attempt_count"]),
+                         ("pending", 3))
+
+    def test_the_assembled_io_contract_follows_the_schema_order(self) -> None:
+        """The three lists are not appended at the end: the evidence list sits after
+        `raw_requirements` and the two predicate lists after `semantic_dependency`, as the
+        phase contract's schema block orders them, and a key the block does not name keeps its
+        place after them. The fixture core above carries none of the keys between, so only a
+        core that does can tell the reorder from an append."""
+        core = _valid_ir()
+        core["io_contract"] = {"notes": "kept", "semantic_dependency": {"required_sources": ["q"]},
+                               "diagnostics_contract": {"checks": []}, "raw_requirements": {},
+                               "outputs": [], "inputs": []}
+        assembled = self.conductor()._assemble_pure_ir(core, [_entries(t) for t in self.TESTS])
+        self.assertEqual(list(assembled["io_contract"]),
+                         ["inputs", "outputs", "raw_requirements", "test_evidence_requirements",
+                          "diagnostics_contract", "semantic_dependency", "test_predicates",
+                          "primary_predicates", "notes"])
+        self.assertEqual(list(core["io_contract"])[0], "notes", "the core was modified")
+
+    def test_each_part_is_a_verification_launch_with_the_core_and_its_test(self) -> None:
+        c = self.conductor(_envelope(_doc()), *(_envelope(_part(t)) for t in self.TESTS))
+        surface = ({"node_key": _NODE, "published_operations": [f"{_SPEC_ID}__apply"],
+                    "source": "ir_public_api"},)
+        c.run_substep(self.refs, "compile", "generate", dependency_surface=surface)
+        core_req, *part_reqs = _requests(c)
+        self.assertNotIn("pure_shape", core_req)
+        self.assertEqual(core_req["dependency_surface"], list(surface))
+        self.assertEqual(set(core_req["pure_context"]),
+                         set(ort.PURE_CONTEXT_REQUIRED_KEYS[("compile", "generate")]))
+        self.assertEqual(len(part_reqs), len(self.TESTS))
+        for test_id, req in zip(self.TESTS, part_reqs):
+            with self.subTest(test_id=test_id):
+                self.assertEqual(req["pure_shape"], "verification")
+                self.assertEqual(
+                    list(req["pure_context"]),
+                    list(ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[
+                        ("compile", "generate", "verification")]))
+                self.assertEqual(json.loads(req["pure_context"]["ir_core_document"]),
+                                 _valid_ir())
+                self.assertEqual(req["pure_context"]["verification_test_document"], test_id)
+                for key in ("controlled_spec_document", "tests_document",
+                            "phase_contract_document", "checks_module_contract_document"):
+                    self.assertEqual(req["pure_context"][key], core_req["pure_context"][key])
+                # A part is shown no catalog: it transcribes no operation name, and its
+                # template has no slot that would render one.
+                self.assertNotIn("dependency_surface", req)
+
+    def test_every_launch_of_a_part_names_its_test_and_no_other_launch_does(self) -> None:
+        """`pure_part` is what a record's reader tells a part's launch from a retry by, so it
+        is on EVERY launch of the part — its warm repair turn included, which carries no
+        context to read the test from — and on no launch of the core."""
+        c = self.conductor(_envelope(_doc()), _envelope(_part("t_beta")),
+                           _envelope(_part("t_alpha")), _envelope(_part("t_beta")))
+        c.run_substep(self.refs, "compile", "generate")
+        reqs = _requests(c)
+        self.assertEqual([r.get("pure_part") for r in reqs],
+                         [None, "t_alpha", "t_alpha", "t_beta"])
+        self.assertTrue(reqs[2]["warm_resume"])
+        self.assertNotIn("pure_context", reqs[2])
+        for req in reqs:
+            ort._validate_launch_request_payload(ort.prepare_launch_request_payload(
+                dict(req, dependency_ref=f"{self.refs.spec_path}/deps.yaml")))
+
+    def test_a_pure_part_is_refused_off_the_verification_shape(self) -> None:
+        c = self.conductor(_envelope(_doc()), _envelope(_part("t_alpha")),
+                           _envelope(_part("t_beta")))
+        c.run_substep(self.refs, "compile", "generate")
+        core_req, part_req, _ = _requests(c)
+        for req, part in ((core_req, "t_alpha"), (part_req, ""), (part_req, 3)):
+            with self.subTest(part=part, shape=req.get("pure_shape")):
+                with self.assertRaises(ValueError) as caught:
+                    ort._validate_pure_launch_request_payload(dict(req, pure_part=part))
+                self.assertIn("pure_part", str(caught.exception))
+
+    def test_a_part_naming_another_test_is_repaired(self) -> None:
+        c = self.conductor(_envelope(_doc()), _envelope(_part("t_beta")),
+                           _envelope(_part("t_alpha")), _envelope(_part("t_beta")))
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual((outcome.status, outcome.attempts), ("pass", 4))
+        meta = self.meta()
+        failed = meta["per_attempt"][1]
+        self.assertEqual((failed["part"], failed["failure_category"]),
+                         ("t_alpha", wc.COMPILE_IR_DOCUMENT_VIOLATION))
+        self.assertIn("'t_alpha'", failed["failure_excerpt"])
+        self.assertEqual([r["attempts"] for r in meta["parts"]], [1, 2, 1])
+        self.assertEqual(_requests(c)[2]["repair_reason"], "pure_ir_document_repair")
+
+    def test_a_part_declaring_an_input_defect_ends_the_substep_with_no_ir(self) -> None:
+        declared = {"verification": None,
+                    "compile_fail": {"input": "tests", "where": "§6-2",
+                                     "what": "the judgment names no threshold"}}
+        c = self.conductor(_envelope(_doc()), _envelope(_part("t_alpha")), _envelope(declared))
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual((outcome.status, outcome.leaf_returncode), ("fail", 0))
+        ir_dir = self.repo / self.refs.ir_ref
+        self.assertFalse((ir_dir / "spec.ir.yaml").exists())
+        ir_meta = json.loads((ir_dir / "ir_meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(ir_meta["last_fail_reason"],
+                         "tests §6-2: the judgment names no threshold")
+        self.assertEqual((ir_meta["verification_status"], ir_meta["attempt_count"]),
+                         ("fail", 3))
+        meta = self.meta()
+        self.assertEqual((meta["result"], meta["failure_category"], meta["attempts"]),
+                         ("fail", wc.COMPILE_DECLARED_FAIL, 3))
+        # The substep's launch count on a failing exit too, not the last loop's.
+        self.assertEqual(outcome.attempts, 3)
+        self.assertEqual(meta["parts"][-1]["part"], "t_beta")
+        self.assertEqual(meta["parts"][-1]["result"], "fail")
+        decision = c.classify_failure(self.refs, "compile", [outcome])
+        self.assertEqual((decision.action, decision.reason),
+                         ("fail_closed", wc.COMPILE_DECLARED_FAIL))
+
+    def test_a_declared_fail_whose_host_write_fails_still_counts_every_launch(self) -> None:
+        """The declared-fail projection is written before the loop records its rows, so when
+        that write raises, the loop's launch is in no shared row: it is added on its own."""
+        declared = {"verification": None,
+                    "compile_fail": {"input": "tests", "where": "§6-2", "what": "x"}}
+        c = self.conductor(_envelope(_doc()), _envelope(_part("t_alpha")), _envelope(declared))
+
+        def boom(*a, **k):
+            raise OSError("no space left on device")
+
+        c._write_declared_compile_fail = boom  # type: ignore[assignment]
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual(outcome.infra_error[0], "pure_compile_host_write_failed")
+        self.assertEqual(outcome.attempts, 3)
+
+    def test_a_core_that_never_passes_launches_no_part(self) -> None:
+        c = self.conductor(_envelope({"ir": _valid_ir()}))
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual(outcome.status, "fail")
+        self.assertEqual(len(_requests(c)), 1 + ort_repair_turns())
+        self.assertEqual(outcome.attempts, 1 + ort_repair_turns())
+        self.assertTrue(all("pure_shape" not in r for r in _requests(c)))
+        meta = self.meta()
+        self.assertEqual(meta["failure_category"], wc.COMPILE_IR_DOCUMENT_VIOLATION)
+        self.assertEqual([r["part"] for r in meta["parts"]], ["core"])
+        decision = c.classify_failure(self.refs, "compile", [outcome])
+        self.assertEqual((decision.action, decision.target_phase, decision.repair_strategy),
+                         ("retry", "compile", "reuse"))
+        self.assertTrue(c._read_repair_findings(self.refs, decision.reason, "compile"))
+
+    def test_a_core_carrying_a_verification_list_is_repaired(self) -> None:
+        for key in wc.Conductor._PURE_IR_VERIFICATION_LISTS:
+            with self.subTest(key=key):
+                ir = _valid_ir()
+                ir["io_contract"][key] = []
+                found = self.conductor()._pure_ir_core_violations(self.refs, _doc(ir))
+                self.assertIsNotNone(found)
+                self.assertEqual(found[0], wc.COMPILE_IR_DOCUMENT_VIOLATION)
+                self.assertIn(f"`{key}`", found[1])
+        ir = _valid_ir()
+        ir["io_contract"] = []
+        found = self.conductor()._pure_ir_core_violations(self.refs, _doc(ir))
+        self.assertIn("`ir.io_contract` must be a JSON object", found[1])
+        self.assertIsNone(self.conductor()._pure_ir_core_violations(self.refs, _doc()))
+        self.assertIsNone(self.conductor()._pure_ir_core_violations(self.refs, _declared()))
+
+    def test_an_id_declared_twice_is_one_part(self) -> None:
+        """The host's part list is `_parse_test_ids_from_tests_md`, which keeps the first of
+        an id declared in both forms; without that, the test's entries would be authored twice
+        and assembled twice, and the gate would refuse the duplicate."""
+        (self.repo / self.refs.spec_path / "tests.md").write_text(
+            "## 6. Tests\n\n### 6-1. `t_alpha`\n\n- `test_id`: `t_alpha`\n\n"
+            "### 6-2. `t_beta`\n", encoding="utf-8")
+        c, outcome = self.run_clean()
+        self.assertEqual(outcome.status, "pass")
+        self.assertEqual([r["part"] for r in self.meta()["parts"]], ["core", *self.TESTS])
+
+    def test_a_tests_document_with_no_test_id_launches_nothing(self) -> None:
+        (self.repo / self.refs.spec_path / "tests.md").write_text(
+            "## 6. Tests\n\n- test_id: written without the backticks\n", encoding="utf-8")
+        c = self.conductor(_envelope(_doc()))
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual(outcome.status, "fail")
+        self.assertEqual(outcome.infra_error[0], "pure_context_assembly_failed")
+        self.assertTrue(outcome.infra_error[1].startswith("pure_tests_document_no_test_ids: "))
+        self.assertEqual(_requests(c), [])
+
+    def test_a_document_that_vanishes_after_the_core_ran_fails_no_part(self) -> None:
+        """The parts' documents are read before the core launches, so a spec document that
+        disappears while the core runs cannot fail a LATER part's context assembly — which would
+        return before any meta write and leave the core's attempts unrecorded."""
+        c = self.conductor(_envelope(_doc()), *(_envelope(_part(t)) for t in self.TESTS))
+        real_spawn = c.spawn_leaf
+
+        def spawn_then_delete(*a, **k):
+            proc = real_spawn(*a, **k)
+            (self.repo / self.refs.spec_path / "controlled_spec.md").unlink(missing_ok=True)
+            return proc
+
+        c.spawn_leaf = spawn_then_delete  # type: ignore[assignment]
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual((outcome.status, outcome.attempts), ("pass", 3))
+        self.assertEqual([r["part"] for r in self.meta()["parts"]], ["core", *self.TESTS])
+
+    def test_an_assembly_the_host_cannot_vouch_for_is_a_host_write_failure(self) -> None:
+        c = self.conductor(_envelope(_doc()), *(_envelope(_part(t)) for t in self.TESTS))
+        broken = _assembled_ir(*self.TESTS)
+        broken["meta"]["spec_kind"] = "problem"
+        c._assemble_pure_ir = lambda core, parts: broken  # type: ignore[assignment]
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual((outcome.status, outcome.leaf_returncode), ("fail", 1))
+        self.assertEqual(outcome.infra_error[0], "pure_compile_host_write_failed")
+        self.assertIn("spec_kind", outcome.infra_error[1])
+        self.assertFalse((self.repo / self.refs.ir_ref / "spec.ir.yaml").exists())
+
+    # --- a reopen -------------------------------------------------------------------
+
+    _PRIOR = {"core": "prior-core", "t_alpha": "prior-alpha"}
+
+    def test_a_test_named_core_does_not_take_the_cores_session(self) -> None:
+        """`core` is a legal test id (the tests.md grammar reserves none), and the core loop's
+        `part` label is `core` too; the previous run's rows are keyed by `test_id`, so on a
+        reopen the core resumes the core and the test resumes the test."""
+        (self.repo / self.refs.spec_path / "tests.md").write_text(
+            "## 6. Tests\n\n### 6-1. `core`\n\nA test called core.\n", encoding="utf-8")
+        self.TESTS = ("core",)
+        self.stage_previous_run({}, rows=[("core", None, "prior-core"),
+                                          ("core", "core", "prior-test")])
+        core, part = self.reopen(warm=True)
+        self.assertEqual(core["repair_target_agent_run_id"], "prior-core")
+        self.assertEqual(part["repair_target_agent_run_id"], "prior-test")
+
+    def stage_previous_run(self, parts: dict[str, str], rows=None,
+                           failed: str | None = None) -> str:
+        """The directory a previous `compile.generate` wrote into, its meta's `parts[]`, its
+        IR, and one launch record per previous loop naming it."""
+        prior_ref = f"{self.refs.ir_ref.rsplit('/', 1)[0]}/advdiff-uc2_20260101_000"
+        prior = self.repo / prior_ref
+        prior.mkdir(parents=True, exist_ok=True)
+        (prior / "spec.ir.yaml").write_text(
+            yaml.safe_dump(_assembled_ir(*self.TESTS), sort_keys=False), encoding="utf-8")
+        rows = rows if rows is not None else [
+            (k, None if k == "core" else k, v) for k, v in parts.items()]
+        (prior / "compile_generate_meta.json").write_text(json.dumps({
+            "result": "fail" if failed else "pass",
+            "parts": [{"part": k, "test_id": t, "agent_run_id": v,
+                       "result": "fail" if k == failed else "pass"}
+                      for k, t, v in rows]}), encoding="utf-8")
+        launches = self.repo / "workspace" / "orchestrations" / "o" / "launches"
+        launches.mkdir(parents=True, exist_ok=True)
+        for _part_name, _test_id, arid in rows:
+            (launches / f"{arid}.request.json").write_text(json.dumps(
+                {"ir_ref": prior_ref, "pipeline_ref": self.refs.pipeline_ref,
+                 "agent_run_id": arid}), encoding="utf-8")
+        return prior_ref
+
+    def reopen(self, *, warm: bool):
+        c = self.conductor(_envelope(_doc()), *(_envelope(_part(t)) for t in self.TESTS))
+        c._claude_session_resumable = lambda arid, **kw: warm  # type: ignore[assignment]
+        launches = self.repo / "workspace" / "orchestrations" / "o" / "launches"
+        target = sorted(p.name for p in launches.glob("prior-*.request.json"))[-1]
+        repair = {"issue_severity": "major", "repair_strategy": "reuse",
+                  "repair_target_agent_run_id": target.removesuffix(".request.json"),
+                  "repair_reason": "compile_static_compile_static_violation",
+                  "repair_findings": "io_contract.primary_predicates[1]: reads no state"}
+        outcome = c.run_substep(self.refs, "compile", "generate", repair=repair)
+        self.assertEqual(outcome.status, "pass")
+        return _requests(c)
+
+    def test_a_reopen_resumes_each_loop_on_its_own_previous_attempt(self) -> None:
+        self.stage_previous_run(self._PRIOR)
+        core, alpha, beta = self.reopen(warm=True)
+        self.assertEqual(core["repair_target_agent_run_id"], "prior-core")
+        self.assertEqual(alpha["repair_target_agent_run_id"], "prior-alpha")
+        # The same findings; a part's copy adds the host's locator note (its own row).
+        self.assertTrue(alpha["repair_findings"].startswith(core["repair_findings"]))
+        # The core resumes its session; a part does not, even when its session is resumable:
+        # that session holds the previous core, and a warm repair re-sends no context. Its cold
+        # repair carries the core this reopen produced.
+        self.assertTrue(core["warm_resume"])
+        self.assertFalse(alpha.get("warm_resume"))
+        self.assertEqual(json.loads(alpha["pure_context"]["ir_core_document"]), _valid_ir())
+        self.assertIn("prior_document", alpha)
+        # A loop the previous run never reached resumes nothing: the only target on offer
+        # is another loop's session.
+        self.assertEqual(beta["repair_strategy"], "none")
+        self.assertFalse(beta.get("warm_resume"))
+
+    def test_a_gate_finding_reaches_every_part_with_where_its_entries_sat(self) -> None:
+        """Every loop passed, so the findings come from a gate on the whole IR, which names an
+        entry by its index; each part's copy closes with the host's note of its own indices."""
+        self.stage_previous_run(self._PRIOR)
+        core, alpha, _ = self.reopen(warm=True)
+        self.assertNotIn("Host note", core["repair_findings"])
+        self.assertTrue(alpha["repair_findings"].startswith(
+            "io_contract.primary_predicates[1]: reads no state\n\nHost note: "))
+        self.assertIn("test 't_alpha' were io_contract.test_evidence_requirements[0]; "
+                      "io_contract.test_predicates[0]; io_contract.primary_predicates[0]",
+                      alpha["repair_findings"])
+
+    def test_a_loop_that_ended_the_run_is_the_only_one_handed_its_refusal(self) -> None:
+        """The previous run ENDED on t_alpha's document violation, so the findings are that
+        part's own refusal: handing them to the core as "correct exactly these violations" is
+        an instruction its validator refuses. The core starts fresh; t_alpha repairs."""
+        self.stage_previous_run(self._PRIOR, failed="t_alpha")
+        core, alpha, beta = self.reopen(warm=True)
+        self.assertEqual(core["repair_strategy"], "none")
+        self.assertNotIn("repair_findings", core)
+        self.assertEqual(alpha["repair_target_agent_run_id"], "prior-alpha")
+        self.assertNotIn("Host note", alpha["repair_findings"])
+        self.assertEqual(beta["repair_strategy"], "none")
+
+    def test_a_part_with_no_entries_in_the_previous_ir_gets_no_prior_document(self) -> None:
+        """A previous IR without this test's entries (one written before issue #526, or one
+        whose tests changed) has nothing to correct: no prior document, not three empty lists
+        presented as the leaf's own."""
+        prior_ref = self.stage_previous_run(self._PRIOR)
+        ir = _assembled_ir("t_beta")
+        (self.repo / prior_ref / "spec.ir.yaml").write_text(
+            yaml.safe_dump(ir, sort_keys=False), encoding="utf-8")
+        record = {"ir_ref": prior_ref}
+        c = self.conductor()
+        self.assertIsNone(c._pure_ir_verification_prior_document("t_alpha")(record))
+        self.assertIsNotNone(c._pure_ir_verification_prior_document("t_beta")(record))
+
+    def test_a_cold_reopen_carries_each_part_its_own_entries(self) -> None:
+        self.stage_previous_run(self._PRIOR)
+        core, alpha, _ = self.reopen(warm=False)
+        # The core's copy is the assembled IR WITHOUT the three lists: it is refused for
+        # carrying them, so they must not come back to it as its own document.
+        self.assertEqual(json.loads(core["prior_document"]), _doc())
+        self.assertIsNone(c_core_violations(self, json.loads(core["prior_document"])))
+        self.assertEqual(json.loads(alpha["prior_document"]),
+                         {"verification": _entries("t_alpha"), "compile_fail": None})
+
+    def test_a_reopen_of_a_run_with_no_parts_keeps_the_core_on_the_outer_target(self) -> None:
+        """A run from before issue #526 had one loop, the core's predecessor, so its target is
+        the core's; no part can resume it."""
+        self.stage_previous_run({})
+        launches = self.repo / "workspace" / "orchestrations" / "o" / "launches"
+        (launches / "prior-alpha.request.json").write_text(json.dumps(
+            {"ir_ref": "workspace/nowhere", "agent_run_id": "prior-alpha"}), encoding="utf-8")
+        core, alpha, beta = self.reopen(warm=True)
+        self.assertEqual(core["repair_target_agent_run_id"], "prior-alpha")
+        self.assertEqual((alpha["repair_strategy"], beta["repair_strategy"]), ("none", "none"))
+
+
+class PureCompileVerificationDocumentTests(_Fixture):
+    def violations(self, doc, test_id: str = _TEST_ID):
+        return self.conductor()._pure_ir_verification_violations(test_id)(self.refs, doc)
+
+    def test_a_clean_part_is_accepted(self) -> None:
+        self.assertIsNone(self.violations(_part()))
+        many = _part()
+        many["verification"]["primary_predicates"].append(
+            dict(many["verification"]["primary_predicates"][0], quantity="r"))
+        self.assertIsNone(self.violations(many))
+
+    def test_each_malformed_part_is_one_document_violation(self) -> None:
+        def with_body(**changes):
+            body = _entries()
+            body.update(changes)
+            return {"verification": body, "compile_fail": None}
+
+        two = _entries()["test_predicates"] * 2
+        cases = {
+            "not an object": ([], "not a JSON object"),
+            "the IR envelope": (_doc(), "EXACTLY the keys `verification` and `compile_fail`"),
+            "an extra key": (dict(_part(), ir=None), "EXACTLY the keys"),
+            "a list missing": ({"verification": {k: v for k, v in _entries().items()
+                                                 if k != "test_predicates"},
+                                "compile_fail": None}, "EXACTLY the keys"),
+            "not a list": (with_body(test_predicates={}), "must be a JSON array"),
+            "another test": (_part("t_other"), "'t_other'"),
+            "an entry that is not an object": (with_body(test_predicates=["x"]),
+                                               "must be an object"),
+            "two predicates": (with_body(test_predicates=two), "EXACTLY one entry"),
+            "no evidence entry": (with_body(test_evidence_requirements=[]),
+                                  "EXACTLY one entry"),
+            "no primary predicate": (with_body(primary_predicates=[]), "at least one entry"),
+            "both answers": ({"verification": _entries(),
+                              "compile_fail": {"input": "tests", "where": "§6",
+                                               "what": "x"}}, "two different answers"),
+        }
+        for name, (doc, needle) in cases.items():
+            with self.subTest(case=name):
+                found = self.violations(doc)
+                self.assertIsNotNone(found)
+                self.assertEqual(found[0], wc.COMPILE_IR_DOCUMENT_VIOLATION)
+                self.assertIn(needle, found[1])
+
+    def test_a_part_declares_only_against_its_own_inputs(self) -> None:
+        for name in wc.Conductor._compile_fail_inputs("verification"):
+            with self.subTest(input=name):
+                self.assertIsNone(self.violations(
+                    {"verification": None,
+                     "compile_fail": {"input": name, "where": "§6", "what": "x"}}))
+        # The core is the phase's own output, and the catalog was never shown to a part.
+        for name in ("ir_core", "verification_test", "published_operations", "deps"):
+            with self.subTest(input=name):
+                found = self.violations(
+                    {"verification": None,
+                     "compile_fail": {"input": name, "where": "§6", "what": "x"}})
+                self.assertIsNotNone(found)
+                self.assertIn(f"got `input` {name!r}", found[1])
+
+    def test_the_part_inputs_are_its_inlined_documents_without_the_core_and_the_id(self) -> None:
+        self.assertEqual(wc.Conductor._compile_fail_inputs("verification"),
+                         ("controlled_spec", "tests", "phase_contract",
+                          "checks_module_contract"))
+
+    def test_the_part_template_enumerates_exactly_the_admissible_inputs(self) -> None:
+        tpl = (Path(ort.__file__).resolve().parent / "prompt_templates"
+               / "pure_compile_generate_verification.txt").read_text(encoding="utf-8")
+        head = ("the input at fault, which is one of these names and nothing else (they name "
+                "the inputs inlined below, in the order they appear there): ")
+        self.assertEqual(tpl.count(head), 1)
+        statement = tpl.split(head, 1)[1].split(";", 1)[0]
+        self.assertLess(len(statement), 200, "the reader ran past the enumeration")
+        listed = tuple(re.findall(r"`([a-z0-9_]+)`", statement))
+        self.assertEqual(listed, wc.Conductor._compile_fail_inputs("verification"))
+        slots = [k.removesuffix("_document")
+                 for k in re.findall(r"^<(\w+_document)>$", tpl, flags=re.MULTILINE)]
+        self.assertEqual(tuple(slots[:len(listed)]), listed)
+        self.assertEqual(slots[len(listed):], ["ir_core", "verification_test"])
 
 
 def ort_repair_turns() -> int:
