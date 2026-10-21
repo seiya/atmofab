@@ -1620,6 +1620,23 @@ class PureCompilePartsTests(_Fixture):
         self.assertTrue(outcome.infra_error[1].startswith("pure_tests_document_no_test_ids: "))
         self.assertEqual(_requests(c), [])
 
+    def test_a_document_that_vanishes_after_the_core_ran_fails_no_part(self) -> None:
+        """The parts' documents are read before the core launches, so a spec document that
+        disappears while the core runs cannot fail a LATER part's context assembly — which would
+        return before any meta write and leave the core's attempts unrecorded."""
+        c = self.conductor(_envelope(_doc()), *(_envelope(_part(t)) for t in self.TESTS))
+        real_spawn = c.spawn_leaf
+
+        def spawn_then_delete(*a, **k):
+            proc = real_spawn(*a, **k)
+            (self.repo / self.refs.spec_path / "controlled_spec.md").unlink(missing_ok=True)
+            return proc
+
+        c.spawn_leaf = spawn_then_delete  # type: ignore[assignment]
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual((outcome.status, outcome.attempts), ("pass", 3))
+        self.assertEqual([r["part"] for r in self.meta()["parts"]], ["core", *self.TESTS])
+
     def test_an_assembly_the_host_cannot_vouch_for_is_a_host_write_failure(self) -> None:
         c = self.conductor(_envelope(_doc()), *(_envelope(_part(t)) for t in self.TESTS))
         broken = _assembled_ir(*self.TESTS)

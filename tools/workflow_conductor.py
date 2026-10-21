@@ -7243,8 +7243,15 @@ class Conductor:
         # The part list is a fact of the context, so a tests document the host cannot read, or
         # one that declares no test id, is the context-assembly failure the producer loop
         # reports for any other document (no leaf runs): the same outcome, its own name.
+        # The four documents every part is shown are read HERE, once, for the same reason: a
+        # part's context then holds nothing that can fail to assemble, so the failure arrives
+        # before any leaf has run rather than after the core and earlier parts launched (whose
+        # attempts no meta would then record).
         try:
-            self._pure_node_document(f"{refs.spec_path}/tests.md", "tests")
+            part_documents = {
+                k: v for k, v in self._build_pure_compile_context(refs).items()
+                if k in ("controlled_spec_document", "tests_document",
+                         "phase_contract_document", "checks_module_contract_document")}
             test_ids = _parse_test_ids_from_tests_md(
                 self.repo_root / refs.spec_path / "tests.md")
             if not test_ids:
@@ -7306,10 +7313,7 @@ class Conductor:
         for test_id in test_ids:
             part_spec = base._replace(
                 build_context=(lambda refs, test_id=test_id: {
-                    **{k: v for k, v in self._build_pure_compile_context(refs).items()
-                       if k in ("controlled_spec_document", "tests_document",
-                                "phase_contract_document", "checks_module_contract_document")},
-                    "ir_core_document": core_text,
+                    **part_documents, "ir_core_document": core_text,
                     "verification_test_document": test_id}),
                 violations=self._pure_ir_verification_violations(test_id),
                 write_artifacts=stash_part(test_id),
