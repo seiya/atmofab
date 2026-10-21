@@ -708,6 +708,10 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # "How a `Compile fail` is declared" says `input` is one of the inputs the launch prompt
     # lists, never the IR core a per-test call is shown.
     "compile-docs-18": "3eb4c2de23728f6f43459cee80136ed96fcd8ec6f28b927712268eafc5b1dd68",
+    # compile-docs-19 (issue #526 follow-up): the substep bullet and §1-1 say a call per GROUP
+    # of tests (a "verification call" rather than a per-test one). A bump: the producer reads
+    # the document whole, and the §1-1 sentence is inside the excerpt every part reads.
+    "compile-docs-19": "539892082d6f1509187139d40ab010ad0597dd143b6a6418d7817126bdd97cc1",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1719,7 +1723,7 @@ INLINED_DOCUMENT_CLASS: dict[str, str] = {
     "bundle_document": "same-phase",           # the producer's bundle (the reviewer's subject)
     # The compile producer's own IR core, shown to each verification part (issue #526).
     "ir_core_document": "same-phase",
-    "verification_test_document": "input",     # one test id of tests.md, which is hashed
+    "verification_tests_document": "input",    # test ids of tests.md, which is hashed
     "harness_capabilities": "input",           # `harness.manifest`
     "target_profile": "input",                 # the target profile's hash (`target.profile`)
     "runner_document": "derived",              # RENDER_VERSION over the IR + harness outputs

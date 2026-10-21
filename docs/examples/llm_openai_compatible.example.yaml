@@ -104,9 +104,9 @@ phases:
     substeps:
       # PURE: the IR producer. The host inlines the controlled spec, the tests, the dependency
       # declaration and the phase contract; the leaf returns one JSON document holding the IR
-      # without its per-test verification lists, and one further call per test returns that
-      # test's entries (issue #526). Such a call is shown the controlled spec, the tests, the
-      # phase contract, the checks-module contract and the IR core (about 60 KB on the
+      # without its per-test verification lists, and one further call per group of tests
+      # returns those tests' entries (issue #526). Such a call is shown the controlled spec, the
+      # tests, an excerpt of the phase contract, the checks-module contract and the IR core (about 60 KB on the
       # channel node), so its context is the producer's minus the dependency declaration, the
       # profile specification, the dependency graph, the example documents and the
       # published-operations catalog, plus the core. THE CONTEXT IS LARGE, and these are BOUNDS rather than constants: most of the total is
@@ -132,7 +132,7 @@ phases:
         # the MAXIMUM — the number that sizes this cap — is 63,009 either way.) The JSON
         # document carrying one is larger again, since the YAML is what the host writes from
         # it. Since issue #526 one call writes the IR WITHOUT its per-test verification lists
-        # (each test's entries are a call of their own, far smaller), and that core is what
+        # (each group of tests' entries is a call of its own, far smaller), and that core is what
         # sizes this cap: the `shallow_water2d_channel` 0.2.4 IR measured 60,447 bytes of core
         # JSON (its per-test verification lists, measured one test at a time, sum to 89,685).
         # That whole IR, 168,735 bytes of JSON, was written at 85,325 output tokens as the

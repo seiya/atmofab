@@ -183,8 +183,8 @@ def collect_agent_run_summary(
     and is left out.
 
     One substep makes several launches BY DESIGN: `compile.generate` is an IR core and one
-    `verification` part per test (issue #526), so its rows are keyed by part too — a clean run
-    over T tests is 1 + T rows and no redo. A row's part is the `pure_part` its launch request
+    `verification` part per group of tests (issue #526), so its rows are keyed by part too — a
+    clean run over P parts is 1 + P rows and no redo. A row's part is the `pure_part` its launch request
     (`<root>/launches/<agent_run_id>.request.json`) carries, which the conductor stamps on every
     launch of a part; the key then carries `part`. Without `root`, or for a row whose request
     is unreadable, no part is read and the row keys as the substep's own.

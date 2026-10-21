@@ -1053,6 +1053,14 @@ PINNED: dict[str, str] = {
     # and the part's names the host's locator note. Round 2: the paragraphs name the reviewer
     # and the later phases as sources of whole-IR findings too, and the core's lists a metric.
     "pure-82": "9977b4093fff55fbb7e818acb18cb9aaaabeb0a3ef0d45c3b4708b75315b3be0",
+    # pure-83 (issue #526 follow-up): a `verification` part authors a GROUP of consecutive
+    # tests, bounded by `_VERIFICATION_PART_BUDGET_BYTES` of their tests.md definitions, and is
+    # shown the sections of `phase_01_compile.md` that `_VERIFICATION_PHASE_CONTRACT_HEADINGS`
+    # names instead of the whole document — the closing runs measured every part re-sending
+    # 65-100k input tokens with no cross-session cache hit on codex. Members moved:
+    # `pure_compile_generate_verification.txt` (a group of tests, `verification_tests_document`,
+    # the excerpt's label) and the two new members naming the selection and the bound.
+    "pure-83": "19b3574dcc0396e06409c0c90bc73861251a3a11037fbff4a38bb69ba56f953d",
 }
 
 
@@ -1186,6 +1194,15 @@ def _contract_tuple() -> dict[str, object]:
                 "language", language, "prompt_fragments").EXEMPLAR_GATE_DRIFT_NOTE
             for language in _prompt_languages()
         },
+        # The two host choices that decide what a `compile.generate` verification part reads
+        # (issue #526): which sections of `phase_01_compile.md` it is shown, and the bound that
+        # decides which tests share a part. The document's own text stays leaf input data like
+        # the whole document the core reads; the SELECTION is the host's, so a heading added or
+        # dropped, or a different grouping bound, changes what a part reads and bumps the
+        # version rather than shipping silently.
+        "compile_verification_phase_contract_headings":
+            list(wc.Conductor._VERIFICATION_PHASE_CONTRACT_HEADINGS),
+        "compile_verification_part_budget_bytes": wc.Conductor._VERIFICATION_PART_BUDGET_BYTES,
         # ... and the runner-output binding, inlined after the whole runner-output contract in
         # the `harness` shape's two prompts on the same ground as that document.
         "runner_output_binding_document": {

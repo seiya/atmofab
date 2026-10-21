@@ -30,8 +30,8 @@ the rework inside a run. `--since` / `--until` choose which rows are COUNTED; ra
 use every row of the segment, so a window edge does not turn a retry into a first launch.
 
 PART: since issue #526 one `compile.generate` substep run is several leaf launches by design --
-the IR core, then one `verification` part per test -- so the earliest row of EACH part is a first
-launch too, and the part's rows are a substep of their own in the table
+the IR core, then one `verification` part per group of tests -- so the earliest row of EACH part
+is a first launch too, and the part's rows are a substep of their own in the table
 (`compile.generate[verification]`), so `compile.generate`'s first-launch median stays the core's.
 A row's part is the `pure_part` its launch request (`launches/<agent_run_id>.request.json`)
 carries; the conductor stamps it on every launch of a part, warm repair turns included. A row with
