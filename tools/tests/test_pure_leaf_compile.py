@@ -177,8 +177,19 @@ def _valid_ir(kind: str = "component") -> dict:
     return ir
 
 
-def _doc(ir: dict | None = None, reason=None) -> dict:
-    return {"ir": ir if ir is not None else _valid_ir(), "last_fail_reason": reason}
+def _doc(ir: dict | None = None) -> dict:
+    return {"ir": ir if ir is not None else _valid_ir(), "compile_fail": None}
+
+
+def _declared(input_name: str = "tests", where: str = "§6",
+              what: str = "declares no test_id") -> dict:
+    """A well-formed `Compile fail` declaration, and the reason the host records for it."""
+    return {"ir": None, "compile_fail": {"input": input_name, "where": where, "what": what}}
+
+
+def _declared_reason(doc: dict) -> str:
+    d = doc["compile_fail"]
+    return f"{d['input']} {d['where']}: {d['what']}"
 
 
 def _verdict(status: str = "pass", severity: str = "none", reason=None) -> dict:
@@ -622,15 +633,14 @@ class PureIrDocumentViolationTests(_Fixture):
         self.assertIsNone(self.violations(_doc()))
 
     def test_a_declared_fail_has_no_violations_and_needs_no_ir(self) -> None:
-        self.assertIsNone(self.violations({"ir": None, "last_fail_reason": "tests.md is empty"}))
+        self.assertIsNone(self.violations(_declared()))
 
     def test_each_shape_defect_is_one_ir_document_violation(self) -> None:
         for label, doc in (
             ("not an object", ["ir"]),
             ("extra key", dict(_doc(), notes="hello")),
             ("missing key", {"ir": _valid_ir()}),
-            ("reason wrong type", {"ir": None, "last_fail_reason": {"why": "x"}}),
-            ("reason empty", {"ir": None, "last_fail_reason": "   "}),
+            ("the old key", {"ir": None, "last_fail_reason": "tests.md is empty"}),
             # The family must STRADDLE the `isinstance(ir, dict)` guard, and it did not: a
             # STRING is iterable, so the section check below it (`k not in ir`, a substring
             # test) produces a violation anyway and the guard could be deleted with this row
@@ -638,11 +648,11 @@ class PureIrDocumentViolationTests(_Fixture):
             # the section check raises `TypeError`, which escapes `run_substep` uncaught and
             # kills the conductor mid-run rather than costing one repair turn.
             ("ir not a mapping (iterable)", {"ir": "schema_version: 1.0",
-                                             "last_fail_reason": None}),
-            ("ir not a mapping (a list)", {"ir": ["schema_version"], "last_fail_reason": None}),
-            ("ir is null", {"ir": None, "last_fail_reason": None}),
-            ("ir is a number", {"ir": 5, "last_fail_reason": None}),
-            ("ir is a bool", {"ir": True, "last_fail_reason": None}),
+                                             "compile_fail": None}),
+            ("ir not a mapping (a list)", {"ir": ["schema_version"], "compile_fail": None}),
+            ("ir is null", {"ir": None, "compile_fail": None}),
+            ("ir is a number", {"ir": 5, "compile_fail": None}),
+            ("ir is a bool", {"ir": True, "compile_fail": None}),
         ):
             with self.subTest(shape=label):
                 result = self.violations(doc)
@@ -726,7 +736,7 @@ class PureIrDocumentViolationTests(_Fixture):
             c = _conductor(repo)
             ir = _valid_ir("problem")
             self.assertIsNone(c._pure_ir_document_violations(refs, {"ir": ir,
-                                                                    "last_fail_reason": None}))
+                                                                    "compile_fail": None}))
 
     def test_an_impl_defaults_section_is_refused(self) -> None:
         """The IR is target-free (issue #284, R4-a PR-3): a document that still carries the
@@ -738,7 +748,7 @@ class PureIrDocumentViolationTests(_Fixture):
             c = _conductor(repo)
             ir = _valid_ir()
             ir["impl_defaults"] = {"toolchain": {"language": "x"}}
-            found = c._pure_ir_document_violations(refs, {"ir": ir, "last_fail_reason": None})
+            found = c._pure_ir_document_violations(refs, {"ir": ir, "compile_fail": None})
             self.assertIsNotNone(found)
             assert found is not None
             self.assertEqual(found[0], wc.COMPILE_IR_DOCUMENT_VIOLATION)
@@ -773,7 +783,7 @@ class PureIrDocumentViolationTests(_Fixture):
         """The UTF-8 probe in the producer loop. `json.loads` accepts a lone surrogate, and
         writing it raises — so it must be classified as a document defect before the write."""
         c = self.conductor(_envelope(json.dumps(_doc()).replace(
-            '"last_fail_reason": null', '"last_fail_reason": null, "x": "\\ud800"')))
+            '"compile_fail": null', '"compile_fail": null, "x": "\\ud800"')))
         outcome = c.run_substep(self.refs, "compile", "generate")
         meta = json.loads((self.repo / self.refs.ir_ref
                            / "compile_generate_meta.json").read_text(encoding="utf-8"))
@@ -874,8 +884,12 @@ class PureCompileProducerTests(_Fixture):
         """Neither a pass nor a repairable defect: the leaf answered that the phase cannot be
         completed from its inputs. rc stays 0 — nothing crashed — and the routing declines the
         document table and terminalizes it fail_closed in both modes (issue #355)."""
-        reason = "tests.md declares no test_id, so the verification contract cannot be derived"
-        c = self.conductor(_envelope({"ir": None, "last_fail_reason": reason}))
+        doc = _declared("tests", "§6", "declares no test_id, so the verification contract "
+                                       "cannot be derived")
+        reason = _declared_reason(doc)
+        self.assertEqual(reason, "tests §6: declares no test_id, so the verification contract "
+                                 "cannot be derived")
+        c = self.conductor(_envelope(doc))
         events: list = []
         c.emit = lambda ev, **f: events.append((ev, f))  # type: ignore[assignment]
         outcome = c.run_substep(self.refs, "compile", "generate")
@@ -911,8 +925,9 @@ class PureCompileProducerTests(_Fixture):
         escalation that could hand the declaration back to the leaf as repair findings
         (issue #355). The facts stay where a repair read would find them — which is what makes
         the terminal route, not an empty read, the thing that keeps them out of a repair."""
-        reason = "deps.yaml names a dependency the registry does not carry"
-        c = self.conductor(_envelope({"ir": None, "last_fail_reason": reason}))
+        doc = _declared("deps", "deps", "names a dependency the registry does not carry")
+        reason = _declared_reason(doc)
+        c = self.conductor(_envelope(doc))
         outcome = c.run_substep(self.refs, "compile", "generate")
         for mode in ("dev", "prod"):
             with self.subTest(mode=mode):
@@ -1099,8 +1114,9 @@ class PureCompileSpecValueTests(_Fixture):
         self.assertNotIn("pure_bundle_attempt_failed", [e for e, _ in events])
 
     def test_the_producer_declared_fail_summary_carries_the_token_and_the_reason(self) -> None:
-        reason = "tests.md declares no test_id"
-        c = self.conductor(_envelope({"ir": None, "last_fail_reason": reason}))
+        doc = _declared()
+        reason = _declared_reason(doc)
+        c = self.conductor(_envelope(doc))
         c.run_substep(self.refs, "compile", "generate")
         self.assertEqual(
             _finalized(c)[-1]["result_summary"],
@@ -1233,6 +1249,129 @@ class PureCompileTransportCategoryTests(_Fixture):
 # ======================================================================================
 # The defensive freshness branch
 # ======================================================================================
+# ======================================================================================
+# The structured declaration (issue #526)
+# ======================================================================================
+class PureCompileFailDeclarationTests(_Fixture):
+    """A `compile_fail` names the input at fault, or it is not a declaration.
+
+    The give-up this exists for (issue #526): three channel 0.2.5 attempts returned a
+    `last_fail_reason` saying no input was missing or contradictory, and the host recorded each
+    as a terminal spec-level failure. Now a declaration that names no inlined input is a
+    document violation — a warm repair turn, then the producer-failure route."""
+
+    def violation(self, compile_fail):
+        return self.conductor()._pure_ir_document_violations(
+            self.refs, {"ir": None, "compile_fail": compile_fail})
+
+    def test_every_admissible_input_is_a_declaration(self) -> None:
+        for name in wc.Conductor._compile_fail_inputs(""):
+            with self.subTest(input=name):
+                self.assertIsNone(self.violation({"input": name, "where": "§1", "what": "x"}))
+
+    def test_each_malformed_declaration_is_one_document_violation(self) -> None:
+        good = {"input": "tests", "where": "§6", "what": "declares no test_id"}
+        family = (
+            # The give-up the issue records, verbatim in shape: prose naming no input.
+            ("a string", "no missing or contradictory input; the section is too large"),
+            # STRADDLES the `isinstance(value, dict)` guard: a list of the three key names has
+            # the right `set()`, so only the type test refuses it before `.get` would raise.
+            ("a list of the key names", ["input", "where", "what"]),
+            ("a number", 3),
+            ("an empty object", {}),
+            ("an extra key", dict(good, severity="major")),
+            ("a missing key", {"input": "tests", "where": "§6"}),
+            ("input names the model", dict(good, input="model")),
+            ("input names the output", dict(good, input="ir")),
+            ("input is empty", dict(good, input="")),
+            ("input is a filename", dict(good, input="tests.md")),
+            ("input is not a string", dict(good, input=["tests"])),
+            ("where is empty", dict(good, where="  ")),
+            ("what is empty", dict(good, what="")),
+            ("what is not a string", dict(good, what=None)),
+        )
+        self.assertTrue(any(not isinstance(v, dict) and set(v) == set(good)
+                            for _, v in family if isinstance(v, list)),
+                        "the family must hold a non-mapping with the right key set")
+        for label, value in family:
+            with self.subTest(shape=label):
+                result = self.violation(value)
+                self.assertIsNotNone(result, label)
+                self.assertEqual(result[0], wc.COMPILE_IR_DOCUMENT_VIOLATION)
+                # The finding is an instruction that converges: it names the admissible inputs
+                # and says the other answer is the document.
+                self.assertIn("return the document", result[1])
+                for name in wc.Conductor._compile_fail_inputs(""):
+                    self.assertIn(f"`{name}`", result[1])
+
+    def test_a_give_up_is_repaired_into_a_document(self) -> None:
+        give_up = {"ir": None, "compile_fail": "no input is missing; the IR is too large"}
+        c = self.conductor(_envelope(give_up), _envelope(_doc()))
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual(outcome.status, "pass")
+        self.assertEqual(outcome.attempts, 2)
+        ir_dir = self.repo / self.refs.ir_ref
+        self.assertTrue((ir_dir / "spec.ir.yaml").exists())
+        gmeta = json.loads((ir_dir / "compile_generate_meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(gmeta["per_attempt"][0]["failure_category"],
+                         wc.COMPILE_IR_DOCUMENT_VIOLATION)
+        repair = [cap["--request-json"] for s, cap in c.calls if s == "record-launch"][1]
+        self.assertEqual(repair["repair_reason"], "pure_ir_document_repair")
+
+    def test_a_persistent_give_up_is_a_producer_failure_not_a_declared_fail(self) -> None:
+        """End to end: the repair budget runs out, the substep's terminal category is the
+        document violation, and the router reopens `(compile, reuse)` — the route a retry takes
+        — rather than `fail_closed` on `compile_declared_fail`. No `ir_meta.json` blames an
+        input."""
+        give_up = {"ir": None, "compile_fail": {"input": "none", "where": "-",
+                                                "what": "the section is too large"}}
+        c = self.conductor(_envelope(give_up))
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual(outcome.status, "fail")
+        ir_dir = self.repo / self.refs.ir_ref
+        gmeta = json.loads((ir_dir / "compile_generate_meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(gmeta["failure_category"], wc.COMPILE_IR_DOCUMENT_VIOLATION)
+        self.assertEqual(gmeta["attempts"], 1 + ort_repair_turns())
+        self.assertFalse((ir_dir / "ir_meta.json").exists())
+        for mode in ("dev", "prod"):
+            with self.subTest(mode=mode):
+                c.workflow_mode = mode
+                decision = c.classify_failure(self.refs, "compile", [outcome])
+                self.assertEqual(
+                    (decision.action, decision.target_phase, decision.repair_strategy),
+                    ("retry", "compile", "reuse"))
+                self.assertEqual(
+                    decision.reason,
+                    f"{wc.COMPILE_DOCUMENT_REASON_PREFIX}{wc.COMPILE_IR_DOCUMENT_VIOLATION}")
+
+    def test_the_template_enumerates_exactly_the_admissible_inputs(self) -> None:
+        """The list is the code's (`_compile_fail_inputs`); the template's sentence is read at
+        its statement position and compared element by element, in order."""
+        tpl = (Path(ort.__file__).resolve().parent / "prompt_templates"
+               / "pure_compile_generate.txt").read_text(encoding="utf-8")
+        head = "the input at fault, which is one of these names and nothing else: "
+        self.assertEqual(tpl.count(head), 1)
+        statement = tpl.split(head, 1)[1].split(";", 1)[0]
+        self.assertLess(len(statement), 400, "the reader ran past the enumeration")
+        listed = re.findall(r"`([a-z0-9_]+)`", statement)
+        self.assertEqual(tuple(listed), wc.Conductor._compile_fail_inputs(""))
+
+    def test_the_inputs_are_the_inlined_documents_plus_the_catalog(self) -> None:
+        names = wc.Conductor._compile_fail_inputs("")
+        self.assertEqual(
+            names[:-1],
+            tuple(k.removesuffix("_document")
+                  for k in ort.PURE_CONTEXT_REQUIRED_KEYS[("compile", "generate")]))
+        self.assertEqual(names[-1], "published_operations")
+        with self.assertRaises(ValueError):
+            wc.Conductor._compile_fail_inputs("harness")
+
+
+def ort_repair_turns() -> int:
+    from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+    return MAX_BUNDLE_REPAIR_TURNS
+
+
 # ======================================================================================
 # Provider matrix
 # ======================================================================================

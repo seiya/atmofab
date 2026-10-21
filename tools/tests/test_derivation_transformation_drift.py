@@ -694,6 +694,11 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # errors line names an axis outside the rank and a non-dividing factor (values the gate does
     # not check).
     "compile-docs-16": "2189cbe5f154c9bfe02a6ef295716b020116705173ea5ccc3bf7937dcd6e7c63",
+    # compile-docs-17 (issue #526 PR-1): §1-1 and the schema block state a `Compile fail` as the
+    # structured `compile_fail` object (`input` / `where` / `what`), and say that a declaration
+    # naming no admissible input is a document violation, repaired and retried like any producer
+    # failure. A bump: the producer reads it as the contract of its third exit.
+    "compile-docs-17": "9758f29174968f652b7ba15c0fd17247e8c39e12d2e0a516543e1e4945086eb2",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

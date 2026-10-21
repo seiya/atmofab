@@ -1031,6 +1031,13 @@ PINNED: dict[str, str] = {
     # producer's launch paragraph is scoped to component / problem nodes and compares captured
     # state only where the IR's cross-target predicates do.
     "pure-80": "22eaae8f1d9f3fe821ebd80a34b9c66d8feefd6c19f8126d436b7ff590120b53",
+    # pure-81 (issue #526 PR-1): the `compile.generate` producer's envelope is `{ir,
+    # compile_fail}`. A declaration is an object naming the input at fault (one of the inlined
+    # documents, or the published-operations catalog), its section and what is wrong there; a
+    # declaration naming no such input is a document violation and comes back as a repair turn,
+    # because a section the leaf could not finish writing is not a defect of an input. Member
+    # moved: `pure_compile_generate.txt` (output contract).
+    "pure-81": "259105fc84e2b79471f780914d8f93390d90d1450b219301e3da2c9eb0d72e0a",
 }
 
 

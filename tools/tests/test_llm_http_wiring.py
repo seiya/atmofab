@@ -758,8 +758,8 @@ class ColdOuterReopenTests(_HttpServeMixin, unittest.TestCase):
         c = self._conductor(_COMPILE_HTTP_CONFIG)
         c.run_substep(refs, "compile", "generate", repair=self._repair())
         prior = json.loads(c.requests[0]["prior_document"])
-        self.assertEqual(set(prior), {"ir", "last_fail_reason"})
-        self.assertIsNone(prior["last_fail_reason"])
+        self.assertEqual(set(prior), {"ir", "compile_fail"})
+        self.assertIsNone(prior["compile_fail"])
         self.assertEqual(prior["ir"]["meta"]["notes"], _PRIOR_IR_MARKER)
 
     def test_a_cold_outer_reopen_without_a_prior_artifact_still_carries_the_findings(

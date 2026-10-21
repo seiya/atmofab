@@ -21865,8 +21865,11 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # to this case's shape by `transpose` / `flip` / `coarsen`): bumped 98600->98800; measured
         # 98784 at the commit that takes this bump. Round 3 (the errors line names an axis outside
         # the rank and a non-dividing factor): bumped 98800->99000; measured 98917 at the commit
-        # that takes this bump.
-        "docs/workflow/phases/phase_01_compile.md": 99000,
+        # that takes this bump. Issue #526 PR-1 (§1-1 and the schema block state a `Compile fail`
+        # as the structured `compile_fail` object, and that a declaration naming no admissible
+        # input is a document violation retried like any producer failure): bumped 99000->99600;
+        # measured 99487 with `wc -c` in /home/seiya/atmofab at the commit that takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 99600,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
