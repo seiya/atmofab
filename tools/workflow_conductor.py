@@ -7237,8 +7237,10 @@ class Conductor:
 
         A reopen re-runs every loop. The core may change on a repair, and every part reads it,
         so a part kept from the previous run could name a case or variable the new core does
-        not declare. Each loop warm-resumes ITS OWN session from the previous run when one is
-        recorded (`_compile_part_repair`)."""
+        not declare. Each loop repairs ITS OWN previous attempt when one is recorded
+        (`_compile_part_repair`): the core warm-resumes its session, and a part takes the cold
+        repair, whose re-stated launch body carries the core this reopen produced
+        (`reopen_warm`)."""
         from tools.validate_pipeline_semantics import _parse_test_ids_from_tests_md
         # The part list is a fact of the context, so a tests document the host cannot read, or
         # one that declares no test id, is the context-assembly failure the producer loop
@@ -7323,7 +7325,7 @@ class Conductor:
                 non_object_findings=("the reply parsed to a non-object JSON value (expected "
                                      "the verification document)"),
                 accept_noun=f"verification part {test_id}",
-                pure_shape="verification")
+                pure_shape="verification", reopen_warm=False)
             outcome = self._run_pure_producer_substep(
                 refs, "compile", "generate",
                 self._compile_part_repair(repair, previous_parts, test_id),
@@ -7718,6 +7720,13 @@ class Conductor:
         #: The category recorded for that exit. Deliberately absent from the routing table.
         declared_fail_category: str = ""
         declared_fail_event: str = ""
+        #: Whether an OUTER reopen may warm-resume the repair target's session. False where the
+        #: document's inputs may have changed since that session ran: a `compile.generate`
+        #: verification part reads the IR core, which the same reopen re-authors first, and a
+        #: resumed session holds the OLD core (a warm repair re-sends no context). Such a loop's
+        #: first turn is the cold repair instead, which re-states the whole launch body. The
+        #: loop's own repair turns are unaffected: inside one loop the inputs do not move.
+        reopen_warm: bool = True
 
     class _PureReviewerSpec(NamedTuple):
         """The phase-specific half of the pure REVIEWER loop."""
@@ -8064,7 +8073,8 @@ class Conductor:
                 prior = spec.prior_document(record) if record is not None else None
                 prior_document = (prior.encode("utf-8", "backslashreplace").decode("utf-8")
                                   if prior is not None else None)
-            if target and self._pure_session_resumable(target, entry, phase, substep):
+            if (target and spec.reopen_warm
+                    and self._pure_session_resumable(target, entry, phase, substep)):
                 resume_session_id = target
             elif seed is not None:
                 # No session, but a diagnosis to carry: make the first attempt a cold repair.

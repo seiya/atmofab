@@ -1705,7 +1705,13 @@ class PureCompilePartsTests(_Fixture):
         self.assertEqual(core["repair_target_agent_run_id"], "prior-core")
         self.assertEqual(alpha["repair_target_agent_run_id"], "prior-alpha")
         self.assertEqual(core["repair_findings"], alpha["repair_findings"])
-        self.assertTrue(core["warm_resume"] and alpha["warm_resume"])
+        # The core resumes its session; a part does not, even when its session is resumable:
+        # that session holds the previous core, and a warm repair re-sends no context. Its cold
+        # repair carries the core this reopen produced.
+        self.assertTrue(core["warm_resume"])
+        self.assertFalse(alpha.get("warm_resume"))
+        self.assertEqual(json.loads(alpha["pure_context"]["ir_core_document"]), _valid_ir())
+        self.assertIn("prior_document", alpha)
         # A loop the previous run never reached resumes nothing: the only target on offer
         # is another loop's session.
         self.assertEqual(beta["repair_strategy"], "none")
