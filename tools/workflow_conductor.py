@@ -6840,8 +6840,14 @@ class Conductor:
                      + "; ".join(clauses)))
         declaration = doc.get("compile_fail")
         if declaration is not None:
-            # A declaration that the phase cannot be completed — when it names an input. There
-            # is no `ir` to shape-check either way.
+            # A declaration that the phase cannot be completed — when it names an input. It says
+            # there is no IR, so a reply that also carries one has given both answers, and taking
+            # either would discard what the leaf meant by the other.
+            if doc.get("ir") is not None:
+                return (COMPILE_IR_DOCUMENT_VIOLATION,
+                        ("the document carries both an `ir` and a `compile_fail`, and they are "
+                         "two different answers: return the IR with `compile_fail` null, or "
+                         "declare with `ir` null"))
             return self._compile_fail_violation(declaration, "")
         ir = doc.get("ir")
         if not isinstance(ir, dict):

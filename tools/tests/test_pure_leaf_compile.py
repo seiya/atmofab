@@ -1304,6 +1304,26 @@ class PureCompileFailDeclarationTests(_Fixture):
                 for name in wc.Conductor._compile_fail_inputs(""):
                     self.assertIn(f"`{name}`", result[1])
 
+    def test_an_ir_beside_a_declaration_is_two_answers_not_a_declaration(self) -> None:
+        """A hedge — the IR written out AND a declaration beside it — must not be recorded as a
+        declared fail with the IR discarded: it is a document violation, and the repair turn
+        asks for one answer. Every declaration shape the other rows accept is refused here."""
+        for name in wc.Conductor._compile_fail_inputs(""):
+            with self.subTest(input=name):
+                result = self.conductor()._pure_ir_document_violations(
+                    self.refs, {"ir": _valid_ir(),
+                                "compile_fail": {"input": name, "where": "§6", "what": "x"}})
+                self.assertIsNotNone(result)
+                self.assertEqual(result[0], wc.COMPILE_IR_DOCUMENT_VIOLATION)
+                self.assertIn("two different answers", result[1])
+        doc = {"ir": _valid_ir(), "compile_fail": _declared()["compile_fail"]}
+        c = self.conductor(_envelope(doc), _envelope(_doc()))
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual((outcome.status, outcome.attempts), ("pass", 2))
+        ir_dir = self.repo / self.refs.ir_ref
+        meta = json.loads((ir_dir / "ir_meta.json").read_text(encoding="utf-8"))
+        self.assertEqual(meta["verification_status"], "pending")
+
     def test_a_give_up_is_repaired_into_a_document(self) -> None:
         give_up = {"ir": None, "compile_fail": "no input is missing; the IR is too large"}
         c = self.conductor(_envelope(give_up), _envelope(_doc()))
