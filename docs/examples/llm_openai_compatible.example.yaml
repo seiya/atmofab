@@ -133,8 +133,10 @@ phases:
         # it. Since issue #526 one call writes the IR WITHOUT its per-test verification lists
         # (each test's entries are a call of their own, far smaller), and that core is what
         # sizes this cap: the `shallow_water2d_channel` 0.2.4 IR measured 60,447 bytes of core
-        # JSON (about 50k tokens) beside 89,685 of verification lists, already above the 32768
-        # this entry carried before. A truncated IR is a wasted turn, not a repairable one, so
+        # JSON beside 89,685 of verification lists. That whole IR, 168,735 bytes of JSON, was
+        # written at about 85k output tokens with thinking included (claude-opus-5-5), so the
+        # core is roughly 30k on that ratio — at the 32768 this entry carried before, with no
+        # room left for reasoning. A truncated IR is a wasted turn, not a repairable one, so
         # 65536 is a BOUND taken from that measurement and not a requirement — re-measure
         # against the node and the model you run, and read the writer's budget note under
         # `generate.generate` below, which explains why a reasoning model needs more than the

@@ -215,7 +215,9 @@ prints, for the rows in the window: the retry share of `output_tokens` / `total_
 `cost_usd`, the first-launch median `output_tokens` per `step.substep`, and the retry cost
 attributed to the failure that sent the run back (for example
 `compile.verify fail -> compile.generate`). A launch is one leaf launch of a substep; a retry is
-every launch of that substep after the first within one run segment. The script's docstring
+every launch of that substep after the first within one run segment — counted per part for
+`compile.generate`, whose IR core and per-test verification parts are separate launches by design
+(issue #526; the parts are their own row, `compile.generate[verification]`). The script's docstring
 states what counts and what is excluded. It cuts a run at each operator `--resume`, and it
 corrects a warm-resumed row that the conductor recorded as the session's running total
 (rows recorded before issue #281; since then the conductor records a warm turn as its own turn,
@@ -234,7 +236,9 @@ Decision criteria when reading a comparison:
 - Both windows cover the same node set: pass the same `--node` list to each, because a node
   added to or removed from one window moves every per-`step.substep` median.
 - A change to a leaf (prompt, injected facts, a hoisted deterministic check) is judged by the
-  first-launch median of THAT `step.substep`, in both windows.
+  first-launch median of THAT `step.substep`, in both windows. Do not put the two windows on
+  either side of issue #526: `compile.generate` was the whole IR before it and is the IR core
+  after it.
 - A change aimed at the first-launch pass rate is judged by the retry share and by the cause
   rows it targets.
 - The `output_tokens` share is the headline. The `total_tokens` and `cost_usd` shares differ from

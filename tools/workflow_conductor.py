@@ -3916,7 +3916,8 @@ class Conductor:
 
         For an HTTP provider the reopen is the IN-MEMORY conversation (`_run_http_leaf` replays
         the prior user prompt and assistant answer), so a repair turn is warm exactly while
-        that history exists — which is the whole of one substep run. Answering False instead
+        that history exists — which is the whole of one producer loop (one substep run; one
+        per core and per part for `compile.generate`, issue #526). Answering False instead
         would make every repair render the COLD fallback: the full closed context re-inlined
         plus `prior_document`, on top of a replay already carrying both, so attempt N would
         ship N copies of the node's spec/IR/tests and each prior bundle twice. The history does
@@ -7238,10 +7239,11 @@ class Conductor:
 
         A reopen re-runs every loop. The core may change on a repair, and every part reads it,
         so a part kept from the previous run could name a case or variable the new core does
-        not declare. Each loop repairs ITS OWN previous attempt when one is recorded
-        (`_compile_part_repair`): the core warm-resumes its session, and a part takes the cold
-        repair, whose re-stated launch body carries the core this reopen produced
-        (`reopen_warm`)."""
+        not declare. A loop that repairs, repairs ITS OWN previous attempt, and which loops repair
+        follows from what the findings are about (`_compile_part_repair`). The core resumes its
+        session where the provider and the transcript allow, and takes the cold repair
+        otherwise; a part always takes the cold repair, whose re-stated launch body carries the
+        core this reopen produced (`reopen_warm`)."""
         from tools.validate_pipeline_semantics import _parse_test_ids_from_tests_md
         # The part list is a fact of the context, so a tests document the host cannot read, or
         # one that declares no test id, is the context-assembly failure the producer loop
@@ -7429,9 +7431,10 @@ class Conductor:
         previous run by failing, the findings are that loop's own refusal (its document
         violation), so only that loop repairs, and every other loop starts fresh: a findings
         text about one test's document handed to another as "correct exactly these violations"
-        is an instruction its own validator refuses. When every loop passed, the findings come
-        from a gate on the whole assembled IR, which names an entry by its index in the
-        assembled lists and does not say which turn wrote it; every loop with a previous attempt
+        is an instruction its own validator refuses. When every loop passed, the findings were
+        raised on the whole assembled IR — by `Compile.static`, the reviewer, a later phase or
+        a revocation — and may name an entry by its index in the assembled lists without
+        saying which turn wrote it; every loop with a previous attempt
         repairs, and a part's findings close with the host's note of where its own entries sat
         (`_verification_locator`), so it can tell its findings from another test's.
 
@@ -8121,7 +8124,9 @@ class Conductor:
         # everything from pure_context — the M-C carry-forward contract. When there is no session
         # to resume (a provider without CAP_WARM_RESUME, a GC'd claude transcript, a rotated codex
         # home), the first attempt is instead a COLD repair on the same repair template: it
-        # carries the findings and the prior document, and re-sends pure_context. Two reopens still
+        # carries the findings and the prior document, and re-sends pure_context. So is it for a
+        # spec whose `reopen_warm` is False (a `compile.generate` verification part, whose inputs
+        # the reopen re-authored), whatever the session's state. Two reopens still
         # render the full launch prompt, and only two: one with NO findings excerpt, and one whose
         # target the launch validator would refuse (`usable`, below) (issue #209).
         if repair and str(repair.get("repair_strategy", "")).strip() == "reuse":

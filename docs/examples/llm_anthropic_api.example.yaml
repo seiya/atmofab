@@ -90,8 +90,10 @@ phases:
         # 63,009 either way). The JSON document carrying one is larger again. Since issue #526
         # one call writes the IR without its per-test verification lists (each test's entries
         # are a call of their own), and that core sizes this cap: the
-        # `shallow_water2d_channel` 0.2.4 core measured 60,447 bytes of JSON (about 50k
-        # tokens). 65536 is a BOUND taken from that measurement, not a requirement —
+        # `shallow_water2d_channel` 0.2.4 core measured 60,447 bytes of JSON; the whole IR
+        # (168,735 bytes) was written at about 85k output tokens with thinking included, so
+        # the core is roughly 30k on that ratio, at the old 32768 with no room to reason.
+        # 65536 is a BOUND taken from that measurement, not a requirement —
         # re-measure against the node you run. The timeout moves with it.
         max_output_tokens: 65536
         timeout_s: 4800
