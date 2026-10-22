@@ -216,8 +216,9 @@ prints, for the rows in the window: the retry share of `output_tokens` / `total_
 attributed to the failure that sent the run back (for example
 `compile.verify fail -> compile.generate`). A launch is one leaf launch of a substep; a retry is
 every launch of that substep after the first within one run segment — counted per part for
-`compile.generate`, whose IR core and per-test verification parts are separate launches by design
-(issue #526; the parts are their own row, `compile.generate[verification]`). The script's docstring
+`compile.generate`, whose IR core and verification parts (one per group of tests) are separate
+launches by design (issue #526; the parts are their own row, `compile.generate[verification]`).
+The script's docstring
 states what counts and what is excluded. It cuts a run at each operator `--resume`, and it
 corrects a warm-resumed row that the conductor recorded as the session's running total
 (rows recorded before issue #281; since then the conductor records a warm turn as its own turn,

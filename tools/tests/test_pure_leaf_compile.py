@@ -22,6 +22,7 @@ import re
 import shutil
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
@@ -1457,10 +1458,15 @@ def c_core_violations(case: "_Fixture", doc: dict):
 
 
 class PureCompilePartsTests(_Fixture):
+    """The part machinery with ONE test per part: the bound is 0, so every test is a group of
+    its own (`_verification_part_groups`). `PureCompilePartGroupTests` drives the grouping."""
     TESTS = ("t_alpha", "t_beta")
 
     def setUp(self) -> None:
         super().setUp()
+        bound = mock.patch.object(wc.Conductor, "_VERIFICATION_PART_BUDGET_BYTES", 0)
+        bound.start()
+        self.addCleanup(bound.stop)
         (self.repo / self.refs.spec_path / "tests.md").write_text(
             "## 6. Tests\n\n### 6-1. `t_alpha`\n\nThe first judgment.\n\n"
             "### 6-2. `t_beta`\n\nThe second judgment.\n", encoding="utf-8")
@@ -1489,10 +1495,10 @@ class PureCompilePartsTests(_Fixture):
         self.assertEqual((meta["result"], meta["attempts"]), ("pass", 3))
         self.assertEqual([r["part"] for r in meta["per_attempt"]], ["core", *self.TESTS])
         self.assertEqual(
-            [(r["part"], r["test_id"], r["agent_run_id"], r["attempts"], r["result"])
+            [(r["part"], r["test_ids"], r["agent_run_id"], r["attempts"], r["result"])
              for r in meta["parts"]],
-            [("core", None, "child-1", 1, "pass"), ("t_alpha", "t_alpha", "child-2", 1, "pass"),
-             ("t_beta", "t_beta", "child-3", 1, "pass")])
+            [("core", None, "child-1", 1, "pass"), ("t_alpha", ["t_alpha"], "child-2", 1, "pass"),
+             ("t_beta", ["t_beta"], "child-3", 1, "pass")])
         self.assertEqual(outcome.agent_run_id, "child-3")
         ir_meta = json.loads((self.repo / self.refs.ir_ref / "ir_meta.json")
                              .read_text(encoding="utf-8"))
@@ -1509,7 +1515,8 @@ class PureCompilePartsTests(_Fixture):
         core["io_contract"] = {"notes": "kept", "semantic_dependency": {"required_sources": ["q"]},
                                "diagnostics_contract": {"checks": []}, "raw_requirements": {},
                                "outputs": [], "inputs": []}
-        assembled = self.conductor()._assemble_pure_ir(core, [_entries(t) for t in self.TESTS])
+        assembled = self.conductor()._assemble_pure_ir(core, [_entries(t) for t in self.TESTS],
+                                                       list(self.TESTS))
         self.assertEqual(list(assembled["io_contract"]),
                          ["inputs", "outputs", "raw_requirements", "test_evidence_requirements",
                           "diagnostics_contract", "semantic_dependency", "test_predicates",
@@ -1536,10 +1543,16 @@ class PureCompilePartsTests(_Fixture):
                         ("compile", "generate", "verification")]))
                 self.assertEqual(json.loads(req["pure_context"]["ir_core_document"]),
                                  _valid_ir())
-                self.assertEqual(req["pure_context"]["verification_test_document"], test_id)
+                self.assertEqual(req["pure_context"]["verification_tests_document"], test_id)
                 for key in ("controlled_spec_document", "tests_document",
-                            "phase_contract_document", "checks_module_contract_document"):
+                            "checks_module_contract_document"):
                     self.assertEqual(req["pure_context"][key], core_req["pure_context"][key])
+                # The phase contract is the excerpt of the core's whole document.
+                self.assertEqual(req["pure_context"]["phase_contract_document"],
+                                 wc._markdown_heading_sections(
+                                     core_req["pure_context"]["phase_contract_document"],
+                                     wc.Conductor._VERIFICATION_PHASE_CONTRACT_HEADINGS,
+                                     subject="x"))
                 # A part is shown no catalog: it transcribes no operation name, and its
                 # template has no slot that would render one.
                 self.assertNotIn("dependency_surface", req)
@@ -1697,7 +1710,7 @@ class PureCompilePartsTests(_Fixture):
         c = self.conductor(_envelope(_doc()), *(_envelope(_part(t)) for t in self.TESTS))
         broken = _assembled_ir(*self.TESTS)
         broken["meta"]["spec_kind"] = "problem"
-        c._assemble_pure_ir = lambda core, parts: broken  # type: ignore[assignment]
+        c._assemble_pure_ir = lambda core, parts, ids: broken  # type: ignore[assignment]
         outcome = c.run_substep(self.refs, "compile", "generate")
         self.assertEqual((outcome.status, outcome.leaf_returncode), ("fail", 1))
         self.assertEqual(outcome.infra_error[0], "pure_compile_host_write_failed")
@@ -1710,7 +1723,7 @@ class PureCompilePartsTests(_Fixture):
 
     def test_a_test_named_core_does_not_take_the_cores_session(self) -> None:
         """`core` is a legal test id (the tests.md grammar reserves none), and the core loop's
-        `part` label is `core` too; the previous run's rows are keyed by `test_id`, so on a
+        `part` label is `core` too; the previous run's rows are keyed by `test_ids`, so on a
         reopen the core resumes the core and the test resumes the test."""
         (self.repo / self.refs.spec_path / "tests.md").write_text(
             "## 6. Tests\n\n### 6-1. `core`\n\nA test called core.\n", encoding="utf-8")
@@ -1734,7 +1747,7 @@ class PureCompilePartsTests(_Fixture):
             (k, None if k == "core" else k, v) for k, v in parts.items()]
         (prior / "compile_generate_meta.json").write_text(json.dumps({
             "result": "fail" if failed else "pass",
-            "parts": [{"part": k, "test_id": t, "agent_run_id": v,
+            "parts": [{"part": k, "test_ids": None if t is None else [t], "agent_run_id": v,
                        "result": "fail" if k == failed else "pass"}
                       for k, t, v in rows]}), encoding="utf-8")
         launches = self.repo / "workspace" / "orchestrations" / "o" / "launches"
@@ -1811,8 +1824,8 @@ class PureCompilePartsTests(_Fixture):
             yaml.safe_dump(ir, sort_keys=False), encoding="utf-8")
         record = {"ir_ref": prior_ref}
         c = self.conductor()
-        self.assertIsNone(c._pure_ir_verification_prior_document("t_alpha")(record))
-        self.assertIsNotNone(c._pure_ir_verification_prior_document("t_beta")(record))
+        self.assertIsNone(c._pure_ir_verification_prior_document(("t_alpha",))(record))
+        self.assertIsNotNone(c._pure_ir_verification_prior_document(("t_beta",))(record))
 
     def test_a_cold_reopen_carries_each_part_its_own_entries(self) -> None:
         self.stage_previous_run(self._PRIOR)
@@ -1836,9 +1849,254 @@ class PureCompilePartsTests(_Fixture):
         self.assertEqual((alpha["repair_strategy"], beta["repair_strategy"]), ("none", "none"))
 
 
+class PureCompilePartGroupTests(_Fixture):
+    """Consecutive tests share a `verification` part up to `_VERIFICATION_PART_BUDGET_BYTES` of
+    their tests.md definitions, and every part is shown an excerpt of the phase contract."""
+    TESTS = ("t_alpha", "t_beta", "t_gamma")
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.repo / self.refs.spec_path / "tests.md").write_text(
+            "## 6. Tests\n\n### 6-1. `t_alpha`\n\nThe first judgment.\n\n"
+            "### 6-2. `t_beta`\n\nThe second judgment.\n\n"
+            "### 6-3. `t_gamma`\n\nThe third judgment.\n", encoding="utf-8")
+
+    def meta(self) -> dict:
+        return json.loads((self.repo / self.refs.ir_ref / "compile_generate_meta.json")
+                          .read_text(encoding="utf-8"))
+
+    @staticmethod
+    def _group(*test_ids: str, reverse: bool = False) -> dict:
+        """One part's document for `test_ids`, its entries listed test by test — in reverse
+        when `reverse`, which a part is free to do."""
+        ids = list(reversed(test_ids)) if reverse else list(test_ids)
+        body = {key: [e for t in ids for e in _entries(t)[key]]
+                for key in wc.Conductor._PURE_IR_VERIFICATION_LISTS}
+        return {"verification": body, "compile_fail": None}
+
+    def test_tests_within_the_bound_share_one_part(self) -> None:
+        """The default bound holds the fixture's three short definitions in one part: one
+        launch, named by its first test, shown every id, and its entries assembled in the tests
+        document's order whatever order the part listed them in."""
+        c = self.conductor(_envelope(_doc()), _envelope(self._group(*self.TESTS, reverse=True)))
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual((outcome.status, outcome.attempts), ("pass", 2))
+        core_req, part_req = _requests(c)
+        self.assertEqual(part_req["pure_part"], "t_alpha")
+        self.assertEqual(part_req["pure_context"]["verification_tests_document"],
+                         "t_alpha\nt_beta\nt_gamma")
+        written = yaml.safe_load((self.repo / self.refs.ir_ref / "spec.ir.yaml")
+                                 .read_text(encoding="utf-8"))
+        self.assertEqual(written, _assembled_ir(*self.TESTS))
+        self.assertEqual([(r["part"], r["test_ids"]) for r in self.meta()["parts"]],
+                         [("core", None), ("t_alpha", list(self.TESTS))])
+
+    def test_a_test_past_the_bound_opens_the_next_part(self) -> None:
+        from tools.validate_pipeline_semantics import _tests_md_test_block_bytes
+        text = (self.repo / self.refs.spec_path / "tests.md").read_text(encoding="utf-8")
+        block = _tests_md_test_block_bytes(text)
+        bound = block["t_alpha"] + block["t_beta"]
+        with mock.patch.object(wc.Conductor, "_VERIFICATION_PART_BUDGET_BYTES", bound):
+            c = self.conductor(_envelope(_doc()), _envelope(self._group("t_alpha", "t_beta")),
+                               _envelope(self._group("t_gamma")))
+            outcome = c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual((outcome.status, outcome.attempts), ("pass", 3))
+        self.assertEqual([r.get("pure_part") for r in _requests(c)], [None, "t_alpha", "t_gamma"])
+        self.assertEqual([r["test_ids"] for r in self.meta()["parts"]],
+                         [None, ["t_alpha", "t_beta"], ["t_gamma"]])
+
+    def test_the_grouping_rule(self) -> None:
+        c = self.conductor()
+        ids = ["a", "b", "c", "d", "e"]
+        with mock.patch.object(wc.Conductor, "_VERIFICATION_PART_BUDGET_BYTES", 10):
+            # Up to the bound joins; one byte past opens a new part; a test larger than the
+            # bound is a part of its own, and nothing joins it after; an id with no measured
+            # definition weighs nothing.
+            self.assertEqual(
+                c._verification_part_groups(ids, {"a": 4, "b": 6, "c": 1, "d": 30}),
+                [("a", "b"), ("c",), ("d",), ("e",)])
+            self.assertEqual(c._verification_part_groups(["a", "b", "c"], {"b": 10, "c": 1}),
+                             [("a", "b"), ("c",)])
+            self.assertEqual(c._verification_part_groups(["a", "b"], {"a": 11, "b": 11}),
+                             [("a",), ("b",)])
+            self.assertEqual(c._verification_part_groups([], {}), [])
+            # A new part starts counting from its own first test.
+            self.assertEqual(c._verification_part_groups(["a", "b", "c"],
+                                                         {"a": 6, "b": 6, "c": 3}),
+                             [("a",), ("b", "c")])
+
+    def test_a_group_reopen_resumes_the_group_it_was(self) -> None:
+        """The previous run's rows are keyed by the group's ids, so the same group resumes its
+        own session, and a group the previous run did not have starts cold."""
+        prior_ref = f"{self.refs.ir_ref.rsplit('/', 1)[0]}/advdiff-uc2_20260101_000"
+        prior = self.repo / prior_ref
+        prior.mkdir(parents=True, exist_ok=True)
+        (prior / "spec.ir.yaml").write_text(
+            yaml.safe_dump(_assembled_ir(*self.TESTS), sort_keys=False), encoding="utf-8")
+        rows = [("core", None, "prior-core"), ("t_alpha", list(self.TESTS), "prior-group")]
+        (prior / "compile_generate_meta.json").write_text(json.dumps({
+            "result": "pass",
+            "parts": [{"part": k, "test_ids": t, "agent_run_id": v, "result": "pass"}
+                      for k, t, v in rows]}), encoding="utf-8")
+        launches = self.repo / "workspace" / "orchestrations" / "o" / "launches"
+        launches.mkdir(parents=True, exist_ok=True)
+        for _k, _t, arid in rows:
+            (launches / f"{arid}.request.json").write_text(json.dumps(
+                {"ir_ref": prior_ref, "pipeline_ref": self.refs.pipeline_ref,
+                 "agent_run_id": arid}), encoding="utf-8")
+        repair = {"issue_severity": "major", "repair_strategy": "reuse",
+                  "repair_target_agent_run_id": "prior-group",
+                  "repair_reason": "compile_static_compile_static_violation",
+                  "repair_findings": "io_contract.primary_predicates[2]: reads no state"}
+        c = self.conductor(_envelope(_doc()), _envelope(self._group(*self.TESTS)))
+        c._claude_session_resumable = lambda arid, **kw: False  # type: ignore[assignment]
+        self.assertEqual(c.run_substep(self.refs, "compile", "generate", repair=repair).status,
+                         "pass")
+        _core, part = _requests(c)
+        self.assertEqual(part["repair_target_agent_run_id"], "prior-group")
+        self.assertIn("tests 't_alpha', 't_beta', 't_gamma' were "
+                      "io_contract.test_evidence_requirements[0, 1, 2]", part["repair_findings"])
+        self.assertEqual(json.loads(part["prior_document"]), self._group(*self.TESTS))
+        # A different grouping finds no row of its own and starts cold.
+        with mock.patch.object(wc.Conductor, "_VERIFICATION_PART_BUDGET_BYTES", 0):
+            c = self.conductor(_envelope(_doc()),
+                               *(_envelope(self._group(t)) for t in self.TESTS))
+            c._claude_session_resumable = lambda arid, **kw: False  # type: ignore[assignment]
+            self.assertEqual(
+                c.run_substep(self.refs, "compile", "generate", repair=repair).status, "pass")
+        self.assertEqual([r["repair_strategy"] for r in _requests(c)[1:]], ["none"] * 3)
+
+    def test_a_previous_run_recorded_one_test_per_row_still_routes_each_loop(self) -> None:
+        """A `pure-82` row names one `test_id`: it reads as that one-test group, so the core
+        resumes the core and a part matching that group resumes it — never the core taking the
+        outer target, which is the last part's session."""
+        prior_ref = f"{self.refs.ir_ref.rsplit('/', 1)[0]}/advdiff-uc2_20260101_000"
+        prior = self.repo / prior_ref
+        prior.mkdir(parents=True, exist_ok=True)
+        (prior / "spec.ir.yaml").write_text(
+            yaml.safe_dump(_assembled_ir(*self.TESTS), sort_keys=False), encoding="utf-8")
+        rows = [("core", None, "prior-core"), ("t_alpha", "t_alpha", "prior-alpha"),
+                ("t_beta", "t_beta", "prior-beta"), ("t_gamma", "t_gamma", "prior-gamma")]
+        (prior / "compile_generate_meta.json").write_text(json.dumps({
+            "result": "pass",
+            "parts": [{"part": k, "test_id": t, "agent_run_id": v, "result": "pass"}
+                      for k, t, v in rows]}), encoding="utf-8")
+        launches = self.repo / "workspace" / "orchestrations" / "o" / "launches"
+        launches.mkdir(parents=True, exist_ok=True)
+        for _k, _t, arid in rows:
+            (launches / f"{arid}.request.json").write_text(json.dumps(
+                {"ir_ref": prior_ref, "pipeline_ref": self.refs.pipeline_ref,
+                 "agent_run_id": arid}), encoding="utf-8")
+        repair = {"issue_severity": "major", "repair_strategy": "reuse",
+                  "repair_target_agent_run_id": "prior-gamma",
+                  "repair_reason": "compile_static_compile_static_violation",
+                  "repair_findings": "io_contract.primary_predicates[2]: reads no state"}
+        with mock.patch.object(wc.Conductor, "_VERIFICATION_PART_BUDGET_BYTES", 0):
+            c = self.conductor(_envelope(_doc()),
+                               *(_envelope(self._group(t)) for t in self.TESTS))
+            c._claude_session_resumable = lambda arid, **kw: False  # type: ignore[assignment]
+            self.assertEqual(
+                c.run_substep(self.refs, "compile", "generate", repair=repair).status, "pass")
+        self.assertEqual([r["repair_target_agent_run_id"] for r in _requests(c)],
+                         ["prior-core", "prior-alpha", "prior-beta", "prior-gamma"])
+        # Under the default bound the three tests are one group, which no old row names.
+        c = self.conductor(_envelope(_doc()), _envelope(self._group(*self.TESTS)))
+        c._claude_session_resumable = lambda arid, **kw: False  # type: ignore[assignment]
+        self.assertEqual(c.run_substep(self.refs, "compile", "generate", repair=repair).status,
+                         "pass")
+        core, part = _requests(c)
+        self.assertEqual(core["repair_target_agent_run_id"], "prior-core")
+        self.assertEqual(part["repair_strategy"], "none")
+
+    def test_a_phase_contract_missing_a_selected_heading_launches_nothing(self) -> None:
+        doc = self.repo / ort.WORKFLOW_PHASE_DOC_BY_STEP["compile"]
+        doc.write_text(doc.read_text(encoding="utf-8").replace(
+            "#### V3. io_contract consistency", "#### V3. renamed"), encoding="utf-8")
+        c = self.conductor(_envelope(_doc()))
+        outcome = c.run_substep(self.refs, "compile", "generate")
+        self.assertEqual(outcome.infra_error[0], "pure_context_assembly_failed")
+        self.assertIn("pure_phase_contract_document_unsliceable", outcome.infra_error[1])
+        self.assertIn("V3. io_contract consistency", outcome.infra_error[1])
+        self.assertIn("phase_01_compile.md", outcome.infra_error[1])
+        self.assertEqual(_requests(c), [])
+
+    def test_the_real_phase_contract_excerpt(self) -> None:
+        """Every selected heading is in the real document once, the excerpt is those sections
+        alone, and it leaves out the sections about the IR's other parts."""
+        text = (_REAL_REPO / ort.WORKFLOW_PHASE_DOC_BY_STEP["compile"]).read_text(
+            encoding="utf-8")
+        excerpt = wc._markdown_heading_sections(
+            text, wc.Conductor._VERIFICATION_PHASE_CONTRACT_HEADINGS, subject="x")
+        headings = [ln for ln in excerpt.splitlines() if re.match(r"^#{1,6} ", ln)]
+        self.assertEqual(tuple(headings), wc.Conductor._VERIFICATION_PHASE_CONTRACT_HEADINGS)
+        self.assertIn("  primary_predicates:", excerpt)
+        # The two sections that govern the part's own declaration are in it.
+        self.assertIn("guessed completion is forbidden", excerpt)
+        self.assertIn("Your `compile_fail` is not a repair note", excerpt)
+        for absent in ("## Overview", "#### V8. public_api surface", "#### Decision Criteria",
+                       "#### Severity of a finding (`issue_severity`)"):
+            self.assertNotIn(absent, excerpt)
+        self.assertLess(len(excerpt), len(text))
+
+
+class MarkdownHeadingSectionsTests(unittest.TestCase):
+    TEXT = ("# T\n\n## A\n\na body\n\n```yaml\n# a comment\n## not a heading\n```\n\n"
+            "### A.1\n\nsub body\n\n## B\n\nb body\n")
+
+    def test_a_section_is_its_heading_and_own_body_in_document_order(self) -> None:
+        self.assertEqual(
+            wc._markdown_heading_sections(self.TEXT, ("## B", "## A"), subject="t"),
+            "## A\n\na body\n\n```yaml\n# a comment\n## not a heading\n```\n\n"
+            "## B\n\nb body")
+        self.assertEqual(wc._markdown_heading_sections(self.TEXT, ("### A.1",), subject="t"),
+                         "### A.1\n\nsub body")
+
+    def test_a_longer_or_tilde_fence_hides_its_headings(self) -> None:
+        """A fence closes only on a run of its own character at least as long: a ``` line
+        inside a ```` fence, or inside a ~~~ fence, is content."""
+        for fence in ("````", "~~~"):
+            with self.subTest(fence=fence):
+                text = f"## A\n{fence}\n```\n## B\n```\n{fence}\n## B\nb\n"
+                self.assertEqual(
+                    wc._markdown_heading_sections(text, ("## B",), subject="t"), "## B\nb")
+        # A bare heading inside a tilde fence is content too.
+        self.assertEqual(wc._markdown_heading_sections(
+            "~~~\n## B\n~~~\n## B\nb\n", ("## B",), subject="t"), "## B\nb")
+
+    def test_a_fence_closes_only_on_a_bare_run_and_opens_only_shallow(self) -> None:
+        # An info string, or text after the run, does not close the fence.
+        self.assertEqual(wc._markdown_heading_sections(
+            "```\n```yaml\n## B\n```\n## B\nb\n", ("## B",), subject="t"), "## B\nb")
+        self.assertEqual(wc._markdown_heading_sections(
+            "```\n``` trailing\n## B\n```\n## B\nb\n", ("## B",), subject="t"), "## B\nb")
+        # Four spaces make an indented code line, not a fence: the heading after it counts.
+        self.assertEqual(wc._markdown_heading_sections(
+            "    ```\n## B\nb\n", ("## B",), subject="t"), "## B\nb")
+
+    def test_a_missing_or_repeated_heading_raises(self) -> None:
+        for text, heading in ((self.TEXT, "## C"), (self.TEXT, "## not a heading"),
+                              (self.TEXT + "\n## B\n", "## B")):
+            with self.subTest(heading=heading):
+                with self.assertRaises(ValueError) as caught:
+                    wc._markdown_heading_sections(text, (heading,), subject="t")
+                self.assertIn(repr(heading), str(caught.exception))
+
+
+class TestsBlockBytesTests(unittest.TestCase):
+    def test_each_definition_runs_to_the_next_declaration_or_section(self) -> None:
+        from tools.validate_pipeline_semantics import _tests_md_test_block_bytes
+        text = ("## 6. Tests\n### 6-1. `a`\nxx\n- `test_id`: `b`\nyyy\n"
+                "## 7. Notes\nignored\n### 6-2. `a`\nz\n")
+        self.assertEqual(_tests_md_test_block_bytes(text),
+                         {"a": len("### 6-1. `a`\nxx\n") + len("### 6-2. `a`\nz\n"),
+                          "b": len("- `test_id`: `b`\nyyy\n")})
+        self.assertEqual(list(_tests_md_test_block_bytes("### 6-1. `é`\né\n").values()),
+                         [len("### 6-1. `é`\né\n".encode("utf-8"))])
+
+
 class PureCompileVerificationDocumentTests(_Fixture):
-    def violations(self, doc, test_id: str = _TEST_ID):
-        return self.conductor()._pure_ir_verification_violations(test_id)(self.refs, doc)
+    def violations(self, doc, test_ids: tuple[str, ...] = (_TEST_ID,)):
+        return self.conductor()._pure_ir_verification_violations(test_ids)(self.refs, doc)
 
     def test_a_clean_part_is_accepted(self) -> None:
         self.assertIsNone(self.violations(_part()))
@@ -1880,6 +2138,27 @@ class PureCompileVerificationDocumentTests(_Fixture):
                 self.assertEqual(found[0], wc.COMPILE_IR_DOCUMENT_VIOLATION)
                 self.assertIn(needle, found[1])
 
+    def test_a_group_part_must_answer_for_each_of_its_tests(self) -> None:
+        group = ("t_a", "t_b")
+
+        def doc(*ids: str) -> dict:
+            body = {k: [e for t in ids for e in _entries(t)[k]]
+                    for k in wc.Conductor._PURE_IR_VERIFICATION_LISTS}
+            return {"verification": body, "compile_fail": None}
+
+        self.assertIsNone(self.violations(doc("t_b", "t_a"), group))
+        found = self.violations(doc("t_a"), group)
+        self.assertIn("'t_b' has 0", found[1])
+        found = self.violations(doc("t_a", "t_b", "t_c"), group)
+        self.assertIn("'t_c'", found[1])
+        self.assertIn("'t_a', 't_b'", found[1])
+        missing_primary = doc("t_a", "t_b")
+        missing_primary["verification"]["primary_predicates"].pop()
+        self.assertIn("at least one entry for 't_b'",
+                      self.violations(missing_primary, group)[1])
+        # A test id is matched whole, never as a substring of another.
+        self.assertIsNotNone(self.violations(doc("t"), ("t_a",)))
+
     def test_a_part_declares_only_against_its_own_inputs(self) -> None:
         for name in wc.Conductor._compile_fail_inputs("verification"):
             with self.subTest(input=name):
@@ -1887,7 +2166,7 @@ class PureCompileVerificationDocumentTests(_Fixture):
                     {"verification": None,
                      "compile_fail": {"input": name, "where": "§6", "what": "x"}}))
         # The core is the phase's own output, and the catalog was never shown to a part.
-        for name in ("ir_core", "verification_test", "published_operations", "deps"):
+        for name in ("ir_core", "verification_tests", "published_operations", "deps"):
             with self.subTest(input=name):
                 found = self.violations(
                     {"verification": None,
@@ -1913,7 +2192,7 @@ class PureCompileVerificationDocumentTests(_Fixture):
         slots = [k.removesuffix("_document")
                  for k in re.findall(r"^<(\w+_document)>$", tpl, flags=re.MULTILINE)]
         self.assertEqual(tuple(slots[:len(listed)]), listed)
-        self.assertEqual(slots[len(listed):], ["ir_core", "verification_test"])
+        self.assertEqual(slots[len(listed):], ["ir_core", "verification_tests"])
 
 
 def ort_repair_turns() -> int:

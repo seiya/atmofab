@@ -1117,6 +1117,57 @@ def _numbered_section_range(text: str, begin: str, end: str, *, subject: str) ->
     return "\n".join(lines[start:stop]).rstrip("\n")
 
 
+_MARKDOWN_HEADING_RE = re.compile(r"^#{1,6} ")
+#: A fence line: three or more backticks or tildes after at most three spaces (four or more
+#: make an indented code line, never a fence), and what follows the run.
+_MARKDOWN_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
+
+
+def _markdown_heading_sections(text: str, headings: tuple[str, ...], *, subject: str) -> str:
+    """Return the sections of `text` whose heading lines are EXACTLY `headings`, joined in
+    document order by one blank line. A section is its heading line and its own body: it ends
+    at the next heading line of ANY level, so a subsection is included only by naming it.
+
+    FENCE-AWARE: a line inside a fenced block is never a heading — the compile phase contract's
+    schema block is YAML, whose comment lines may begin with `#`. A fence opens on a run of
+    three or more backticks or tildes indented at most three spaces (an info string may follow)
+    and closes only on a bare run of the same character at least as long, so a longer fence
+    may quote a shorter one and a ```` ```yaml ```` line inside a fence is content. A heading
+    is matched unindented; HTML comments are not recognised. These follow CommonMark for the
+    shapes a repository document uses, not in every corner. Every heading must occur
+    exactly once outside a fence, else `ValueError`: a renamed or duplicated heading is a
+    contract change that must stop the launch, not shorten or widen what the leaf reads. A
+    slice is a pure-leaf input, so changing what one spans needs a
+    `PURE_PROMPT_CONTRACT_VERSION` bump, as `_numbered_section_range`'s docstring states."""
+    lines = text.splitlines()
+    starts: list[int] = []
+    fence = ""
+    for index, line in enumerate(lines):
+        run = _MARKDOWN_FENCE_RE.match(line)
+        if run and not fence:
+            fence = run.group(1)
+            continue
+        if run and fence:
+            if (run.group(1)[0] == fence[0] and len(run.group(1)) >= len(fence)
+                    and not run.group(2).strip()):
+                fence = ""
+            continue
+        if not fence and _MARKDOWN_HEADING_RE.match(line):
+            starts.append(index)
+    found: dict[str, list[int]] = {}
+    for index in starts:
+        found.setdefault(lines[index].rstrip(), []).append(index)
+    slices: list[tuple[int, str]] = []
+    for heading in headings:
+        at = found.get(heading, [])
+        if len(at) != 1:
+            raise ValueError(f"{subject} has {len(at)} {heading!r} heading line(s); expected 1")
+        begin = at[0]
+        end = next((i for i in starts if i > begin), len(lines))
+        slices.append((begin, "\n".join(lines[begin:end]).strip("\n")))
+    return "\n\n".join(body for _, body in sorted(slices))
+
+
 def _checks_contract_abi_sections(text: str) -> str:
     """Return §1-§4 of `docs/workflow/CHECKS_MODULE_CONTRACT.md` — or of a language's binding of
     it (`docs/backends/language/<id>/CHECKS_ABI.md`, numbered section for section like it,
@@ -6922,14 +6973,15 @@ class Conductor:
         The `verification` part (issue #526) is shown four of those documents plus two values
         that are not inputs of the phase: the IR core, which is this phase's own output (a
         core that lacks what a test needs is refused by `Compile.static` on the assembled IR and
-        authored again, so it is never the operator's to repair), and the test id the host
-        assigned. Neither is admissible, and the part receives no catalog."""
+        authored again, so it is never the operator's to repair), and the test ids the host
+        assigned. Neither is admissible, and the part receives no catalog. Its phase contract
+        is an excerpt (`_VERIFICATION_PHASE_CONTRACT_HEADINGS`) but still that input."""
         from tools.orchestration_runtime import (PURE_CONTEXT_REQUIRED_KEYS,
                                                  PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE)
         if shape == "verification":
             keys = PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[("compile", "generate", shape)]
             return tuple(k.removesuffix("_document") for k in keys
-                         if k not in ("ir_core_document", "verification_test_document"))
+                         if k not in ("ir_core_document", "verification_tests_document"))
         if shape:
             raise ValueError(f"no compile.generate shape {shape!r}")
         keys = PURE_CONTEXT_REQUIRED_KEYS[("compile", "generate")]
@@ -7052,9 +7104,41 @@ class Conductor:
             return None
 
     #: The three per-test lists of `io_contract` (issue #526). The core producer leaves them out;
-    #: one `verification` part per test authors that test's entries, and the host assembles them.
+    #: each `verification` part authors the entries of its group of tests, and the host
+    #: assembles them.
     _PURE_IR_VERIFICATION_LISTS: tuple[str, ...] = (
         "test_evidence_requirements", "test_predicates", "primary_predicates")
+    #: The bound on one `verification` part's tests, in UTF-8 bytes of their `tests.md`
+    #: definitions (`_tests_md_test_block_bytes`): consecutive tests share a part until the next
+    #: one would take it past this. A test larger than the bound is a part of its own. The
+    #: output a part writes, not its input, is what the split bounds (issue #526), and the
+    #: definition size is the host's proxy for it, calibrated on the node that needed the split:
+    #: `shallow_water2d_channel@0.2.5`'s 16 definitions are 41 KB for an estimated 160k output
+    #: tokens (≈ 3.9 per byte), so 10 KB is ≈ 39k tokens, half the smallest per-model maximum
+    #: measured for one reply (79k). A node whose entries are smaller per byte (a harness wrote
+    #: ≈ 0.25 tokens per byte) gets fewer, larger parts — each part re-sends the whole shared
+    #: context, which is the cost this bound exists to cap.
+    _VERIFICATION_PART_BUDGET_BYTES: ClassVar[int] = 10_000
+    #: The headings of `phase_01_compile.md` whose sections a `verification` part is shown, in
+    #: document order: the schema block (its own body; the `###` subsections under it are about
+    #: `algorithm` and the sidecar), the producer's own substep, the reviewer's and the static
+    #: gate's rules on case coverage, `io_contract` and input routing, and the two sections that
+    #: govern the producer's own `compile_fail` (On-failure: guessed completion is forbidden and
+    #: a self-check invariant is no ground to declare; Acceptance of retry: a declaration is not
+    #: a repair note). The rest — the phase overview, `ir_meta.json`, the algorithm /
+    #: dependency / public-surface checks, the severity rubric — is about sections the part
+    #: neither writes nor is judged on. A heading that is missing is a context-assembly
+    #: failure, never a shorter excerpt.
+    _VERIFICATION_PHASE_CONTRACT_HEADINGS: tuple[str, ...] = (
+        "## `spec.ir.yaml` schema",
+        "### 1-1. Compile.generate substep",
+        "#### V1. case coverage",
+        "#### V3. io_contract consistency",
+        "#### V9. case input routing",
+        "#### Verification tools",
+        "## On-failure behavior",
+        "## Acceptance of retry from Validate",
+    )
     #: `io_contract`'s key order in the phase contract's schema block; the assembled section
     #: follows it, and any key it does not name follows in the core's own order.
     _PURE_IR_IO_CONTRACT_ORDER: tuple[str, ...] = (
@@ -7078,22 +7162,24 @@ class Conductor:
         if carried:
             return (COMPILE_IR_DOCUMENT_VIOLATION,
                     (f"`ir.io_contract` carries {', '.join(f'`{k}`' for k in carried)}: the "
-                     "three per-test verification lists are authored by a separate turn per "
-                     "test and assembled by the host, so this IR must leave them out"))
+                     "three per-test verification lists are authored by separate turns over "
+                     "groups of tests and assembled by the host, so this IR must leave them "
+                     "out"))
         return None
 
     def _pure_ir_verification_violations(
-            self, test_id: str) -> Callable[[NodeRefs, Any], tuple[str, str] | None]:
-        """The validator of ONE `verification` part's document, for the test it was assigned.
+            self, test_ids: tuple[str, ...]) -> Callable[[NodeRefs, Any], tuple[str, str] | None]:
+        """The validator of ONE `verification` part's document, for the tests it was assigned.
 
         The shape alone, as for the core: the envelope `{verification, compile_fail}`, a
         declaration by `_compile_fail_violation`'s rule for this shape, the three lists, every
-        entry an object naming THIS test, one evidence entry and one predicate entry (the
-        schema holds one of each per test) and at least one primary predicate, and the
-        serialize/parse round trip. What the entries MEAN — the grammar, the coverage, the
+        entry an object naming one of THESE tests, and for each of them one evidence entry and
+        one predicate entry (the schema holds one of each per test) and at least one primary
+        predicate, and the serialize/parse round trip. What the entries MEAN — the grammar, the coverage, the
         target cases — is `Compile.static`'s, on the assembled IR; repeating it here would be a
         second gate (the principle `_pure_ir_document_violations` states)."""
         lists = self._PURE_IR_VERIFICATION_LISTS
+        assigned = ", ".join(repr(t) for t in test_ids)
 
         def violations(refs: NodeRefs, doc: Any) -> tuple[str, str] | None:
             if not isinstance(doc, dict):
@@ -7126,21 +7212,24 @@ class Conductor:
                             f"`verification.{key}` must be a JSON array; got "
                             f"{type(entries).__name__}")
                 for i, entry in enumerate(entries):
-                    if not isinstance(entry, dict) or entry.get("test_id") != test_id:
+                    if not isinstance(entry, dict) or entry.get("test_id") not in test_ids:
                         got = (entry.get("test_id") if isinstance(entry, dict)
                                else type(entry).__name__)
                         return (COMPILE_IR_DOCUMENT_VIOLATION,
                                 (f"`verification.{key}[{i}]` must be an object whose `test_id` "
-                                 f"is {test_id!r}, the one test this turn authors; got {got!r}"))
-                if key == "primary_predicates" and not entries:
-                    return (COMPILE_IR_DOCUMENT_VIOLATION,
-                            ("`verification.primary_predicates` must hold at least one entry "
-                             f"for {test_id!r}: every condition of the test needs a "
-                             "corroborant"))
-                if key != "primary_predicates" and len(entries) != 1:
-                    return (COMPILE_IR_DOCUMENT_VIOLATION,
-                            (f"`verification.{key}` must hold EXACTLY one entry, the one for "
-                             f"{test_id!r}; got {len(entries)}"))
+                                 f"is one of the tests this turn authors ({assigned}); got "
+                                 f"{got!r}"))
+                for test_id in test_ids:
+                    count = sum(1 for entry in entries if entry["test_id"] == test_id)
+                    if key == "primary_predicates" and not count:
+                        return (COMPILE_IR_DOCUMENT_VIOLATION,
+                                ("`verification.primary_predicates` must hold at least one "
+                                 f"entry for {test_id!r}: every condition of the test needs a "
+                                 "corroborant"))
+                    if key != "primary_predicates" and count != 1:
+                        return (COMPILE_IR_DOCUMENT_VIOLATION,
+                                (f"`verification.{key}` must hold EXACTLY one entry for each "
+                                 f"test this turn authors; {test_id!r} has {count}"))
             try:
                 round_tripped = yaml.safe_load(self._pure_ir_yaml(body))
             except Exception as exc:  # noqa: BLE001 — any serializer/parser refusal is the finding
@@ -7174,9 +7263,9 @@ class Conductor:
         return json.dumps(doc, indent=2, ensure_ascii=False)
 
     def _pure_ir_verification_prior_document(
-            self, test_id: str) -> Callable[[dict[str, Any]], str | None]:
+            self, test_ids: tuple[str, ...]) -> Callable[[dict[str, Any]], str | None]:
         """The `prior_document` of one part's cold repair: the IR the repair target's attempt
-        wrote, its three lists filtered to `test_id`. The same file `_pure_ir_prior_document`
+        wrote, its three lists filtered to the part's `test_ids`. The same file `_pure_ir_prior_document`
         reads, because the assembled IR is the only place a part's entries were persisted.
         NEVER raises; None when the file, the section or the lists are not there."""
         lists = self._PURE_IR_VERIFICATION_LISTS
@@ -7194,7 +7283,7 @@ class Conductor:
             if not isinstance(io_contract, dict):
                 return None
             body = {key: [e for e in (io_contract.get(key) or [])
-                          if isinstance(e, dict) and e.get("test_id") == test_id]
+                          if isinstance(e, dict) and e.get("test_id") in test_ids]
                     for key in lists}
             if not any(body.values()):
                 return None
@@ -7206,15 +7295,18 @@ class Conductor:
 
         return prior
 
-    def _assemble_pure_ir(self, core: dict[str, Any],
-                          parts: list[dict[str, Any]]) -> dict[str, Any]:
+    def _assemble_pure_ir(self, core: dict[str, Any], parts: list[dict[str, Any]],
+                          test_ids: list[str]) -> dict[str, Any]:
         """The IR the host writes: the core with each part's three lists concatenated into its
-        `io_contract`, parts in the order given (the tests document's), and `io_contract`'s keys
-        in the schema block's order. The core is not modified."""
+        `io_contract`, every list ordered by `test_ids` (the tests document's order; a part may
+        list its own tests' entries in any order, and entries of one test keep theirs), and
+        `io_contract`'s keys in the schema block's order. The core is not modified."""
         ir = json.loads(json.dumps(core))
         io_contract = ir["io_contract"]
+        rank = {test_id: i for i, test_id in enumerate(test_ids)}
         for key in self._PURE_IR_VERIFICATION_LISTS:
-            io_contract[key] = [entry for part in parts for entry in part[key]]
+            io_contract[key] = sorted((entry for part in parts for entry in part[key]),
+                                      key=lambda entry: rank[entry["test_id"]])
         order = [k for k in self._PURE_IR_IO_CONTRACT_ORDER if k in io_contract]
         order += [k for k in io_contract if k not in order]
         ir["io_contract"] = {k: io_contract[k] for k in order}
@@ -7224,10 +7316,11 @@ class Conductor:
                                    resolved_dependencies: tuple[dict[str, str], ...],
                                    dependency_surface: tuple[dict[str, Any], ...]
                                    ) -> "SubstepOutcome":
-        """Run `compile.generate` as 1 + T pure producer loops (issue #526): the IR CORE, then
-        one `verification` part per test the node's tests document declares, in its order. The
-        host assembles the IR from them and writes it once, after the last part passes; the
-        deterministic `Compile.static` gate then runs on the whole IR exactly as before.
+        """Run `compile.generate` as 1 + P pure producer loops (issue #526): the IR CORE, then
+        one `verification` part per group of consecutive tests of the node's tests document
+        (`_verification_part_groups`), in its order. The host assembles the IR from them and
+        writes it once, after the last part passes; the deterministic `Compile.static` gate then
+        runs on the whole IR exactly as before.
 
         Each loop is `_run_pure_producer_substep` unchanged, so each has its own bounded warm
         repair. The first loop that does not pass ends the substep with ITS outcome: a declared
@@ -7244,7 +7337,9 @@ class Conductor:
         session where the provider and the transcript allow, and takes the cold repair
         otherwise; a part always takes the cold repair, whose re-stated launch body carries the
         core this reopen produced (`reopen_warm`)."""
-        from tools.validate_pipeline_semantics import _parse_test_ids_from_tests_md
+        from tools.orchestration_runtime import WORKFLOW_PHASE_DOC_BY_STEP
+        from tools.validate_pipeline_semantics import (_parse_test_ids_from_tests_md,
+                                                       _tests_md_test_block_bytes)
         # The part list is a fact of the context, so a tests document the host cannot read, or
         # one that declares no test id, is the context-assembly failure the producer loop
         # reports for any other document (no leaf runs): the same outcome, its own name.
@@ -7257,8 +7352,17 @@ class Conductor:
                 k: v for k, v in self._build_pure_compile_context(refs).items()
                 if k in ("controlled_spec_document", "tests_document",
                          "phase_contract_document", "checks_module_contract_document")}
+            try:
+                part_documents["phase_contract_document"] = _markdown_heading_sections(
+                    part_documents["phase_contract_document"],
+                    self._VERIFICATION_PHASE_CONTRACT_HEADINGS,
+                    subject=WORKFLOW_PHASE_DOC_BY_STEP["compile"])
+            except ValueError as exc:
+                raise RuntimeError(f"pure_phase_contract_document_unsliceable: {exc}") from exc
             test_ids = _parse_test_ids_from_tests_md(
                 self.repo_root / refs.spec_path / "tests.md")
+            groups = self._verification_part_groups(
+                test_ids, _tests_md_test_block_bytes(part_documents["tests_document"]))
             if not test_ids:
                 raise RuntimeError(
                     f"pure_tests_document_no_test_ids: {refs.spec_path}/tests.md declares no "
@@ -7273,15 +7377,16 @@ class Conductor:
         shared_attempts: list[dict[str, Any]] = []
         parts: list[dict[str, Any]] = []
         core_ir: dict[str, Any] = {}
-        entries: dict[str, dict[str, Any]] = {}
+        entries: dict[tuple[str, ...], dict[str, Any]] = {}
         previous_parts = self._previous_compile_parts(repair)
 
-        def collect_meta(name: str, test_id: str | None) -> Callable[..., None]:
+        def collect_meta(name: str, group: tuple[str, ...] | None) -> Callable[..., None]:
             def write_meta(refs: NodeRefs, *, result: str, failure_category: str | None,
                            failure_excerpt: str | None, attempts: int,
                            per_attempt: list[dict[str, Any]]) -> None:
                 shared_attempts.extend({**row, "part": name} for row in per_attempt)
-                parts.append({"part": name, "test_id": test_id,
+                parts.append({"part": name,
+                              "test_ids": list(group) if group is not None else None,
                               "agent_run_id": per_attempt[-1]["agent_run_id"],
                               "attempts": attempts, "result": result,
                               "failure_category": failure_category})
@@ -7299,9 +7404,9 @@ class Conductor:
         def stash_core(refs: NodeRefs, doc: dict[str, Any], *, attempts: int) -> None:
             core_ir.update(doc["ir"])
 
-        def stash_part(test_id: str) -> Callable[..., None]:
+        def stash_part(group: tuple[str, ...]) -> Callable[..., None]:
             def stash(refs: NodeRefs, doc: dict[str, Any], *, attempts: int) -> None:
-                entries[test_id] = doc["verification"]
+                entries[group] = doc["verification"]
             return stash
 
         def ended(outcome: SubstepOutcome, rows_before: int) -> SubstepOutcome:
@@ -7325,29 +7430,32 @@ class Conductor:
         if outcome.status != "pass":
             return ended(outcome, 0)
         core_text = json.dumps(core_ir, indent=2, ensure_ascii=False)
-        for test_id in test_ids:
+        for group in groups:
+            # The part's label is its first test: groups are consecutive and disjoint, so the
+            # first id names one part, and a one-test part keeps the label it always had.
+            label = group[0]
             part_spec = base._replace(
-                build_context=(lambda refs, test_id=test_id: {
+                build_context=(lambda refs, group=group: {
                     **part_documents, "ir_core_document": core_text,
-                    "verification_test_document": test_id}),
-                violations=self._pure_ir_verification_violations(test_id),
-                write_artifacts=stash_part(test_id),
-                write_meta=collect_meta(test_id, test_id),
+                    "verification_tests_document": "\n".join(group)}),
+                violations=self._pure_ir_verification_violations(group),
+                write_artifacts=stash_part(group),
+                write_meta=collect_meta(label, group),
                 write_declared_fail=write_declared_fail,
-                prior_document=self._pure_ir_verification_prior_document(test_id),
+                prior_document=self._pure_ir_verification_prior_document(group),
                 non_object_findings=("the reply parsed to a non-object JSON value (expected "
                                      "the verification document)"),
-                accept_noun=f"verification part {test_id}",
-                pure_shape="verification", reopen_warm=False, pure_part=test_id)
+                accept_noun=f"verification part {label}",
+                pure_shape="verification", reopen_warm=False, pure_part=label)
             rows_before = len(parts)
             outcome = self._run_pure_producer_substep(
                 refs, "compile", "generate",
-                self._compile_part_repair(repair, previous_parts, test_id),
+                self._compile_part_repair(repair, previous_parts, group),
                 resolved_dependencies, part_spec)
             if outcome.status != "pass":
                 return ended(outcome, rows_before)
         try:
-            ir = self._assemble_pure_ir(core_ir, [entries[t] for t in test_ids])
+            ir = self._assemble_pure_ir(core_ir, [entries[g] for g in groups], test_ids)
             doc = {"ir": ir, "compile_fail": None}
             # The host's own consistency check on what it assembled: every part passed its
             # own validator, so a violation here is the assembly's defect, not a leaf's.
@@ -7365,12 +7473,30 @@ class Conductor:
                                   len(shared_attempts))
         return SubstepOutcome(outcome.agent_run_id, "pass", [], 0, None, len(shared_attempts))
 
+    def _verification_part_groups(self, test_ids: list[str],
+                                  sizes: dict[str, int]) -> list[tuple[str, ...]]:
+        """`test_ids` cut into consecutive groups, one per `verification` part: a test joins the
+        current group unless its definition (`sizes`, UTF-8 bytes; 0 when absent) would take the
+        group past `_VERIFICATION_PART_BUDGET_BYTES`, and a test that alone exceeds the bound
+        is a group of its own. Every test is in exactly one group, in `test_ids`' order."""
+        groups: list[list[str]] = []
+        total = 0
+        for test_id in test_ids:
+            size = sizes.get(test_id, 0)
+            if not groups or total + size > self._VERIFICATION_PART_BUDGET_BYTES:
+                groups.append([])
+                total = 0
+            groups[-1].append(test_id)
+            total += size
+        return [tuple(group) for group in groups]
+
     class _PreviousCompileRun(NamedTuple):
         """What a reopened `compile.generate` reads back of the run it reopens."""
 
-        #: `{test_id: agent_run_id}` of each loop's last attempt, the core under `None`.
-        arids: dict[str | None, str]
-        #: The `test_id` of the loop that ENDED that run by failing (`None` for the core), or
+        #: `{test_ids: agent_run_id}` of each loop's last attempt — a part under the tuple of
+        #: its tests, the core under `None`.
+        arids: dict[tuple[str, ...] | None, str]
+        #: The `test_ids` of the loop that ENDED that run by failing (`None` for the core), or
         #: `_PASSED` when every loop passed and the reopen comes from a gate on the whole IR.
         failed: Any
         #: The IR that run assembled and wrote, when it got that far; else `{}`.
@@ -7384,9 +7510,13 @@ class Conductor:
         """On a `reuse` reopen, the previous run's `compile_generate_meta.json#parts[]` and IR,
         read from the directory the repair target's own launch record names
         (`_ensure_fresh_producer_id` has rotated `refs` away from it). The rows are keyed by
-        `test_id` rather than by the `part` label, because a test may be called `core` (the
-        tests.md grammar reserves no id), and a label key would let that part's row stand for
-        the core's. Empty when there is no such reopen, no record, or no readable `parts[]`."""
+        their `test_ids` rather than by the `part` label, because a test may be called `core`
+        (the tests.md grammar reserves no id), and a label key would let that part's row stand
+        for the core's. A row written before parts covered groups (`pure-82`) carries one
+        `test_id` and reads as that one-test group. A part of this run whose group differs from
+        every previous row's (the grouping bound changed between the two) therefore finds no
+        row and starts cold. Empty when there is no such reopen, no record, or no readable
+        `parts[]`."""
         empty = self._PreviousCompileRun({}, self._PASSED, {})
         if not (repair and str(repair.get("repair_strategy", "")).strip() == "reuse"):
             return empty
@@ -7405,25 +7535,39 @@ class Conductor:
         except (OSError, UnicodeError, ValueError):
             return empty
         rows = meta.get("parts") if isinstance(meta, dict) else None
+        def key(row: dict[str, Any]) -> tuple[str, ...] | None:
+            ids = row["test_ids"] if "test_ids" in row else (
+                None if row["test_id"] is None else [row["test_id"]])
+            return None if ids is None else tuple(ids)
+
+        def readable(row: Any) -> bool:
+            if not isinstance(row, dict):
+                return False
+            if "test_ids" in row:
+                ids = row["test_ids"]
+                return ids is None or (isinstance(ids, list) and bool(ids)
+                                       and all(isinstance(t, str) for t in ids))
+            return "test_id" in row and (row["test_id"] is None
+                                         or isinstance(row["test_id"], str))
+
         rows = [row for row in (rows if isinstance(rows, list) else [])
-                if isinstance(row, dict)
-                and (row.get("test_id") is None or isinstance(row.get("test_id"), str))
+                if readable(row)
                 and isinstance(row.get("agent_run_id"), str) and row["agent_run_id"].strip()]
         if not rows:
             return empty
-        failed = rows[-1]["test_id"] if rows[-1].get("result") != "pass" else self._PASSED
+        failed = key(rows[-1]) if rows[-1].get("result") != "pass" else self._PASSED
         try:
             ir = yaml.safe_load((self.repo_root / ir_ref / "spec.ir.yaml")
                                 .read_text(encoding="utf-8"))
         except (OSError, UnicodeError, ValueError, yaml.YAMLError):
             ir = {}
-        return self._PreviousCompileRun({row["test_id"]: row["agent_run_id"] for row in rows},
+        return self._PreviousCompileRun({key(row): row["agent_run_id"] for row in rows},
                                         failed, ir if isinstance(ir, dict) else {})
 
     def _compile_part_repair(self, repair: dict[str, str] | None,
                              previous: "Conductor._PreviousCompileRun",
-                             test_id: str | None) -> dict[str, str] | None:
-        """The `repair` one loop of a reopened `compile.generate` runs with — `test_id` None for
+                             test_ids: tuple[str, ...] | None) -> dict[str, str] | None:
+        """The `repair` one loop of a reopened `compile.generate` runs with — `test_ids` None for
         the core: the outer repair with its target replaced by THAT loop's own last attempt from
         the previous run, so each loop repairs its own document.
 
@@ -7436,7 +7580,7 @@ class Conductor:
         a revocation — and may name an entry by its index in the assembled lists without
         saying which turn wrote it; every loop with a previous attempt
         repairs, and a part's findings close with the host's note of where its own entries sat
-        (`_verification_locator`), so it can tell its findings from another test's.
+        (`_verification_locator`), so it can tell its findings from another part's.
 
         A loop with no row of its own runs WITHOUT the repair (a cold launch), because the outer
         target is another loop's session. That is a part the previous run never reached, and
@@ -7446,23 +7590,24 @@ class Conductor:
         if repair is None:
             return None
         if not previous.arids:
-            return repair if test_id is None else None
-        if test_id not in previous.arids:
+            return repair if test_ids is None else None
+        if test_ids not in previous.arids:
             return None
-        if previous.failed is not self._PASSED and previous.failed != test_id:
+        if previous.failed is not self._PASSED and previous.failed != test_ids:
             return None
-        repaired = {**repair, "repair_target_agent_run_id": previous.arids[test_id]}
+        repaired = {**repair, "repair_target_agent_run_id": previous.arids[test_ids]}
         findings = str(repair.get("repair_findings") or "").strip()
-        locator = (self._verification_locator(previous.ir, test_id)
-                   if test_id is not None and previous.failed is self._PASSED else None)
+        locator = (self._verification_locator(previous.ir, test_ids)
+                   if test_ids is not None and previous.failed is self._PASSED else None)
         if findings and locator:
             repaired["repair_findings"] = f"{findings}\n\n{locator}"
         return repaired
 
-    def _verification_locator(self, ir: dict[str, Any], test_id: str) -> str | None:
-        """The host's note of where `test_id`'s entries sat in the assembled IR a gate finding
-        was raised on: the indices of its entries in each of the three lists. None when the IR
-        holds none of them."""
+    def _verification_locator(self, ir: dict[str, Any],
+                              test_ids: tuple[str, ...]) -> str | None:
+        """The host's note of where the entries of `test_ids` sat in the assembled IR a gate
+        finding was raised on: their indices in each of the three lists. None when the IR holds
+        none of them."""
         io_contract = ir.get("io_contract") if isinstance(ir, dict) else None
         if not isinstance(io_contract, dict):
             return None
@@ -7470,14 +7615,16 @@ class Conductor:
         for key in self._PURE_IR_VERIFICATION_LISTS:
             entries = io_contract.get(key)
             at = [i for i, e in enumerate(entries if isinstance(entries, list) else [])
-                  if isinstance(e, dict) and e.get("test_id") == test_id]
+                  if isinstance(e, dict) and e.get("test_id") in test_ids]
             if at:
                 places.append(f"io_contract.{key}[{', '.join(map(str, at))}]")
         if not places:
             return None
+        named = ", ".join(repr(t) for t in test_ids)
         return (f"Host note: in the assembled IR these findings were raised on, the entries of "
-                f"test {test_id!r} were " + "; ".join(places) + ". A finding about any other "
-                "index of those lists is about another test's entries.")
+                f"{'test' if len(test_ids) == 1 else 'tests'} {named} were "
+                + "; ".join(places) + ". A finding about any other index of those lists is "
+                "about another part's entries.")
 
     def _write_declared_compile_fail(self, refs: NodeRefs, reason: str, *,
                                      attempts: int) -> None:
@@ -7804,9 +7951,9 @@ class Conductor:
         #: first turn is the cold repair instead, which re-states the whole launch body. The
         #: loop's own repair turns are unaffected: inside one loop the inputs do not move.
         reopen_warm: bool = True
-        #: The test a `compile.generate` verification part authors, stamped on every launch
-        #: request of the loop (`pure_part`) so a record's reader can tell the part's launches
-        #: from a retry. "" for every other loop.
+        #: The label of a `compile.generate` verification part — the first of the tests it
+        #: authors — stamped on every launch request of the loop (`pure_part`) so a record's
+        #: reader can tell the part's launches from a retry. "" for every other loop.
         pure_part: str = ""
 
     class _PureReviewerSpec(NamedTuple):
@@ -8065,8 +8212,8 @@ class Conductor:
         a CodegenBundle (validated and assembly-preflighted by `_pure_bundle_violations`, written
         as `files[]` + `codegen_bundle.json` + the control file + `bundle_meta.json`), `compile`
         returns `{ir, compile_fail}` (shape-validated by `_pure_ir_document_violations`, and
-        since issue #526 run as an IR core and per-test `verification` parts whose specs hold
-        their documents for `_run_pure_compile_producer` to assemble and write as
+        since issue #526 run as an IR core and `verification` parts over groups of tests, whose
+        specs hold their documents for `_run_pure_compile_producer` to assemble and write as
         `spec.ir.yaml` + `ir_meta.json` + `compile_generate_meta.json`). Nothing below names
         either.
 
@@ -12746,7 +12893,8 @@ class Conductor:
             # The pure producer. `dependency_surface` is threaded through for the compile
             # producer, whose `<dependency_facts>` block is the published-operation catalog it
             # must transcribe verbatim; `build_launch_request` attaches it to that substep only.
-            # Compile runs as a core and one part per test, and the host assembles the IR.
+            # Compile runs as a core and one part per group of tests, and the host assembles
+            # the IR.
             if phase == "compile":
                 return self._run_pure_compile_producer(
                     refs, repair, resolved_dependencies, dependency_surface)

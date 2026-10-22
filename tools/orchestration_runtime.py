@@ -8959,9 +8959,10 @@ _PROMPT_TEMPLATE_FILES = {
     # (step, substep); the repair template is substep-agnostic. Their line 0 is
     # PURE_PROMPT_SENTINEL (parity-tested against the module constant).
     "pure compile.generate": "pure_compile_generate.txt",
-    # The `compile.generate` VERIFICATION part (issue #526): the leaf that authors one test's
-    # three verification lists against the IR core the default-shape leaf returned. The host
-    # runs it once per test the node's tests document declares and assembles the IR.
+    # The `compile.generate` VERIFICATION part (issue #526): the leaf that authors a group of
+    # tests' three verification lists against the IR core the default-shape leaf returned. The
+    # host runs it once per group of consecutive tests of the node's tests document and
+    # assembles the IR.
     "pure compile.generate.verification": "pure_compile_generate_verification.txt",
     "pure compile.verify": "pure_compile_verify.txt",
     "pure generate.generate": "pure_generate_generate.txt",
@@ -9471,7 +9472,7 @@ PURE_CONTEXT_REQUIRED_KEYS: dict[tuple[str, str], tuple[str, ...]] = {
 #: which template the leaf is sent and which context keys it must carry.
 #: Two families share it. The shapes declared on the `generate` pairs are kept equal to the
 #: non-default values of `codegen_bundle.BUNDLE_SHAPES` — the acceptance layer's vocabulary — by
-#: `test_pure_leaf_wiring`; `verification` is `compile.generate`'s per-test part (issue #526),
+#: `test_pure_leaf_wiring`; `verification` is a `compile.generate` part (issue #526),
 #: which has no bundle and is declared on that pair alone.
 PURE_LAUNCH_SHAPES: frozenset[str] = frozenset({"harness", "verification"})
 
@@ -9498,15 +9499,16 @@ PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE: dict[tuple[str, str, str], tuple[str, ...]]
                                         "runner_output_contract_document",
                                         "severity_rubric_document", "bundle_document"),
     # One `compile.generate` verification part (issue #526): the four documents the default
-    # compile producer is shown that bear on a test's verification lists, then the IR core the
-    # host accepted from that producer and the one test id this part authors. The two per-part
+    # compile producer is shown that bear on a test's verification lists (the phase contract as
+    # the excerpt `Conductor._VERIFICATION_PHASE_CONTRACT_HEADINGS` names), then the IR core the
+    # host accepted from that producer and the test ids this part authors. The two per-part
     # values come LAST, in template slot order, so every part of a node renders the same prompt
     # prefix.
     ("compile", "generate", "verification"): ("controlled_spec_document", "tests_document",
                                               "phase_contract_document",
                                               "checks_module_contract_document",
                                               "ir_core_document",
-                                              "verification_test_document"),
+                                              "verification_tests_document"),
 }
 
 
@@ -10825,9 +10827,9 @@ def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> No
         raise ValueError(
             f"pure launch request pure_parallel must be a non-empty string when present; "
             f"got {parallel!r}")
-    # The test a `compile.generate` verification part authors (issue #526), on EVERY request of
-    # that part — a warm repair carries no `pure_context`, so the context's test id cannot say
-    # which part a record belongs to. Read by the records' readers (the audit's repeated-substep
+    # The label of a `compile.generate` verification part (issue #526) — the first test it
+    # authors — on EVERY request of that part: a warm repair carries no `pure_context`, so the
+    # context's test ids cannot say which part a record belongs to. Read by the records' readers (the audit's repeated-substep
     # table, the attempt-cost report), never by the renderer. Only that shape carries it.
     part = request_payload.get("pure_part")
     if part is not None and not (isinstance(part, str) and part.strip()

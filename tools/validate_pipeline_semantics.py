@@ -3431,6 +3431,29 @@ def _parse_test_ids_from_tests_md(tests_path: Path) -> list[str]:
     return test_ids
 
 
+def _tests_md_test_block_bytes(text: str) -> dict[str, int]:
+    """The UTF-8 size of each test's definition in a `tests.md` text, keyed by test id in
+    `_parse_test_ids_from_tests_md`'s order. A definition runs from its id declaration (either
+    form) to the next declaration or `## ` heading, as `_parse_cross_target_judged_test_ids`
+    reads it; a repeated id adds its second block to the first's size. The bullet form starts
+    its block at the bullet, so a heading above it counts toward the test before — a size, not
+    a boundary any reader relies on."""
+    sizes: dict[str, int] = {}
+    current: str | None = None
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        match = TEST_ID_HEADING_PATTERN.match(line) or TEST_ID_BULLET_PATTERN.match(line)
+        if match:
+            current = match.group(1).strip() or None
+            if current is not None:
+                sizes.setdefault(current, 0)
+        elif line.startswith("## "):
+            current = None
+        if current is not None:
+            sizes[current] += len(raw_line.encode("utf-8")) + 1
+    return sizes
+
+
 def _parse_cross_target_judged_test_ids(tests_path: Path) -> set[str] | None:
     """The `tests.md` test ids whose definition applies the cross-target judgment
     (`CROSS_TARGET_JUDGMENT_PHRASE`), or None when the file cannot be read. A test's definition

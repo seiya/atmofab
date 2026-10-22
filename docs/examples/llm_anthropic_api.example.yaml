@@ -71,8 +71,8 @@ phases:
     substeps:
       # PURE: the IR producer. The host inlines the controlled spec, the tests, the dependency
       # declaration and the phase contract; the leaf returns one JSON document holding the IR
-      # without its per-test verification lists, and one further call per test returns that
-      # test's entries (issue #526), shown the core in place of the dependency declaration, the
+      # without its per-test verification lists, and one further call per group of tests
+      # returns those tests' entries (issue #526), shown the core in place of the dependency declaration, the
       # profile specification, the dependency graph, the example documents and the catalog. The inlined context is a BOUND, not a constant: most of it is
       # `docs/workflow/phases/phase_01_compile.md` in full (so it moves whenever that document
       # is edited) and the reviewer's also carries the IR under review (so it moves per node and
@@ -88,8 +88,8 @@ phases:
         # live `workspace/` run 42,721 to 63,009 bytes of YAML (widen the scope to the
         # archived `workspace_2026*/` snapshots and it is 25 from 20,850; the MAXIMUM is
         # 63,009 either way). The JSON document carrying one is larger again. Since issue #526
-        # one call writes the IR without its per-test verification lists (each test's entries
-        # are a call of their own), and that core sizes this cap: the
+        # one call writes the IR without its per-test verification lists (each group of tests'
+        # entries is a call of its own), and that core sizes this cap: the
         # `shallow_water2d_channel` 0.2.4 core measured 60,447 bytes of JSON; the whole IR
         # (168,735 bytes) was written at 85,325 output tokens as the CLI result envelope
         # reported them, so
