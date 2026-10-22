@@ -12752,6 +12752,53 @@ end program shallow_water2d_runner
             self.assertEqual(self._compile_with_io_contract(
                 Path(tmp), self._io_contract_with_predicates(preds)), [])
 
+    def test_compile_predicate_gate_refuses_an_xfail_suite_failure_assertion(self) -> None:
+        """Issue #530, through the production entry (`validate_compile_stage` ->
+        `_validate_test_predicates` -> `_xfail_suite_failure_violations`): the top-level
+        verdict and checks are the harness's xfail-excluded fold, which leaves out every target
+        case of an xfail predicate (`runner_ir.xfail_cases`), so a failure asserted there with
+        neither `per_case` nor `case:` can never hold. Each refused spelling is refused once,
+        at its own condition; each control — the same condition scoped either way, a suite-level
+        PASS assertion (what the fold reports when only the guard fails), and the same
+        failure assertion in a `pass` predicate — leaves the stage clean."""
+        refused = (
+            {"ref": "verdict.overall", "op": "eq", "value": "fail"},
+            {"ref": "verdict.failed_checks", "op": "includes", "value": "g"},
+            {"ref": "verdict.failed_checks", "op": "eq", "value": ["g"]},
+            {"ref": "checks.g.status", "op": "eq", "value": "fail"},
+        )
+        admitted = (
+            ("xfail", {"ref": "verdict.overall", "op": "eq", "value": "fail", "per_case": True}),
+            ("xfail", {"ref": "verdict.failed_checks", "op": "includes", "value": "g",
+                       "case": "c1"}),
+            ("xfail", {"ref": "verdict.overall", "op": "eq", "value": "pass"}),
+            ("xfail", {"ref": "checks.g.status", "op": "eq", "value": "pass"}),
+            ("xfail", {"ref": "verdict.failed_checks", "op": "eq", "value": []}),
+            ("pass", {"ref": "verdict.overall", "op": "eq", "value": "fail"}),
+            ("pass", {"ref": "checks.g.status", "op": "eq", "value": "fail"}),
+        )
+
+        def stage(outcome: str, cond: dict) -> list[str]:
+            preds = [{"test_id": "t1", "expected_outcome": outcome, "target_cases": ["c1"],
+                      "pass_when": {"all": [{"ref": "metrics.mass_drift_rel", "op": "le",
+                                             "value": 1.0, "per_case": True},
+                                            dict(cond)]}}]
+            with tempfile.TemporaryDirectory() as tmp:
+                return self._compile_with_io_contract(
+                    Path(tmp), self._io_contract_with_predicates(preds))
+
+        for cond in refused:
+            with self.subTest(refused=cond):
+                v = stage("xfail", cond)
+                hits = [x for x in v if "test_predicates[0].pass_when.all[1] (test 't1', "
+                        "expected_outcome xfail) asserts" in str(x)]
+                self.assertEqual(len(hits), 1, v)
+                self.assertIn("xfail-excluded fold", hits[0])
+                self.assertEqual(len(v), 1, v)
+        for outcome, cond in admitted:
+            with self.subTest(outcome=outcome, admitted=cond):
+                self.assertEqual(stage(outcome, cond), [])
+
     def test_compile_coverage_gate_through_the_stage(self) -> None:
         """Z6 PR-3 (issue #255): the per-test coverage gate, THROUGH the full compile stage
         (`_validate_test_predicates` -> `primary_evidence.coverage_violations`), replacing the
