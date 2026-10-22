@@ -1521,7 +1521,9 @@ def validate_primary_predicate_schema(
     the same forms as a `test_predicates` condition, exactly one scope, `target_cases` ⊆
     cases), parses `expr` and every `bind` under the closed grammar, and resolves every name:
     a capture name is a snapshot schema variable or the time variable; an `inputs.<path>` is a
-    number or a rectangular numeric list in EVERY target case; a bare name is a coordinate, an earlier bind, or a constant;
+    number or a rectangular numeric list in EVERY case the scope evaluates the predicate in
+    (every target case under `per_case: true`, X under `case: X`; issue #532), and an
+    `at('<case>').inputs.<path>` in that case; a bare name is a coordinate, an earlier bind, or a constant;
     an `at('<case>')` case is one of the predicate's own target cases; a
     `comparand.<point>.<var>` (grammar 3) names a snapshot schema variable or the time
     variable, like a capture, and the predicate that reads one must read this run's own state
@@ -1597,9 +1599,13 @@ def validate_primary_predicate_schema(
                      f"test {test_id.strip()!r} in test_predicates "
                      f"({sorted(set(test_target_cases[test_id.strip()]))}): a corroborant "
                      "ranges over every case its test ranges over")
+        # The cases an own-case `inputs.<path>` is read in: those the scope evaluates the
+        # predicate in (issue #532), or every target case when the scope is malformed, as
+        # `_predicate_rank_violation` ranks it.
+        scope_cases = list(targets)
         if targets:
             try:
-                _predicate_scope({**pred, "target_cases": targets}, loc)
+                scope_cases = _predicate_scope({**pred, "target_cases": targets}, loc)[1]
             except PrimaryEvidenceError as exc:
                 v.append(str(exc))
         for key in ("na_allowed", "expected_outcome"):
@@ -1687,7 +1693,7 @@ def validate_primary_predicate_schema(
                         v.append(f"{eloc}: {prefix}{ref.point}.{ref.name} is not a snapshot "
                                  f"schema variable ({sorted(capture_names)})")
                 elif ref.kind == "inputs":
-                    for cid in ([ref.case] if ref.case is not None else targets):
+                    for cid in ([ref.case] if ref.case is not None else scope_cases):
                         case = cases.get(cid)
                         inputs = case.get("inputs") if isinstance(case, dict) else None
                         try:

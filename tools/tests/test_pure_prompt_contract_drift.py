@@ -1071,6 +1071,12 @@ PINNED: dict[str, str] = {
     # The probes add an indented fence with a longer closer, an indented heading, a headings
     # tuple out of document order, and a repeated, indented test-id declaration.
     "pure-83": "6d8dd4fa706b58a04509d4cd0833551e5484a01dc0d5588c113ac895b70ef4b1",
+    # pure-84 (issue #532): the verification template says a case input a primary predicate
+    # names resolves in every case the predicate is evaluated in (the one case under
+    # `case: X`, the named case under `at('<case>')`) — it said "in every target case", and
+    # on that reading a codex leaf declared `compile_fail` for a test whose cases declare
+    # different profile inputs. Member moved: `pure_compile_generate_verification.txt`.
+    "pure-84": "22008342688579a1a2496bb9d3bc9e2ad3d94fb2145509e20b57431f1e9f2351",
 }
 
 

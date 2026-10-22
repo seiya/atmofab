@@ -10564,7 +10564,8 @@ def _validate_test_predicates(
     # The host-evaluated corroborants (Z6, issue #255): every `io_contract.primary_predicates`
     # entry parses under the closed grammar and every name it uses resolves — a capture
     # variable against the snapshot schema, an `inputs.<path>` to a number or a numeric list in
-    # every target case, an `at('<case>')` to one of its own target cases — so that
+    # every case its scope evaluates (issue #532), an `at('<case>')` to one of its own target
+    # cases and its `inputs.<path>` in that case — so that
     # Validate.execute never meets an expression it cannot value. The shape errors this
     # reports are the ones `evaluate_primary_predicates` raises on.
     from tools.primary_evidence import (

@@ -712,6 +712,12 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # of tests (a "verification call" rather than a per-test one). A bump: the producer reads
     # the document whole, and the §1-1 sentence is inside the excerpt every part reads.
     "compile-docs-19": "539892082d6f1509187139d40ab010ad0597dd143b6a6418d7817126bdd97cc1",
+    # compile-docs-20 (issue #532): the schema block, the grammar's `inputs.<a>.<b>` entry, V3
+    # and V9's floor say a primary predicate's own-case `inputs.<path>` resolves in every case
+    # its scope evaluates (X under `case: X`) and `at('<case>').inputs.<path>` in that case —
+    # they said "every target case", and a codex leaf declared `compile_fail` on that reading.
+    # A bump: the producer and every verification part read those sections.
+    "compile-docs-20": "39978e082a639ad84b4cc444c3c0e5e3bf4a80b43360c16814ad0bd5b1f0079c",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",
@@ -1630,7 +1636,13 @@ PINNED_VERDICT: dict[str, str] = {
     # axes alone, so a stacked `[ncomp, nx, ny]` state's axis exchange is writable. Round 3: the
     # `_RANK_RULES` comment and the module docstring name transpose's axis range among the
     # evaluation errors (comment / docstring only; no record's value moves).
-    "verdict-10": "565659840661d2cc65fef640ca9b86fd5446503a36a41f6e3038d0c621a8571d",
+    "verdict-10@62f1bc76": "565659840661d2cc65fef640ca9b86fd5446503a36a41f6e3038d0c621a8571d",
+    # Re-pinned by issue #532 (not bumped): the primary schema gate resolves an own-case
+    # `inputs.<path>` in the cases the predicate's scope evaluates it in (X under `case: X`)
+    # rather than in every target case, as `_predicate_rank_violation` already ranked it. A
+    # `--stage compile`-only edit: `evaluate_primary_predicates` and the evaluator it calls are
+    # untouched, so no record's value moves. The shipped digest stays pinned.
+    "verdict-10": "612e17b631d6b1e514a2dbda306a3b98557b5b592b59ca2a794d4d544025d3c0",
 }
 
 

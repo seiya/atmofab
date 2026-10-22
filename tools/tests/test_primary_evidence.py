@@ -322,6 +322,21 @@ class EvaluationTest(unittest.TestCase):
         self.assertEqual(rec["evaluated"][1]["rhs"], 2.0)
         self.assertFalse(rec["evaluated"][1]["satisfied"])
 
+    def test_a_case_scoped_input_only_its_case_declares_is_evaluated(self) -> None:
+        """Issue #532: the input the gate now resolves in X alone is the one evaluation reads
+        in X; the other target case, which lacks it, is never asked for it."""
+        cases = [_case("a", shift=0.25, u_jet=2.0), _case("b")]
+        pred = {**SYM, "expr": "maxabs(final.h) * inputs.initial.u_jet", "op": "le",
+                "value": 10.0}
+        ir = _ir([pred], cases=cases)
+        self.assertEqual(pe.validate_primary_predicate_schema(
+            [pred], case_ids={"a", "b"}, test_ids=["t_mass", "t_sym"],
+            schema=pe.snapshot_schema(ir), cases={c["case_id"]: c for c in cases}), [])
+        [rec] = pe.evaluate_primary_predicates(ir, self.run.root)
+        self.assertTrue(rec["satisfied"], rec)
+        self.assertEqual([e["case"] for e in rec["evaluated"]], ["a"])
+        self.assertAlmostEqual(rec["evaluated"][0]["value"], 2.0 * float(self.h.max()))
+
     def test_coordinates_broadcast_along_their_axis(self) -> None:
         coords = [{"name": "x", "axis": 0, "count": "inputs.grid.nx", "length": "inputs.grid.L_x",
                    "placement": "cell_center"},
@@ -1202,6 +1217,34 @@ class SchemaGateTest(unittest.TestCase):
         # under at('<case>') the path resolves in THAT case alone
         self.assertEqual(self._v([{**HMIN, "expr": "at('a').inputs.grid.dx + final.s"}],
                                  ir=ir), [])
+
+    def test_a_case_scoped_input_path_resolves_in_its_case_alone(self) -> None:
+        """Issue #532: under `case: X` the predicate is evaluated in X alone, so a bare
+        `inputs.<path>` resolves in X and not in the other target cases; it is still refused
+        where X lacks it, and `per_case: true` still resolves it in every target case."""
+        ir = _ir([SYM])
+        del ir["case"]["test_case_set"][1]["inputs"]["grid"]["dx"]
+        scoped = {**SYM, "expr": "maxabs(final.h) * inputs.grid.dx"}
+        self.assertEqual(self._v([scoped], ir=ir), [])
+        out = self._v([{**scoped, "case": "b"}], ir=ir)
+        self.assertEqual(len(out), 1, out)
+        self.assertIn("in case 'b': inputs.grid.dx is not a key", out[0])
+        out = self._v([{**scoped, "case": " a "}], ir=ir)
+        self.assertEqual(out, [])
+        # the narrowing is the bare reference's: an at('b') input is still read in 'b'
+        out = self._v([{**scoped, "expr": "maxabs(final.h) * at('b').inputs.grid.dx"}], ir=ir)
+        self.assertEqual(len(out), 1, out)
+        self.assertIn("in case 'b': inputs.grid.dx is not a key", out[0])
+        out = self._v([{k: v for k, v in scoped.items() if k != "case"} | {"per_case": True}],
+                      ir=ir)
+        self.assertEqual(len(out), 1, out)
+        self.assertIn("in case 'b': inputs.grid.dx is not a key", out[0])
+        # a malformed scope is reported, and the path is then resolved in every target case
+        out = self._v([{**scoped, "per_case": True}], ir=ir)
+        self.assertEqual(out[0], "primary_predicates[0]: exactly one of `per_case: true` or "
+                                 "`case: <case_id>` names the scope")
+        self.assertEqual(len(out), 2, out)
+        self.assertIn("in case 'b': inputs.grid.dx is not a key", out[1])
 
     def test_a_numeric_list_input_resolves_at_the_gate(self) -> None:
         """Grammar 2 (the harness sentinels): a rectangular numeric list resolves like a number

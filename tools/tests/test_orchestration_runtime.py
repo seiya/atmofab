@@ -21874,8 +21874,12 @@ class ChildContextDocSizeTests(unittest.TestCase):
         # Issue #526 PR-2 (the substep-14 bullet says the host assembles the IR from a core call
         # and one call per test): bumped 99600->99800; measured 99636 at the commit that takes
         # this bump. Round 1 (§1-1's declaration bullet names the inputs the launch prompt
-        # lists): measured 99610, no bump.
-        "docs/workflow/phases/phase_01_compile.md": 99800,
+        # lists): measured 99610, no bump. Issue #532 (the schema block, the grammar's
+        # `inputs.<a>.<b>` entry, V3 and V9's floor say an own-case input resolves in every case
+        # the predicate's scope evaluates, and an `at('<case>')` one in that case): bumped
+        # 99800->100200; measured 99971 with `wc -c` in /home/seiya/atmofab at the commit that
+        # takes this bump.
+        "docs/workflow/phases/phase_01_compile.md": 100200,
     }
 
     def test_child_context_docs_within_budget(self) -> None:
