@@ -12798,6 +12798,17 @@ end program shallow_water2d_runner
         for outcome, cond in admitted:
             with self.subTest(outcome=outcome, admitted=cond):
                 self.assertEqual(stage(outcome, cond), [])
+        # The outcome is read as the schema gate and `runner_ir.xfail_cases` read it — stripped
+        # and case-folded — so a spelling both of them take as xfail is refused here too.
+        v = stage(" XFail ", refused[0])
+        self.assertEqual(
+            [x for x in v if "(test 't1', expected_outcome xfail) asserts" in str(x)][:1],
+            v[:1], v)
+        self.assertEqual(len(v), 1, v)
+        # A malformed `checks` ref is the schema gate's alone to report (once, on the ref).
+        v = stage("xfail", {"ref": "checks.g", "op": "eq", "value": "fail"})
+        self.assertTrue(v, v)
+        self.assertFalse([x for x in v if "xfail-excluded fold" in str(x)], v)
 
     def test_compile_coverage_gate_through_the_stage(self) -> None:
         """Z6 PR-3 (issue #255): the per-test coverage gate, THROUGH the full compile stage
