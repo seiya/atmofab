@@ -1058,7 +1058,8 @@ PINNED: dict[str, str] = {
     # tests, bounded by `_VERIFICATION_PART_BUDGET_BYTES` of their tests.md definitions, and is
     # shown the sections of `phase_01_compile.md` that `_VERIFICATION_PHASE_CONTRACT_HEADINGS`
     # names instead of the whole document — the closing runs measured every part re-sending
-    # 65-100k input tokens with no cross-session cache hit on codex. Members moved:
+    # 65-100k input tokens, and a fresh codex session reused nothing beyond the CLI's own prefix
+    # (685 of 697 fresh codex launches that month). Members moved:
     # `pure_compile_generate_verification.txt` (a group of tests, `verification_tests_document`,
     # the excerpt's label) and the two new members naming the selection and the bound.
     # Re-pinned in place (unshipped) by round 1: probe members pin the slicer and the grouping
@@ -1067,7 +1068,9 @@ PINNED: dict[str, str] = {
     # clause of the rule decides a split (round 1's probe let four rule changes through), and a
     # fence closes only on a bare run indented at most three spaces. Round 3: the excerpt adds
     # the On-failure and Acceptance-of-retry sections, which govern a part's own declaration.
-    "pure-83": "acd63ca415f8cd7307e7df1533ee1374a42f2232bf2e9f501262cecd663c28af",
+    # The probes add an indented fence with a longer closer, an indented heading, a headings
+    # tuple out of document order, and a repeated, indented test-id declaration.
+    "pure-83": "6d8dd4fa706b58a04509d4cd0833551e5484a01dc0d5588c113ac895b70ef4b1",
 }
 
 
@@ -1216,7 +1219,7 @@ def _contract_tuple() -> dict[str, object]:
         # differently, changes what a part reads) and the size measure plus grouping rule that
         # decide which tests share a prompt.
         "compile_verification_slicer_probe": wc._markdown_heading_sections(
-            _SLICER_PROBE, ("## A", "### A.2", "## C"), subject="probe"),
+            _SLICER_PROBE, ("## C", "## A", "### A.2", "## D"), subject="probe"),
         # The size measure's own output, so counting characters for bytes, dropping the
         # newline, a declaration line left out or a `## ` that no longer ends a block moves the
         # digest whether or not it moves a split on the probe...
@@ -1244,10 +1247,12 @@ def _contract_tuple() -> dict[str, object]:
 #: The fixed inputs of the two algorithm probes in `_contract_tuple`.
 _SLICER_PROBE = ("# T\n\n## A\n\na\n\n````\n```\n## not a heading\n```\n````\n\n"
                  "~~~\n# yaml comment\n~~~\n\n    ```\n\n### A.1\n\nx\n\n### A.2\n\ny\n\n"
-                 "## B\n\nb\n\n## C\n\nc\n\n```\n```yaml\n## inside\n``` x\n~~~\n## inside\n```\n")
+                 "## B\n\nb\n\n## C\n\nc\n\n```\n```yaml\n## inside\n``` x\n~~~\n## inside\n```\n\n"
+                 "  ````\n# indented fence\n`````\n\n ## indented heading\n\n## D\n\nd\n")
 _TESTS_PROBE = ("## 6. Tests\n\n### 6-1. `p1`\n\n" + "a" * 3000 + "\n\n### 6-2. `p2`\n\n"
-                + "b" * 6966 + "\n\n- `test_id`: `p3`\n" + "c" * 4000 + "\n\n## 7. End\n"
-                + "d" * 50000 + "\n### 6-3. `p4`\n\n" + "é" * 6000 + "\n")
+                + "b" * 6845 + "\n\n- `test_id`: `p3`\n" + "c" * 4000 + "\n\n## 7. End\n"
+                + "d" * 50000 + "\n### 6-3. `p4`\n\n" + "é" * 6000 + "\n"
+                + "  - `test_id`: `p1`\n" + "e" * 100 + "\n")
 
 
 def _parse_ids_probe() -> list[str]:
