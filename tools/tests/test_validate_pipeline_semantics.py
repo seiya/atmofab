@@ -12805,6 +12805,14 @@ end program shallow_water2d_runner
             [x for x in v if "(test 't1', expected_outcome xfail) asserts" in str(x)][:1],
             v[:1], v)
         self.assertEqual(len(v), 1, v)
+        # `per_case: false` is the suite scope the evaluator reads it as, so it is refused here;
+        # a non-bool `per_case` scopes nothing for either gate, so both report it.
+        v = stage("xfail", {**refused[0], "per_case": False})
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("xfail-excluded fold", v[0])
+        v = stage("xfail", {**refused[0], "per_case": "true"})
+        self.assertTrue([x for x in v if "per_case must be a boolean" in str(x)], v)
+        self.assertTrue([x for x in v if "xfail-excluded fold" in str(x)], v)
         # A malformed `checks` ref is the schema gate's alone to report (once, on the ref).
         v = stage("xfail", {"ref": "checks.g", "op": "eq", "value": "fail"})
         self.assertTrue(v, v)

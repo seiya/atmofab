@@ -10370,8 +10370,10 @@ def _xfail_suite_failure_violations(predicates: Any) -> list[str]:
 
     A suite-level PASS assertion stays admitted: "only the expected guard failed, so the top
     level reads pass" is what the fold is specified to report, and a harness self-test asserts
-    exactly that. A condition with a malformed scope or ref is ``validate_predicate_schema``'s
-    to report; this rule reads only the well-formed spellings."""
+    exactly that. Only a real ``True`` scopes a condition here, as the schema gate admits only
+    a real bool: a ``per_case: "true"`` is reported by both gates, and so is a failure assertion
+    naming an undeclared check id. The two findings agree — the one remedy, a well-formed
+    per-case scope over a declared id, clears both — so neither is suppressed for the other."""
     from tools.verdict_evaluator import CHECK_REF_LEAF, VERDICT_ENUM_FIELD, VERDICT_LIST_FIELD
 
     out: list[str] = []
@@ -10399,11 +10401,12 @@ def _xfail_suite_failure_violations(predicates: Any) -> list[str]:
                 out.append(
                     f"test_predicates[{idx}].pass_when.all[{cidx}] (test "
                     f"{pred.get('test_id')!r}, expected_outcome xfail) asserts `{ref} {op} "
-                    f"{value!r}` at the SUITE level, which can never hold on a correct kernel: "
-                    "the top-level verdict and checks are the harness's xfail-excluded fold, "
-                    "which leaves out every target case of an xfail test, this one's included. "
-                    "Read it in the case that fails — `per_case: true`, or `case: <one of "
-                    "this predicate's target_cases>`")
+                    f"{value!r}` at the SUITE level, which no failure of this test's own cases "
+                    "can satisfy: the top-level verdict and checks are the harness's "
+                    "xfail-excluded fold, which leaves out every target case of an xfail test, "
+                    "this one's included, so the condition holds only when some case outside "
+                    "every xfail test fails. Read it in the case that fails — `per_case: true`, "
+                    "or `case: <one of this predicate's target_cases>`")
     return out
 
 
