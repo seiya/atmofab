@@ -12758,8 +12758,8 @@ end program shallow_water2d_runner
         verdict and checks are the harness's xfail-excluded fold, which leaves out every target
         case of an xfail predicate (`runner_ir.xfail_cases`), so a failure asserted there with
         neither `per_case` nor `case:` is satisfied by no failure of the test's own cases. Each
-        refused spelling is refused once, at its own condition; each control — the same condition scoped either way, a suite-level
-        PASS assertion (what the fold reports when only the guard fails), and the same
+        refused spelling is refused once, at its own condition; each control — the same
+        condition scoped either way, a suite-level PASS assertion (what the fold reports when only the guard fails), and the same
         failure assertion in a `pass` predicate — leaves the stage clean."""
         refused = (
             {"ref": "verdict.overall", "op": "eq", "value": "fail"},
@@ -12817,6 +12817,12 @@ end program shallow_water2d_runner
                 v = stage("xfail", {**refused[0], malformed[0]: malformed[1]})
                 self.assertTrue([x for x in v if schema_says in str(x)], v)
                 self.assertFalse([x for x in v if "xfail-excluded fold" in str(x)], v)
+        # ... while a falsy malformed `per_case` IS read as suite scope, so both gates report it.
+        for falsy in (0, ""):
+            with self.subTest(falsy=falsy):
+                v = stage("xfail", {**refused[0], "per_case": falsy})
+                self.assertTrue([x for x in v if "per_case must be a boolean" in str(x)], v)
+                self.assertTrue([x for x in v if "xfail-excluded fold" in str(x)], v)
         # A malformed `checks` ref is the schema gate's alone to report (once, on the ref).
         v = stage("xfail", {"ref": "checks.g", "op": "eq", "value": "fail"})
         self.assertTrue(v, v)

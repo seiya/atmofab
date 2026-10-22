@@ -10372,10 +10372,11 @@ def _xfail_suite_failure_violations(predicates: Any) -> list[str]:
     A suite-level PASS assertion stays admitted: "only the expected guard failed, so the top
     level reads pass" is what the fold is specified to report, and a harness self-test asserts
     exactly that. A condition is suite-level here exactly when ``verdict_evaluator`` reads it
-    so — ``bool(per_case)`` false and no ``case`` key — so a malformed scope (``per_case:
-    "true"``, ``case: null``) is the schema gate's alone. A failure assertion naming an
-    undeclared check id is reported by both gates; the two findings agree (one remedy, a
-    per-case scope over a declared id, clears both), and neither is suppressed for the other:
+    so — ``bool(per_case)`` false and no ``case`` key — so a malformed scope the evaluator does
+    not read as suite-level (``per_case: "true"``, ``case: null``) is the schema gate's alone,
+    and a falsy one (``per_case: 0``) is reported by both. So is a failure assertion naming an
+    undeclared check id; the two findings agree (one remedy, a per-case scope over a declared
+    id, clears both), and neither is suppressed for the other:
     a suppression keyed on the schema's findings would also wait out an unrelated one, such as
     a missing ``quantity``, for a whole retry."""
     from tools.verdict_evaluator import CHECK_REF_LEAF, VERDICT_ENUM_FIELD, VERDICT_LIST_FIELD
