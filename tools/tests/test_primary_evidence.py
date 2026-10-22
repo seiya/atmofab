@@ -1231,6 +1231,10 @@ class SchemaGateTest(unittest.TestCase):
         self.assertIn("in case 'b': inputs.grid.dx is not a key", out[0])
         out = self._v([{**scoped, "case": " a "}], ir=ir)
         self.assertEqual(out, [])
+        # the narrowing is the bare reference's: an at('b') input is still read in 'b'
+        out = self._v([{**scoped, "expr": "maxabs(final.h) * at('b').inputs.grid.dx"}], ir=ir)
+        self.assertEqual(len(out), 1, out)
+        self.assertIn("in case 'b': inputs.grid.dx is not a key", out[0])
         out = self._v([{k: v for k, v in scoped.items() if k != "case"} | {"per_case": True}],
                       ir=ir)
         self.assertEqual(len(out), 1, out)
