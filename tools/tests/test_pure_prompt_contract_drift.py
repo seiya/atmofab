@@ -96,6 +96,7 @@ import tools.codegen_bundle as cb
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools.backends import registry as _registry
+from tools.validate_pipeline_semantics import _tests_md_test_block_bytes
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, PURE_SYSTEM_PROMPT
 
 _TEMPLATE_FILES = (
@@ -1060,7 +1061,10 @@ PINNED: dict[str, str] = {
     # 65-100k input tokens with no cross-session cache hit on codex. Members moved:
     # `pure_compile_generate_verification.txt` (a group of tests, `verification_tests_document`,
     # the excerpt's label) and the two new members naming the selection and the bound.
-    "pure-83": "19b3574dcc0396e06409c0c90bc73861251a3a11037fbff4a38bb69ba56f953d",
+    # Re-pinned in place (unshipped) by round 1: two probe members pin the slicer's and the
+    # grouping rule's behaviour on fixed inputs, and the slicer reads 4-backtick and tilde
+    # fences.
+    "pure-83": "7afb848f81b4d5b119756faa941ab5194221c7be719efbafc5e8b5f34b40dfc3",
 }
 
 
@@ -1203,6 +1207,17 @@ def _contract_tuple() -> dict[str, object]:
         "compile_verification_phase_contract_headings":
             list(wc.Conductor._VERIFICATION_PHASE_CONTRACT_HEADINGS),
         "compile_verification_part_budget_bytes": wc.Conductor._VERIFICATION_PART_BUDGET_BYTES,
+        # ...and the two ALGORITHMS those choices run through, over fixed probes rather than the
+        # live documents (which this pin deliberately leaves to compile-docs): the slicer that
+        # cuts the excerpt (a section ending at a different heading, or a fence read
+        # differently, changes what a part reads) and the size measure plus grouping rule that
+        # decide which tests share a prompt.
+        "compile_verification_slicer_probe": wc._markdown_heading_sections(
+            _SLICER_PROBE, ("## A", "### A.2", "## C"), subject="probe"),
+        "compile_verification_grouping_probe": [
+            list(group) for group in wc.Conductor._verification_part_groups(
+                wc.Conductor.__new__(wc.Conductor), _parse_ids_probe(),
+                _tests_md_test_block_bytes(_TESTS_PROBE))],
         # ... and the runner-output binding, inlined after the whole runner-output contract in
         # the `harness` shape's two prompts on the same ground as that document.
         "runner_output_binding_document": {
@@ -1211,6 +1226,19 @@ def _contract_tuple() -> dict[str, object]:
             for language in _prompt_languages()
         },
     }
+
+
+#: The fixed inputs of the two algorithm probes in `_contract_tuple`.
+_SLICER_PROBE = ("# T\n\n## A\n\na\n\n````\n```\n## not a heading\n```\n````\n\n"
+                 "~~~\n# yaml comment\n~~~\n\n### A.1\n\nx\n\n### A.2\n\ny\n\n"
+                 "## B\n\nb\n\n## C\n\nc\n")
+_TESTS_PROBE = ("## 6. Tests\n\n### 6-1. `p1`\n\n" + "a" * 3000 + "\n\n### 6-2. `p2`\n\n"
+                + "b" * 6966 + "\n\n- `test_id`: `p3`\n" + "c" * 4000 + "\n\n## 7. End\n"
+                + "d" * 50000 + "\n### 6-3. `p4`\n\n" + "é" * 6000 + "\n")
+
+
+def _parse_ids_probe() -> list[str]:
+    return list(_tests_md_test_block_bytes(_TESTS_PROBE))
 
 
 def _prompt_languages() -> list[str]:
