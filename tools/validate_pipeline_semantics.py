@@ -10366,14 +10366,18 @@ def _xfail_suite_failure_violations(predicates: Any) -> list[str]:
     neither ``per_case`` nor ``case:`` reads a fold that excludes this test's own cases, and one
     that asserts a failure there — ``verdict.overall eq fail``, ``verdict.failed_checks
     includes <id>`` or ``eq`` a non-empty list, ``checks.<id>.status eq fail`` — holds only when
-    some OTHER case fails: on a correct kernel never, a ``physics_fail`` the IR made certain.
+    some case outside every ``xfail`` test fails — never on a failure of this test's own cases,
+    which is the one thing the test exists to observe.
 
     A suite-level PASS assertion stays admitted: "only the expected guard failed, so the top
     level reads pass" is what the fold is specified to report, and a harness self-test asserts
-    exactly that. Only a real ``True`` scopes a condition here, as the schema gate admits only
-    a real bool: a ``per_case: "true"`` is reported by both gates, and so is a failure assertion
-    naming an undeclared check id. The two findings agree — the one remedy, a well-formed
-    per-case scope over a declared id, clears both — so neither is suppressed for the other."""
+    exactly that. A condition is suite-level here exactly when ``verdict_evaluator`` reads it
+    so — ``bool(per_case)`` false and no ``case`` key — so a malformed scope (``per_case:
+    "true"``, ``case: null``) is the schema gate's alone. A failure assertion naming an
+    undeclared check id is reported by both gates; the two findings agree (one remedy, a
+    per-case scope over a declared id, clears both), and neither is suppressed for the other:
+    a suppression keyed on the schema's findings would also wait out an unrelated one, such as
+    a missing ``quantity``, for a whole retry."""
     from tools.verdict_evaluator import CHECK_REF_LEAF, VERDICT_ENUM_FIELD, VERDICT_LIST_FIELD
 
     out: list[str] = []
@@ -10384,7 +10388,7 @@ def _xfail_suite_failure_violations(predicates: Any) -> list[str]:
         pass_when = pred.get("pass_when")
         conds = pass_when.get("all") if isinstance(pass_when, dict) else None
         for cidx, cond in enumerate(conds if isinstance(conds, list) else []):
-            if not isinstance(cond, dict) or cond.get("per_case") is True or "case" in cond:
+            if not isinstance(cond, dict) or bool(cond.get("per_case")) or "case" in cond:
                 continue
             ref, op, value = cond.get("ref"), cond.get("op"), cond.get("value")
             if not isinstance(ref, str):
@@ -10456,7 +10460,7 @@ def _validate_test_predicates(
 
     An ``xfail`` predicate asserting a failure at the suite level is refused
     (``_xfail_suite_failure_violations``, issue #530): the top-level fold excludes that test's
-    own target cases, so the condition can never hold on a correct kernel.
+    own target cases, so no failure of those cases can satisfy the condition.
 
     A violation routes (via ``classify_compile_static_failure``) back to ``compile.generate``
     to re-author the predicates."""

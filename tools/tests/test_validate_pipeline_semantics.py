@@ -12757,8 +12757,8 @@ end program shallow_water2d_runner
         `_validate_test_predicates` -> `_xfail_suite_failure_violations`): the top-level
         verdict and checks are the harness's xfail-excluded fold, which leaves out every target
         case of an xfail predicate (`runner_ir.xfail_cases`), so a failure asserted there with
-        neither `per_case` nor `case:` can never hold. Each refused spelling is refused once,
-        at its own condition; each control — the same condition scoped either way, a suite-level
+        neither `per_case` nor `case:` is satisfied by no failure of the test's own cases. Each
+        refused spelling is refused once, at its own condition; each control — the same condition scoped either way, a suite-level
         PASS assertion (what the fold reports when only the guard fails), and the same
         failure assertion in a `pass` predicate — leaves the stage clean."""
         refused = (
@@ -12805,14 +12805,18 @@ end program shallow_water2d_runner
             [x for x in v if "(test 't1', expected_outcome xfail) asserts" in str(x)][:1],
             v[:1], v)
         self.assertEqual(len(v), 1, v)
-        # `per_case: false` is the suite scope the evaluator reads it as, so it is refused here;
-        # a non-bool `per_case` scopes nothing for either gate, so both report it.
+        # The scope is read as the evaluator reads it: `per_case: false` is the suite scope, so
+        # it is refused here; a malformed scope the evaluator would not read as suite-level
+        # (`per_case: "true"`, `case: null`) is the schema gate's alone.
         v = stage("xfail", {**refused[0], "per_case": False})
         self.assertEqual(len(v), 1, v)
         self.assertIn("xfail-excluded fold", v[0])
-        v = stage("xfail", {**refused[0], "per_case": "true"})
-        self.assertTrue([x for x in v if "per_case must be a boolean" in str(x)], v)
-        self.assertTrue([x for x in v if "xfail-excluded fold" in str(x)], v)
+        for malformed, schema_says in ((("per_case", "true"), "per_case must be a boolean"),
+                                       (("case", None), "case must be a non-empty string")):
+            with self.subTest(malformed=malformed):
+                v = stage("xfail", {**refused[0], malformed[0]: malformed[1]})
+                self.assertTrue([x for x in v if schema_says in str(x)], v)
+                self.assertFalse([x for x in v if "xfail-excluded fold" in str(x)], v)
         # A malformed `checks` ref is the schema gate's alone to report (once, on the ref).
         v = stage("xfail", {"ref": "checks.g", "op": "eq", "value": "fail"})
         self.assertTrue(v, v)
