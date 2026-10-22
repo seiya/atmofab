@@ -10356,6 +10356,65 @@ def _validate_generated_signatures(
     )
 
 
+def _xfail_suite_failure_violations(predicates: Any) -> list[str]:
+    """Refuse a SUITE-LEVEL failure assertion inside an ``xfail`` predicate (issue #530).
+
+    The top-level ``verdict`` / ``checks`` of ``diagnostics.json`` is the harness's
+    xfail-excluded fold: a failure of a case whose ``expected_xfail`` is true is left out of it,
+    and the host-rendered runner sets that flag on exactly the target cases of every ``xfail``
+    predicate (``runner_ir.xfail_cases``). So inside an ``xfail`` predicate a condition with
+    neither ``per_case`` nor ``case:`` reads a fold that excludes this test's own cases, and one
+    that asserts a failure there — ``verdict.overall eq fail``, ``verdict.failed_checks
+    includes <id>`` or ``eq`` a non-empty list, ``checks.<id>.status eq fail`` — holds only when
+    some case outside every ``xfail`` test fails — never on a failure of this test's own cases,
+    which is the one thing the test exists to observe.
+
+    A suite-level PASS assertion stays admitted: "only the expected guard failed, so the top
+    level reads pass" is what the fold is specified to report, and a harness self-test asserts
+    exactly that. A condition is suite-level here exactly when ``verdict_evaluator`` reads it
+    so — ``bool(per_case)`` false and no ``case`` key — so a malformed scope the evaluator does
+    not read as suite-level (``per_case: "true"``, ``case: null``) is the schema gate's alone,
+    and a falsy one (``per_case: 0``) is reported by both. So is a failure assertion naming an
+    undeclared check id; the two findings agree (one remedy, a per-case scope over a declared
+    id, clears both), and neither is suppressed for the other:
+    a suppression keyed on the schema's findings would also wait out an unrelated one, such as
+    a missing ``quantity``, for a whole retry."""
+    from tools.verdict_evaluator import CHECK_REF_LEAF, VERDICT_ENUM_FIELD, VERDICT_LIST_FIELD
+
+    out: list[str] = []
+    for idx, pred in enumerate(predicates if isinstance(predicates, list) else []):
+        if not isinstance(pred, dict) \
+                or str(pred.get("expected_outcome") or "").strip().lower() != "xfail":
+            continue
+        pass_when = pred.get("pass_when")
+        conds = pass_when.get("all") if isinstance(pass_when, dict) else None
+        for cidx, cond in enumerate(conds if isinstance(conds, list) else []):
+            if not isinstance(cond, dict) or bool(cond.get("per_case")) or "case" in cond:
+                continue
+            ref, op, value = cond.get("ref"), cond.get("op"), cond.get("value")
+            if not isinstance(ref, str):
+                continue
+            head, _, rest = ref.partition(".")
+            asserts_failure = (
+                (ref == f"verdict.{VERDICT_ENUM_FIELD}" and op == "eq" and value == "fail")
+                or (ref == f"verdict.{VERDICT_LIST_FIELD}"
+                    and (op == "includes"
+                         or (op == "eq" and isinstance(value, list) and bool(value))))
+                or (head == "checks" and rest.endswith(f".{CHECK_REF_LEAF}")
+                    and op == "eq" and value == "fail"))
+            if asserts_failure:
+                out.append(
+                    f"test_predicates[{idx}].pass_when.all[{cidx}] (test "
+                    f"{pred.get('test_id')!r}, expected_outcome xfail) asserts `{ref} {op} "
+                    f"{value!r}` at the SUITE level, which no failure of this test's own cases "
+                    "can satisfy: the top-level verdict and checks are the harness's "
+                    "xfail-excluded fold, which leaves out every target case of an xfail test, "
+                    "this one's included, so the condition holds only when some case outside "
+                    "every xfail test fails. Read it in the case that fails — `per_case: true`, "
+                    "or `case: <one of this predicate's target_cases>`")
+    return out
+
+
 def _validate_test_predicates(
     repo_root: Path, ir_dir: Path, violations: list[str]
 ) -> None:
@@ -10399,6 +10458,10 @@ def _validate_test_predicates(
     the set is pinned separately — every test whose ``tests.md`` definition contains
     ``CROSS_TARGET_JUDGMENT_PHRASE`` carries at least one cross-target predicate, and no other
     test carries one (``_parse_cross_target_judged_test_ids``).
+
+    An ``xfail`` predicate asserting a failure at the suite level is refused
+    (``_xfail_suite_failure_violations``, issue #530): the top-level fold excludes that test's
+    own target cases, so no failure of those cases can satisfy the condition.
 
     A violation routes (via ``classify_compile_static_failure``) back to ``compile.generate``
     to re-author the predicates."""
@@ -10494,6 +10557,8 @@ def _validate_test_predicates(
         verdict_fields=verdict_fields,
         metric_addrs=metric_addrs,
     ):
+        violations.append(f"{derived_path}:{msg}")
+    for msg in _xfail_suite_failure_violations(predicates):
         violations.append(f"{derived_path}:{msg}")
 
     # The host-evaluated corroborants (Z6, issue #255): every `io_contract.primary_predicates`

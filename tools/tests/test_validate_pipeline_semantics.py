@@ -12752,6 +12752,82 @@ end program shallow_water2d_runner
             self.assertEqual(self._compile_with_io_contract(
                 Path(tmp), self._io_contract_with_predicates(preds)), [])
 
+    def test_compile_predicate_gate_refuses_an_xfail_suite_failure_assertion(self) -> None:
+        """Issue #530, through the production entry (`validate_compile_stage` ->
+        `_validate_test_predicates` -> `_xfail_suite_failure_violations`): the top-level
+        verdict and checks are the harness's xfail-excluded fold, which leaves out every target
+        case of an xfail predicate (`runner_ir.xfail_cases`), so a failure asserted there with
+        neither `per_case` nor `case:` is satisfied by no failure of the test's own cases. Each
+        refused spelling is refused once, at its own condition; each control — the same
+        condition scoped either way, a suite-level PASS assertion (what the fold reports when only the guard fails), and the same
+        failure assertion in a `pass` predicate — leaves the stage clean."""
+        refused = (
+            {"ref": "verdict.overall", "op": "eq", "value": "fail"},
+            {"ref": "verdict.failed_checks", "op": "includes", "value": "g"},
+            {"ref": "verdict.failed_checks", "op": "eq", "value": ["g"]},
+            {"ref": "checks.g.status", "op": "eq", "value": "fail"},
+        )
+        admitted = (
+            ("xfail", {"ref": "verdict.overall", "op": "eq", "value": "fail", "per_case": True}),
+            ("xfail", {"ref": "verdict.failed_checks", "op": "includes", "value": "g",
+                       "case": "c1"}),
+            ("xfail", {"ref": "verdict.overall", "op": "eq", "value": "pass"}),
+            ("xfail", {"ref": "checks.g.status", "op": "eq", "value": "pass"}),
+            ("xfail", {"ref": "verdict.failed_checks", "op": "eq", "value": []}),
+            ("pass", {"ref": "verdict.overall", "op": "eq", "value": "fail"}),
+            ("pass", {"ref": "checks.g.status", "op": "eq", "value": "fail"}),
+        )
+
+        def stage(outcome: str, cond: dict) -> list[str]:
+            preds = [{"test_id": "t1", "expected_outcome": outcome, "target_cases": ["c1"],
+                      "pass_when": {"all": [{"ref": "metrics.mass_drift_rel", "op": "le",
+                                             "value": 1.0, "per_case": True},
+                                            dict(cond)]}}]
+            with tempfile.TemporaryDirectory() as tmp:
+                return self._compile_with_io_contract(
+                    Path(tmp), self._io_contract_with_predicates(preds))
+
+        for cond in refused:
+            with self.subTest(refused=cond):
+                v = stage("xfail", cond)
+                hits = [x for x in v if "test_predicates[0].pass_when.all[1] (test 't1', "
+                        "expected_outcome xfail) asserts" in str(x)]
+                self.assertEqual(len(hits), 1, v)
+                self.assertIn("xfail-excluded fold", hits[0])
+                self.assertEqual(len(v), 1, v)
+        for outcome, cond in admitted:
+            with self.subTest(outcome=outcome, admitted=cond):
+                self.assertEqual(stage(outcome, cond), [])
+        # The outcome is read as the schema gate and `runner_ir.xfail_cases` read it — stripped
+        # and case-folded — so a spelling both of them take as xfail is refused here too.
+        v = stage(" XFail ", refused[0])
+        self.assertEqual(
+            [x for x in v if "(test 't1', expected_outcome xfail) asserts" in str(x)][:1],
+            v[:1], v)
+        self.assertEqual(len(v), 1, v)
+        # The scope is read as the evaluator reads it: `per_case: false` is the suite scope, so
+        # it is refused here; a malformed scope the evaluator would not read as suite-level
+        # (`per_case: "true"`, `case: null`) is the schema gate's alone.
+        v = stage("xfail", {**refused[0], "per_case": False})
+        self.assertEqual(len(v), 1, v)
+        self.assertIn("xfail-excluded fold", v[0])
+        for malformed, schema_says in ((("per_case", "true"), "per_case must be a boolean"),
+                                       (("case", None), "case must be a non-empty string")):
+            with self.subTest(malformed=malformed):
+                v = stage("xfail", {**refused[0], malformed[0]: malformed[1]})
+                self.assertTrue([x for x in v if schema_says in str(x)], v)
+                self.assertFalse([x for x in v if "xfail-excluded fold" in str(x)], v)
+        # ... while a falsy malformed `per_case` IS read as suite scope, so both gates report it.
+        for falsy in (0, ""):
+            with self.subTest(falsy=falsy):
+                v = stage("xfail", {**refused[0], "per_case": falsy})
+                self.assertTrue([x for x in v if "per_case must be a boolean" in str(x)], v)
+                self.assertTrue([x for x in v if "xfail-excluded fold" in str(x)], v)
+        # A malformed `checks` ref is the schema gate's alone to report (once, on the ref).
+        v = stage("xfail", {"ref": "checks.g", "op": "eq", "value": "fail"})
+        self.assertTrue(v, v)
+        self.assertFalse([x for x in v if "xfail-excluded fold" in str(x)], v)
+
     def test_compile_coverage_gate_through_the_stage(self) -> None:
         """Z6 PR-3 (issue #255): the per-test coverage gate, THROUGH the full compile stage
         (`_validate_test_predicates` -> `primary_evidence.coverage_violations`), replacing the
