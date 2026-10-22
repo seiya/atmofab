@@ -1384,7 +1384,7 @@ class PureRenderTests(unittest.TestCase):
         # every other one is.
         ("tools/prompt_templates/pure_compile_verify.txt", None, None),
         ("tools/prompt_templates/pure_compile_generate.txt", None, None),
-        # Issue #526: the per-test verification part of `compile.generate`, scanned for the
+        # Issue #526: the verification part of `compile.generate`, scanned for the
         # reason its parent template is.
         ("tools/prompt_templates/pure_compile_generate_verification.txt", None, None),
         # Round 2 of issue #143 added this: the AGENTIC transport, which was then the ONLY one
