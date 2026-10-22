@@ -7512,9 +7512,11 @@ class Conductor:
         (`_ensure_fresh_producer_id` has rotated `refs` away from it). The rows are keyed by
         their `test_ids` rather than by the `part` label, because a test may be called `core`
         (the tests.md grammar reserves no id), and a label key would let that part's row stand
-        for the core's. A part of this run whose group differs from every previous row's (the
-        grouping bound changed between the two) therefore finds no row and starts cold. Empty
-        when there is no such reopen, no record, or no readable `parts[]`."""
+        for the core's. A row written before parts covered groups (`pure-82`) carries one
+        `test_id` and reads as that one-test group. A part of this run whose group differs from
+        every previous row's (the grouping bound changed between the two) therefore finds no
+        row and starts cold. Empty when there is no such reopen, no record, or no readable
+        `parts[]`."""
         empty = self._PreviousCompileRun({}, self._PASSED, {})
         if not (repair and str(repair.get("repair_strategy", "")).strip() == "reuse"):
             return empty
@@ -7534,14 +7536,22 @@ class Conductor:
             return empty
         rows = meta.get("parts") if isinstance(meta, dict) else None
         def key(row: dict[str, Any]) -> tuple[str, ...] | None:
-            ids = row.get("test_ids")
+            ids = row["test_ids"] if "test_ids" in row else (
+                None if row["test_id"] is None else [row["test_id"]])
             return None if ids is None else tuple(ids)
 
+        def readable(row: Any) -> bool:
+            if not isinstance(row, dict):
+                return False
+            if "test_ids" in row:
+                ids = row["test_ids"]
+                return ids is None or (isinstance(ids, list) and bool(ids)
+                                       and all(isinstance(t, str) for t in ids))
+            return "test_id" in row and (row["test_id"] is None
+                                         or isinstance(row["test_id"], str))
+
         rows = [row for row in (rows if isinstance(rows, list) else [])
-                if isinstance(row, dict) and "test_ids" in row
-                and (row["test_ids"] is None
-                     or (isinstance(row["test_ids"], list) and row["test_ids"]
-                         and all(isinstance(t, str) for t in row["test_ids"])))
+                if readable(row)
                 and isinstance(row.get("agent_run_id"), str) and row["agent_run_id"].strip()]
         if not rows:
             return empty

@@ -1966,6 +1966,48 @@ class PureCompilePartGroupTests(_Fixture):
                 c.run_substep(self.refs, "compile", "generate", repair=repair).status, "pass")
         self.assertEqual([r["repair_strategy"] for r in _requests(c)[1:]], ["none"] * 3)
 
+    def test_a_previous_run_recorded_one_test_per_row_still_routes_each_loop(self) -> None:
+        """A `pure-82` row names one `test_id`: it reads as that one-test group, so the core
+        resumes the core and a part matching that group resumes it — never the core taking the
+        outer target, which is the last part's session."""
+        prior_ref = f"{self.refs.ir_ref.rsplit('/', 1)[0]}/advdiff-uc2_20260101_000"
+        prior = self.repo / prior_ref
+        prior.mkdir(parents=True, exist_ok=True)
+        (prior / "spec.ir.yaml").write_text(
+            yaml.safe_dump(_assembled_ir(*self.TESTS), sort_keys=False), encoding="utf-8")
+        rows = [("core", None, "prior-core"), ("t_alpha", "t_alpha", "prior-alpha"),
+                ("t_beta", "t_beta", "prior-beta"), ("t_gamma", "t_gamma", "prior-gamma")]
+        (prior / "compile_generate_meta.json").write_text(json.dumps({
+            "result": "pass",
+            "parts": [{"part": k, "test_id": t, "agent_run_id": v, "result": "pass"}
+                      for k, t, v in rows]}), encoding="utf-8")
+        launches = self.repo / "workspace" / "orchestrations" / "o" / "launches"
+        launches.mkdir(parents=True, exist_ok=True)
+        for _k, _t, arid in rows:
+            (launches / f"{arid}.request.json").write_text(json.dumps(
+                {"ir_ref": prior_ref, "pipeline_ref": self.refs.pipeline_ref,
+                 "agent_run_id": arid}), encoding="utf-8")
+        repair = {"issue_severity": "major", "repair_strategy": "reuse",
+                  "repair_target_agent_run_id": "prior-gamma",
+                  "repair_reason": "compile_static_compile_static_violation",
+                  "repair_findings": "io_contract.primary_predicates[2]: reads no state"}
+        with mock.patch.object(wc.Conductor, "_VERIFICATION_PART_BUDGET_BYTES", 0):
+            c = self.conductor(_envelope(_doc()),
+                               *(_envelope(self._group(t)) for t in self.TESTS))
+            c._claude_session_resumable = lambda arid, **kw: False  # type: ignore[assignment]
+            self.assertEqual(
+                c.run_substep(self.refs, "compile", "generate", repair=repair).status, "pass")
+        self.assertEqual([r["repair_target_agent_run_id"] for r in _requests(c)],
+                         ["prior-core", "prior-alpha", "prior-beta", "prior-gamma"])
+        # Under the default bound the three tests are one group, which no old row names.
+        c = self.conductor(_envelope(_doc()), _envelope(self._group(*self.TESTS)))
+        c._claude_session_resumable = lambda arid, **kw: False  # type: ignore[assignment]
+        self.assertEqual(c.run_substep(self.refs, "compile", "generate", repair=repair).status,
+                         "pass")
+        core, part = _requests(c)
+        self.assertEqual(core["repair_target_agent_run_id"], "prior-core")
+        self.assertEqual(part["repair_strategy"], "none")
+
     def test_a_phase_contract_missing_a_selected_heading_launches_nothing(self) -> None:
         doc = self.repo / ort.WORKFLOW_PHASE_DOC_BY_STEP["compile"]
         doc.write_text(doc.read_text(encoding="utf-8").replace(
