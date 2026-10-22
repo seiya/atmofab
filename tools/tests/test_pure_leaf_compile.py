@@ -1975,6 +1975,7 @@ class PureCompilePartGroupTests(_Fixture):
         self.assertEqual(outcome.infra_error[0], "pure_context_assembly_failed")
         self.assertIn("pure_phase_contract_document_unsliceable", outcome.infra_error[1])
         self.assertIn("V3. io_contract consistency", outcome.infra_error[1])
+        self.assertIn("phase_01_compile.md", outcome.infra_error[1])
         self.assertEqual(_requests(c), [])
 
     def test_the_real_phase_contract_excerpt(self) -> None:
@@ -2013,6 +2014,19 @@ class MarkdownHeadingSectionsTests(unittest.TestCase):
                 text = f"## A\n{fence}\n```\n## B\n```\n{fence}\n## B\nb\n"
                 self.assertEqual(
                     wc._markdown_heading_sections(text, ("## B",), subject="t"), "## B\nb")
+        # A bare heading inside a tilde fence is content too.
+        self.assertEqual(wc._markdown_heading_sections(
+            "~~~\n## B\n~~~\n## B\nb\n", ("## B",), subject="t"), "## B\nb")
+
+    def test_a_fence_closes_only_on_a_bare_run_and_opens_only_shallow(self) -> None:
+        # An info string, or text after the run, does not close the fence.
+        self.assertEqual(wc._markdown_heading_sections(
+            "```\n```yaml\n## B\n```\n## B\nb\n", ("## B",), subject="t"), "## B\nb")
+        self.assertEqual(wc._markdown_heading_sections(
+            "```\n``` trailing\n## B\n```\n## B\nb\n", ("## B",), subject="t"), "## B\nb")
+        # Four spaces make an indented code line, not a fence: the heading after it counts.
+        self.assertEqual(wc._markdown_heading_sections(
+            "    ```\n## B\nb\n", ("## B",), subject="t"), "## B\nb")
 
     def test_a_missing_or_repeated_heading_raises(self) -> None:
         for text, heading in ((self.TEXT, "## C"), (self.TEXT, "## not a heading"),

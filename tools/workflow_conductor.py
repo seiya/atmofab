@@ -1118,8 +1118,9 @@ def _numbered_section_range(text: str, begin: str, end: str, *, subject: str) ->
 
 
 _MARKDOWN_HEADING_RE = re.compile(r"^#{1,6} ")
-#: A fence line: three or more backticks or tildes after optional indentation.
-_MARKDOWN_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
+#: A fence line: three or more backticks or tildes after at most three spaces (four or more
+#: make an indented code line, never a fence), and what follows the run.
+_MARKDOWN_FENCE_RE = re.compile(r"^ {0,3}(`{3,}|~{3,})(.*)$")
 
 
 def _markdown_heading_sections(text: str, headings: tuple[str, ...], *, subject: str) -> str:
@@ -1129,8 +1130,11 @@ def _markdown_heading_sections(text: str, headings: tuple[str, ...], *, subject:
 
     FENCE-AWARE: a line inside a fenced block is never a heading — the compile phase contract's
     schema block is YAML, whose comment lines may begin with `#`. A fence opens on a run of
-    three or more backticks or tildes and closes only on a run of the same character at least
-    as long, so a longer fence may quote a shorter one (CommonMark's rule). Every heading must occur
+    three or more backticks or tildes indented at most three spaces (an info string may follow)
+    and closes only on a bare run of the same character at least as long, so a longer fence
+    may quote a shorter one and a ```` ```yaml ```` line inside a fence is content. A heading
+    is matched unindented; HTML comments are not recognised. These follow CommonMark for the
+    shapes a repository document uses, not in every corner. Every heading must occur
     exactly once outside a fence, else `ValueError`: a renamed or duplicated heading is a
     contract change that must stop the launch, not shorten or widen what the leaf reads. A
     slice is a pure-leaf input, so changing what one spans needs a
@@ -1140,10 +1144,12 @@ def _markdown_heading_sections(text: str, headings: tuple[str, ...], *, subject:
     fence = ""
     for index, line in enumerate(lines):
         run = _MARKDOWN_FENCE_RE.match(line)
-        if run:
-            if not fence:
-                fence = run.group(1)
-            elif run.group(1)[0] == fence[0] and len(run.group(1)) >= len(fence):
+        if run and not fence:
+            fence = run.group(1)
+            continue
+        if run and fence:
+            if (run.group(1)[0] == fence[0] and len(run.group(1)) >= len(fence)
+                    and not run.group(2).strip()):
                 fence = ""
             continue
         if not fence and _MARKDOWN_HEADING_RE.match(line):
@@ -7326,6 +7332,7 @@ class Conductor:
         session where the provider and the transcript allow, and takes the cold repair
         otherwise; a part always takes the cold repair, whose re-stated launch body carries the
         core this reopen produced (`reopen_warm`)."""
+        from tools.orchestration_runtime import WORKFLOW_PHASE_DOC_BY_STEP
         from tools.validate_pipeline_semantics import (_parse_test_ids_from_tests_md,
                                                        _tests_md_test_block_bytes)
         # The part list is a fact of the context, so a tests document the host cannot read, or
@@ -7343,7 +7350,8 @@ class Conductor:
             try:
                 part_documents["phase_contract_document"] = _markdown_heading_sections(
                     part_documents["phase_contract_document"],
-                    self._VERIFICATION_PHASE_CONTRACT_HEADINGS, subject="the phase contract")
+                    self._VERIFICATION_PHASE_CONTRACT_HEADINGS,
+                    subject=WORKFLOW_PHASE_DOC_BY_STEP["compile"])
             except ValueError as exc:
                 raise RuntimeError(f"pure_phase_contract_document_unsliceable: {exc}") from exc
             test_ids = _parse_test_ids_from_tests_md(
