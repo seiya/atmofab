@@ -1988,6 +1988,9 @@ class PureCompilePartGroupTests(_Fixture):
         headings = [ln for ln in excerpt.splitlines() if re.match(r"^#{1,6} ", ln)]
         self.assertEqual(tuple(headings), wc.Conductor._VERIFICATION_PHASE_CONTRACT_HEADINGS)
         self.assertIn("  primary_predicates:", excerpt)
+        # The two sections that govern the part's own declaration are in it.
+        self.assertIn("guessed completion is forbidden", excerpt)
+        self.assertIn("Your `compile_fail` is not a repair note", excerpt)
         for absent in ("## Overview", "#### V8. public_api surface", "#### Decision Criteria",
                        "#### Severity of a finding (`issue_severity`)"):
             self.assertNotIn(absent, excerpt)

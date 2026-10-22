@@ -7121,11 +7121,14 @@ class Conductor:
     _VERIFICATION_PART_BUDGET_BYTES: ClassVar[int] = 10_000
     #: The headings of `phase_01_compile.md` whose sections a `verification` part is shown, in
     #: document order: the schema block (its own body; the `###` subsections under it are about
-    #: `algorithm` and the sidecar), the producer's own substep, and the reviewer's and the static
-    #: gate's rules over `io_contract`. The rest — the phase overview, `ir_meta.json`, the
-    #: algorithm / dependency / public-surface checks, the severity rubric, the failure and
-    #: retry flow — is about sections the part neither writes nor is judged on. A heading that
-    #: is missing is a context-assembly failure, never a shorter excerpt.
+    #: `algorithm` and the sidecar), the producer's own substep, the reviewer's and the static
+    #: gate's rules on case coverage, `io_contract` and input routing, and the two sections that
+    #: govern the producer's own `compile_fail` (On-failure: guessed completion is forbidden and
+    #: a self-check invariant is no ground to declare; Acceptance of retry: a declaration is not
+    #: a repair note). The rest — the phase overview, `ir_meta.json`, the algorithm /
+    #: dependency / public-surface checks, the severity rubric — is about sections the part
+    #: neither writes nor is judged on. A heading that is missing is a context-assembly
+    #: failure, never a shorter excerpt.
     _VERIFICATION_PHASE_CONTRACT_HEADINGS: tuple[str, ...] = (
         "## `spec.ir.yaml` schema",
         "### 1-1. Compile.generate substep",
@@ -7133,6 +7136,8 @@ class Conductor:
         "#### V3. io_contract consistency",
         "#### V9. case input routing",
         "#### Verification tools",
+        "## On-failure behavior",
+        "## Acceptance of retry from Validate",
     )
     #: `io_contract`'s key order in the phase contract's schema block; the assembled section
     #: follows it, and any key it does not name follows in the core's own order.

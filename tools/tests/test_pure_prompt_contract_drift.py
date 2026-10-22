@@ -1065,8 +1065,9 @@ PINNED: dict[str, str] = {
     # rule on fixed inputs, and the slicer reads 4-backtick and tilde fences. Round 2: the size
     # measure's output is pinned too and the grouping probe gains fixed sizes on which each
     # clause of the rule decides a split (round 1's probe let four rule changes through), and a
-    # fence closes only on a bare run indented at most three spaces.
-    "pure-83": "063b304573c1a701953e32ae7c2b6355c46434240a47b5ca9084332cbdcb58e6",
+    # fence closes only on a bare run indented at most three spaces. Round 3: the excerpt adds
+    # the On-failure and Acceptance-of-retry sections, which govern a part's own declaration.
+    "pure-83": "acd63ca415f8cd7307e7df1533ee1374a42f2232bf2e9f501262cecd663c28af",
 }
 
 

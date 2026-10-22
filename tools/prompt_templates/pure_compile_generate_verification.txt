@@ -14,7 +14,7 @@ Authoring rules (the phase contract inlined below is the canonical source for ea
 **Tests (the test set the verification contract must cover exactly):**
 <tests_document>
 
-**Phase contract (the sections of this phase's contract that govern the three lists — the schema block, the producer's own substep with its `Compile fail` conditions, and the reviewer's and the deterministic gate's rules over `io_contract`; the sections about the IR's other parts are left out — it governs every rule above):**
+**Phase contract (the sections of this phase's contract that govern the three lists and your declaration — the schema block, the producer's own substep with its `Compile fail` conditions, the reviewer's and the deterministic gate's rules on case coverage, `io_contract` and input routing, and the phase's failure and retry rules; the sections about the IR's other parts are left out — it governs every rule above):**
 <phase_contract_document>
 
 **Checks-module contract (the fixed callback surface and fold semantics the verification contract's diagnostics and per-test predicates are read against):**
