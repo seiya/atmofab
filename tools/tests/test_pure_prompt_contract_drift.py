@@ -1061,10 +1061,12 @@ PINNED: dict[str, str] = {
     # 65-100k input tokens with no cross-session cache hit on codex. Members moved:
     # `pure_compile_generate_verification.txt` (a group of tests, `verification_tests_document`,
     # the excerpt's label) and the two new members naming the selection and the bound.
-    # Re-pinned in place (unshipped) by round 1: two probe members pin the slicer's and the
-    # grouping rule's behaviour on fixed inputs, and the slicer reads 4-backtick and tilde
-    # fences.
-    "pure-83": "7afb848f81b4d5b119756faa941ab5194221c7be719efbafc5e8b5f34b40dfc3",
+    # Re-pinned in place (unshipped) by round 1: probe members pin the slicer and the grouping
+    # rule on fixed inputs, and the slicer reads 4-backtick and tilde fences. Round 2: the size
+    # measure's output is pinned too and the grouping probe gains fixed sizes on which each
+    # clause of the rule decides a split (round 1's probe let four rule changes through), and a
+    # fence closes only on a bare run indented at most three spaces.
+    "pure-83": "063b304573c1a701953e32ae7c2b6355c46434240a47b5ca9084332cbdcb58e6",
 }
 
 
@@ -1214,10 +1216,20 @@ def _contract_tuple() -> dict[str, object]:
         # decide which tests share a prompt.
         "compile_verification_slicer_probe": wc._markdown_heading_sections(
             _SLICER_PROBE, ("## A", "### A.2", "## C"), subject="probe"),
+        # The size measure's own output, so counting characters for bytes, dropping the
+        # newline, a declaration line left out or a `## ` that no longer ends a block moves the
+        # digest whether or not it moves a split on the probe...
+        "compile_verification_block_bytes_probe": _tests_md_test_block_bytes(_TESTS_PROBE),
+        # ...and the grouping rule over that measure and over fixed sizes chosen so that each
+        # clause decides a split: equal to the bound joins, a new part counts from its own
+        # first test, a test past the bound stands alone and nothing joins it after.
         "compile_verification_grouping_probe": [
-            list(group) for group in wc.Conductor._verification_part_groups(
-                wc.Conductor.__new__(wc.Conductor), _parse_ids_probe(),
-                _tests_md_test_block_bytes(_TESTS_PROBE))],
+            [list(group) for group in wc.Conductor._verification_part_groups(
+                wc.Conductor.__new__(wc.Conductor), ids, sizes)]
+            for ids, sizes in (
+                (_parse_ids_probe(), _tests_md_test_block_bytes(_TESTS_PROBE)),
+                (["a", "b", "c"], {"a": 6000, "b": 6000, "c": 3000}),
+                (["a", "b", "c", "d"], {"a": 4000, "b": 6000, "c": 12000, "d": 1}))],
         # ... and the runner-output binding, inlined after the whole runner-output contract in
         # the `harness` shape's two prompts on the same ground as that document.
         "runner_output_binding_document": {
@@ -1230,8 +1242,8 @@ def _contract_tuple() -> dict[str, object]:
 
 #: The fixed inputs of the two algorithm probes in `_contract_tuple`.
 _SLICER_PROBE = ("# T\n\n## A\n\na\n\n````\n```\n## not a heading\n```\n````\n\n"
-                 "~~~\n# yaml comment\n~~~\n\n### A.1\n\nx\n\n### A.2\n\ny\n\n"
-                 "## B\n\nb\n\n## C\n\nc\n")
+                 "~~~\n# yaml comment\n~~~\n\n    ```\n\n### A.1\n\nx\n\n### A.2\n\ny\n\n"
+                 "## B\n\nb\n\n## C\n\nc\n\n```\n```yaml\n## inside\n``` x\n~~~\n## inside\n```\n")
 _TESTS_PROBE = ("## 6. Tests\n\n### 6-1. `p1`\n\n" + "a" * 3000 + "\n\n### 6-2. `p2`\n\n"
                 + "b" * 6966 + "\n\n- `test_id`: `p3`\n" + "c" * 4000 + "\n\n## 7. End\n"
                 + "d" * 50000 + "\n### 6-3. `p4`\n\n" + "é" * 6000 + "\n")
