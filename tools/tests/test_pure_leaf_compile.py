@@ -2005,6 +2005,15 @@ class MarkdownHeadingSectionsTests(unittest.TestCase):
         self.assertEqual(wc._markdown_heading_sections(self.TEXT, ("### A.1",), subject="t"),
                          "### A.1\n\nsub body")
 
+    def test_a_longer_or_tilde_fence_hides_its_headings(self) -> None:
+        """A fence closes only on a run of its own character at least as long: a ``` line
+        inside a ```` fence, or inside a ~~~ fence, is content."""
+        for fence in ("````", "~~~"):
+            with self.subTest(fence=fence):
+                text = f"## A\n{fence}\n```\n## B\n```\n{fence}\n## B\nb\n"
+                self.assertEqual(
+                    wc._markdown_heading_sections(text, ("## B",), subject="t"), "## B\nb")
+
     def test_a_missing_or_repeated_heading_raises(self) -> None:
         for text, heading in ((self.TEXT, "## C"), (self.TEXT, "## not a heading"),
                               (self.TEXT + "\n## B\n", "## B")):

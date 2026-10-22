@@ -1118,6 +1118,8 @@ def _numbered_section_range(text: str, begin: str, end: str, *, subject: str) ->
 
 
 _MARKDOWN_HEADING_RE = re.compile(r"^#{1,6} ")
+#: A fence line: three or more backticks or tildes after optional indentation.
+_MARKDOWN_FENCE_RE = re.compile(r"^\s*(`{3,}|~{3,})")
 
 
 def _markdown_heading_sections(text: str, headings: tuple[str, ...], *, subject: str) -> str:
@@ -1125,20 +1127,26 @@ def _markdown_heading_sections(text: str, headings: tuple[str, ...], *, subject:
     document order by one blank line. A section is its heading line and its own body: it ends
     at the next heading line of ANY level, so a subsection is included only by naming it.
 
-    FENCE-AWARE: a line inside a ``` block is never a heading — the compile phase contract's
-    schema block is YAML, whose comment lines may begin with `#`. Every heading must occur
+    FENCE-AWARE: a line inside a fenced block is never a heading — the compile phase contract's
+    schema block is YAML, whose comment lines may begin with `#`. A fence opens on a run of
+    three or more backticks or tildes and closes only on a run of the same character at least
+    as long, so a longer fence may quote a shorter one (CommonMark's rule). Every heading must occur
     exactly once outside a fence, else `ValueError`: a renamed or duplicated heading is a
     contract change that must stop the launch, not shorten or widen what the leaf reads. A
     slice is a pure-leaf input, so changing what one spans needs a
     `PURE_PROMPT_CONTRACT_VERSION` bump, as `_numbered_section_range`'s docstring states."""
     lines = text.splitlines()
     starts: list[int] = []
-    in_fence = False
+    fence = ""
     for index, line in enumerate(lines):
-        if line.lstrip().startswith("```"):
-            in_fence = not in_fence
+        run = _MARKDOWN_FENCE_RE.match(line)
+        if run:
+            if not fence:
+                fence = run.group(1)
+            elif run.group(1)[0] == fence[0] and len(run.group(1)) >= len(fence):
+                fence = ""
             continue
-        if not in_fence and _MARKDOWN_HEADING_RE.match(line):
+        if not fence and _MARKDOWN_HEADING_RE.match(line):
             starts.append(index)
     found: dict[str, list[int]] = {}
     for index in starts:
