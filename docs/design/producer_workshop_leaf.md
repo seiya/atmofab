@@ -1,16 +1,23 @@
 # Producer leaves as sandboxed agents, judging leaves as pure functions
 
-Status: **proposed**. Recorded 2026-10-22 from a zero-base reconsideration of the leaf execution model against the measured cost of the pure-function path. This document extends `zero_base_architecture.md` (A2, A3, A8) and does not replace it: the deterministic `conductor`, the host-owned evidence channel (A4 / Z6), the derivation-keyed store (Z5) and the `CodegenBundle` contract (Z0) are kept as they stand. No item below is implemented. The term `workshop leaf` is defined in this note alone; its `docs/GLOSSARY.md` entry is added by the pull request that adopts the first such leaf, and until then the term appears nowhere else.
+Status: **proposed**. Recorded 2026-10-22 from a zero-base reconsideration of the leaf execution model against the measured cost of the pure-function path; revised the same day from its first review round. This document extends `zero_base_architecture.md` and departs from three of its items (§Departures): the deterministic `conductor`, the host-owned evidence channel (A4 / Z6), the derivation-keyed store (Z5) and the `CodegenBundle` contract (Z0) are kept as they stand. No item below is implemented. The term `workshop leaf` is defined in `docs/GLOSSARY.md` with a `proposed` mark that the adopting pull request removes.
 
 ## Purpose
 
-Decide which `LLM` `substep` keeps the `pure-function leaf` shape and which one changes to an agent working in a sandbox, state the sandbox each shape requires, and state the evidence on which the change is adopted or declined.
+Decide which `LLM` `substep` keeps the `pure-function leaf` shape and which one changes to an agent working in a sandbox, state the sandbox each shape requires, state what the producer is shown and what that leaves unprotected, and state the evidence on which the change is adopted or declined.
 
 ## Scope
 
 - The five `LLM` leaves `compile.generate`, `compile.verify`, `generate.generate`, `generate.verify`, `validate.judge`, and the `escalate` diagnostician.
-- The sandbox of a leaf, and the sandbox of the deterministic `Build` and `Validate.execute` substeps.
-- Out of scope: the phase sequence, the per-phase I/O contracts, the gates, the verdict evaluator, and the store. None of them changes under this note.
+- The sandbox of a leaf.
+- Out of scope: the phase sequence, the per-phase I/O contracts, the gates, the verdict evaluator, the store, and the sandbox of the deterministic `Build` and `Validate.execute` substeps (§Not adopted). None of them changes under this note.
+
+## Terms
+
+- **`workshop leaf`**: an `LLM` agent that runs with a tool surface inside a host-prepared, host-confined work tree, and whose result is the final state of that tree. Defined in `docs/GLOSSARY.md` (proposed).
+- **work tree**: the directory the host seeds for one `workshop leaf` attempt and the leaf writes into. It is not an artifact: no gate, no later `phase` and no other attempt reads it, and a warm repair of the same attempt is the only later reader.
+- **seed**: the files the host writes into a work tree before launch; one file per key of the producer's pure context (§Seeding).
+- **snapshot**: the host's copy of the work tree's final state into the producer's existing output contract (the `CodegenBundle` for `generate.generate`, the IR documents for `compile.generate`), taken after the leaf exits.
 
 ## Premises
 
@@ -18,31 +25,33 @@ The premises of `AGENTS.md` §Development premises apply unchanged. Three of the
 
 1. **A leaf is not malicious and takes shortcuts.** A hole is in scope when a leaf that takes it gets closer to reporting its `substep` done. A defense against the operator, who owns the machine, is out of scope.
 2. **No vendor lock-in.** A change to the leaf model is complete only when it lands on every declared provider, the HTTP transports included.
-3. **Cost per certified artifact is a design objective.** The dominant term is output tokens: a leaf's wall clock is its model generation at a throughput floor of about 100 tok/s (`skills/workflow-timing-audit/SKILL.md`), and prompt caching reduces input cost only.
+3. **Cost per certified artifact is a design objective.** The dominant term is output tokens: a leaf's wall clock is its model generation at a throughput floor of about 100 tok/s on Opus (`skills/workflow-timing-audit/SKILL.md`; an HTTP endpoint of the recorded corpus ran at 17.6 to 59.8 tok/s, `docs/ORCHESTRATION.md` §Leaf LLM configuration), and prompt caching reduces input cost only.
 
 ## Measured baseline
 
-The figures that decide the shape of each leaf, all from recorded runs.
+The figures that decide the shape of each leaf, all from recorded runs. Every orchestration of 2026-10-22 ran AFTER the part split of issue #526 (PR #528 merged 2026-10-21T20:24Z).
 
 | measurement | value | record |
 |---|---|---|
 | an `LLM` orchestrator resuming one node (advdiff): turns, context, tokens | 242 turns, 22K to 274K context, about 40M tokens | `deterministic_conductor.md` §Why |
 | `validate.judge`, agentic against pure, same verdict | 2,122,319 tokens / 396 s against 202,313 / 109 s | `zero_base_architecture.md` Z3 |
-| `compile.generate` launch prompt, `shallow_water2d_channel@0.2.5` | 301 KB, about 98.7k input tokens | issue #526 |
-| the same leaf, codex `gpt-6.1-sol`, one orchestration (2026-10-22) | 5 attempts, 640,692 tokens, no IR written | `orch_20261022T120314Z_b2c31943` |
-| the same node after the part split of issue #526 | 3,353,660 tokens, then the provider's credits ran out | `orch_20261022T065443Z_9aae2fe2` |
-| one small component node, claude `opus-5-5`, first-attempt pass (`rk4`, `fortran_cpu_mpi`) | 3 leaves, 264,875 tokens, 8 min | `orch_20261022T040744Z_2a842495` |
+| `compile.generate` of `shallow_water2d_channel@0.2.5` before the part split, codex `gpt-6.1-sol`: one-reply launch prompt; outcome | 301 KB, about 98.7k input tokens; `compile_declared_fail` 3 of 3, no IR written, each reply stating that no input was defective | issue #526 |
+| the same node after the part split, codex, one orchestration | 5 part leaves of 300,926 to 333,608 bytes each, one attempt each; 4 passed, the fifth declared a contract defect (fixed by issue #532); 640,692 tokens, no IR assembled | `orch_20261022T120314Z_b2c31943` |
+| the same node after the part split, codex, `--with-deps` | 17 of 18 compile leaves passed, the IR was assembled twice and revoked twice (`Compile.static`, then `Compile.verify`); 3,353,660 tokens, then the provider's credits ran out | `orch_20261022T065443Z_9aae2fe2` |
+| the same node, claude `opus-5-5`, one-reply core part | the core part passed in one reply, 169,451 tokens; the driver was then interrupted (`driver_interrupted`) before the next part launched | `orch_20261022T064517Z_5689df1d` |
+| one small component node, claude `opus-5-5`, first-attempt pass (`rk4`, `fortran_cpu_mpi`) | 3 leaves, 264,875 tokens; the orchestration's wall clock, which held no other `LLM` leaf, 8 min | `orch_20261022T040744Z_2a842495` |
 | its `generate.generate` leaf | 40,254 output tokens, 71,527 cache-creation input tokens | same |
-| its `generate.generate` prompt | 160,916 bytes, carrying the IR's `primary_predicates` and `test_predicates` | same, `launches/b7323baa-….prompt.txt` |
+| its `generate.generate` prompt | 160,916 bytes, carrying the whole `tests.md` and the IR's `primary_predicates` and `test_predicates` | same, `launches/b7323baa-….prompt.txt` |
 
-Two facts follow for the producing leaves.
+Three facts follow for the producing leaves.
 
-- **A producer that must write a whole document in one reply gives up on a large node.** The leaf of issue #526 stated in every attempt that no input was defective and that it could not complete the document; the part split of that issue is a host-side decomposition of the work that an agent harness performs itself.
-- **Every repair re-emits the whole document.** The repair contract on both the warm and the cold path is one complete corrected document (`docs/ORCHESTRATION.md` §pure-function leaf, issue #510). A one-line gate finding against a bundle costs the bundle's output tokens again.
+- **A producer that must write a whole document in one reply gave up on a large node on one provider.** The record is codex before the part split (issue #526: three replies stating that no input was defective and that the document could not be completed). The part split is a host-side decomposition of the work that an agent harness performs itself, and it does not shrink the prompt: each part is handed the whole input again, so a 5-part node pays 5 launch prompts of about 100k tokens. No give-up is recorded for claude: the one claude record on the same node is a one-reply pass of the core part.
+- **Every repair re-emits the whole document.** The repair contract on both the warm and the cold path is one complete corrected document (`tools/prompt_templates/pure_bundle_repair.txt`; `docs/ORCHESTRATION.md` §pure-function leaf; issue #510). A one-line gate finding against a bundle costs the bundle's output tokens again, and the recorded output of a bundle is dominated by thinking rather than by the emitted source (`skills/workflow-timing-audit/SKILL.md`), so what a repair re-spends is the reasoning about the whole document, not only its text.
+- **No large-node record exists for `generate.generate`.** Every channel row above is `compile.generate`. The first A/B (§Decision Criteria) produces that record.
 
 One fact for the judging leaves: a judging leaf reads and decides, performs no search, and is the leaf on which the agentic shape measured ten times the cost of the pure shape.
 
-One fact about what the producer is shown: `Generate` is shown the judging predicates, because they are part of `spec.ir.yaml`, which is its whole contract. What it is not shown is `tests.md` prose, the host evaluator, the judge's excerpt policy, and every past artifact. The defense of the current design is therefore not secrecy of the predicates but host ownership of the evidence channel (A4, Z6): a leaf that reads a predicate and holds no write path to captured state gains nothing from reading it.
+One fact about what the producer is shown, and it is a fact about the CURRENT design: `generate.generate` is handed the whole `tests.md` (`tests_document`), the host-rendered runner (`runner_document`), the whole `spec.ir.yaml` with its `primary_predicates` and `test_predicates`, the target profile and the harness capabilities — the five keys of its pure context (`tools/workflow_conductor.py` `_build_pure_context`; `tools/tests/data/conductor_launch_requests/generate_generate.request.json`). `compile.generate` is handed `tests.md` as a primary input. What no producer is shown is the host evaluator (`tools/verdict_evaluator.py`, `tools/primary_evidence.py`), the judge's excerpt policy, and every past artifact. The defense of the current design is therefore not secrecy of the judgment but host ownership of the evidence channel (A4, Z6): a leaf that reads every predicate and holds no write path to captured state gains nothing from reading them, and the one gain it keeps — registering state that fits the visible cases — is the accepted residual A4 names.
 
 ## Design Policy
 
@@ -51,75 +60,88 @@ The leaf model is asymmetric.
 | role | leaves | shape | reason |
 |---|---|---|---|
 | judging | `compile.verify`, `generate.verify`, `validate.judge`, `escalate` | `pure-function leaf`, unchanged | reads and decides; the agentic shape measured 10× the cost; an independent reviewer must share no context with the producer |
-| producing | `compile.generate`, `generate.generate` | `workshop leaf` (defined below) | the one-reply shape gives up on large nodes and re-emits whole documents on repair |
+| producing | `compile.generate`, `generate.generate` | `workshop leaf` | the one-reply shape gave up on a large node on one provider, pays the whole prompt per part on every provider, and re-emits whole documents on repair |
 
-What is NOT adopted, and the rule that rejects it: an `LLM` that drives the phase loop, or that holds the gates, the evaluator or the verdict. The first is the O(turns²) cost in the baseline table; the second places what judges the result within reach of a leaf under a goal, which is the `leaf shortcut` class, and would require the enforcement complex that Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) deleted.
+What is NOT adopted, and the rule that rejects it: an `LLM` that drives the phase loop, or that holds the gates, the evaluator or the verdict. The first is the $O(\text{turns}^2)$ cost in the baseline table; the second places what judges the result within reach of a leaf under a goal, which is the `leaf shortcut` class.
 
 ### `workshop leaf`
 
-A `workshop leaf` is an `LLM` agent that runs with a tool surface inside a host-prepared, host-confined work tree, and whose result is the final state of that tree. It replaces the one-reply document of a producing `substep`; it replaces nothing downstream of the producer.
+A `workshop leaf` replaces the one-reply document of a producing `substep`; it replaces nothing downstream of the producer.
 
-- **Seeding.** The host writes into the work tree exactly what it inlines into the producer's prompt today: `spec.ir.yaml`, the target profile, the harness's public interface, each dependency's certified interface, the exemplar, and the phase contract text. Nothing else is placed and nothing else is reachable.
-- **Tool surface.** Read and write within the work tree; compile, `static lint`, `syntax check`, and execution of the leaf's own cases, each through a wrapper over the build-runtime library (`tools/build_runtime.py`) that records every invocation in the leaf's `command_log.jsonl`. No shell outside the wrapper, no network except the leaf's own provider endpoint.
-- **Not on the surface.** `tests.md`, the verdict evaluator (`tools/verdict_evaluator.py`, `tools/primary_evidence.py`), the gates, every `workspace/` artifact of any other attempt, `spec/`, `tools/`, `docs/`, `.git/`. The leaf can compile and run what it wrote; it cannot run the judgment on it.
-- **Hand-off.** At the leaf's end the host snapshots the work tree into the existing `CodegenBundle` (for `generate.generate`) or the IR documents (for `compile.generate`), validates it under the existing contract, and runs the existing gates in its own process. The work tree itself is kept as the attempt's dialog record and is an input to nothing.
-- **Repair.** A gate finding re-enters the SAME work tree and the SAME session with the finding appended; the leaf edits in place. The whole-document repair contract is retired for the producing leaves. A `restart` repair discards the tree and seeds a new one, as the cold path does today.
+- **Seeding.** The host writes into the work tree one file per key of the producer's pure context as it is rendered today — for `generate.generate`: `ir_document`, `tests_document`, `runner_document`, `target_profile`, `harness_capabilities`, plus the exemplar and the phase contract text the template carries; for `compile.generate`: the keys of its pure context, `tests.md` and `controlled_spec.md` among them. Nothing else is placed and nothing else is reachable. Whether a producer should be shown less than today is a separate decision (§What the producer is shown).
+- **Tool surface.** Read and write within the work tree; `assemble` (the host's rendering of the runner glue and build graph from the IR and the tree, exactly as `Build` performs it) followed by compile; `static lint`; `syntax check`; and execution of the built binary on inputs the leaf writes, the IR's declared cases included. Each runs through a wrapper over the build-runtime library (`tools/build_runtime.py`) that records every invocation in the attempt's `command_log.jsonl`. No shell outside the wrapper. The lint and syntax results the wrapper returns are feedback: the host's `Generate.gate` and `Compile.static` still run on the snapshot and are the authority.
+- **Not on the surface.** The verdict evaluator (`tools/verdict_evaluator.py`, `tools/primary_evidence.py`), the gates, every `workspace/` artifact of any other attempt, the CLI's session store (§Sandbox), `spec/`, `tools/`, `docs/`, `.git/`.
+- **Declarations in the tree.** A `compile.generate` leaf that finds an input absent, self-contradictory or insufficient writes `declared_fail.json` (the `last_fail_reason` text) at the tree root and exits; the snapshot reads it as the `compile_declared_fail` exit under the rules `docs/ORCHESTRATION.md` §pure-function leaf states for it. A `generate.generate` leaf writes `bundle.yaml` at the tree root carrying every non-file member of the `CodegenBundle` (`files[].role`, `entrypoints`, `state_bindings`, `target_lowering_plan`, `capability_requirements`); the snapshot validates it under the bundle schema and refuses a tree with no such file as a schema failure, which routes as a malformed bundle does today.
+- **Hand-off.** The snapshot is validated under the existing contract and the existing gates run in the host's own process. Every artifact a later `phase` reads is host-written from the snapshot, as today.
+- **Repair.** Two paths, selected by whether the producer's session can be continued. **Warm**: the gate finding is appended to the SAME session over the SAME work tree, and the leaf edits in place; a CLI provider continues its session as `warm_resume` does today, and the host tool-use loop (§Provider neutrality) holds the conversation in memory as `_run_http_leaf` does today, so both transports have a warm path. **Cold** (a `restart` directive, a session that cannot be continued, a cross-phase reopen): a new work tree is seeded from the snapshot of the attempt being repaired plus the findings, and a new session starts. On neither path does the leaf re-emit the whole document; the whole-document repair contract is retired for the producing leaves.
 - **Independence of review.** A `workshop leaf` may use its harness's sub-agents internally. `generate.verify` and `compile.verify` remain pure leaves outside the work tree, launched by the host from the snapshot, sharing no session and no tree with the producer.
-- **Record.** The full transcript of the agent, every tool call, and every wrapper invocation are recorded under the attempt, as the pure leaf's prompt and reply are today. Usage is recorded per turn, with the running-total trap of `TODO.md` (issue #281) resolved for the agentic transport before the first billed comparison.
+- **Record.** Under the host tool-use loop every request, response and tool call passes through the host and is recorded under the attempt, as the pure HTTP leaf's `http_response.txt` is today: the record is total by construction. Under a CLI harness the host records what the CLI emits (its result envelope and transcript), and `docs/ORCHESTRATION.md` §pure-function leaf already records that a CLI leaf's input is not a function of the host prompt alone; the wrapper's `command_log.jsonl` is the host's own record of every build-runtime call on either transport. Usage is recorded per turn, with the running-total trap of `TODO.md` (issue #281) resolved for each agentic transport before its first billed comparison.
+- **Turn cap.** A `workshop leaf` entry in `llm.yaml` carries a required `max_turns` field; there is no default, for the reason `docs/ORCHESTRATION.md` §Leaf LLM configuration gives for `llm.yaml` itself. A leaf that reaches it is stopped and its tree is snapshotted as it stands.
+
+### What the producer is shown
+
+Two options; the first A/B runs under option S, and option W is the operator's decision, not decided by this note.
+
+- **Option S (shown, as today).** The seed is the producer's current pure context. Accepted residual, named: a producer that can execute its binary on the IR's declared cases, and that reads every predicate, can confirm before hand-off that its state fits the visible cases. The pure producer holds the same inputs and the same hardcoding path (`docs/GLOSSARY.md` `leaf shortcut`), and A4 accepts the fitted-state residual for it; what option S adds is confirmation. The route is `generate.generate` to snapshot to a passing verdict; the gain is a certified kernel that is correct on the declared cases and on nothing else, which is the same certification A4 already states as the guarantee scope.
+- **Option W (withheld).** The seed carries the IR with `io_contract.test_predicates[].pass_when` and `io_contract.primary_predicates` removed and `tests.md` removed, keeping `diagnostics_contract` (the check ids and verdict fields the runner must emit) and the case set. Undefined under this note and refused by it: which IR sections a producer needs to emit a conforming runner, and whether `Compile.generate` can be run under W at all (its primary input is `tests.md`). Adopting W is a phase-contract change (`docs/workflow/phases/phase_02_generate.md`) with its own review.
+- **Held-out cases.** Deferred and undefined. Running host-derived cases at `Validate.execute` needs two things neither `docs/TESTS.md` nor `tools/primary_evidence.py` provides: a predicate scope for a case outside every test's `target_cases` (the grammar ranges over exactly those, `tools/primary_evidence.py` `_predicate_scope`), and a reference computed from the inputs rather than a band calibrated against one (`docs/TESTS.md` §Refinement judgment, §Symmetry pairs). No `tests.md` in the tree declares an admissible input range (enumerated 2026-10-22 over `spec/**/tests.md` with `find`; 0 matches for an admissible-range statement). This note counts held-out cases as no defense.
 
 ### Sandbox
 
-Two sandboxes, one per role, plus one the host owes independently of this note.
+Two sandboxes, one per role. Both describe a leaf launched at the LOCAL site; a remote `execution site` (`docs/ORCHESTRATION.md` §Execution sites) runs no `LLM` leaf.
 
 | sandbox | holds | writable | network | technology |
 |---|---|---|---|---|
-| `workshop leaf` | the seeded work tree; the toolchain and the provider CLI read-only; the CLI's credential home as today | the work tree only | the provider endpoint only, through a network namespace and a proxy | `bwrap` + network namespace |
-| pure leaf | nothing (an empty tmpfs at the checkout path, as since issue #227) | its scratch root only | the provider endpoint only | `bwrap`, unchanged |
-| `Build` / `Validate.execute` (host, deterministic) | the staged source, the binary, the run directory | the object dir, `binary/<binary_id>/bin/`, `runs/<run_id>/` | none | `bwrap` (NOT applied today: both run unconfined in the conductor's process) |
+| `workshop leaf` | the work tree; the toolchain, the build-runtime wrapper and the provider CLI read-only; a PRIVATE per-attempt config home holding the provider's `auth` material and nothing else | the work tree and the private home | the provider endpoint only, through a network namespace and a proxy | `bwrap` + network namespace |
+| pure leaf (CLI transports) | nothing (an empty tmpfs at the checkout path, as since issue #227); the CLI's config home read-write, as today | its scratch root and the CLI's config home | unrestricted today; the provider endpoint only under this note | `bwrap` |
 
-Virtualization stronger than user-namespace containment (a VM, a user-space kernel) is not required, and the rule that declines it is premise 1: the holes a VM closes beyond `bwrap` are holes against the operator's machine, and a leaf gains nothing toward its verdict from any of them. The one place that executes untrusted code on the operator's machine with no sandbox at all is the third row, and it is the host's own step. Confining it closes the Z6 accepted residual as well: a generated `checks_compute` that rewrites `raw/state_snapshots/<case_id>.json` after the runner wrote it cannot do so when the snapshot leaves the process through a pipe to the host and the run directory is not writable by the binary. That change is independent of the `workshop leaf` decision and precedes it in the migration order.
+The private home is required because a tool-bearing leaf can read what a tool-free one cannot: today the CLI's config home (`~/.claude` with `~/.claude.json`) is bound read-write into every claude leaf for auth and the session transcript (`tools/orchestration_runtime.py`, the rw bind it documents), and that home holds the transcripts of every other leaf of every orchestration under `~/.claude/projects/`. A `workshop leaf` with a read tool in that sandbox could read a sibling attempt's bundle, the reviewer's findings on its own previous attempt, or the attempt a `restart` discarded — each a past artifact read as input, the `leaf shortcut` `docs/workflow/WORKFLOW_CORE.md` forbids. The codex lineage home of issue #245 (one `CODEX_HOME` per thread, `auth.json` alone contributed from the original) is the shape; the claude counterpart is one `CLAUDE_CONFIG_DIR` per attempt seeded with the credential file alone, the shape issue #63 used for the agentic leaf. The network rule applies to both shapes: it exists so that no leaf reaches an endpoint the host did not configure, and it is a new requirement on the pure CLI leaf as well, whose profile today carries no network namespace (`tools/orchestration_runtime.py` `render_bwrap_command`).
 
-### The judging boundary under an agentic producer
+Virtualization stronger than user-namespace containment (a VM, a user-space kernel) is not required, and the rule that declines it is premise 1: the holes a VM closes beyond `bwrap` are holes against the operator's machine, and a leaf gains nothing toward its verdict from any of them.
 
-Three things stay out of the producer's reach, and each is enforced by placement rather than by a rule in a prompt.
+### Departures
 
-1. **Write authority over anything the verdict reads.** Held by the hand-off: the host snapshots the tree, and every later artifact is host-written.
-2. **The judgment itself.** The evaluator and the full predicate run are absent from the work tree. A producer that can run the verdict iterates against it until the visible cases pass; a producer that can run only its own cases cannot. The predicates remain visible (they are the IR), as today.
-3. **Past artifacts and sibling attempts.** Not bound, as today.
+This note departs from three items of `zero_base_architecture.md`, and names what returns with each.
 
-One defense becomes available only under this design and is adopted with it: **held-out cases.** `Validate.execute` runs, beside the IR's `test_case_set`, cases the host derives by perturbing declared inputs within the ranges `tests.md` states, and the host-evaluated primary predicates must hold on them. A producer that fit the visible cases does not certify. Which perturbations are admissible is stated per test kind in `docs/TESTS.md` by the adopting pull request; a `tests.md` that states no range yields no held-out case for that test and is not refused.
+- **A2 (every LLM stage a pure function with no gate invocation).** A `workshop leaf` invokes lint, syntax and compile itself. What does not move: the gates the host runs on the snapshot remain the authority, and the leaf's invocations are feedback with no standing in any record a gate reads.
+- **A3 (the model cannot write).** A `workshop leaf` writes into its work tree. What does not move: the tree is not an artifact, every artifact is host-written from the snapshot, and no FS-diff authorization is needed because no write of the leaf is authorized or refused — it is copied or not copied by the snapshot's contract.
+- **Z4 (enforcement retirement).** Two of the retired items return in a narrower form: a per-attempt writable `bwrap` profile (the work tree and the private home), and a tool-call record (the wrapper's `command_log.jsonl`). What does not return: capability tokens, output and read manifests, PreToolUse hooks, write-scope baselines, launch-marker validation.
 
 ### Provider neutrality
 
-A `workshop leaf` needs an agent loop. The CLI providers (`claude_cli`, `codex_cli`) carry one; the HTTP providers (`openai_compatible`, `anthropic_api`) carry none. The rule: the host owns a minimal tool-use loop in `tools/` with exactly the tool surface above (read, write, run-through-wrapper), driven over each provider's tool-calling API, and every provider runs a `workshop leaf` through it or through its CLI harness with the same surface. A CLI harness's additional capabilities (sub-agents, context compaction) are permitted on top of that surface and are not required by any contract. Keeping the HTTP providers on the pure shape instead is rejected, because it reintroduces a second launch shape, which Z4 removed.
+A `workshop leaf` needs an agent loop. The CLI providers (`claude_cli`, `codex_cli`) carry one; the HTTP providers (`openai_compatible`, `anthropic_api`) carry none. The rule: the host owns a minimal tool-use loop in `tools/` with exactly the tool surface above (read, write, the wrapper's five operations), driven over each provider's tool-calling API, and every provider runs a `workshop leaf` through it or through its CLI harness with the same surface. A CLI harness's additional capabilities (sub-agents, context compaction) are permitted on top of that surface and are not required by any contract. Keeping the HTTP providers on the pure producer instead is rejected by premise 2: a leaf-model change is complete only when it lands on every declared provider.
 
 ## Decision Criteria
 
 The `workshop leaf` is adopted per producing `substep`, and the first is `generate.generate`.
 
-- **Comparison.** A billed A/B against the pure producer on two nodes: one small component (the `rk4` row of the baseline, or its equal) and `shallow_water2d_channel@0.2.5`. Both arms on the same model and effort.
-- **Measured dimensions**, each reported separately and none traded for another: certified outcome (equal per-test statuses required), output tokens per certified node, wall clock per certified node, first-attempt gate pass rate, repair count, and the number of agent turns.
-- **Adoption rule.** Adopt when the certified outcome is equal and the large node certifies at all (the pure arm's recorded outcome is a give-up), and when the small node's output tokens and wall clock are not worse than the pure arm's. A cost regression on the small node with a pass on the large one is adopted only with a per-node cap on agent turns that the small node stays under.
-- **Decline rule.** When the large node does not certify under the `workshop leaf` either, or the small node regresses by more than the cap allows, the shape is declined and the fallback below is taken.
+- **Comparison.** A billed A/B against the pure producer on two nodes on `claude_cli`: one small component (the `rk4` row of the baseline, or its equal) and `shallow_water2d_channel@0.2.5`. Both arms on the same model and effort, under option S, with the `max_turns` value of the A/B stated in its record.
+- **Measured dimensions**, each reported separately and none traded for another: certified outcome, output tokens per certified node, wall clock per certified node, first-attempt gate pass rate, repair count, and the number of agent turns.
+- **Certified outcome, defined.** For a node that holds a certified pure-arm outcome on the same target, equal per-test statuses. For a node that holds none (the channel node at 0.2.5 holds none), certification with `basis.corroboration=agree` on every test of the verdict.
+- **Adoption rule.** Adopt when both nodes certify under the `workshop leaf`, the certified outcome holds as defined, and the small node's output tokens and wall clock are not worse than the pure arm's. A cost regression on the small node is adopted only with a `max_turns` value under which the small node stays within the pure arm's cost, stated in the record.
+- **Decline rule.** When either node does not certify under the `workshop leaf`, or the small node's cost regresses under every `max_turns` value tried, the shape is declined and the fallback below is taken.
 - **Cost targets** of `zero_base_architecture.md` §Decision Criteria stand: at most 10 min wall and 100k output tokens per certified node.
 
 ## Migration order
 
-1. Confine `Build` and `Validate.execute` under `bwrap` with the snapshot channel out of the process. Independent of the A/B; closes the Z6 residual.
-2. `workshop leaf` for `generate.generate` on `claude_cli`; the A/B above.
-3. On adoption: `compile.generate`, replacing the part split of issue #526 (the leaf splits its own work); `codex_cli`; the host tool-use loop for the HTTP providers.
-4. Retire the whole-document repair contract for the producing leaves; the pure template pair `pure_generate_generate*.txt` / `pure_compile_generate*.txt` becomes the seed contract text of the work tree.
-5. Held-out cases at `Validate.execute`.
+1. `workshop leaf` for `generate.generate` on `claude_cli`, with the private config home, the network namespace and the wrapper; the A/B above.
+2. On adoption: `compile.generate`, replacing the part split of issue #526 (the leaf splits its own work); `codex_cli`; the host tool-use loop for the HTTP providers.
+3. Retire the whole-document repair contract for the producing leaves; the pure template pair `pure_generate_generate*.txt` / `pure_compile_generate*.txt` becomes the seed contract text of the work tree.
+4. The network namespace on the pure CLI leaf's profile.
+
+## Not adopted
+
+- **Confining `Build` and `Validate.execute` under `bwrap`.** Both run in the conductor's own process at the local site with no sandbox (`docs/BWRAP_ENABLEMENT.md`; `z4_enforcement_retirement.md` item 3), and as a submitted job at a remote site (issue #333). The judgment uses premise 1's decision criterion: what the operator's machine would gain is out of scope, and what a leaf would gain from the in-scope half — rewriting a snapshot file after the runner wrote it — is what Z6 already records as nil, because decoy storage gives the same value without it (`zero_base_architecture.md` Z6, the accepted residual). New evidence of a route that closure alone cuts reopens the item.
 
 ## Fallback
 
-When the A/B declines the shape, the producing leaves stay pure and two changes are made within that shape: the repair reply becomes a patch against the prior document that the host applies, and `generate.generate` is produced in host-named parts as `compile.generate` is since issue #526. This keeps the one-reply model and its cost on repair, and keeps the host responsible for splitting the work.
+When the A/B declines the shape, the producing leaves stay pure and two changes are made within that shape: the repair reply becomes a patch against the prior document that the host applies (no such form exists today), and `generate.generate` is produced in host-named parts as `compile.generate` is since issue #526. This keeps the one-reply model and its per-part prompt cost, and keeps the host responsible for splitting the work.
 
 ## References
 
 - `zero_base_architecture.md` (A2, A3, A4, A8, Z3, Z4, Z6)
-- `deterministic_conductor.md` §Why, §Leaf sandboxing
+- `deterministic_conductor.md` §Why, and its "Leaf sandboxing" paragraph under §Design
 - `z4_enforcement_retirement.md`
-- `docs/ORCHESTRATION.md` §pure-function leaf, §repair / retry
+- `docs/ORCHESTRATION.md` §Leaf LLM configuration, §Execution sites, §repair / retry, §pure-function leaf
 - `docs/BWRAP_ENABLEMENT.md`
-- [issue #171](https://github.com/seiya/atmofab/issues/171), [issue #227](https://github.com/seiya/atmofab/issues/227), [issue #255](https://github.com/seiya/atmofab/issues/255), [issue #510](https://github.com/seiya/atmofab/issues/510), [issue #526](https://github.com/seiya/atmofab/issues/526)
+- [issue #63](https://github.com/seiya/atmofab/issues/63), [issue #171](https://github.com/seiya/atmofab/issues/171), [issue #227](https://github.com/seiya/atmofab/issues/227), [issue #245](https://github.com/seiya/atmofab/issues/245), [issue #255](https://github.com/seiya/atmofab/issues/255), [issue #333](https://github.com/seiya/atmofab/issues/333), [issue #510](https://github.com/seiya/atmofab/issues/510), [issue #526](https://github.com/seiya/atmofab/issues/526), [issue #532](https://github.com/seiya/atmofab/issues/532)
