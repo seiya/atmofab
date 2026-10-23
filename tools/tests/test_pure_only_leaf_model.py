@@ -8,10 +8,12 @@ issue placed them in `test_workflow_conductor.py`; they moved because they need 
 fixture that `test_pure_leaf_producer.py` owns, and importing that into the conductor suite
 would couple two large files for two tests.)
 
-1. **Every LLM launch is pure.** For every declared provider, every `(phase, substep)` in
-   `LLM_LEAF_SUBSTEPS`, and every bundle shape, `run_substep` dispatches into one of the two
-   pure loops — and on a node with NO shape the two `generate` pairs fail CLOSED instead of
-   falling through to a loop that no longer exists.
+1. **Every LLM launch is pure, or a workshop leaf's by its entry.** For every declared
+   provider, every `(phase, substep)` in `LLM_LEAF_SUBSTEPS`, and every bundle shape,
+   `run_substep` dispatches into one of the two pure loops — and on a node with NO shape the
+   two `generate` pairs fail CLOSED instead of falling through to a loop that no longer exists.
+   The one other loop is `_run_workshop_producer_substep`, for a `leaf: workshop` entry of
+   `generate.generate` (issue #534; `test_workshop_producer.py`).
 2. **Nothing launches outside a read-only sandbox but a workshop lineage's.** `spawn_leaf`
    refuses a profile that is not `readonly`, so "the leaf runs confined with no write
    authority" is enforced at the spawn site rather than inferred from the fact that only pure
