@@ -2996,9 +2996,10 @@ class ConductHappyPathTest(unittest.TestCase):
 
         def _capture_init(self, **kw):  # type: ignore[no-untyped-def]
             orig_init(self, **kw)
-            seen.append(self.site)
+            seen.append((self.site, self.local_site))
 
         box = Site(site_id="box", executes=("cpu",), host="box", workdir="/w")
+        local = Site(site_id="local", executes=("cpu", "gpu"))
         common = dict(
             repo_root=str(_SHARED_REPO_ROOT), orchestration_id="o", orchestration_agent_run_id="O",
             spec_ref="spec/c/x", source_dependency_ref="d", until_phase="compile",
@@ -3012,9 +3013,11 @@ class ConductHappyPathTest(unittest.TestCase):
              patch.object(wc.Conductor, "__init__", _capture_init), \
              patch.object(wc.Conductor, "conduct", return_value="pass"), \
              patch.object(wc, "resolve_run_target", return_value=None):
-            wc.run_conductor(**common, site=box)
+            wc.run_conductor(**common, site=box, local_site=local)
             wc.run_conductor(**common)
-        self.assertEqual(seen, [box, None])
+        # The local entry travels beside the target's site (issue #534: where a workshop
+        # leaf's wrapper runs a binary).
+        self.assertEqual(seen, [(box, local), (None, None)])
 
     def test_run_conductor_stamps_the_spec_side_alias_not_the_operators_model(self) -> None:
         """A model-less claude entry is stamped with the SPEC-side default, and that default

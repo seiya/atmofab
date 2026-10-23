@@ -5,8 +5,11 @@ Since issue #64 each orchestration's isolated backend homes live at
 `<homes-root>/<orchestration_id>/{claude,codex}`, where the root is
 `~/.atmofab/homes` (relocatable with `ATMOFAB_WORKFLOW_HOMES_ROOT`). The `codex`
 entry is a CONTAINER since issue #245: each codex thread's own `CODEX_HOME` is a
-lineage directory beneath it, `codex/<codex_lineage_id>/`, and this tool neither reads
-nor names that level — it judges the entry by its `<orchestration_id>/` children and
+lineage directory beneath it, `codex/<codex_lineage_id>/`. The `claude` entry is a run's
+pre-Z4 private claude home where one was recorded, and is the container a `workshop leaf`
+lineage (proposed, issue #534) is laid out in, `claude/<lineage_id>/` holding that lineage's
+private config home, work tree, staged closure and snapshot, once a run creates one. This tool neither
+reads nor names that level — it judges the entry by its `<orchestration_id>/` children and
 walks the whole tree for the size. They hold the ONLY record of what a leaf actually
 did — the claude transcript, the codex rollout — so **nothing deletes them
 automatically and nothing ever will**. Retention is indefinite, and this tool is the
@@ -37,7 +40,8 @@ WHAT DELETION COSTS, so the operator can decide rather than discover:
   * `--resume` for that orchestration degrades to a COLD launch. Warm resume finds a
     leaf's session in the home's transcript; a rotated (re-created) home has none.
   * the run stops being auditable at the transcript level. `skills/workflow-timing-audit`
-    reads a pre-Z4 agentic claude leaf's transcript from the home (`skills/workflow-audit`
+    reads a pre-Z4 agentic claude leaf's transcript from the home, and a `workshop leaf`
+    lineage, once one runs, keeps its transcript and snapshot there (`skills/workflow-audit`
     reads nothing from it and only names it as where a `codex_cli` leaf's rollout is), and
     the artifacts under `workspace/orchestrations/<id>/` record what the host saw, not the
     leaf's own turn.

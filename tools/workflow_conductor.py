@@ -3711,6 +3711,10 @@ class Conductor:
     #: with its default `executes` — the configuration with no `sites.yaml`, and what a conductor
     #: built without a driver gets; `run_conductor` passes the driver's resolution.
     site: Site | None = None
+    #: The local site as `sites.yaml` declares it (its `executes` may name more classes than the
+    #: default), whatever site `site` is: where a `workshop leaf`'s wrapper runs a binary
+    #: (`_local_execution_site`). None is the default local site.
+    local_site: Site | None = None
     #: The derivation record of each `(node_key, phase)` attempt in flight (issue #250): set by
     #: `run_phase` at phase start, read by `record_launch` for the key every launch of that
     #: attempt is stamped with.
@@ -6373,9 +6377,19 @@ class Conductor:
         this method only assembles the conductor-side inputs (the IR snapshot variables the
         bundle must bind, resolved harness capabilities, the build-graph derivation) and
         delegates."""
+        from tools.codegen_bundle import pure_bundle_contract_violation
+        return pure_bundle_contract_violation(
+            doc, **self._pure_bundle_violation_inputs(refs),
+            build_graph=lambda d: self._build_pure_bundle_graph(refs, d))
+
+    def _pure_bundle_violation_inputs(self, refs: NodeRefs) -> dict[str, Any]:
+        """The host-owned keyword arguments of `pure_bundle_contract_violation` for this node:
+        everything but the document and its build-graph derivation. One assembly, read by the
+        pure loop above and frozen into a `workshop leaf`'s wrapper (`_freeze_wrapper_context`),
+        so the contract a wrapper's `derive` reports against is the one the hand-off applies."""
         from tools.codegen_bundle import (
-            pure_bundle_contract_violation, harness_provided_capabilities,
-            published_operations_from_ir, snapshot_variable_entries_from_ir)
+            harness_provided_capabilities, published_operations_from_ir,
+            snapshot_variable_entries_from_ir)
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         # Capability negotiation against the target's harness, resolved by the same
         # `_pure_harness_node_key` that narrows the manifest the leaf is SHOWN — so a capability
@@ -6383,15 +6397,15 @@ class Conductor:
         # (an undeclared harness provides nothing => every requirement unsatisfied, fail-closed).
         harness_nk = self._pure_harness_node_key(refs.node_key)
         provided = harness_provided_capabilities(harness_nk)
-        return pure_bundle_contract_violation(
-            doc, node_key=refs.node_key, spec_id=refs.spec_id,
-            shape=(self._bundle_shape(refs) or ""),
-            language=self._read_toolchain(refs)["language"],
-            runner_basename=self._runner_basename(refs),
-            ir_snapshot_variables=snapshot_variable_entries_from_ir(ir),
-            harness_provided=provided, harness_label=harness_nk,
-            build_graph=lambda d: self._build_pure_bundle_graph(refs, d),
-            ir_published_operations=published_operations_from_ir(ir))
+        return {
+            "node_key": refs.node_key, "spec_id": refs.spec_id,
+            "shape": (self._bundle_shape(refs) or ""),
+            "language": self._read_toolchain(refs)["language"],
+            "runner_basename": self._runner_basename(refs),
+            "ir_snapshot_variables": snapshot_variable_entries_from_ir(ir),
+            "harness_provided": provided, "harness_label": harness_nk,
+            "ir_published_operations": published_operations_from_ir(ir),
+        }
 
     def _build_pure_bundle_graph(self, refs: NodeRefs, doc: Any) -> dict[str, Any]:
         """The deterministic build graph of a bundle (`derive_build_graph`), with the closure,
@@ -6400,6 +6414,11 @@ class Conductor:
         by the caller). The single derivation source for both the assembly preflight and the
         Makefile renderer, so the graph the host validates is the graph it builds."""
         from tools.codegen_bundle import derive_build_graph
+        return derive_build_graph(doc, **self._pure_bundle_graph_inputs(refs))
+
+    def _pure_bundle_graph_inputs(self, refs: NodeRefs) -> dict[str, Any]:
+        """The host-owned keyword arguments of `derive_build_graph` for this node (everything
+        but the document), for the reason `_pure_bundle_violation_inputs` gives."""
         from tools.validate_pipeline_semantics import _read_dependency_graph_sidecar
         tc = self._read_toolchain(refs)
         toolchain = {
@@ -6427,10 +6446,8 @@ class Conductor:
         # a glue object the host does not write, nor omit one it does.
         host_glue = ((self._runner_basename(refs),)
                      if self._conductor_authors_runner(refs) else ())
-        return derive_build_graph(
-            doc, dependency_closure=tuple(closure_nodes), toolchain=toolchain,
-            host_glue_sources=host_glue,
-            dependency_edges=edges or None)
+        return {"dependency_closure": tuple(closure_nodes), "toolchain": toolchain,
+                "host_glue_sources": host_glue, "dependency_edges": edges or None}
 
     def _render_pure_makefile_from_graph(self, refs: NodeRefs, graph: dict[str, Any]) -> str:
         """Render `src/Makefile` from a bundle's derived build graph (`derive_build_graph`).
@@ -6444,15 +6461,22 @@ class Conductor:
         Source paths: a `staged:` dep is `$(OBJDIR)/<name>` (staged by `_stage_dependency_sources`
         before make), a `bundle:` / `glue:` source is a filename in the src/ cwd. Objects live
         under `$(OBJDIR)`; the conservative total prerequisite order comes from the graph."""
+        render, inputs = self._control_file_render_inputs(refs)
+        return render(graph=graph, **inputs)
+
+    def _control_file_render_inputs(self, refs: NodeRefs) -> tuple[Callable[..., str],
+                                                                    dict[str, Any]]:
+        """`(render_from_graph, its host-owned keyword arguments)` for this node: everything
+        the control file says but the graph, for the reason `_pure_bundle_violation_inputs`
+        gives."""
         tc = self._read_toolchain(refs)
-        return self._control_file_module(tc["build_system"]).render_from_graph(
-            rules=self._control_file_rules(tc, self._target_architecture()),
-            compiler=build_compiler(tc),
-            bin_name=self._resolve_exe_name(refs),
-            cases_default=" ".join(self.read_case_ids(refs)),
-            graph=graph,
-            initial_capture_dir=self._conductor_authors_runner(refs),
-        )
+        return self._control_file_module(tc["build_system"]).render_from_graph, {
+            "rules": self._control_file_rules(tc, self._target_architecture()),
+            "compiler": build_compiler(tc),
+            "bin_name": self._resolve_exe_name(refs),
+            "cases_default": " ".join(self.read_case_ids(refs)),
+            "initial_capture_dir": self._conductor_authors_runner(refs),
+        }
 
     @staticmethod
     def _control_file_module(build_system: str) -> Any:
@@ -10330,6 +10354,30 @@ class Conductor:
             staged.append(binding)
         return staged
 
+    def _refuse_unstaged_closure(self, refs: NodeRefs, staged: list[dict[str, Any]],
+                                 where: str) -> None:
+        """Raise when the node has a dependency closure and `_stage_dependency_sources` staged
+        nothing of it: staging needs a host-authored control file on both axes, and a stage run
+        without the closure would report an unresolved dependency module as a content error
+        and loop. Fail closed — such a node is unbuildable anyway."""
+        if staged or not self._dependency_closure_nodes(refs):
+            return
+        tc = self._read_toolchain(refs)
+        language = tc["language"]
+        missing = "; ".join(
+            reason for reason in (
+                backend_registry.missing_capability_reason(
+                    "build_system", tc["build_system"], "control_file"),
+                backend_registry.missing_capability_reason(
+                    "language", language, "control_file"))
+            if reason) or "the host does not author this node's control file"
+        raise RuntimeError(
+            f"{where}: cannot stage dependency modules for build_system="
+            f"{tc['build_system']!r}, language={language!r}: staging needs a "
+            f"host-authored control file on both axes ({missing}); the "
+            f"syntax gate would misdiagnose an unresolved dependency module as a "
+            f"content error and loop — fail closed (this node is unbuildable anyway)")
+
     def _copy_bound_file(self, refs: NodeRefs, phase: str, node_key: str, ref: str,
                          sha256: str, target: Path) -> None:
         """Copy the bound file `ref` of closure member `node_key` to `target` and refuse the copy
@@ -10372,6 +10420,164 @@ class Conductor:
                 refs, "generate", str(binding["node_key"]), binding["interface_header_ref"],
                 binding["interface_header_sha256"],
                 src / Path(binding["interface_header_ref"]).name)
+
+    def _stage_workshop_closure(self, refs: NodeRefs, paths: Any) -> tuple[str, ...]:
+        """Stage the node's dependency closure into a `workshop leaf` lineage's
+        `paths.staged_closure` (each wrapper `compile` copies it into a fresh object
+        directory), from the bindings the generate key bound
+        (`_stage_dependency_sources`, phase `generate`), and return the basenames placed there.
+
+        Run in the main thread when the lineage is created, before the leaf launches, so the
+        wrapper's transport threads only compile against it. The staged files are SOURCES and
+        headers, as for the syntax gate; the directory is out of the tree and bound into no
+        wrapper run, and the object directory holding its copies is absent from a `run`'s
+        sandbox, so the built program cannot open a dependency's certified source. A wrapper
+        `compile` runs the host-rendered control file (never one the leaf edited), but the
+        closure's sources sit on its compiler's search path, as they do in the host's Build,
+        so a leaf-authored source that includes one can see its text in a diagnostic. That read
+        gains the leaf nothing toward a verdict — the host's own Build re-stages the bound
+        copies — and is a recorded qualification of `docs/design/producer_workshop_leaf.md`
+        §Tool surface ("the leaf never reads a dependency's source"), which holds for `run`.
+        Refuses a closure it could not stage, as the syntax gate does."""
+        staged = self._stage_dependency_sources(refs, paths.staged_closure, phase="generate")
+        self._refuse_unstaged_closure(refs, staged, "workshop leaf staged closure")
+        names: list[str] = []
+        for binding in staged:
+            names.append(self._language_facts().model_basename(spec_id_of(binding["node_key"])))
+            if "interface_header_ref" in binding:
+                names.append(Path(binding["interface_header_ref"]).name)
+        return tuple(names)
+
+    def _local_execution_site(self) -> Any:
+        """The local execution site as the operator's `sites.yaml` declares it: `self.site`
+        when the run's target maps there, else `self.local_site` (the driver's resolution of
+        the `local` entry); None — the default `executes` — when neither is known."""
+        if self.site is not None and self.site.is_local:
+            return self.site
+        return self.local_site
+
+    def _freeze_wrapper_context(self, refs: NodeRefs, paths: Any, *, agent_run_id: str,
+                                seed_names: tuple[str, ...], reserved_names: frozenset[str],
+                                closure_file_names: tuple[str, ...], max_wrapper_calls: int,
+                                lineage_deadline: float) -> Any:
+        """The `workshop_wrapper.WrapperContext` of one launch of a lineage, computed here, in
+        the main thread, from the same inputs the host's own gates read: the bundle contract
+        (`_pure_bundle_violation_inputs`), the build graph (`_pure_bundle_graph_inputs`), the
+        control file (`_control_file_render_inputs`), the lint preset `_gate_lint_check` runs,
+        the mandatory syntax stage `_gate_syntax_check` runs, and the target's launch shape at
+        the LOCAL site (`host_execution.launch_shape`, as `_execute_inproc` asks it, with the
+        local site's own `executes` from `sites.yaml`, `_local_execution_site`): a wrapper run
+        happens where the conductor runs, whatever site the target's Validate maps to. Every
+        callable is a module function bound to frozen arguments: an operation served on a
+        transport thread calls no conductor method.
+
+        What it does NOT carry is what the gates' DIRECTORY holds: the host gates read `src/`
+        with the host-rendered files in it (the runner, the node's interface header and checks
+        header, and each closure member's interface header `_write_dependency_headers`
+        copies), while the wrapper's compile, lint and syntax stages read a source view of the
+        manifest's files and the SEEDS (`workshop_wrapper._source_view`), so every one of those
+        files has to be a seed of the tree (issue #534 PR-3; measured on a `cuda_cpp` node,
+        where a correct tree without the headers fails the wrapper's lint and syntax and passes
+        the host's).
+
+        Raises `RuntimeError` on a host precondition (a language with no lint preset or no
+        syntax stage) — the gates raise the same for the same node. A target whose class this
+        host cannot run leaves `run` unavailable rather than failing the launch."""
+        from functools import partial
+
+        from tools.build_runtime import (
+            build_system_executable,
+            lint_preset_executables,
+            syntax_adapter,
+            syntax_compiler_wrapper,
+        )
+        from tools.codegen_bundle import derive_build_graph, pure_bundle_contract_violation
+        from tools.host_execution import LaunchUnavailable, launch_shape
+        from tools.orchestration_runtime import wrapper_toolchain_ro_roots
+        from tools.workshop_wrapper import WrapperContext, wrapper_base_env
+
+        tc = self._read_toolchain(refs)
+        language = tc["language"]
+        build_graph = partial(derive_build_graph, **self._pure_bundle_graph_inputs(refs))
+        violations = partial(pure_bundle_contract_violation,
+                             **self._pure_bundle_violation_inputs(refs), build_graph=build_graph)
+        render, render_inputs = self._control_file_render_inputs(refs)
+        lint_preset = backend_registry.linter_for_language(language)
+        if lint_preset is None:
+            raise RuntimeError(
+                f"workshop wrapper: toolchain.language={language!r} has no static lint preset")
+        if not backend_registry.provides("language", language, "syntax_promotions"):
+            raise RuntimeError(
+                f"workshop wrapper: toolchain.language={language!r} has no syntax stage")
+        syntax_facts = backend_registry.capability_module(
+            "language", language, "syntax_promotions")
+        syntax_compiler = str(backend_registry.capability_module(
+            "language", language, "bundle_facts").MANDATORY_SYNTAX_COMPILER)
+        adapter = syntax_adapter(syntax_compiler)
+        wrapper = syntax_compiler_wrapper(tc["backend"], syntax_compiler)
+        execute = self._require_build_execute(tc["build_system"], "workshop wrapper")
+        exe = self._resolve_exe_name(refs)
+        run_unavailable: str | None = None
+        launch_prefix: tuple[str, ...] | None = None
+        launch_env: tuple[tuple[str, str], ...] = ()
+        try:
+            launch = launch_shape(self.target, self._local_execution_site())
+        except LaunchUnavailable as exc:
+            run_unavailable = f"this host cannot run the target's binaries: {exc}"
+        else:
+            if launch.platform_probe is not None:
+                # A class that names a device runs on device nodes a wrapper run's `/dev` does
+                # not hold (bwrap's `--dev` is the minimal set), and which nodes to bind is
+                # undecided (issue #534 step 1): say so rather than run a binary that cannot
+                # reach its device and report its failure as the tree's.
+                run_unavailable = (
+                    f"the {self.target.hardware_class} class's binaries are not run by the "
+                    f"wrapper: a wrapper run binds no device node; the host's Validate.execute "
+                    f"runs them")
+            else:
+                launch_prefix = tuple(launch.argv_prefix)
+                launch_env = tuple(sorted(launch.env.items()))
+        executables = [
+            build_system_executable(tc["build_system"]), build_compiler(tc),
+            *lint_preset_executables(lint_preset),
+            str(adapter.EXECUTABLE) if wrapper is None else str(wrapper.COMPILER_WRAPPER),
+            *(launch_prefix[:1] if launch_prefix else ()),
+        ]
+        return WrapperContext(
+            paths=paths,
+            repo_root=self.repo_root,
+            orchestration_id=self.orchestration_id,
+            agent_run_id=agent_run_id,
+            reserved_names=reserved_names,
+            control_file_basename=self._control_file_basename(refs),
+            violations=violations,
+            build_graph=build_graph,
+            render_control_file=partial(render, **render_inputs),
+            closure_file_names=closure_file_names,
+            seed_names=tuple(seed_names),
+            language=language,
+            build_system=tc["build_system"],
+            build_overrides=tuple(execute.build_overrides(
+                str(paths.staged_obj), str(paths.staged_bin), exe)),
+            lint_preset=lint_preset,
+            syntax_compiler=syntax_compiler,
+            syntax_std=tc["standard"],
+            syntax_architecture=self._target_architecture(),
+            syntax_parallel_backend=tc["backend"],
+            syntax_staged_suffixes=tuple(s.lower() for s in syntax_facts.STAGED_SUFFIXES),
+            model_basename=self._model_basename(refs),
+            interface_header_basename=(
+                header.basename(spec_id_of(refs.node_key))
+                if (header := self._interface_header_module(refs)) is not None else None),
+            launch_argv_prefix=launch_prefix,
+            launch_env=launch_env,
+            run_unavailable=run_unavailable,
+            run_raw_dirs=self._run_raw_dirs(refs),
+            base_env=tuple(sorted(wrapper_base_env(self.env).items())),
+            toolchain_ro_roots=tuple(wrapper_toolchain_ro_roots(executables, self.repo_root)),
+            max_wrapper_calls=max_wrapper_calls,
+            lineage_deadline=lineage_deadline,
+        )
 
     def _build_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
         """Deterministic Build: compile_project + binary_meta + post_build gate.
@@ -11201,20 +11407,7 @@ class Conductor:
                         / "syntax" / "_deps")
             deps_dir.mkdir(parents=True, exist_ok=True)
             staged_deps = self._stage_dependency_sources(refs, deps_dir, phase="generate")
-            if not staged_deps and self._dependency_closure_nodes(refs):
-                missing = "; ".join(
-                    reason for reason in (
-                        backend_registry.missing_capability_reason(
-                            "build_system", tc["build_system"], "control_file"),
-                        backend_registry.missing_capability_reason(
-                            "language", language, "control_file"))
-                    if reason) or "the host does not author this node's control file"
-                raise RuntimeError(
-                    f"generate.gate syntax check: cannot stage dependency modules for build_system="
-                    f"{tc['build_system']!r}, language={language!r}: staging needs a "
-                    f"host-authored control file on both axes ({missing}); the "
-                    f"syntax gate would misdiagnose an unresolved dependency module as a "
-                    f"content error and loop — fail closed (this node is unbuildable anyway)")
+            self._refuse_unstaged_closure(refs, staged_deps, "generate.gate syntax check")
             dep_files = [p for p in deps_dir.iterdir() if p.is_file()]
 
             raw = self.env.get("ATMOFAB_SYNTAX_COMPILERS", mandatory)
@@ -12187,6 +12380,14 @@ class Conductor:
         """repo-root-relative POSIX path for canonical refs."""
         return str(path.relative_to(self.repo_root)).replace("\\", "/")
 
+    def _run_raw_dirs(self, refs: NodeRefs) -> tuple[str, ...]:
+        """The directories created under a run's working directory before the binary runs, as
+        one nested path: `raw/state_snapshots/` for every runner, and `initial/` below it only
+        for the runner the host renders (see `_execute_inproc`). One answer, read by
+        `Validate.execute` and by a `workshop leaf`'s wrapper `run`."""
+        authors_runner = self._conductor_authors_runner(refs)
+        return ("raw", "state_snapshots", *(("initial",) if authors_runner else ()))
+
     def _execute_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
         """Deterministic Validate.execute: in-process run_program + run_quality_checks,
         promote the runner's primary evidence to the canonical run node dir, author the
@@ -12333,7 +12534,7 @@ class Conductor:
         # file's quality-check recipe pre-creates the same set (`initial_capture_dir`), so the
         # run and the quality check see one directory set.
         authors_runner = self._conductor_authors_runner(refs)
-        run_raw_dirs = ("raw", "state_snapshots", *(("initial",) if authors_runner else ()))
+        run_raw_dirs = self._run_raw_dirs(refs)
 
         def commands(binary_path: str, spec_path: str, bin_path: str, qc_path: str,
                      obj_path: str) -> tuple[list[str], dict[str, str], list[list[str]]]:
@@ -15815,7 +16016,8 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
                   wait_usage_reset: bool = False,
                   rederive: frozenset[str] | set[str] | None = None,
                   target_profile: TargetProfile | None = None,
-                  site: Site | None = None) -> str:
+                  site: Site | None = None,
+                  local_site: Site | None = None) -> str:
     """Conductor entrypoint used by run_workflow.py (the only orchestration driver).
     Resolves the node, allocates+reserves ids (adopting an already-certified IR and the
     pipeline bound to it on a cold run; on resume, seeding the stage ids from
@@ -15827,7 +16029,7 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
     from. `target_profile` is the target the driver resolved at launch; None resolves the
     default target (`select_target_id`), which refuses when several profiles are declared.
     `site` is the execution site the driver resolved for that target (issue #293); None is the
-    local site."""
+    local site. `local_site` is the `local` entry of the same `sites.yaml` (None: the default)."""
     root = Path(repo_root)
     # Every leaf must be launchable before the first one is: a model-less codex entry would
     # otherwise surface as a mid-run `ValueError` from `_codex_pinned_model`, phases in.
@@ -15843,6 +16045,7 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
         rederive=frozenset(rederive or ()),
         target_profile=target_profile,
         site=site,
+        local_site=local_site,
     )
     refs = (resume_node_refs(conductor, node_key, spec_path) if resume
             else prepare_node(conductor, node_key, spec_path))

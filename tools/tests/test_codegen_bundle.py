@@ -3426,6 +3426,8 @@ class PureStateBindingLayerTests(unittest.TestCase):
                 _read_toolchain=lambda refs: {"language": "fortran"},
                 _runner_basename=lambda refs: "bx_runner.f90",
                 _build_pure_bundle_graph=lambda refs, d: None)
+            holder._pure_bundle_violation_inputs = (
+                lambda refs: wc.Conductor._pure_bundle_violation_inputs(holder, refs))
             refs = SimpleNamespace(ir_ref=ir_ref, node_key=self._NK, spec_id="bx")
             with mock.patch.object(cb, "pure_bundle_contract_violation",
                                    autospec=True, return_value=None) as spy:

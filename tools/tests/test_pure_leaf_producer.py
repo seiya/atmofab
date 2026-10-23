@@ -935,6 +935,217 @@ class PureMakefileTests(unittest.TestCase):
             self.assertIn("test:", mk)
 
 
+class WorkshopWrapperContextTests(unittest.TestCase):
+    """`_freeze_wrapper_context` (issue #534 PR-1): a `workshop leaf`'s wrapper judges, derives
+    and renders from the SAME inputs as the pure path, bound once in the main thread."""
+
+    def setUp(self) -> None:
+        import time
+
+        from tools import workshop_tree as wt
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name) / "repo"
+        self.refs = _write_node(self.repo)
+        self.c = _conductor(self.repo)
+        self.paths = wt.LineagePaths(Path(self._tmp.name) / "homes", "o", "child-1",
+                                     self.repo / "workspace" / "orchestrations" / "o")
+        self.paths.home.mkdir(parents=True)
+        self.paths.make_work_dirs()
+        self.ctx = self.c._freeze_wrapper_context(
+            self.refs, self.paths, agent_run_id="child-1", seed_names=(),
+            reserved_names=frozenset({"Makefile"}), closure_file_names=(),
+            max_wrapper_calls=7, lineage_deadline=time.time() + 60)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_the_contract_is_the_pure_paths(self) -> None:
+        self.assertIsNone(self.ctx.violations(_valid_bundle()))
+        bad = _valid_bundle()
+        bad["capability_requirements"] = ["batched_cases@1", "state_registration@1"]
+        self.assertEqual(self.ctx.violations(bad), self.c._pure_bundle_violations(self.refs, bad))
+
+    def test_the_control_file_is_the_pure_paths(self) -> None:
+        doc = _valid_bundle()
+        self.assertEqual(
+            self.ctx.render_control_file(graph=self.ctx.build_graph(doc)),
+            self.c._render_pure_makefile_from_graph(
+                self.refs, self.c._build_pure_bundle_graph(self.refs, doc)))
+
+    def test_the_toolchain_facts_are_the_gates(self) -> None:
+        self.assertEqual(self.ctx.lint_preset, _backend_registry.linter_for_language("fortran"))
+        self.assertEqual(self.ctx.syntax_compiler, str(_backend_registry.capability_module(
+            "language", "fortran", "bundle_facts").MANDATORY_SYNTAX_COMPILER))
+        self.assertEqual(self.ctx.control_file_basename,
+                         self.c._control_file_basename(self.refs))
+        overrides = " ".join(self.ctx.build_overrides)
+        self.assertIn(str(self.paths.staged_obj), overrides)
+        self.assertIn(str(self.paths.staged_bin), overrides)
+        self.assertIn(self.c._resolve_exe_name(self.refs), overrides)
+        self.assertIsNone(self.ctx.run_unavailable)
+        self.assertEqual((self.ctx.max_wrapper_calls, self.ctx.agent_run_id), (7, "child-1"))
+
+    def _freeze(self, **over):
+        import time
+        kwargs = dict(agent_run_id="child-1", seed_names=(), reserved_names=frozenset({"Makefile"}),
+                      closure_file_names=(), max_wrapper_calls=7,
+                      lineage_deadline=time.time() + 60)
+        kwargs.update(over)
+        return self.c._freeze_wrapper_context(self.refs, self.paths, **kwargs)
+
+    def test_the_syntax_stage_is_the_gates(self) -> None:
+        # Each fact against the source `_gate_syntax_check` reads it from.
+        target = self.c.target
+        facts = _backend_registry.capability_module("language", "fortran", "syntax_promotions")
+        self.assertEqual(self.ctx.syntax_std, str(target.toolchain["standard"]))
+        self.assertEqual(self.ctx.syntax_parallel_backend, target.parallel_backend)
+        self.assertEqual(self.ctx.syntax_architecture,
+                         (target.doc.get("hardware") or {}).get("architecture"))
+        self.assertEqual(self.ctx.syntax_staged_suffixes,
+                         tuple(s.lower() for s in facts.STAGED_SUFFIXES))
+        self.assertEqual(self.ctx.model_basename, f"{_SPEC_ID}_model.f90")
+        self.assertIsNone(self.ctx.interface_header_basename)
+        with mock.patch.object(wc.Conductor, "_interface_header_module",
+                               return_value=SimpleNamespace(basename=lambda s: f"{s}.hdr")):
+            self.assertEqual(self._freeze().interface_header_basename, f"{_SPEC_ID}.hdr")
+
+    def test_the_launch_shape_is_the_local_sites(self) -> None:
+        # The wrapper runs where the conductor runs, whatever site the target maps to.
+        import tools.host_execution as he
+
+        from tools.execution_sites import Site
+
+        # The local site as sites.yaml declares it (here: executing a class the default does
+        # not), while the target's Validate maps to a remote site: the wrapper asks the local.
+        local = Site(site_id="local", executes=("cpu", "gpu"))
+        self.c.site = Site(site_id="far", executes=("cpu",), host="h", workdir="/w")
+        self.c.local_site = local
+        with mock.patch.object(he, "launch_shape", wraps=he.launch_shape) as spy:
+            ctx = self._freeze()
+        self.assertIs(spy.call_args.args[1], local)
+        # The target mapping to the local site: that site answers, as `_execute_inproc` reads it.
+        self.c.site, self.c.local_site = local, None
+        with mock.patch.object(he, "launch_shape", wraps=he.launch_shape) as spy:
+            self._freeze()
+        self.assertIs(spy.call_args.args[1], local)
+        # Neither known: the default local site.
+        self.c.site = None
+        with mock.patch.object(he, "launch_shape", wraps=he.launch_shape) as spy:
+            ctx = self._freeze()
+        self.assertIsNone(spy.call_args.args[1])
+        self.assertEqual(ctx.launch_argv_prefix, tuple(he.launch_shape(self.c.target).argv_prefix))
+        with mock.patch.object(he, "launch_shape", side_effect=he.LaunchUnavailable("no gpu")):
+            ctx = self._freeze()
+        self.assertIsNone(ctx.launch_argv_prefix)
+        self.assertIn("no gpu", ctx.run_unavailable)
+
+    def test_the_run_and_view_inputs_are_wired(self) -> None:
+        ctx = self._freeze(seed_names=("spec.ir.yaml", "x_runner.f90"))
+        self.assertEqual(ctx.seed_names, ("spec.ir.yaml", "x_runner.f90"))
+        # The fixture node's runner is host-rendered, so `initial/` is among them.
+        self.assertEqual(ctx.run_raw_dirs, self.c._run_raw_dirs(self.refs))
+        self.assertEqual(ctx.run_raw_dirs, ("raw", "state_snapshots", "initial"))
+
+    def test_a_device_class_is_not_run_by_the_wrapper(self) -> None:
+        # A wrapper run binds no device node, so a class whose launch names a device probe is
+        # declared unavailable rather than run to a failure the leaf cannot repair.
+        import tools.host_execution as he
+
+        real = he.launch_shape(self.c.target)
+        device = he.LaunchShape(argv_prefix=real.argv_prefix, env=real.env,
+                                platform_probe=("probe",))
+        with mock.patch.object(he, "launch_shape", return_value=device):
+            ctx = self._freeze()
+        self.assertIsNone(ctx.launch_argv_prefix)
+        self.assertIn("binds no device node", ctx.run_unavailable)
+
+    def test_the_syntax_compiler_and_the_launcher_are_bound(self) -> None:
+        import tools.host_execution as he
+        import tools.orchestration_runtime as ort_mod
+
+        real = he.launch_shape(self.c.target)
+        launched = he.LaunchShape(argv_prefix=("the_launcher", "-n", "2"), env=real.env)
+        adapter = SimpleNamespace(EXECUTABLE="the_syntax_compiler", LANGUAGE="fortran")
+        with mock.patch.object(he, "launch_shape", return_value=launched), \
+                mock.patch("tools.build_runtime.syntax_adapter", return_value=adapter), \
+                mock.patch.object(ort_mod, "wrapper_toolchain_ro_roots",
+                                  return_value=[]) as spy:
+            self._freeze()
+        executables = spy.call_args.args[0]
+        self.assertIn("the_syntax_compiler", executables)
+        self.assertIn("the_launcher", executables)
+
+    def test_a_language_with_no_lint_preset_is_a_host_precondition(self) -> None:
+        with mock.patch.object(wc.backend_registry, "linter_for_language", return_value=None):
+            with self.assertRaisesRegex(RuntimeError, "no static lint preset"):
+                self._freeze()
+
+    def test_the_toolchain_roots_cover_every_program_a_run_starts(self) -> None:
+        import tools.orchestration_runtime as ort_mod
+        from tools.build_runtime import lint_preset_executables
+
+        with mock.patch.object(ort_mod, "wrapper_toolchain_ro_roots",
+                               return_value=["/opt/x"]) as spy:
+            ctx = self._freeze()
+        executables, repo_root = spy.call_args.args
+        tc = self.c._read_toolchain(self.refs)
+        for program in ("make", wc.build_compiler(tc), *lint_preset_executables(
+                ctx.lint_preset)):
+            self.assertIn(program, executables)
+        self.assertEqual(repo_root, self.repo)
+        self.assertEqual(ctx.toolchain_ro_roots, ("/opt/x",))
+
+    def test_the_base_env_carries_the_conductors_path(self) -> None:
+        self.c.env = {"PATH": "/tools/bin:/usr/bin", "SECRET": "x"}
+        self.assertEqual(dict(self._freeze().base_env)["PATH"], "/tools/bin:/usr/bin")
+        # The conductor's PATH, and of its environment nothing else.
+        self.assertEqual(dict(self._freeze().base_env),
+                         {"PATH": "/tools/bin:/usr/bin", "HOME": "/tmp", "TMPDIR": "/tmp",
+                          "LANG": "C.UTF-8"})
+
+    def test_an_unstaged_closure_is_refused(self) -> None:
+        with mock.patch.object(wc.Conductor, "_stage_dependency_sources", return_value=[]):
+            with self.assertRaisesRegex(RuntimeError, "workshop leaf staged closure"):
+                self.c._stage_workshop_closure(self.refs, self.paths)
+
+    def test_the_context_calls_no_conductor_method(self) -> None:
+        # Every callable is a module function bound to frozen arguments: a transport thread
+        # that runs one cannot reach the conductor.
+        import functools
+        for name in ("violations", "build_graph", "render_control_file"):
+            with self.subTest(name=name):
+                fn = getattr(self.ctx, name)
+                self.assertIsInstance(fn, functools.partial)
+                self.assertNotIsInstance(getattr(fn.func, "__self__", None), wc.Conductor)
+
+    def test_staging_refuses_a_closure_with_no_bindings(self) -> None:
+        # The fixture node's closure holds the target's harness; no generate key was computed,
+        # so there is nothing to stage from (`_stage_dependency_sources`' own refusal).
+        with self.assertRaisesRegex(RuntimeError, "no derivation record"):
+            self.c._stage_workshop_closure(self.refs, self.paths)
+
+    def test_staging_places_the_bound_sources(self) -> None:
+        import hashlib
+        ref = "workspace/certified/harness_fortran_cpu_model.f90"
+        (self.repo / ref).parent.mkdir(parents=True)
+        (self.repo / ref).write_text("module harness_fortran_cpu_model\nend module\n")
+        sha = hashlib.sha256((self.repo / ref).read_bytes()).hexdigest()
+        self.c._phase_closure_bindings[(self.refs.node_key, "generate")] = [
+            {"node_key": _HARNESS, "model_source_ref": ref, "model_source_sha256": sha}]
+        names = self.c._stage_workshop_closure(self.refs, self.paths)
+        self.assertEqual(names, ("harness_fortran_cpu_model.f90",))
+        # A binding that carries an interface header stages it beside the source, by its name.
+        hdr = "workspace/certified/harness_fortran_cpu_model.hdr"
+        (self.repo / hdr).write_text("header\n")
+        hsha = hashlib.sha256((self.repo / hdr).read_bytes()).hexdigest()
+        self.c._phase_closure_bindings[(self.refs.node_key, "generate")][0].update(
+            {"interface_header_ref": hdr, "interface_header_sha256": hsha})
+        self.assertEqual(self.c._stage_workshop_closure(self.refs, self.paths),
+                         ("harness_fortran_cpu_model.f90", "harness_fortran_cpu_model.hdr"))
+        self.assertTrue((self.paths.staged_closure / names[0]).is_file())
+
+
 # ======================================================================================
 # _run_pure_generate_substep: happy path + bounded repair + exhaustion
 # ======================================================================================

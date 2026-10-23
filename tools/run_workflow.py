@@ -52,6 +52,7 @@ except ModuleNotFoundError:  # pragma: no cover - direct CLI execution
     from tools import validate_pipeline_semantics as _probe  # noqa: F401
 
 from tools.execution_sites import SitesConfig
+from tools.host_execution import LOCAL_SITE
 from tools.llm_config import (
     LlmConfig,
     LlmConfigError,
@@ -4092,6 +4093,8 @@ def _run_node(
                     target_profile=target_profile,
                     site=(sites_config.site_for(target_profile.target_id)
                           if sites_config is not None and target_profile is not None else None),
+                    local_site=(sites_config.sites.get(LOCAL_SITE)
+                                if sites_config is not None else None),
                 )
             except Exception as exc:  # noqa: BLE001 - terminalize on conductor error
                 # If the conductor/runtime already terminalized with a specific terminal
