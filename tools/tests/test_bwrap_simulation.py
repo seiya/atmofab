@@ -1188,6 +1188,37 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
             self.assertEqual(entry["agent_run_id"], "arid-sim")
         self.assertEqual(self.wt.read_lineage_record(self.paths)["wrapper_calls_used"], 5)
 
+    def test_a_tool_installed_in_a_checkout_virtualenv_starts_inside_the_run(self) -> None:
+        """`docs/DEVELOPMENT.md` suggests a virtualenv, and one kept in the checkout sat under
+        the run's checkout tmpfs: the linter was `No such file` inside the run and found on
+        the host (issue #534 round 1)."""
+        from tools.build_runtime import tool_run_program
+        from tools.orchestration_runtime import (
+            render_wrapper_sandbox_prefix,
+            wrapper_toolchain_ro_roots,
+        )
+
+        repo = Path(self._tmp.name) / "checkout"
+        exe = repo / ".venv" / "bin" / "linttool"
+        exe.parent.mkdir(parents=True)
+        exe.write_text("#!/bin/sh\necho LINTTOOL_RAN\n")
+        exe.chmod(0o755)
+        (repo / "tools").mkdir()
+        (repo / "tools" / "gate.py").write_text("x")
+        env = dict(self.ctx.base_env) | {"PATH": f"{exe.parent}:/usr/bin:/bin"}
+        with mock.patch.dict(os.environ, {"PATH": env["PATH"]}):
+            roots = wrapper_toolchain_ro_roots(["linttool"], repo)
+        prefix = render_wrapper_sandbox_prefix(
+            repo_root=repo, project_dir=self.paths.tree, rw_binds=[self.paths.tree],
+            toolchain_ro_roots=roots, env=env)
+        result = tool_run_program({
+            "project_dir": str(self.paths.tree),
+            "command": ["sh", "-c", f"linttool; ls {repo / 'tools'} || echo TOOLS_HIDDEN"],
+            "env": env, "timeout_sec": 30, "sandbox_argv_prefix": prefix,
+        })
+        self.assertIn("LINTTOOL_RAN", result["stdout"], result)
+        self.assertIn("TOOLS_HIDDEN", result["stdout"], result)
+
     def test_a_timeout_stops_every_process_of_the_run(self) -> None:
         """A background descendant of a wrapper run dies with it. Under `--new-session` alone a
         kill of the launcher's process group reached the launcher only: the descendant kept the

@@ -10526,7 +10526,7 @@ class Conductor:
             launch_env=launch_env,
             run_unavailable=run_unavailable,
             base_env=tuple(sorted(wrapper_base_env(self.env).items())),
-            toolchain_ro_roots=tuple(wrapper_toolchain_ro_roots(executables)),
+            toolchain_ro_roots=tuple(wrapper_toolchain_ro_roots(executables, self.repo_root)),
             max_wrapper_calls=max_wrapper_calls,
             lineage_deadline=lineage_deadline,
         )

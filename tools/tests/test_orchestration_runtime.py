@@ -29462,6 +29462,31 @@ class WrapperSandboxRendererTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.render(toolchain_ro_roots=[str(alias)])
 
+    def test_a_virtualenv_in_the_checkout_is_bound_back_over_the_tmpfs(self) -> None:
+        venv = self.repo / ".venv"
+        (venv / "bin").mkdir(parents=True)
+        cmd = self.render(toolchain_ro_roots=[str(venv)])
+        tmpfs = cmd.index("--tmpfs", cmd.index("--tmpfs") + 1)
+        self.assertEqual(cmd[tmpfs + 1], str(self.repo.resolve()))
+        i = cmd.index(str(venv.resolve()))
+        self.assertGreater(i, tmpfs, "bound before the tmpfs, so hidden by it")
+        self.assertEqual(cmd[i - 1], "--ro-bind")
+        for bad in (self.repo / "tools", self.repo / ".git", venv / "bin"):
+            with self.subTest(bad=bad):
+                bad.mkdir(parents=True, exist_ok=True)
+                with self.assertRaisesRegex(ValueError, "lies in the checkout"):
+                    self.render(toolchain_ro_roots=[str(bad)])
+
+    def test_a_tool_in_the_checkout_resolves_to_its_top_level_directory(self) -> None:
+        exe = self.repo / ".venv" / "bin" / "linttool"
+        exe.parent.mkdir(parents=True)
+        exe.write_text("#!/bin/sh\\n")
+        exe.chmod(0o755)
+        with mock.patch.dict(os.environ, {"PATH": f"{exe.parent}:/usr/bin:/bin",
+                                          "HOME": str(self.repo.parent)}):
+            self.assertEqual(ort.wrapper_toolchain_ro_roots(["linttool"], self.repo),
+                             [str((self.repo / ".venv").resolve())])
+
     def test_toolchain_roots_cover_a_prefix_install_and_skip_system_dirs(self) -> None:
         prefix = Path(self._tmp.name) / "opt" / "tool" / "1.0"
         (prefix / "bin").mkdir(parents=True)
