@@ -107,6 +107,16 @@ class _WorkshopFakeConductor(_PureFakeConductor):
     def _workshop_session_resumable(self, paths, session_id):  # type: ignore[override]
         return self.resumable
 
+    numbered_prompts = False
+
+    def runtime(self, args, *, input=None):  # type: ignore[override]
+        self.__dict__.setdefault("argvs", []).append(list(args))
+        result = super().runtime(args, input=input)
+        if args[0] == "record-launch" and self.numbered_prompts:
+            n = sum(1 for a in self.argvs if a[0] == "record-launch")
+            return {"launch_prompt_text": f"PROMPT-{n}"}
+        return result
+
     def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore
         self.__dict__.setdefault("spawns", []).append(kwargs)
         request = [c for c in self.calls if c[0] == "record-launch"][-1][1]["--request-json"]
@@ -164,7 +174,7 @@ class _Base(unittest.TestCase):
         self.refs = wc.NodeRefs(target_id=self.refs.target_id, node_key=self.refs.node_key,
                                 spec_path=self.refs.spec_path, ir_id=self.refs.ir_id,
                                 pipeline_id=self.refs.pipeline_id,
-                                source_id=self.refs.source_id + "_r")
+                                source_id="src_20260715_002")
         src = self.repo / self.refs.source_dir() / "src"
         src.mkdir(parents=True)
         (src / runner).write_text(text, encoding="utf-8")
@@ -892,3 +902,125 @@ class ExemplarRecordTests(_Base):
             prompt = ort.render_launch_prompt_text(payload)
             ort._validate_launch_prompt_text(payload, prompt)
             self.assertTrue(prompt.startswith(pure_leaf.WORKSHOP_PROMPT_SENTINEL))
+
+
+class GapTests(_Base):
+    """Rows for mechanisms round 1's mutants found unobserved (issue #534 PR-3)."""
+
+    def test_a_failed_attempt_s_bundle_meta_is_marked_workshop(self) -> None:
+        self.c.leaf_actions = [_writes_nothing]
+        self.run_substep()
+        meta = self.bundle_meta()
+        self.assertEqual((meta["result"], meta["leaf_mode"]), ("fail", "workshop"))
+
+    def test_the_real_session_check_reads_the_lineage_home(self) -> None:
+        paths = self.paths("lin")
+        check = wc.Conductor._workshop_session_resumable
+        self.assertFalse(check(self.c, paths, "sid"))
+        (paths.config / "projects" / "slug").mkdir(parents=True)
+        (paths.config / "projects" / "slug" / "sid.jsonl").write_text("{}\n")
+        self.assertTrue(check(self.c, paths, "sid"))
+        for other in ("other", "", None):
+            self.assertFalse(check(self.c, paths, other), other)
+        # The operator's own home is not where a workshop session lives.
+        self.assertFalse(check(self.c, self.paths("lin2"), "sid"))
+
+    def test_a_warm_launch_names_its_lineage_to_record_launch_and_a_cold_one_does_not(
+            self) -> None:
+        self.c.leaf_actions = [_writes_nothing, _writes_bundle]
+        self.run_substep()
+        argvs = [a for a in self.c.argvs if a[0] == "record-launch"]
+        self.assertNotIn("--workshop-lineage-id", argvs[0])
+        self.assertEqual(argvs[1][argvs[1].index("--workshop-lineage-id") + 1], "child-1")
+
+    def test_the_contract_copy_is_not_overwritten_by_a_warm_turn(self) -> None:
+        self.c.numbered_prompts = True
+        self.c.leaf_actions = [_writes_nothing, _writes_bundle]
+        self.run_substep()
+        self.assertEqual((self.paths("child-1").tree / "CONTRACT.md").read_text(), "PROMPT-1")
+
+    def test_a_transport_death_does_not_replace_the_carried_findings(self) -> None:
+        self.c.leaf_actions = [_writes_nothing,
+                               lambda c, t, kw: wc.ProcResult(1, "", "API Error: 529 overloaded"),
+                               _writes_bundle]
+        with mock.patch.object(self.c, "_pure_transient_retry", return_value=True):
+            self.assertEqual(self.run_substep().status, "pass")
+        third = self.requests()[2]
+        self.assertIn(workshop_tree.BUNDLE_MANIFEST_NAME, third["repair_findings"])
+        self.assertNotIn("529", third["repair_findings"])
+
+    def test_a_usage_wait_retries_from_the_snapshot(self) -> None:
+        def dies_after_a_draft(c, tree, kwargs):
+            (tree / "draft.txt").write_text("kept\n", encoding="utf-8")
+            return wc.ProcResult(1, "", "x")
+
+        seen: list[str] = []
+
+        def finishes(c, tree, kwargs):
+            seen.append((tree / "draft.txt").read_text())
+            _write_bundle(tree)
+
+        self.c.leaf_actions = [dies_after_a_draft, finishes]
+        with mock.patch.object(wc, "_leaf_infra_error",
+                               return_value=("llm_usage_limit", "limit")), \
+                mock.patch.object(self.c, "_usage_limit_wait", return_value=True):
+            self.assertEqual(self.run_substep().status, "pass")
+        self.assertEqual(seen, ["kept\n"])
+
+    def test_the_wrapper_is_given_the_lineage_deadline(self) -> None:
+        import time
+        before = time.time()
+        self.run_substep()
+        deadline = self.c.frozen[0]["lineage_deadline"]
+        self.assertTrue(before + 2700 - 5 <= deadline <= time.time() + 2700)
+
+    def test_an_outer_reopen_keeps_the_lineage_s_clock(self) -> None:
+        self.assertEqual(self.run_substep().status, "pass")
+        paths = self.paths("child-1")
+        record = workshop_tree.read_lineage_record(paths)
+        record["started_at_utc"] = "2000-01-01T00:00:00Z"
+        paths.record_json.write_text(json.dumps(record), encoding="utf-8")
+        reopen = OuterReopenTests._reopen
+        self.c.leaf_actions = [_writes_bundle]
+        self.assertEqual(reopen(self, "child-1").status, "pass")
+        # The year-2000 clock has run out: the reopened lineage is ended and a fresh one runs.
+        self.assertEqual(self.requests()[-1]["workshop_lineage_id"], "child-2")
+        self.assertEqual(workshop_tree.read_lineage_record(paths)["ended_by"], "lineage_timeout")
+
+    def test_a_warm_turn_is_accounted_against_the_resumed_envelope(self) -> None:
+        self.c.leaf_actions = [_writes_nothing, _writes_bundle]
+        seen: list = []
+        real = wc._leaf_usage_row
+
+        def spy(proc, entry, **kw):
+            seen.append(kw.get("resumed"))
+            return real(proc, entry, **kw)
+
+        with mock.patch.object(wc, "_leaf_usage_row", spy):
+            self.run_substep()
+        self.assertIsNone(seen[0])
+        self.assertEqual(seen[1][0], "child-1")
+
+
+class SeedRefusalTests(_Base):
+    def test_two_seeds_of_one_name_are_refused(self) -> None:
+        src = self.repo / self.refs.source_dir() / "src"
+        (src / "tests.md").write_text("x", encoding="utf-8")
+        with self.assertRaises(RuntimeError) as ctx:
+            self.c._workshop_seeds(self.refs, self.c._build_pure_context(self.refs), {})
+        self.assertIn("tests.md", str(ctx.exception))
+
+    def test_a_context_carrying_the_runner_needs_it_in_src(self) -> None:
+        context = self.c._build_pure_context(self.refs)
+        (self.repo / self.refs.source_dir() / "src"
+         / self.c._runner_basename(self.refs)).unlink()
+        with self.assertRaises(RuntimeError) as ctx:
+            self.c._workshop_seeds(self.refs, context, {})
+        self.assertIn("runner", str(ctx.exception))
+
+    def test_a_host_file_named_like_the_contract_is_refused(self) -> None:
+        src = self.repo / self.refs.source_dir() / "src"
+        (src / "CONTRACT.md").write_text("x", encoding="utf-8")
+        with self.assertRaises(RuntimeError) as ctx:
+            self.c._workshop_seeds(self.refs, self.c._build_pure_context(self.refs), {})
+        self.assertIn("CONTRACT.md", str(ctx.exception))
