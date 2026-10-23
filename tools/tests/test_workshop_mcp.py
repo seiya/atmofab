@@ -74,7 +74,7 @@ class _Fixture(unittest.TestCase):
         workshop_tree.write_lineage_record(self.paths, node_key="component/x/y",
                                            started_at_utc="2026-10-23T00:00:00Z")
         self.ctx = SimpleNamespace(paths=self.paths, agent_run_id="arid-launch-1",
-                                   max_wrapper_calls=3)
+                                   max_wrapper_calls=3, seed_texts=())
         self.calls: list[tuple[str, dict]] = []
 
     def _server(self, run_op=None, on_end=None) -> workshop_mcp.WrapperMcpServer:

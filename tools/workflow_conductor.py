@@ -9195,7 +9195,7 @@ class Conductor:
                 refs, paths, agent_run_id=child_arid, seed_names=lineage.seed_names,
                 reserved_names=lineage.reserved, closure_file_names=lineage.closure_file_names,
                 max_wrapper_calls=int(entry.max_wrapper_calls),
-                lineage_deadline=lineage.deadline)
+                lineage_deadline=lineage.deadline, seed_texts=lineage.seeds)
         except Exception as exc:  # noqa: BLE001 — a host precondition, before any launch
             raise WorkshopSetupFailed(f"{type(exc).__name__}: {exc}") from exc
         calls_before = int(read_lineage_record(paths).get("wrapper_calls_used") or 0)
@@ -11368,7 +11368,8 @@ class Conductor:
     def _freeze_wrapper_context(self, refs: NodeRefs, paths: Any, *, agent_run_id: str,
                                 seed_names: tuple[str, ...], reserved_names: frozenset[str],
                                 closure_file_names: tuple[str, ...], max_wrapper_calls: int,
-                                lineage_deadline: float) -> Any:
+                                lineage_deadline: float,
+                                seed_texts: Mapping[str, str] | None = None) -> Any:
         """The `workshop_wrapper.WrapperContext` of one launch of a lineage, computed here, in
         the main thread, from the same inputs the host's own gates read: the bundle contract
         (`_pure_bundle_violation_inputs`), the build graph (`_pure_bundle_graph_inputs`), the
@@ -11486,6 +11487,7 @@ class Conductor:
             toolchain_ro_roots=tuple(wrapper_toolchain_ro_roots(executables, self.repo_root)),
             max_wrapper_calls=max_wrapper_calls,
             lineage_deadline=lineage_deadline,
+            seed_texts=tuple(sorted((seed_texts or {}).items())),
         )
 
     def _build_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:

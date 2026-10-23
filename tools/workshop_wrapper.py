@@ -135,6 +135,10 @@ class WrapperContext:
     max_wrapper_calls: int
     #: Epoch seconds at which the lineage's `lineage_timeout_s` runs out.
     lineage_deadline: float
+    #: `(name, text)` of every seed the host re-places before each operation (the contract
+    #: copy excepted, which no operation reads), so an operation reads the host's seeds rather
+    #: than a copy the leaf edited (issue #534 PR-3). Empty: nothing is re-placed.
+    seed_texts: tuple[tuple[str, str], ...] = ()
     capture_limit: int = DEFAULT_CAPTURE_LIMIT
     #: The longest a single run may take, before the lineage's remaining time shortens it.
     run_timeout_sec: int = field(default=3600)
@@ -200,10 +204,19 @@ def run_wrapper_op(ctx: WrapperContext, op: str, arguments: Mapping[str, Any] | 
             return _ended(ctx, str(ended_by))
         handler = _OPS[op]
         with _op_lock(ctx):
+            _replace_seeds(ctx)
             return handler(ctx, args, on_spawn)
     except Exception as exc:  # noqa: BLE001 - every failure is feedback, never a raise
         return _result(False, category=CATEGORY_WRAPPER_ERROR,
                        findings=f"{type(exc).__name__}: {exc}")
+
+
+def _replace_seeds(ctx: WrapperContext) -> None:
+    """Write every frozen seed back into the tree, through no link, before an operation runs:
+    the runner, the headers and `spec.ir.yaml` an operation reads are the host's, whatever the
+    leaf did to its copies."""
+    for name, text in ctx.seed_texts:
+        workshop_tree.write_host_file(ctx.paths.tree, name, text)
 
 
 def _ended(ctx: WrapperContext, ended_by: str) -> dict[str, Any]:

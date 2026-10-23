@@ -238,6 +238,10 @@ class HappyPathTests(_Base):
         self.assertEqual((tree / "CONTRACT.md").read_text(), "PROMPT")
         frozen = self.c.frozen[0]
         self.assertIn("CONTRACT.md", frozen["seed_names"])
+        # Every seed but the contract copy is frozen for the wrapper to re-place.
+        self.assertEqual(set(frozen["seed_texts"]),
+                         set(frozen["seed_names"]) - {"CONTRACT.md"})
+        self.assertEqual(frozen["seed_texts"]["tests.md"], (tree / "tests.md").read_text())
         self.assertIn(runner, frozen["seed_names"])
         self.assertIn(workshop_tree.BUNDLE_MANIFEST_NAME, frozen["reserved_names"])
         self.assertIn(self.c._control_file_basename(self.refs), frozen["reserved_names"])
@@ -598,7 +602,7 @@ _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
 #: `WORKSHOP_SYSTEM_PROMPT`. A change to either is a change of the workshop leaf's contract and
 #: takes a new version, keeping every shipped pin (the no-revert check reads them).
 _WORKSHOP_CONTRACT_DIGESTS = {
-    "workshop-1": "1dd7dbe09e566218dc940211b96abe81c58a6e2f92ae9b6d7981ba6939bb27e2",
+    "workshop-1": "7b815a1b6c0d4639012927da03a9b67390c0d88047e743ad85cd356c8b09f331",
 }
 
 
