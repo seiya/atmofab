@@ -1430,6 +1430,26 @@ class WorkshopCompileProducerTests(unittest.TestCase):
         self.assertIn("ir.meta.spec_kind",
                       self.meta()["per_attempt"][0]["failure_excerpt"])
 
+    def test_an_ir_judged_against_a_tests_copy_in_the_tree_is_refused(self) -> None:
+        """Round 1 (issue #534 step 2): the leaf writes a cut-down `tests.md` into its tree and
+        points `meta.source_refs.tests` at it. The ref is the host's fact, so the document
+        contract refuses it, the repair turn names the node's own path, and nothing of the
+        copy reaches the written IR."""
+        from tools.tests.test_pure_leaf_compile import _assembled_ir
+
+        def decoy(c, tree, kwargs):
+            (tree / "mytests.md").write_text("## 1. Tests\n", encoding="utf-8")
+            ir = _assembled_ir()
+            ir["meta"]["source_refs"] = {"tests": str(tree / "mytests.md")}
+            _writes_ir(ir)(c, tree, kwargs)
+
+        self.c.leaf_actions = [decoy, _writes_ir()]
+        self.assertEqual(self.run_substep().status, "pass")
+        first = self.meta()["per_attempt"][0]
+        self.assertEqual(first["failure_category"], wc.COMPILE_IR_DOCUMENT_VIOLATION)
+        self.assertIn(f"{self.refs.spec_path}/tests.md", first["failure_excerpt"])
+        self.assertNotIn("mytests.md", (self.repo / self.refs.ir_ref / "spec.ir.yaml").read_text())
+
     def test_a_compile_static_reopen_continues_the_open_lineage_warm(self) -> None:
         self.assertEqual(self.run_substep().status, "pass")
         evidence = self.c.__dict__.setdefault("evidence", {})

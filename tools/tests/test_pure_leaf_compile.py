@@ -674,6 +674,40 @@ class PureIrDocumentViolationTests(_Fixture):
     def test_a_declared_fail_has_no_violations_and_needs_no_ir(self) -> None:
         self.assertIsNone(self.violations(_declared()))
 
+    def test_the_source_refs_must_name_the_node_s_own_spec_documents(self) -> None:
+        """Issue #534 step 2 round 1: `Compile.static` reads the node's tests through
+        `meta.source_refs.tests`, so a ref to any other file has the gate judge the IR against a
+        test set the leaf chose (measured on a workshop tree: a cut-down copy cleared the gate
+        with a test's entries dropped). Each present ref must be the node's own document; an
+        absent one is the gate's to refuse."""
+        own = {"controlled_spec": f"{_SPEC_PATH}/controlled_spec.md",
+               "tests": f"{_SPEC_PATH}/tests.md", "deps": f"{_SPEC_PATH}/deps.yaml"}
+
+        def with_refs(refs):
+            ir = _valid_ir()
+            ir["meta"]["source_refs"] = refs
+            return _doc(ir)
+
+        self.assertIsNone(self.violations(with_refs(dict(own))))
+        self.assertIsNone(self.violations(_doc()))           # absent: Compile.static's finding
+        self.assertIsNone(self.violations(with_refs({"tests": own["tests"]})))
+        other = "spec/component/dynamics/advection_diffusion/other_node/tests.md"
+        for label, refs in (
+                ("an absolute path to a copy", dict(own, tests="/tmp/tree/mytests.md")),
+                ("a relative path out of the spec dir", dict(own, tests="../tree/tests.md")),
+                ("another node's tests", dict(own, tests=other)),
+                ("a respelled own path", dict(own, tests="./" + own["tests"])),
+                ("another controlled spec", dict(own, controlled_spec=other)),
+                ("another deps", dict(own, deps=other)),
+                ("not a mapping", own["tests"])):
+            with self.subTest(case=label):
+                result = self.violations(with_refs(refs))
+                self.assertIsNotNone(result)
+                self.assertEqual(result[0], wc.COMPILE_IR_DOCUMENT_VIOLATION)
+                self.assertIn("source_refs", result[1])
+        result = self.violations(with_refs(dict(own, tests=other)))
+        self.assertIn(f"`tests: {own['tests']}`", result[1])
+
     def test_each_shape_defect_is_one_ir_document_violation(self) -> None:
         for label, doc in (
             ("not an object", ["ir"]),

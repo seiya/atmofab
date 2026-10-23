@@ -7231,6 +7231,32 @@ class Conductor:
                      f"{declared_kind!r}. It selects which deterministic gates apply, so a "
                      f"value other than the node's own turns those gates off rather than "
                      f"describing the node."))
+        # `meta.source_refs` names the documents every later gate reads the node's tests and
+        # contract through (`Compile.static`'s per-test coverage reads `tests.md` from
+        # `source_refs.tests`), so it is the host's fact, not the leaf's: a ref naming another
+        # file — a cut-down copy in a workshop leaf's tree, another node's `tests.md` — would
+        # have the gates judge the IR against a test set the leaf chose. Each ref present must
+        # be the node's own spec document, spelled as the phase contract's schema spells it; an
+        # absent one is left to `Compile.static`, which already refuses it.
+        own_refs = {name: f"{refs.spec_path}/{name}{suffix}"
+                    for name, suffix in (("controlled_spec", ".md"), ("tests", ".md"),
+                                         ("deps", ".yaml"))}
+        meta = ir.get("meta")
+        source_refs = meta.get("source_refs") if isinstance(meta, dict) else None
+        if source_refs is not None:
+            if not isinstance(source_refs, dict):
+                return (COMPILE_IR_DOCUMENT_VIOLATION,
+                        (f"`ir.meta.source_refs` must be a mapping of {sorted(own_refs)} to this "
+                         f"node's spec documents; got {type(source_refs).__name__}"))
+            wrong = {name: source_refs[name] for name, want in own_refs.items()
+                     if name in source_refs and source_refs[name] != want}
+            if wrong:
+                return (COMPILE_IR_DOCUMENT_VIOLATION,
+                        ("`ir.meta.source_refs` must name this node's own spec documents, "
+                         "exactly: " + ", ".join(f"`{n}: {own_refs[n]}`" for n in sorted(wrong))
+                         + f"; got {wrong!r}. Every later gate reads the node's tests and "
+                         "contract through these refs, so a ref to any other file — a copy, "
+                         "another node's — is refused."))
         # The host serializes `ir` itself, so a value the serializer cannot express — or one that
         # does not survive the round trip — must fail here as a repairable document defect rather
         # than at the host write, where it would be mis-routed as a transport fail_closed.
