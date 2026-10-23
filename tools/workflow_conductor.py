@@ -9614,6 +9614,13 @@ class Conductor:
             refs, pure_context, self._workshop_seed_request(
                 refs, phase, substep, entry, resolved_dependencies, exemplar,
                 runner_host_authored, pure_context, paths.lineage_id, spec))
+        # An orientation seed the lineage was created with and the host no longer resolves (the
+        # certified siblings moved under the run) is removed, not left behind as a leaf file:
+        # the tree then holds what this launch's seeds and record say.
+        for name in (self._WORKSHOP_DEPENDENCIES_SEED, self._WORKSHOP_EXEMPLAR_SEED):
+            stale = Path(paths.tree) / name
+            if name not in seeds and (stale.is_symlink() or stale.is_file()):
+                stale.unlink()
         started = _parse_iso_utc(str(lineage_record.get("started_at_utc") or ""))
         return self._workshop_lineage_from_seeds(
             refs, paths, seeds,

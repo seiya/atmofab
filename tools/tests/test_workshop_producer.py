@@ -787,9 +787,6 @@ class TemplateTests(unittest.TestCase):
         self.assertNotIn("Work tree contract", warm)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class AuditTests(unittest.TestCase):
     def test_a_workshop_bundle_meta_is_summarized_with_its_lineages_calls_and_turns(
@@ -1024,3 +1021,91 @@ class SeedRefusalTests(_Base):
         with self.assertRaises(RuntimeError) as ctx:
             self.c._workshop_seeds(self.refs, self.c._build_pure_context(self.refs), {})
         self.assertIn("CONTRACT.md", str(ctx.exception))
+
+
+class Round2Tests(_Base):
+    """Rows for round 2's findings (issue #534 PR-3)."""
+
+    def test_an_exemplar_the_host_no_longer_resolves_leaves_the_reopened_tree(self) -> None:
+        with mock.patch.object(_WorkshopFakeConductor, "_resolve_exemplar",
+                               return_value=_EXEMPLAR):
+            self.assertEqual(self.run_substep().status, "pass")
+        tree = self.paths("child-1").tree
+        self.assertTrue((tree / "EXEMPLAR.md").is_file())
+        seen: list[bool] = []
+
+        def checks(c, t, kw):
+            seen.append((t / "EXEMPLAR.md").exists())
+            _write_bundle(t)
+
+        self.c.leaf_actions = [checks]
+        with mock.patch.object(_WorkshopFakeConductor, "_resolve_exemplar", return_value=None):
+            self.assertEqual(OuterReopenTests._reopen(self, "child-1").status, "pass")
+        self.assertTrue(self.requests()[-1]["warm_resume"])
+        self.assertEqual(seen, [False])
+        self.assertIsNone(self.bundle_meta()["per_attempt"][-1]["exemplar_ref"])
+        self.assertNotIn("EXEMPLAR.md",
+                         [p.name for p in self.paths("child-1").snapshot.iterdir()])
+
+    def test_a_reopen_keeping_its_exemplar_records_it(self) -> None:
+        with mock.patch.object(_WorkshopFakeConductor, "_resolve_exemplar",
+                               return_value=_EXEMPLAR):
+            self.assertEqual(self.run_substep().status, "pass")
+            self.c.leaf_actions = [_writes_bundle]
+            self.assertEqual(OuterReopenTests._reopen(self, "child-1").status, "pass")
+        self.assertEqual(self.bundle_meta()["per_attempt"][-1]["exemplar_ref"],
+                         _EXEMPLAR["source_ref"])
+
+    def test_the_host_judges_the_snapshot_not_the_live_tree(self) -> None:
+        real = workshop_tree.snapshot_tree
+
+        def drops_the_model(paths, host_placed):
+            out = real(paths, host_placed)
+            (paths.snapshot / f"{_SPEC_ID}_model.f90").unlink()
+            return out
+
+        with mock.patch.object(workshop_tree, "snapshot_tree", drops_the_model):
+            self.c.leaf_actions = [_writes_bundle]
+            outcome = self.run_substep()
+        self.assertEqual(outcome.status, "fail")
+        self.assertIn(f"{_SPEC_ID}_model.f90", self.bundle_meta()["failure_excerpt"])
+
+    def test_the_retry_and_wait_budgets_are_counted_per_substep_run(self) -> None:
+        retries: list[int] = []
+        waits: list[int] = []
+
+        def retry(**kw):
+            retries.append(kw["retries_done"])
+            return kw["retries_done"] < 2
+
+        def wait(**kw):
+            waits.append(kw["waits_done"])
+            return kw["waits_done"] < 3
+
+        overloaded = lambda c, t, kw: wc.ProcResult(1, "", "API Error: 529 overloaded")
+        self.c.leaf_actions = [overloaded] * 3
+        with mock.patch.object(self.c, "_pure_transient_retry", side_effect=retry):
+            self.assertEqual(self.run_substep().status, "fail")
+        self.assertEqual(retries, [0, 1, 2])
+        self.assertEqual(len({r["workshop_lineage_id"] for r in self.requests()}), 3)
+        self.c.leaf_actions = [lambda c, t, kw: wc.ProcResult(1, "", "usage")] * 4
+        self.fresh_source()
+        with mock.patch.object(wc, "_leaf_infra_error",
+                               return_value=("llm_usage_limit", "limit")), \
+                mock.patch.object(self.c, "_usage_limit_wait", side_effect=wait):
+            self.assertEqual(self.run_substep().status, "fail")
+        self.assertEqual(waits, [0, 1, 2, 3])
+
+    def test_the_real_wrapper_context_carries_the_seed_texts(self) -> None:
+        """The conductor half of round 1's F1: the REAL `_freeze_wrapper_context` hands the
+        seed texts to the wrapper (the fake overrides it everywhere else)."""
+        paths = self.paths("frozen")
+        ctx = wc.Conductor._freeze_wrapper_context(
+            self.c, self.refs, paths, agent_run_id="a1", seed_names=("tests.md",),
+            reserved_names=frozenset({"tests.md"}), closure_file_names=(),
+            max_wrapper_calls=3, lineage_deadline=1.0, seed_texts={"tests.md": "T"})
+        self.assertEqual(ctx.seed_texts, (("tests.md", "T"),))
+
+
+if __name__ == "__main__":
+    unittest.main()
