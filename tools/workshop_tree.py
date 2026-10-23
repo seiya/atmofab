@@ -26,6 +26,7 @@ seeds and of the control file are the caller's.
 from __future__ import annotations
 
 import copy
+import errno
 import fcntl
 import json
 import os
@@ -303,27 +304,85 @@ class AssemblyFailure:
     findings: str
 
 
-def regular_file_under(root: Path, rel: PurePosixPath) -> tuple[Path | None, str | None]:
-    """`(path, None)` when `<root>/<rel>` is a regular file reached through no symbolic link,
-    else `(None, why)`. Every component is `lstat`ed: a link anywhere on the way is refused,
-    whether it points in or out of the tree (a row-2 binary can create one in the rw tree)."""
-    current = root
-    for index, part in enumerate(rel.parts):
-        current = current / part
-        try:
-            info = current.lstat()
-        except FileNotFoundError:
-            return None, "does not exist"
-        except OSError as exc:
-            return None, f"cannot be read ({exc.strerror or exc})"
-        if stat.S_ISLNK(info.st_mode):
+def _open_no_follow(root: Path, rel: PurePosixPath) -> int:
+    """An fd open for reading on `<root>/<rel>`, reached through no symbolic link: each
+    directory component is opened relative to the previous one with `O_NOFOLLOW`, and the file
+    itself too, so a component swapped for a link between a check and the open (a run of the
+    leaf's own program still writing the tree) is refused rather than followed. Raises
+    `OSError` (`ELOOP` for a link) and `ValueError` (a NUL in the name)."""
+    flags_dir = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in rel.parts[:-1]:
+            nxt = os.open(part, flags_dir, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+        file_fd = os.open(rel.parts[-1], os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=fd)
+    finally:
+        os.close(fd)
+    return file_fd
+
+
+def read_regular_file_under(root: Path, rel: PurePosixPath) -> tuple[bytes | None, str | None]:
+    """`(bytes, None)` when `<root>/<rel>` is a regular file reached through no symbolic link,
+    else `(None, why)`. A link anywhere on the way is refused, whether it points in or out of
+    the tree (a program the wrapper ran can create one in the read-write tree). Never raises."""
+    try:
+        fd = _open_no_follow(Path(root), rel)
+    except FileNotFoundError:
+        return None, "does not exist"
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
             return None, "is reached through a symbolic link"
-        last = index == len(rel.parts) - 1
-        if last and not stat.S_ISREG(info.st_mode):
-            return None, "is not a regular file"
-        if not last and not stat.S_ISDIR(info.st_mode):
+        if exc.errno == errno.ENOTDIR:
+            # `O_DIRECTORY | O_NOFOLLOW` on a link to a directory answers ENOTDIR too: tell the
+            # two apart by what the component is (the message only; the open already refused).
+            current = Path(root)
+            for part in rel.parts[:-1]:
+                current = current / part
+                if current.is_symlink():
+                    return None, "is reached through a symbolic link"
             return None, "is not reachable (a component is not a directory)"
-    return current, None
+        return None, f"cannot be read ({exc.strerror or exc})"
+    except ValueError as exc:
+        return None, f"is not a usable path ({exc})"
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            return None, "is not a regular file"
+        with os.fdopen(fd, "rb", closefd=False) as stream:
+            return stream.read(), None
+    except OSError as exc:
+        return None, f"cannot be read ({exc.strerror or exc})"
+    finally:
+        os.close(fd)
+
+
+def write_host_file(root: Path, name: str, text: str) -> None:
+    """Write a host-placed file (the derived control file) at the top of `root`, never through
+    a link: whatever the leaf left at that name — a link, a directory — is removed first and
+    the file is created with `O_NOFOLLOW`, so the host's write lands in the tree and nowhere
+    else."""
+    target = Path(root) / name
+    try:
+        info = target.lstat()
+    except FileNotFoundError:
+        info = None
+    if info is not None and not stat.S_ISREG(info.st_mode):
+        if stat.S_ISDIR(info.st_mode):
+            shutil.rmtree(target)
+        else:
+            target.unlink()
+    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, "w", encoding="utf-8") as stream:
+        stream.write(text)
+
+
+def is_host_file(root: Path, name: str) -> bool:
+    """Whether `<root>/<name>` is a regular file (not a link to one)."""
+    try:
+        return stat.S_ISREG((Path(root) / name).lstat().st_mode)
+    except OSError:
+        return False
 
 
 def assemble_bundle_document(root: Path, reserved: Iterable[str]) -> dict[str, Any] | AssemblyFailure:
@@ -339,10 +398,19 @@ def assemble_bundle_document(root: Path, reserved: Iterable[str]) -> dict[str, A
     still goes through `codegen_bundle.pure_bundle_contract_violation`, which owns the grammar of
     a `logical_path` and every other rule of the document; this function decides only what can
     be READ. Never raises on the tree's content."""
-    root = Path(root)
-    reserved_set = frozenset(reserved)
-    manifest, why = regular_file_under(root, PurePosixPath(BUNDLE_MANIFEST_NAME))
-    if manifest is None:
+    try:
+        return _assemble(Path(root), frozenset(reserved))
+    except (ValueError, UnicodeError, RecursionError, OSError) as exc:
+        # A manifest no reader below anticipated — a NUL or a lone surrogate in a path, a
+        # nesting deep enough to exhaust the parser — is still the tree's defect, not the host's.
+        return AssemblyFailure(BUNDLE_SCHEMA_VIOLATION,
+                               f"{BUNDLE_MANIFEST_NAME} cannot be assembled: "
+                               f"{type(exc).__name__}: {exc}")
+
+
+def _assemble(root: Path, reserved_set: frozenset[str]) -> dict[str, Any] | AssemblyFailure:
+    raw, why = read_regular_file_under(root, PurePosixPath(BUNDLE_MANIFEST_NAME))
+    if raw is None:
         if why == "does not exist":
             return AssemblyFailure(
                 WORKSHOP_TREE_EMPTY,
@@ -350,12 +418,9 @@ def assemble_bundle_document(root: Path, reserved: Iterable[str]) -> dict[str, A
                 "tree root, naming every bundle file")
         return AssemblyFailure(BUNDLE_SCHEMA_VIOLATION, f"{BUNDLE_MANIFEST_NAME} {why}")
     try:
-        text = manifest.read_bytes().decode("utf-8")
+        text = raw.decode("utf-8")
     except UnicodeDecodeError:
         return AssemblyFailure(BUNDLE_SCHEMA_VIOLATION, f"{BUNDLE_MANIFEST_NAME} is not UTF-8")
-    except OSError as exc:
-        return AssemblyFailure(BUNDLE_SCHEMA_VIOLATION,
-                               f"{BUNDLE_MANIFEST_NAME} cannot be read: {exc}")
     try:
         loaded = yaml.safe_load(text)
     except yaml.YAMLError as exc:
@@ -401,16 +466,14 @@ def assemble_bundle_document(root: Path, reserved: Iterable[str]) -> dict[str, A
                 f"{where}: logical_path {logical!r} names a host-placed tree file; a bundle "
                 "file needs a name of its own")
             continue
-        path, why = regular_file_under(root, rel)
-        if path is None:
+        data, why = read_regular_file_under(root, rel)
+        if data is None:
             findings.append(f"{where}: {logical} {why}")
             continue
         try:
-            entry["content"] = path.read_bytes().decode("utf-8")
+            entry["content"] = data.decode("utf-8")
         except UnicodeDecodeError:
             findings.append(f"{where}: {logical} is not UTF-8 text")
-        except OSError as exc:
-            findings.append(f"{where}: {logical} cannot be read: {exc}")
     if findings:
         return AssemblyFailure(BUNDLE_SCHEMA_VIOLATION, "\n".join(findings))
     return doc
@@ -432,7 +495,10 @@ def _walk_tree_files(root: Path) -> tuple[list[PurePosixPath], list[str]]:
         for name in filenames:
             path = base / name
             rel = PurePosixPath(path.relative_to(root).as_posix())
-            info = path.lstat()
+            try:
+                info = path.lstat()
+            except OSError:
+                continue
             if stat.S_ISLNK(info.st_mode):
                 links.append(rel.as_posix())
             elif stat.S_ISREG(info.st_mode):
@@ -440,31 +506,40 @@ def _walk_tree_files(root: Path) -> tuple[list[PurePosixPath], list[str]]:
     return sorted(files), sorted(links)
 
 
-def _copy_files(source: Path, target: Path, names: Iterable[PurePosixPath]) -> list[str]:
+def _copy_files(source: Path, target: Path,
+                names: Iterable[PurePosixPath]) -> tuple[list[str], list[str]]:
+    """Copy each named file of `source` to the same path under `target`, read through no link
+    (`read_regular_file_under`). Returns `(copied, refused)`: a file that is a link by the time
+    it is read, or cannot be read, is refused rather than raised."""
     copied: list[str] = []
+    refused: list[str] = []
     for rel in names:
+        data, why = read_regular_file_under(source, rel)
+        if data is None:
+            refused.append(f"{rel.as_posix()}: {why}")
+            continue
         destination = target / rel
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source / rel, destination)
+        destination.write_bytes(data)
         copied.append(rel.as_posix())
-    return copied
+    return copied, refused
 
 
 def snapshot_tree(paths: LineagePaths, host_placed: Iterable[str]) -> dict[str, list[str]]:
     """Copy the tree's final state into `snapshot/`: every regular file except the host-placed
     ones (`reserved_tree_names` minus the manifest — the seeds and the derived control file,
     which the host owns and re-places), so a seed the leaf edited is never copied back. A
-    symbolic link is not followed and not copied. The snapshot directory is emptied first: a
-    lineage is snapshotted when it ends, once. Returns `{"copied": [...], "links_refused":
-    [...]}`."""
+    symbolic link is not followed and not copied, and a file that cannot be read is refused,
+    never raised. The snapshot directory is emptied first: a lineage is snapshotted when it
+    ends, once. Returns `{"copied": [...], "links_refused": [...], "unreadable": [...]}`."""
     skip = {str(n) for n in host_placed} - {BUNDLE_MANIFEST_NAME}
     if paths.snapshot.exists():
         shutil.rmtree(paths.snapshot)
     paths.snapshot.mkdir(parents=True)
     files, links = _walk_tree_files(paths.tree)
     kept = [rel for rel in files if rel.as_posix() not in skip]
-    copied = _copy_files(paths.tree, paths.snapshot, kept)
-    return {"copied": copied, "links_refused": links}
+    copied, unreadable = _copy_files(paths.tree, paths.snapshot, kept)
+    return {"copied": copied, "links_refused": links, "unreadable": unreadable}
 
 
 def seed_from_snapshot(new_paths: LineagePaths, old_paths: LineagePaths,
@@ -477,4 +552,5 @@ def seed_from_snapshot(new_paths: LineagePaths, old_paths: LineagePaths,
     files, _links = _walk_tree_files(old_paths.snapshot)
     kept = [rel for rel in files
             if rel.as_posix() not in skip and not (new_paths.tree / rel).exists()]
-    return _copy_files(old_paths.snapshot, new_paths.tree, kept)
+    copied, _refused = _copy_files(old_paths.snapshot, new_paths.tree, kept)
+    return copied

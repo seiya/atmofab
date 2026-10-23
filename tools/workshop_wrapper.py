@@ -168,24 +168,33 @@ def run_wrapper_op(ctx: WrapperContext, op: str, arguments: Mapping[str, Any] | 
                        findings=f"unknown operation {op!r}; the operations are {WRAPPER_OPS}")
     args = dict(arguments or {})
     try:
-        if _remaining_seconds(ctx) <= 0:
-            workshop_tree.end_lineage(ctx.paths, "lineage_timeout")
-            return _result(False, category=CATEGORY_LINEAGE_TIMEOUT, ended=True,
-                           findings="the lineage's lineage_timeout_s has run out")
-        if not workshop_tree.count_wrapper_call(ctx.paths, ctx.max_wrapper_calls):
+        ended_by = workshop_tree.read_lineage_record(ctx.paths).get("ended_by")
+        if ended_by is None and _remaining_seconds(ctx) <= 0:
+            ended_by = workshop_tree.end_lineage(ctx.paths, "lineage_timeout")
+        if ended_by is None and not workshop_tree.count_wrapper_call(
+                ctx.paths, ctx.max_wrapper_calls):
             ended_by = workshop_tree.read_lineage_record(ctx.paths).get("ended_by")
-            if ended_by == "max_wrapper_calls":
-                return _result(
-                    False, category=CATEGORY_MAX_WRAPPER_CALLS, ended=True,
-                    findings=f"the lineage has used its max_wrapper_calls="
-                             f"{ctx.max_wrapper_calls}; the tree is taken as it stands")
-            return _result(False, category=CATEGORY_LINEAGE_ENDED, ended=True,
-                           findings=f"the lineage has ended ({ended_by})")
+        if ended_by is not None:
+            # The recorded reason answers, whichever bound this call would also have hit.
+            return _ended(ctx, str(ended_by))
         handler = _OPS[op]
         return handler(ctx, args, on_spawn)
     except Exception as exc:  # noqa: BLE001 - every failure is feedback, never a raise
         return _result(False, category=CATEGORY_WRAPPER_ERROR,
                        findings=f"{type(exc).__name__}: {exc}")
+
+
+def _ended(ctx: WrapperContext, ended_by: str) -> dict[str, Any]:
+    if ended_by == "max_wrapper_calls":
+        return _result(False, category=CATEGORY_MAX_WRAPPER_CALLS, ended=True,
+                       findings=f"the lineage has used its max_wrapper_calls="
+                                f"{ctx.max_wrapper_calls}; the tree is taken as it stands")
+    if ended_by == "lineage_timeout":
+        return _result(False, category=CATEGORY_LINEAGE_TIMEOUT, ended=True,
+                       findings="the lineage's lineage_timeout_s has run out; the tree is "
+                                "taken as it stands")
+    return _result(False, category=CATEGORY_LINEAGE_ENDED, ended=True,
+                   findings=f"the lineage has ended ({ended_by})")
 
 
 def _no_arguments(op: str, args: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -229,8 +238,8 @@ def _derive(ctx: WrapperContext) -> dict[str, Any]:
         graph = ctx.build_graph(doc)
     except RuntimeError as exc:
         return _result(False, category=CATEGORY_BUILD_GRAPH, findings=str(exc))
-    (ctx.paths.tree / ctx.control_file_basename).write_text(
-        ctx.render_control_file(graph=graph), encoding="utf-8")
+    workshop_tree.write_host_file(ctx.paths.tree, ctx.control_file_basename,
+                                  ctx.render_control_file(graph=graph))
     missing = [n for n in ctx.closure_file_names if not (ctx.paths.staged_obj / n).is_file()]
     if missing:
         return _result(False, category=CATEGORY_STAGED_CLOSURE,
@@ -240,7 +249,7 @@ def _derive(ctx: WrapperContext) -> dict[str, Any]:
 
 
 def _require_derived(ctx: WrapperContext) -> dict[str, Any] | None:
-    if not (ctx.paths.tree / ctx.control_file_basename).is_file():
+    if not workshop_tree.is_host_file(ctx.paths.tree, ctx.control_file_basename):
         return _result(False, category=CATEGORY_NOT_DERIVED,
                        findings="run derive first: the tree holds no derived control file")
     return None
@@ -342,10 +351,10 @@ def _tree_file(ctx: WrapperContext, name: Any) -> tuple[Path | None, str | None]
     rel = workshop_tree.plain_relative_path(name) if isinstance(name, str) else None
     if rel is None:
         return None, f"cases_file {name!r} must be a tree-relative path with no '..' segment"
-    path, why = workshop_tree.regular_file_under(ctx.paths.tree, PurePosixPath(rel))
-    if path is None:
+    data, why = workshop_tree.read_regular_file_under(ctx.paths.tree, PurePosixPath(rel))
+    if data is None:
         return None, f"cases_file {name} {why}"
-    return path, None
+    return ctx.paths.tree / rel, None
 
 
 def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict[str, Any]:

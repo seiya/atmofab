@@ -10,6 +10,7 @@ under a real sandbox are `test_bwrap_simulation.WorkshopWrapperSandboxTests`.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import threading
 import time
@@ -215,6 +216,14 @@ class AssemblyTests(_LineageCase):
         self.write(wt.BUNDLE_MANIFEST_NAME, b"\xff\n")
         self.assertFailure(self.assemble(), wt.BUNDLE_SCHEMA_VIOLATION, "not UTF-8")
 
+    def test_a_manifest_no_reader_anticipated_is_a_finding(self) -> None:
+        deep = "a: " + "[" * 5000 + "]" * 5000 + "\n"
+        for text in ('files:\n  - logical_path: "a\\0b.f90"\n',
+                     'files:\n  - logical_path: "\\ud800.f90"\n', deep):
+            with self.subTest(text=text[:40]):
+                self.write(wt.BUNDLE_MANIFEST_NAME, text)
+                self.assertFailure(self.assemble(), wt.BUNDLE_SCHEMA_VIOLATION)
+
     def test_a_symlinked_manifest_is_refused(self) -> None:
         target = Path(self._tmp.name) / "m.yaml"
         target.write_text("files: []\n")
@@ -260,6 +269,94 @@ class SnapshotTests(_LineageCase):
         copied = wt.seed_from_snapshot(new, self.paths, self.reserved)
         self.assertEqual(copied, ["bundle.yaml", "x_model.f90"])
         self.assertEqual((new.tree / "tests.md").read_text(), "fresh\n")
+
+    def test_a_cold_reuse_seed_does_not_overwrite_what_the_new_tree_holds(self) -> None:
+        self.write("x_model.f90", "old\n")
+        wt.snapshot_tree(self.paths, self.reserved)
+        new = wt.LineagePaths(self.paths.homes_root, "orch_1", "arid-3",
+                              self.paths.orchestration_dir)
+        new.home.mkdir(parents=True)
+        new.make_work_dirs()
+        wt.seed_tree(new, {"x_model.f90": "new\n"})
+        self.assertEqual(wt.seed_from_snapshot(new, self.paths, set()), [])
+        self.assertEqual((new.tree / "x_model.f90").read_text(), "new\n")
+
+    def test_the_snapshot_is_emptied_first_and_lists_linked_dirs(self) -> None:
+        (self.paths.snapshot / "stale.f90").write_text("from a previous copy\n")
+        (self.paths.tree / "dirlink").symlink_to(Path(self._tmp.name))
+        self.write("x_model.f90", "m\n")
+        out = wt.snapshot_tree(self.paths, self.reserved)
+        self.assertFalse((self.paths.snapshot / "stale.f90").exists())
+        self.assertEqual(out["links_refused"], ["dirlink"])
+        self.assertFalse((self.paths.snapshot / "dirlink").exists())
+
+    def test_an_unreadable_file_is_refused_not_raised(self) -> None:
+        locked = self.write("locked.f90", "x\n")
+        locked.chmod(0o000)
+        try:
+            # The row needs a refusal to observe; a process that reads a mode-000 file (root)
+            # has none.
+            self.assertFalse(os.access(locked, os.R_OK), "run the suite as a non-root user")
+            out = wt.snapshot_tree(self.paths, self.reserved)
+        finally:
+            locked.chmod(0o644)
+        self.assertNotIn("locked.f90", out["copied"])
+        self.assertEqual([u.split(":")[0] for u in out["unreadable"]], ["locked.f90"])
+
+    def test_a_file_that_became_a_link_is_refused_at_copy_time(self) -> None:
+        # The walk saw a regular file; by the copy it is a link out of the tree (a run of the
+        # leaf's own program swapping it). The copy reads through no link, so it is refused.
+        outside = Path(self._tmp.name) / "secret.txt"
+        outside.write_text("outside\n")
+        (self.paths.tree / "swapped.f90").symlink_to(outside)
+        copied, refused = wt._copy_files(self.paths.tree, self.paths.snapshot,
+                                         [wt.PurePosixPath("swapped.f90")])
+        self.assertEqual(copied, [])
+        self.assertIn("symbolic link", refused[0])
+        self.assertFalse((self.paths.snapshot / "swapped.f90").exists())
+
+
+class HostFileWriteTests(_LineageCase):
+    def test_the_control_file_is_written_in_the_tree_never_through_a_link(self) -> None:
+        victim = Path(self._tmp.name) / "victim.txt"
+        victim.write_text("untouched\n")
+        (self.paths.tree / _CONTROL).symlink_to(victim)
+        wt.write_host_file(self.paths.tree, _CONTROL, "rendered\n")
+        self.assertEqual(victim.read_text(), "untouched\n")
+        self.assertFalse((self.paths.tree / _CONTROL).is_symlink())
+        self.assertEqual((self.paths.tree / _CONTROL).read_text(), "rendered\n")
+        self.assertTrue(wt.is_host_file(self.paths.tree, _CONTROL))
+
+    def test_a_directory_at_the_name_is_replaced(self) -> None:
+        (self.paths.tree / _CONTROL).mkdir()
+        wt.write_host_file(self.paths.tree, _CONTROL, "rendered\n")
+        self.assertEqual((self.paths.tree / _CONTROL).read_text(), "rendered\n")
+
+    def test_a_link_at_the_name_is_not_a_derived_control_file(self) -> None:
+        target = self.write("real_control", "all:\n")
+        (self.paths.tree / _CONTROL).symlink_to(target)
+        self.assertFalse(wt.is_host_file(self.paths.tree, _CONTROL))
+
+
+def _count_in_child(args) -> int:
+    homes, orch_dir, cap, n = args
+    paths = wt.LineagePaths(Path(homes), "orch_1", "arid-1", Path(orch_dir))
+    return sum(wt.count_wrapper_call(paths, cap) for _ in range(n))
+
+
+class CrossProcessCounterTests(_LineageCase):
+    def test_the_counter_is_exclusive_across_processes(self) -> None:
+        # The thread lock is per process; the file lock is what serializes a second process
+        # serving the same lineage.
+        import multiprocessing
+
+        ctx = multiprocessing.get_context("fork")
+        args = (str(self.paths.homes_root), str(self.paths.orchestration_dir), 60, 20)
+        with ctx.Pool(6) as pool:
+            granted = sum(pool.map(_count_in_child, [args] * 6))
+        doc = wt.read_lineage_record(self.paths)
+        self.assertEqual((granted, doc["wrapper_calls_used"], doc["ended_by"]),
+                         (60, 60, "max_wrapper_calls"))
 
 
 def _context(paths: wt.LineagePaths, reserved, **over) -> ww.WrapperContext:
