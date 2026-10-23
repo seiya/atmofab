@@ -878,6 +878,19 @@ class IrAssemblyTests(_IrLineageCase):
         doc = self.assemble()
         self.assertEqual((doc["ir"], doc["compile_fail"]["input"]), ({"meta": {}}, "tests"))
 
+    def test_a_null_declaration_is_a_finding_alone_or_beside_an_ir(self) -> None:
+        """Round 1: `null` in `compile_fail.json` assembled as "no declaration", so a file the
+        contract says is refused beside an IR was accepted there."""
+        self.write(wt.COMPILE_FAIL_NAME, "null")
+        for with_ir in (False, True):
+            with self.subTest(with_ir=with_ir):
+                if with_ir:
+                    self.write(wt.IR_DOCUMENT_NAME, "meta: {}\n")
+                failure = self.assemble()
+                self.assertIsInstance(failure, wt.AssemblyFailure)
+                self.assertEqual(failure.category, wt.IR_DOCUMENT_VIOLATION)
+                self.assertIn("holds null", failure.findings)
+
     def test_neither_file_is_an_empty_tree(self) -> None:
         self.write("notes.md", "scratch\n")
         failure = self.assemble()

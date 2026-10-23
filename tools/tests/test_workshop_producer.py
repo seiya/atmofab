@@ -711,7 +711,7 @@ _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
 #: first three templates and the system prompt alone.
 _WORKSHOP_CONTRACT_DIGESTS = {
     "workshop-1": "434bbd2a7d61d8ad6352b857a08398ed9ea0c33af5f7904823a841af6cc0d17e",
-    "workshop-2": "8cad22f0a96fac515ec1540c3aff778dbaf4e3e8bda30877895ca2fb5209b125",
+    "workshop-2": "9b791e637083087bfa7faa764d7edd2bcb0dd47874688e56ea6246faf6dfbd29",
 }
 
 

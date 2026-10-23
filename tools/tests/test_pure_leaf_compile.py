@@ -1478,7 +1478,7 @@ class PureCompileFailDeclarationTests(_Fixture):
         tpl = (Path(ort.__file__).resolve().parent / "prompt_templates"
                / "workshop_compile_generate.txt").read_text(encoding="utf-8")
         head = ("the input at fault, which is one of these names and nothing else (they name "
-                "the seed documents listed under Inputs below, in the order they appear there, "
+                "the seed documents whose labels follow below, in the order the labels appear, "
                 "then the catalog): ")
         self.assertEqual(tpl.count(head), 1)
         statement = tpl.split(head, 1)[1].split(";", 1)[0]

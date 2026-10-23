@@ -567,6 +567,11 @@ def _assemble_ir(root: Path) -> dict[str, Any] | AssemblyFailure:
             f"the tree holds neither {IR_DOCUMENT_NAME} nor {COMPILE_FAIL_NAME}: write the IR "
             f"at the tree root as {IR_DOCUMENT_NAME}")
     findings = [f for f in (ir_why, fail_why) if f]
+    if has_fail and fail_why is None and declared is None:
+        # A file that declares nothing is not the absence of a declaration: the contract says
+        # a `compile_fail.json` beside an IR is refused, and a `null` one would slip through it.
+        findings.append(f"{COMPILE_FAIL_NAME} holds null: delete it, or write the declaration "
+                        "object")
     if findings:
         return AssemblyFailure(IR_DOCUMENT_VIOLATION, "\n".join(findings))
     if has_ir and not isinstance(ir, dict):
