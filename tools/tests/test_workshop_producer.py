@@ -711,7 +711,7 @@ _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
 #: first three templates and the system prompt alone.
 _WORKSHOP_CONTRACT_DIGESTS = {
     "workshop-1": "434bbd2a7d61d8ad6352b857a08398ed9ea0c33af5f7904823a841af6cc0d17e",
-    "workshop-2": "9b791e637083087bfa7faa764d7edd2bcb0dd47874688e56ea6246faf6dfbd29",
+    "workshop-2": "79daa75c9cdc3233d8ea0697e63d0b4c2d1a1cf8d7ad60eaaed39066dae66c14",
 }
 
 
@@ -1242,6 +1242,15 @@ def _writes_declaration(c, tree, kwargs):
         encoding="utf-8")
 
 
+#: A declaration whose reason is longer than the 300 characters a summary keeps.
+_LONG_WHAT = "the section declares no test id the host can read; " * 8
+
+
+def _writes_long_declaration(c, tree, kwargs):
+    (tree / workshop_tree.COMPILE_FAIL_NAME).write_text(
+        json.dumps({"input": "tests", "where": "§1", "what": _LONG_WHAT}), encoding="utf-8")
+
+
 _SURFACE = ({"node_key": "component/dep@0.1.0",
              "published_operations": ["dep__apply"], "source": "ir_public_api",
              "public_api": {}},)
@@ -1394,6 +1403,15 @@ class WorkshopCompileProducerTests(unittest.TestCase):
                          f"workshop_compile_fail: {wc.COMPILE_DECLARED_FAIL}: "
                          "tests §1: declares no test")
         self.assertNotIn(wc.COMPILE_DECLARED_FAIL, wc.COMPILE_DOCUMENT_FAILURE_ROUTING)
+
+    def test_the_summary_keeps_300_characters_of_a_long_declaration(self) -> None:
+        self.c.leaf_actions = [_writes_long_declaration]
+        self.run_substep()
+        reason = f"tests §1: {_LONG_WHAT.strip()}"
+        self.assertGreater(len(reason), 300)
+        finals = [c[1]["--agent-run-json"] for c in self.c.calls if c[0] == "finalize-child"]
+        self.assertEqual(finals[-1]["result_summary"],
+                         f"workshop_compile_fail: {wc.COMPILE_DECLARED_FAIL}: {reason[:300]}")
 
     def test_a_declaration_beside_an_ir_is_repaired_warm_with_the_ir_repair_turn(self) -> None:
         def both(c, tree, kwargs):

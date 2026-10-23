@@ -1556,7 +1556,7 @@ class PureRenderTests(unittest.TestCase):
         # replaced the dangling pointer to an "agent-driven `attribution=ir` route" entry.
         # READ: same tokens, nothing assigned.
         ("docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-         " #92d095c5c044"),
+         " #3b60c8d416a3"),
         # Issue #455: the cross-phase re-derivation bullet names what reaches it — a judge
         # `fail` or, in `prod`, a `Generate.verify` `major` naming `ir_inconsistency`, each by
         # the reason it escalates under (`verify_severity_major`). READ: it states what the
