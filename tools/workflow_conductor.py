@@ -4431,6 +4431,9 @@ class Conductor:
                 or timeout_seconds < 1):
             raise ValueError(f"spawn_leaf timeout_seconds must be an integer >= 1 (got "
                              f"{timeout_seconds!r})")
+        # Resolved HERE, before the codex branch below returns: a name left None would reach
+        # the codex marker as `leaf exceeded None=<n>` on every launch that passes no bound.
+        timeout_name = timeout_name or LEAF_TIMEOUT_ENV_BOUND_NAME
         argv = self.leaf_command(
             entry, session_id=session_id, resume_session_id=resume_session_id,
             mcp_config_json=mcp_config_json)
@@ -4534,7 +4537,6 @@ class Conductor:
         # The ONE place the claude leaf is waited on, and therefore the only place the cap has to
         # be armed: a deterministic substep never reaches spawn_leaf, and the usage-limit wait
         # happens BETWEEN launches.
-        timeout_name = timeout_name or LEAF_TIMEOUT_ENV_BOUND_NAME
         timeout_seconds = _leaf_timeout_seconds() if timeout_seconds is None else timeout_seconds
         started = time.monotonic()
         deadline = (started + timeout_seconds) if timeout_seconds else None

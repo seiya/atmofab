@@ -695,6 +695,30 @@ class WorkshopSpawnArgvTests(unittest.TestCase):
                                         mcp_config_json=mcp)
             self.assertEqual(seen[0][seen[0].index("--mcp-config") + 1], mcp)
 
+    def test_spawn_leaf_hands_the_codex_spawn_its_bound_and_its_name(self) -> None:
+        """Through `spawn_leaf`, for both an explicit bound and none: the codex spawn gets the
+        seconds and a NAME — the environment cap's when the caller names none."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            cfg = repo / "llm.yaml"
+            cfg.write_text("defaults: {provider: codex_cli, model: gpt-x}\n", encoding="utf-8")
+            c = _PureFakeConductor(repo_root=repo, orchestration_id="o",
+                                   orchestration_agent_run_id="orch", env={},
+                                   llm_config=lc.load_llm_config(cfg))
+            c._bwrap_enabled = lambda: False  # type: ignore[assignment]
+            c.leaf_command = lambda *a, **k: ["sleep", "60"]  # type: ignore[assignment]
+            env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}
+            for kwargs, expected in (
+                    ({"timeout_seconds": 1, "timeout_name": "lineage_timeout_s"},
+                     "leaf exceeded lineage_timeout_s=1"),
+                    ({}, "leaf exceeded ATMOFAB_LEAF_TIMEOUT_SECONDS=1")):
+                with self.subTest(kwargs=kwargs), mock.patch.dict(
+                        os.environ, {"ATMOFAB_LEAF_TIMEOUT_SECONDS":
+                                     "1" if not kwargs else "3600"}):
+                    result = wc.Conductor.spawn_leaf(c, "", env, c.entry_for(None, None),
+                                                     child_arid="child", **kwargs)
+                    self.assertIn(expected, result.stderr)
+
     def test_the_codex_spawn_takes_the_explicit_bound_too(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
