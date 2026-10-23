@@ -55,9 +55,11 @@ WORKSHOP_TREE_EMPTY = "workshop_tree_empty"
 #: category, so the routing of a defective document does not depend on its transport.
 BUNDLE_SCHEMA_VIOLATION = "bundle_schema_violation"
 
-#: Why a lineage ended. `None` while it is open.
+#: Why a lineage ended. `None` while it is open. `superseded`: the host continued its work in
+#: a new lineage seeded from its snapshot because its session could not be resumed (issue #534
+#: PR-3), so nothing will continue it.
 ENDED_BY_VALUES: tuple[str, ...] = (
-    "leaf_exit", "max_wrapper_calls", "lineage_timeout", "leaf_timeout")
+    "leaf_exit", "max_wrapper_calls", "lineage_timeout", "leaf_timeout", "superseded")
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 

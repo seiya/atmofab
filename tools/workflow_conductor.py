@@ -9354,6 +9354,8 @@ class Conductor:
                     repair_target = target_arid
                     mode = "warm"
                 else:
+                    from tools.workshop_tree import end_lineage
+                    end_lineage(paths, "superseded")
                     prior = paths
                     mode = "cold_reuse"
             self.emit("workshop_reopen", node_key=refs.node_key, substep=substep or "",
@@ -9382,6 +9384,10 @@ class Conductor:
                     end_lineage(lineage.paths, "max_wrapper_calls")
                     warm = False
             if lineage is not None and not warm:
+                # Its work goes on in a new lineage: record that nothing will continue it (a
+                # reason a bound already recorded stands).
+                from tools.workshop_tree import end_lineage
+                end_lineage(lineage.paths, "superseded")
                 prior, lineage, resume_session_id = lineage.paths, None, None
             repair_payload: dict[str, str] | None = None
             if repair_target is not None:

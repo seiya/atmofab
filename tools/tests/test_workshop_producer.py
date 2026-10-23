@@ -339,6 +339,10 @@ class RepairTests(_Base):
         second = self.requests()[1]
         self.assertEqual(second["workshop_lineage_id"], "child-2")
         self.assertFalse(second.get("warm_resume"))
+        # The abandoned lineage is recorded as such; the one that passed stays open.
+        self.assertEqual(workshop_tree.read_lineage_record(self.paths("child-1"))["ended_by"],
+                         "superseded")
+        self.assertIsNone(workshop_tree.read_lineage_record(self.paths("child-2"))["ended_by"])
 
     def test_an_entry_without_warm_resume_takes_a_cold_reuse(self) -> None:
         self.c = _WorkshopFakeConductor(
@@ -554,6 +558,18 @@ class OuterReopenTests(_Base):
         self.assertFalse(request.get("warm_resume"))
         self.assertEqual(request["repair_target_agent_run_id"], "child-1")
         self.assertEqual(seen, [True])
+        # A bound's reason stands over the supersession.
+        self.assertEqual(workshop_tree.read_lineage_record(self.paths("child-1"))["ended_by"],
+                         "leaf_timeout")
+
+    def test_an_open_unresumable_lineage_is_superseded_on_reopen(self) -> None:
+        self.assertEqual(self.run_substep().status, "pass")
+        self.c.resumable = False
+        self.c.leaf_actions = [_writes_bundle]
+        self.assertEqual(self._reopen("child-1").status, "pass")
+        self.assertEqual(self.requests()[-1]["workshop_lineage_id"], "child-2")
+        self.assertEqual(workshop_tree.read_lineage_record(self.paths("child-1"))["ended_by"],
+                         "superseded")
 
     def test_a_target_with_no_lineage_starts_a_fresh_one_carrying_the_findings(self) -> None:
         self.c.leaf_actions = [_writes_bundle]
