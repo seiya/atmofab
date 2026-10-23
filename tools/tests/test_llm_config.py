@@ -1284,12 +1284,19 @@ class WorkshopEntryTests(_Tmp):
             with self.subTest(body=body):
                 self.assert_rule("llm_config_workshop_field_not_substep_scoped", body)
 
-    def test_a_workshop_entry_is_admissible_on_generate_generate_only(self) -> None:
-        for pair in ("compile: {substeps: {generate", "generate: {substeps: {verify",
-                     "validate: {substeps: {judge", "compile: {substeps: {verify"):
+    def test_a_workshop_entry_is_admissible_on_the_two_producing_substeps_only(self) -> None:
+        for pair in ("generate: {substeps: {verify", "validate: {substeps: {judge",
+                     "compile: {substeps: {verify"):
             with self.subTest(pair=pair):
                 self.assert_rule("llm_config_workshop_substep_inadmissible",
                                  self._gen(f"leaf: workshop, {self.BOUNDS}", pair))
+        # Issue #534 step 2: `compile.generate` joins `generate.generate`.
+        for pair in ("generate: {substeps: {generate", "compile: {substeps: {generate"):
+            with self.subTest(admitted=pair):
+                cfg = lc.load_llm_config(self.write(
+                    self._gen(f"leaf: workshop, {self.BOUNDS}", pair)))
+                phase = pair.split(":")[0]
+                self.assertTrue(cfg.entry_for(phase, "generate").is_workshop)
 
     def test_a_workshop_entry_needs_a_provider_declaring_it(self) -> None:
         self.assert_rule(
@@ -1348,11 +1355,14 @@ class WorkshopEntryTests(_Tmp):
                 break
             block.append(line[len("#       "):].split("#", 1)[0].rstrip())
         self.assertIn("  leaf: workshop", block)
-        body = self.BASE + "phases:\n  generate:\n    substeps:\n" + "\n".join(
-            "      " + line for line in block) + "\n"
-        entry = lc.load_llm_config(self.write(body)).entry_for("generate", "generate")
-        self.assertTrue(entry.is_workshop)
-        self.assertIsNotNone(entry.max_wrapper_calls)
+        # The sample says the block goes under both producing substeps (issue #534 step 2).
+        for phase in ("compile", "generate"):
+            with self.subTest(phase=phase):
+                body = (self.BASE + f"phases:\n  {phase}:\n    substeps:\n"
+                        + "\n".join("      " + line for line in block) + "\n")
+                entry = lc.load_llm_config(self.write(body)).entry_for(phase, "generate")
+                self.assertTrue(entry.is_workshop)
+                self.assertIsNotNone(entry.max_wrapper_calls)
 
     def test_the_workshop_pairs_match_the_launch_validator(self) -> None:
         from tools import pure_leaf

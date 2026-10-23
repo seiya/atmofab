@@ -1,7 +1,9 @@
 """The wrapper's transport: one MCP endpoint per `workshop leaf` launch (issue #534).
 
 `docs/design/producer_workshop_leaf.md` §Tool surface: a `workshop leaf` reaches the wrapper's
-five operations (`tools/workshop_wrapper.py`) as MCP tools. This module serves them over MCP's
+operations (`tools/workshop_wrapper.py`) as MCP tools — the operations its lineage serves
+(`WrapperContext.ops`): five on a `generate.generate` lineage, `check_ir` on a
+`compile.generate` one. This module serves them over MCP's
 streamable-HTTP transport from the conductor's own process — a `ThreadingHTTPServer` on
 `127.0.0.1:<ephemeral port>`, started for ONE launch and stopped when that launch's leaf exits.
 The leaf's CLI is told the URL by `--mcp-config` (`pure_leaf.workshop_mcp_config_json`).
@@ -36,6 +38,7 @@ import json
 import os
 import signal
 import socket
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -45,7 +48,7 @@ from typing import Any
 
 from tools import workshop_tree
 from tools.workshop_wrapper import (
-    WRAPPER_OPS,
+    ALL_OPS,
     WrapperContext,
     result_text,
     run_wrapper_op,
@@ -74,46 +77,61 @@ _JSONRPC_INTERNAL_ERROR = -32603
 
 _NO_ARGUMENTS = {"type": "object", "properties": {}, "additionalProperties": False}
 
-#: The five tools, with the input each takes. The descriptions say what the operation does and
-#: what its result is; the contract they serve is the launch prompt's.
-TOOL_DEFINITIONS: tuple[dict[str, Any], ...] = (
-    {"name": "derive",
-     "description": "Read bundle.yaml and the files it names from your tree, check the bundle "
-                    "the way the host will, and derive the build. Returns ok, or the category "
-                    "and findings to fix.",
-     "inputSchema": _NO_ARGUMENTS},
-    {"name": "compile",
-     "description": "Build your tree's bundle with the target's toolchain and the staged "
-                    "dependency closure. Returns ok, the return code and the build output.",
-     "inputSchema": _NO_ARGUMENTS},
-    {"name": "lint",
-     "description": "Run the target's static lint over your bundle's sources. Returns ok, the "
-                    "return code and the lint output.",
-     "inputSchema": _NO_ARGUMENTS},
-    {"name": "syntax_check",
-     "description": "Run the target's syntax-only compiler check over your bundle, including "
-                    "the model file compiled alone. Returns ok, the return code and the output.",
-     "inputSchema": _NO_ARGUMENTS},
-    {"name": "run",
-     "description": "Run a binary your last compile built on a case file of your tree. "
-                    "Returns ok, the return code and the program's output.",
-     "inputSchema": {
-         "type": "object",
-         "properties": {
-             "binary": {"type": "string",
-                        "description": "basename of a binary the last compile built"},
-             "cases_file": {"type": "string",
-                            "description": "tree-relative case file (default spec.ir.yaml)"},
-             "case_ids": {"type": "array", "items": {"type": "string"},
-                          "description": "case ids to run (default: every case)"},
-         },
-         "required": ["binary"],
-         "additionalProperties": False,
-     }},
-)
+#: Every tool, by operation, with the input each takes. A lineage is served the ones its
+#: context names (`WrapperContext.ops`). The descriptions say what the operation does and what
+#: its result is; the contract they serve is the launch prompt's.
+TOOL_DEFINITIONS: dict[str, dict[str, Any]] = {
+    "derive":
+        {"name": "derive",
+         "description": "Read bundle.yaml and the files it names from your tree, check the "
+                        "bundle the way the host will, and derive the build. Returns ok, or the "
+                        "category and findings to fix.",
+         "inputSchema": _NO_ARGUMENTS},
+    "compile":
+        {"name": "compile",
+         "description": "Build your tree's bundle with the target's toolchain and the staged "
+                        "dependency closure. Returns ok, the return code and the build output.",
+         "inputSchema": _NO_ARGUMENTS},
+    "lint":
+        {"name": "lint",
+         "description": "Run the target's static lint over your bundle's sources. Returns ok, "
+                        "the return code and the lint output.",
+         "inputSchema": _NO_ARGUMENTS},
+    "syntax_check":
+        {"name": "syntax_check",
+         "description": "Run the target's syntax-only compiler check over your bundle, "
+                        "including the model file compiled alone. Returns ok, the return code "
+                        "and the output.",
+         "inputSchema": _NO_ARGUMENTS},
+    "run":
+        {"name": "run",
+         "description": "Run a binary your last compile built on a case file of your tree. "
+                        "Returns ok, the return code and the program's output.",
+         "inputSchema": {
+             "type": "object",
+             "properties": {
+                 "binary": {"type": "string",
+                            "description": "basename of a binary the last compile built"},
+                 "cases_file": {"type": "string",
+                                "description": "tree-relative case file (default spec.ir.yaml)"},
+                 "case_ids": {"type": "array", "items": {"type": "string"},
+                              "description": "case ids to run (default: every case)"},
+             },
+             "required": ["binary"],
+             "additionalProperties": False,
+         }},
+    "check_ir":
+        {"name": "check_ir",
+         "description": "Read spec.ir.yaml (or compile_fail.json) from your tree, check the "
+                        "document the way the host will, and run the phase's deterministic "
+                        "gate over the IR. Returns ok, or the category and findings to fix.",
+         "inputSchema": _NO_ARGUMENTS},
+}
 
-if tuple(t["name"] for t in TOOL_DEFINITIONS) != WRAPPER_OPS:  # pragma: no cover - import guard
-    raise RuntimeError("TOOL_DEFINITIONS must name exactly workshop_wrapper.WRAPPER_OPS")
+if set(TOOL_DEFINITIONS) != set(ALL_OPS):  # pragma: no cover - import guard
+    raise RuntimeError("TOOL_DEFINITIONS must name exactly workshop_wrapper.ALL_OPS")
+if any(t["name"] != op for op, t in TOOL_DEFINITIONS.items()):  # pragma: no cover
+    raise RuntimeError("each TOOL_DEFINITIONS entry is keyed by its own name")
 
 
 def _utc_now_iso() -> str:
@@ -176,6 +194,23 @@ class WrapperMcpServer:
 
         class _Httpd(ThreadingHTTPServer):
             daemon_threads = True
+
+            def handle_error(self, request, client_address):
+                # A connection the client dropped mid-exchange (a `ConnectionResetError` from
+                # the response write, issue #534 step 1's A/B) is one record row, never a
+                # traceback on the conductor's stderr (`socketserver`'s default prints one).
+                error = sys.exc_info()[1]
+                try:
+                    host, port = client_address[:2]
+                    server._log({
+                        "recorded_at_utc": _utc_now_iso(),
+                        "agent_run_id": server.ctx.agent_run_id,
+                        "event": "connection_error",
+                        "peer": f"{host}:{port}",
+                        "error": f"{type(error).__name__}: {error}",
+                    })
+                except Exception:  # noqa: BLE001 - an error handler that raises prints anyway
+                    pass
 
             def process_request(self, request, client_address):
                 def serve() -> None:
@@ -313,13 +348,14 @@ class WrapperMcpServer:
         if method == "ping":
             return 200, _ok(rid, {}), {}
         if method == "tools/list":
-            return 200, _ok(rid, {"tools": [dict(t) for t in TOOL_DEFINITIONS]}), {}
+            return 200, _ok(rid, {"tools": [dict(TOOL_DEFINITIONS[op]) for op in self.ctx.ops
+                                            if op in TOOL_DEFINITIONS]}), {}
         if method == "tools/call":
             name = params.get("name")
             arguments = params.get("arguments")
-            if not isinstance(name, str) or name not in WRAPPER_OPS:
+            if not isinstance(name, str) or name not in self.ctx.ops:
                 return 200, _error(rid, _JSONRPC_INVALID_PARAMS,
-                                   f"unknown tool {name!r}; the tools are {list(WRAPPER_OPS)}"), {}
+                                   f"unknown tool {name!r}; the tools are {list(self.ctx.ops)}"), {}
             if arguments is not None and not isinstance(arguments, dict):
                 return 200, _error(rid, _JSONRPC_INVALID_PARAMS,
                                    "arguments must be an object"), {}

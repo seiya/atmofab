@@ -812,3 +812,225 @@ class WrapperCallCompositionTests(_LineageCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+# --- the IR lineage (issue #534 step 2) -----------------------------------------------------
+
+_IR_SEEDS = {"tests.md": "# tests\n", "controlled_spec.md": "# spec\n", "CONTRACT.md": "c\n"}
+_IR_OUTPUTS = (wt.IR_DOCUMENT_NAME, wt.COMPILE_FAIL_NAME)
+
+
+class _IrLineageCase(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name)
+        self.paths = wt.LineagePaths(
+            homes_root=base / "homes", orchestration_id="orch_1", lineage_id="arid-ir",
+            orchestration_dir=base / "repo" / "workspace" / "orchestrations" / "orch_1")
+        self.paths.home.mkdir(parents=True, mode=0o700)
+        self.paths.make_work_dirs()
+        self.seed_names = wt.seed_tree(self.paths, _IR_SEEDS)
+        self.reserved = wt.reserved_tree_names(self.seed_names, None, _IR_OUTPUTS)
+        wt.write_lineage_record(self.paths, node_key="component/x@0.1.0",
+                                started_at_utc="2026-10-24T00:00:00Z")
+
+    def write(self, rel: str, text: str | bytes) -> Path:
+        path = self.paths.tree / rel
+        if isinstance(text, bytes):
+            path.write_bytes(text)
+        else:
+            path.write_text(text, encoding="utf-8")
+        return path
+
+    def assemble(self):
+        return wt.assemble_ir_document(self.paths.tree, self.reserved)
+
+
+class ReservedNamesTests(unittest.TestCase):
+    def test_the_outputs_and_the_control_file_are_the_caller_s(self) -> None:
+        self.assertEqual(wt.reserved_tree_names(("a.md",), "Makefile"),
+                         frozenset({"a.md", "Makefile", wt.BUNDLE_MANIFEST_NAME}))
+        self.assertEqual(wt.reserved_tree_names(("a.md",), None, _IR_OUTPUTS),
+                         frozenset({"a.md", *_IR_OUTPUTS}))
+        self.assertNotIn(wt.BUNDLE_MANIFEST_NAME,
+                         wt.reserved_tree_names(("a.md",), None, _IR_OUTPUTS))
+
+
+class IrAssemblyTests(_IrLineageCase):
+    """`assemble_ir_document`: which of the two output files the tree holds decides the
+    document; what the producer's contract makes of it is `test_workshop_producer`'s."""
+
+    def test_an_ir_alone_is_the_ir_with_no_declaration(self) -> None:
+        self.write(wt.IR_DOCUMENT_NAME, "schema_version: '1.0'\nmeta: {spec_kind: component}\n")
+        self.assertEqual(self.assemble(), {
+            "ir": {"schema_version": "1.0", "meta": {"spec_kind": "component"}},
+            "compile_fail": None})
+
+    def test_a_declaration_alone_is_the_declaration_with_no_ir(self) -> None:
+        decl = {"input": "tests", "where": "§6", "what": "no test"}
+        self.write(wt.COMPILE_FAIL_NAME, json.dumps(decl))
+        self.assertEqual(self.assemble(), {"ir": None, "compile_fail": decl})
+
+    def test_both_files_give_both_answers_for_the_contract_to_refuse(self) -> None:
+        self.write(wt.IR_DOCUMENT_NAME, "meta: {}\n")
+        self.write(wt.COMPILE_FAIL_NAME, '{"input": "tests", "where": "x", "what": "y"}')
+        doc = self.assemble()
+        self.assertEqual((doc["ir"], doc["compile_fail"]["input"]), ({"meta": {}}, "tests"))
+
+    def test_neither_file_is_an_empty_tree(self) -> None:
+        self.write("notes.md", "scratch\n")
+        failure = self.assemble()
+        self.assertIsInstance(failure, wt.AssemblyFailure)
+        self.assertEqual(failure.category, wt.WORKSHOP_TREE_EMPTY)
+
+    def test_each_unreadable_shape_is_a_finding_never_a_raise(self) -> None:
+        outside = Path(self._tmp.name) / "outside.yaml"
+        outside.write_text("meta: {}\n", encoding="utf-8")
+        cases = {
+            "not a mapping": ("- a\n- b\n", "must be a YAML mapping"),
+            "not yaml": ("a: [\n", "cannot be parsed"),
+            "not utf-8": (b"meta: \xff\n", "not UTF-8"),
+            "a date": ("meta: {when: 2026-10-24}\n", "not a JSON value"),
+        }
+        for label, (text, needle) in cases.items():
+            with self.subTest(case=label):
+                (self.paths.tree / wt.IR_DOCUMENT_NAME).unlink(missing_ok=True)
+                self.write(wt.IR_DOCUMENT_NAME, text)
+                failure = self.assemble()
+                self.assertIsInstance(failure, wt.AssemblyFailure)
+                self.assertEqual(failure.category, wt.IR_DOCUMENT_VIOLATION)
+                self.assertIn(needle, failure.findings)
+        with self.subTest(case="a link"):
+            (self.paths.tree / wt.IR_DOCUMENT_NAME).unlink()
+            (self.paths.tree / wt.IR_DOCUMENT_NAME).symlink_to(outside)
+            failure = self.assemble()
+            self.assertEqual(failure.category, wt.IR_DOCUMENT_VIOLATION)
+            self.assertIn("symbolic link", failure.findings)
+        with self.subTest(case="a directory"):
+            (self.paths.tree / wt.IR_DOCUMENT_NAME).unlink()
+            (self.paths.tree / wt.IR_DOCUMENT_NAME).mkdir()
+            self.assertEqual(self.assemble().category, wt.IR_DOCUMENT_VIOLATION)
+        with self.subTest(case="a declaration that is not JSON"):
+            (self.paths.tree / wt.IR_DOCUMENT_NAME).rmdir()
+            self.write(wt.COMPILE_FAIL_NAME, "{not json")
+            self.assertEqual(self.assemble().category, wt.IR_DOCUMENT_VIOLATION)
+
+    def test_the_category_is_the_conductor_s(self) -> None:
+        import tools.workflow_conductor as wc
+        self.assertEqual(wt.IR_DOCUMENT_VIOLATION, wc.COMPILE_IR_DOCUMENT_VIOLATION)
+        self.assertIn(wt.WORKSHOP_TREE_EMPTY, wc.COMPILE_DOCUMENT_FAILURE_CATEGORIES)
+        self.assertEqual(wc.COMPILE_DOCUMENT_FAILURE_ROUTING[wt.WORKSHOP_TREE_EMPTY],
+                         ("compile", "reuse"))
+
+    def test_the_snapshot_keeps_the_outputs_and_drops_the_seeds(self) -> None:
+        self.write(wt.IR_DOCUMENT_NAME, "meta: {}\n")
+        self.write("tests.md", "edited\n")
+        wt.snapshot_tree(self.paths, self.reserved - set(_IR_OUTPUTS))
+        self.assertTrue((self.paths.snapshot / wt.IR_DOCUMENT_NAME).is_file())
+        self.assertFalse((self.paths.snapshot / "tests.md").exists())
+
+
+class LastLaunchTests(_IrLineageCase):
+    def test_the_last_launch_is_recorded_and_ended_by_is_left_alone(self) -> None:
+        wt.record_last_launch(self.paths, agent_run_id="a1", rc=0, ended_at_utc="t1")
+        wt.record_last_launch(self.paths, agent_run_id="a2", rc=3, ended_at_utc="t2")
+        doc = wt.read_lineage_record(self.paths)
+        self.assertEqual(doc["last_launch"], {"agent_run_id": "a2", "rc": 3,
+                                              "ended_at_utc": "t2"})
+        self.assertIsNone(doc["ended_by"])
+
+
+def _ir_context(paths: wt.LineagePaths, reserved, seen: list, **over) -> ww.WrapperContext:
+    findings = list(over.pop("_findings", []))
+
+    def validate(repo_root, ir_dir):
+        seen.append((Path(ir_dir), {p.name: p.read_text() for p in Path(ir_dir).iterdir()}))
+        return findings
+    fields = dict(
+        paths=paths, repo_root=Path("/nonexistent-checkout"), orchestration_id="orch_1",
+        agent_run_id="arid-ir", reserved_names=reserved, seed_names=tuple(sorted(_IR_SEEDS)),
+        max_wrapper_calls=5, lineage_deadline=time.time() + 600, ops=ww.IR_CHECK_OPS,
+        violations=lambda doc: None, assemble=wt.assemble_ir_document,
+        declared_fail=lambda doc: (None if doc.get("compile_fail") is None
+                                   else f"{doc['compile_fail']['input']} declared"),
+        ir_yaml=lambda ir: "# host form\n" + json.dumps(ir, sort_keys=True) + "\n",
+        ir_meta_text='{"verification_status": "pending"}\n',
+        sidecar_texts=(("dependency_graph.json", '{"g": 1}'),),
+        validate_ir_dir=validate)
+    fields.update(over)
+    return ww.WrapperContext(**fields)
+
+
+class WrapperCheckIrTests(_IrLineageCase):
+    """`check_ir` (issue #534 step 2) with its callables stubbed: what it hands the validators,
+    and in which order it stops. The real validators are driven by `test_workshop_producer`."""
+
+    def test_the_validators_read_the_host_form_beside_the_meta_and_sidecars(self) -> None:
+        seen: list = []
+        self.write(wt.IR_DOCUMENT_NAME, "meta: {spec_kind: component}\n")
+        result = ww.run_wrapper_op(_ir_context(self.paths, self.reserved, seen), "check_ir")
+        self.assertEqual(result, {"ok": True})
+        ir_dir, files = seen[0]
+        self.assertEqual(ir_dir, self.paths.home / "check")
+        self.assertFalse(ir_dir.is_relative_to(self.paths.tree))
+        self.assertEqual(files, {
+            "spec.ir.yaml": '# host form\n{"meta": {"spec_kind": "component"}}\n',
+            "ir_meta.json": '{"verification_status": "pending"}\n',
+            "dependency_graph.json": '{"g": 1}'})
+        # emptied on every call: a file of the previous call's directory does not survive
+        (ir_dir / "stale.txt").write_text("x")
+        ww.run_wrapper_op(_ir_context(self.paths, self.reserved, seen), "check_ir")
+        self.assertNotIn("stale.txt", seen[1][1])
+        self.assertEqual(wt.read_lineage_record(self.paths)["wrapper_calls_used"], 2)
+
+    def test_findings_are_returned_with_the_head_kept(self) -> None:
+        seen: list = []
+        self.write(wt.IR_DOCUMENT_NAME, "meta: {}\n")
+        ctx = _ir_context(self.paths, self.reserved, seen,
+                          _findings=["FIRST " + "a" * 50, "second " + "b" * 50],
+                          capture_limit=40)
+        result = ww.run_wrapper_op(ctx, "check_ir")
+        self.assertEqual((result["ok"], result["category"], result["truncated"]),
+                         (False, ww.CATEGORY_IR_STATIC, True))
+        self.assertTrue(result["findings"].startswith("FIRST "))
+        self.assertIn("...<omitted ", result["findings"])
+
+    def test_it_stops_at_the_assembly_the_contract_and_a_declaration(self) -> None:
+        seen: list = []
+        failure = ww.run_wrapper_op(_ir_context(self.paths, self.reserved, seen), "check_ir")
+        self.assertEqual(failure["category"], wt.WORKSHOP_TREE_EMPTY)
+        self.write(wt.IR_DOCUMENT_NAME, "meta: {}\n")
+        refused = ww.run_wrapper_op(_ir_context(
+            self.paths, self.reserved, seen,
+            violations=lambda doc: ("ir_document_violation", "spec_kind wrong")), "check_ir")
+        self.assertEqual((refused["category"], refused["findings"]),
+                         ("ir_document_violation", "spec_kind wrong"))
+        (self.paths.tree / wt.IR_DOCUMENT_NAME).unlink()
+        self.write(wt.COMPILE_FAIL_NAME, '{"input": "tests", "where": "a", "what": "b"}')
+        declared = ww.run_wrapper_op(_ir_context(self.paths, self.reserved, seen), "check_ir")
+        self.assertEqual(declared, {"ok": True, "declared_fail": "tests declared"})
+        self.assertEqual(seen, [], "the validators ran on a tree that holds no IR to judge")
+
+    def test_check_ir_takes_no_arguments(self) -> None:
+        result = ww.run_wrapper_op(_ir_context(self.paths, self.reserved, []), "check_ir",
+                                   {"path": "x"})
+        self.assertEqual(result["category"], ww.CATEGORY_BAD_ARGUMENTS)
+
+    def test_an_operation_the_lineage_does_not_serve_is_refused_before_it_is_counted(self) -> None:
+        ir_ctx = _ir_context(self.paths, self.reserved, [], max_wrapper_calls=1)
+        for op in ww.WRAPPER_OPS + ("nope",):
+            with self.subTest(op=op):
+                result = ww.run_wrapper_op(ir_ctx, op)
+                self.assertEqual(result["category"], ww.CATEGORY_BAD_ARGUMENTS)
+                self.assertNotIn("ended", result)
+        record = wt.read_lineage_record(self.paths)
+        self.assertEqual((record["wrapper_calls_used"], record["ended_by"]), (0, None))
+        bundle_ctx = _context(self.paths, self.reserved, max_wrapper_calls=1)
+        self.assertEqual(ww.run_wrapper_op(bundle_ctx, "check_ir")["category"],
+                         ww.CATEGORY_BAD_ARGUMENTS)
+        self.assertEqual(wt.read_lineage_record(self.paths)["wrapper_calls_used"], 0)
+        # ...and an op a context NAMES without the fields to serve it is a host fault, counted.
+        odd = _ir_context(self.paths, self.reserved, [], ops=("check_ir",), assemble=None)
+        self.assertEqual(ww.run_wrapper_op(odd, "check_ir")["category"],
+                         ww.CATEGORY_WRAPPER_ERROR)

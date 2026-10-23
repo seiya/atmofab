@@ -594,8 +594,9 @@ def _pure_source_dirs_of(
 def _pure_ir_dirs_of(
     repo_root: Path, orchestration_id: str
 ) -> list[str]:
-    """Every repo-relative IR directory this orchestration launched a PURE `compile` leaf into,
-    in sorted order.
+    """Every repo-relative IR directory this orchestration launched a PURE or WORKSHOP `compile`
+    leaf into, in sorted order (a `workshop leaf` serves `compile.generate` since issue #534
+    step 2, and records the same `compile_generate_meta.json`).
 
     Discovery reads this orchestration's own persisted launch requests
     (`launches/<arid>.request.json`) and keeps the `ir_ref` of every row whose `step` is
@@ -618,7 +619,7 @@ def _pure_ir_dirs_of(
         row = _load_json_if_dict(path) or {}
         if _clean_str(row.get("step")) != "compile":
             continue
-        if _clean_str(row.get("leaf_mode")) != "pure":
+        if _clean_str(row.get("leaf_mode")) not in ("pure", "workshop"):
             continue
         ref = _clean_str(row.get("ir_ref"))
         if not ref:
@@ -698,8 +699,8 @@ def _pure_leaf_keys_that_ran(repo_root: Path, orchestration_id: str) -> frozense
     for path in sorted(launches.glob("*.request.json")):
         row = _load_json_if_dict(path) or {}
         # A `workshop leaf` (issue #534) ran on its entry's provider just as a pure one did,
-        # and it is the leaf an A/B of the two models attributes. (The compile and validate
-        # discoveries above keep `pure`: no workshop leaf serves either phase.)
+        # and it is the leaf an A/B of the two models attributes. (The validate discovery
+        # above keeps `pure`: no workshop leaf serves that phase. The compile one admits both.)
         if _clean_str(row.get("leaf_mode")) not in ("pure", "workshop"):
             continue
         step = _clean_str(row.get("step"))

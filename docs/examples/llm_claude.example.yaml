@@ -81,10 +81,13 @@
 # narrowed away from `pure` can run nothing and is refused with
 # `llm_config_capability_insufficient_for_substep`. No sample sets the key.
 #
-# `generate.generate` alone may instead run as a WORKSHOP leaf (issue #534): it edits a
-# host-seeded work tree and asks the host to derive, compile, lint, syntax-check and run it,
-# instead of returning one document. Its entry states the leaf model and both bounds, which
-# have no default and are written on the substep only:
+# The two producing substeps, `compile.generate` and `generate.generate`, may instead run as a
+# WORKSHOP leaf (issue #534): the leaf edits a host-seeded work tree instead of returning one
+# document. `generate.generate` asks the host to derive, compile, lint, syntax-check and run its
+# bundle; `compile.generate` writes the WHOLE IR in its tree (no part split) and asks the host
+# to check it the way `Compile.static` will. The entry states the leaf model and both bounds,
+# which have no default and are written on the substep only — the same block under
+# `phases.compile.substeps` and under `phases.generate.substeps`:
 #
 #       generate:
 #         provider: claude_cli
@@ -98,9 +101,10 @@
 # retry and a usage-limit wait each start a fresh lineage with fresh counters, so one substep
 # run may open up to 8 lineages (1 + 2 repair turns + 2 transient retries + 3 usage waits; 5
 # without --wait-usage-reset): up to max_wrapper_calls x 8 calls and lineage_timeout_s x 8
-# seconds, and more across an outer reopen. The generate derivation key does not name the leaf
-# model: on a node whose Generate is already certified, a workshop entry reuses it unless the
-# run passes --rederive generate,build,validate. The leaf runs in a private config home under
+# seconds, and more across an outer reopen. Neither derivation key names the leaf model: on a
+# node whose Compile or Generate is already certified, a workshop entry reuses it unless the
+# run passes --rederive (compile,generate,build,validate for both; generate,build,validate for
+# Generate alone). The leaf runs in a private config home under
 # its lineage home, over which `~/.claude/.credentials.json` is bound, so that file must exist
 # (`docs/ORCHESTRATION.md` §workshop leaf; `docs/RUNBOOK.md` §0-2).
 defaults:

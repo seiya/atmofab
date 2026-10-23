@@ -21,11 +21,14 @@ import sys
 import tempfile
 import textwrap
 import threading
+import time
 import unittest
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
+
+import yaml
 
 from tools import orchestration_runtime as ort
 from tools import workflow_conductor as wc
@@ -1470,6 +1473,7 @@ class WorkshopLeafCliTests(unittest.TestCase):
         from tools import workshop_mcp
         ctx = mock.Mock()
         ctx.agent_run_id = self.lineage
+        ctx.ops = __import__("tools.workshop_wrapper", fromlist=["x"]).WRAPPER_OPS
         from tools.workshop_tree import LineagePaths
         ctx.paths = LineagePaths(homes_root=Path(self.iso["homes_root"]),
                                  orchestration_id=self.orch, lineage_id=self.lineage,
@@ -1555,6 +1559,62 @@ class WorkshopLeafCliTests(unittest.TestCase):
         result = api.tool_results()[0]
         self.assertIn("WRAPPER-DERIVED-42", json.dumps(result))
         self.assertNotIn("is_error", {k for k, v in result.items() if v})
+
+    def test_mc2_a_compile_tree_is_written_checked_and_assembled(self) -> None:
+        """MC2 (issue #534 step 2): the real CLI writes `spec.ir.yaml` with its `Write` tool and
+        calls `mcp__wrapper__check_ir`, which the REAL wrapper serves over an IR lineage's
+        context (`run_wrapper_op`; the validators stubbed to one marker finding, the document
+        contract to clean). The operation ran on the leaf's file, its finding reached the model,
+        only `check_ir` was offered among the wrapper's tools, and the tree assembles into the
+        document the host hands to `Compile.static`."""
+        from tools import workshop_mcp, workshop_tree, workshop_wrapper
+        paths = workshop_tree.LineagePaths(
+            homes_root=Path(self.iso["homes_root"]), orchestration_id=self.orch,
+            lineage_id=self.lineage,
+            orchestration_dir=self.repo / "workspace" / "orchestrations" / self.orch)
+        paths.make_work_dirs()
+        workshop_tree.write_lineage_record(paths, node_key="component/x@0.1.0",
+                                           started_at_utc="2026-10-24T00:00:00Z")
+        seen: list = []
+
+        def validate(repo_root, ir_dir):
+            seen.append((Path(ir_dir) / "spec.ir.yaml").read_text())
+            return ["IR-CHECK-FINDING-7: per_case_status is not stated by tests.md"]
+
+        ctx = workshop_wrapper.WrapperContext(
+            paths=paths, repo_root=self.repo, orchestration_id=self.orch,
+            agent_run_id=self.lineage, max_wrapper_calls=5,
+            reserved_names=workshop_tree.reserved_tree_names(
+                (), None, (workshop_tree.IR_DOCUMENT_NAME, workshop_tree.COMPILE_FAIL_NAME)),
+            seed_names=(), lineage_deadline=time.time() + 600,
+            ops=workshop_wrapper.IR_CHECK_OPS, violations=lambda doc: None,
+            assemble=workshop_tree.assemble_ir_document, declared_fail=lambda doc: None,
+            ir_yaml=lambda ir: yaml.safe_dump(ir), ir_meta_text="{}\n",
+            validate_ir_dir=validate)
+        server = workshop_mcp.WrapperMcpServer(ctx).start()
+        self.addCleanup(server.stop)
+        ir_text = "schema_version: '1.0'\nmeta: {spec_kind: component}\n"
+        api = self._api([
+            ([{"type": "tool_use", "id": "toolu_1", "name": "Write",
+               "input": {"file_path": str(self.tree / "spec.ir.yaml"), "content": ir_text}}],
+             "tool_use"),
+            ([{"type": "tool_use", "id": "toolu_2", "name": "mcp__wrapper__check_ir",
+               "input": {}}], "tool_use"),
+            ([{"type": "text", "text": "done"}], "end_turn")])
+        res = self._launch(api, server, session=str(uuid.uuid4()))
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual(json.loads(res.stdout)["permission_denials"], [])
+        self.assertEqual(len(seen), 1)
+        self.assertEqual(yaml.safe_load(seen[0]),
+                         {"schema_version": "1.0", "meta": {"spec_kind": "component"}})
+        self.assertIn("IR-CHECK-FINDING-7", json.dumps(api.tool_results()[-1]))
+        tools = {t["name"] for t in api.main_requests()[0]["tools"]}
+        self.assertEqual({t for t in tools if t.startswith("mcp__wrapper__")},
+                         {"mcp__wrapper__check_ir"})
+        self.assertEqual(workshop_tree.assemble_ir_document(self.tree),
+                         {"ir": {"schema_version": "1.0", "meta": {"spec_kind": "component"}},
+                          "compile_fail": None})
+        self.assertEqual(workshop_tree.read_lineage_record(paths)["wrapper_calls_used"], 1)
 
     def test_m4_control_without_the_grant_the_call_is_denied(self) -> None:
         """The control for M4: the same launch with `--allowedTools mcp__wrapper` removed is

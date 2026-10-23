@@ -108,8 +108,8 @@ def is_pure_request(request_payload: Any) -> bool:
 
 # --------------------------------------------------------------------------------------
 # The `workshop leaf` (issue #534; `docs/design/producer_workshop_leaf.md`): a PRODUCING leaf
-# that edits a host-seeded work tree and reaches five host operations through the wrapper's
-# MCP endpoint (`tools/workshop_mcp.py`), instead of returning one document. It shares the
+# that edits a host-seeded work tree and reaches its substep's host operations through the
+# wrapper's MCP endpoint (`tools/workshop_mcp.py`), instead of returning one document. It shares the
 # pure leaf's host-rendered prompt and its launch-record shape — no write authority under the
 # checkout, the host writes every artifact from the snapshot after the leaf exits — and differs
 # in what it holds: file tools confined to its tree, and the wrapper.
@@ -118,14 +118,16 @@ def is_pure_request(request_payload: Any) -> bool:
 #: The `leaf_mode` value that selects the workshop path.
 WORKSHOP_LEAF_MODE = "workshop"
 
-#: The `(step, substep)` pairs a workshop leaf may serve. Step 1 of the design note's migration
-#: order adopts `generate.generate` alone (`tools/llm_config.py` refuses any other entry).
-WORKSHOP_LAUNCH_PAIRS: frozenset[tuple[str, str]] = frozenset({("generate", "generate")})
+#: The `(step, substep)` pairs a workshop leaf may serve: both producing substeps. Step 1 of the
+#: design note's migration order adopted `generate.generate`, step 2 `compile.generate`
+#: (`tools/llm_config.py` refuses any other entry).
+WORKSHOP_LAUNCH_PAIRS: frozenset[tuple[str, str]] = frozenset({
+    ("generate", "generate"), ("compile", "generate")})
 
 #: The prompt-contract version a workshop request carries in `prompt_contract_version` (the
 #: field the pure request uses for its own). Its own counter, so a workshop template change
 #: never moves `PURE_PROMPT_CONTRACT_VERSION` and the reverse.
-WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-1"
+WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-2"
 
 #: The first line of every host-rendered workshop launch prompt, anchored as the pure sentinel
 #: is (`startswith`). A distinct literal, so a record's prompt says which of the two leaf
@@ -137,9 +139,18 @@ WORKSHOP_PROMPT_SENTINEL = "Workshop leaf turn (host-seeded work tree)"
 WORKSHOP_SYSTEM_PROMPT = (
     "You are the producer of a host-mediated workflow, working in a host-seeded work tree. "
     "Your file tools reach that tree and nothing else; you hold no shell. The host runs the "
-    "build operations you ask for through the `wrapper` tools and judges your tree after you "
+    "operations you ask for through the `wrapper` tools and judges your tree after you "
     "finish. The user message is your complete task."
 )
+
+#: What a workshop launch prompt's `<tool_surface>` slot says the leaf holds, by the provider
+#: the launch request names (`workshop_provider`): the one sentence of the contract that
+#: differs by transport (`docs/design/producer_workshop_leaf.md` §Provider neutrality). A
+#: provider with no row cannot serve a workshop launch (`_validate_pure_launch_request_payload`).
+WORKSHOP_TOOL_SURFACE_TEXT: dict[str, str] = {
+    "claude_cli": ("You have no shell: your file tools (Read, Write, Edit, Glob, Grep) reach "
+                   "your work tree and nothing else."),
+}
 
 #: The MCP server name the wrapper is registered under in `--mcp-config`. The CLI names its
 #: tools `mcp__<server>__<tool>`, and `--allowedTools mcp__<server>` grants all of them.

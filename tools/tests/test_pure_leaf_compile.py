@@ -1238,10 +1238,12 @@ class PureCompileTransportCategoryTests(_Fixture):
         from tools.pure_leaf import RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE
         self.assertEqual(
             set(wc.COMPILE_DOCUMENT_FAILURE_CATEGORIES),
-            {RESPONSE_UNPARSEABLE, RESPONSE_TRUNCATED, wc.COMPILE_IR_DOCUMENT_VIOLATION},
+            {RESPONSE_UNPARSEABLE, RESPONSE_TRUNCATED, wc.COMPILE_IR_DOCUMENT_VIOLATION,
+             "workshop_tree_empty"},
             "the producer table's members are the shared loop's own categories plus this "
-            "phase's document violation; a member added to one side and not the other is what "
-            "this row exists to catch")
+            "phase's document violation and the workshop leaf's empty tree (issue #534 step "
+            "2); a member added to one side and not the other is what this row exists to "
+            "catch")
         for category in wc.COMPILE_DOCUMENT_FAILURE_CATEGORIES:
             with self.subTest(category=category):
                 self.assertEqual(wc.COMPILE_DOCUMENT_FAILURE_ROUTING[category],
@@ -1433,6 +1435,28 @@ class PureCompileFailDeclarationTests(_Fixture):
         self.assertEqual(tuple(slots) + ("published_operations",), tuple(listed))
         self.assertLess(tpl.index("<checks_module_contract_document>"),
                         tpl.index("<dependency_facts>"))
+
+    def test_the_workshop_template_enumerates_exactly_the_admissible_inputs(self) -> None:
+        """The `compile.generate` workshop twin (issue #534 step 2) states the same list at its
+        own statement position, element by element, and its order claim — the seed documents
+        "in the order they appear there" — holds against the tree names its Inputs give, each
+        of which is the seed of the context key the name stands for."""
+        tpl = (Path(ort.__file__).resolve().parent / "prompt_templates"
+               / "workshop_compile_generate.txt").read_text(encoding="utf-8")
+        head = ("the input at fault, which is one of these names and nothing else (they name "
+                "the seed documents listed under Inputs below, in the order they appear there, "
+                "then the catalog): ")
+        self.assertEqual(tpl.count(head), 1)
+        statement = tpl.split(head, 1)[1].split(";", 1)[0]
+        self.assertLess(len(statement), 400, "the reader ran past the enumeration")
+        listed = re.findall(r"`([a-z0-9_]+)`", statement)
+        self.assertEqual(tuple(listed), wc.Conductor._compile_fail_inputs(""))
+        seeds = wc.Conductor._WORKSHOP_DOCUMENT_SEEDS_BY_PHASE["compile"]
+        by_name = {name: key.removesuffix("_document") for key, name in seeds.items()}
+        named = re.findall(r"^In your tree: `([^`]+)`\.$", tpl, flags=re.MULTILINE)
+        self.assertEqual(tuple(by_name[n] for n in named) + ("published_operations",),
+                         tuple(listed))
+        self.assertIn("(the published-operations catalog in `DEPENDENCIES.md`)", statement)
 
     def test_the_inputs_are_the_inlined_documents_plus_the_catalog(self) -> None:
         names = wc.Conductor._compile_fail_inputs("")

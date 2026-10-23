@@ -80,7 +80,8 @@ def _with_test_templates(test: unittest.TestCase) -> None:
 def _workshop_request(child: str, lineage: str | None = None, **overrides) -> dict:
     req = _pure_request("generate", leaf_mode="workshop",
                         prompt_contract_version=WORKSHOP_PROMPT_CONTRACT_VERSION,
-                        agent_run_id=child, workshop_lineage_id=lineage or child)
+                        agent_run_id=child, workshop_lineage_id=lineage or child,
+                        workshop_provider="claude_cli")
     req.update(overrides)
     return req
 
@@ -390,8 +391,8 @@ class WorkshopRecordLaunchTests(_Env):
         self.assertIn("workshop generate.verify", str(ctx.exception))
         with self.assertRaises(ValueError) as ctx:
             ort._validate_launch_request_payload(req)
-        self.assertIn("leaf_mode=workshop is only valid for (generate, generate)",
-                      str(ctx.exception))
+        self.assertIn("leaf_mode=workshop is only valid for (compile, generate), "
+                      "(generate, generate);", str(ctx.exception))
 
     def test_the_prompt_and_the_request_must_agree_on_the_leaf_model(self) -> None:
         workshop = ort.prepare_launch_request_payload(_workshop_request("ar_x"))
@@ -696,7 +697,7 @@ class SpawnTimeoutTests(unittest.TestCase):
             cancel = threading.Event()
             server = workshop_mcp.WrapperMcpServer(
                 SimpleNamespace(paths=paths, agent_run_id="child", max_wrapper_calls=1,
-                                lineage_deadline=time.time() + 600),
+                                lineage_deadline=time.time() + 600, ops=("derive",)),
                 on_end=lambda _why: cancel.set()).start()
             self.addCleanup(server.stop)
             leaf = ("import http.client, json, time, urllib.parse\n"

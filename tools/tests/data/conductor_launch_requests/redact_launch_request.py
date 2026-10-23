@@ -4,9 +4,10 @@ Usage:
     python3 tools/tests/data/conductor_launch_requests/redact_launch_request.py \
         workspace/orchestrations/<oid>/launches/<arid>.request.json
 
-Writes `<step>_<substep>.request.json` (`<step>_step` for a step-level request) beside this
-script, overwriting an existing fixture of that pair — the tracked corpus holds one row per
-pair. A faithful pure request is a few hundred KB, almost all of it the inlined `pure_context`
+Writes `<step>_<substep>.request.json` (`<step>_step` for a step-level request;
+`<step>_<substep>.workshop.request.json` for a `workshop leaf`'s, issue #534) beside this
+script, overwriting an existing fixture of that pair and leaf model — the tracked corpus holds
+one row per pair and leaf model. A faithful pure request is a few hundred KB, almost all of it the inlined `pure_context`
 documents and the rendered `launch_prompt_full`; both are replaced by a placeholder that keeps
 the byte count and the sha256 of the original, so the KEY SET of `pure_context` (which the pure
 validator requires per shape) survives while the content — reproducible from the run it names —
@@ -63,6 +64,8 @@ def main(argv: list[str]) -> int:
     source = Path(argv[1])
     req = json.loads(source.read_text(encoding="utf-8"))
     name = f"{req['step']}_{req.get('substep') or 'step'}"
+    if req.get("leaf_mode") == "workshop":
+        name += ".workshop"
     dest = HERE / f"{name}.request.json"
     resolved = source.resolve()
     shown = resolved.relative_to(REPO_ROOT) if resolved.is_relative_to(REPO_ROOT) else source
