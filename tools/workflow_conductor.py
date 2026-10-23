@@ -4451,9 +4451,13 @@ class Conductor:
         leaves only: the workshop leaf is the one caller, and a codex or HTTP entry refuses it.
 
         `timeout_seconds` replaces the environment cap (`_leaf_timeout_seconds()`) for this one
-        leaf, and `timeout_name` names that bound in the `leaf_timeout` marker and event: a
-        workshop lineage passes its remaining `lineage_timeout_s` (issue #534). An explicit
-        bound is an integer >= 1 — a lineage with no time left is not launched at all.
+        leaf, and `timeout_name` names that bound in the `leaf_timeout` marker and event. It
+        REPLACES the cap, so a caller with a bound of its own passes the SMALLER of the two
+        and names the one it passed: a workshop lineage (issue #534) passes
+        `min(ATMOFAB_LEAF_TIMEOUT_SECONDS, remaining lineage_timeout_s)` — the environment cap
+        is still the per-process bound the design note keeps, and its `0` means "no cap", so
+        then the remaining lineage time alone. An explicit bound is an integer >= 1 — a lineage
+        with no time left is not launched at all — clamped to `LEAF_TIMEOUT_MAX_SECONDS`.
         `mcp_config_json` is the workshop leaf's wrapper endpoint (`leaf_command`).
 
         `timeout_context` only labels the `leaf_timeout` event with the node/step/substep the

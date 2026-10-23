@@ -8019,12 +8019,14 @@ def build_readonly_bwrap_profile(
     `_prepare_claude_workshop_home`), so `write_roots` stays empty and the checkout is still an
     empty tmpfs: what a workshop leaf can write is its own tree and its own CLI home, and the
     one file mapping is the credential the CLI refreshes in place (it writes through a bind of
-    a single file — measured, CLI 2.1.309: its writer lands on the bound file). The `readonly`
+    a single file — measured on CLI 2.1.309 with `.claude.json` bound the same way, which the
+    CLI writes with the same file writer: the write landed on the host file; the credential
+    write itself happens only on a token refresh, which an unbilled run cannot provoke). The `readonly`
     the spawn seam checks is therefore False on this profile, and `Conductor.spawn_leaf`
     admits it only with exactly those two rw paths. Nothing else of this function changes.
 
     The profile every leaf runs under — a pure leaf's as below, a workshop leaf's with the four
-    parameters of the paragraph after this one. Its sole production caller is `record_launch`'s
+    parameters of the paragraph before this one. Its sole production caller is `record_launch`'s
     child-process branch. The checkout is NOT
     bound (issue #227): an empty tmpfs sits at `repo_root`, so a tool-bearing codex leaf finds
     neither the artifact trees nor `tools/` / `docs/` / `spec/` — a pure leaf's whole context
