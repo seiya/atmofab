@@ -27,6 +27,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest import mock
 
+from tools import orchestration_runtime as ort
 from tools import workflow_conductor as wc
 from tools.orchestration_runtime import (
     _ensure_orchestration_audit_dirs,
@@ -1328,6 +1329,310 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
         self.assertLess(elapsed, 10, f"the call outlived its timeout by {elapsed - 2:.1f} s")
         time.sleep(5)
         self.assertFalse(marker.exists(), "a descendant of the timed-out run kept running")
+
+
+
+class _ScriptedApi:
+    """An Anthropic Messages API stand-in that answers with a SCRIPT, streamed as the CLI asks.
+
+    The i-th request whose body offers tools (the leaf's main loop) is answered `script[i]` —
+    a list of content blocks and a stop reason; every other request (the CLI's own side calls)
+    gets a one-word text reply. Request bodies are kept for the assertions. Unbilled: the
+    CLI talks to loopback with a placeholder key."""
+
+    def __init__(self, script: list[tuple[list[dict], str]]) -> None:
+        bodies: list[bytes] = []
+
+        def events(blocks: list[dict], stop: str) -> bytes:
+            evs: list[dict] = [{"type": "message_start", "message": {
+                "id": "msg_1", "type": "message", "role": "assistant",
+                "model": "claude-opus-5-5", "content": [], "stop_reason": None,
+                "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 1}}}]
+            for i, block in enumerate(blocks):
+                if block["type"] == "text":
+                    evs += [{"type": "content_block_start", "index": i,
+                             "content_block": {"type": "text", "text": ""}},
+                            {"type": "content_block_delta", "index": i,
+                             "delta": {"type": "text_delta", "text": block["text"]}}]
+                else:
+                    evs += [{"type": "content_block_start", "index": i, "content_block": {
+                                "type": "tool_use", "id": block["id"], "name": block["name"],
+                                "input": {}}},
+                            {"type": "content_block_delta", "index": i, "delta": {
+                                "type": "input_json_delta",
+                                "partial_json": json.dumps(block["input"])}}]
+                evs.append({"type": "content_block_stop", "index": i})
+            evs += [{"type": "message_delta", "delta": {"stop_reason": stop,
+                                                        "stop_sequence": None},
+                     "usage": {"output_tokens": 1}}, {"type": "message_stop"}]
+            return "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n"
+                           for e in evs).encode()
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                bodies.append(body)
+                main = [b for b in bodies if b'"tools"' in b]
+                if b'"tools"' in body and len(main) <= len(script):
+                    blocks, stop = script[len(main) - 1]
+                else:
+                    blocks, stop = [{"type": "text", "text": "ok"}], "end_turn"
+                data = events(blocks, stop)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            do_GET = do_POST
+
+            def log_message(self, *args) -> None:  # BaseHTTPRequestHandler's spelling
+                pass
+
+        self.bodies = bodies
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        self.base_url = f"http://127.0.0.1:{self._server.server_address[1]}"
+
+    def main_requests(self) -> list[dict]:
+        return [json.loads(b) for b in self.bodies if b'"tools"' in b]
+
+    def tool_results(self) -> list[dict]:
+        out = []
+        for doc in self.main_requests():
+            for message in doc.get("messages", []):
+                if isinstance(message.get("content"), list):
+                    out += [c for c in message["content"] if c.get("type") == "tool_result"]
+        return out
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+@skip_probes.skip_unless_installed("claude")
+class WorkshopLeafCliTests(unittest.TestCase):
+    """UNBILLED (issue #534 PR-2): the real claude CLI under a workshop leaf's launch shape —
+    the production argv (`Conductor.leaf_command` with the wrapper's `--mcp-config`) under the
+    rendered workshop profile (`_prepare_claude_workshop_home` + `claude_workshop_profile_
+    kwargs`, a real bwrap), against a scripted API stand-in and the real wrapper endpoint
+    (`workshop_mcp.WrapperMcpServer`, its operation stubbed). The measurements M1-M5 of the
+    issue's plan, kept as rows so a CLI version that moves one turns a row red.
+
+    `ANTHROPIC_BASE_URL` and a placeholder `ANTHROPIC_API_KEY` are set by an `env` prefix
+    INSIDE the sandbox, as `test_claude_pure_launch_reaches_the_api_from_the_empty_cwd` does:
+    the profile's allowlist refuses both names (they are what it closes)."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not _bwrap_usable():
+            raise AssertionError("bwrap is absent or unprivileged user namespaces are disabled")
+
+    def setUp(self) -> None:
+        from tools import operator_private_root
+        from tools.orchestration_runtime import init_orchestration
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name).resolve()
+        self.repo = base / "repo"
+        self.repo.mkdir()
+        self.credentials = base / "operator" / ".credentials.json"
+        self.credentials.parent.mkdir()
+        self.credentials.write_text('{"claudeAiOauth": {"accessToken": "placeholder"}}',
+                                    encoding="utf-8")
+        os.chmod(self.credentials, 0o600)
+        patches = [mock.patch.dict(os.environ, {"ATMOFAB_WORKFLOW_HOMES_ROOT":
+                                                str(base / "homes")}),
+                   mock.patch.object(operator_private_root, "claude_credentials_file",
+                                     lambda: self.credentials)]
+        for patcher in patches:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        self.orch = "orch_ws_lb"
+        init_orchestration(repo_root=self.repo, orchestration_id=self.orch)
+        _ensure_orchestration_audit_dirs(self.repo, self.orch)
+        cfg = base / "llm.yaml"
+        cfg.write_text("defaults: {provider: claude_cli}\nphases: {generate: {substeps: "
+                       "{generate: {leaf: workshop, max_wrapper_calls: 5, "
+                       "lineage_timeout_s: 600}}}}\n", encoding="utf-8")
+        from tools import llm_config
+        self.conductor = wc.Conductor(
+            repo_root=self.repo, orchestration_id=self.orch, orchestration_agent_run_id="ORCH",
+            llm_config=llm_config.load_llm_config(cfg), env={})
+        self.entry = self.conductor.entry_for("generate", "generate")
+        self.lineage = str(uuid.uuid4())
+        from tools.orchestration_runtime import _prepare_claude_workshop_home
+        self.iso = _prepare_claude_workshop_home(self.repo, self.orch, self.lineage,
+                                                 resume=False)
+        self.config, self.tree = Path(self.iso["config"]), Path(self.iso["tree"])
+
+    def _endpoint(self, calls: list[str]):
+        from tools import workshop_mcp
+        ctx = mock.Mock()
+        ctx.agent_run_id = self.lineage
+        from tools.workshop_tree import LineagePaths
+        ctx.paths = LineagePaths(homes_root=Path(self.iso["homes_root"]),
+                                 orchestration_id=self.orch, lineage_id=self.lineage,
+                                 orchestration_dir=self.repo / "workspace" / "orchestrations"
+                                 / self.orch)
+
+        def op(ctx, name, args, *, on_spawn=None):
+            calls.append(name)
+            return {"ok": True, "marker": "WRAPPER-DERIVED-42"}
+
+        server = workshop_mcp.WrapperMcpServer(ctx, run_op=op).start()
+        self.addCleanup(server.stop)
+        return server
+
+    def _launch(self, api: _ScriptedApi, server, *, session: str,
+                resume: str | None = None, restricted: bool = True,
+                arid: str | None = None) -> subprocess.CompletedProcess:
+        from tools.pure_leaf import workshop_mcp_config_json
+        argv = self.conductor.leaf_command(
+            self.entry, session_id=session, resume_session_id=resume,
+            mcp_config_json=workshop_mcp_config_json(server.url))
+        if not restricted:
+            argv.remove("--restricted")
+        profile = build_readonly_bwrap_profile(
+            repo_root=self.repo, orchestration_id=self.orch, agent_run_id=arid or session,
+            backend_command="claude", backend_type="claude",
+            **ort.claude_workshop_profile_kwargs(self.iso))
+        command = ["env", f"ANTHROPIC_BASE_URL={api.base_url}",
+                   "ANTHROPIC_API_KEY=atmofab-loopback", *argv]
+        return subprocess.run(render_bwrap_command(profile=profile, command_argv=command),
+                              input="Do the task.", capture_output=True, text=True,
+                              timeout=240, check=False)
+
+    def _api(self, script) -> _ScriptedApi:
+        api = _ScriptedApi(script)
+        self.addCleanup(api.close)
+        return api
+
+    def test_m1_an_empty_config_home_runs_and_the_cli_populates_it(self) -> None:
+        """M1: `config/` holds only the credential placeholder (bound over by the operator's
+        file), and `-p` runs from it with no onboarding state; the CLI writes its global config
+        and the session transcript THERE, and the operator's credentials file is untouched."""
+        before = self.credentials.read_bytes()
+        api = self._api([([{"type": "text", "text": "done"}], "end_turn")])
+        session = str(uuid.uuid4())
+        res = self._launch(api, self._endpoint([]), session=session)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        envelope = json.loads(res.stdout)
+        self.assertEqual((envelope["subtype"], envelope["result"]), ("success", "done"))
+        created = sorted(str(p.relative_to(self.config)) for p in self.config.rglob("*")
+                         if p.is_file())
+        self.assertIn(".claude.json", created)
+        self.assertTrue(any(c.startswith("projects/") and c.endswith(f"{session}.jsonl")
+                            for c in created), created)
+        self.assertEqual(self.credentials.read_bytes(), before)
+
+    def test_m3_m4_m5_the_cli_calls_the_wrapper_and_gets_its_result(self) -> None:
+        """M3: `initialize`, `tools/list` and `tools/call` reach the endpoint and the CLI accepts
+        its JSON answers. M4: the call is EXECUTED under the workshop permission flags — no
+        `permission_denials`. M5: the request lists the five file tools and the wrapper's
+        tools. And the wrapper's answer is what the model is handed back."""
+        calls: list[str] = []
+        api = self._api([
+            ([{"type": "tool_use", "id": "toolu_1", "name": "mcp__wrapper__derive",
+               "input": {}}], "tool_use"),
+            ([{"type": "text", "text": "done"}], "end_turn")])
+        server = self._endpoint(calls)
+        res = self._launch(api, server, session=str(uuid.uuid4()))
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        envelope = json.loads(res.stdout)
+        self.assertEqual(envelope["permission_denials"], [])
+        self.assertEqual(calls, ["derive"])
+        methods = [json.loads(line)["request"].get("method")
+                   for line in server.ctx.paths.wrapper_calls.read_text().splitlines()
+                   if json.loads(line)["request"]]
+        for method in ("initialize", "tools/list", "tools/call"):
+            self.assertIn(method, methods)
+        tools = {t["name"] for t in api.main_requests()[0]["tools"]}
+        self.assertTrue({"Read", "Write", "Edit", "Glob", "Grep"} <= tools, tools)
+        self.assertTrue({f"mcp__wrapper__{op}" for op in
+                         ("derive", "compile", "lint", "syntax_check", "run")} <= tools, tools)
+        self.assertFalse(tools & {"Bash", "WebFetch"}, tools)
+        result = api.tool_results()[0]
+        self.assertIn("WRAPPER-DERIVED-42", json.dumps(result))
+        self.assertNotIn("is_error", {k for k, v in result.items() if v})
+
+    def test_m4_control_without_the_grant_the_call_is_denied(self) -> None:
+        """The control for M4: the same launch with `--allowedTools mcp__wrapper` removed is
+        DENIED (measured: `acceptEdits` + `--permission-prompts none` alone deny an MCP call),
+        so the row above passes because of the grant and not because nothing is checked."""
+        calls: list[str] = []
+        api = self._api([
+            ([{"type": "tool_use", "id": "toolu_1", "name": "mcp__wrapper__derive",
+               "input": {}}], "tool_use"),
+            ([{"type": "text", "text": "done"}], "end_turn")])
+        server = self._endpoint(calls)
+        original = self.conductor.leaf_command
+
+        def without_grant(*a, **k):
+            argv = original(*a, **k)
+            i = argv.index("--allowedTools")
+            return argv[:i] + argv[i + 2:]
+
+        self.conductor.leaf_command = without_grant  # type: ignore[assignment]
+        res = self._launch(api, server, session=str(uuid.uuid4()))
+        self.assertEqual(calls, [])
+        self.assertEqual([d["tool_name"] for d in json.loads(res.stdout)["permission_denials"]],
+                         ["mcp__wrapper__derive"])
+
+    def test_m2a_the_file_tools_reach_the_tree_and_nothing_else(self) -> None:
+        """M2 (a): a `Write` inside the tree lands on the host's tree; a `Write` to the CLI's own
+        `config/` or beside the tree is refused by `--restricted` and lands nowhere."""
+        targets = {"in tree": self.tree / "a.txt",
+                   "config home": self.config / "CLAUDE.md",
+                   "beside the tree": self.tree.parent / "x.txt"}
+        outcomes = {}
+        for label, target in targets.items():
+            api = self._api([
+                ([{"type": "tool_use", "id": "toolu_1", "name": "Write",
+                   "input": {"file_path": str(target), "content": "written"}}], "tool_use"),
+                ([{"type": "text", "text": "done"}], "end_turn")])
+            self._launch(api, self._endpoint([]), session=str(uuid.uuid4()))
+            outcomes[label] = (target.exists(), json.dumps(api.tool_results()))
+        self.assertTrue(outcomes["in tree"][0], outcomes)
+        for label in ("config home", "beside the tree"):
+            self.assertFalse(outcomes[label][0], outcomes)
+            self.assertIn("--restricted confines the file tools", outcomes[label][1])
+
+    def test_m2b_no_instruction_file_reaches_a_cold_or_a_warm_turn(self) -> None:
+        """M2 (b): instruction files planted where the CLI discovers them — the tree's
+        `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`, `.claude/settings.json`, and the
+        config home's `CLAUDE.md` — reach neither the cold launch nor a warm `--resume
+        --fork-session` of it. CONTROL: the same two launches without `--restricted` carry
+        every marker, so a dead capture cannot pass the absent half."""
+        markers = {"tree CLAUDE.md": (self.tree / "CLAUDE.md", "MARKER-TREE-MD"),
+                   "tree .claude/CLAUDE.md": (self.tree / ".claude" / "CLAUDE.md",
+                                              "MARKER-DOTCLAUDE-MD"),
+                   "tree CLAUDE.local.md": (self.tree / "CLAUDE.local.md", "MARKER-LOCAL-MD"),
+                   "config CLAUDE.md": (self.config / "CLAUDE.md", "MARKER-CONFIG-MD")}
+        for path, text in markers.values():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text + "\n", encoding="utf-8")
+        (self.tree / ".claude" / "settings.json").write_text(
+            json.dumps({"model": "claude-marker-settings"}), encoding="utf-8")
+        texts = [t for _, t in markers.values()] + ["claude-marker-settings"]
+        for restricted in (True, False):
+            with self.subTest(restricted=restricted):
+                cold, warm = str(uuid.uuid4()), str(uuid.uuid4())
+                api = self._api([([{"type": "text", "text": "done"}], "end_turn")])
+                res = self._launch(api, self._endpoint([]), session=cold,
+                                   restricted=restricted)
+                self.assertTrue(api.bodies, res.stdout + res.stderr)
+                api2 = self._api([([{"type": "text", "text": "done"}], "end_turn")])
+                res2 = self._launch(api2, self._endpoint([]), session=warm, resume=cold,
+                                    restricted=restricted)
+                self.assertTrue(api2.bodies, res2.stdout + res2.stderr)
+                for label, bodies in (("cold", api.bodies), ("warm", api2.bodies)):
+                    seen = b"".join(bodies).decode(errors="replace")
+                    for text in texts:
+                        if restricted:
+                            self.assertNotIn(text, seen, f"{label}: {text}")
+                        else:
+                            self.assertIn(text, seen, f"control {label}: {text}")
 
 
 if __name__ == "__main__":

@@ -105,6 +105,73 @@ def is_pure_request(request_payload: Any) -> bool:
         return False
     return str(request_payload.get("leaf_mode", "")).strip().lower() == PURE_LEAF_MODE
 
+
+# --------------------------------------------------------------------------------------
+# The `workshop leaf` (issue #534; `docs/design/producer_workshop_leaf.md`): a PRODUCING leaf
+# that edits a host-seeded work tree and reaches five host operations through the wrapper's
+# MCP endpoint (`tools/workshop_mcp.py`), instead of returning one document. It shares the
+# pure leaf's host-rendered prompt and its launch-record shape — no write authority under the
+# checkout, the host writes every artifact from the snapshot after the leaf exits — and differs
+# in what it holds: file tools confined to its tree, and the wrapper.
+# --------------------------------------------------------------------------------------
+
+#: The `leaf_mode` value that selects the workshop path.
+WORKSHOP_LEAF_MODE = "workshop"
+
+#: The `(step, substep)` pairs a workshop leaf may serve. Step 1 of the design note's migration
+#: order adopts `generate.generate` alone (`tools/llm_config.py` refuses any other entry).
+WORKSHOP_LAUNCH_PAIRS: frozenset[tuple[str, str]] = frozenset({("generate", "generate")})
+
+#: The prompt-contract version a workshop request carries in `prompt_contract_version` (the
+#: field the pure request uses for its own). Its own counter, so a workshop template change
+#: never moves `PURE_PROMPT_CONTRACT_VERSION` and the reverse.
+WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-1"
+
+#: The first line of every host-rendered workshop launch prompt, anchored as the pure sentinel
+#: is (`startswith`). A distinct literal, so a record's prompt says which of the two leaf
+#: models it was written for and the validators compare that against the request.
+WORKSHOP_PROMPT_SENTINEL = "Workshop leaf turn (host-seeded work tree)"
+
+#: The system prompt a workshop leaf runs under (`--system-prompt`), for the reason
+#: `PURE_SYSTEM_PROMPT` replaces the CLI's default: the default carries per-machine sections.
+WORKSHOP_SYSTEM_PROMPT = (
+    "You are the producer of a host-mediated workflow, working in a host-seeded work tree. "
+    "Your file tools reach that tree and nothing else; you hold no shell. The host runs the "
+    "build operations you ask for through the `wrapper` tools and judges your tree after you "
+    "finish. The user message is your complete task."
+)
+
+#: The MCP server name the wrapper is registered under in `--mcp-config`. The CLI names its
+#: tools `mcp__<server>__<tool>`, and `--allowedTools mcp__<server>` grants all of them.
+WORKSHOP_MCP_SERVER_NAME = "wrapper"
+
+#: The built-in tools a workshop leaf holds (`--tools`). File tools only: `--restricted`
+#: confines them to the working directory, which is the tree.
+WORKSHOP_FILE_TOOLS: tuple[str, ...] = ("Read", "Write", "Edit", "Glob", "Grep")
+
+
+def is_workshop_request(request_payload: Any) -> bool:
+    """True when a launch request selects the workshop path (`leaf_mode == "workshop"`,
+    case/space-insensitively). The workshop twin of `is_pure_request`, and like it the single
+    detection predicate the producer and the validators share."""
+    if not isinstance(request_payload, dict):
+        return False
+    return str(request_payload.get("leaf_mode", "")).strip().lower() == WORKSHOP_LEAF_MODE
+
+
+def is_host_rendered_request(request_payload: Any) -> bool:
+    """True for a pure OR a workshop request: a launch whose prompt the host renders from a
+    template and whose artifacts the host writes after the leaf exits. The question every
+    launch-record carve-out that is about "the leaf holds no write authority" asks; a question
+    about what the leaf HOLDS (no tool at all) asks `is_pure_request`."""
+    return is_pure_request(request_payload) or is_workshop_request(request_payload)
+
+
+def workshop_mcp_config_json(url: str) -> str:
+    """The `--mcp-config` JSON string naming the wrapper's endpoint for one launch."""
+    return json.dumps({"mcpServers": {WORKSHOP_MCP_SERVER_NAME: {"type": "http", "url": url}}},
+                      sort_keys=True)
+
 # A JSON `null` is a PRESENT value, not an absent key. The two are distinguished with an
 # explicit sentinel (the `tools/codegen_bundle.py` idiom) so an envelope carrying
 # `"result": null` falls through to its own handling instead of being read as "no key".
@@ -206,6 +273,52 @@ def pure_leaf_flags() -> list[str]:
     """
     return ["--restricted", "--safe-mode", "--system-prompt", PURE_SYSTEM_PROMPT, "--tools", "",
             "--strict-mcp-config", "--disable-slash-commands", "--output-format", "json"]
+
+
+def workshop_leaf_flags(mcp_config_json: str) -> list[str]:
+    """The `claude -p` flags of a `workshop leaf` (issue #534). A fresh list per call.
+
+    Measured on CLI 2.1.309 against a loopback API stand-in and a loopback wrapper endpoint
+    (`tools/tests/test_bwrap_simulation.py` `WorkshopLeafCliTests`, unbilled):
+
+    - `--restricted` as for the pure leaf (the operator's settings FILES are ignored), and
+      here load-bearing in two more ways: it removes every code-running built-in tool, and it
+      CONFINES the file tools to the working directory, which is the tree (a `Write` to
+      `<tree>/../x` or to the CLI's own `config/` is refused, "outside ... --restricted
+      confines the file tools to the working directory"). It also keeps out every instruction
+      file the CLI discovers by itself — `CLAUDE.md`, `.claude/CLAUDE.md`, `CLAUDE.local.md`
+      and `.claude/settings.json` in the tree, `CLAUDE.md` in `CLAUDE_CONFIG_DIR` — on a cold
+      launch and on a warm resume (M2: none of five planted markers reached a request; with
+      `--restricted` removed, all five did). No `--setting-sources` is needed beside it.
+    - `--system-prompt <WORKSHOP_SYSTEM_PROMPT>` for the reason the pure leaf takes its own.
+    - `--tools Read,Write,Edit,Glob,Grep` (`WORKSHOP_FILE_TOOLS`): the built-in tool list. The
+      wrapper's MCP tools survive it (M5: the request lists the five file tools and
+      `mcp__wrapper__<op>`).
+    - `--mcp-config <json> --strict-mcp-config`: the wrapper's endpoint for this launch, and
+      no other MCP server from any configuration (M3: `initialize`, `tools/list` and
+      `tools/call` reach the endpoint, JSON — not SSE — responses accepted).
+    - `--permission-mode acceptEdits --permission-prompts none --allowedTools mcp__wrapper`
+      (M4): `acceptEdits` lets the file tools write inside the working directory with no
+      prompt; an MCP call needs approval under every mode, and with `--permission-prompts
+      none` nobody can give it, so it is denied unless `--allowedTools mcp__wrapper` grants
+      the server's tools (measured: denied with the first two flags alone, and under
+      `dontAsk`; executed with the grant).
+    - `--disable-slash-commands`, `--output-format json` as for the pure leaf.
+
+    It drops `--safe-mode`, which disables MCP servers, and `--tools ""`. The leaf runs with
+    `CLAUDE_CONFIG_DIR` set to its lineage's private `config/` (`orchestration_runtime.
+    _prepare_claude_workshop_home`), so the CLI's global config, transcripts and caches of this
+    lineage live there and the operator's `~/.claude` is not bound at all; the operator's
+    credentials file is bound over `config/.credentials.json`, read-write, because the CLI
+    refreshes the OAuth token in place."""
+    if not isinstance(mcp_config_json, str) or not mcp_config_json.strip():
+        raise ValueError("workshop_leaf_flags requires the wrapper's --mcp-config JSON")
+    return ["--restricted", "--system-prompt", WORKSHOP_SYSTEM_PROMPT,
+            "--tools", ",".join(WORKSHOP_FILE_TOOLS),
+            "--mcp-config", mcp_config_json, "--strict-mcp-config",
+            "--permission-mode", "acceptEdits", "--permission-prompts", "none",
+            "--allowedTools", f"mcp__{WORKSHOP_MCP_SERVER_NAME}",
+            "--disable-slash-commands", "--output-format", "json"]
 
 
 # --------------------------------------------------------------------------------------

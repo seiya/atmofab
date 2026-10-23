@@ -67,6 +67,17 @@ The run must reach `orchestration_meta.json` `status=pass` with a real
 per-run cost, status and the `violations/` records for a quick read
 (`skills/workflow-audit/SKILL.md`).
 
+## Workshop leaf criteria
+
+A `workshop leaf` ([issue #534](https://github.com/seiya/atmofab/issues/534); `docs/design/producer_workshop_leaf.md` §Sandbox) runs under two rows, both bwrap. Its conductor loop lands with PR-3 of that issue; until then a workshop entry fails its substep closed (`workshop_leaf_not_wired`) and no live run reaches either row. What each row binds, for when one does:
+
+| Row | What is bound | Pinned by |
+|---|---|---|
+| 1 — the leaf's CLI | the row every leaf takes (system directories and the CLI install root read-only, an empty tmpfs at `repo_root`, the leaf's two scratch roots) with the operator's `~/.claude` NOT bound: instead its lineage home's `config/` (the CLI's `CLAUDE_CONFIG_DIR`) and `tree/` (its working directory, `--chdir`) read-write, and the operator's `~/.claude/.credentials.json` bound read-write over `config/.credentials.json` (`build_readonly_bwrap_profile` with `claude_workshop_profile_kwargs`). The profile records `leaf_mode: workshop`, `readonly: false`, `write_roots: []`; `spawn_leaf` launches under it only with exactly those two rw paths, for a workshop entry. No `--unshare-net` in step 1 (the leaf holds no tool that reaches the network; the design note's step 4 adds it) | `test_bwrap_simulation.WorkshopLeafCliTests` (the real CLI with the production argv, unbilled), `test_workshop_launch.WorkshopProfileTests`, `test_pure_only_leaf_model.SpawnLeafAdmitsOneWritableProfileTests` |
+| 2 — the wrapper's runs | each build-runtime call the wrapper makes for the leaf, under `render_wrapper_sandbox_prefix`: `--unshare-net --unshare-pid`, the toolchain read-only, `--tmpfs <repo_root>`, and per operation only the lineage directories it needs | `test_bwrap_simulation.WorkshopWrapperSandboxTests` |
+
+On a live run: each workshop `launches/<arid>.response.json` carries `workshop_lineage_id` and `claude_workflow_home`, its `sandbox_command` binds nothing under `~/.claude` but the one file mapping `~/.claude/.credentials.json` -> `<home>/config/.credentials.json`, and `--chdir`s into `<homes-root>/<oid>/claude/<lineage_id>/tree`, and its `claude_mcp_config` names the loopback endpoint every line of `workspace/orchestrations/<oid>/workshop/<lineage_id>/wrapper_calls.jsonl` was served on.
+
 ## Codex session criteria
 
 For a Codex run, confirm that every leaf launch has a distinct `thread.started` event (on

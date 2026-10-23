@@ -68,6 +68,61 @@ class PureLeafFlagsTest(unittest.TestCase):
         self.assertNotIn("--mutated", pl.pure_leaf_flags())
 
 
+class WorkshopLeafFlagsTest(unittest.TestCase):
+    """The workshop leaf's flag set (issue #534): the golden list is the M4 result — the
+    permission flags that let the wrapper's MCP tools run with nobody to approve them."""
+
+    MCP = '{"mcpServers": {"wrapper": {"type": "http", "url": "http://127.0.0.1:1/mcp"}}}'
+
+    def test_flag_set_golden(self):
+        self.assertEqual(
+            pl.workshop_leaf_flags(self.MCP),
+            ["--restricted", "--system-prompt", pl.WORKSHOP_SYSTEM_PROMPT,
+             "--tools", "Read,Write,Edit,Glob,Grep",
+             "--mcp-config", self.MCP, "--strict-mcp-config",
+             "--permission-mode", "acceptEdits", "--permission-prompts", "none",
+             "--allowedTools", "mcp__wrapper",
+             "--disable-slash-commands", "--output-format", "json"])
+
+    def test_it_drops_what_disables_mcp_and_every_tool(self):
+        flags = pl.workshop_leaf_flags(self.MCP)
+        self.assertNotIn("--safe-mode", flags)
+        self.assertNotIn("", flags)
+        self.assertEqual(flags[0], "--restricted")
+
+    def test_an_endpoint_is_required_and_the_list_is_fresh(self):
+        for bad in ("", "  ", None):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                pl.workshop_leaf_flags(bad)  # type: ignore[arg-type]
+        a = pl.workshop_leaf_flags(self.MCP)
+        a.append("--mutated")
+        self.assertNotIn("--mutated", pl.workshop_leaf_flags(self.MCP))
+
+    def test_the_mcp_config_names_the_wrapper_server(self):
+        doc = json.loads(pl.workshop_mcp_config_json("http://127.0.0.1:9/mcp"))
+        self.assertEqual(doc, {"mcpServers": {pl.WORKSHOP_MCP_SERVER_NAME: {
+            "type": "http", "url": "http://127.0.0.1:9/mcp"}}})
+        self.assertEqual(f"mcp__{pl.WORKSHOP_MCP_SERVER_NAME}",
+                         pl.workshop_leaf_flags(self.MCP)[
+                             pl.workshop_leaf_flags(self.MCP).index("--allowedTools") + 1])
+
+    def test_the_detection_predicates(self):
+        for payload, pure, workshop in (
+                ({"leaf_mode": "pure"}, True, False), ({"leaf_mode": " WORKSHOP "}, False, True),
+                ({"leaf_mode": "agentic"}, False, False), ({}, False, False),
+                ("workshop", False, False)):
+            with self.subTest(payload=payload):
+                self.assertEqual(pl.is_pure_request(payload), pure)
+                self.assertEqual(pl.is_workshop_request(payload), workshop)
+                self.assertEqual(pl.is_host_rendered_request(payload), pure or workshop)
+
+    def test_the_sentinels_and_versions_are_distinct(self):
+        self.assertNotEqual(pl.WORKSHOP_PROMPT_SENTINEL, pl.PURE_PROMPT_SENTINEL)
+        self.assertFalse(pl.WORKSHOP_PROMPT_SENTINEL.startswith(pl.PURE_PROMPT_SENTINEL))
+        self.assertFalse(pl.PURE_PROMPT_SENTINEL.startswith(pl.WORKSHOP_PROMPT_SENTINEL))
+        self.assertNotEqual(pl.WORKSHOP_PROMPT_CONTRACT_VERSION, pl.PURE_PROMPT_CONTRACT_VERSION)
+
+
 class ParseResultEnvelopeTest(unittest.TestCase):
     def test_well_formed(self):
         env = pl.parse_result_envelope(_envelope())

@@ -28425,6 +28425,210 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             self.assertTrue([v for v in self._pure_violations(repo_root)
                              if "must NOT reference a sandbox profile" in v])
 
+    def _make_workshop(self, repo_root: Path, *, workshop_prompt: bool = True,
+                       profile: dict | None = None) -> None:
+        """Turn the pure record into a WORKSHOP record (issue #534 PR-2): the request declares
+        `leaf_mode: workshop` with its lineage and contract version, the prompt is rendered
+        from a stand-in workshop template (PR-3 ships the real one), and the sandbox profile is
+        the writable lineage profile `record_launch` writes."""
+        from unittest import mock
+
+        from tools import orchestration_runtime as ort
+        from tools.pure_leaf import (
+            WORKSHOP_PROMPT_CONTRACT_VERSION,
+            WORKSHOP_PROMPT_SENTINEL,
+        )
+        self._make_pure(repo_root)
+        root = self._orch_root(repo_root)
+        req_path = root / "launches" / f"{self._ARID}.request.json"
+        req = json.loads(req_path.read_text(encoding="utf-8"))
+        req.update(leaf_mode="workshop", workshop_lineage_id=self._ARID,
+                   prompt_contract_version=WORKSHOP_PROMPT_CONTRACT_VERSION)
+        req_path.write_text(json.dumps(req, ensure_ascii=False), encoding="utf-8")
+        if workshop_prompt:
+            template = (f"{WORKSHOP_PROMPT_SENTINEL}: stand-in.\n\n<tests_document>\n\n"
+                        "Target node_key: <node_key>\nTarget step: <step>\n"
+                        "Target substep: <substep>\norchestration_id: <orchestration_id>\n"
+                        "agent_run_id: <agent_run_id>\n"
+                        "prompt_contract_version: <prompt_contract_version>\n")
+            real = ort._load_launch_prompt_templates()
+            with mock.patch.object(ort, "_load_launch_prompt_templates",
+                                   lambda: {**real, "workshop generate.generate": template}), \
+                    mock.patch.object(ort, "_PROMPT_TEMPLATE_FILES",
+                                      {**ort._PROMPT_TEMPLATE_FILES,
+                                       "workshop generate.generate": "workshop_x.txt"}):
+                prompt = ort.render_launch_prompt_text(ort.prepare_launch_request_payload({
+                    "leaf_mode": "workshop", "workshop_lineage_id": self._ARID,
+                    "agent_model": "opus", "agent_role": "substep", "node_key": self._NODE,
+                    "step": "generate", "substep": "generate", "orchestration_id": self._ORCH,
+                    "agent_run_id": self._ARID, "parent_agent_run_id": "orch_run_001",
+                    "source_id": "src_20260415_001",
+                    "prompt_contract_version": WORKSHOP_PROMPT_CONTRACT_VERSION,
+                    "allowed_output_paths": [],
+                    "pure_context": {"harness_capabilities": "{}", "target_profile": "t",
+                                     "ir_document": "i", "tests_document": "t",
+                                     "runner_document": "r"}}))
+            (root / "launches" / f"{self._ARID}.prompt.txt").write_text(prompt,
+                                                                       encoding="utf-8")
+        home = f"/tmp/homes/{self._ORCH}/claude/{self._ARID}"
+        body = profile if profile is not None else {
+            "agent_run_id": self._ARID, "readonly": False, "leaf_mode": "workshop",
+            "write_roots": [], "read_roots": [],
+            "runtime_rw_bind_paths": [f"{home}/config", f"{home}/tree"],
+            "workdir": f"{home}/tree",
+            "runtime_rw_credential_mapping": ["/operator/.credentials.json",
+                                              f"{home}/config/.credentials.json"]}
+        (root / "sandbox_profiles" / f"{self._ARID}.json").write_text(json.dumps(body),
+                                                                     encoding="utf-8")
+
+    def _workshop_violations(self, repo_root: Path) -> list[str]:
+        return [v for v in validate(repo_root=repo_root, workspace_root="workspace",
+                                    require_orchestration=True)
+                if "workshop" in v or "pure launch" in v or "pure-launch mismatch" in v
+                or "launch-prompt template markers" in v]
+
+    def test_a_consistent_workshop_record_passes_the_sweep(self) -> None:
+        """The persisted shape of a workshop launch passes the gate `Generate.gate` runs, so
+        the gate cannot fail closed on the record alone — compared against the SAME tree as a
+        pure record, so this asserts the conversion adds nothing rather than that the filter
+        hides everything."""
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as tmp2:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_workshop(repo_root)
+            self.assertEqual(self._workshop_violations(repo_root), [])
+            control = Path(tmp2)
+            self._build_tree(control)
+            self._make_pure(control)
+            self.assertEqual(self._all_violations(repo_root), self._all_violations(control))
+
+    def test_a_workshop_record_disagreeing_with_its_prompt_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_workshop(repo_root, workshop_prompt=False)
+            self.assertTrue(any("workshop-launch mismatch" in v
+                                for v in self._workshop_violations(repo_root)))
+
+    def test_a_workshop_record_carrying_the_pure_contract_version_is_flagged(self) -> None:
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_workshop(repo_root)
+            req_path = self._orch_root(repo_root) / "launches" / f"{self._ARID}.request.json"
+            req = json.loads(req_path.read_text(encoding="utf-8"))
+            req["prompt_contract_version"] = PURE_PROMPT_CONTRACT_VERSION
+            req_path.write_text(json.dumps(req), encoding="utf-8")
+            self.assertTrue(any("workshop launch request prompt_contract_version" in v
+                                for v in self._workshop_violations(repo_root)))
+
+    def test_a_workshop_record_with_another_profile_shape_is_flagged(self) -> None:
+        home = f"/tmp/homes/{self._ORCH}/claude/{self._ARID}"
+        good = {"agent_run_id": self._ARID, "readonly": False, "leaf_mode": "workshop",
+                "write_roots": [], "runtime_rw_bind_paths": [f"{home}/config", f"{home}/tree"],
+                "workdir": f"{home}/tree",
+                "runtime_rw_credential_mapping": ["/operator/.credentials.json",
+                                                  f"{home}/config/.credentials.json"]}
+        for label, change in (("read-only", {"readonly": True}),
+                              ("a write root", {"write_roots": ["workspace"]}),
+                              ("a third bind", {"runtime_rw_bind_paths": [
+                                  f"{home}/config", f"{home}/tree", "/tmp/x"]}),
+                              ("two homes", {"runtime_rw_bind_paths": [
+                                  f"{home}/config", "/tmp/elsewhere/tree"],
+                                  "workdir": "/tmp/elsewhere/tree"}),
+                              ("another lineage", {"runtime_rw_bind_paths": [
+                                  "/tmp/homes/x/claude/OTHER/config",
+                                  "/tmp/homes/x/claude/OTHER/tree"],
+                                  "workdir": "/tmp/homes/x/claude/OTHER/tree"}),
+                              ("an unnormalized spelling", {"runtime_rw_bind_paths": [
+                                  f"{home}/x/../config", f"{home}/x/../tree"],
+                                  "workdir": f"{home}/x/../tree"}),
+                              # The lineage NAME is right here, so only the normalization
+                              # test can refuse it.
+                              ("an unnormalized spelling of the right lineage", {
+                                  "runtime_rw_bind_paths": [
+                                      f"{home}/../{self._ARID}/config",
+                                      f"{home}/../{self._ARID}/tree"],
+                                  "workdir": f"{home}/../{self._ARID}/tree"}),
+                              ("workdir config", {"workdir": f"{home}/config"}),
+                              ("no leaf_mode", {"leaf_mode": None}),
+                              ("the credential mapped into the tree", {
+                                  "runtime_rw_credential_mapping": [
+                                      "/operator/.credentials.json",
+                                      f"{home}/tree/.credentials.json"]}),
+                              ("no credential mapping", {
+                                  "runtime_rw_credential_mapping": None})):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._build_tree(repo_root)
+                self._make_workshop(repo_root, profile={**good, **change})
+                self.assertTrue(any("workshop launch sandbox profile" in v
+                                    for v in self._workshop_violations(repo_root)), label)
+
+    def test_a_workshop_profile_under_the_checkout_or_without_a_lineage_is_flagged(self) -> None:
+        for label in ("under the checkout", "no lineage in the request"):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._build_tree(repo_root)
+                home = repo_root / "lineage" / self._ARID
+                profile = {"agent_run_id": self._ARID, "readonly": False,
+                           "leaf_mode": "workshop", "write_roots": [],
+                           "runtime_rw_bind_paths": [f"{home}/config", f"{home}/tree"],
+                           "workdir": f"{home}/tree",
+                           "runtime_rw_credential_mapping": [
+                               "/operator/.credentials.json",
+                               f"{home}/config/.credentials.json"]}
+                if label == "under the checkout":
+                    self._make_workshop(repo_root, profile=profile)
+                    expected = "must lie outside the checkout"
+                else:
+                    self._make_workshop(repo_root)
+                    req_path = (self._orch_root(repo_root) / "launches"
+                                / f"{self._ARID}.request.json")
+                    req = json.loads(req_path.read_text(encoding="utf-8"))
+                    del req["workshop_lineage_id"]
+                    req_path.write_text(json.dumps(req), encoding="utf-8")
+                    expected = "names no workshop_lineage_id"
+                self.assertTrue(any(expected in v for v in self._workshop_violations(repo_root)),
+                                label)
+
+    def test_a_workshop_prompt_whose_request_is_unreadable_is_flagged(self) -> None:
+        """The request half defaults to "not workshop" when its file is gone, so the prompt
+        alone is a mismatch rather than a crash."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_workshop(repo_root)
+            (self._orch_root(repo_root) / "launches" / f"{self._ARID}.request.json").unlink()
+            self.assertTrue(any("workshop-launch mismatch" in v
+                                for v in self._workshop_violations(repo_root)))
+
+    def test_no_readable_request_at_all_is_a_mismatch_not_an_unbound_name(self) -> None:
+        """With EVERY request file gone, no earlier row can leave a value behind, so the
+        per-row default is what answers: a mismatch violation, not an UnboundLocalError
+        (round 3: this shape pins the initialisation a one-request removal could not)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_workshop(repo_root)
+            for path in (self._orch_root(repo_root) / "launches").glob("*.request.json"):
+                path.unlink()
+            self.assertTrue(any("workshop-launch mismatch" in v
+                                for v in self._workshop_violations(repo_root)))
+
+    def test_a_pure_request_with_a_workshop_prompt_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_workshop(repo_root)
+            req_path = self._orch_root(repo_root) / "launches" / f"{self._ARID}.request.json"
+            req = json.loads(req_path.read_text(encoding="utf-8"))
+            req["leaf_mode"] = "pure"
+            req_path.write_text(json.dumps(req), encoding="utf-8")
+            self.assertTrue(any("workshop-launch mismatch" in v
+                                for v in self._workshop_violations(repo_root)))
+
     def test_http_pure_leaf_backends_matches_the_runtime(self) -> None:
         """The token set is duplicated here (this module may not import the runtime); the two
         must not drift, or a provider added there would fail this gate."""

@@ -1784,6 +1784,21 @@ class PureStepResultValidationTests(unittest.TestCase):
                     repo, oid, node_key=_NODE, step="generate", agent_run_id="orch", payload=payload)
 
 
+class WorkshopStepResultValidationTests(PureStepResultValidationTests):
+    """The same phase with its PRODUCER a workshop leaf (issue #534): its terminal row also
+    carries output_refs == [], and the step-result validator vouches its host-written
+    deliverables by existence exactly as it does a pure producer's. The verify reviewer stays
+    pure, so this row is what tells a workshop producer apart."""
+
+    def _setup(self, tmp: str):
+        ort, repo, oid, refs, payload, required = super()._setup(tmp)
+        path = (repo / "workspace" / "orchestrations" / oid / "launches"
+                / "gen-pure-1.request.json")
+        path.write_text(json.dumps({"leaf_mode": "workshop", "step": "generate",
+                                    "substep": "generate"}), encoding="utf-8")
+        return ort, repo, oid, refs, payload, required
+
+
 class PureVerifyTransientWallClockBudgetScopeTest(unittest.TestCase):
     """The reviewer loop's copy of the transient wall-clock budget.
 

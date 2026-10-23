@@ -2171,7 +2171,15 @@ def _leaf_timeout_seconds() -> int:
     return min(max(0, value), LEAF_TIMEOUT_MAX_SECONDS)
 
 
-def _leaf_timeout_marker(timeout_seconds: int, elapsed: float) -> str:
+#: The name a `leaf_timeout` marker gives the bound that killed the leaf when the caller passed
+#: none: the environment cap. A caller that passes its own bound (`spawn_leaf(timeout_seconds=,
+#: timeout_name=)` — a workshop lineage's remaining `lineage_timeout_s`, issue #534) names it,
+#: so the kill is not misattributed to a cap the operator did not set.
+LEAF_TIMEOUT_ENV_BOUND_NAME = "ATMOFAB_LEAF_TIMEOUT_SECONDS"
+
+
+def _leaf_timeout_marker(timeout_seconds: int, elapsed: float,
+                         bound_name: str = LEAF_TIMEOUT_ENV_BOUND_NAME) -> str:
     """The conductor's own note, appended to a killed leaf's captured stderr.
 
     APPENDED, never substituted: whatever the leaf managed to write before it wedged is the
@@ -2180,8 +2188,82 @@ def _leaf_timeout_marker(timeout_seconds: int, elapsed: float) -> str:
     text (it comes from `ProcResult.timed_out`), and no classifier pattern may ever match it —
     that would let any leaf claim the tag by writing the line (see `_LEAF_INFRA_ERROR_PATTERNS`).
     """
-    return (f"[conductor] leaf_timeout: leaf exceeded ATMOFAB_LEAF_TIMEOUT_SECONDS="
+    return (f"[conductor] leaf_timeout: leaf exceeded {bound_name}="
             f"{timeout_seconds} (elapsed {elapsed:.0f}s); process group killed")
+
+
+#: The reason detail of a `leaf: workshop` entry's substep until issue #534 PR-3 wires its
+#: loop (`run_substep`); short enough to survive the 200-character reason whole.
+WORKSHOP_LEAF_NOT_WIRED_DETAIL = (
+    "`leaf: workshop` is not wired yet (#534 PR-3): drop leaf, max_wrapper_calls and "
+    "lineage_timeout_s from the entry; start a fresh run")
+
+#: The line appended to the stderr of a leaf ended through `spawn_leaf(cancel_event=)`.
+LEAF_CANCELLED_MARKER = ("[conductor] leaf_cancelled: the leaf was ended from outside "
+                         "(its cancel event was set); process group killed")
+
+#: How often a cancellable wait looks at its event.
+LEAF_CANCEL_POLL_SECONDS = 0.2
+
+
+def _wait_for_leaf_exit(process: Any, deadline: float | None,
+                        cancel_event: threading.Event | None) -> str:
+    """Wait for `process` to exit: `"exited"`, `"cancelled"` when `cancel_event` was set first,
+    or `subprocess.TimeoutExpired` raised at `deadline`. Without an event this is the one
+    deadline-bounded `wait` it always was."""
+    if cancel_event is None:
+        process.wait(timeout=None if deadline is None
+                     else max(deadline - time.monotonic(), 0.0))
+        return "exited"
+    while True:
+        if cancel_event.is_set():
+            return "cancelled"
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            raise subprocess.TimeoutExpired(getattr(process, "args", ""), 0)
+        step = (LEAF_CANCEL_POLL_SECONDS if remaining is None
+                else min(remaining, LEAF_CANCEL_POLL_SECONDS))
+        try:
+            process.wait(timeout=step)
+            return "exited"
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def _admissible_leaf_profile(profile: Mapping[str, Any], entry: Any,
+                             repo_root: Path | None = None) -> bool:
+    """Whether `spawn_leaf` may launch a leaf under `profile`: a READ-ONLY profile (every pure
+    leaf's), or a WORKSHOP lineage's (issue #534) for a workshop entry — `leaf_mode:
+    workshop`, `readonly: False`, and rw binds that are EXACTLY two sibling directories of one
+    lineage home, `config` and `tree`, spelled as normalized absolute paths outside the
+    checkout (`repo_root`), with the tree as the working directory and `CLAUDE_CONFIG_DIR`
+    naming `config`. Fail-closed: any other shape answers False."""
+    if profile.get("readonly") is True:
+        # A WORKSHOP entry under a read-only profile is refused too: its edits would land on
+        # the sandbox's own tmpfs and vanish, and the snapshot would read an empty tree.
+        return profile.get("leaf_mode") is None and not getattr(entry, "is_workshop", False)
+    if not (getattr(entry, "is_workshop", False)
+            and profile.get("leaf_mode") == "workshop" and profile.get("readonly") is False):
+        return False
+    rw = profile.get("runtime_rw_bind_paths")
+    if not (isinstance(rw, list) and len(rw) == 2 and all(isinstance(p, str) for p in rw)):
+        return False
+    if any(not os.path.isabs(p) or p != os.path.normpath(p) for p in rw):
+        return False
+    paths = sorted((Path(p) for p in rw), key=lambda p: p.name)
+    if repo_root is not None:
+        repo = Path(os.path.normpath(str(Path(repo_root).absolute())))
+        if any(p == repo or p.is_relative_to(repo) or repo.is_relative_to(p) for p in paths):
+            return False
+    config, tree = paths
+    env = profile.get("env") if isinstance(profile.get("env"), dict) else {}
+    credential = profile.get("runtime_rw_credential_mapping")
+    return (config.name == "config" and tree.name == "tree" and config.parent == tree.parent
+            and str(profile.get("workdir") or "") == str(tree)
+            and env.get("CLAUDE_CONFIG_DIR") == str(config)
+            # The credential lands in the CLI's own home, never in the tree the host snapshots.
+            and isinstance(credential, list) and len(credential) == 2
+            and str(credential[1]) == str(config / ".credentials.json"))
 
 
 def _leaf_stream_encoding() -> str:
@@ -4064,6 +4146,7 @@ class Conductor:
         *,
         session_id: str | None = None,
         resume_session_id: str | None = None,
+        mcp_config_json: str | None = None,
     ) -> list[str]:
         """Headless command to run one substep body as an isolated leaf agent.
         Honors the entry's custom `command` (wrapper + flags) so the conductor launches the
@@ -4099,9 +4182,25 @@ class Conductor:
         caller with genuinely no phase/substep (and the test suite) need not spell it out; every
         production launch passes its own, which
         `test_every_leaf_launch_site_passes_its_own_entry` pins by introspecting this module.
+
+        `mcp_config_json` selects the WORKSHOP launch (issue #534): an entry whose `leaf` is
+        `workshop` takes `pure_leaf.workshop_leaf_flags(mcp_config_json)` in place of
+        `pure_leaf_flags()` — the same `--model` / `--effort` / `--resume --fork-session` /
+        `--session-id` prefix and trailing `-p` — and the JSON names this launch's wrapper
+        endpoint. A workshop entry without it, or a pure entry with it, is refused: the two
+        must agree, or a leaf would hold the wrapper under a pure contract or lack it under a
+        workshop one.
         """
         entry = entry if entry is not None else self.entry_for(None, None)
         base = _provider_command_base(entry)
+        workshop = bool(getattr(entry, "is_workshop", False))
+        if workshop != (mcp_config_json is not None):
+            raise ValueError(
+                "leaf_command: a workshop entry takes its wrapper's mcp_config_json and a pure "
+                f"entry takes none (leaf={getattr(entry, 'leaf', 'pure')!r}, "
+                f"mcp_config_json={'given' if mcp_config_json is not None else 'absent'})")
+        if workshop and entry.provider != "claude_cli":
+            raise ValueError(f"provider {entry.provider!r} runs no workshop leaf")
         if entry.provider == "claude_cli":
             # `-p` runs non-interactively, and `pure_leaf_flags()` below is the whole of the
             # leaf's surface: no tools, no MCP servers, no slash commands, no customizations
@@ -4130,8 +4229,9 @@ class Conductor:
                 flags += ["--resume", resume_session_id, "--fork-session"]
             if session_id:
                 flags += ["--session-id", session_id]
-            from tools.pure_leaf import pure_leaf_flags
-            flags += pure_leaf_flags()
+            from tools.pure_leaf import pure_leaf_flags, workshop_leaf_flags
+            flags += (workshop_leaf_flags(mcp_config_json) if mcp_config_json is not None
+                      else pure_leaf_flags())
             return [*base, *flags, "-p"]
         if entry.provider == "codex_cli":
             # JSONL is mandatory: thread.started is the sole authoritative Codex
@@ -4348,8 +4448,29 @@ class Conductor:
         resume_session_id: str | None = None,
         child_arid: str,
         timeout_context: dict[str, str] | None = None,
+        timeout_seconds: int | None = None,
+        timeout_name: str | None = None,
+        mcp_config_json: str | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> ProcResult:
         """Launch one leaf and return its captured result.
+
+        `cancel_event` ends the leaf from another thread (issue #534): when it is set while the
+        leaf runs, the leaf's process group is terminated as at the cap and the result carries
+        `LEAF_CANCELLED_MARKER` instead of a timeout marker — no `leaf_timeout` event, because
+        no bound of this function fired. A workshop lineage's wrapper endpoint sets it when an
+        operation reports the lineage ENDED (`workshop_mcp.WrapperMcpServer(on_end=)`). Claude
+        leaves only: the workshop leaf is the one caller, and a codex or HTTP entry refuses it.
+
+        `timeout_seconds` replaces the environment cap (`_leaf_timeout_seconds()`) for this one
+        leaf, and `timeout_name` names that bound in the `leaf_timeout` marker and event. It
+        REPLACES the cap, so a caller with a bound of its own passes the SMALLER of the two
+        and names the one it passed: a workshop lineage (issue #534) passes
+        `min(ATMOFAB_LEAF_TIMEOUT_SECONDS, remaining lineage_timeout_s)` — the environment cap
+        is still the per-process bound the design note keeps, and its `0` means "no cap", so
+        then the remaining lineage time alone. An explicit bound is an integer >= 1 — a lineage
+        with no time left is not launched at all — clamped to `LEAF_TIMEOUT_MAX_SECONDS`.
+        `mcp_config_json` is the workshop leaf's wrapper endpoint (`leaf_command`).
 
         `timeout_context` only labels the `leaf_timeout` event with the node/step/substep the
         leaf belongs to (`spawn_leaf` itself has no access to them). It never changes what is
@@ -4360,6 +4481,9 @@ class Conductor:
         `test_every_leaf_launch_site_passes_its_own_entry` pins by introspecting this module.
         """
         entry = entry if entry is not None else self.entry_for(None, None)
+        if cancel_event is not None and entry.provider != "claude_cli":
+            raise ValueError(f"spawn_leaf cancel_event is a claude leaf's (provider "
+                             f"{entry.provider!r})")
         if entry.is_http:
             # No process, so nothing below applies: no codex feature cache, no bwrap profile
             # (an HTTP pure leaf runs no model-directed tool — see tools/llm_http_leaf.py), no
@@ -4369,8 +4493,22 @@ class Conductor:
             return self._run_http_leaf(prompt_text, entry, child_env=child_env,
                                        child_arid=child_arid,
                                        timeout_context=timeout_context)
+        if timeout_seconds is not None and (
+                isinstance(timeout_seconds, bool) or not isinstance(timeout_seconds, int)
+                or timeout_seconds < 1):
+            raise ValueError(f"spawn_leaf timeout_seconds must be an integer >= 1 (got "
+                             f"{timeout_seconds!r})")
+        if timeout_seconds is not None:
+            # The same sanity ceiling the environment cap is clamped to: a deadline past it
+            # cannot be handed to a selecting wait.
+            timeout_seconds = min(timeout_seconds, LEAF_TIMEOUT_MAX_SECONDS)
+
+        # Resolved HERE, before the codex branch below returns: a name left None would reach
+        # the codex marker as `leaf exceeded None=<n>` on every launch that passes no bound.
+        timeout_name = timeout_name or LEAF_TIMEOUT_ENV_BOUND_NAME
         argv = self.leaf_command(
-            entry, session_id=session_id, resume_session_id=resume_session_id)
+            entry, session_id=session_id, resume_session_id=resume_session_id,
+            mcp_config_json=mcp_config_json)
         # Wrap the leaf in the bwrap sandbox that record-launch already built (no checkout
         # in it at all — an empty tmpfs at repo_root, issue #227 — and only the leaf's own
         # scratch roots under it writable).
@@ -4390,16 +4528,24 @@ class Conductor:
                     "bwrap enforcement is mandatory but no usable sandbox profile is "
                     f"available for this leaf (child_arid={child_arid!r}); refusing to "
                     "launch unconfined (fail-closed)")
-            # Z4 (issue #171): every CLI leaf is a PURE leaf, which has no repository write
-            # authority at all, so its profile is the read-only one. Asserted at the spawn
-            # site rather than left to follow from "only the pure loops call this": a guard
-            # that rests on today's caller set goes quiet the moment a sixth caller appears,
-            # and what it protects is the FS-diff-free write model — nothing attributes a
-            # write from this window, because nothing in this window may write.
-            if profile.get("readonly") is not True:
+            # Z4 (issue #171): every CLI leaf but one is a PURE leaf, which has no repository
+            # write authority at all, so its profile is the read-only one. Asserted at the
+            # spawn site rather than left to follow from "only the pure loops call this": a
+            # guard that rests on today's caller set goes quiet the moment a sixth caller
+            # appears, and what it protects is the FS-diff-free write model — nothing
+            # attributes a write from this window, because nothing in this window may write
+            # under the checkout.
+            #
+            # The one other admitted profile is a WORKSHOP leaf's (issue #534), and it is
+            # admitted by its exact shape, fail-closed: `leaf_mode: workshop`, an entry that
+            # IS a workshop entry, and rw binds that are exactly the lineage's own `config/`
+            # and `tree/` — siblings under one lineage home, outside the checkout — with the
+            # tree as its working directory. Anything else writable is refused.
+            if not _admissible_leaf_profile(profile, entry, self.repo_root):
                 raise SandboxEnforcementError(
-                    f"the sandbox profile for {child_arid!r} is not read-only; every leaf "
-                    "runs as a pure function with no repository write authority, so a "
+                    f"the sandbox profile for {child_arid!r} is neither read-only nor a "
+                    "workshop lineage's (exactly its config/ and tree/ writable, for a "
+                    "workshop entry); a leaf has no repository write authority, so any other "
                     "writable profile is a host defect (fail-closed)")
             from tools.orchestration_runtime import render_bwrap_command
             try:
@@ -4420,7 +4566,8 @@ class Conductor:
                     argv, child_env, child_arid, entry=entry,
                     prompt_text=prompt_text,
                     resume=bool(resume_session_id),
-                    timeout_context=timeout_context)
+                    timeout_context=timeout_context,
+                    timeout_seconds=timeout_seconds, timeout_name=timeout_name)
             # A raw Popen, not `subprocess.run(timeout=)`: on a timeout `run` calls `kill()`,
             # which signals the DIRECT child only — and under mandatory bwrap the direct child
             # is the wrapper, so the CLI behind it would survive. `start_new_session=True`
@@ -4462,7 +4609,7 @@ class Conductor:
         # The ONE place the claude leaf is waited on, and therefore the only place the cap has to
         # be armed: a deterministic substep never reaches spawn_leaf, and the usage-limit wait
         # happens BETWEEN launches.
-        timeout_seconds = _leaf_timeout_seconds()
+        timeout_seconds = _leaf_timeout_seconds() if timeout_seconds is None else timeout_seconds
         started = time.monotonic()
         deadline = (started + timeout_seconds) if timeout_seconds else None
         # Pinned now, while the leaf is unquestionably alive: `start_new_session=True` makes it
@@ -4549,8 +4696,22 @@ class Conductor:
             # case is structural here rather than something a poll has to notice in time, and
             # the quadratic re-join the growing slice existed to bound is gone with it.
             try:
-                process.wait(timeout=None if deadline is None
-                             else max(deadline - time.monotonic(), 0.0))
+                if _wait_for_leaf_exit(process, deadline, cancel_event) == "cancelled":
+                    # Ended from outside (a workshop lineage's bound): the same teardown as the
+                    # cap, reported as what it is.
+                    _terminate_leaf_process_group(process, pgid=leaf_pgid,
+                                                  pgid_start_ticks=leaf_start_ticks)
+                    try:
+                        returncode = process.wait(timeout=LEAF_TERMINATE_GRACE_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        returncode = -int(signal.SIGKILL)
+                    _finish_streams()
+                    stderr_tail.publish(stderr_chunks)
+                    stderr = "".join(list(stderr_chunks))
+                    if stream_abandoned:
+                        stderr = (stderr.rstrip() + "\n" + LEAF_STREAM_ABANDONED_MARKER).strip()
+                    stderr = (stderr.rstrip() + "\n" + LEAF_CANCELLED_MARKER).strip()
+                    return ProcResult(returncode or 1, "".join(list(stdout_chunks)), stderr)
             except subprocess.TimeoutExpired:
                 # Still running with the cap spent: this is the wedge.
                 _terminate_leaf_process_group(process, pgid=leaf_pgid,
@@ -4583,7 +4744,7 @@ class Conductor:
                 return self._timed_out_result(
                     returncode, "".join(list(stdout_chunks)), stderr, entry=entry,
                     timeout_seconds=timeout_seconds, started=started,
-                    context=timeout_context)
+                    context=timeout_context, timeout_name=timeout_name)
             # The leaf exited on its own, so its status is authoritative. Only a descendant it
             # leaked can still hold the pipes, and that gets the teardown grace, not the cap.
             # INSIDE the try: an interrupt arriving during these joins still has to reach the
@@ -4629,6 +4790,7 @@ class Conductor:
         timeout_seconds: int, started: float, context: dict[str, str] | None,
         usage: dict[str, Any] | None = None, model: str | None = None,
         resume_mode: str | None = None, raw_stdout: str | None = None,
+        timeout_name: str = LEAF_TIMEOUT_ENV_BOUND_NAME,
     ) -> ProcResult:
         """The ProcResult for a leaf the conductor killed at the cap, plus its `leaf_timeout` event.
 
@@ -4646,7 +4808,7 @@ class Conductor:
         elapsed = time.monotonic() - started
         if returncode is None or returncode == 0:
             returncode = 1
-        marker = _leaf_timeout_marker(timeout_seconds, elapsed)
+        marker = _leaf_timeout_marker(timeout_seconds, elapsed, timeout_name)
         stderr = ((stderr or "").rstrip() + "\n" + marker).strip()
         fields = {
             "node_key": (context or {}).get("node_key", ""),
@@ -4655,6 +4817,7 @@ class Conductor:
             "agent_run_id": (context or {}).get("agent_run_id", ""),
             "backend": (entry or self.entry_for(None, None)).backend_token,
             "timeout_seconds": timeout_seconds,
+            "timeout_bound": timeout_name,
             "elapsed_seconds": round(elapsed, 1),
             "leaf_exit": returncode,
             "stdout_chars": len(stdout or ""),
@@ -4745,6 +4908,8 @@ class Conductor:
         *, prompt_text: str, entry: ResolvedLeafEntry | None = None,
         resume: bool = False,
         timeout_context: dict[str, str] | None = None,
+        timeout_seconds: int | None = None,
+        timeout_name: str = LEAF_TIMEOUT_ENV_BOUND_NAME,
     ) -> ProcResult:
         entry = entry if entry is not None else self.entry_for(None, None)
         # Every leaf supplies its child ARID so the emitted thread can be registered before
@@ -4781,7 +4946,7 @@ class Conductor:
         # never reach EOF and the conductor would block FOREVER PAST THE CAP: the original defect,
         # merely delayed. So the read runs in a pump thread and the main path waits on a queue
         # with the remaining time; every wait below is bounded the same way.
-        timeout_seconds = _leaf_timeout_seconds()
+        timeout_seconds = _leaf_timeout_seconds() if timeout_seconds is None else timeout_seconds
         started = time.monotonic()
         deadline = (started + timeout_seconds) if timeout_seconds else None
         # Set by THIS thread only, when a wait actually runs out — never by a timer racing a
@@ -5215,7 +5380,7 @@ class Conductor:
                 returncode, "", stderr, entry=entry,
                 timeout_seconds=timeout_seconds, started=started,
                 context=timeout_context, usage=usage, model=model, resume_mode=resume_mode,
-                raw_stdout=raw_stdout)
+                raw_stdout=raw_stdout, timeout_name=timeout_name)
         if thread_id is None and drained_thread_id is not None:
             # The whole turn was still queued when the read stopped, and the guard above did NOT
             # call it a timeout — so this leaf's answer is about to be returned, and its identity
@@ -5292,7 +5457,15 @@ class Conductor:
 
     def record_launch(self, child_arid: str, request: dict[str, Any],
                       entry: ResolvedLeafEntry | None = None, *,
-                      codex_lineage_id: str | None = None) -> dict[str, Any]:
+                      codex_lineage_id: str | None = None,
+                      workshop_lineage_id: str | None = None,
+                      mcp_config_json: str | None = None) -> dict[str, Any]:
+        """Record one launch (`orchestration_runtime record-launch`).
+
+        A WORKSHOP launch (issue #534) passes its wrapper endpoint as `mcp_config_json` (it is
+        recorded in the launch's setting surface) and, on a WARM resume only, the lineage it
+        resumes as `workshop_lineage_id` — the twin of `codex_lineage_id`: a lineage home that
+        is gone answers `workshop_lineage_home_missing` and nothing is recorded."""
         # The derivation key of the phase attempt this launch belongs to (issue #250), stamped
         # here — the ONE funnel every launch passes through — rather than in
         # `build_launch_request`, so the request builder stays a pure function of `refs` and
@@ -5321,7 +5494,8 @@ class Conductor:
             "backend_command": _provider_command_base(
                 entry or self.entry_for(None, None))[0],
         }
-        response.update(self._launch_setting_surface(child_arid, request, entry))
+        response.update(self._launch_setting_surface(child_arid, request, entry,
+                                                     mcp_config_json=mcp_config_json))
         request_ref = self._write_launch_input_evidence(
             f"{child_arid}.request.input.json", request)
         argv = [
@@ -5343,11 +5517,14 @@ class Conductor:
         ]
         if codex_lineage_id is not None:
             argv += ["--codex-lineage-id", codex_lineage_id]
+        if workshop_lineage_id is not None:
+            argv += ["--workshop-lineage-id", workshop_lineage_id]
         return self.runtime(argv, input=json.dumps(
             self._child_env(child_arid, entry), ensure_ascii=False))
 
     def _launch_setting_surface(self, child_arid: str, request: dict[str, Any],
-                                entry: ResolvedLeafEntry | None) -> dict[str, Any]:
+                                entry: ResolvedLeafEntry | None, *,
+                                mcp_config_json: str | None = None) -> dict[str, Any]:
         """What this leaf's launch closes its CONFIGURATION surface to, for the record.
 
         Since Z4 (issue #171) that is one field: the TOOLS the leaf was launched with. The
@@ -5373,6 +5550,12 @@ class Conductor:
 
         Two launches are declined outright, because they have no argv to describe at all — an
         HTTP leaf (no process) and a deterministic substep (in-process).
+
+        A WORKSHOP leaf (issue #534) records one more field, `claude_mcp_config`: the server
+        name and URL its `--mcp-config` names. The URL is per launch (an ephemeral loopback
+        port), so it is not a constant of the flag set the way the rest of it is; it is the
+        record that ties this launch to the endpoint every line of its `wrapper_calls.jsonl`
+        was served on (no reader compares the two yet; PR-3's audit is the first).
         """
         entry = entry if entry is not None else self.entry_for(None, None)
         if entry.is_http:
@@ -5393,10 +5576,17 @@ class Conductor:
         # spawn_leaf passes keeps the recorded argv on the production path. `leaf_command` is
         # side-effect-free on every branch since issue #230 (the codex arm wrote its
         # per-child output schema here before), so the id is for the argv alone.
-        argv = self.leaf_command(entry, session_id=child_arid)
+        argv = self.leaf_command(entry, session_id=child_arid, mcp_config_json=mcp_config_json)
         surface: dict[str, Any] = {}
         if "--tools" in argv:
             surface["claude_tools"] = _variadic_values(argv, "--tools")
+        # From the JSON this launch was handed, not from argv: a configured `command:` may carry
+        # an `--mcp-config` of its own (a file path, not JSON), which argv would offer first.
+        if mcp_config_json is not None:
+            servers = json.loads(mcp_config_json).get("mcpServers", {})
+            surface["claude_mcp_config"] = [
+                {"server": name, "url": str(spec.get("url", ""))}
+                for name, spec in sorted(servers.items())]
         return surface
 
     def finalize_child(self, child_arid: str, reply_text: str,
@@ -9709,9 +9899,12 @@ class Conductor:
             # corrected once already. Set here rather than on the argv because the CLI exposes
             # no flag for it.
             env["CLAUDE_CODE_DISABLE_AUTO_MEMORY"] = "1"
-            # CLAUDE_CONFIG_DIR is deliberately NOT set: a pure leaf has no private home to
+            # CLAUDE_CONFIG_DIR is deliberately NOT set here: a pure leaf has no private home to
             # name (`record_launch` prepares none), and naming one here would point the leaf at a configuration surface
-            # nothing prepared, hashed or recorded.
+            # nothing prepared, hashed or recorded. A WORKSHOP leaf (issue #534) does have one,
+            # and it reaches the leaf the way a codex lineage home does — through the profile's
+            # `env_overrides` and `--setenv` alone (`claude_workshop_profile_kwargs`); the pop
+            # below keeps this dict from carrying a second spelling of it.
         elif entry.provider == "codex_cli":
             # ATMOFAB_HOME was the historical private alias for CODEX_HOME. An operator
             # who set BOTH to different homes has said two incompatible things, and the
@@ -13099,6 +13292,22 @@ class Conductor:
             if phase == "compile":
                 return self._run_pure_compile_producer(
                     refs, repair, resolved_dependencies, dependency_surface)
+            if entry.is_workshop:
+                # A `leaf: workshop` entry (issue #534) loads, and its loop is PR-3's. A run is
+                # refused at its START (`LlmConfig.validate_runnable`,
+                # `llm_config_workshop_leaf_not_wired`), before anything is billed; this is the
+                # backstop for a caller that skips that check. It fails CLOSED rather than
+                # running the entry as a pure leaf: the operator asked for another leaf model,
+                # and running this one instead would record a launch the configuration did not
+                # describe. No leaf was launched, so the `leaf_exit=1` the transport branch
+                # records is a synthesized code, not an exit. The detail fits the 200-character
+                # reason whole (`_PHASE_REASON_DETAIL_MAX_CHARS`), remedy included.
+                detail = WORKSHOP_LEAF_NOT_WIRED_DETAIL
+                self.emit("workshop_leaf_not_wired", node_key=refs.node_key, phase=phase,
+                          substep=substep or "", provider=entry.provider)
+                return SubstepOutcome(
+                    self.new_agent_run_id(), "fail", [], 1,
+                    ("workshop_leaf_not_wired", detail), 1)
             return self._run_pure_producer_substep(
                 refs, phase, substep, repair, resolved_dependencies,
                 self._pure_producer_spec(phase, self._shape_for_spec(refs, phase)),

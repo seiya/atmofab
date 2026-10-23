@@ -3372,8 +3372,12 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
         substep = payload.get("substep") or "step"
         elapsed = payload.get("elapsed_seconds", "?")
         cap = payload.get("timeout_seconds", "?")
+        # The bound that fired, as the event names it: the environment cap, or a workshop
+        # lineage's remaining `lineage_timeout_s` (issue #534). An event from before the field
+        # existed was always the environment cap.
+        bound = payload.get("timeout_bound") or "ATMOFAB_LEAF_TIMEOUT_SECONDS"
         return (f"    [warn   ] leaf timeout in {phase}.{substep}: no answer after {elapsed}s "
-                f"(cap {cap}s, ATMOFAB_LEAF_TIMEOUT_SECONDS) — process group killed, "
+                f"(cap {cap}s, {bound}) — process group killed, "
                 f"phase fails closed")
 
     if status == "info" and event == "leaf_usage_limit_wait":

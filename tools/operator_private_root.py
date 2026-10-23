@@ -117,6 +117,14 @@ def backend_credential_home_paths(backend_type: str) -> tuple[tuple[Path, ...], 
         return (codex_home,), ()
     return (), ()
 
+def claude_credentials_file() -> Path:
+    """The operator's claude CLI credentials file, `~/.claude/.credentials.json`: what a
+    `workshop leaf`'s private `CLAUDE_CONFIG_DIR` binds over its own `.credentials.json`
+    (`orchestration_runtime._prepare_claude_workshop_home`, issue #534). The same `~/.claude`
+    `backend_credential_home_paths("claude")` names, so the file a workshop leaf authenticates
+    with is the one a pure leaf's rw bind of that directory reaches."""
+    return backend_credential_home_paths("claude")[0][0] / ".credentials.json"
+
 def _resolve_lenient(path: Path) -> Path:
     """`path.resolve()`, falling back to `path` itself when the OS refuses.
 
