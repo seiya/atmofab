@@ -24381,12 +24381,12 @@ class AgentRoleFailClosedTests(unittest.TestCase):
             Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
         )
         captured = sorted(fixture_dir.glob("*.request.json"))
-        # EIGHT: two deterministic captures and, since the re-capture that closed the
+        # NINE: two deterministic captures and, since the re-capture that closed the
         # `TODO.md` item issue #171 PR-1 left, five REDACTED pure ones — the role field is
-        # verbatim in a redaction, so the LLM half of the role rule is covered again — and one
-        # redacted WORKSHOP one (issue #534). `BuildLaunchRequestTest`'s docstring carries the
+        # verbatim in a redaction, so the LLM half of the role rule is covered again — and two
+        # redacted WORKSHOP ones (issue #534). `BuildLaunchRequestTest`'s docstring carries the
         # provenance.
-        self.assertEqual(len(captured), 8, "captured payload set changed; revisit coverage")
+        self.assertEqual(len(captured), 9, "captured payload set changed; revisit coverage")
         from tools.pure_leaf import (
             PURE_PROMPT_CONTRACT_VERSION,
             WORKSHOP_PROMPT_CONTRACT_VERSION,

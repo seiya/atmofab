@@ -354,10 +354,10 @@ class BuildLaunchRequestTest(unittest.TestCase):
     The fixtures under `data/conductor_launch_requests/` are CAPTURES of real runs, and that is
     what makes this row evidence rather than a restatement of the builder.
 
-    EIGHT ROWS: two DETERMINISTIC captures, five PURE ones and one WORKSHOP one (issue #534:
+    NINE ROWS: two DETERMINISTIC captures, five PURE ones and two WORKSHOP ones (issue #534:
     `generate.generate` from run 2 of step 1's A/B, taken under `workshop-1`, so it carries no
-    `workshop_provider` — `_WORKSHOP_1_ABSENT_KEYS`; the `compile.generate` workshop row
-    follows step 2 PR-1's billed run). The pure five were re-captured
+    `workshop_provider` — `_WORKSHOP_1_ABSENT_KEYS`; `compile.generate` from step 2 PR-1's
+    billed run, taken under `workshop-2`). The pure five were re-captured
     (a `TODO.md` item filed by issue #171 PR-1's round-1 review and closed by the commit that
     added them, 9158667e) after Z4 deleted the agentic shape their predecessors recorded; they
     were deleted rather than hand-converted at the time, because a
@@ -414,6 +414,8 @@ class BuildLaunchRequestTest(unittest.TestCase):
             ("validate", "judge", "pure"),
             # Issue #534: run 2 of step 1's A/B (`orch_20261023T105639Z_3106b29e`).
             ("generate", "generate", "workshop"),
+            # Issue #534: step 2 PR-1's billed run, small node (`orch_20261023T233910Z_159fd6eb`).
+            ("compile", "generate", "workshop"),
         }
         self.assertEqual(set(real), expected_keys, "captured fixture set changed")
         # Every row is EITHER deterministic OR host-rendered (pure or workshop), asserted rather
@@ -494,7 +496,7 @@ class BuildLaunchRequestTest(unittest.TestCase):
         from tools.orchestration_runtime import PURE_CONTEXT_REQUIRED_KEYS
         pure_rows = {k: v for k, v in _load_real_requests().items()
                      if v.get("leaf_mode") in ("pure", "workshop")}
-        self.assertEqual(len(pure_rows), 6)
+        self.assertEqual(len(pure_rows), 7)
         for (step, substep, _mode), req in pure_rows.items():
             with self.subTest(step=step, substep=substep):
                 if "pure_context" not in req:
