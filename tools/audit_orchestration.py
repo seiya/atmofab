@@ -600,7 +600,7 @@ def _pure_ir_dirs_of(
 
     Discovery reads this orchestration's own persisted launch requests
     (`launches/<arid>.request.json`) and keeps the `ir_ref` of every row whose `step` is
-    `compile` and whose `leaf_mode` is `pure`. That is deliberately NOT the reservation the
+    `compile` and whose `leaf_mode` is `pure` or `workshop`. That is deliberately NOT the reservation the
     source-dir discovery above uses: `reservations/<node>/compile.json#reserved_ir_id` is
     OVERWRITTEN by `_ensure_fresh_producer_id` on every rotation, so it names only the LIVE ir
     directory and would drop every repaired or restarted attempt — the same undercount

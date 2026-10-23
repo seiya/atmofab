@@ -71,7 +71,7 @@ Invalidation is content-exact, not semantically minimal: any hashed input change
 
 ### A2. LLM stages as pure functions
 
-> Departed from for the producing `generate.generate` on a `leaf: workshop` entry since 2026-10-23 ([issue #534](https://github.com/seiya/atmofab/issues/534)): `producer_workshop_leaf.md` §Departures (A2).
+> Departed from for the producing `generate.generate` on a `leaf: workshop` entry since 2026-10-23, and for `compile.generate` on one since step 2 of `producer_workshop_leaf.md` §Migration order ([issue #534](https://github.com/seiya/atmofab/issues/534)): `producer_workshop_leaf.md` §Departures (A2).
 
 Every LLM stage is a host-mediated transformation: the host assembles the authorized context, the model returns a complete typed artifact, and the host validates and writes it. Pure-function status means that the model has no authority outside the host-mediated input/output channel; it does not require every stage to fit in one request.
 
@@ -86,7 +86,7 @@ The prompt-prefix-caching item of R6 is the default behavior here: the fixed con
 
 ### A3. Trust model: unrepresentable over policed
 
-> Departed from for the producing `generate.generate` on a `leaf: workshop` entry since 2026-10-23 ([issue #534](https://github.com/seiya/atmofab/issues/534)): `producer_workshop_leaf.md` §Departures (A3).
+> Departed from for the producing `generate.generate` on a `leaf: workshop` entry since 2026-10-23, and for `compile.generate` on one since step 2 of `producer_workshop_leaf.md` §Migration order ([issue #534](https://github.com/seiya/atmofab/issues/534)): `producer_workshop_leaf.md` §Departures (A3).
 
 The current threat model (a leaf forging evidence, writing outside scope, deriving rules from validator code, tampering with audit logs) exists because the untrusted actor holds a shell inside the repository. Under A2 the untrusted actor holds nothing:
 
