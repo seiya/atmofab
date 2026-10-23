@@ -708,6 +708,38 @@ class PureIrDocumentViolationTests(_Fixture):
         result = self.violations(with_refs(dict(own, tests=other)))
         self.assertIn(f"`tests: {own['tests']}`", result[1])
 
+    def test_the_node_keys_must_be_the_node_s_own(self) -> None:
+        """Round 2 (issue #534 step 2): `Compile.static` chooses its 2-D/3-D state-contract and
+        lowering-floor gates from `dependency.node_key`, falling back to `meta.node_key`, so an
+        omitted or foreign key turned gates off (measured on a real `problem` IR: two refused
+        defects passed). `dependency.node_key` must be the node's; `meta.node_key` may be
+        absent and must not disagree."""
+        def with_keys(dep=..., meta=...):
+            ir = _valid_ir()
+            if dep is not ...:
+                if dep is None:
+                    ir["dependency"].pop("node_key", None)
+                else:
+                    ir["dependency"]["node_key"] = dep
+            if meta is not ...:
+                ir["meta"]["node_key"] = meta
+            return _doc(ir)
+
+        self.assertIsNone(self.violations(with_keys()))
+        self.assertIsNone(self.violations(with_keys(meta=_NODE)))
+        for label, doc in (
+                ("dependency key absent", with_keys(dep=None)),
+                ("dependency key absent, meta foreign",
+                 with_keys(dep=None, meta="infrastructure/harness_fortran_cpu@0.8.0")),
+                ("dependency key foreign", with_keys(dep="problem/shallow_water2d@0.4.0")),
+                ("meta key foreign", with_keys(meta="infrastructure/harness_fortran_cpu@0.8.0")),
+                ("another version", with_keys(dep=_NODE.replace("0.2.0", "0.2.1")))):
+            with self.subTest(case=label):
+                result = self.violations(doc)
+                self.assertIsNotNone(result)
+                self.assertEqual(result[0], wc.COMPILE_IR_DOCUMENT_VIOLATION)
+                self.assertIn(repr(_NODE), result[1])
+
     def test_each_shape_defect_is_one_ir_document_violation(self) -> None:
         for label, doc in (
             ("not an object", ["ir"]),
@@ -811,6 +843,7 @@ class PureIrDocumentViolationTests(_Fixture):
             refs = _write_compile_node(repo, kind="problem")
             c = _conductor(repo)
             ir = _valid_ir("problem")
+            ir["dependency"]["node_key"] = refs.node_key   # the node's own key, not the fixture's
             self.assertIsNone(c._pure_ir_document_violations(refs, {"ir": ir,
                                                                     "compile_fail": None}))
 

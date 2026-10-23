@@ -7231,13 +7231,32 @@ class Conductor:
                      f"{declared_kind!r}. It selects which deterministic gates apply, so a "
                      f"value other than the node's own turns those gates off rather than "
                      f"describing the node."))
+        # The node's key, the same way: `Compile.static` decides which of its gates apply from
+        # the IR's own `dependency.node_key`, falling back to `meta.node_key`
+        # (`_plan_dependency_node_key`) — the multi-dimensional state contract runs only on a
+        # 2-D/3-D `problem` key, and the local-operation lowering floor returns early on an
+        # `infrastructure` one — so a key the leaf chose, or omitted, would choose the gates. The
+        # dependency section must carry this node's key; `meta` may omit it, and must not
+        # disagree.
+        dep_key = (ir.get("dependency") or {}).get("node_key") \
+            if isinstance(ir.get("dependency"), dict) else None
+        meta_key = (ir.get("meta") or {}).get("node_key") \
+            if isinstance(ir.get("meta"), dict) else None
+        if dep_key != refs.node_key or (meta_key is not None and meta_key != refs.node_key):
+            return (COMPILE_IR_DOCUMENT_VIOLATION,
+                    (f"`ir.dependency.node_key` (and `ir.meta.node_key`, when present) must be "
+                     f"this node's own key {refs.node_key!r}, verbatim; got "
+                     f"dependency.node_key={dep_key!r}, meta.node_key={meta_key!r}. It selects "
+                     f"which deterministic gates apply, so another value turns gates off "
+                     f"rather than describing the node."))
         # `meta.source_refs` names the documents every later gate reads the node's tests and
         # contract through (`Compile.static`'s per-test coverage reads `tests.md` from
         # `source_refs.tests`), so it is the host's fact, not the leaf's: a ref naming another
         # file — a cut-down copy in a workshop leaf's tree, another node's `tests.md` — would
         # have the gates judge the IR against a test set the leaf chose. Each ref present must
-        # be the node's own spec document, spelled as the phase contract's schema spells it; an
-        # absent one is left to `Compile.static`, which already refuses it.
+        # be the node's own spec document, spelled as the phase contract's schema spells it. An
+        # absent `tests` or `controlled_spec` ref is `Compile.static`'s finding; nothing reads
+        # `deps` today, so its absence is no one's.
         own_refs = {name: f"{refs.spec_path}/{name}{suffix}"
                     for name, suffix in (("controlled_spec", ".md"), ("tests", ".md"),
                                          ("deps", ".yaml"))}
