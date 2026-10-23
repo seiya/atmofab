@@ -5537,8 +5537,9 @@ class Conductor:
 
         A WORKSHOP leaf (issue #534) records one more field, `claude_mcp_config`: the server
         name and URL its `--mcp-config` names. The URL is per launch (an ephemeral loopback
-        port), so it is not a constant of the flag set the way the rest of it is, and it is
-        what `wrapper_calls.jsonl` and the launch's own argv are reconciled against.
+        port), so it is not a constant of the flag set the way the rest of it is; it is the
+        record that ties this launch to the endpoint every line of its `wrapper_calls.jsonl`
+        was served on (no reader compares the two yet; PR-3's audit is the first).
         """
         entry = entry if entry is not None else self.entry_for(None, None)
         if entry.is_http:

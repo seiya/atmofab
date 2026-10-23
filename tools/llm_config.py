@@ -17,10 +17,11 @@ table row instead of a new branch.
 **Capabilities are declared, never inferred.** `PROVIDER_CAPABILITIES` below is the single
 source of truth; a config's own `capabilities:` list may only RESTRICT a provider's set (to
 model an endpoint that, say, cannot be warm-resumed), never extend it. Since Z4 (issue #171)
-the pure leaf is the only leaf model, so every LLM leaf simply requires `pure` — which is what
-makes an HTTP provider admissible everywhere, and an entry narrowed away from `pure` admissible
-nowhere (`llm_config_capability_insufficient_for_substep`). Neither is a
-`provider == "openai_compatible"` branch.
+the pure leaf is the one leaf model every LLM leaf has, so a `leaf: pure` entry — the default —
+requires `pure`, which is what makes an HTTP provider admissible everywhere, and a pure entry
+narrowed away from `pure` is admissible nowhere (`llm_config_capability_insufficient_for_
+substep`). A `leaf: workshop` entry (issue #534) requires `workshop` instead, on the pairs
+`WORKSHOP_LEAF_SUBSTEPS` names. Neither is a `provider == "openai_compatible"` branch.
 
 Stdlib + PyYAML only, and deliberately importing nothing from `tools.orchestration_runtime` /
 `tools.workflow_conductor`: both of those import (or will import) this module, and the

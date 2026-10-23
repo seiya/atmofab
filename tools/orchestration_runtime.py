@@ -8023,8 +8023,9 @@ def build_readonly_bwrap_profile(
     the spawn seam checks is therefore False on this profile, and `Conductor.spawn_leaf`
     admits it only with exactly those two rw paths. Nothing else of this function changes.
 
-    The profile every leaf runs under — since Z4 (issue #171) there is no other kind of leaf.
-    Its sole production caller is `record_launch`'s `if is_pure:` branch. The checkout is NOT
+    The profile every leaf runs under — a pure leaf's as below, a workshop leaf's with the four
+    parameters of the paragraph after this one. Its sole production caller is `record_launch`'s
+    child-process branch. The checkout is NOT
     bound (issue #227): an empty tmpfs sits at `repo_root`, so a tool-bearing codex leaf finds
     neither the artifact trees nor `tools/` / `docs/` / `spec/` — a pure leaf's whole context
     is inlined in its launch prompt and it needs no repository file. What IS bound: the
@@ -11098,7 +11099,8 @@ def _validate_pass_output_refs_against_launch(
 def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> None:
     """Validate the pure-leaf-specific shape of a launch request (`leaf_mode == "pure"`).
 
-    Enforced (fail-closed): the only accepted `leaf_mode` value is `"pure"`; pure is confined to
+    Enforced (fail-closed): the accepted `leaf_mode` values are `"pure"` and, since issue #534,
+    `"workshop"` (its three differences are stated in the body); pure is confined to
     the migrated (generate, generate) / (generate, verify) substeps; it is mutually exclusive
     with `deterministic`; `prompt_contract_version` matches the transport's contract EXACTLY;
     `allowed_output_paths` is empty (the leaf has no write authority — the host writes after the

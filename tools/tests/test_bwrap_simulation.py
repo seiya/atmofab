@@ -1337,7 +1337,7 @@ class _ScriptedApi:
 
     The i-th request whose body offers tools (the leaf's main loop) is answered `script[i]` —
     a list of content blocks and a stop reason; every other request (the CLI's own side calls)
-    gets a one-word text reply. Bodies and headers are kept for the assertions. Unbilled: the
+    gets a one-word text reply. Request bodies are kept for the assertions. Unbilled: the
     CLI talks to loopback with a placeholder key."""
 
     def __init__(self, script: list[tuple[list[dict], str]]) -> None:
