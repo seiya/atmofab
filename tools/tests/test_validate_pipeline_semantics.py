@@ -28540,6 +28540,13 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                               ("an unnormalized spelling", {"runtime_rw_bind_paths": [
                                   f"{home}/x/../config", f"{home}/x/../tree"],
                                   "workdir": f"{home}/x/../tree"}),
+                              # The lineage NAME is right here, so only the normalization
+                              # test can refuse it.
+                              ("an unnormalized spelling of the right lineage", {
+                                  "runtime_rw_bind_paths": [
+                                      f"{home}/../{self._ARID}/config",
+                                      f"{home}/../{self._ARID}/tree"],
+                                  "workdir": f"{home}/../{self._ARID}/tree"}),
                               ("workdir config", {"workdir": f"{home}/config"}),
                               ("no leaf_mode", {"leaf_mode": None})):
             with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:

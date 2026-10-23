@@ -145,6 +145,13 @@ class LineageHomeTests(_Env):
         self.assertIsNone(self._prepare("lin_gone", resume=True))
         self.assertFalse((self.homes / _ORCH / "claude" / "lin_gone").exists())
 
+    def test_a_warm_preparation_re_secures_the_lineage_home(self) -> None:
+        cold = self._prepare("lin_a", resume=False)
+        home = Path(cold["home"])
+        os.chmod(home, 0o755)
+        self._prepare("lin_a", resume=True)
+        self.assertEqual(stat.S_IMODE(home.lstat().st_mode), 0o700)
+
     def test_a_warm_preparation_re_secures_the_config_home(self) -> None:
         """The CLI's own `config/` holds the lineage's transcripts: a drifted mode is tightened
         on the warm preparation, and a link in its place is refused."""
@@ -353,6 +360,9 @@ class WorkshopRecordLaunchTests(_Env):
                 {"response": {**_spawn_response("ar_x"), "backend": "codex"}}),
         }
         self._prepare("ar_x", resume=False)
+        # A lineage that EXISTS, so the cold "starts its own lineage" check is the one that
+        # refuses the row naming it, not the absence of its home (round 2: the row was masked).
+        self._prepare("ar_other", resume=False)
         for label, (req, kw) in cases.items():
             with self.subTest(case=label):
                 with self.assertRaises((ValueError, RuntimeError)):
@@ -696,6 +706,36 @@ class SpawnTimeoutTests(unittest.TestCase):
             self.assertLess(time.monotonic() - t0, 30)
             self.assertIn('\\"ended\\": true', result.stdout)
             self.assertTrue(result.stderr.endswith(wc.LEAF_CANCELLED_MARKER), result.stderr)
+
+    def test_a_cancelled_leaf_that_exits_zero_is_still_a_failed_launch(self) -> None:
+        """A leaf that answers the termination with a clean exit and a whole envelope must not
+        read as a finished turn: the pure loops accept on `returncode == 0`."""
+        import threading
+        script = "trap 'echo ANSWERED; exit 0' TERM; sleep 60 & wait"
+        with tempfile.TemporaryDirectory() as tmp:
+            c = self._claude_conductor(Path(tmp), ["sh", "-c", script])
+            cancel = threading.Event()
+            threading.Timer(0.5, cancel.set).start()
+            result = wc.Conductor.spawn_leaf(
+                c, "", {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+                c.entry_for("generate", "verify"), child_arid="child", cancel_event=cancel)
+            self.assertEqual(result.returncode, 1)
+            self.assertEqual(result.stdout.strip(), "ANSWERED")  # the trap ran and exited 0
+            self.assertTrue(result.stderr.endswith(wc.LEAF_CANCELLED_MARKER))
+
+    def test_the_bound_still_fires_while_a_cancel_event_is_held(self) -> None:
+        """PR-3 passes both on every workshop spawn: an event never set must not switch the
+        deadline off."""
+        import threading
+        with tempfile.TemporaryDirectory() as tmp:
+            c = self._claude_conductor(Path(tmp), ["sleep", "60"])
+            result = wc.Conductor.spawn_leaf(
+                c, "", {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+                c.entry_for("generate", "verify"), child_arid="child",
+                timeout_seconds=1, timeout_name="lineage_timeout_s",
+                cancel_event=threading.Event())
+            self.assertIn("leaf exceeded lineage_timeout_s=1", result.stderr)
+            self.assertNotIn(wc.LEAF_CANCELLED_MARKER, result.stderr)
 
     def test_a_cancel_event_is_a_claude_leafs(self) -> None:
         import threading
