@@ -16,7 +16,8 @@ Two places per lineage, and the leaf sees only the first:
   `snapshot/` (the tree's non-host-placed files, copied when the lineage ends);
 * the LINEAGE RECORD, `workspace/orchestrations/<oid>/workshop/<lineage_id>/`, host-written
   only: `workshop_lineage.json`, `command_log.jsonl` (every build-runtime call of the wrapper) and
-  `wrapper_calls.jsonl` (every request the wrapper served).
+  `wrapper_calls.jsonl` (every request the wrapper's transport served; that transport and its
+  writer are issue #534 PR-2's).
 
 No function here raises on what the leaf wrote: a malformed tree is a finding the caller
 reports back, never an exception. Neutral core (`docs/BACKEND_BOUNDARY.md`): the names of the

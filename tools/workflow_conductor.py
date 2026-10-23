@@ -10425,9 +10425,14 @@ class Conductor:
         Run in the main thread when the lineage is created, before the leaf launches, so the
         wrapper's transport threads only compile against it. The staged files are SOURCES and
         headers, as for the syntax gate; the directory is out of the tree and absent from a
-        wrapper `run`'s sandbox, so a leaf-authored program cannot open a dependency's
-        certified source (`docs/design/producer_workshop_leaf.md` §Tool surface). Refuses a
-        closure it could not stage, as the syntax gate does."""
+        wrapper `run`'s sandbox, so the built program cannot open a dependency's certified
+        source. A wrapper `compile` does bind it (the build writes its objects there), and the
+        control file it runs is the tree's, which the leaf can edit: such a control file can
+        print a staged source into the compile's output. That read gains the leaf nothing
+        toward a verdict — the host's own Build re-stages the bound copies — and is a recorded
+        departure from `docs/design/producer_workshop_leaf.md` §Tool surface ("the leaf never
+        reads a dependency's source"), which holds for `run` only. Refuses a closure it could
+        not stage, as the syntax gate does."""
         staged = self._stage_dependency_sources(refs, paths.staged_obj, phase="generate")
         self._refuse_unstaged_closure(refs, staged, "workshop leaf staged closure")
         names: list[str] = []
@@ -10448,6 +10453,13 @@ class Conductor:
         the local site (`host_execution.launch_shape`, as `_execute_inproc` asks it). Every
         callable is a module function bound to frozen arguments: an operation served on a
         transport thread calls no conductor method.
+
+        What it does NOT carry is what the gates' DIRECTORY holds: the host gates read `src/`
+        with the host-rendered headers in it (the node's interface header and checks header,
+        and each closure member's interface header `_write_dependency_headers` copies), while
+        the wrapper's lint and syntax stages read the work tree, so those headers have to be
+        seeds of the tree (issue #534 PR-3; measured on a `cuda_cpp` node in round 1, where a
+        correct tree without them fails the wrapper's lint and syntax and passes the host's).
 
         Raises `RuntimeError` on a host precondition (a language with no lint preset or no
         syntax stage) — the gates raise the same for the same node. A target whose class this

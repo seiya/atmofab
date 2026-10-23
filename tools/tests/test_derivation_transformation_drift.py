@@ -1231,7 +1231,10 @@ PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #534 PR-1), behaviour-preserving for the build: `_run_command` and
     # `tool_compile_project` take an optional `sandbox_argv_prefix` (and `on_spawn`), which
     # `_build_inproc` never passes; the unprefixed path runs the same `subprocess.run` and
-    # writes the same `command_log.jsonl` entry. (Measured by diffing `build_tuple()` against
+    # writes the same `command_log.jsonl` entry. One difference, on a timeout only: the
+    # result's `stdout` / `stderr` are text, where they were the bytes `TimeoutExpired`
+    # carries (which `_build_inproc`'s log write could not take); a timed-out build is a
+    # failure and is never reused. (Measured by diffing `build_tuple()` against
     # origin/main ad0393fd's: those two rows and no other.) The digest `build-2` shipped with at ad0393fd:
     "build-2@ad0393fd": "8607644d9d7dc718cc7dabac0481be902360ce0f08aad91257e9e9e1f94d1793",
 }
@@ -1512,7 +1515,8 @@ PINNED_EXECUTE: dict[str, str] = {
     "execute-12": "fa6566def55fa6c086a61df51b741600a60049b2f1a74f14d164dabda2c655e5",
     # Re-pinned (issue #534 PR-1), behaviour-preserving for the execute: `_run_command` and the
     # two run tools take an optional `sandbox_argv_prefix` (and `on_spawn`), which
-    # `_execute_inproc` never passes; the unprefixed path is unchanged. (Measured by diffing
+    # `_execute_inproc` never passes; the unprefixed path is unchanged but for a timeout's
+    # result, whose `stdout` / `stderr` are now text rather than bytes (see the build pin). (Measured by diffing
     # `execute_tuple()` against origin/main ad0393fd's: those three rows and no other.) The
     # digest `execute-12` shipped with at ad0393fd:
     "execute-12@ad0393fd": "7d0bf312f0768f31579cf210435a16f781c9d38531db52f9d782225123a0da42",

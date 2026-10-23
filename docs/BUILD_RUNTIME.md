@@ -42,7 +42,7 @@ The module also exports the facts a build or run at a remote execution site need
 - `compile_project` / `run_program` / `run_quality_checks` / `run_linter` / `run_syntax_check` always record the executed command in `JSONL` format. Where the conductor places each log is canonical in `docs/workflow/COMMAND_LOG_PLACEMENT.md`.
 - The default for `command_log_path` when unspecified is `<project_dir>/command_log.jsonl`; a relative `command_log_path` resolves against `project_dir`.
 - Each entry carries `version`, `command_id`, `tool_name`, `started_at_utc`, `ended_at_utc`, `elapsed_ms`, `cwd`, `command`, `executed_command`, `timeout_sec`, `capture_limit`, `env_override_keys` (the names, not the values), `ok`, `return_code`, `error` on a timeout, `sandbox_argv_prefix` when the call passed one (`command` stays the command the caller composed, so a reader of `command` reads the same argv either way), and the attribution fields when they are passed.
-- The execution result returns `command_id`, `executed_command`, and `command_log_path`, and when the log is under the current working directory (the checkout, for the conductor), returns `command_log_ref`. A prefixed call also returns `sandbox_argv_prefix` and `process_group_id`.
+- The execution result returns `command_id`, `executed_command`, and `command_log_path`, and when the log is under the current working directory (the checkout, for the conductor), returns `command_log_ref`. A prefixed call also returns `sandbox_argv_prefix` and `process_group_id`. A timed-out call's `stdout` and `stderr` are text, as on every other outcome.
 
 ## Call examples
 Building `fortran` with `make`:
