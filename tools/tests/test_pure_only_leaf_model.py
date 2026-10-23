@@ -312,9 +312,25 @@ class SpawnLeafAdmitsOneWritableProfileTests(unittest.TestCase):
             "a pure entry": (lambda p: p, pure),
             "a third rw path": (lambda p: p["runtime_rw_bind_paths"].append(third), workshop),
             "one rw path": (lambda p: p["runtime_rw_bind_paths"].pop(), workshop),
+            # The workdir moves with the tree, so only the one-home clause can refuse it.
             "config and tree of two homes": (
                 lambda p: p.update(runtime_rw_bind_paths=[self.config,
-                                                          str(Path(third) / "tree")]),
+                                                          str(Path(third) / "tree")],
+                                   workdir=str(Path(third) / "tree")),
+                workshop),
+            "a lineage home under the checkout": (
+                lambda p: p.update(
+                    runtime_rw_bind_paths=[str(self.repo / "ws" / "config"),
+                                           str(self.repo / "ws" / "tree")],
+                    workdir=str(self.repo / "ws" / "tree"),
+                    env={"CLAUDE_CONFIG_DIR": str(self.repo / "ws" / "config")}),
+                workshop),
+            "an unnormalized spelling": (
+                lambda p: p.update(
+                    runtime_rw_bind_paths=[self.config.replace("/config", "/x/../config"),
+                                           self.tree.replace("/tree", "/x/../tree")],
+                    workdir=self.tree.replace("/tree", "/x/../tree"),
+                    env={"CLAUDE_CONFIG_DIR": self.config.replace("/config", "/x/../config")}),
                 workshop),
             "renamed tree": (lambda p: p.update(
                 runtime_rw_bind_paths=[self.config, third], workdir=third), workshop),

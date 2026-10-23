@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 import re
 
 import yaml
@@ -648,11 +649,14 @@ def _is_pure_launch_prompt_text(launch_text: str) -> bool:
 _HTTP_PURE_LEAF_BACKENDS: frozenset[str] = frozenset({"openai_compatible", "anthropic_api"})
 
 
-def _workshop_profile_violations(profile: dict) -> list[str]:
+def _workshop_profile_violations(profile: dict, request: dict | None = None,
+                                 repo_root: Path | None = None) -> list[str]:
     """What is wrong with a persisted workshop leaf's sandbox profile (issue #534): it must be
     `leaf_mode: workshop`, `readonly: false`, `write_roots: []`, with exactly two rw binds —
-    one lineage home's `config` and `tree` — and its tree as its workdir. The persisted-record
-    twin of `workflow_conductor._admissible_leaf_profile`, which refuses the spawn."""
+    the `config` and `tree` of ONE lineage home, spelled as normalized absolute paths, outside
+    the checkout (`repo_root`), in the lineage directory the request names
+    (`workshop_lineage_id`) — and its tree as its workdir. The persisted-record twin of
+    `workflow_conductor._admissible_leaf_profile`, which refuses the spawn."""
     out: list[str] = []
     if profile.get("leaf_mode") != "workshop" or profile.get("readonly") is not False:
         out.append(f"workshop launch sandbox profile must be leaf_mode=workshop, readonly=false "
@@ -662,13 +666,30 @@ def _workshop_profile_violations(profile: dict) -> list[str]:
         out.append(f"workshop launch sandbox profile write_roots must be [] (got "
                    f"{profile.get('write_roots')!r})")
     rw = profile.get("runtime_rw_bind_paths")
-    names = sorted(Path(p).name for p in rw) if isinstance(rw, list) and all(
-        isinstance(p, str) for p in rw) else None
-    if names != ["config", "tree"] or len({str(Path(p).parent) for p in rw}) != 1:
+    paths = ([Path(p) for p in rw] if isinstance(rw, list)
+             and all(isinstance(p, str) and p for p in rw) else None)
+    if (paths is None or sorted(p.name for p in paths) != ["config", "tree"]
+            or len({p.parent for p in paths}) != 1):
         out.append(f"workshop launch sandbox profile must bind exactly one lineage home's "
                    f"config/ and tree/ read-write (got {rw!r})")
-    elif str(profile.get("workdir") or "") not in rw or Path(
-            str(profile.get("workdir"))).name != "tree":
+        return out
+    if any(not p.is_absolute() or str(p) != os.path.normpath(str(p)) for p in paths):
+        out.append(f"workshop launch sandbox profile rw binds must be normalized absolute "
+                   f"paths (got {rw!r})")
+    if repo_root is not None:
+        repo = Path(os.path.normpath(str(Path(repo_root).absolute())))
+        if any(p == repo or p.is_relative_to(repo) or repo.is_relative_to(p) for p in paths):
+            out.append(f"workshop launch sandbox profile rw binds must lie outside the "
+                       f"checkout {repo} (got {rw!r})")
+    if request is not None:
+        lineage = request.get("workshop_lineage_id")
+        if not (isinstance(lineage, str) and lineage.strip()):
+            out.append("workshop launch request names no workshop_lineage_id")
+        elif paths[0].parent.name != lineage.strip():
+            out.append(f"workshop launch sandbox profile binds lineage "
+                       f"{paths[0].parent.name!r}, not the request's {lineage.strip()!r}")
+    tree = next(p for p in paths if p.name == "tree")
+    if str(profile.get("workdir") or "") != str(tree):
         out.append(f"workshop launch sandbox profile workdir must be its tree (got "
                    f"{profile.get('workdir')!r})")
     return out
@@ -8115,7 +8136,12 @@ def _validate_orchestration_hierarchy(
                                         # checkout, nothing under it.
                                         violations.extend(
                                             f"{runs_path}:line {idx + 1} {why}"
-                                            for why in _workshop_profile_violations(sbx_doc))
+                                            for why in _workshop_profile_violations(
+                                                sbx_doc,
+                                                req_payload_for_launch
+                                                if isinstance(req_payload_for_launch, dict)
+                                                else {},
+                                                workspace_path.parent))
                                     else:
                                         if sbx_doc.get("readonly") is not True:
                                             violations.append(

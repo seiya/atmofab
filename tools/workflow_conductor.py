@@ -2224,12 +2224,14 @@ def _wait_for_leaf_exit(process: Any, deadline: float | None,
             continue
 
 
-def _admissible_leaf_profile(profile: Mapping[str, Any], entry: Any) -> bool:
+def _admissible_leaf_profile(profile: Mapping[str, Any], entry: Any,
+                             repo_root: Path | None = None) -> bool:
     """Whether `spawn_leaf` may launch a leaf under `profile`: a READ-ONLY profile (every pure
     leaf's), or a WORKSHOP lineage's (issue #534) for a workshop entry — `leaf_mode:
     workshop`, `readonly: False`, and rw binds that are EXACTLY two sibling directories of one
-    lineage home, `config` and `tree`, with the tree as the working directory and
-    `CLAUDE_CONFIG_DIR` naming `config`. Fail-closed: any other shape answers False."""
+    lineage home, `config` and `tree`, spelled as normalized absolute paths outside the
+    checkout (`repo_root`), with the tree as the working directory and `CLAUDE_CONFIG_DIR`
+    naming `config`. Fail-closed: any other shape answers False."""
     if profile.get("readonly") is True:
         return profile.get("leaf_mode") is None
     if not (getattr(entry, "is_workshop", False)
@@ -2238,7 +2240,13 @@ def _admissible_leaf_profile(profile: Mapping[str, Any], entry: Any) -> bool:
     rw = profile.get("runtime_rw_bind_paths")
     if not (isinstance(rw, list) and len(rw) == 2 and all(isinstance(p, str) for p in rw)):
         return False
+    if any(not os.path.isabs(p) or p != os.path.normpath(p) for p in rw):
+        return False
     paths = sorted((Path(p) for p in rw), key=lambda p: p.name)
+    if repo_root is not None:
+        repo = Path(os.path.normpath(str(Path(repo_root).absolute())))
+        if any(p == repo or p.is_relative_to(repo) or repo.is_relative_to(p) for p in paths):
+            return False
     config, tree = paths
     env = profile.get("env") if isinstance(profile.get("env"), dict) else {}
     return (config.name == "config" and tree.name == "tree" and config.parent == tree.parent
@@ -4517,7 +4525,7 @@ class Conductor:
             # IS a workshop entry, and rw binds that are exactly the lineage's own `config/`
             # and `tree/` — siblings under one lineage home, outside the checkout — with the
             # tree as its working directory. Anything else writable is refused.
-            if not _admissible_leaf_profile(profile, entry):
+            if not _admissible_leaf_profile(profile, entry, self.repo_root):
                 raise SandboxEnforcementError(
                     f"the sandbox profile for {child_arid!r} is neither read-only nor a "
                     "workshop lineage's (exactly its config/ and tree/ writable, for a "

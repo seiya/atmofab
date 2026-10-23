@@ -28531,7 +28531,15 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                               ("a third bind", {"runtime_rw_bind_paths": [
                                   f"{home}/config", f"{home}/tree", "/tmp/x"]}),
                               ("two homes", {"runtime_rw_bind_paths": [
-                                  f"{home}/config", "/tmp/elsewhere/tree"]}),
+                                  f"{home}/config", "/tmp/elsewhere/tree"],
+                                  "workdir": "/tmp/elsewhere/tree"}),
+                              ("another lineage", {"runtime_rw_bind_paths": [
+                                  "/tmp/homes/x/claude/OTHER/config",
+                                  "/tmp/homes/x/claude/OTHER/tree"],
+                                  "workdir": "/tmp/homes/x/claude/OTHER/tree"}),
+                              ("an unnormalized spelling", {"runtime_rw_bind_paths": [
+                                  f"{home}/x/../config", f"{home}/x/../tree"],
+                                  "workdir": f"{home}/x/../tree"}),
                               ("workdir config", {"workdir": f"{home}/config"}),
                               ("no leaf_mode", {"leaf_mode": None})):
             with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
@@ -28540,6 +28548,30 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 self._make_workshop(repo_root, profile={**good, **change})
                 self.assertTrue(any("workshop launch sandbox profile" in v
                                     for v in self._workshop_violations(repo_root)), label)
+
+    def test_a_workshop_profile_under_the_checkout_or_without_a_lineage_is_flagged(self) -> None:
+        for label in ("under the checkout", "no lineage in the request"):
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._build_tree(repo_root)
+                home = repo_root / "lineage" / self._ARID
+                profile = {"agent_run_id": self._ARID, "readonly": False,
+                           "leaf_mode": "workshop", "write_roots": [],
+                           "runtime_rw_bind_paths": [f"{home}/config", f"{home}/tree"],
+                           "workdir": f"{home}/tree"}
+                if label == "under the checkout":
+                    self._make_workshop(repo_root, profile=profile)
+                    expected = "must lie outside the checkout"
+                else:
+                    self._make_workshop(repo_root)
+                    req_path = (self._orch_root(repo_root) / "launches"
+                                / f"{self._ARID}.request.json")
+                    req = json.loads(req_path.read_text(encoding="utf-8"))
+                    del req["workshop_lineage_id"]
+                    req_path.write_text(json.dumps(req), encoding="utf-8")
+                    expected = "names no workshop_lineage_id"
+                self.assertTrue(any(expected in v for v in self._workshop_violations(repo_root)),
+                                label)
 
     def test_a_workshop_prompt_whose_request_is_unreadable_is_flagged(self) -> None:
         """The request half defaults to "not workshop" when its file is gone, so the prompt
