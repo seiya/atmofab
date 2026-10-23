@@ -145,6 +145,19 @@ class LineageHomeTests(_Env):
         self.assertIsNone(self._prepare("lin_gone", resume=True))
         self.assertFalse((self.homes / _ORCH / "claude" / "lin_gone").exists())
 
+    def test_a_warm_preparation_re_secures_the_config_home(self) -> None:
+        """The CLI's own `config/` holds the lineage's transcripts: a drifted mode is tightened
+        on the warm preparation, and a link in its place is refused."""
+        cold = self._prepare("lin_a", resume=False)
+        config = Path(cold["config"])
+        os.chmod(config, 0o755)
+        self._prepare("lin_a", resume=True)
+        self.assertEqual(stat.S_IMODE(config.lstat().st_mode), 0o700)
+        config.rename(config.with_name("config_real"))
+        config.symlink_to(config.with_name("config_real"))
+        with self.assertRaises(ValueError):
+            self._prepare("lin_a", resume=True)
+
     def test_a_missing_credentials_file_is_refused(self) -> None:
         self.credentials.unlink()
         with self.assertRaises(ValueError) as ctx:
