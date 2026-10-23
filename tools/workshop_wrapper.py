@@ -105,6 +105,10 @@ class WrapperContext:
     syntax_architecture: str | None
     syntax_parallel_backend: str | None
     syntax_staged_suffixes: tuple[str, ...]
+    #: The node's model file and its host-rendered interface header (None for a language
+    #: with none): what the model-alone probe stages.
+    model_basename: str
+    interface_header_basename: str | None
     #: The local launch shape (`host_execution.launch_shape`), or None with `run_unavailable`.
     launch_argv_prefix: tuple[str, ...] | None
     launch_env: tuple[tuple[str, str], ...]
@@ -307,44 +311,88 @@ def _op_lint(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dic
     return _command_feedback(result) | {"preset": ctx.lint_preset}
 
 
+def _stage_dir(ctx: WrapperContext, name: str) -> Path:
+    """A fresh stage directory under the lineage's `syntax/`: a residue from an earlier call
+    would make the staged set wider than the tree is now."""
+    stage_dir = ctx.paths.syntax / name
+    if stage_dir.exists():
+        shutil.rmtree(stage_dir)
+    stage_dir.mkdir(parents=True)
+    return stage_dir
+
+
+def _syntax_run(ctx: WrapperContext, stage_dir: Path, on_spawn: Any) -> dict[str, Any]:
+    from tools.build_runtime import tool_run_syntax_check
+
+    env = dict(ctx.base_env)
+    return tool_run_syntax_check({
+        "compiler": ctx.syntax_compiler,
+        "std": ctx.syntax_std,
+        "architecture": ctx.syntax_architecture,
+        "parallel_backend": ctx.syntax_parallel_backend,
+        "project_dir": str(stage_dir),
+        "env": env,
+        "command_log_path": str(ctx.paths.command_log),
+        "capture_limit": ctx.capture_limit,
+        "timeout_sec": _bounded_timeout(ctx, ctx.compile_timeout_sec),
+        "sandbox_argv_prefix": _sandbox(ctx, project_dir=stage_dir, rw=[stage_dir], env=env),
+        "on_spawn": on_spawn,
+        **_attribution(ctx),
+    })
+
+
 def _op_syntax_check(ctx: WrapperContext, args: Mapping[str, Any],
                      on_spawn: Any) -> dict[str, Any]:
-    from tools.build_runtime import SyntaxSourceNameError, tool_run_syntax_check
-    from tools.workflow_conductor import stage_syntax_inputs
+    """The host gate's mandatory syntax stage over the tree, then — when it passes — its
+    model-alone probe (issue #389): the same compiler over exactly what a node depending on
+    this one is staged, the closure, the model file and the node's interface header. The tree
+    is staged as `workflow_conductor.stage_syntax_inputs` stages `src/` (every file of a staged
+    suffix, at its own relative path), read through no link."""
+    from tools.build_runtime import SyntaxSourceNameError
 
     refused = _no_arguments("syntax_check", args)
     if refused is not None:
         return refused
-    stage_dir = ctx.paths.syntax / ctx.syntax_compiler
-    if stage_dir.exists():
-        shutil.rmtree(stage_dir)
-    stage_dir.mkdir(parents=True)
-    stage_syntax_inputs(ctx.paths.tree, stage_dir, ctx.syntax_staged_suffixes)
+    stage_dir = _stage_dir(ctx, ctx.syntax_compiler)
+    files, _links = workshop_tree._walk_tree_files(ctx.paths.tree)
+    workshop_tree._copy_files(
+        ctx.paths.tree, stage_dir,
+        [rel for rel in files if rel.suffix.lower() in ctx.syntax_staged_suffixes])
     for name in ctx.closure_file_names:
         shutil.copy2(ctx.paths.staged_obj / name, stage_dir / name)
-    env = dict(ctx.base_env)
     try:
-        result = tool_run_syntax_check({
-            "compiler": ctx.syntax_compiler,
-            "std": ctx.syntax_std,
-            "architecture": ctx.syntax_architecture,
-            "parallel_backend": ctx.syntax_parallel_backend,
-            "project_dir": str(stage_dir),
-            "env": env,
-            "command_log_path": str(ctx.paths.command_log),
-            "capture_limit": ctx.capture_limit,
-            "timeout_sec": _bounded_timeout(ctx, ctx.compile_timeout_sec),
-            "sandbox_argv_prefix": _sandbox(ctx, project_dir=stage_dir, rw=[stage_dir],
-                                            env=env),
-            "on_spawn": on_spawn,
-            **_attribution(ctx),
-        })
+        result = _syntax_run(ctx, stage_dir, on_spawn)
     except SyntaxSourceNameError as exc:
         return _result(False, category="syntax_error", findings=str(exc))
     if result.get("skipped"):
         return _result(True, skipped=True, reason=result.get("reason"),
                        compiler=ctx.syntax_compiler)
-    return _command_feedback(result) | {"compiler": ctx.syntax_compiler}
+    out = _command_feedback(result) | {"compiler": ctx.syntax_compiler}
+    if not out["ok"]:
+        return out
+    model, _why = workshop_tree.read_regular_file_under(
+        ctx.paths.tree, PurePosixPath(ctx.model_basename))
+    if model is None:
+        # A missing model is `derive`'s finding (the bundle contract), not this probe's.
+        return out
+    alone_dir = _stage_dir(ctx, f"{ctx.syntax_compiler}_model_alone")
+    for name in ctx.closure_file_names:
+        shutil.copy2(ctx.paths.staged_obj / name, alone_dir / name)
+    (alone_dir / ctx.model_basename).write_bytes(model)
+    if ctx.interface_header_basename:
+        header, _ = workshop_tree.read_regular_file_under(
+            ctx.paths.tree, PurePosixPath(ctx.interface_header_basename))
+        if header is not None:
+            (alone_dir / ctx.interface_header_basename).write_bytes(header)
+    alone = _command_feedback(_syntax_run(ctx, alone_dir, on_spawn))
+    if not alone["ok"]:
+        alone["findings"] = (
+            f"the whole tree passed, but {ctx.model_basename} alone did not: a node that "
+            f"depends on this one is staged exactly the model file (and its interface header) "
+            f"with the dependency closure, so the model may not use or include any other file "
+            f"of this bundle; move what it needs into the model file")
+    return _result(bool(alone["ok"]), compiler=ctx.syntax_compiler, rc=out.get("rc"),
+                   stdout=out.get("stdout"), stderr=out.get("stderr"), model_alone=alone)
 
 
 def _tree_file(ctx: WrapperContext, name: Any) -> tuple[Path | None, str | None]:

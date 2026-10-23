@@ -10522,6 +10522,10 @@ class Conductor:
             syntax_architecture=self._target_architecture(),
             syntax_parallel_backend=tc["backend"],
             syntax_staged_suffixes=tuple(s.lower() for s in syntax_facts.STAGED_SUFFIXES),
+            model_basename=self._model_basename(refs),
+            interface_header_basename=(
+                header.basename(spec_id_of(refs.node_key))
+                if (header := self._interface_header_module(refs)) is not None else None),
             launch_argv_prefix=launch_prefix,
             launch_env=launch_env,
             run_unavailable=run_unavailable,

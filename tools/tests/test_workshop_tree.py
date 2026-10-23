@@ -368,6 +368,7 @@ def _context(paths: wt.LineagePaths, reserved, **over) -> ww.WrapperContext:
         language="fortran", build_system="make", build_overrides=(), lint_preset="fortitude",
         syntax_compiler="gfortran", syntax_std="f2008", syntax_architecture=None,
         syntax_parallel_backend=None, syntax_staged_suffixes=(".f90",),
+        model_basename="x_model.f90", interface_header_basename=None,
         launch_argv_prefix=(), launch_env=(), run_unavailable=None,
         base_env=tuple(sorted(ww.wrapper_base_env({"PATH": "/usr/bin:/bin"}).items())),
         toolchain_ro_roots=(), max_wrapper_calls=5, lineage_deadline=time.time() + 600)

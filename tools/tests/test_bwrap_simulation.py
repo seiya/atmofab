@@ -1112,7 +1112,8 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
                              "BIN=x_runner"),
             lint_preset="fortitude", syntax_compiler="gfortran", syntax_std="f2008",
             syntax_architecture=None, syntax_parallel_backend=None,
-            syntax_staged_suffixes=(".f90",), launch_argv_prefix=(), launch_env=(),
+            syntax_staged_suffixes=(".f90",), model_basename="x_model.f90",
+            interface_header_basename=None, launch_argv_prefix=(), launch_env=(),
             run_unavailable=None, base_env=tuple(sorted(ww.wrapper_base_env().items())),
             toolchain_ro_roots=tuple(wrapper_toolchain_ro_roots(
                 ["make", "gfortran", "python3", *lint_preset_executables("fortitude")])),
@@ -1187,6 +1188,42 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
                              ["bwrap", "--die-with-parent", "--new-session", "--unshare-net"])
             self.assertEqual(entry["agent_run_id"], "arid-sim")
         self.assertEqual(self.wt.read_lineage_record(self.paths)["wrapper_calls_used"], 5)
+
+    def test_syntax_check_runs_the_host_gates_model_alone_probe(self) -> None:
+        """A model that `use`s another file of its own bundle passes over the whole tree and
+        breaks every consumer, which is staged the model alone (issue #389): the host's
+        Generate.gate refuses it, so the wrapper's feedback must too (issue #534 round 1)."""
+        (self.paths.tree / "x_helper.f90").write_text(textwrap.dedent("""\
+            module x_helper
+              implicit none
+            contains
+              integer function x_one()
+                x_one = 1
+              end function x_one
+            end module x_helper
+            """))
+        (self.paths.tree / "x_model.f90").write_text(textwrap.dedent("""\
+            module x_model
+              use dep_model, only: dep_twice
+              use x_helper, only: x_one
+              implicit none
+            contains
+              integer function x_value()
+                x_value = dep_twice(21) * x_one()
+              end function x_value
+            end module x_model
+            """))
+        out = self.op("syntax_check")
+        self.assertFalse(out["ok"], out)
+        self.assertEqual(out["rc"], 0, "the whole tree is expected to pass")
+        self.assertFalse(out["model_alone"]["ok"])
+        self.assertIn("x_model.f90 alone did not", out["model_alone"]["findings"])
+        # The helper moved into the model file: both pass.
+        (self.paths.tree / "x_helper.f90").unlink()
+        (self.paths.tree / "x_model.f90").write_text(self._MODEL)
+        out = self.op("syntax_check")
+        self.assertTrue(out["ok"], out)
+        self.assertTrue(out["model_alone"]["ok"], out)
 
     def test_a_tool_installed_in_a_checkout_virtualenv_starts_inside_the_run(self) -> None:
         """`docs/DEVELOPMENT.md` suggests a virtualenv, and one kept in the checkout sat under
