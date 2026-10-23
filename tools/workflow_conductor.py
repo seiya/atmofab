@@ -2219,6 +2219,11 @@ def _leaf_timeout_marker(timeout_seconds: int, elapsed: float,
             f"{timeout_seconds} (elapsed {elapsed:.0f}s); process group killed")
 
 
+class WorkshopSetupFailed(RuntimeError):
+    """A `workshop leaf` launch could not be set up on the host side (issue #534): a host
+    precondition, raised before anything is recorded or launched."""
+
+
 class WorkshopEndpointNotStopped(RuntimeError):
     """A `workshop leaf` launch's wrapper endpoint still had a handler running after `stop()`
     (issue #534): the loop refuses to snapshot the tree under it."""
@@ -9185,10 +9190,14 @@ class Conductor:
             # the wrapper's feedback reads what the gates will.
             for name, text in lineage.seeds.items():
                 write_host_file(paths.tree, name, text)
-        ctx = self._freeze_wrapper_context(
-            refs, paths, agent_run_id=child_arid, seed_names=lineage.seed_names,
-            reserved_names=lineage.reserved, closure_file_names=lineage.closure_file_names,
-            max_wrapper_calls=int(entry.max_wrapper_calls), lineage_deadline=lineage.deadline)
+        try:
+            ctx = self._freeze_wrapper_context(
+                refs, paths, agent_run_id=child_arid, seed_names=lineage.seed_names,
+                reserved_names=lineage.reserved, closure_file_names=lineage.closure_file_names,
+                max_wrapper_calls=int(entry.max_wrapper_calls),
+                lineage_deadline=lineage.deadline)
+        except Exception as exc:  # noqa: BLE001 — a host precondition, before any launch
+            raise WorkshopSetupFailed(f"{type(exc).__name__}: {exc}") from exc
         calls_before = int(read_lineage_record(paths).get("wrapper_calls_used") or 0)
         cancel = threading.Event()
         server = self._start_wrapper_endpoint(ctx, lambda _ended_by: cancel.set())
@@ -9330,15 +9339,17 @@ class Conductor:
                 paths, lineage_record = located
                 if (lineage_record.get("ended_by") is None and warm_capable
                         and self._workshop_session_resumable(paths, target_arid)):
-                    seeds = self._workshop_seeds(
-                        refs, pure_context, self._workshop_seed_request(
-                            refs, phase, substep, entry, resolved_dependencies, exemplar,
-                            runner_host_authored, pure_context, paths.lineage_id, spec))
-                    started = _parse_iso_utc(str(lineage_record.get("started_at_utc") or ""))
-                    lineage = self._workshop_lineage_from_seeds(
-                        refs, paths, seeds,
-                        (started.timestamp() if started is not None else time.time())
-                        + float(entry.lineage_timeout_s))
+                    try:
+                        lineage = self._reattach_workshop_lineage(
+                            refs, entry, paths, lineage_record, phase, substep,
+                            resolved_dependencies, exemplar, runner_host_authored,
+                            pure_context, spec)
+                    except Exception as exc:  # noqa: BLE001 — a host precondition
+                        self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
+                                  detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
+                        return SubstepOutcome(
+                            self.new_agent_run_id(), "fail", [], 1,
+                            ("workshop_lineage_setup_failed", _pure_assembly_detail(exc)), 1)
                     resume_session_id = target_arid
                     repair_target = target_arid
                     mode = "warm"
@@ -9411,6 +9422,14 @@ class Conductor:
                 turn = self._spawn_workshop_turn(
                     refs, request, entry, lineage, child_arid=child_arid, phase=phase,
                     substep=substep, resume_session_id=resume_session_id, warm=warm)
+            except WorkshopSetupFailed as exc:
+                # Nothing was launched or recorded: a host precondition (the wrapper's
+                # context could not be frozen), routed like an unassemblable context.
+                self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
+                          detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
+                return SubstepOutcome(child_arid, "fail", [], 1,
+                                      ("workshop_lineage_setup_failed", str(exc)[:200]),
+                                      max(1, len(per_attempt)))
             except WorkshopEndpointNotStopped as exc:
                 # A host defect (a wrapper handler outlived the endpoint's stop): the tree is
                 # not read under it. The launch is recorded and unfinalized, which the
@@ -9548,6 +9567,28 @@ class Conductor:
             else:
                 prior, lineage, resume_session_id = lineage.paths, None, None
             attempt += 1
+
+    def _reattach_workshop_lineage(self, refs: NodeRefs, entry: Any, paths: Any,
+                                   lineage_record: Mapping[str, Any], phase: str,
+                                   substep: str | None,
+                                   resolved_dependencies: tuple[dict[str, str], ...],
+                                   exemplar: dict[str, Any] | None, runner_host_authored: bool,
+                                   pure_context: dict[str, str],
+                                   spec: "Conductor._PureProducerSpec"
+                                   ) -> "Conductor._WorkshopLineage":
+        """The loop's handle on an OPEN lineage an outer reopen continues warm: the current
+        seeds (re-placed before the launch), the closure restaged, and the deadline its record's
+        `started_at_utc` and the entry's `lineage_timeout_s` give. Raises on a host
+        precondition."""
+        seeds = self._workshop_seeds(
+            refs, pure_context, self._workshop_seed_request(
+                refs, phase, substep, entry, resolved_dependencies, exemplar,
+                runner_host_authored, pure_context, paths.lineage_id, spec))
+        started = _parse_iso_utc(str(lineage_record.get("started_at_utc") or ""))
+        return self._workshop_lineage_from_seeds(
+            refs, paths, seeds,
+            (started.timestamp() if started is not None else time.time())
+            + float(entry.lineage_timeout_s))
 
     def _workshop_seed_request(self, refs: NodeRefs, phase: str, substep: str | None,
                                entry: Any, resolved_dependencies: tuple[dict[str, str], ...],

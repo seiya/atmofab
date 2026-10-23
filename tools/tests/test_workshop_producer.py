@@ -173,7 +173,8 @@ class _Base(unittest.TestCase):
         return self.c.run_substep(self.refs, "generate", "generate", repair=repair)
 
     def requests(self) -> list[dict]:
-        return [c[1]["--request-json"] for c in self.c.calls if c[0] == "record-launch"]
+        return [c[1]["--request-json"] for c in getattr(self.c, "calls", [])
+                if c[0] == "record-launch"]
 
     def paths(self, lineage: str) -> workshop_tree.LineagePaths:
         return workshop_tree.LineagePaths(
@@ -737,3 +738,29 @@ class TimeoutEventTests(_Base):
                                      context={"step": "generate"})
         self.assertEqual(events[0][1]["leaf_mode"], "workshop")
         self.assertNotIn("leaf_mode", events[1][1])
+
+
+class SetupFailureTests(_Base):
+    def test_a_wrapper_context_that_cannot_be_frozen_fails_closed_unlaunched(self) -> None:
+        with mock.patch.object(_WorkshopFakeConductor, "_freeze_wrapper_context",
+                               side_effect=RuntimeError("no static lint preset")):
+            outcome = self.run_substep()
+        self.assertEqual(outcome.status, "fail")
+        self.assertEqual(outcome.infra_error[0], "workshop_lineage_setup_failed")
+        self.assertIn("no static lint preset", outcome.infra_error[1])
+        self.assertEqual(self.requests(), [])
+        self.assertFalse(hasattr(self.c, "spawns"))
+
+    def test_an_outer_reopen_whose_seeds_cannot_be_rendered_fails_closed(self) -> None:
+        self.assertEqual(self.run_substep().status, "pass")
+        evidence = self.c.__dict__["evidence"]
+        with mock.patch.object(ort, "_read_launch_request_payload",
+                               lambda r, o, *, agent_run_id:
+                               evidence.get(f"{agent_run_id}.request.input.json")), \
+                mock.patch.object(_WorkshopFakeConductor, "_workshop_seeds",
+                                  side_effect=RuntimeError("seed boom")):
+            outcome = self.run_substep(repair={
+                "repair_strategy": "reuse", "repair_target_agent_run_id": "child-1",
+                "repair_findings": "x", "issue_severity": "major", "repair_reason": "r"})
+        self.assertEqual(outcome.infra_error[0], "workshop_lineage_setup_failed")
+        self.assertIn("seed boom", outcome.infra_error[1])
