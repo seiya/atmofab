@@ -6045,7 +6045,9 @@ class Conductor:
     def _pure_leaf_substep(self, refs: NodeRefs, phase: str, substep: str | None) -> bool:
         """True when this substep runs as a host-mediated pure-function leaf.
 
-        Since Z4 (issue #171) there is nothing else an LLM leaf can be, so what this predicate
+        Since Z4 (issue #171) every LLM leaf runs on this host-rendered path — a `workshop leaf`
+        (issue #534) too: its request is host-rendered and it answers True here, which is what
+        keeps `run_phase` from pre-writing the control file for it — so what this predicate
         still decides is only whether the node HAS a pure path: the `(phase, substep)` pair, and
         — for the two GENERATE pairs only — whether the node has a CodegenBundle shape at all
         (`_bundle_shape`, which answers `m3c` or `harness`).

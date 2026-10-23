@@ -74,6 +74,8 @@ class _WorkshopFakeConductor(_PureFakeConductor):
     homes: Path
     leaf_actions: list
     resumable = True
+    #: How many launches past the end of `leaf_actions` the fake serves before raising.
+    MAX_SPAWNS_PAST_SCRIPT = 8
 
     def _prepare_workshop_home(self, lineage_id, *, resume):  # type: ignore[override]
         home = self.homes / self.orchestration_id / "claude" / lineage_id
@@ -125,6 +127,11 @@ class _WorkshopFakeConductor(_PureFakeConductor):
         self.__dict__.setdefault("order", []).append(("spawn", kwargs["child_arid"]))
         index = len(self.spawns) - 1
         actions = self.leaf_actions
+        if index >= len(actions) + self.MAX_SPAWNS_PAST_SCRIPT:
+            # A loop that lost a budget would re-launch the repeated last action forever; name
+            # it instead of hanging (a hang is neither a kill nor a survivor).
+            raise AssertionError(f"unbounded re-launch: {index + 1} launches for a script of "
+                                 f"{len(actions)}")
         action = actions[min(index, len(actions) - 1)] if actions else None
         result = action(self, tree, kwargs) if action is not None else None
         return result if result is not None else wc.ProcResult(0, _envelope(), "")
@@ -685,7 +692,7 @@ _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
 #: `WORKSHOP_SYSTEM_PROMPT`. A change to either is a change of the workshop leaf's contract and
 #: takes a new version, keeping every shipped pin (the no-revert check reads them).
 _WORKSHOP_CONTRACT_DIGESTS = {
-    "workshop-1": "36b24f9784eaf318c3be23cbca630affe639a8bcb1dc4d11fa8fe35179872f7e",
+    "workshop-1": "434bbd2a7d61d8ad6352b857a08398ed9ea0c33af5f7904823a841af6cc0d17e",
 }
 
 

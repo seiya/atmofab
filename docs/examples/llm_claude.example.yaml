@@ -96,7 +96,7 @@
 #
 # A bound that runs out ends the lineage with its tree as it stands. A repair, a transient
 # retry and a usage-limit wait each start a fresh lineage with fresh counters, so one substep
-# run may open up to 8 lineages (1 + 2 repair turns + 2 transient retries + 3 usage waits; 6
+# run may open up to 8 lineages (1 + 2 repair turns + 2 transient retries + 3 usage waits; 5
 # without --wait-usage-reset): up to max_wrapper_calls x 8 calls and lineage_timeout_s x 8
 # seconds, and more across an outer reopen. The leaf runs in a private config home under
 # its lineage home, over which `~/.claude/.credentials.json` is bound, so that file must exist
