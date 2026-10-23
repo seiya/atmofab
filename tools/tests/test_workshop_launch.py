@@ -412,8 +412,13 @@ class WorkshopRecordLaunchTests(_Env):
         self.assertTrue(ort.render_launch_prompt_text(req).startswith(WORKSHOP_PROMPT_SENTINEL))
 
     def test_without_its_template_a_workshop_request_is_a_named_refusal(self) -> None:
-        with mock.patch.object(ort, "_load_launch_prompt_templates", _REAL_TEMPLATE_LOADER), \
-                mock.patch.object(ort, "_PROMPT_TEMPLATE_FILES", _REAL_TEMPLATE_FILES):
+        # The real map minus the workshop launch template: the refusal names what is missing.
+        without = {k: v for k, v in _REAL_TEMPLATE_FILES.items()
+                   if k != "workshop generate.generate"}
+        loaded = {k: v for k, v in _REAL_TEMPLATE_LOADER().items()
+                  if k != "workshop generate.generate"}
+        with mock.patch.object(ort, "_load_launch_prompt_templates", lambda: loaded), \
+                mock.patch.object(ort, "_PROMPT_TEMPLATE_FILES", without):
             with self.assertRaises(ValueError) as ctx:
                 ort.render_launch_prompt_text(
                     ort.prepare_launch_request_payload(_workshop_request("ar_x")))
@@ -594,21 +599,6 @@ class LeafCommandTests(unittest.TestCase):
         self.assertEqual(seen[1][seen[1].index("--workshop-lineage-id") + 1], "child")
         response = json.loads(seen[0][seen[0].index("--response-json") + 1])
         self.assertEqual(response["claude_mcp_config"][0]["url"], "http://127.0.0.1:4242/mcp")
-
-    def test_a_workshop_entry_fails_closed_until_its_loop_is_wired(self) -> None:
-        from tools.tests.test_pure_leaf_producer import _write_node
-        refs = _write_node(self.repo)
-        outcome = self.c.run_substep(refs, "generate", "generate")
-        self.assertEqual(outcome.status, "fail")
-        self.assertEqual(outcome.infra_error[0], "workshop_leaf_not_wired")
-        self.assertEqual(outcome.infra_error[1], wc.WORKSHOP_LEAF_NOT_WIRED_DETAIL)
-        # The fail_closed reason the transport branch composes keeps the remedy whole: the
-        # head it writes, plus this detail, fits `_PHASE_REASON_DETAIL_MAX_CHARS`.
-        head = f"leaf_transport_error: leaf_exit=1 (tag: {outcome.infra_error[0]}; )"
-        self.assertLessEqual(len(head) + len(outcome.infra_error[1]),
-                             wc._PHASE_REASON_DETAIL_MAX_CHARS)
-        for field in ("leaf", "max_wrapper_calls", "lineage_timeout_s", "fresh run"):
-            self.assertIn(field, outcome.infra_error[1])
 
 
 class SpawnTimeoutTests(unittest.TestCase):

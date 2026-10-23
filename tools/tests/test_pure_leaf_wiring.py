@@ -1401,6 +1401,11 @@ class PureRenderTests(unittest.TestCase):
         # `SKILL` does, and issue #143's leftover was in exactly that position.
         ("tools/prompt_templates/pure_generate_generate.txt", None, None),
         ("tools/prompt_templates/pure_bundle_repair.txt", None, None),
+        # Issue #534: the workshop producer's templates, scanned for the reason their pure
+        # twins are.
+        ("tools/prompt_templates/workshop_generate_generate.txt", None, None),
+        ("tools/prompt_templates/workshop_generate_generate_harness.txt", None, None),
+        ("tools/prompt_templates/workshop_bundle_repair.txt", None, None),
         # Issue #289 (R4-b PR-2): the generate templates' language rules moved into fragment
         # files the host composes into them, so each fragment file is a leaf-read template
         # surface of its own — a severity spelled in one reaches the leaf exactly as one spelled
@@ -3487,23 +3492,27 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
     A backend that declares no fragments composes every marker to nothing; every other failure
     is a NAMED refusal, as for a language."""
 
-    _KEYS = ("pure generate.generate", "pure generate.verify")
+    #: The workshop producer's template (issue #534) carries the pure producer's rules
+    #: verbatim, composed from the same fragments.
+    _KEYS = ("pure generate.generate", "pure generate.verify", "workshop generate.generate")
     #: The opening words of the OpenMP floor paragraph in each template (the fragment's text).
     _OPENMP_FLOOR = {
         "pure generate.generate": "For a `cpu` target whose `parallel.backend` is `openmp`",
+        "workshop generate.generate": "For a `cpu` target whose `parallel.backend` is `openmp`",
         "pure generate.verify": "on a `component`/`problem` node whose target is cpu+openmp+",
     }
 
     #: The opening words of the MPI floor paragraph in each template (issue #316, R4-c PR-4).
     _MPI_FLOOR = {
         "pure generate.generate": "For a `cpu` target whose `parallel.backend` is `mpi`",
+        "workshop generate.generate": "For a `cpu` target whose `parallel.backend` is `mpi`",
         "pure generate.verify": "on a `component`/`problem` node whose target is cpu+mpi+",
     }
 
     @staticmethod
     def _section(key: str, parallel: str) -> str:
         raw = ort._load_launch_prompt_templates()[key]
-        stem = ort._PROMPT_TEMPLATE_FILES[key].removeprefix("pure_").removesuffix(".txt")
+        stem = ort._fragment_template_stem(ort._PROMPT_TEMPLATE_FILES[key])
         return ort.backend_registry.capability_module(
             "parallel", parallel, "prompt_fragments").fragments(stem)[
                 ort._PARALLEL_FRAGMENT_RE.findall(raw)[0]]

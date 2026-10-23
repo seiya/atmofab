@@ -9291,6 +9291,12 @@ _PROMPT_TEMPLATE_FILES = {
     "pure generate.verify.harness": "pure_generate_verify_harness.txt",
     "pure validate.judge": "pure_validate_judge.txt",
     "pure bundle repair": "pure_bundle_repair.txt",
+    # The `workshop leaf` (issue #534): the producer's rules and output contract verbatim, the
+    # documents as seed files of its work tree instead of inlined, and the tree contract in
+    # place of the one-reply instruction. Line 0 is WORKSHOP_PROMPT_SENTINEL.
+    "workshop generate.generate": "workshop_generate_generate.txt",
+    "workshop generate.generate.harness": "workshop_generate_generate_harness.txt",
+    "workshop bundle repair": "workshop_bundle_repair.txt",
     # The escalate diagnostician: one template, four (step, substep) keys, because the pair is
     # what the renderer looks up and the prompt does not vary with the failed phase (the phase
     # is a field of the diagnosis document).
@@ -9897,6 +9903,19 @@ def _pure_launch_template_name(request_payload: dict[str, Any]) -> str:
     return f"{family} {step}.{substep}.{shape}" if shape else f"{family} {step}.{substep}"
 
 
+def _fragment_template_stem(template_file: str) -> str:
+    """The stem a backend's prompt fragments are keyed by: the template file without its family
+    prefix and suffix. A `workshop leaf`'s template (issue #534) carries the pure template's
+    rules verbatim, so it is composed from the SAME fragments as its pure twin:
+    `workshop_generate_generate.txt` and `pure_generate_generate.txt` both ask for
+    `generate_generate`."""
+    stem = template_file.removesuffix(".txt")
+    for family in ("pure_", "workshop_"):
+        if stem.startswith(family):
+            return stem[len(family):]
+    return stem
+
+
 #: A neutral template's marker for a place the target LANGUAGE's rules go (issue #289, R4-b
 #: PR-2). Composed away before any `<key>` substitution, so a composed template is exactly the
 #: text the leaf reads and the cold repair's re-statement of the body (`_pure_launch_body`)
@@ -9925,7 +9944,7 @@ def _compose_language_fragments(template: str, template_file: str, language: Any
             f"target language the prompt is composed for")
     try:
         module = backend_registry.capability_module("language", lang, "prompt_fragments")
-        sections = module.fragments(template_file.removeprefix("pure_").removesuffix(".txt"))
+        sections = module.fragments(_fragment_template_stem(template_file))
     except (backend_registry.UnsupportedBackend, backend_registry.BackendNotExtracted,
             ValueError) as exc:
         raise ValueError(
@@ -9981,7 +10000,7 @@ def _compose_parallel_fragments(template: str, template_file: str, parallel: Any
         return _PARALLEL_FRAGMENT_RE.sub("", template)
     try:
         module = backend_registry.capability_module("parallel", backend, "prompt_fragments")
-        sections = module.fragments(template_file.removeprefix("pure_").removesuffix(".txt"))
+        sections = module.fragments(_fragment_template_stem(template_file))
     except (backend_registry.UnsupportedBackend, backend_registry.BackendNotExtracted,
             ValueError) as exc:
         raise ValueError(

@@ -3376,9 +3376,13 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
         # lineage's remaining `lineage_timeout_s` (issue #534). An event from before the field
         # existed was always the environment cap.
         bound = payload.get("timeout_bound") or "ATMOFAB_LEAF_TIMEOUT_SECONDS"
+        # A workshop leaf's kill ends its lineage, and the host judges the tree it left: the
+        # phase goes on (a defective tree is repaired by a cold reuse), so saying it fails
+        # closed would be false.
+        outcome = ("lineage ended, its tree is judged as it stands"
+                   if payload.get("leaf_mode") == "workshop" else "phase fails closed")
         return (f"    [warn   ] leaf timeout in {phase}.{substep}: no answer after {elapsed}s "
-                f"(cap {cap}s, {bound}) — process group killed, "
-                f"phase fails closed")
+                f"(cap {cap}s, {bound}) — process group killed, {outcome}")
 
     if status == "info" and event == "leaf_usage_limit_wait":
         phase = payload.get("step", "?")

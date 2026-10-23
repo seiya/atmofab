@@ -6518,8 +6518,9 @@ class LeafEnvSpawnSiteGuardTest(unittest.TestCase):
         # rather than going quietly vacuous. ONE since Z4 (issue #171): `_spawn_pure_turn`,
         # the site every launch goes through — the two pure loops and the escalate
         # diagnostician. It was two (the agentic launch in `run_substep` was the other), and
-        # four before those three inlined their own launch block.
-        self.assertEqual(len(sites), 1, "spawn_leaf call sites changed; re-read the guard")
+        # four before those three inlined their own launch block. TWO since issue #534 PR-3:
+        # `_spawn_workshop_turn`, the workshop producer's launch, is the second.
+        self.assertEqual(len(sites), 2, "spawn_leaf call sites changed; re-read the guard")
         import ast
         for node in sites:
             with self.subTest(line=node.lineno):
