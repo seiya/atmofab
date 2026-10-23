@@ -243,13 +243,27 @@ class WorkshopRecordLaunchTests(_Env):
         _preflight(self.repo)
         _with_test_templates(self)
 
-    def _launch(self, child: str, req: dict, **kw) -> dict:
+    def _launch(self, child: str, req: dict, *, prepare: bool = True,
+                response: dict | None = None, **kw) -> dict:
+        """Record one launch. A COLD workshop launch has its lineage home prepared first, as
+        the conductor does in its own process before it records the launch (`prepare=False`
+        leaves it absent)."""
+        if (prepare and pure_leaf.is_workshop_request(req) and "workshop_lineage_id" not in kw
+                and not (self.homes / _ORCH / "claude" / child).exists()):
+            self._prepare(child, resume=False)
         prepared = ort.prepare_launch_request_payload(dict(req))
         req = dict(req, launch_prompt_full=ort.render_launch_prompt_text(prepared))
         return record_launch(repo_root=self.repo, orchestration_id=_ORCH,
                              parent_agent_run_id="orch_run_001", child_agent_run_id=child,
-                             request_payload=req, response_payload=_spawn_response(child),
-                             **kw)
+                             request_payload=req,
+                             response_payload=response or _spawn_response(child), **kw)
+
+    def test_a_cold_launch_whose_home_the_host_did_not_prepare_is_refused(self) -> None:
+        with self.assertRaises(RuntimeError) as ctx:
+            self._launch("ar_ws_cold", _workshop_request("ar_ws_cold"), prepare=False)
+        self.assertIn("the host prepares it before recording the launch", str(ctx.exception))
+        self.assertFalse((self._base() / "launches/ar_ws_cold.request.json").exists())
+        self.assertFalse((self.homes / _ORCH / "claude" / "ar_ws_cold").exists())
 
     def _base(self) -> Path:
         return self.repo / "workspace/orchestrations" / _ORCH
@@ -318,7 +332,14 @@ class WorkshopRecordLaunchTests(_Env):
                 _workshop_request("ar_x", prompt_contract_version=
                                   pure_leaf.PURE_PROMPT_CONTRACT_VERSION), {}),
             "a write path": (_workshop_request("ar_x", allowed_output_paths=["x"]), {}),
+            "an HTTP provider named by the response": (
+                _workshop_request("ar_x"),
+                {"response": {**_spawn_response("ar_x"), "backend": "anthropic_api"}}),
+            "a codex backend named by the response": (
+                _workshop_request("ar_x"),
+                {"response": {**_spawn_response("ar_x"), "backend": "codex"}}),
         }
+        self._prepare("ar_x", resume=False)
         for label, (req, kw) in cases.items():
             with self.subTest(case=label):
                 with self.assertRaises((ValueError, RuntimeError)):

@@ -13389,11 +13389,16 @@ def _prepare_claude_workshop_home(repo_root: Path, orchestration_id: str, lineag
     bound into no leaf) and the LINEAGE HOME `<container>/<lineage_id>/`, which is
     `workshop_tree.LineagePaths.home`. `lineage_id` is the `agent_run_id` of the cold launch
     that started the lineage. `resume` means what it means there: cold creates the lineage
-    home EXCLUSIVELY, 0700 (one already there is refused, not adopted); warm requires it and
-    answers `None` when it is gone, which `record_launch` turns into
-    `workshop_lineage_home_missing` before any durable launch mutation, so the conductor falls
-    back to a cold reuse — a resume against a home without its transcript cannot continue the
-    session.
+    home EXCLUSIVELY, 0700 (one already there is refused, not adopted) — called by the
+    CONDUCTOR, in its own process, before it records the launch, because the tree is seeded and
+    the wrapper's context frozen under the home first; warm requires it and answers `None` when
+    it is gone. `record_launch` calls it warm for both launches: on a warm one a `None` becomes
+    `workshop_lineage_home_missing`, answered before any launch record (a resume against a
+    home without its transcript cannot continue the session, so the conductor falls back to a
+    cold reuse); on a cold one it is a host defect. Either way the orchestration's `claude/`
+    container is established (created, recorded in `orchestration_meta.json`, its owner marker
+    written) as on any preparation, as the codex preparer does; only the lineage home is never
+    created warm.
 
     What the lineage home holds that this function places: `config/` (0700), the leaf's
     `CLAUDE_CONFIG_DIR`, created empty but for a `.credentials.json` placeholder over which
@@ -14726,18 +14731,26 @@ def record_launch(
     # A WORKSHOP leaf's lineage (issue #534): a claude launch in the lineage's private home,
     # whose id the request names (`workshop_lineage_id`). A COLD launch starts the lineage —
     # its id is the child's own, and no `--workshop-lineage-id` is passed; a WARM one resumes it
-    # and passes the id, and its home must still be there. The warm half is answered here,
-    # before any durable launch mutation, exactly as the codex lineage is above: a missing home
-    # returns `workshop_lineage_home_missing` and the conductor falls back to a cold reuse.
+    # and passes the id.
+    #
+    # The HOST prepares a cold lineage's home before this launch is recorded, not this function:
+    # the conductor seeds the tree, stages the closure and freezes the wrapper's context — all
+    # under the home — and starts the wrapper endpoint whose URL this launch records, before it
+    # records the launch (`_prepare_claude_workshop_home(..., resume=False)`, in its own
+    # process). So here the home must exist on BOTH launches, and the two absences mean
+    # different things: a warm launch whose home is gone returns
+    # `workshop_lineage_home_missing` and the conductor falls back to a cold reuse, as the codex
+    # lineage does above; a cold launch whose home was never prepared is a host defect, refused.
+    # Both are answered before any launch record, session-index row or active-child marker.
     is_workshop = _pure_leaf_is_workshop_request(request_payload)
     workshop_isolation: dict[str, str] | None = None
     if workshop_lineage_id is not None or is_workshop:
         if not is_workshop:
             raise ValueError("workshop_lineage_id is valid only for a workshop launch request")
-        if backend_token != "claude":
+        if backend_token != "claude" or (_launch_backend and _launch_backend != "claude"):
             raise ValueError(
                 f"record-launch: a workshop launch runs on the claude backend only; this launch "
-                f"names {backend_token!r}")
+                f"names {_launch_backend or backend_token!r}")
         requested = request_payload.get("workshop_lineage_id")
         if not (isinstance(requested, str) and _AGENT_RUN_ID_RE.match(requested.strip())):
             raise ValueError(
@@ -14764,13 +14777,18 @@ def record_launch(
                     f"{workshop_lineage_id!r}, so the request's workshop_lineage_id must name "
                     f"it and the child must be a new run (got request {requested!r}, child "
                     f"{child_agent_run_id!r})")
-            workshop_isolation = _prepare_claude_workshop_home(
-                repo_root, orchestration_id, workshop_lineage_id, resume=True)
-            if workshop_isolation is None:
-                return {
-                    "workshop_lineage_home_missing": True,
-                    "workshop_lineage_id": workshop_lineage_id,
-                }
+        workshop_isolation = _prepare_claude_workshop_home(
+            repo_root, orchestration_id, requested, resume=True)
+        if workshop_isolation is None:
+            if workshop_lineage_id is None:
+                raise RuntimeError(
+                    f"record-launch: the cold workshop launch {child_agent_run_id!r} has no "
+                    "lineage home; the host prepares it before recording the launch "
+                    "(`_prepare_claude_workshop_home(..., resume=False)`)")
+            return {
+                "workshop_lineage_home_missing": True,
+                "workshop_lineage_id": workshop_lineage_id,
+            }
 
     # A Codex warm-resume target lives in one LINEAGE HOME — `<container>/<lineage_id>/`,
     # the `CODEX_HOME` of the thread it resumes (`_prepare_codex_workflow_home`). Prepare
@@ -15235,18 +15253,15 @@ def record_launch(
                 # no hooks — and `--restricted`, which keeps out the operator's settings files,
                 # the other thing a private home kept out (issue #453;
                 # `default_agent_model_for_backend`). A WORKSHOP leaf (issue #534) has one per
-                # lineage, prepared below.
+                # lineage, which the host prepares before this launch is recorded (above).
                 profile_kwargs: dict[str, Any] = {}
                 if codex_isolation is not None:
                     profile_kwargs = codex_isolation_profile_kwargs(codex_isolation)
                 if is_workshop:
                     if _backend_family != "claude":
                         raise ValueError("a workshop launch's profile is a claude profile")
-                    # A COLD workshop launch starts its lineage, named by the child's own id,
-                    # created exclusively (a warm one was prepared above).
-                    if workshop_isolation is None:
-                        workshop_isolation = _prepare_claude_workshop_home(
-                            repo_root, orchestration_id, child_agent_run_id, resume=False)
+                    # Its lineage home was found above, cold and warm alike.
+                    assert workshop_isolation is not None
                     response_payload["claude_workflow_home"] = workshop_isolation["home"]
                     response_payload["workshop_lineage_id"] = workshop_isolation["lineage_id"]
                     profile_kwargs = claude_workshop_profile_kwargs(workshop_isolation)
