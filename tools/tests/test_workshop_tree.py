@@ -375,6 +375,27 @@ class WrapperBoundsAndDeriveTests(_LineageCase):
     """The wrapper's bookkeeping and its host-side operation. The sandboxed ones run under real
     bwrap in `test_bwrap_simulation`."""
 
+    def test_every_operation_reads_the_host_s_seeds_not_the_leaf_s_edits(self) -> None:
+        """Issue #534 PR-3: the frozen seed texts are written back before an operation, so a
+        seed the leaf edited (the runner, `spec.ir.yaml`) is not what the operation reads; a
+        seed left out of `seed_texts` (the contract copy) is left alone. Not re-placed for a
+        refused call."""
+        texts = tuple(sorted((n, t) for n, t in _SEEDS.items() if n != "CONTRACT.md"))
+        ctx = _context(self.paths, self.reserved, seed_texts=texts)
+        for name in _SEEDS:
+            (self.paths.tree / name).write_text("edited by the leaf\n")
+        (self.paths.tree / "x_runner.f90").unlink()
+        (self.paths.tree / "x_runner.f90").symlink_to(self.paths.tree / "tests.md")
+        ww.run_wrapper_op(ctx, "derive")
+        for name, text in texts:
+            self.assertFalse((self.paths.tree / name).is_symlink(), name)
+            self.assertEqual((self.paths.tree / name).read_text(), text, name)
+        self.assertEqual((self.paths.tree / "CONTRACT.md").read_text(), "edited by the leaf\n")
+        wt.end_lineage(self.paths, "leaf_exit")
+        (self.paths.tree / "tests.md").write_text("edited again\n")
+        self.assertTrue(ww.run_wrapper_op(ctx, "derive")["ended"])
+        self.assertEqual((self.paths.tree / "tests.md").read_text(), "edited again\n")
+
     def test_every_call_is_counted_and_the_cap_ends_the_lineage(self) -> None:
         ctx = _context(self.paths, self.reserved, max_wrapper_calls=2)
         for _ in range(2):

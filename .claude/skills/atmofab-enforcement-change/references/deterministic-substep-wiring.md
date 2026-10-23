@@ -36,7 +36,9 @@ and dispatch sites — which is how the green-unit-suite failure above happens:
    `pure-function leaf` holds no tool and writes nothing, the host writes every artifact from
    the document the leaf returns, and both functions went with that grant in Z4
    ([issue #171](https://github.com/seiya/atmofab/issues/171) PR-2). There is nothing to make
-   leaf-non-writable: a host-authored artifact is unreachable by construction.
+   leaf-non-writable: a host-authored artifact is unreachable by construction (a `workshop leaf`,
+   issue #534, writes only its own work tree outside the checkout, and the host writes every
+   artifact from that tree's snapshot).
 9. `ALLOWED_VALIDATE_PIPELINE_STAGES` and `_build_gate_runbook`, and the matching table in
    `docs/workflow/LAUNCH_PROMPT_REFERENCE.md` — keep them in sync in the same commit.
 

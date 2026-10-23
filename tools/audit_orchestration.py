@@ -1186,6 +1186,12 @@ def _render_pure_leaf_row(label: str, row: dict[str, Any], lines: list[str]) -> 
         f"attempts={row.get('attempts')} "
         f"(repair turns={row.get('repair_turns')}){cat_str}{contract_str}"
     )
+    if row.get("leaf_mode") == "workshop":
+        lineages = row.get("lineages") or []
+        lines.append(
+            f"  - workshop leaf — lineages {len(lineages)} "
+            f"({', '.join(f'`{x}`' for x in lineages) or 'none recorded'}), "
+            f"wrapper calls {row.get('wrapper_calls')}, model turns {row.get('model_turns')}")
     # `total` sums all four token classes; show cache_creation too so the four
     # displayed numbers reconcile with `total`.
     lines.append(

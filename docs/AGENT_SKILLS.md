@@ -5,7 +5,10 @@ This document defines the reference conventions for the `skills` used in the pro
 > **No workflow leaf reads a `SKILL`.** Since Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171))
 > every LLM substep of the core workflow runs as a `pure-function leaf`: it holds no tools, reads
 > nothing from disk, and receives its whole contract inlined in the launch prompt the host renders
-> (`tools/prompt_templates/pure_*.txt`). The five core phase `SKILL`s are deleted with the agentic
+> (`tools/prompt_templates/pure_*.txt`). The one other leaf shape, a `workshop leaf`
+> (`Generate.generate` on a `leaf: workshop` entry, `docs/ORCHESTRATION.md` §workshop leaf), reads
+> its contract from the prompt the host renders (`tools/prompt_templates/workshop_*.txt`) and the
+> `seed` files the host places in its `work tree`; no `SKILL` is among them. The five core phase `SKILL`s are deleted with the agentic
 > leaf that read them. What is left under `skills/` is the procedures an OPERATOR runs — the
 > optional `Tune` / `Promote` flows, the audits, the spec input check, the timing audit — plus the
 > reserved `Tune` / `Promote` surface. This document maps those, and records where each core
@@ -22,7 +25,8 @@ This document defines the reference conventions for the `skills` used in the pro
 - OUT OF SCOPE: the skills under `.claude/skills/`. Those are dev-only procedures for an operator's
   interactive session (how to review a change, how to change enforcement machinery); no phase maps to
   them, and no leaf can load them — a pure leaf runs under `--safe-mode`, which disables skills
-  along with every other customization (`CLAUDE.md`).
+  along with every other customization, and a `workshop leaf` runs with an empty tmpfs at the
+  checkout path, a private config home and `--restricted` (`CLAUDE.md`).
 
 ## Requirements
 - An OPERATOR running one of the flows below identifies the target phase, then reads the corresponding `SKILL.md`. A workflow leaf does not: the host renders its contract into its prompt.
@@ -37,7 +41,7 @@ This document defines the reference conventions for the `skills` used in the pro
 - `Build` and `Validate.execute` are non-LLM steps the **conductor runs in-process** (no leaf agent, no `SKILL.md`); their contract is `docs/workflow/phases/phase_03_build.md` / `phase_04_validate.md`. They go through the build-runtime library (`compile_project` / `run_program` / `run_quality_checks`; `docs/BUILD_RUNTIME.md`) and apply the `Build-runtime execution rules` of `AGENTS.md`.
 - Each phase must not drop the required outputs defined in its file under `docs/workflow/phases/` (e.g. `ir_meta.json`, `source_meta.json`, `binary_meta.json`, `verdict.json`, `validate_meta.json`).
 - Write into `SKILL.md` the execution procedure and the procedures specific to that `SKILL`, and do not duplicate the `phase`'s I/O contract / artifact format / numerical canonical requirements in a form that contradicts `docs/workflow/WORKFLOW_CORE.md` or `docs/workflow/phases/phase_*.md`.
-- There is no leaf hook layer. A pure leaf makes no tool call, so there is nothing for a hook to judge; `tools/hooks/` holds the operator's DEV entrypoint alone (`docs/HOOKS.md` is canonical).
+- There is no leaf hook layer. A pure leaf makes no tool call, so there is nothing for a hook to judge, and a `workshop leaf`'s calls are bounded by placement and by the host-served wrapper rather than by a hook (`docs/ORCHESTRATION.md` §workshop leaf); `tools/hooks/` holds the operator's DEV entrypoint alone (`docs/HOOKS.md` is canonical).
 
 ## Responsibility-decision flow
 1. Judge whether the rule to add/change directly affects the validity of a workflow artifact.
@@ -48,20 +52,21 @@ This document defines the reference conventions for the `skills` used in the pro
 6. When the decision is hard, use as the decision axis whether the impact of a rule violation extends to the destruction of auditability / reproducibility / judgment consistency. When it destroys, choose the contract documents under `docs/workflow/`; when it does not, choose `SKILL.md`.
 
 ## phase-to-contract correspondence table (core workflow)
-Every row is host-side: either a `pure-function leaf` reading one template, or a deterministic
-substep the conductor runs in-process. No row names a `SKILL`.
+Every row is host-side: a `pure-function leaf` reading one template, a `workshop leaf` reading one
+template and its `seed` files, or a deterministic substep the conductor runs in-process. No row
+names a `SKILL`.
 
 - `Compile generate`: `tools/prompt_templates/pure_compile_generate.txt` for the IR core, with `phase_01_compile.md` and the node's `spec` documents inlined (`_build_pure_compile_context`), then `pure_compile_generate_verification.txt` once per group of consecutive `tests.md` tests, shown an excerpt of `phase_01_compile.md` (issue #526)
 - `Compile static`: conductor in-process (deterministic `validate_workspace_root` + `validate_pipeline_semantics --stage compile`, see `docs/workflow/phases/phase_01_compile.md`)
 - `Compile verify`: `tools/prompt_templates/pure_compile_verify.txt` (`_build_pure_compile_verify_context`)
-- `Generate generate`: `tools/prompt_templates/pure_generate_generate.txt` on the `m3c` bundle shape, `pure_generate_generate_harness.txt` on the `harness` shape
+- `Generate generate`: `tools/prompt_templates/pure_generate_generate.txt` on the `m3c` bundle shape, `pure_generate_generate_harness.txt` on the `harness` shape; on a `leaf: workshop` entry, a `workshop leaf` rendered from `tools/prompt_templates/workshop_generate_generate.txt` / `workshop_generate_generate_harness.txt` per bundle shape, its repair turns from `workshop_bundle_repair.txt` (`docs/ORCHESTRATION.md` §workshop leaf)
 - `Generate gate`: conductor in-process (deterministic lint check `run_linter`, syntax check `run_syntax_check` compiler front-end gate — the target language's mandatory syntax-only stage, for `fortran` [GENERATE_RULES.md](backends/language/fortran/GENERATE_RULES.md) §2 — and static check `validate_workspace_root` + `validate_pipeline_semantics --stage post_generate` — the static check runs only when the lint and syntax checks both pass; see `docs/workflow/phases/phase_02_generate.md`)
 - `Generate verify`: `tools/prompt_templates/pure_generate_verify.txt` / `pure_generate_verify_harness.txt`, per bundle shape
 - `Build`: conductor in-process (see `docs/workflow/phases/phase_03_build.md`)
 - `Validate execute`: conductor in-process (see `docs/workflow/phases/phase_04_validate.md`)
 - `Validate judge`: `tools/prompt_templates/pure_validate_judge.txt`
 - `Escalate diagnose`: `tools/prompt_templates/pure_escalate_diagnose.txt`
-- Repair turns: `tools/prompt_templates/pure_bundle_repair.txt`
+- Repair turns: `tools/prompt_templates/pure_bundle_repair.txt`; a `workshop leaf`'s, `tools/prompt_templates/workshop_bundle_repair.txt`
 
 ## phase-to-Skill correspondence table (optional flows)
 - `Tune generate`: `skills/workflow-tune-generate/SKILL.md`

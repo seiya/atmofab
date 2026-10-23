@@ -144,9 +144,12 @@ def claude_leaf_projects_roots(repo_root: Path,
                                orchestration_id: str | None = None) -> tuple[Path, ...]:
     """Every directory a Claude leaf's per-project state may live under.
 
-    ONE root since Z4 (issue #171): the operator's `~/.claude/projects`. Every claude leaf is a
-    PURE leaf, which takes `--safe-mode` (no customizations) and is prepared no private
-    `CLAUDE_CONFIG_DIR`, so it writes its `--session-id` transcript there. Issue #63's
+    ONE root since Z4 (issue #171): the operator's `~/.claude/projects`. A PURE claude leaf
+    takes `--safe-mode` (no customizations) and is prepared no private `CLAUDE_CONFIG_DIR`, so
+    it writes its `--session-id` transcript there. A `workshop leaf` (issue #534) writes its
+    transcript into its lineage's private config home instead
+    (`<homes-root>/<oid>/claude/<lineage_id>/config/projects`), which this resolver does not
+    return: a dangling workshop leaf's transcript is not located by the post-mortem below. Issue #63's
     per-orchestration private home existed for the AGENTIC leaf and went with it; a transcript
     written under one before Z4 is no longer reachable from here — accepted, and the reason the
     signature keeps `orchestration_id` is that its callers pass one and the key it would select

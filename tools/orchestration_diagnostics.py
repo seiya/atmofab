@@ -16,7 +16,8 @@ leaf is launched with its ``agent_run_id`` pinned as the Claude session id
 directly addressable as ``<projects-root>/<slug>/<arid>.jsonl`` — the operator's
 ``~/.claude/projects``, which since Z4 (issue #171) is the only root there is. A
 ``pure-function leaf`` is prepared no private ``CLAUDE_CONFIG_DIR``, so it writes where every
-other claude session writes. Issue #63 had put an AGENTIC leaf's transcript in the
+other claude session writes. A ``workshop leaf`` (issue #534) writes its transcript into its
+lineage's private config home instead, which is not searched here. Issue #63 had put an AGENTIC leaf's transcript in the
 orchestration's private home and issue #64 made that home durable
 (``~/.atmofab/homes/<orchestration_id>/claude``); that leaf is deleted, the home is no longer
 prepared, and a transcript written under one before the cut is not reachable from here —
@@ -572,7 +573,7 @@ def _summarize_one_pure_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
     parts = meta.get("parts")
     loops = max(sum(1 for row in parts if isinstance(row, dict)), 1) \
         if isinstance(parts, list) else 1
-    return {
+    row: dict[str, Any] = {
         "found": True,
         "result": meta.get("result"),
         "attempts": attempts,
@@ -582,6 +583,18 @@ def _summarize_one_pure_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
         "usage_total": usage_total,
         "models": models,
     }
+    if meta.get("leaf_mode") == "workshop":
+        # A `workshop leaf` (issue #534): the lineages its attempts ran in, and the wrapper
+        # calls and model turns they spent — the A/B's own dimensions besides tokens.
+        rows = [a for a in per_attempt if isinstance(a, dict)]
+        row["leaf_mode"] = "workshop"
+        row["lineages"] = list(dict.fromkeys(
+            str(a["lineage_id"]) for a in rows if isinstance(a.get("lineage_id"), str)))
+        row["wrapper_calls"] = sum(_nonneg_int_or_none(a.get("wrapper_calls")) or 0
+                                   for a in rows)
+        row["model_turns"] = sum(_nonneg_int_or_none(a.get("model_turns")) or 0
+                                 for a in rows)
+    return row
 
 
 #: The per-attempt record each pure phase's producer / reviewer writes, by phase. The two files

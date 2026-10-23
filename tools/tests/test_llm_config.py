@@ -1329,16 +1329,11 @@ class WorkshopEntryTests(_Tmp):
         self.assertEqual(cfg.entry_for("generate", "generate").capabilities,
                          frozenset({lc.CAP_WORKSHOP}))
 
-    def test_a_run_naming_a_workshop_entry_is_refused_at_its_start(self) -> None:
-        """Until issue #534 PR-3 wires the loop: the entry LOADS, and `validate_runnable` — the
-        run-start check — refuses it by name, before anything is billed."""
-        cfg = lc.load_llm_config(self.write(self._gen(f"leaf: workshop, {self.BOUNDS}")))
-        with self.assertRaises(lc.LlmConfigError) as ctx:
-            cfg.validate_runnable()
-        self.assertEqual(ctx.exception.rule, "llm_config_workshop_leaf_not_wired")
-        self.assertEqual(ctx.exception.where, "phases.generate.substeps.generate")
-        # A configuration without one is unaffected.
-        lc.load_llm_config(self.write(self._gen("leaf: pure"))).validate_runnable()
+    def test_a_run_naming_a_workshop_entry_passes_its_start(self) -> None:
+        """The workshop loop is wired (issue #534 PR-3): the run-start check no longer refuses a
+        workshop entry, and still refuses what it always did beside one."""
+        lc.load_llm_config(self.write(self._gen(f"leaf: workshop, {self.BOUNDS}"))
+                           ).validate_runnable()
 
     def test_the_sample_comment_block_loads_as_written(self) -> None:
         """The commented workshop block of `llm_claude.example.yaml` is the operator's copy-paste

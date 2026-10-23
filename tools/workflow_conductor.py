@@ -97,6 +97,15 @@ def _iso_now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
+def _parse_iso_utc(text: str) -> datetime | None:
+    """`text` (an `_iso_now` spelling) as an aware datetime, or None when it is not one."""
+    try:
+        value = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return value if value.tzinfo is not None else None
+
+
 # Basename of the per-attempt launch-instant probe `Conductor._launch_instant` writes into the
 # child's bookkeeping dir. Its MTIME is the freshness reference every `min_mtime` comparison uses
 # (issue #113); the file also makes that instant readable after the run, which a float in a local
@@ -651,6 +660,9 @@ GENERATE_BUNDLE_FAILURE_CATEGORIES: tuple[str, ...] = (
     "bundle_assembly_collision",
     "bundle_checks_abi_violation",
     "bundle_shape_unsupported",
+    # A `workshop leaf`'s tree with no bundle manifest at all (issue #534): the leaf ended
+    # without writing one, which its own next turn repairs like any other bundle defect.
+    "workshop_tree_empty",
 )
 GENERATE_BUNDLE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
     category: ("generate", "reuse") for category in GENERATE_BUNDLE_FAILURE_CATEGORIES
@@ -1653,6 +1665,7 @@ def build_launch_request(
     pure_shape: str = "",
     pure_language: str = "",
     pure_parallel: str = "",
+    workshop_lineage_id: str | None = None,
 ) -> dict[str, Any]:
     """Construct the record-launch --request-json payload for one substep.
 
@@ -1956,10 +1969,24 @@ def build_launch_request(
     # overrides the generate branch's leaf-authored output set. On a warm-resume repair the session
     # already holds the context, so pure_context is omitted (the validator exempts it for a
     # warm+reuse+findings request); a cold launch/fallback carries it.
+    if workshop_lineage_id is not None and not pure_leaf:
+        raise ValueError("build_launch_request: a workshop lineage belongs to a host-rendered "
+                         "(pure_leaf=True) request")
     if pure_leaf:
-        from tools.pure_leaf import PURE_LEAF_MODE, PURE_PROMPT_CONTRACT_VERSION
+        from tools.pure_leaf import (
+            PURE_LEAF_MODE,
+            PURE_PROMPT_CONTRACT_VERSION,
+            WORKSHOP_LEAF_MODE,
+            WORKSHOP_PROMPT_CONTRACT_VERSION,
+        )
         req["leaf_mode"] = PURE_LEAF_MODE
         req["prompt_contract_version"] = PURE_PROMPT_CONTRACT_VERSION
+        if workshop_lineage_id is not None:
+            # A `workshop leaf` (issue #534): the same closed context, seeded into a work tree
+            # rather than inlined, and the lineage the launch belongs to.
+            req["leaf_mode"] = WORKSHOP_LEAF_MODE
+            req["prompt_contract_version"] = WORKSHOP_PROMPT_CONTRACT_VERSION
+            req["workshop_lineage_id"] = workshop_lineage_id
         req["allowed_output_paths"] = []
         req["skill_name"] = ""
         req["skill_ref"] = ""
@@ -2192,11 +2219,15 @@ def _leaf_timeout_marker(timeout_seconds: int, elapsed: float,
             f"{timeout_seconds} (elapsed {elapsed:.0f}s); process group killed")
 
 
-#: The reason detail of a `leaf: workshop` entry's substep until issue #534 PR-3 wires its
-#: loop (`run_substep`); short enough to survive the 200-character reason whole.
-WORKSHOP_LEAF_NOT_WIRED_DETAIL = (
-    "`leaf: workshop` is not wired yet (#534 PR-3): drop leaf, max_wrapper_calls and "
-    "lineage_timeout_s from the entry; start a fresh run")
+class WorkshopSetupFailed(RuntimeError):
+    """A `workshop leaf` launch could not be set up on the host side (issue #534): a host
+    precondition, raised before anything is recorded or launched."""
+
+
+class WorkshopEndpointNotStopped(RuntimeError):
+    """A `workshop leaf` launch's wrapper endpoint still had a handler running after `stop()`
+    (issue #534): the loop refuses to snapshot the tree under it."""
+
 
 #: The line appended to the stderr of a leaf ended through `spawn_leaf(cancel_event=)`.
 LEAF_CANCELLED_MARKER = ("[conductor] leaf_cancelled: the leaf was ended from outside "
@@ -4777,8 +4808,8 @@ class Conductor:
         stderr = "".join(list(stderr_chunks))
         if stream_abandoned:
             stderr = (stderr.rstrip() + "\n" + LEAF_STREAM_ABANDONED_MARKER).strip()
-        # Every claude leaf is a PURE leaf since Z4 (issue #171), and a pure loop parses the
-        # `--output-format json` envelope itself — reading `is_error` / `parse_error` off it is
+        # Every claude leaf's loop — the pure one since Z4 (issue #171), and the workshop one
+        # (issue #534) — parses the `--output-format json` envelope itself — reading `is_error` / `parse_error` off it is
         # what makes a malformed reply repairable rather than silently empty. So the capture
         # boundary hands the envelope through untouched; the agentic unwrap that used to sit
         # here had no leaf left to serve.
@@ -4825,6 +4856,10 @@ class Conductor:
         }
         if raw_stdout is not None:
             fields["raw_stdout_chars"] = len(raw_stdout)
+        if (context or {}).get("leaf_mode") == "workshop":
+            # A workshop leaf's kill ends its lineage and its tree is judged as it stands
+            # (issue #534); the console line must not say the phase fails closed.
+            fields["leaf_mode"] = "workshop"
         self.emit("leaf_timeout", **fields)
         # `timed_out=True` is what makes this a `leaf_timeout` downstream (`_leaf_infra_error`);
         # the marker in stderr is evidence for the operator, never the mechanism.
@@ -5555,7 +5590,8 @@ class Conductor:
         name and URL its `--mcp-config` names. The URL is per launch (an ephemeral loopback
         port), so it is not a constant of the flag set the way the rest of it is; it is the
         record that ties this launch to the endpoint every line of its `wrapper_calls.jsonl`
-        was served on (no reader compares the two yet; PR-3's audit is the first).
+        was served on (no reader compares the two; `tools/audit_orchestration.py` renders the
+        lineages and wrapper-call counts from `bundle_meta.json`, not this field).
         """
         entry = entry if entry is not None else self.entry_for(None, None)
         if entry.is_http:
@@ -6009,7 +6045,9 @@ class Conductor:
     def _pure_leaf_substep(self, refs: NodeRefs, phase: str, substep: str | None) -> bool:
         """True when this substep runs as a host-mediated pure-function leaf.
 
-        Since Z4 (issue #171) there is nothing else an LLM leaf can be, so what this predicate
+        Since Z4 (issue #171) every LLM leaf runs on this host-rendered path — a `workshop leaf`
+        (issue #534) too: its request is host-rendered and it answers True here, which is what
+        keeps `run_phase` from pre-writing the control file for it — so what this predicate
         still decides is only whether the node HAS a pure path: the `(phase, substep)` pair, and
         — for the two GENERATE pairs only — whether the node has a CodegenBundle shape at all
         (`_bundle_shape`, which answers `m3c` or `harness`).
@@ -6761,9 +6799,20 @@ class Conductor:
         cannot lower raises, as a host precondition — the §5.1 pin at Compile already refused such
         an IR in every language that declares `signatures`, so reaching here with one is a host
         fault."""
+        header = self._interface_header_text(refs)
+        if header is None:
+            return
+        basename, text = header
+        (self.repo_root / refs.source_dir() / "src" / basename).write_text(
+            text, encoding="utf-8")
+
+    def _interface_header_text(self, refs: NodeRefs) -> tuple[str, str] | None:
+        """`(basename, text)` of the node's published-surface header (`_write_interface_header`),
+        or None for a language that declares none. Also a seed of a `workshop leaf`'s tree
+        (`_workshop_seeds`): the wrapper's view must carry it as the host gates' `src/` does."""
         module = self._interface_header_module(refs)
         if module is None:
-            return
+            return None
         spec_id = spec_id_of(refs.node_key)
         ir = _read_yaml(self.repo_root / refs.ir_ref / "spec.ir.yaml") or {}
         public_api = ir.get("public_api") if isinstance(ir, dict) else None
@@ -6772,8 +6821,7 @@ class Conductor:
                                  spec_kind=refs.node_key.partition("/")[0].strip())
         except ValueError as exc:
             raise RuntimeError(f"interface_header_unrenderable: {refs.node_key}: {exc}") from exc
-        (self.repo_root / refs.source_dir() / "src" / module.basename(spec_id)).write_text(
-            text, encoding="utf-8")
+        return module.basename(spec_id), text
 
     def _bundle_source_names(self, refs: NodeRefs) -> list[str]:
         """The `files[].logical_path` names of the ACCEPTED bundle under `refs.source_dir()`
@@ -6818,7 +6866,8 @@ class Conductor:
 
     def _write_bundle_meta(self, refs: NodeRefs, *, result: str,
                            failure_category: str | None, failure_excerpt: str | None,
-                           attempts: int, per_attempt: list[dict[str, Any]]) -> None:
+                           attempts: int, per_attempt: list[dict[str, Any]],
+                           leaf_mode: str = "pure") -> None:
         """Author `<source_dir>/bundle_meta.json` — the pure producer's terminal record and the
         freshness-gated deliverable of the pure `generate.generate` substep. Carries the outcome
         (`result` pass/fail), the terminal `failure_category` + `failure_excerpt` on exhaustion
@@ -6835,6 +6884,17 @@ class Conductor:
             "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
             "per_attempt": per_attempt,
         }
+        if leaf_mode == "workshop":
+            # A `workshop leaf` (issue #534). `prompt_contract_version` stays the pure one: it
+            # names the bundle RULES the document answers (the workshop templates carry the pure
+            # template's rules verbatim, `test_workshop_producer`), which is what the exemplar
+            # selector reads it for (`_exemplar_contract_version_matches`); the workshop
+            # template's own counter is recorded beside it.
+            from tools.pure_leaf import WORKSHOP_PROMPT_CONTRACT_VERSION
+            meta["leaf_mode"] = "workshop"
+            meta["workshop_prompt_contract_version"] = WORKSHOP_PROMPT_CONTRACT_VERSION
+        elif leaf_mode != "pure":
+            raise ValueError(f"bundle_meta leaf_mode must be pure or workshop (got {leaf_mode!r})")
         if failure_excerpt:
             meta["failure_excerpt"] = failure_excerpt
         path = self.repo_root / refs.source_dir() / "bundle_meta.json"
@@ -8893,6 +8953,709 @@ class Conductor:
             cold_repair_target = None
             attempt += 1
 
+    # --- the workshop producer (issue #534) -------------------------------------
+    # `docs/design/producer_workshop_leaf.md`: a PRODUCING leaf may run as a `workshop leaf` —
+    # an agent editing a host-seeded work tree under its own lineage home, reaching the
+    # wrapper's five operations over a per-launch MCP endpoint — and the host snapshots the
+    # tree into the same CodegenBundle contract the pure producer returns. The phase half (the
+    # context, the bundle checks, the writers, `bundle_meta.json`) is the pure producer's spec,
+    # unchanged; this loop replaces only "parse one reply" with "assemble the snapshot".
+
+    #: The tree name each `pure_context` document is seeded under. `runner_document` has none
+    #: here: the runner is in the node's `src/` and is seeded from there under its own name. A
+    #: context key with no entry is refused (`_workshop_seeds`), so a document added to a pure
+    #: context cannot silently miss the tree.
+    _WORKSHOP_DOCUMENT_SEEDS: ClassVar[dict[str, str]] = {
+        "harness_capabilities": "harness_capabilities.json",
+        "target_profile": "target_profile.json",
+        "ir_document": "spec.ir.yaml",
+        "tests_document": "tests.md",
+        "runner_output_contract_document": "runner_output_contract.md",
+        "gate_guards_document": "gate_guards.md",
+        "lint_rules_document": "lint_rules.md",
+    }
+    #: The host-composed orientation the pure template splices in, seeded as files.
+    _WORKSHOP_DEPENDENCIES_SEED: ClassVar[str] = "DEPENDENCIES.md"
+    _WORKSHOP_EXEMPLAR_SEED: ClassVar[str] = "EXEMPLAR.md"
+    #: The rendered launch prompt of the lineage's latest COLD launch, so the leaf can re-read
+    #: its contract after the CLI compacts the conversation. Written after `record_launch`
+    #: renders it, never re-placed by a warm launch (whose prompt is a repair turn).
+    _WORKSHOP_CONTRACT_SEED: ClassVar[str] = "CONTRACT.md"
+    #: The name a lineage's remaining `lineage_timeout_s` takes in a `leaf_timeout` marker.
+    _WORKSHOP_LINEAGE_BOUND_NAME: ClassVar[str] = "lineage_timeout_s"
+
+    class _WorkshopLineage(NamedTuple):
+        """One lineage the loop holds open: its paths and what the host placed in its tree."""
+
+        paths: Any
+        #: name -> text of every seed but the contract, re-placed before a warm launch.
+        seeds: dict[str, str]
+        #: Every host-placed tree name, the contract included (`WrapperContext.seed_names`).
+        seed_names: tuple[str, ...]
+        #: `workshop_tree.reserved_tree_names`: the seeds, the control file, the manifest.
+        reserved: frozenset[str]
+        #: The reserved names minus the manifest: what the snapshot leaves out.
+        host_placed: frozenset[str]
+        closure_file_names: tuple[str, ...]
+        #: Epoch seconds at which the lineage's `lineage_timeout_s` runs out.
+        deadline: float
+
+    class _WorkshopTurn(NamedTuple):
+        """One recorded workshop launch and what the host read back after it."""
+
+        proc: Any
+        envelope: Any
+        model: str | None
+        model_provenance: str | None
+        usage: dict[str, Any] | None
+        launched_monotonic: float
+        #: The lineage record's `ended_by` after this launch (None: still open).
+        ended_by: str | None
+        #: True when a wrapper result ended the leaf (`spawn_leaf(cancel_event=)`).
+        cancelled: bool
+        wrapper_calls: int
+        model_turns: int | None
+
+    def _workshop_seeds(self, refs: NodeRefs, pure_context: Mapping[str, str],
+                        request: Mapping[str, Any]) -> dict[str, str]:
+        """The files the host places in a new lineage's tree, by tree name (the contract seed
+        is not among them: `_spawn_workshop_turn` writes it once the prompt is rendered).
+
+        Every file the host has placed in the node's `src/` at this point (the runner, the
+        checks header, each closure member's interface header — what `run_phase` writes before
+        any generate substep) plus the node's own interface header, which the host gates read
+        beside the bundle (`Conductor._freeze_wrapper_context`: a wrapper view without one of
+        them disagrees with the gate); each document of the pure context under
+        `_WORKSHOP_DOCUMENT_SEEDS`; and the dependency facts and the exemplar the pure template
+        splices in, when there are any. Raises `RuntimeError` on a context key with no seed
+        name and on two seeds of one name: a host defect, routed like an unassemblable
+        context."""
+        from tools.orchestration_runtime import _build_dependency_facts, _build_exemplar
+        seeds: dict[str, str] = {}
+        control = self._control_file_basename(refs)
+        src = self.repo_root / refs.source_dir() / "src"
+        if src.is_dir():
+            for path in sorted(src.iterdir()):
+                if path.name == control or path.is_symlink() or not path.is_file():
+                    continue
+                seeds[path.name] = path.read_text(encoding="utf-8")
+        header = self._interface_header_text(refs)
+        if header is not None:
+            seeds[header[0]] = header[1]
+        for key, value in pure_context.items():
+            if key == "runner_document":
+                runner = self._runner_basename(refs)
+                if runner not in seeds:
+                    raise RuntimeError(
+                        f"workshop seeds: the context carries the runner and {runner} is not "
+                        f"in {refs.source_dir()}/src")
+                continue
+            name = self._WORKSHOP_DOCUMENT_SEEDS.get(key)
+            if name is None:
+                raise RuntimeError(f"workshop seeds: context key {key!r} has no tree name")
+            if name in seeds:
+                raise RuntimeError(f"workshop seeds: two seeds named {name!r}")
+            seeds[name] = value
+        for name, text in ((self._WORKSHOP_DEPENDENCIES_SEED, _build_dependency_facts(request)),
+                           (self._WORKSHOP_EXEMPLAR_SEED, _build_exemplar(request))):
+            if text.strip():
+                if name in seeds:
+                    raise RuntimeError(f"workshop seeds: two seeds named {name!r}")
+                seeds[name] = text.strip() + "\n"
+        if self._WORKSHOP_CONTRACT_SEED in seeds:
+            raise RuntimeError(
+                f"workshop seeds: two seeds named {self._WORKSHOP_CONTRACT_SEED!r}")
+        return seeds
+
+    def _prepare_workshop_home(self, lineage_id: str, *, resume: bool) -> dict[str, str] | None:
+        """The lineage home (`orchestration_runtime._prepare_claude_workshop_home`): created
+        exclusively when `resume` is False, required (None when gone) when True."""
+        from tools.orchestration_runtime import _prepare_claude_workshop_home
+        return _prepare_claude_workshop_home(self.repo_root, self.orchestration_id, lineage_id,
+                                             resume=resume)
+
+    def _workshop_paths(self, isolation: Mapping[str, str], lineage_id: str) -> Any:
+        from tools.workshop_tree import LineagePaths
+        return LineagePaths(
+            homes_root=Path(isolation["homes_root"]), orchestration_id=self.orchestration_id,
+            lineage_id=lineage_id,
+            orchestration_dir=self.repo_root / "workspace" / "orchestrations"
+            / self.orchestration_id)
+
+    def _start_wrapper_endpoint(self, ctx: Any, on_end: Callable[[str], None]) -> Any:
+        """Start one launch's MCP endpoint (`workshop_mcp.WrapperMcpServer`)."""
+        from tools.workshop_mcp import WrapperMcpServer
+        return WrapperMcpServer(ctx, on_end=on_end).start()
+
+    def _workshop_lineage_from_seeds(self, refs: NodeRefs, paths: Any, seeds: dict[str, str],
+                                     deadline: float) -> "Conductor._WorkshopLineage":
+        """The loop's handle on a lineage whose tree holds `seeds`: the closure (re)staged into
+        its `staged/closure` from the bindings the generate key bound, and the name sets."""
+        from tools.workshop_tree import BUNDLE_MANIFEST_NAME, reserved_tree_names
+        closure = self._stage_workshop_closure(refs, paths)
+        names = tuple(sorted([*seeds, self._WORKSHOP_CONTRACT_SEED]))
+        reserved = reserved_tree_names(names, self._control_file_basename(refs))
+        return self._WorkshopLineage(
+            paths=paths, seeds=dict(seeds), seed_names=names, reserved=reserved,
+            host_placed=frozenset(reserved - {BUNDLE_MANIFEST_NAME}),
+            closure_file_names=closure, deadline=deadline)
+
+    def _open_workshop_lineage(self, refs: NodeRefs, entry: Any, lineage_id: str,
+                               seeds: dict[str, str], prior: Any | None
+                               ) -> "Conductor._WorkshopLineage":
+        """Start a lineage: its home (exclusively), its work directories, its seeds, its staged
+        closure, its record, and — for a COLD REUSE — the ended lineage `prior`'s snapshot
+        copied over the seeds (`workshop_tree.seed_from_snapshot`: a host-placed name is never
+        copied back). Raises on a host precondition; the loop routes it fail_closed."""
+        from tools.workshop_tree import seed_from_snapshot, seed_tree, write_lineage_record
+        isolation = self._prepare_workshop_home(lineage_id, resume=False)
+        if isolation is None:  # pragma: no cover - a cold preparation creates or raises
+            raise RuntimeError(f"workshop lineage {lineage_id}: no home was prepared")
+        paths = self._workshop_paths(isolation, lineage_id)
+        paths.make_work_dirs()
+        seed_tree(paths, seeds)
+        started = datetime.now(timezone.utc)
+        lineage = self._workshop_lineage_from_seeds(
+            refs, paths, seeds, started.timestamp() + float(entry.lineage_timeout_s))
+        if prior is not None:
+            seed_from_snapshot(paths, prior, lineage.host_placed)
+        write_lineage_record(paths, node_key=refs.node_key,
+                             started_at_utc=started.isoformat().replace("+00:00", "Z"))
+        return lineage
+
+    def _locate_workshop_lineage(self, lineage_id: str) -> tuple[Any, dict[str, Any]] | None:
+        """The paths and record of an EXISTING lineage, or None when its home or record is
+        gone. Prepares nothing but the container (`resume=True`)."""
+        from tools.workshop_tree import read_lineage_record
+        try:
+            isolation = self._prepare_workshop_home(lineage_id, resume=True)
+        except ValueError:
+            return None
+        if isolation is None:
+            return None
+        paths = self._workshop_paths(isolation, lineage_id)
+        try:
+            return paths, read_lineage_record(paths)
+        except ValueError:
+            return None
+
+    def _workshop_session_resumable(self, paths: Any, session_id: str | None) -> bool:
+        """Whether the claude transcript of `session_id` is in THIS lineage's config home
+        (`<home>/config/projects/*/<sid>.jsonl`) — the home a warm launch of the lineage is
+        served from. The twin of `_claude_session_resumable`, whose root is the operator's
+        `~/.claude`, which a workshop leaf never writes."""
+        if not isinstance(session_id, str) or not session_id.strip():
+            return False
+        try:
+            return bool(sorted((Path(paths.config) / "projects").glob(
+                f"*/{session_id.strip()}.jsonl")))
+        except OSError:
+            return False
+
+    def _workshop_timeout(self, deadline: float) -> tuple[int, str]:
+        """The bound one launch runs under and its name: the environment cap, or the lineage's
+        remaining time when that is smaller or the cap is off (`0`)."""
+        remaining = max(1, int(deadline - time.time()))
+        cap = _leaf_timeout_seconds()
+        if cap and cap <= remaining:
+            return cap, LEAF_TIMEOUT_ENV_BOUND_NAME
+        return remaining, self._WORKSHOP_LINEAGE_BOUND_NAME
+
+    def _spawn_workshop_turn(self, refs: NodeRefs, request: dict[str, Any], entry: Any,
+                             lineage: "Conductor._WorkshopLineage", *, child_arid: str,
+                             phase: str, substep: str | None,
+                             resume_session_id: str | None, warm: bool
+                             ) -> "Conductor._WorkshopTurn | None":
+        """One launch of a lineage: freeze the wrapper context, start the endpoint, record the
+        launch, spawn the leaf under its bound, stop the endpoint, record why the lineage ended
+        (if it did), snapshot the tree.
+
+        The ORDER at the end is the design's (`docs/ORCHESTRATION.md` §workshop leaf): a bound
+        is recorded by the wrapper before it ends the leaf; the endpoint's `stop()` kills every
+        sandboxed run still in flight and joins its handlers; only then is the tree copied, so
+        nothing writes into it while it is read. A handler still alive after the stop is a host
+        defect, raised rather than snapshotted past.
+
+        Returns None when a WARM launch finds the lineage home gone (`record_launch` answers
+        `workshop_lineage_home_missing`): nothing was launched and the loop falls back to a
+        cold launch."""
+        from tools.pure_leaf import _MISSING, parse_result_envelope, workshop_mcp_config_json
+        from tools.workshop_tree import (
+            end_lineage,
+            read_lineage_record,
+            snapshot_tree,
+            write_host_file,
+        )
+        paths = lineage.paths
+        if warm and not paths.home.is_dir():
+            # The lineage home is gone (an operator prune): the answer `record_launch` would
+            # give (`workshop_lineage_home_missing`), given before anything is written into it.
+            self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
+                      target=resume_session_id or "", reason="workshop_lineage_home_missing")
+            return None
+        if warm:
+            # The host's files, as the host placed them: a seed the leaf edited is restored, so
+            # the wrapper's feedback reads what the gates will.
+            for name, text in lineage.seeds.items():
+                write_host_file(paths.tree, name, text)
+        try:
+            ctx = self._freeze_wrapper_context(
+                refs, paths, agent_run_id=child_arid, seed_names=lineage.seed_names,
+                reserved_names=lineage.reserved, closure_file_names=lineage.closure_file_names,
+                max_wrapper_calls=int(entry.max_wrapper_calls),
+                lineage_deadline=lineage.deadline, seed_texts=lineage.seeds)
+        except Exception as exc:  # noqa: BLE001 — a host precondition, before any launch
+            raise WorkshopSetupFailed(f"{type(exc).__name__}: {exc}") from exc
+        calls_before = int(read_lineage_record(paths).get("wrapper_calls_used") or 0)
+        cancel = threading.Event()
+        server = self._start_wrapper_endpoint(ctx, lambda _ended_by: cancel.set())
+        try:
+            mcp_config_json = workshop_mcp_config_json(server.url)
+            rec = self.record_launch(
+                child_arid, request, entry,
+                workshop_lineage_id=(paths.lineage_id if warm else None),
+                mcp_config_json=mcp_config_json)
+            if rec.get("workshop_lineage_home_missing"):
+                self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
+                          target=resume_session_id or "",
+                          reason="workshop_lineage_home_missing")
+                return None
+            if not warm:
+                write_host_file(paths.tree, self._WORKSHOP_CONTRACT_SEED,
+                                str(rec["launch_prompt_text"]))
+            self._launch_instant(child_arid)
+            launched_monotonic = time.monotonic()
+            timeout_seconds, timeout_name = self._workshop_timeout(lineage.deadline)
+            proc = self.spawn_leaf(
+                rec["launch_prompt_text"], self._child_env(child_arid, entry), entry,
+                session_id=child_arid,
+                resume_session_id=(resume_session_id if warm else None),
+                child_arid=child_arid,
+                timeout_context={"node_key": refs.node_key, "step": phase,
+                                 "substep": substep or "", "agent_run_id": child_arid,
+                                 "leaf_mode": "workshop"},
+                timeout_seconds=timeout_seconds, timeout_name=timeout_name,
+                mcp_config_json=mcp_config_json, cancel_event=cancel)
+            self._persist_leaf_output(child_arid, proc)
+        finally:
+            server.stop()
+        if server.in_flight():
+            raise WorkshopEndpointNotStopped(
+                f"workshop wrapper endpoint of {child_arid}: {server.in_flight()} handler(s) "
+                "still running after stop; the tree is not snapshotted under a live operation")
+        cancelled = cancel.is_set()
+        if not cancelled:
+            if proc.timed_out:
+                end_lineage(paths, "lineage_timeout"
+                            if timeout_name == self._WORKSHOP_LINEAGE_BOUND_NAME
+                            else "leaf_timeout")
+            elif proc.returncode != 0:
+                # A leaf that died is not resumed: its session may hold a half-written turn.
+                end_lineage(paths, "leaf_exit")
+        record = read_lineage_record(paths)
+        snapshot_tree(paths, lineage.host_placed)
+        envelope = parse_result_envelope(proc.stdout)
+        model = None if envelope.model is _MISSING else envelope.model
+        resumed = None
+        if warm and resume_session_id:
+            resumed = (resume_session_id, self._persisted_result_envelope(resume_session_id))
+        usage = _leaf_usage_row(proc, entry, envelope=envelope, resumed=resumed)
+        raw = envelope.raw if isinstance(envelope.raw, dict) else {}
+        turns = raw.get("num_turns")
+        wrapper_calls = int(record.get("wrapper_calls_used") or 0) - calls_before
+        ended_by = record.get("ended_by")
+        self.emit("workshop_launch_complete", node_key=refs.node_key, substep=substep or "",
+                  agent_run_id=child_arid, lineage_id=paths.lineage_id, warm=warm,
+                  wrapper_calls=wrapper_calls, ended_by=ended_by or "",
+                  leaf_exit=proc.returncode)
+        return self._WorkshopTurn(
+            proc, envelope, model, "result_envelope" if model is not None else None, usage,
+            launched_monotonic, ended_by if isinstance(ended_by, str) else None, cancelled,
+            wrapper_calls,
+            turns if isinstance(turns, int) and not isinstance(turns, bool) else None)
+
+    def _run_workshop_producer_substep(self, refs: NodeRefs, phase: str, substep: str | None,
+                                       repair: dict[str, str] | None,
+                                       resolved_dependencies: tuple[dict[str, str], ...],
+                                       spec: "Conductor._PureProducerSpec"
+                                       ) -> "SubstepOutcome":
+        """Run a PRODUCER substep as a `workshop leaf` (issue #534): the pure producer's outer
+        contract — the same `spec`, `SubstepOutcome`, failure categories and routing,
+        finalize-then-write order, `bundle_meta.json` — with the leaf editing a lineage's tree.
+
+        A LINEAGE is one CLI session and its tree; it starts at a cold launch (lineage id = that
+        launch's agent_run_id) and continues across warm `--resume --fork-session` launches
+        while it is OPEN (`ended_by` null). A bound — `max_wrapper_calls`, `lineage_timeout_s`,
+        the per-process `leaf_timeout` — or a dead leaf ENDS it; its tree is taken as it stands.
+
+        Each attempt: launch, snapshot, assemble the snapshot (`workshop_tree.
+        assemble_bundle_document`), then the spec's own checks. Clean -> pass, the artifacts
+        written from the assembled document exactly as the pure path writes a returned one. A
+        defect within `MAX_BUNDLE_REPAIR_TURNS` -> a WARM turn over the same lineage when it is
+        open and its transcript is in the lineage's home, else a COLD REUSE: a new lineage
+        seeded with the current seeds plus the prior lineage's snapshot, whose prompt is the
+        cold repair turn (the findings and the whole launch body). A dead leaf is a transport
+        failure, retried (usage wait, transient retry) by a cold reuse with the carriers kept.
+
+        An OUTER reopen (`repair_strategy: reuse`) continues the repaired attempt's lineage:
+        warm when it is open and resumable, else a cold reuse from its snapshot, else (no
+        lineage to find) a cold launch carrying the findings. Any other repair starts afresh."""
+        from tools.orchestration_runtime import _read_launch_request_payload
+        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS, is_workshop_request
+        from tools.workshop_tree import AssemblyFailure, assemble_bundle_document
+
+        entry = self.entry_for(phase, substep)
+        try:
+            pure_context = spec.build_context(refs)
+        except Exception as exc:  # noqa: BLE001 — any context-assembly failure must recover
+            self.emit("pure_context_assembly_failed", node_key=refs.node_key,
+                      detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
+            return SubstepOutcome(
+                self.new_agent_run_id(), "fail", [], 1,
+                ("pure_context_assembly_failed", _pure_assembly_detail(exc)), 1)
+        runner_host_authored = spec.runner_host_authored(refs)
+        exemplar = self._resolve_exemplar(refs) if spec.wants_exemplar else None
+        warm_capable = entry.supports(CAP_WARM_RESUME)
+        per_attempt: list[dict[str, Any]] = []
+        #: The open lineage the next turn resumes, and the session it resumes.
+        lineage: Conductor._WorkshopLineage | None = None
+        resume_session_id: str | None = None
+        #: An ended (or unresumable) lineage whose snapshot seeds the next cold lineage.
+        prior: Any | None = None
+        repair_target: str | None = None
+        last_excerpt: str | None = None
+        if repair and str(repair.get("repair_strategy", "")).strip() == "reuse":
+            seed = str(repair.get("repair_findings", "")).strip() or None
+            target_arid = str(repair.get("repair_target_agent_run_id") or "").strip()
+            usable = bool(target_arid) and target_arid != "none"
+            if seed is not None:
+                last_excerpt = seed.encode("utf-8", "backslashreplace").decode("utf-8")
+                if usable:
+                    repair_target = target_arid
+            mode = "cold"
+            record = (_read_launch_request_payload(
+                self.repo_root, self.orchestration_id, agent_run_id=target_arid)
+                if usable else None)
+            located = None
+            if record is not None and is_workshop_request(record):
+                located = self._locate_workshop_lineage(str(record.get("workshop_lineage_id")))
+            if located is not None and located[1].get("node_key") != refs.node_key:
+                # A lineage is one node's: a record naming another node is not continued, and
+                # its snapshot does not seed this one (PR-2 left this to the loop).
+                located = None
+            if located is not None:
+                paths, lineage_record = located
+                # Warm only with findings to send: a resumed session given no findings would be
+                # re-sent the whole cold launch prompt, which describes a fresh tree carried
+                # over from an ended session — false for the session it continues. Without
+                # findings the reopen is a cold reuse, whose tree that prompt describes.
+                if (lineage_record.get("ended_by") is None and warm_capable
+                        and last_excerpt is not None
+                        and self._workshop_session_resumable(paths, target_arid)):
+                    try:
+                        lineage = self._reattach_workshop_lineage(
+                            refs, entry, paths, lineage_record, phase, substep,
+                            resolved_dependencies, exemplar, runner_host_authored,
+                            pure_context, spec)
+                    except Exception as exc:  # noqa: BLE001 — a host precondition
+                        self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
+                                  detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
+                        return SubstepOutcome(
+                            self.new_agent_run_id(), "fail", [], 1,
+                            ("workshop_lineage_setup_failed", _pure_assembly_detail(exc)), 1)
+                    resume_session_id = target_arid
+                    repair_target = target_arid
+                    mode = "warm"
+                else:
+                    from tools.workshop_tree import end_lineage
+                    end_lineage(paths, "superseded")
+                    prior = paths
+                    mode = "cold_reuse"
+            self.emit("workshop_reopen", node_key=refs.node_key, substep=substep or "",
+                      target=target_arid, mode=mode,
+                      findings_carried=last_excerpt is not None)
+        attempt = 0
+        usage_waits = 0
+        transient_retries = 0
+        transient_spent = 0.0
+        while True:
+            child_arid = self.new_agent_run_id()
+            warm = (lineage is not None and resume_session_id is not None and warm_capable
+                    and self._workshop_session_resumable(lineage.paths, resume_session_id))
+            if lineage is not None and warm:
+                # A lineage with no time or no wrapper call left can do nothing in a warm turn
+                # (its first call would be refused and end it): end it by the bound it has
+                # spent and take a cold reuse, which starts fresh counters. `count_wrapper_call`
+                # ends a lineage only on the call PAST the cap, so a leaf that spent exactly
+                # `max_wrapper_calls` and exited leaves it open with nothing left.
+                from tools.workshop_tree import end_lineage, read_lineage_record
+                if lineage.deadline - time.time() < 1:
+                    end_lineage(lineage.paths, "lineage_timeout")
+                    warm = False
+                elif (int(read_lineage_record(lineage.paths).get("wrapper_calls_used") or 0)
+                      >= int(entry.max_wrapper_calls)):
+                    end_lineage(lineage.paths, "max_wrapper_calls")
+                    warm = False
+            if lineage is not None and not warm:
+                # Its work goes on in a new lineage: record that nothing will continue it (a
+                # reason a bound already recorded stands).
+                from tools.workshop_tree import end_lineage
+                end_lineage(lineage.paths, "superseded")
+                prior, lineage, resume_session_id = lineage.paths, None, None
+            repair_payload: dict[str, str] | None = None
+            if repair_target is not None:
+                repair_payload = {
+                    "issue_severity": "major",
+                    "repair_strategy": "reuse",
+                    "repair_target_agent_run_id": repair_target,
+                    "repair_reason": spec.repair_reason,
+                }
+                if last_excerpt:
+                    repair_payload["repair_findings"] = last_excerpt
+            findings_turn = bool(repair_payload and repair_payload.get("repair_findings"))
+            lineage_id = lineage.paths.lineage_id if (warm and lineage is not None) else child_arid
+            request = build_launch_request(
+                refs, step=phase, substep=substep,
+                orchestration_id=self.orchestration_id,
+                orchestration_agent_run_id=self.orchestration_agent_run_id,
+                child_agent_run_id=child_arid,
+                agent_model=entry.model, workflow_mode=self.workflow_mode,
+                runner_host_authored=runner_host_authored,
+                repair=repair_payload,
+                resolved_dependencies=resolved_dependencies,
+                # Every attempt's tree holds the exemplar seed (a repair turn's included: the
+                # lineage carries it, or the cold reuse re-seeds it), so every request records
+                # it; no workshop template splices it into the prompt.
+                exemplar=exemplar,
+                warm_resume=warm,
+                pure_leaf=True,
+                pure_shape=spec.pure_shape,
+                pure_language=self._pure_language(phase),
+                pure_parallel=self._pure_parallel(phase),
+                pure_context=(None if (warm and findings_turn) else pure_context),
+                workshop_lineage_id=lineage_id,
+            )
+            if not warm:
+                try:
+                    seeds = self._workshop_seeds(refs, pure_context, request)
+                    lineage = self._open_workshop_lineage(refs, entry, child_arid, seeds, prior)
+                except Exception as exc:  # noqa: BLE001 — a host precondition, fail_closed
+                    self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
+                              detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
+                    return SubstepOutcome(
+                        child_arid, "fail", [], 1,
+                        ("workshop_lineage_setup_failed", _pure_assembly_detail(exc)),
+                        max(1, len(per_attempt)))
+                prior = None
+            assert lineage is not None
+            try:
+                turn = self._spawn_workshop_turn(
+                    refs, request, entry, lineage, child_arid=child_arid, phase=phase,
+                    substep=substep, resume_session_id=resume_session_id, warm=warm)
+            except WorkshopSetupFailed as exc:
+                # Nothing was launched or recorded: a host precondition (the wrapper's
+                # context could not be frozen), routed like an unassemblable context.
+                self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
+                          detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
+                return SubstepOutcome(child_arid, "fail", [], 1,
+                                      ("workshop_lineage_setup_failed", str(exc)[:200]),
+                                      max(1, len(per_attempt)))
+            except WorkshopEndpointNotStopped as exc:
+                # A host defect (a wrapper handler outlived the endpoint's stop): the tree is
+                # not read under it. The launch was recorded, so it is finalized as a failed
+                # attempt before the substep fails closed.
+                self.finalize_child(
+                    child_arid, "status: fail\ncategory: workshop_wrapper_not_stopped",
+                    self._agent_run_json(
+                        refs, phase, substep, child_arid, "fail", [],
+                        "workshop_generate_fail: workshop_wrapper_not_stopped", entry=entry))
+                return SubstepOutcome(child_arid, "fail", [], 1,
+                                      ("workshop_wrapper_not_stopped", str(exc)[:200]),
+                                      max(1, len(per_attempt)))
+            if turn is None:
+                # The lineage's home is gone: nothing to resume and no snapshot to seed from. Its
+                # record (in the workspace, not the home) says nothing will continue it.
+                from tools.workshop_tree import end_lineage
+                end_lineage(lineage.paths, "superseded")
+                lineage, resume_session_id, prior = None, None, None
+                continue
+            proc = turn.proc
+            attempt_record: dict[str, Any] = {
+                "agent_run_id": child_arid, "model": turn.model,
+                "model_provenance": turn.model_provenance, "usage": turn.usage,
+                # What THIS attempt's tree held: the lineage's exemplar seed, if it has one.
+                "exemplar_ref": (exemplar.get("source_ref")
+                                 if (self._WORKSHOP_EXEMPLAR_SEED in lineage.seeds
+                                     and isinstance(exemplar, dict)) else None),
+                "lineage_id": lineage.paths.lineage_id,
+                "warm": warm,
+                "model_turns": turn.model_turns,
+                "wrapper_calls": turn.wrapper_calls,
+                "ended_by": turn.ended_by,
+            }
+            per_attempt.append(attempt_record)
+            infra_error: tuple[str, str] | None = None
+            category: str | None = None
+            findings: str | None = None
+            accepted_doc: dict[str, Any] | None = None
+            if proc.returncode != 0 and not proc.timed_out and not turn.cancelled:
+                # The leaf DIED (not a bound): a transport failure, as on the pure path.
+                infra_error = _leaf_infra_error(proc)
+                category = "pure_transport"
+                findings = self._leaf_failure_summary(proc)
+            else:
+                # The tree is the answer, whatever the leaf said or however it was ended.
+                assembled = assemble_bundle_document(lineage.paths.snapshot, lineage.reserved)
+                if isinstance(assembled, AssemblyFailure):
+                    category, findings = assembled.category, assembled.findings
+                else:
+                    result = spec.violations(refs, assembled)
+                    if result is not None:
+                        category, findings = result
+                    else:
+                        try:
+                            json.dumps(assembled, ensure_ascii=False).encode("utf-8")
+                        except UnicodeEncodeError:
+                            category = spec.schema_category
+                            findings = spec.unencodable_findings
+                        else:
+                            accepted_doc = assembled
+                if category is not None and turn.ended_by is not None:
+                    findings = (f"{findings}\n(the lineage ended by {turn.ended_by}; the tree "
+                                "was taken as it stood)")
+            status = "pass" if category is None else "fail"
+            this_excerpt: str | None = None
+            if category is not None:
+                this_excerpt = (findings.encode("utf-8", "backslashreplace").decode("utf-8")
+                                if findings is not None else None)
+                if category != "pure_transport":
+                    last_excerpt = this_excerpt
+                attempt_record["failure_category"] = category
+                attempt_record["failure_excerpt"] = (
+                    this_excerpt[:_PURE_ATTEMPT_EXCERPT_MAX_CHARS] if this_excerpt else None)
+                self.emit(spec.attempt_failed_event, node_key=refs.node_key,
+                          substep=substep, attempt=len(per_attempt), failure_category=category,
+                          detail=(this_excerpt or "")[:200])
+            reply = (f"status: {status}\nleaf rc={proc.returncode}\n"
+                     f"category: {category or 'none'}")
+            result_summary = (
+                f"workshop_generate_fail: {category}" if status != "pass"
+                else f"workshop_generate_pass: {spec.accept_noun} accepted "
+                     f"(attempts={len(per_attempt)})")
+            self.finalize_child(
+                child_arid, reply,
+                self._agent_run_json(refs, phase, substep, child_arid, status,
+                                     [], result_summary, entry=entry,
+                                     agent_model_override=turn.model,
+                                     usage=turn.usage, resume_mode=proc.resume_mode))
+            if status == "pass":
+                assert accepted_doc is not None
+                try:
+                    spec.write_artifacts(refs, accepted_doc, attempts=len(per_attempt))
+                    spec.write_meta(
+                        refs, result="pass", failure_category=None, failure_excerpt=None,
+                        attempts=len(per_attempt), per_attempt=per_attempt,
+                        leaf_mode="workshop")
+                except Exception as exc:  # noqa: BLE001 — any host-write failure must recover
+                    return SubstepOutcome(
+                        child_arid, "fail", [], 1,
+                        (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
+                        len(per_attempt))
+                return SubstepOutcome(child_arid, "pass", [], proc.returncode,
+                                      None, len(per_attempt))
+            # A dead leaf's retries run in a NEW lineage seeded from this one's snapshot (the
+            # dead one is ended `leaf_exit`), with the repair carriers kept.
+            if (category == "pure_transport" and infra_error is not None
+                    and infra_error[0] == "llm_usage_limit"
+                    and self._usage_limit_wait(refs=refs, phase=phase, substep=substep,
+                                               child_arid=child_arid, waits_done=usage_waits,
+                                               infra_error=infra_error, entry=entry)):
+                usage_waits += 1
+                prior, lineage, resume_session_id = lineage.paths, None, None
+                continue
+            if category == "pure_transport":
+                elapsed_s = max(0.0, time.monotonic() - turn.launched_monotonic)
+                spent_before = transient_spent
+                transient_spent += elapsed_s
+                if self._pure_transient_retry(
+                        refs=refs, phase=phase, substep=substep, infra_error=infra_error,
+                        child_arid=child_arid, retries_done=transient_retries,
+                        elapsed_s=elapsed_s, spent_s=spent_before):
+                    transient_retries += 1
+                    prior, lineage, resume_session_id = lineage.paths, None, None
+                    continue
+            can_repair = (category is not None and category != "pure_transport"
+                          and attempt < MAX_BUNDLE_REPAIR_TURNS)
+            if not can_repair:
+                try:
+                    spec.write_meta(
+                        refs, result="fail", failure_category=category,
+                        failure_excerpt=this_excerpt, attempts=len(per_attempt),
+                        per_attempt=per_attempt, leaf_mode="workshop")
+                except Exception as exc:  # noqa: BLE001 — any host-write failure must recover
+                    return SubstepOutcome(
+                        child_arid, "fail", [], 1,
+                        (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
+                        len(per_attempt))
+                return SubstepOutcome(child_arid, "fail", [], proc.returncode,
+                                      infra_error, len(per_attempt))
+            # The repair turn: warm over this lineage while it is open, else (checked at the
+            # top of the loop) a cold reuse from its snapshot.
+            repair_target = child_arid
+            if turn.ended_by is None:
+                resume_session_id = self._session_id_for_child(child_arid, entry)
+            else:
+                prior, lineage, resume_session_id = lineage.paths, None, None
+            attempt += 1
+
+    def _reattach_workshop_lineage(self, refs: NodeRefs, entry: Any, paths: Any,
+                                   lineage_record: Mapping[str, Any], phase: str,
+                                   substep: str | None,
+                                   resolved_dependencies: tuple[dict[str, str], ...],
+                                   exemplar: dict[str, Any] | None, runner_host_authored: bool,
+                                   pure_context: dict[str, str],
+                                   spec: "Conductor._PureProducerSpec"
+                                   ) -> "Conductor._WorkshopLineage":
+        """The loop's handle on an OPEN lineage an outer reopen continues warm: the current
+        seeds (re-placed before the launch), the closure restaged, and the deadline its record's
+        `started_at_utc` and the entry's `lineage_timeout_s` give. Raises on a host
+        precondition."""
+        seeds = self._workshop_seeds(
+            refs, pure_context, self._workshop_seed_request(
+                refs, phase, substep, entry, resolved_dependencies, exemplar,
+                runner_host_authored, pure_context, paths.lineage_id, spec))
+        # An orientation seed the lineage was created with and the host no longer resolves (the
+        # certified siblings moved under the run) is removed, not left behind as a leaf file:
+        # the tree then holds what this launch's seeds and record say.
+        for name in (self._WORKSHOP_DEPENDENCIES_SEED, self._WORKSHOP_EXEMPLAR_SEED):
+            stale = Path(paths.tree) / name
+            if name not in seeds and (stale.is_symlink() or stale.is_file()):
+                stale.unlink()
+        started = _parse_iso_utc(str(lineage_record.get("started_at_utc") or ""))
+        return self._workshop_lineage_from_seeds(
+            refs, paths, seeds,
+            (started.timestamp() if started is not None else time.time())
+            + float(entry.lineage_timeout_s))
+
+    def _workshop_seed_request(self, refs: NodeRefs, phase: str, substep: str | None,
+                               entry: Any, resolved_dependencies: tuple[dict[str, str], ...],
+                               exemplar: dict[str, Any] | None, runner_host_authored: bool,
+                               pure_context: dict[str, str], lineage_id: str,
+                               spec: "Conductor._PureProducerSpec") -> dict[str, Any]:
+        """A request carrying what `_workshop_seeds` renders the orientation seeds from (the
+        dependency facts and the exemplar), for a lineage the loop re-attaches to without a
+        cold launch to build it from. Built, never recorded."""
+        request = build_launch_request(
+            refs, step=phase, substep=substep, orchestration_id=self.orchestration_id,
+            orchestration_agent_run_id=self.orchestration_agent_run_id,
+            child_agent_run_id=lineage_id, agent_model=entry.model,
+            workflow_mode=self.workflow_mode, runner_host_authored=runner_host_authored,
+            resolved_dependencies=resolved_dependencies, exemplar=exemplar, pure_leaf=True,
+            pure_shape=spec.pure_shape, pure_language=self._pure_language(phase),
+            pure_parallel=self._pure_parallel(phase), pure_context=pure_context,
+            workshop_lineage_id=lineage_id)
+        return request
+
     # --- Z2 pure-leaf verify reviewer (M-D) ------------------------------------
     # The pure `generate.verify` reviewer returns exactly one verify-verdict JSON document; the
     # host validates it (`verify_verdict_violations`), repairs a schema violation in a bounded
@@ -10652,7 +11415,8 @@ class Conductor:
     def _freeze_wrapper_context(self, refs: NodeRefs, paths: Any, *, agent_run_id: str,
                                 seed_names: tuple[str, ...], reserved_names: frozenset[str],
                                 closure_file_names: tuple[str, ...], max_wrapper_calls: int,
-                                lineage_deadline: float) -> Any:
+                                lineage_deadline: float,
+                                seed_texts: Mapping[str, str] | None = None) -> Any:
         """The `workshop_wrapper.WrapperContext` of one launch of a lineage, computed here, in
         the main thread, from the same inputs the host's own gates read: the bundle contract
         (`_pure_bundle_violation_inputs`), the build graph (`_pure_bundle_graph_inputs`), the
@@ -10770,6 +11534,7 @@ class Conductor:
             toolchain_ro_roots=tuple(wrapper_toolchain_ro_roots(executables, self.repo_root)),
             max_wrapper_calls=max_wrapper_calls,
             lineage_deadline=lineage_deadline,
+            seed_texts=tuple(sorted((seed_texts or {}).items())),
         )
 
     def _build_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, str]:
@@ -13293,21 +14058,11 @@ class Conductor:
                 return self._run_pure_compile_producer(
                     refs, repair, resolved_dependencies, dependency_surface)
             if entry.is_workshop:
-                # A `leaf: workshop` entry (issue #534) loads, and its loop is PR-3's. A run is
-                # refused at its START (`LlmConfig.validate_runnable`,
-                # `llm_config_workshop_leaf_not_wired`), before anything is billed; this is the
-                # backstop for a caller that skips that check. It fails CLOSED rather than
-                # running the entry as a pure leaf: the operator asked for another leaf model,
-                # and running this one instead would record a launch the configuration did not
-                # describe. No leaf was launched, so the `leaf_exit=1` the transport branch
-                # records is a synthesized code, not an exit. The detail fits the 200-character
-                # reason whole (`_PHASE_REASON_DETAIL_MAX_CHARS`), remedy included.
-                detail = WORKSHOP_LEAF_NOT_WIRED_DETAIL
-                self.emit("workshop_leaf_not_wired", node_key=refs.node_key, phase=phase,
-                          substep=substep or "", provider=entry.provider)
-                return SubstepOutcome(
-                    self.new_agent_run_id(), "fail", [], 1,
-                    ("workshop_leaf_not_wired", detail), 1)
+                # A `leaf: workshop` entry (issue #534): the same producer half, the leaf editing
+                # a host-seeded work tree instead of returning the document.
+                return self._run_workshop_producer_substep(
+                    refs, phase, substep, repair, resolved_dependencies,
+                    self._pure_producer_spec(phase, self._shape_for_spec(refs, phase)))
             return self._run_pure_producer_substep(
                 refs, phase, substep, repair, resolved_dependencies,
                 self._pure_producer_spec(phase, self._shape_for_spec(refs, phase)),

@@ -161,6 +161,10 @@ def render_tuple() -> dict[str, str]:
             _source_digest(wc.Conductor._interface_header_module),
         "Conductor._write_interface_header":
             _source_digest(wc.Conductor._write_interface_header),
+        # Issue #534 PR-3: the header's rendering moved here from `_write_interface_header`,
+        # so a `workshop leaf`'s tree can be seeded with the same text.
+        "Conductor._interface_header_text":
+            _source_digest(wc.Conductor._interface_header_text),
         # The second language's RUNNER (issue #289, R4-b PR-6): its renderer and the checks
         # header it renders beside the runner (the ABI table in `checks_abi`), the neutral IR
         # readers both renderers share, the declaration reader its harness pin reads, the
@@ -991,7 +995,12 @@ PINNED_RENDER: dict[str, str] = {
     # profile's count; the renderer's pin of that harness carries the seven-argument writer.
     # Rows moved: `fortran/runner.py`, and the docstrings of `tools/host_execution.py`
     # (`perf_parallelism`) and `tools/host_render.py` (`render_runner`).
-    "render-12": "9bafc15cbd642af8b5ac4ba07f1dc7efdf574978408a3e52338373913f21123f",
+    "render-12": "e67d6b26885115087847d3cb1ae58e95657a261335fc00e35716c51dcb0c5d2d",
+    # Re-pinned (issue #534 PR-3), behaviour-preserving: `_write_interface_header` writes what
+    # the new `_interface_header_text` renders (joins the tuple), so a `workshop leaf`'s tree is
+    # seeded with the header the gates read; the header written is byte-identical. The digest
+    # `render-12` shipped with at 4f35f054:
+    "render-12@4f35f054": "9bafc15cbd642af8b5ac4ba07f1dc7efdf574978408a3e52338373913f21123f",
     # Re-pinned (issue #534 PR-1), behaviour-preserving: `_render_pure_makefile_from_graph`
     # reads the renderer and its host-owned arguments from `_control_file_render_inputs`
     # (joins the tuple), so a `workshop leaf`'s wrapper binds the same ones; the control file

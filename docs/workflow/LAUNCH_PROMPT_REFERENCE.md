@@ -2,8 +2,8 @@
 
 Human-facing reference for the conductor's launch-prompt render path. The **machine-parsed
 templates** live as plain-text files under [`tools/prompt_templates/`](../../tools/prompt_templates/),
-one `pure_*.txt` per `(step, substep)` and declared shape — this document holds the non-parsed
-reference material around them.
+one `pure_*.txt` per `(step, substep)` and declared shape, plus the three `workshop_*.txt` of a
+`workshop leaf` — this document holds the non-parsed reference material around them.
 
 The render path: the conductor supplies the launch-request parameters; `record-launch` renders the
 prompt from `tools/prompt_templates/` (substituting the `<...>` placeholders and inlining the host-
@@ -51,6 +51,10 @@ Untrusted documents inlined into the prompt (`tests.md`, the IR, the host-render
 **gate correspondence:** pure `(generate, generate)` and pure `(generate, verify)` invoke **no** validator gate — the same `(none)` mapping their agentic counterparts had in the table Z4 (issue #171) deleted from this document. Nothing enforces it and nothing needs to: a pure leaf holds no tool to invoke a gate with, every gate is run by the conductor in its own process, and the deleted allow-set scanner was the enforcement the agentic leaf needed. Codex's read-only sandbox may expose tools, but neither backend receives a workflow-gate invocation contract.
 
 **record-launch artifacts:** a pure CLI launch writes the launch record (`launches/<arid>.*`), the session-run-index row, the agent_graph edge, the active-child markers, and a **read-only `bwrap` profile** (`readonly: true`, `write_roots: []`) — the one document about the launch that decides anything, because `bwrap` enforces it. It wrote three more until PR-2 of [issue #171](https://github.com/seiya/atmofab/issues/171): an access policy / deny-all read manifest, a zero-authority capability (`mode: "pure_readonly"`, `write_roots: []`, `mcp_permissions: []`) and a per-agent FS-diff write baseline. Each described an authority a pure leaf does not hold, and nothing enforced any of them once the leaf hook layer went; the host writes every artifact after the child window closes. `validate_pipeline_semantics`' launch-record sweep still re-checks request-vs-prompt pure agreement, the reduced marker set, the sandbox profile's `readonly` / empty `write_roots`, and the terminal row's `output_refs == []`.
+
+#### Workshop leaf launch prompt (`leaf_mode = "workshop"`)
+
+A `workshop leaf` (`Generate.generate` on a `leaf: workshop` entry; [issue #534](https://github.com/seiya/atmofab/issues/534); `docs/ORCHESTRATION.md` §workshop leaf is canonical) is rendered from `workshop_generate_generate.txt` (`m3c`) or `workshop_generate_generate_harness.txt` (`harness`), and its repair turns from `workshop_bundle_repair.txt`. Each opens with the sentinel `Workshop leaf turn (host-seeded work tree)` (`pure_leaf.WORKSHOP_PROMPT_SENTINEL`), anchored at line 0 as the pure sentinel is, and carries the same identity block; its `prompt_contract_version:` must equal `pure_leaf.WORKSHOP_PROMPT_CONTRACT_VERSION`. The launch request is built as a pure one (`build_launch_request(pure_leaf=True)`, the same `pure_context` keys on a cold launch) and then carries `leaf_mode: workshop`, that contract version and `workshop_lineage_id`. What differs from the pure prompt: a work-tree contract and the five wrapper operations replace the one-reply instruction; the output contract and the authoring rules are the pure template's lines verbatim (`tools/tests/test_workshop_producer.py` pins them); and no document is inlined — each is named by its `seed` file in the tree. A cold repair turn restates the whole launch body after the findings; a warm one carries the findings alone.
 
 ---
 

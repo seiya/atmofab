@@ -27,7 +27,7 @@ The core workflow is five phases. Each phase produces exactly one kind of primar
 
 From `Generate` onward, `spec.ir.yaml` is the sole generation and verification contract; reading `controlled_spec.md` is forbidden except at `Generate.verify`, which reads it as a secondary requirement-fidelity cross-check.
 
-Each phase runs an ordered substep sequence, and there are exactly two launch shapes. An `LLM` substep runs as one `pure-function leaf`: the host inlines a closed context into the prompt, the model returns one JSON document, and the host validates and writes it — the leaf holds no tools, no shell and no write authority. A deterministic substep runs in the conductor's own process. Since Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) there is no third shape: the agentic leaf, which ran in the checkout with tools and a hook layer around it, is retired, and a node with no bundle shape now fails closed rather than falling back to one.
+Each phase runs an ordered substep sequence, and there are three launch shapes. An `LLM` substep runs as one `pure-function leaf`: the host inlines a closed context into the prompt, the model returns one JSON document, and the host validates and writes it — the leaf holds no tools, no shell and no write authority. A deterministic substep runs in the conductor's own process. The producing `Generate.generate` may instead run as a `workshop leaf` when its `llm.yaml` entry says `leaf: workshop` (`claude_cli` only, [issue #534](https://github.com/seiya/atmofab/issues/534)): an agent that edits a host-seeded work tree outside the checkout and asks the host to derive, compile, lint, syntax-check and run it, after which the host snapshots the tree into the same bundle contract and runs the same gates; every judging leaf stays pure (`docs/ORCHESTRATION.md` §workshop leaf). The agentic leaf of the pre-Z4 design ([issue #171](https://github.com/seiya/atmofab/issues/171)), which ran in the checkout with tools and a hook layer around it, is retired, and a node with no bundle shape fails closed rather than falling back to one.
 
 | phase | substeps | `LLM` substeps |
 |---|---|---|
@@ -75,7 +75,7 @@ python3 tools/run_workflow.py spec/problem/dynamics/advection_diffusion/advdiff1
 
 ## Build runtime
 
-The conductor calls the build-runtime library `tools/build_runtime.py` in-process for every `compile`, `run`, `quality check`, `static lint`, and `syntax check`; no leaf calls it, and one-off `gcc` / `clang` / `gfortran` builds are forbidden. Its entry points, the validation each applies, and the `command_log.jsonl` record each writes are specified in `docs/BUILD_RUNTIME.md`.
+The conductor calls the build-runtime library `tools/build_runtime.py` in-process for every `compile`, `run`, `quality check`, `static lint`, and `syntax check`; no leaf imports it (a `workshop leaf` reaches five of its operations only through the host-served wrapper, which composes every argument), and one-off `gcc` / `clang` / `gfortran` builds are forbidden. Its entry points, the validation each applies, and the `command_log.jsonl` record each writes are specified in `docs/BUILD_RUNTIME.md`.
 
 ## Artifacts
 
@@ -168,7 +168,7 @@ and `tools/tests/suite_env_guard.py` are canonical.
 | `docs/WORKFLOW.md` | workflow entry point; `docs/workflow/WORKFLOW_CORE.md` and `docs/workflow/phases/` hold the contracts |
 | `docs/SPEC.md` | overall policy, `spec` management requirements, registry requirements |
 | `docs/RUNBOOK.md` | operational procedure, preflight, recovery |
-| `docs/ORCHESTRATION.md` | orchestration design and contract, including the `pure-function leaf` every LLM substep runs as |
+| `docs/ORCHESTRATION.md` | orchestration design and contract, including the `pure-function leaf` every judging LLM substep runs as and the `workshop leaf` |
 | `docs/AGENT_SKILLS.md` | phase-to-`SKILL` mapping |
 | `docs/GLOSSARY.md` | canonical terminology and artifact definitions |
 | `docs/BACKEND_BOUNDARY.md` | where knowledge of a concrete target-stack technology may live, and which `axis` selects it |

@@ -109,7 +109,8 @@ def _is_loopback(host: str) -> bool:
 # provider; each one replaces a `backend == ...` branch:
 #   pure         the provider can run a Z2 host-mediated PURE leaf (one typed document in,
 #                one JSON document out; `write_roots: []`, no tools, no hooks, no MCP). Since
-#                Z4 (issue #171) this is the ONLY leaf transport: the agentic loop — a
+#                Z4 (issue #171) this is the transport of every entry but a `leaf: workshop`
+#                one: the agentic loop — a
 #                tool-holding session in the checkout, driven by a launch prompt — is gone,
 #                and with it the `agentic` capability that selected it.
 #   warm_resume  a finished leaf session can be reopened for a repair turn carrying the prior
@@ -812,18 +813,6 @@ class LlmConfig:
         # Resolve the single CLI identity `init` and the preflight speak, which raises a
         # NAMED rule when the configuration can launch no process at all.
         self.cli_launch_identity()
-        # A `leaf: workshop` entry loads (it can be read, diffed, tested and probed), and the
-        # conductor's workshop loop is issue #534 PR-3's: until it lands, a run is refused
-        # HERE, before init and before any phase is paid for, rather than failing closed at
-        # the substep after Compile has run.
-        for label, entry in self._labelled_entries():
-            if entry.is_workshop:
-                raise LlmConfigError(
-                    "llm_config_workshop_leaf_not_wired",
-                    "this entry is `leaf: workshop`, and the conductor's workshop loop is not "
-                    "wired yet (issue #534 PR-3); remove `leaf`, `max_wrapper_calls` and "
-                    "`lineage_timeout_s` from it to run the substep as a pure leaf",
-                    where=label)
         for label, entry in self._labelled_entries():
             if entry.provider != "codex_cli":
                 continue
