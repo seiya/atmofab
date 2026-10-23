@@ -382,6 +382,38 @@ class WorkshopRecordLaunchTests(_Env):
                     self._launch("ar_x", req, **kw)
                 self.assertFalse((self._base() / "launches/ar_x.request.json").exists())
 
+    def test_the_request_names_this_launch_s_provider(self) -> None:
+        """Issue #534 step 2: the `<tool_surface>` a prompt states is its request's
+        `workshop_provider`'s, so a request naming a provider other than this launch's is
+        refused by `record_launch` before anything is recorded — reached here by giving a second
+        provider a surface row, as PR-2 will."""
+        self._prepare("ar_x", resume=False)
+        with mock.patch.dict(pure_leaf.WORKSHOP_TOOL_SURFACE_TEXT,
+                             {"codex_cli": "Your shell reaches your tree."}):
+            with self.assertRaises(ValueError) as ctx:
+                self._launch("ar_x", _workshop_request("ar_x", workshop_provider="codex_cli"))
+        self.assertIn("is not this launch's provider", str(ctx.exception))
+        self.assertFalse((self._base() / "launches/ar_x.request.json").exists())
+
+    def test_the_validator_holds_workshop_provider_to_the_workshop_request(self) -> None:
+        for label, req, needle in (
+                ("absent", _workshop_request("ar_x", workshop_provider=None),
+                 "must name its provider in workshop_provider"),
+                ("a provider with no surface row",
+                 _workshop_request("ar_x", workshop_provider="anthropic_api"),
+                 "must name its provider in workshop_provider"),
+                ("on a pure request", _pure_request("generate", workshop_provider="claude_cli"),
+                 "carries workshop_provider and is not a workshop request")):
+            with self.subTest(case=label):
+                with self.assertRaises(ValueError) as ctx:
+                    ort._validate_pure_launch_request_payload(req)
+                self.assertIn(needle, str(ctx.exception))
+                if label != "on a pure request":
+                    with self.assertRaises(ValueError) as rendered:
+                        ort.prepare_launch_request_payload(dict(req))
+                    self.assertIn(needle, str(rendered.exception))
+        ort._validate_pure_launch_request_payload(_workshop_request("ar_x"))
+
     def test_a_workshop_request_on_another_pair_is_refused(self) -> None:
         """Refused twice: the renderer finds no workshop template for the pair (it renders
         before validation), and the validator names the admissible pairs."""

@@ -1030,6 +1030,10 @@ class WrapperCheckIrTests(_IrLineageCase):
         self.assertEqual(ww.run_wrapper_op(bundle_ctx, "check_ir")["category"],
                          ww.CATEGORY_BAD_ARGUMENTS)
         self.assertEqual(wt.read_lineage_record(self.paths)["wrapper_calls_used"], 0)
+        # A bundle op named by a context that lacks the bundle callables is a host fault too.
+        lacking = _ir_context(self.paths, self.reserved, [], ops=("derive",))
+        self.assertEqual(ww.run_wrapper_op(lacking, "derive")["category"],
+                         ww.CATEGORY_WRAPPER_ERROR)
         # ...and an op a context NAMES without the fields to serve it is a host fault, counted.
         odd = _ir_context(self.paths, self.reserved, [], ops=("check_ir",), assemble=None)
         self.assertEqual(ww.run_wrapper_op(odd, "check_ir")["category"],

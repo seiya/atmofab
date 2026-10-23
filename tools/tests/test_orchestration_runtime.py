@@ -24387,8 +24387,10 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         # redacted WORKSHOP one (issue #534). `BuildLaunchRequestTest`'s docstring carries the
         # provenance.
         self.assertEqual(len(captured), 8, "captured payload set changed; revisit coverage")
-        from tools.pure_leaf import (PURE_PROMPT_CONTRACT_VERSION,
-                                     WORKSHOP_PROMPT_CONTRACT_VERSION)
+        from tools.pure_leaf import (
+            PURE_PROMPT_CONTRACT_VERSION,
+            WORKSHOP_PROMPT_CONTRACT_VERSION,
+        )
         for path in captured:
             payload = json.loads(path.read_text(encoding="utf-8"))
             if payload.get("leaf_mode") == "pure":

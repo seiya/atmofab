@@ -14,7 +14,6 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import re
 import tempfile
 import unittest
 from pathlib import Path
@@ -301,7 +300,7 @@ class RepairTests(_Base):
         self.c.leaf_actions = [_writes_nothing, _writes_bundle]
         outcome = self.run_substep()
         self.assertEqual(outcome.status, "pass", outcome)
-        first, second = self.requests()
+        _first, second = self.requests()
         self.assertEqual(second["workshop_lineage_id"], "child-1")
         self.assertTrue(second["warm_resume"])
         self.assertEqual(second["repair_target_agent_run_id"], "child-1")
@@ -348,7 +347,7 @@ class RepairTests(_Base):
         self.c.leaf_actions = [ends_by_the_cap, finishes]
         outcome = self.run_substep()
         self.assertEqual(outcome.status, "pass", outcome)
-        first, second = self.requests()
+        _first, second = self.requests()
         self.assertEqual(second["workshop_lineage_id"], "child-2")
         self.assertFalse(second.get("warm_resume"))
         self.assertIn("pure_context", second)
@@ -712,7 +711,7 @@ _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
 #: first three templates and the system prompt alone.
 _WORKSHOP_CONTRACT_DIGESTS = {
     "workshop-1": "434bbd2a7d61d8ad6352b857a08398ed9ea0c33af5f7904823a841af6cc0d17e",
-    "workshop-2": "PENDING",
+    "workshop-2": "8cad22f0a96fac515ec1540c3aff778dbaf4e3e8bda30877895ca2fb5209b125",
 }
 
 
@@ -1394,7 +1393,7 @@ class WorkshopCompileProducerTests(unittest.TestCase):
         self.c.leaf_actions = [both, fixed]
         outcome = self.run_substep()
         self.assertEqual(outcome.status, "pass", outcome)
-        first, second = self.requests()
+        _first, second = self.requests()
         self.assertTrue(second["warm_resume"])
         self.assertEqual(second["workshop_lineage_id"], "child-1")
         self.assertIn("two different answers", second["repair_findings"])
@@ -1447,6 +1446,26 @@ class WorkshopCompileProducerTests(unittest.TestCase):
         self.assertEqual((request["workshop_lineage_id"], request["warm_resume"]),
                          ("child-1", True))
         self.assertEqual(self.c.spawns[-1]["resume_session_id"], "child-1")
+        # The re-attached lineage's seeds are rendered with the surface too: its catalog stays.
+        self.assertIn("dep__apply",
+                      (self.paths("child-1").tree / "DEPENDENCIES.md").read_text())
+
+    def test_a_handler_outliving_the_stop_is_summarized_as_a_compile_failure(self) -> None:
+        self.c.live_handlers = 1
+        outcome = self.run_substep()
+        self.assertEqual(outcome.infra_error[0], "workshop_wrapper_not_stopped")
+        finals = [c[1]["--agent-run-json"] for c in self.c.calls if c[0] == "finalize-child"]
+        self.assertEqual(finals[0]["result_summary"],
+                         "workshop_compile_fail: workshop_wrapper_not_stopped")
+
+    def test_a_seed_named_after_an_output_file_is_refused(self) -> None:
+        spec = self.c._pure_producer_spec("compile")
+        bad = spec._replace(workshop_document_seeds={
+            **spec.workshop_document_seeds, "tests_document": workshop_tree.IR_DOCUMENT_NAME})
+        with self.assertRaises(RuntimeError) as ctx:
+            self.c._workshop_seeds(self.refs, self.c._build_pure_compile_context(self.refs),
+                                   {}, bad)
+        self.assertIn("named after an output file", str(ctx.exception))
 
     def test_the_pure_entry_still_runs_the_part_split(self) -> None:
         """Dispatch: the workshop branch precedes the compile one only for a workshop entry."""
@@ -1462,6 +1481,34 @@ class WorkshopCompileProducerTests(unittest.TestCase):
                 llm_config=lc.load_llm_config(_write_pure_config(self.repo)), env={})
             self.assertEqual(pure_c.run_substep(self.refs, "compile", "generate"), "PURE")
         self.assertEqual((pure.call_count, workshop.call_count), (1, 1))
+
+
+class WorkshopSpecTests(_Base):
+    def test_both_generate_shapes_carry_the_same_workshop_half(self) -> None:
+        default = self.c._pure_producer_spec("generate", "m3c")
+        harness = self.c._pure_producer_spec("generate", "harness")
+        fields = [f for f in wc.Conductor._PureProducerSpec._fields if f.startswith("workshop_")]
+        self.assertEqual(len(fields), 7)
+        for name in fields:
+            with self.subTest(field=name):
+                self.assertEqual(getattr(harness, name), getattr(default, name))
+                self.assertIsNotNone(getattr(default, name))
+        self.assertTrue(default.workshop_seeds_host_sources and default.workshop_control_file)
+
+    def test_a_workshop_request_names_its_lineage_and_provider_together(self) -> None:
+        base = dict(step="generate", substep="generate", orchestration_id="o",
+                    orchestration_agent_run_id="orch", child_agent_run_id="c",
+                    agent_model="opus", workflow_mode="dev", pure_leaf=True,
+                    pure_context=self.c._build_pure_context(self.refs))
+        for kw in ({"workshop_lineage_id": "c"}, {"workshop_provider": "claude_cli"}):
+            with self.subTest(given=kw):
+                with self.assertRaises(ValueError) as ctx:
+                    wc.build_launch_request(self.refs, **base, **kw)
+                self.assertIn("names its lineage and its provider together", str(ctx.exception))
+        req = wc.build_launch_request(self.refs, **base, workshop_lineage_id="c",
+                                      workshop_provider="claude_cli")
+        self.assertEqual(req["workshop_provider"], "claude_cli")
+        self.assertNotIn("workshop_provider", wc.build_launch_request(self.refs, **base))
 
 
 def _write_pure_config(repo: Path) -> Path:

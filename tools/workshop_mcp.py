@@ -209,7 +209,7 @@ class WrapperMcpServer:
                         "peer": f"{host}:{port}",
                         "error": f"{type(error).__name__}: {error}",
                     })
-                except Exception:  # noqa: BLE001 - an error handler that raises prints anyway
+                except Exception:  # noqa: BLE001, S110 - an error handler that raises prints anyway
                     pass
 
             def process_request(self, request, client_address):
