@@ -704,7 +704,7 @@ class SpawnTimeoutTests(unittest.TestCase):
             seen: list[int] = []
             original = wc._wait_for_leaf_exit
 
-            def spy(process, deadline, cancel_event):  # noqa: ANN001
+            def spy(process, deadline, cancel_event):
                 import time
                 seen.append(int(deadline - time.monotonic()) if deadline else -1)
                 return original(process, deadline, cancel_event)
@@ -842,7 +842,7 @@ class WorkshopSpawnArgvTests(unittest.TestCase):
             class _Stop(Exception):
                 pass
 
-            def popen(argv, **kw):  # noqa: ANN001 - subprocess.Popen's shape
+            def popen(argv, **kw):
                 seen.append(list(argv))
                 raise _Stop()
 

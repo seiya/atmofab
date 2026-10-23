@@ -26,7 +26,6 @@ from tools import workshop_mcp, workshop_tree
 from tools.workshop_tree import LineagePaths
 from tools.workshop_wrapper import WRAPPER_OPS
 
-
 #: The local port of the last request `_http` made, so a row can match the recorded peer.
 _LAST_LOCAL_PORT: list[int] = []
 
@@ -209,7 +208,7 @@ class RecordTests(_Fixture):
 
 class FailureTests(_Fixture):
     def test_an_operation_that_raises_is_answered_and_recorded(self) -> None:
-        def boom(ctx, op, args, *, on_spawn=None):  # noqa: ANN001
+        def boom(ctx, op, args, *, on_spawn=None):
             raise RuntimeError("operation failed")
 
         server = self._server(run_op=boom)
