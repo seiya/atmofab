@@ -29487,6 +29487,27 @@ class WrapperSandboxRendererTests(unittest.TestCase):
             self.assertEqual(ort.wrapper_toolchain_ro_roots(["linttool"], self.repo),
                              [str((self.repo / ".venv").resolve())])
 
+    def test_a_tool_elsewhere_in_the_checkout_is_dropped_not_refused(self) -> None:
+        # Its root is bound by no run: the one operation that starts it fails inside the run,
+        # and every other operation still renders (refusing would end them all).
+        outside = Path(self._tmp.name) / "venv_real"
+        (outside / "bin").mkdir(parents=True)
+        (self.repo / ".venv").symlink_to(outside)
+        for where in ("tools/bin", "myenv/bin", ".venv/bin"):
+            with self.subTest(where=where):
+                exe = self.repo / where / "tool_here"
+                exe.parent.mkdir(parents=True, exist_ok=True)
+                exe.write_text("#!/bin/sh\\n")
+                exe.chmod(0o755)
+                path = f"{exe.parent}:/usr/bin:/bin"
+                with mock.patch.dict(os.environ, {"PATH": path, "HOME": "/nonexistent-home"}):
+                    roots = ort.wrapper_toolchain_ro_roots(["tool_here"], self.repo)
+                self.assertFalse(any(Path(r).is_relative_to(self.repo.resolve())
+                                     for r in roots), roots)
+                self.render(toolchain_ro_roots=roots)
+                exe.unlink()
+        self.assertEqual(sorted(ort.WRAPPER_CHECKOUT_TOOL_DIRS), [".venv", "env", "venv"])
+
     def test_a_linked_program_binds_the_root_of_its_target_too(self) -> None:
         real = Path(self._tmp.name) / "opt" / "real" / "2.0"
         (real / "bin").mkdir(parents=True)

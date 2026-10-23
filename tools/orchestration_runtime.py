@@ -8362,7 +8362,9 @@ def wrapper_toolchain_ro_roots(executables: Sequence[str],
     outside `$HOME` whose parent is a `bin/` directory binds the prefix above it, because such
     an installer keeps the libraries the program loads beside `bin/` (`<prefix>/lib`). Roots
     the system binds already cover are dropped. An executable `PATH` does not hold contributes
-    nothing: the run then fails as it would on the host, inside the sandbox."""
+    nothing: the run then fails as it would on the host, inside the sandbox; so does a program
+    under any other directory of the checkout (`_bindable_checkout_root`), whose root is
+    dropped rather than refused."""
     home = (os.environ.get("HOME") or "").strip()
     system = [Path(p) for p in _runtime_ro_bind_paths()]
     repo = Path(repo_root).resolve() if repo_root is not None else None
@@ -8376,6 +8378,10 @@ def wrapper_toolchain_ro_roots(executables: Sequence[str],
             inside_home = bool(home) and normal.is_relative_to(Path(os.path.normpath(home)))
             if repo is not None and normal.is_relative_to(repo) and normal != repo:
                 root = repo / normal.relative_to(repo).parts[0]
+                if not _bindable_checkout_root(root, repo):
+                    # Bound by no run: the program is then absent inside it, which fails the
+                    # one operation that starts it rather than refusing every operation.
+                    continue
             elif inside_home:
                 root = _install_root_for(candidate, home)
             elif candidate.parent.name == "bin" and candidate.parent.parent != Path("/"):
@@ -8389,9 +8395,17 @@ def wrapper_toolchain_ro_roots(executables: Sequence[str],
 
 
 #: The top-level checkout directories a wrapper run may be bound back over its checkout tmpfs,
-#: as an install root: a directory whose name starts with a dot (a virtualenv), except these,
-#: which hold the repository's history and its agents' configuration.
-_WRAPPER_CHECKOUT_ROOT_REFUSED: frozenset[str] = frozenset({".git", ".claude", ".codex"})
+#: as an install root: the virtualenv names this repository's `.gitignore` lists. No other
+#: part of the checkout is bound into a wrapper run.
+WRAPPER_CHECKOUT_TOOL_DIRS: frozenset[str] = frozenset({".venv", "venv", "env"})
+
+
+def _bindable_checkout_root(root: Path, repo: Path) -> bool:
+    """Whether `root` (inside the checkout `repo`) may be bound back over a wrapper run's
+    checkout tmpfs: a real directory (not a link) directly under the checkout, named in
+    `WRAPPER_CHECKOUT_TOOL_DIRS`."""
+    return (root.parent == repo and root.name in WRAPPER_CHECKOUT_TOOL_DIRS
+            and root.is_dir() and not root.is_symlink())
 
 
 def render_wrapper_sandbox_prefix(
@@ -8412,14 +8426,16 @@ def render_wrapper_sandbox_prefix(
     `--setenv` per entry of `env` (the caller passes the SAME dict to the library as `env`, so
     the command log's `env_override_keys` names what the run was given), the system
     directories and `toolchain_ro_roots` read-only, an empty tmpfs at `repo_root` so nothing of
-    the checkout — `tools/` among it — is in reach of a leaf-authored program, then exactly
-    `rw_binds` read-write and `ro_binds` read-only, each at its own host path, and `--chdir
-    project_dir`.
+    the checkout — `tools/` among it — is in reach of a leaf-authored program, except a
+    virtualenv directory of the checkout given as an install root (`WRAPPER_CHECKOUT_TOOL_DIRS`),
+    which is bound back read-only over it; then exactly `rw_binds` read-write and `ro_binds`
+    read-only, each at its own host path, and `--chdir project_dir`.
 
     Refuses (`ValueError`): a bind that is not an existing absolute path or that has a
     containment relation with the checkout (a bind at or under it would mount the checkout
     back over the tmpfs; one covering it would expose all of it); a `project_dir` not inside
-    a read-write bind; an install root that aliases the checkout
+    a read-write bind; an install root inside the checkout other than one of its virtualenv
+    directories; an install root that aliases the checkout
     (`_refuse_backend_ro_alias_of_repo`); an env name outside `WRAPPER_ENV_BASE_NAMES` and
     `declared_env_names`, or a non-string value."""
     resolved_repo = repo_root.resolve()
@@ -8455,14 +8471,11 @@ def render_wrapper_sandbox_prefix(
     for raw in toolchain_ro_roots:
         root = Path(os.path.normpath(str(raw)))
         if root.is_relative_to(resolved_repo) and root != resolved_repo:
-            parts = root.relative_to(resolved_repo).parts
-            if (len(parts) != 1 or not parts[0].startswith(".")
-                    or parts[0] in _WRAPPER_CHECKOUT_ROOT_REFUSED or not root.is_dir()
-                    or root.is_symlink()):
+            if not _bindable_checkout_root(root, resolved_repo):
                 raise ValueError(
-                    f"wrapper install root {str(raw)!r} lies in the checkout and is not a "
-                    f"top-level dot-directory of it (a virtualenv); a wrapper run is bound no "
-                    f"other part of the checkout — install the tool outside it")
+                    f"wrapper install root {str(raw)!r} lies in the checkout and is not one of "
+                    f"its virtualenv directories {sorted(WRAPPER_CHECKOUT_TOOL_DIRS)}; a "
+                    f"wrapper run is bound no other part of the checkout")
             in_checkout.append(str(root))
         else:
             toolchain.append(str(raw))
