@@ -1777,6 +1777,43 @@ class SandboxArgvPrefixTests(unittest.TestCase):
         time.sleep(3)
         self.assertFalse(marker.exists(), "a process of the timed-out group survived")
 
+    def test_every_entry_point_splices_the_prefix(self) -> None:
+        # The stand-in records and exits without running the command, so each entry point's
+        # own command needs no tool on this host.
+        noexec = self.dir / "fake_noexec"
+        noexec.write_text(
+            "#!/usr/bin/env python3\nimport json, os, sys\n"
+            "open(os.environ['FAKE_RECORD'], 'w').write(json.dumps(sys.argv[1:]))\n")
+        noexec.chmod(0o755)
+        (self.dir / "a.f90").write_text("program a\nend program a\n")
+        common = {"project_dir": str(self.dir), "env": {"FAKE_RECORD": str(self.record)},
+                  "sandbox_argv_prefix": [str(noexec), "--"]}
+        calls = [
+            (self.mod.tool_compile_project, {"build_system": "make"}),
+            (self.mod.tool_run_program, {"command": ["/bin/true"]}),
+            (self.mod.tool_run_quality_checks, {"preset": "make_test"}),
+            (self.mod.tool_run_linter, {"preset": "fortitude"}),
+            (self.mod.tool_run_syntax_check, {"compiler": "gfortran", "std": "f2008"}),
+        ]
+        for fn, args in calls:
+            with self.subTest(fn=fn.__name__):
+                self.record.unlink(missing_ok=True)
+                result = fn({**common, **args})
+                argv = json.loads(self.record.read_text())
+                self.assertEqual(argv[0], "--", result)
+                self.assertEqual(argv[1:], result.get("command") or result["runs"][0]["command"])
+
+    def test_an_unprefixed_timeout_returns_text(self) -> None:
+        # `subprocess.TimeoutExpired` carries bytes even under `text=True`; the result is text.
+        script = self.dir / "talk.sh"
+        script.write_text("#!/bin/sh\necho partial\nexec /usr/bin/tail -f /dev/null\n")
+        script.chmod(0o755)
+        result = self.mod.tool_run_program({"project_dir": str(self.dir),
+                                            "command": [str(script)], "timeout_sec": 1})
+        self.assertIsNone(result["return_code"])
+        self.assertIsInstance(result["stdout"], str)
+        self.assertIsInstance(result["stderr"], str)
+
     def test_every_entry_point_reads_the_key(self) -> None:
         bad = {"sandbox_argv_prefix": "bwrap"}
         calls = [

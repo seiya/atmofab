@@ -29487,6 +29487,18 @@ class WrapperSandboxRendererTests(unittest.TestCase):
             self.assertEqual(ort.wrapper_toolchain_ro_roots(["linttool"], self.repo),
                              [str((self.repo / ".venv").resolve())])
 
+    def test_a_linked_program_binds_the_root_of_its_target_too(self) -> None:
+        real = Path(self._tmp.name) / "opt" / "real" / "2.0"
+        (real / "bin").mkdir(parents=True)
+        (real / "bin" / "tool").write_text("#!/bin/sh\\n")
+        (real / "bin" / "tool").chmod(0o755)
+        shim = Path(self._tmp.name) / "opt" / "shims" / "bin"
+        shim.mkdir(parents=True)
+        (shim / "tool").symlink_to(real / "bin" / "tool")
+        with mock.patch.dict(os.environ, {"PATH": f"{shim}:/usr/bin:/bin"}):
+            roots = ort.wrapper_toolchain_ro_roots(["tool"])
+        self.assertEqual(roots, sorted([str(shim.parent), str(real)]))
+
     def test_toolchain_roots_cover_a_prefix_install_and_skip_system_dirs(self) -> None:
         prefix = Path(self._tmp.name) / "opt" / "tool" / "1.0"
         (prefix / "bin").mkdir(parents=True)

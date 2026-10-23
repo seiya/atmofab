@@ -503,5 +503,119 @@ class WrapperBoundsAndDeriveTests(_LineageCase):
                                "LANG": "C.UTF-8"})
 
 
+class WrapperCallCompositionTests(_LineageCase):
+    """What each sandboxed operation hands the build-runtime library, with the library entry
+    point replaced by a recorder (the real runs are `test_bwrap_simulation`'s)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.calls: list[dict] = []
+
+    def recorder(self, result=None):
+        def record(args):
+            self.calls.append(dict(args))
+            if args.get("on_spawn"):
+                args["on_spawn"](4242)
+            return result or {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
+        return record
+
+    def make_binary(self, name="x_runner"):
+        path = self.paths.staged_bin / name
+        path.write_text("#!/bin/sh\n")
+        path.chmod(0o755)
+        return path
+
+    def test_a_run_is_bounded_by_the_lineage_time_left(self) -> None:
+        from unittest import mock
+
+        self.make_binary()
+        ctx = _context(self.paths, self.reserved, lineage_deadline=time.time() + 30,
+                       run_timeout_sec=3600)
+        with mock.patch("tools.build_runtime.tool_run_program", self.recorder()):
+            self.assertTrue(ww.run_wrapper_op(ctx, "run", {"binary": "x_runner"})["ok"])
+        self.assertLessEqual(self.calls[0]["timeout_sec"], 30)
+        self.assertGreaterEqual(self.calls[0]["timeout_sec"], 25)
+
+    def test_a_run_declares_the_launch_environment_through_the_sandbox(self) -> None:
+        from unittest import mock
+
+        self.make_binary()
+        ctx = _context(self.paths, self.reserved, launch_argv_prefix=("launcher", "-n", "2"),
+                       launch_env=(("OMP_NUM_THREADS", "4"),))
+        with mock.patch("tools.build_runtime.tool_run_program", self.recorder()):
+            out = ww.run_wrapper_op(ctx, "run", {"binary": "x_runner", "case_ids": ["c1"]})
+        self.assertTrue(out["ok"], out)
+        call = self.calls[0]
+        self.assertEqual(call["env"]["OMP_NUM_THREADS"], "4")
+        prefix = call["sandbox_argv_prefix"]
+        i = prefix.index("OMP_NUM_THREADS")
+        self.assertEqual((prefix[i - 1], prefix[i + 1]), ("--setenv", "4"))
+        self.assertEqual(call["command"],
+                         ["launcher", "-n", "2", str(self.paths.staged_bin / "x_runner"),
+                          "--cases", str(self.paths.tree / "spec.ir.yaml"), "c1"])
+        # staged/bin read-only, staged/obj absent.
+        self.assertEqual(prefix[prefix.index(str(self.paths.staged_bin.resolve())) - 1],
+                         "--ro-bind")
+        self.assertNotIn(str(self.paths.staged_obj.resolve()), prefix)
+
+    def test_a_binary_that_is_a_link_or_option_shaped_is_refused(self) -> None:
+        outside = Path(self._tmp.name) / "elsewhere"
+        outside.write_text("#!/bin/sh\n")
+        (self.paths.staged_bin / "linked").symlink_to(outside)
+        self.make_binary("-x")
+        ctx = _context(self.paths, self.reserved, max_wrapper_calls=10)
+        for name in ("linked", "-x"):
+            with self.subTest(name=name):
+                self.assertEqual(ww.run_wrapper_op(ctx, "run", {"binary": name})["category"],
+                                 ww.CATEGORY_BAD_ARGUMENTS)
+
+    def test_compile_lists_built_files_only_and_spawns_are_reported(self) -> None:
+        from unittest import mock
+
+        self.write(_CONTROL, "all:\n")
+        self.make_binary()
+        (self.paths.staged_bin / "a_dir").mkdir()
+        seen: list[int] = []
+        ctx = _context(self.paths, self.reserved)
+        with mock.patch("tools.build_runtime.tool_compile_project", self.recorder()):
+            out = ww.run_wrapper_op(ctx, "compile", on_spawn=seen.append)
+        self.assertEqual(out["binaries"], ["x_runner"])
+        prefix = self.calls[0]["sandbox_argv_prefix"]
+        for rw in (self.paths.tree, self.paths.staged):
+            self.assertEqual(prefix[prefix.index(str(rw.resolve())) - 1], "--bind")
+        with mock.patch("tools.build_runtime.tool_run_linter", self.recorder()):
+            ww.run_wrapper_op(ctx, "lint", on_spawn=seen.append)
+        self.assertEqual(seen, [4242, 4242])
+
+    def test_each_syntax_stage_starts_from_an_empty_directory(self) -> None:
+        from unittest import mock
+
+        stale = self.paths.syntax / "gfortran" / "stale.f90"
+        stale.parent.mkdir(parents=True)
+        stale.write_text("left by an earlier call\n")
+        self.write("x_model.f90", "module x\nend module x\n")
+        self.write("deep/inc.f90", "x\n")
+        (self.paths.tree / "linked.f90").symlink_to(Path(self._tmp.name) / "outside.f90")
+        staged: list[list[str]] = []
+
+        def record(args):
+            root = Path(args["project_dir"])
+            staged.append(sorted(p.relative_to(root).as_posix()
+                                 for p in root.rglob("*") if p.is_file()))
+            return {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
+
+        with mock.patch("tools.build_runtime.tool_run_syntax_check", record):
+            out = ww.run_wrapper_op(_context(self.paths, self.reserved), "syntax_check")
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(staged[0], ["deep/inc.f90", "x_model.f90", "x_runner.f90"])
+        self.assertEqual(staged[1], ["x_model.f90"])
+
+    def test_truncated_output_is_flagged(self) -> None:
+        cut = {"ok": False, "return_code": 2, "stdout": "a\n...<omitted 99 chars>...\nb",
+               "stderr": ""}
+        self.assertTrue(ww._command_feedback(cut)["truncated"])
+        self.assertNotIn("truncated", ww._command_feedback({**cut, "stdout": "ab"}))
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
