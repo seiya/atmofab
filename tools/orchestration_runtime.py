@@ -13820,12 +13820,21 @@ def _probe_claude_backend(
 _CLAUDE_RESTRICTED_OPTION_LINE_RE = re.compile(
     r"(?m)^[ \t]{0,8}(?:-\w,[ \t]*)?--restricted(?![\w-])")
 
-#: The options a `workshop leaf`'s argv carries beyond the pure leaf's (`pure_leaf.
-#: workshop_leaf_flags`, issue #534). A CLI missing one refuses the whole argv, so every
-#: workshop launch would die as a transport failure; `claude_workshop_flag_set_available`
-#: moves that to preflight, for a configuration that has a workshop entry.
-CLAUDE_WORKSHOP_REQUIRED_OPTIONS: tuple[str, ...] = (
-    "--mcp-config", "--tools", "--permission-mode", "--permission-prompts", "--allowedTools")
+def _workshop_only_options() -> tuple[str, ...]:
+    """The options `pure_leaf.workshop_leaf_flags` carries that `pure_leaf_flags` does not —
+    DERIVED, so a flag added to the workshop launch is checked by preflight without a second
+    list to keep in step."""
+    from tools.pure_leaf import pure_leaf_flags, workshop_leaf_flags
+    pure = {flag for flag in pure_leaf_flags() if flag.startswith("--")}
+    return tuple(dict.fromkeys(flag for flag in workshop_leaf_flags("{}")
+                               if flag.startswith("--") and flag not in pure))
+
+
+#: The options a `workshop leaf`'s argv carries beyond the pure leaf's (issue #534). A CLI
+#: missing one refuses the whole argv, so every workshop launch would die as a transport
+#: failure; `claude_workshop_flag_set_available` moves that to preflight, for a configuration
+#: that has a workshop entry. (The options both argvs carry are the pure leaf's own checks'.)
+CLAUDE_WORKSHOP_REQUIRED_OPTIONS: tuple[str, ...] = _workshop_only_options()
 
 
 def _claude_option_line_re(option: str) -> re.Pattern[str]:

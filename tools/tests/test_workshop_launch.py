@@ -414,7 +414,7 @@ def _clear_active_child(repo: Path) -> None:
 
 
 class PreflightTests(unittest.TestCase):
-    _HELP = ("Usage: claude\n  --mcp-config <configs...>  x\n  --tools <tools...>  x\n"
+    _HELP = ("Usage: claude\n  --mcp-config <configs...>  x\n"
              "  --permission-mode <mode>  x\n  --permission-prompts <target>  x\n"
              "  --allowedTools, --allowed-tools <tools...>  x\n")
 
@@ -424,6 +424,17 @@ class PreflightTests(unittest.TestCase):
         def run(argv, **kw):
             return subprocess.CompletedProcess(argv, rc, help_text, "")
         return run
+
+    def test_the_required_options_are_the_workshop_argv_beyond_the_pure_one(self) -> None:
+        """Derived from the two flag sets, and the derivation reads them: the set is exactly
+        the four options today, and a flag added to the workshop argv joins it."""
+        self.assertEqual(ort.CLAUDE_WORKSHOP_REQUIRED_OPTIONS,
+                         ("--mcp-config", "--permission-mode", "--permission-prompts",
+                          "--allowedTools"))
+        original = pure_leaf.workshop_leaf_flags
+        with mock.patch.object(pure_leaf, "workshop_leaf_flags",
+                               lambda j: [*original(j), "--new-flag", "x"]):
+            self.assertIn("--new-flag", ort._workshop_only_options())
 
     def test_the_check_requires_every_option_as_an_option_line(self) -> None:
         self.assertIs(ort._claude_workshop_flag_set_check("claude", self._runner(self._HELP))
