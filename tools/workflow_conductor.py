@@ -9367,10 +9367,20 @@ class Conductor:
             child_arid = self.new_agent_run_id()
             warm = (lineage is not None and resume_session_id is not None and warm_capable
                     and self._workshop_session_resumable(lineage.paths, resume_session_id))
-            if lineage is not None and warm and lineage.deadline - time.time() < 1:
-                from tools.workshop_tree import end_lineage
-                end_lineage(lineage.paths, "lineage_timeout")
-                warm = False
+            if lineage is not None and warm:
+                # A lineage with no time or no wrapper call left can do nothing in a warm turn
+                # (its first call would be refused and end it): end it by the bound it has
+                # spent and take a cold reuse, which starts fresh counters. `count_wrapper_call`
+                # ends a lineage only on the call PAST the cap, so a leaf that spent exactly
+                # `max_wrapper_calls` and exited leaves it open with nothing left.
+                from tools.workshop_tree import end_lineage, read_lineage_record
+                if lineage.deadline - time.time() < 1:
+                    end_lineage(lineage.paths, "lineage_timeout")
+                    warm = False
+                elif (int(read_lineage_record(lineage.paths).get("wrapper_calls_used") or 0)
+                      >= int(entry.max_wrapper_calls)):
+                    end_lineage(lineage.paths, "max_wrapper_calls")
+                    warm = False
             if lineage is not None and not warm:
                 prior, lineage, resume_session_id = lineage.paths, None, None
             repair_payload: dict[str, str] | None = None

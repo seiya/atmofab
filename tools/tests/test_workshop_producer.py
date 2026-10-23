@@ -479,6 +479,41 @@ class EndOfLineageTests(_Base):
         self.assertEqual(record["ended_by"], "lineage_timeout")
 
 
+class SpentBudgetTests(_Base):
+    def test_a_lineage_that_spent_every_call_is_not_resumed(self) -> None:
+        """A leaf that used exactly `max_wrapper_calls` and exited leaves its lineage open with
+        nothing left; the repair ends it `max_wrapper_calls` and takes a cold reuse rather than a
+        warm turn whose first call would be refused."""
+        def spends_the_budget(c, tree, kwargs):
+            paths = self.paths(kwargs["child_arid"])
+            for _ in range(30):
+                self.assertTrue(workshop_tree.count_wrapper_call(paths, 30))
+
+        self.c.leaf_actions = [spends_the_budget, _writes_bundle]
+        self.assertEqual(self.run_substep().status, "pass")
+        second = self.requests()[1]
+        self.assertEqual(second["workshop_lineage_id"], "child-2")
+        self.assertFalse(second.get("warm_resume"))
+        record = workshop_tree.read_lineage_record(self.paths("child-1"))
+        self.assertEqual(record["ended_by"], "max_wrapper_calls")
+        rows = self.bundle_meta()["per_attempt"]
+        self.assertEqual((rows[0]["wrapper_calls"], rows[1]["wrapper_calls"]), (30, 0))
+
+    def test_a_lineage_with_calls_left_is_resumed(self) -> None:
+        def spends_some(c, tree, kwargs):
+            paths = self.paths(kwargs["child_arid"])
+            for _ in range(29):
+                workshop_tree.count_wrapper_call(paths, 30)
+
+        self.c.leaf_actions = [spends_some, _writes_bundle]
+        self.run_substep()
+        self.assertEqual(self.requests()[1]["workshop_lineage_id"], "child-1")
+        # Per attempt: the warm turn on the same record counts its own calls, not the
+        # lineage's running total.
+        self.assertEqual([r["wrapper_calls"] for r in self.bundle_meta()["per_attempt"]],
+                         [29, 0])
+
+
 class OuterReopenTests(_Base):
     def _reopen(self, target: str) -> wc.SubstepOutcome:
         evidence = self.c.__dict__.setdefault("evidence", {})
