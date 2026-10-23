@@ -8253,12 +8253,14 @@ def render_bwrap_command(
             raise ValueError("a workshop profile carries one runtime_rw_credential_mapping "
                              "[source, destination]")
         cred_src, cred_dst = credential[0].strip(), credential[1].strip()
+        claude_home = str((profile.get("env") or {}).get("CLAUDE_CONFIG_DIR") or "")
         if not (Path(cred_src).is_file() and Path(cred_dst).is_file()
-                and not Path(cred_dst).is_symlink()
-                and any(Path(cred_dst).parent == Path(p) for p in rw_paths)):
+                and not Path(cred_dst).is_symlink() and claude_home in rw_paths
+                and Path(cred_dst) == Path(claude_home) / ".credentials.json"):
             raise ValueError(
-                "runtime_rw_credential_mapping must map an existing file onto an existing "
-                f"regular file directly inside one of the profile's rw binds (got {credential!r})")
+                "runtime_rw_credential_mapping must map an existing file onto the existing "
+                "regular file `.credentials.json` of the profile's CLAUDE_CONFIG_DIR, one of its "
+                f"rw binds — never into the tree the host snapshots (got {credential!r})")
     cmd: list[str] = [
         "bwrap",
         "--die-with-parent",
@@ -11136,6 +11138,9 @@ def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> No
             raise ValueError(
                 f"leaf_mode=workshop is only valid for {admissible}; "
                 f"got (step={step!r}, substep={substep!r})")
+        # Not observed by any test: `record_launch`, the one caller, checks the same field
+        # with the same pattern before it gets here. Kept so the validator states the whole
+        # shape on its own.
         if not (isinstance(lineage, str) and _AGENT_RUN_ID_RE.match(lineage.strip())):
             raise ValueError(
                 "workshop launch request must name its lineage in workshop_lineage_id (a plain "
@@ -13393,8 +13398,9 @@ def _prepare_claude_workshop_home(repo_root: Path, orchestration_id: str, lineag
     bound into no leaf) and the LINEAGE HOME `<container>/<lineage_id>/`, which is
     `workshop_tree.LineagePaths.home`. `lineage_id` is the `agent_run_id` of the cold launch
     that started the lineage. `resume` means what it means there: cold creates the lineage
-    home EXCLUSIVELY, 0700 (one already there is refused, not adopted) — called by the
-    CONDUCTOR, in its own process, before it records the launch, because the tree is seeded and
+    home EXCLUSIVELY, 0700 (one already there is refused, not adopted) — to be called by the
+    CONDUCTOR (issue #534 PR-3's loop; until then tests are the only callers), in its own
+    process, before it records the launch, because the tree is seeded and
     the wrapper's context frozen under the home first; warm requires it and answers `None` when
     it is gone. `record_launch` calls it warm for both launches: on a warm one a `None` becomes
     `workshop_lineage_home_missing`, answered before any launch record (a resume against a
@@ -14747,10 +14753,10 @@ def record_launch(
     # and passes the id.
     #
     # The HOST prepares a cold lineage's home before this launch is recorded, not this function:
-    # the conductor seeds the tree, stages the closure and freezes the wrapper's context — all
-    # under the home — and starts the wrapper endpoint whose URL this launch records, before it
+    # the conductor is to seed the tree, stage the closure and freeze the wrapper's context — all
+    # under the home — and start the wrapper endpoint whose URL this launch records, before it
     # records the launch (`_prepare_claude_workshop_home(..., resume=False)`, in its own
-    # process). So here the home must exist on BOTH launches, and the two absences mean
+    # process; issue #534 PR-3's conductor loop is the first production caller). So here the home must exist on BOTH launches, and the two absences mean
     # different things: a warm launch whose home is gone returns
     # `workshop_lineage_home_missing` and the conductor falls back to a cold reuse, as the codex
     # lineage does above; a cold launch whose home was never prepared is a host defect, refused.

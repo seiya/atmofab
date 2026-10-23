@@ -2239,7 +2239,9 @@ def _admissible_leaf_profile(profile: Mapping[str, Any], entry: Any,
     checkout (`repo_root`), with the tree as the working directory and `CLAUDE_CONFIG_DIR`
     naming `config`. Fail-closed: any other shape answers False."""
     if profile.get("readonly") is True:
-        return profile.get("leaf_mode") is None
+        # A WORKSHOP entry under a read-only profile is refused too: its edits would land on
+        # the sandbox's own tmpfs and vanish, and the snapshot would read an empty tree.
+        return profile.get("leaf_mode") is None and not getattr(entry, "is_workshop", False)
     if not (getattr(entry, "is_workshop", False)
             and profile.get("leaf_mode") == "workshop" and profile.get("readonly") is False):
         return False
@@ -2255,9 +2257,13 @@ def _admissible_leaf_profile(profile: Mapping[str, Any], entry: Any,
             return False
     config, tree = paths
     env = profile.get("env") if isinstance(profile.get("env"), dict) else {}
+    credential = profile.get("runtime_rw_credential_mapping")
     return (config.name == "config" and tree.name == "tree" and config.parent == tree.parent
             and str(profile.get("workdir") or "") == str(tree)
-            and env.get("CLAUDE_CONFIG_DIR") == str(config))
+            and env.get("CLAUDE_CONFIG_DIR") == str(config)
+            # The credential lands in the CLI's own home, never in the tree the host snapshots.
+            and isinstance(credential, list) and len(credential) == 2
+            and str(credential[1]) == str(config / ".credentials.json"))
 
 
 def _leaf_stream_encoding() -> str:

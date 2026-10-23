@@ -28475,7 +28475,9 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             "agent_run_id": self._ARID, "readonly": False, "leaf_mode": "workshop",
             "write_roots": [], "read_roots": [],
             "runtime_rw_bind_paths": [f"{home}/config", f"{home}/tree"],
-            "workdir": f"{home}/tree"}
+            "workdir": f"{home}/tree",
+            "runtime_rw_credential_mapping": ["/operator/.credentials.json",
+                                              f"{home}/config/.credentials.json"]}
         (root / "sandbox_profiles" / f"{self._ARID}.json").write_text(json.dumps(body),
                                                                      encoding="utf-8")
 
@@ -28525,7 +28527,9 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         home = f"/tmp/homes/{self._ORCH}/claude/{self._ARID}"
         good = {"agent_run_id": self._ARID, "readonly": False, "leaf_mode": "workshop",
                 "write_roots": [], "runtime_rw_bind_paths": [f"{home}/config", f"{home}/tree"],
-                "workdir": f"{home}/tree"}
+                "workdir": f"{home}/tree",
+                "runtime_rw_credential_mapping": ["/operator/.credentials.json",
+                                                  f"{home}/config/.credentials.json"]}
         for label, change in (("read-only", {"readonly": True}),
                               ("a write root", {"write_roots": ["workspace"]}),
                               ("a third bind", {"runtime_rw_bind_paths": [
@@ -28548,7 +28552,13 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                                       f"{home}/../{self._ARID}/tree"],
                                   "workdir": f"{home}/../{self._ARID}/tree"}),
                               ("workdir config", {"workdir": f"{home}/config"}),
-                              ("no leaf_mode", {"leaf_mode": None})):
+                              ("no leaf_mode", {"leaf_mode": None}),
+                              ("the credential mapped into the tree", {
+                                  "runtime_rw_credential_mapping": [
+                                      "/operator/.credentials.json",
+                                      f"{home}/tree/.credentials.json"]}),
+                              ("no credential mapping", {
+                                  "runtime_rw_credential_mapping": None})):
             with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
                 repo_root = Path(tmp)
                 self._build_tree(repo_root)
@@ -28565,7 +28575,10 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 profile = {"agent_run_id": self._ARID, "readonly": False,
                            "leaf_mode": "workshop", "write_roots": [],
                            "runtime_rw_bind_paths": [f"{home}/config", f"{home}/tree"],
-                           "workdir": f"{home}/tree"}
+                           "workdir": f"{home}/tree",
+                           "runtime_rw_credential_mapping": [
+                               "/operator/.credentials.json",
+                               f"{home}/config/.credentials.json"]}
                 if label == "under the checkout":
                     self._make_workshop(repo_root, profile=profile)
                     expected = "must lie outside the checkout"
@@ -28588,6 +28601,19 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             self._build_tree(repo_root)
             self._make_workshop(repo_root)
             (self._orch_root(repo_root) / "launches" / f"{self._ARID}.request.json").unlink()
+            self.assertTrue(any("workshop-launch mismatch" in v
+                                for v in self._workshop_violations(repo_root)))
+
+    def test_no_readable_request_at_all_is_a_mismatch_not_an_unbound_name(self) -> None:
+        """With EVERY request file gone, no earlier row can leave a value behind, so the
+        per-row default is what answers: a mismatch violation, not an UnboundLocalError
+        (round 3: this shape pins the initialisation a one-request removal could not)."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_workshop(repo_root)
+            for path in (self._orch_root(repo_root) / "launches").glob("*.request.json"):
+                path.unlink()
             self.assertTrue(any("workshop-launch mismatch" in v
                                 for v in self._workshop_violations(repo_root)))
 

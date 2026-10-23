@@ -689,6 +689,12 @@ def _workshop_profile_violations(profile: dict, request: dict | None = None,
             out.append(f"workshop launch sandbox profile binds lineage "
                        f"{paths[0].parent.name!r}, not the request's {lineage.strip()!r}")
     tree = next(p for p in paths if p.name == "tree")
+    config = next(p for p in paths if p.name == "config")
+    credential = profile.get("runtime_rw_credential_mapping")
+    if not (isinstance(credential, list) and len(credential) == 2
+            and str(credential[1]) == str(config / ".credentials.json")):
+        out.append(f"workshop launch sandbox profile must map the credential onto "
+                   f"{config / '.credentials.json'} (got {credential!r})")
     if str(profile.get("workdir") or "") != str(tree):
         out.append(f"workshop launch sandbox profile workdir must be its tree (got "
                    f"{profile.get('workdir')!r})")

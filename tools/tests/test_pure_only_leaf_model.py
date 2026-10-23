@@ -273,7 +273,9 @@ class SpawnLeafAdmitsOneWritableProfileTests(unittest.TestCase):
                 "repo_root": str(self.repo), "tmp_dir": str(self.repo / "tmp"),
                 "readonly": False, "leaf_mode": "workshop", "write_roots": [],
                 "runtime_rw_bind_paths": [self.config, self.tree], "workdir": self.tree,
-                "env": {"CLAUDE_CONFIG_DIR": self.config}}
+                "env": {"CLAUDE_CONFIG_DIR": self.config},
+                "runtime_rw_credential_mapping": ["/operator/.credentials.json",
+                                                  f"{self.config}/.credentials.json"]}
 
     def _write(self, arid: str, profile: dict) -> None:
         d = self.repo / "workspace" / "orchestrations" / "o" / "sandbox_profiles"
@@ -341,6 +343,17 @@ class SpawnLeafAdmitsOneWritableProfileTests(unittest.TestCase):
             "readonly absent": (lambda p: p.pop("readonly"), workshop),
             "a read-only profile claiming leaf_mode": (
                 lambda p: p.update(readonly=True), workshop),
+            # Its tree edits would land on the sandbox tmpfs and vanish (round 3).
+            "a plain read-only profile for a workshop entry": (
+                lambda p: [p.pop(k) for k in ("leaf_mode", "runtime_rw_credential_mapping")]
+                and p.update(readonly=True, runtime_rw_bind_paths=[], env={}), workshop),
+            # The credential would sit in the tree the host snapshots (round 3).
+            "the credential mapped into the tree": (
+                lambda p: p.update(runtime_rw_credential_mapping=[
+                    "/operator/.credentials.json", f"{self.tree}/.credentials.json"]),
+                workshop),
+            "no credential mapping": (
+                lambda p: p.pop("runtime_rw_credential_mapping"), workshop),
         }
         for label, (mutate, entry) in cases.items():
             with self.subTest(case=label):

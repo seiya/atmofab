@@ -242,9 +242,19 @@ class WorkshopProfileTests(_Env):
             "workshop profile marked readonly": lambda p: p.update(readonly=True),
             "credential destination outside config": lambda p: p.update(
                 runtime_rw_credential_mapping=[iso["credentials"], iso["credentials"]]),
+            # Inside an rw bind, but the tree's: the host would snapshot the credential.
+            "credential destination in the tree": lambda p: (
+                Path(iso["tree"], ".credentials.json").write_text(""),
+                p.update(runtime_rw_credential_mapping=[
+                    iso["credentials"], str(Path(iso["tree"], ".credentials.json"))])),
             "CLAUDE_CONFIG_DIR naming another directory": lambda p: p["env"].update(
                 CLAUDE_CONFIG_DIR="/tmp"),
             "unknown leaf_mode": lambda p: p.update(leaf_mode="agentic"),
+            # A workshop profile in every other respect, so ONLY the leaf_mode check can refuse
+            # it (round 3: the row above is also refused by the non-workshop workdir check).
+            "an unknown leaf_mode on an otherwise valid profile": lambda p: (
+                p.pop("runtime_rw_credential_mapping"), p["env"].pop("CLAUDE_CONFIG_DIR"),
+                p.update(leaf_mode="agentic", workdir=p["repo_root"])),
         }
         for label, mutate in cases.items():
             with self.subTest(case=label):
