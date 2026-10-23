@@ -591,7 +591,14 @@ class LeafCommandTests(unittest.TestCase):
         outcome = self.c.run_substep(refs, "generate", "generate")
         self.assertEqual(outcome.status, "fail")
         self.assertEqual(outcome.infra_error[0], "workshop_leaf_not_wired")
-        self.assertIn("leaf: workshop", outcome.infra_error[1])
+        self.assertEqual(outcome.infra_error[1], wc.WORKSHOP_LEAF_NOT_WIRED_DETAIL)
+        # The fail_closed reason the transport branch composes keeps the remedy whole: the
+        # head it writes, plus this detail, fits `_PHASE_REASON_DETAIL_MAX_CHARS`.
+        head = f"leaf_transport_error: leaf_exit=1 (tag: {outcome.infra_error[0]}; )"
+        self.assertLessEqual(len(head) + len(outcome.infra_error[1]),
+                             wc._PHASE_REASON_DETAIL_MAX_CHARS)
+        for field in ("leaf", "max_wrapper_calls", "lineage_timeout_s", "fresh run"):
+            self.assertIn(field, outcome.infra_error[1])
 
 
 class SpawnTimeoutTests(unittest.TestCase):

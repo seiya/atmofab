@@ -97,7 +97,8 @@
 # fresh lineage with fresh counters, so one substep attempt may spend up to
 # max_wrapper_calls x 3 calls and lineage_timeout_s x 3 seconds (1 + MAX_BUNDLE_REPAIR_TURNS,
 # which is 2), and more across an outer reopen. The conductor's workshop loop is not wired yet
-# (issue #534 PR-3): until it is, such an entry loads and its substep fails closed.
+# (issue #534 PR-3): until it is, such an entry loads, and a run that names it is refused at
+# its start with `llm_config_workshop_leaf_not_wired`, before anything is billed.
 defaults:
   provider: claude_cli
   model: opus

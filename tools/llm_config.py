@@ -812,6 +812,18 @@ class LlmConfig:
         # Resolve the single CLI identity `init` and the preflight speak, which raises a
         # NAMED rule when the configuration can launch no process at all.
         self.cli_launch_identity()
+        # A `leaf: workshop` entry loads (it can be read, diffed, tested and probed), and the
+        # conductor's workshop loop is issue #534 PR-3's: until it lands, a run is refused
+        # HERE, before init and before any phase is paid for, rather than failing closed at
+        # the substep after Compile has run.
+        for label, entry in self._labelled_entries():
+            if entry.is_workshop:
+                raise LlmConfigError(
+                    "llm_config_workshop_leaf_not_wired",
+                    "this entry is `leaf: workshop`, and the conductor's workshop loop is not "
+                    "wired yet (issue #534 PR-3); remove `leaf`, `max_wrapper_calls` and "
+                    "`lineage_timeout_s` from it to run the substep as a pure leaf",
+                    where=label)
         for label, entry in self._labelled_entries():
             if entry.provider != "codex_cli":
                 continue

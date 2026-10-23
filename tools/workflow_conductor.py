@@ -2192,6 +2192,12 @@ def _leaf_timeout_marker(timeout_seconds: int, elapsed: float,
             f"{timeout_seconds} (elapsed {elapsed:.0f}s); process group killed")
 
 
+#: The reason detail of a `leaf: workshop` entry's substep until issue #534 PR-3 wires its
+#: loop (`run_substep`); short enough to survive the 200-character reason whole.
+WORKSHOP_LEAF_NOT_WIRED_DETAIL = (
+    "`leaf: workshop` is not wired yet (#534 PR-3): drop leaf, max_wrapper_calls and "
+    "lineage_timeout_s from the entry; start a fresh run")
+
 #: The line appended to the stderr of a leaf ended through `spawn_leaf(cancel_event=)`.
 LEAF_CANCELLED_MARKER = ("[conductor] leaf_cancelled: the leaf was ended from outside "
                          "(its cancel event was set); process group killed")
@@ -13281,13 +13287,16 @@ class Conductor:
                 return self._run_pure_compile_producer(
                     refs, repair, resolved_dependencies, dependency_surface)
             if entry.is_workshop:
-                # A `leaf: workshop` entry (issue #534) loads, and its loop is PR-3's. Until
-                # then the substep fails CLOSED rather than running the entry as a pure leaf:
-                # the operator asked for another leaf model, and running this one instead would
-                # record a launch the configuration did not describe.
-                detail = (f"{phase}.{substep or ''} is configured `leaf: workshop`, and the "
-                          "conductor's workshop loop is not wired yet (issue #534 PR-3); "
-                          "remove `leaf:` and its two bounds from this entry to run it pure")
+                # A `leaf: workshop` entry (issue #534) loads, and its loop is PR-3's. A run is
+                # refused at its START (`LlmConfig.validate_runnable`,
+                # `llm_config_workshop_leaf_not_wired`), before anything is billed; this is the
+                # backstop for a caller that skips that check. It fails CLOSED rather than
+                # running the entry as a pure leaf: the operator asked for another leaf model,
+                # and running this one instead would record a launch the configuration did not
+                # describe. No leaf was launched, so the `leaf_exit=1` the transport branch
+                # records is a synthesized code, not an exit. The detail fits the 200-character
+                # reason whole (`_PHASE_REASON_DETAIL_MAX_CHARS`), remedy included.
+                detail = WORKSHOP_LEAF_NOT_WIRED_DETAIL
                 self.emit("workshop_leaf_not_wired", node_key=refs.node_key, phase=phase,
                           substep=substep or "", provider=entry.provider)
                 return SubstepOutcome(

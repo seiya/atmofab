@@ -1271,6 +1271,25 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertIn("llm_config_codex_cli_requires_model", out["detail"])
             self.assertEqual(calls, [])
 
+    def test_a_workshop_configuration_stops_before_launching(self) -> None:
+        """Until issue #534 PR-3: a `leaf: workshop` entry is refused at run start, before
+        init and before any phase is paid for."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._seed_spec_tree(repo_root)
+            config = repo_root / "workshop.yaml"
+            config.write_text(
+                "defaults: {provider: claude_cli}\nphases: {generate: {substeps: {generate: "
+                "{leaf: workshop, max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n",
+                encoding="utf-8")
+            code, out, calls = self._run_main_with_fake_runtime(
+                ["spec/problem/test.md", "compile", "--llm-config", str(config),
+                 "--repo-root", str(repo_root), "--no-run-conductor"])
+            self.assertEqual(code, 2, out)
+            self.assertEqual(out["reason"], "invalid_startup_input")
+            self.assertIn("llm_config_workshop_leaf_not_wired", out["detail"])
+            self.assertEqual(calls, [])
+
     def test_a_codex_configuration_slug_reaches_init(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
