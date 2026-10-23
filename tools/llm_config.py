@@ -109,7 +109,8 @@ def _is_loopback(host: str) -> bool:
 # provider; each one replaces a `backend == ...` branch:
 #   pure         the provider can run a Z2 host-mediated PURE leaf (one typed document in,
 #                one JSON document out; `write_roots: []`, no tools, no hooks, no MCP). Since
-#                Z4 (issue #171) this is the ONLY leaf transport: the agentic loop — a
+#                Z4 (issue #171) this is the transport of every entry but a `leaf: workshop`
+#                one: the agentic loop — a
 #                tool-holding session in the checkout, driven by a launch prompt — is gone,
 #                and with it the `agentic` capability that selected it.
 #   warm_resume  a finished leaf session can be reopened for a repair turn carrying the prior

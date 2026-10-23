@@ -13418,7 +13418,7 @@ def _prepare_claude_workshop_home(repo_root: Path, orchestration_id: str, lineag
     `workshop_tree.LineagePaths.home`. `lineage_id` is the `agent_run_id` of the cold launch
     that started the lineage. `resume` means what it means there: cold creates the lineage
     home EXCLUSIVELY, 0700 (one already there is refused, not adopted) — to be called by the
-    CONDUCTOR (issue #534 PR-3's loop; until then tests are the only callers), in its own
+    CONDUCTOR (`Conductor._open_workshop_lineage`, the workshop loop's cold launch), in its own
     process, before it records the launch, because the tree is seeded and
     the wrapper's context frozen under the home first; warm requires it and answers `None` when
     it is gone. `record_launch` calls it warm for both launches: on a warm one a `None` becomes
@@ -14772,10 +14772,11 @@ def record_launch(
     # and passes the id.
     #
     # The HOST prepares a cold lineage's home before this launch is recorded, not this function:
-    # the conductor is to seed the tree, stage the closure and freeze the wrapper's context — all
-    # under the home — and start the wrapper endpoint whose URL this launch records, before it
+    # the conductor seeds the tree, stages the closure and freezes the wrapper's context — all
+    # under the home — and starts the wrapper endpoint whose URL this launch records, before it
     # records the launch (`_prepare_claude_workshop_home(..., resume=False)`, in its own
-    # process; issue #534 PR-3's conductor loop is the first production caller). So here the home must exist on BOTH launches, and the two absences mean
+    # process, from `Conductor._open_workshop_lineage`). So here the home must exist on BOTH
+    # launches, and the two absences mean
     # different things: a warm launch whose home is gone returns
     # `workshop_lineage_home_missing` and the conductor falls back to a cold reuse, as the codex
     # lineage does above; a cold launch whose home was never prepared is a host defect, refused.
@@ -15024,11 +15025,12 @@ def record_launch(
         # to be written here, one per question about what the child was allowed to do: which
         # roots it might read, which paths it might write, which MCP tools it might call, and
         # the secret it would present to prove all three. Every one of them described a LEAF
-        # holding tools. Since Z4 (issue #171) the two launch shapes are a PURE leaf — no
+        # holding tools. Since Z4 (issue #171) the launch shapes are a PURE leaf — no
         # tools, no MCP configuration, a read-only sandbox, and `write_roots: []` by
-        # construction, with the host writing every artifact after the child window — and a
+        # construction, with the host writing every artifact after the child window — a
         # DETERMINISTIC substep that is the conductor's own process and is bound by nothing it
-        # writes about itself. PR-2 of that issue stopped writing them.
+        # writes about itself, and (issue #534) a WORKSHOP leaf, whose file tools reach its own
+        # work tree outside the checkout and whose one MCP server is the host's wrapper. PR-2 of that issue stopped writing them.
         #
         # What still decides something is recorded below: the read-only sandbox profile (which
         # the kernel enforces through bwrap) and the launch request itself, whose

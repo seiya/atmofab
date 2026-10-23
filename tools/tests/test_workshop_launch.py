@@ -3,8 +3,10 @@ its launch record, its argv, and the spawn seam's admission of its one writable 
 
 The launch record is driven through the REAL `record_launch` — `_PureFakeConductor` stubs it,
 so without these rows the first billed run would be the first thing to cross its validators.
-The workshop templates are PR-3's: the rows that render a prompt patch a stand-in template
-into the template map, carrying the identity block the validators read.
+The rows that render a prompt patch a stand-in template into the template map, carrying the
+identity block the validators read, so they pin the launch shape apart from the real workshop
+templates (`tools/prompt_templates/workshop_*.txt`, whose own rows are in
+`test_workshop_producer`).
 """
 
 from __future__ import annotations
@@ -45,7 +47,7 @@ _ORCH = "orch_001"
 _REAL_TEMPLATE_LOADER = ort._load_launch_prompt_templates
 _REAL_TEMPLATE_FILES = dict(ort._PROMPT_TEMPLATE_FILES)
 
-#: A stand-in for PR-3's `workshop_generate_generate.txt`: the identity block the validators
+#: A stand-in for `workshop_generate_generate.txt`: the identity block the validators
 #: bind, under the workshop sentinel, and the five document slots of the default shape.
 _TEST_TEMPLATE = (
     f"{WORKSHOP_PROMPT_SENTINEL}: stand-in template (issue #534 PR-2 tests).\n\n"

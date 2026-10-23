@@ -10,7 +10,13 @@ could read, write and run, and this DEV layer. The leaf layer is deleted with th
 made it necessary: a `pure-function leaf` launches with no tools and no shell, so it issues no tool
 call for a hook to judge, and the read-boundary, write-boundary and Bash-grammar machinery that
 layer carried — `read_manifest_read_guard`, `output_manifest_write_guard`, `forbid_python_inline_write`,
-`forbid_tools_direct_read`, `extract_bash_read_targets` and the rest — has no subject left. What
+`forbid_tools_direct_read`, `extract_bash_read_targets` and the rest — has no subject left. A
+`workshop leaf` ([issue #534](https://github.com/seiya/atmofab/issues/534)) does make tool calls —
+file tools confined to its work tree by `--restricted`, and the five operations of the
+host-served wrapper — and no hook judges them either: what bounds them is the launch placement
+(an empty tmpfs at the checkout path, a private config home), the writable profile limited to
+its own lineage, and the wrapper, which resolves every path under the tree and counts every call
+(`docs/ORCHESTRATION.md` §workshop leaf). What
 that machinery enforced, why each grammar was bounded the way it was, and what it measurably did
 NOT reach are in the record rather than here: `git log` at the Z4 PR-1 commit that removed it, and
 the episode files under `.claude/skills/atmofab-enforcement-change/references/`.

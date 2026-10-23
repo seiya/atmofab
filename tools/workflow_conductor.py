@@ -4803,8 +4803,8 @@ class Conductor:
         stderr = "".join(list(stderr_chunks))
         if stream_abandoned:
             stderr = (stderr.rstrip() + "\n" + LEAF_STREAM_ABANDONED_MARKER).strip()
-        # Every claude leaf is a PURE leaf since Z4 (issue #171), and a pure loop parses the
-        # `--output-format json` envelope itself — reading `is_error` / `parse_error` off it is
+        # Every claude leaf's loop — the pure one since Z4 (issue #171), and the workshop one
+        # (issue #534) — parses the `--output-format json` envelope itself — reading `is_error` / `parse_error` off it is
         # what makes a malformed reply repairable rather than silently empty. So the capture
         # boundary hands the envelope through untouched; the agentic unwrap that used to sit
         # here had no leaf left to serve.
@@ -5585,7 +5585,8 @@ class Conductor:
         name and URL its `--mcp-config` names. The URL is per launch (an ephemeral loopback
         port), so it is not a constant of the flag set the way the rest of it is; it is the
         record that ties this launch to the endpoint every line of its `wrapper_calls.jsonl`
-        was served on (no reader compares the two yet; PR-3's audit is the first).
+        was served on (no reader compares the two; `tools/audit_orchestration.py` renders the
+        lineages and wrapper-call counts from `bundle_meta.json`, not this field).
         """
         entry = entry if entry is not None else self.entry_for(None, None)
         if entry.is_http:

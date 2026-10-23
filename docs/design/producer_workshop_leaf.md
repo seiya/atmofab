@@ -1,6 +1,6 @@
 # Producer leaves as sandboxed agents, judging leaves as pure functions
 
-Status: **proposed**. Recorded 2026-10-22 from a zero-base reconsideration of the leaf execution model against the measured cost of the pure-function path. This document extends `zero_base_architecture.md` and departs from three of its items (§Departures); it keeps the deterministic `conductor`, the host-owned evidence channel (A4 / Z6), the derivation-keyed store (Z5) and the `CodegenBundle` contract (Z0) as they stand. No item below is implemented. The term `workshop leaf` is defined in `docs/GLOSSARY.md` with a `proposed` mark that the adopting pull request removes; the mark is a convention this note introduces for a term whose definition precedes its adoption.
+Status: **partially implemented**. Step 1 of §Migration order landed on 2026-10-23 (PRs [#536](https://github.com/seiya/atmofab/pull/536), [#537](https://github.com/seiya/atmofab/pull/537) and the conductor-loop pull request of [issue #534](https://github.com/seiya/atmofab/issues/534)), except the network namespace (§Implementation record); its A/B (§Decision Criteria) is not run, and steps 2 to 4 are open. Recorded 2026-10-22 from a zero-base reconsideration of the leaf execution model against the measured cost of the pure-function path. This document extends `zero_base_architecture.md` and departs from three of its items (§Departures); it keeps the deterministic `conductor`, the host-owned evidence channel (A4 / Z6), the derivation-keyed store (Z5) and the `CodegenBundle` contract (Z0) as they stand. `docs/ORCHESTRATION.md` §workshop leaf is canonical for what is implemented; this note remains canonical for the decision and for the steps not yet taken. The term `workshop leaf` is defined in `docs/GLOSSARY.md`, whose `proposed` mark step 1 removed.
 
 ## Purpose
 
@@ -14,7 +14,7 @@ Decide which `LLM` `substep` keeps the `pure-function leaf` shape and which one 
 
 ## Terms
 
-- **`workshop leaf`**: an `LLM` agent that runs with a tool surface inside a host-prepared, host-confined work tree, and whose result is the final state of that tree. Defined in `docs/GLOSSARY.md` (proposed).
+- **`workshop leaf`**: an `LLM` agent that runs with a tool surface inside a host-prepared, host-confined work tree, and whose result is the final state of that tree. Defined in `docs/GLOSSARY.md`.
 - **work tree**: the directory the host seeds for one `workshop leaf` lineage and the leaf writes into. It is not an artifact: no gate, no later `phase` and no other lineage reads it, and a warm repair of the same lineage is the only later reader.
 - **lineage**: one `workshop leaf` session together with its work tree: the cold launch that started it plus every warm repair of it. The word is used as `codex home lineage` uses it (`docs/GLOSSARY.md`), and is distinct from `attempt`, which the glossary defines as one execution of a `phase`.
 - **host-placed input**: a file the host places for a lineage and the snapshot never copies. Three kinds: a **seed** (one file per key of the producer's pure context, plus the dependency facts, the exemplar and the phase contract text the template carries, written into the tree before launch, §Seeding); a **derived control file** (what `derive` renders into the tree, §Tool surface); and the **staged closure** (the dependency closure's compiled objects and interface files, placed by the wrapper outside the tree, §Tool surface). The host's own copy is what every gate reads.
@@ -149,6 +149,17 @@ The `workshop leaf` is adopted per producing `substep`, and the first is `genera
 2. On adoption: `compile.generate`, replacing the part split of issue #526 (the leaf splits its own work); `codex_cli`; the host tool-use loop for the HTTP providers.
 3. Retire the whole-document repair contract for the producing leaves; the pure template pair `pure_generate_generate*.txt` / `pure_compile_generate*.txt` becomes the seed contract text of the work tree.
 4. The network namespace on the pure CLI leaf's profile.
+
+## Implementation record
+
+Step 1 of §Migration order, as implemented for `generate.generate` on `claude_cli`. `docs/ORCHESTRATION.md` §workshop leaf states the implemented contract; this section names only where the implementation departs from the text above, and the decision each departure takes.
+
+- **No network namespace in step 1.** The leaf's CLI row (§Sandbox, first row) runs without one: the step-1 leaf holds no tool that reaches the network (its built-in tools are the file tools alone, confined to the tree), so the provider endpoint set needs no confinement there. The namespace moves to step 4 with the pure CLI leaf's. The wrapper's runs (second row) do unshare the network.
+- **The control-file renderer's staged rule is kept, and the dependency-source sentence is narrower than §Tool surface states.** The renderer reads a staged closure source from the object directory, where the builder stages it before the build; the wrapper therefore places the closure once in `staged/closure`, bound into no run, and copies it into an emptied `staged/obj` for each `compile`, instead of a renderer variant that reads the closure from elsewhere. A built program cannot open a dependency's certified source (`run` binds no object directory), and no control file the leaf edits is ever run: `compile` derives for itself and builds from a source view. A dependency source does sit on the compiler's search path in a wrapper `compile`, as in the host's `Build`, so a leaf-authored source that includes one can see its text in a diagnostic. "The leaf never reads a dependency's source" therefore holds for every read the leaf makes directly and for `run`, and not for a compiler diagnostic.
+- **The work tree lives under the lineage home**, `<homes-root>/<oid>/claude/<lineage_id>/tree/`, beside the private config home, rather than under the orchestration's record directory; the record directory `workspace/orchestrations/<oid>/workshop/<lineage_id>/` holds only host-written records and is bound into no sandbox.
+- **The lineage record file is `workshop_lineage.json`**, because `docs/GLOSSARY.md` already defines `lineage.json` as the pipeline provenance file.
+- **The seeds** are every file the host placed in the node's `src/` (runner, checks header, closure members' interface headers) and the node's own interface header, beside the pure-context documents, the dependency facts, the exemplar and the contract text; §Seeding names only the pure context. A wrapper view without one of the host-rendered files disagrees with the host gate (measured on a `cuda_cpp` node).
+- **The other departures of the first pull request** — the operations module, the staged-closure layout, the wrapper's added sandbox flags and the virtualenv rule, and the device class left `run_unavailable` — are listed in `docs/ORCHESTRATION.md` §workshop leaf.
 
 ## Not adopted
 

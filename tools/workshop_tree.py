@@ -16,11 +16,11 @@ leaf-side sees the second:
   work tree), `staged/closure` (the staged dependency closure's sources and headers),
   `staged/obj` + `staged/bin` (the wrapper's object and binary directories, made fresh by each
   `compile`), `syntax/` (syntax-check stage directories) and
-  `snapshot/` (the tree's non-host-placed files, copied when the lineage ends);
+  `snapshot/` (the tree's non-host-placed files, copied after each launch of the lineage);
 * the LINEAGE RECORD, `workspace/orchestrations/<oid>/workshop/<lineage_id>/`, host-written
   only: `workshop_lineage.json`, `command_log.jsonl` (every build-runtime call of the wrapper) and
-  `wrapper_calls.jsonl` (every request the wrapper's transport served; that transport and its
-  writer are issue #534 PR-2's).
+  `wrapper_calls.jsonl` (every request the wrapper's transport, `tools/workshop_mcp.py`,
+  served).
 
 No function here raises on what the leaf wrote: a malformed tree is a finding the caller
 reports back, never an exception. Neutral core (`docs/BACKEND_BOUNDARY.md`): the names of the
@@ -534,8 +534,8 @@ def snapshot_tree(paths: LineagePaths, host_placed: Iterable[str]) -> dict[str, 
     ones (`reserved_tree_names` minus the manifest — the seeds and the derived control file,
     which the host owns and re-places), so a seed the leaf edited is never copied back. A
     symbolic link is not followed and not copied, and a file that cannot be read is refused,
-    never raised. The snapshot directory is emptied first: a lineage is snapshotted when it
-    ends, once. Returns `{"copied": [...], "links_refused": [...], "unreadable": [...]}`."""
+    never raised. The snapshot directory is emptied first: the conductor snapshots a lineage
+    after each of its launches, and each snapshot replaces the previous one. Returns `{"copied": [...], "links_refused": [...], "unreadable": [...]}`."""
     skip = {str(n) for n in host_placed} - {BUNDLE_MANIFEST_NAME}
     if paths.snapshot.exists():
         shutil.rmtree(paths.snapshot)
