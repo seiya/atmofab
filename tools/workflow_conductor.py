@@ -9404,7 +9404,10 @@ class Conductor:
                 runner_host_authored=runner_host_authored,
                 repair=repair_payload,
                 resolved_dependencies=resolved_dependencies,
-                exemplar=(None if findings_turn else exemplar),
+                # Every attempt's tree holds the exemplar seed (a repair turn's included: the
+                # lineage carries it, or the cold reuse re-seeds it), so every request records
+                # it; no workshop template splices it into the prompt.
+                exemplar=exemplar,
                 warm_resume=warm,
                 pure_leaf=True,
                 pure_shape=spec.pure_shape,
@@ -9415,9 +9418,7 @@ class Conductor:
             )
             if not warm:
                 try:
-                    seeds = self._workshop_seeds(
-                        refs, pure_context, {**request, "exemplar": exemplar}
-                        if exemplar is not None else request)
+                    seeds = self._workshop_seeds(refs, pure_context, request)
                     lineage = self._open_workshop_lineage(refs, entry, child_arid, seeds, prior)
                 except Exception as exc:  # noqa: BLE001 — a host precondition, fail_closed
                     self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
@@ -9455,8 +9456,10 @@ class Conductor:
             attempt_record: dict[str, Any] = {
                 "agent_run_id": child_arid, "model": turn.model,
                 "model_provenance": turn.model_provenance, "usage": turn.usage,
+                # What THIS attempt's tree held: the lineage's exemplar seed, if it has one.
                 "exemplar_ref": (exemplar.get("source_ref")
-                                 if not findings_turn and isinstance(exemplar, dict) else None),
+                                 if (self._WORKSHOP_EXEMPLAR_SEED in lineage.seeds
+                                     and isinstance(exemplar, dict)) else None),
                 "lineage_id": lineage.paths.lineage_id,
                 "warm": warm,
                 "model_turns": turn.model_turns,

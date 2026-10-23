@@ -803,3 +803,54 @@ class SetupFailureTests(_Base):
                 "repair_findings": "x", "issue_severity": "major", "repair_reason": "r"})
         self.assertEqual(outcome.infra_error[0], "workshop_lineage_setup_failed")
         self.assertIn("seed boom", outcome.infra_error[1])
+
+
+_EXEMPLAR = {"node_key": "problem/sibling@0.1.0", "source_ref": "workspace/pipelines/sib/src_1",
+             "sources": [{"filename": "sibling_model.f90", "text": "module m\nend module\n"}]}
+
+
+class ExemplarRecordTests(_Base):
+    """Every attempt whose tree holds `EXEMPLAR.md` records the exemplar, in its
+    `per_attempt[].exemplar_ref` and on its launch request — a repair turn included."""
+
+    def _run(self, actions) -> None:
+        self.c.leaf_actions = actions
+        with mock.patch.object(_WorkshopFakeConductor, "_resolve_exemplar",
+                               return_value=_EXEMPLAR):
+            self.assertEqual(self.run_substep().status, "pass")
+
+    def test_a_warm_repair_records_the_exemplar_its_tree_holds(self) -> None:
+        self._run([_writes_nothing, _writes_bundle])
+        rows = self.bundle_meta()["per_attempt"]
+        self.assertEqual([r["exemplar_ref"] for r in rows], [_EXEMPLAR["source_ref"]] * 2)
+        self.assertTrue((self.paths("child-1").tree / "EXEMPLAR.md").is_file())
+        self.assertEqual([r.get("exemplar") for r in self.requests()], [_EXEMPLAR] * 2)
+
+    def test_a_cold_reuse_reseeds_and_records_the_exemplar(self) -> None:
+        self._run([lambda c, t, kw: wc.ProcResult(-9, "", "x", timed_out=True),
+                   _writes_bundle])
+        self.assertIn("sibling_model.f90",
+                      (self.paths("child-2").tree / "EXEMPLAR.md").read_text())
+        rows = self.bundle_meta()["per_attempt"]
+        self.assertEqual([r["exemplar_ref"] for r in rows], [_EXEMPLAR["source_ref"]] * 2)
+
+    def test_no_exemplar_no_seed_no_record(self) -> None:
+        self.run_substep()
+        self.assertFalse((self.paths("child-1").tree / "EXEMPLAR.md").exists())
+        self.assertIsNone(self.bundle_meta()["per_attempt"][0]["exemplar_ref"])
+
+    def test_each_request_the_loop_builds_passes_the_real_validator(self) -> None:
+        """The cold, warm and cold-reuse requests, through the real request validator and
+        renderer (the fake runtime does not run them)."""
+        self._run([_writes_nothing, lambda c, t, kw: wc.ProcResult(-9, "", "x", timed_out=True),
+                   _writes_bundle])
+        requests = self.requests()
+        self.assertEqual([(r["workshop_lineage_id"], bool(r.get("warm_resume")))
+                          for r in requests],
+                         [("child-1", False), ("child-1", True), ("child-3", False)])
+        for request in requests:
+            payload = ort.prepare_launch_request_payload(dict(request))
+            ort._validate_launch_request_payload(payload)
+            prompt = ort.render_launch_prompt_text(payload)
+            ort._validate_launch_prompt_text(payload, prompt)
+            self.assertTrue(prompt.startswith(pure_leaf.WORKSHOP_PROMPT_SENTINEL))
