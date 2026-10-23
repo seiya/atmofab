@@ -996,6 +996,10 @@ class WrapperCheckIrTests(_IrLineageCase):
         ww.run_wrapper_op(_ir_context(self.paths, self.reserved, seen), "check_ir")
         self.assertNotIn("stale.txt", seen[1][1])
         self.assertEqual(wt.read_lineage_record(self.paths)["wrapper_calls_used"], 2)
+        rows = [json.loads(line) for line in
+                self.paths.command_log.read_text(encoding="utf-8").splitlines()]
+        self.assertEqual([(r["tool_name"], r["ok"], r["agent_run_id"]) for r in rows],
+                         [("check_ir", True, "arid-ir")] * 2)
 
     def test_findings_are_returned_with_the_head_kept(self) -> None:
         seen: list = []

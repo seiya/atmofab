@@ -1341,6 +1341,15 @@ class WorkshopCompileProducerTests(unittest.TestCase):
         self.assertEqual(names - expected - {"DEPENDENCIES.md", "CONTRACT.md",
                                              workshop_tree.IR_DOCUMENT_NAME}, set())
 
+    def test_no_generate_source_is_seeded_even_where_one_would_render(self) -> None:
+        """Round 1: the fixture's language renders no interface header and its node has no
+        `src/` at compile time, so "nothing of Generate's" was observed only by absence. Here a
+        header WOULD render; the compile lineage still does not seed it."""
+        with mock.patch.object(wc.Conductor, "_interface_header_text",
+                               return_value=("node_model.h", "// header\n")):
+            self.assertEqual(self.run_substep().status, "pass")
+        self.assertFalse((self.paths("child-1").tree / "node_model.h").exists())
+
     def test_every_pure_context_key_of_the_compile_producer_has_a_tree_name(self) -> None:
         self.assertEqual(set(ort.PURE_CONTEXT_REQUIRED_KEYS[("compile", "generate")]),
                          set(wc.Conductor._WORKSHOP_DOCUMENT_SEEDS_BY_PHASE["compile"]))

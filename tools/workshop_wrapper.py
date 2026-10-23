@@ -5,8 +5,11 @@
 itself (`WRAPPER_OPS`); a `compile.generate` one has its IR checked the way `Compile.static`
 will check it (`IR_CHECK_OPS`, step 2). Each operation here
 runs in the conductor's process, from a `WrapperContext` the conductor freezes in its main thread
-before the leaf is launched (`Conductor._freeze_wrapper_context`), so a call — served on a
-transport thread while the leaf runs — reads no conductor state and calls no conductor method.
+before the leaf is launched (`Conductor._freeze_wrapper_context` / `_freeze_ir_check_context`),
+so a call — served on a transport thread while the leaf runs — reads no conductor state. The
+one conductor method it calls is the IR contract an IR context binds
+(`Conductor._pure_ir_document_violations`, and the declaration reader beside it), which reads
+only the frozen node refs and class constants.
 
 What the leaf chooses is the CONTENT of its tree and, for `run`, a binary basename, a
 tree-relative case file and case ids. Every path and every build-runtime argument is composed
@@ -614,8 +617,10 @@ def _op_check_ir(ctx: WrapperContext, args: Mapping[str, Any],
     snapshot and is the authority. No subprocess (`on_spawn` is unused).
 
     The scratch directory is the lineage home's `check/`, outside the tree, emptied on every
-    call; the validators read `tests.md` and the controlled spec through the IR's
-    `meta.source_refs` under `repo_root`, the host's copies, never a seed the leaf edited."""
+    call. The validators read `tests.md` and the controlled spec through the IR's
+    `meta.source_refs`, which the document contract has already pinned to the node's own spec
+    documents (step (2) below), so they read the host's copies under `repo_root` — never a seed
+    the leaf edited, nor a copy it wrote into its tree."""
     refused = _no_arguments("check_ir", args)
     if refused is not None:
         return refused

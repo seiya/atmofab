@@ -30783,10 +30783,6 @@ class PreflightBlockTests(unittest.TestCase):
                 self.assertTrue(any(needle in v for v in found), found)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class CompileIrDirTests(unittest.TestCase):
     """`validate_compile_ir_dir` (issue #534 step 2): the `Compile.static` body over a directory
     the caller names, which a `compile.generate` workshop lineage's `check_ir` runs on a scratch
@@ -30818,13 +30814,29 @@ class CompileIrDirTests(unittest.TestCase):
             holder = threading.Thread(target=main_pin)
             holder.start()
             self.assertTrue(pinned.wait(10))
-            worker = threading.Thread(
-                target=lambda: found.append(vps.validate_compile_ir_dir(repo, scratch)))
+            entered: list = []
+            real_pin = vps._pinned_repo_root_for_schema
+
+            def recording_pin(root):
+                entered.append((threading.current_thread() is not threading.main_thread(),
+                                Path(root)))
+                return real_pin(root)
+
+            def work() -> None:
+                with unittest.mock.patch.object(vps, "_pinned_repo_root_for_schema",
+                                                recording_pin):
+                    found.append(vps.validate_compile_ir_dir(repo, scratch))
+
+            worker = threading.Thread(target=work)
             worker.start()
             worker.join(60)
             release.set()
             holder.join(10)
             (result,) = found
+            # The function enters the schema pin itself, with the repository it judges under:
+            # the pin is a per-thread `ContextVar`, so the holder above cannot observe it, and
+            # this is what does.
+            self.assertEqual(entered, [(True, repo)])
             norm = (lambda xs, d: [x.replace(str(d), "<ir>") for x in xs])
             self.assertEqual(norm(result, scratch),
                              norm(gate, (repo / refs.ir_ref).resolve()))
@@ -30832,3 +30844,7 @@ class CompileIrDirTests(unittest.TestCase):
             refused = vps.validate_compile_stage(repo, "workspace", str(scratch))
             self.assertEqual(len(refused), 1)
             self.assertIn("ir_ref must be under", refused[0])
+
+
+if __name__ == "__main__":
+    unittest.main()

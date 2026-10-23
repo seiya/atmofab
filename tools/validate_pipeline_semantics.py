@@ -8736,9 +8736,10 @@ def validate_compile_ir_dir(repo_root: Path, ir_dir: Path) -> list[str]:
     Its caller is a `compile.generate` `workshop leaf`'s `check_ir` (issue #534 step 2), which
     holds a host-normalized copy of the leaf's IR in a scratch directory under its lineage home
     and wants the findings the gate would give, as feedback. The gate itself still runs through
-    `validate_compile_stage` on `<ir_ref>`. Every repository document the validators read
-    (`tests.md`, the controlled spec, the catalog) is read under `repo_root`, never from the
-    scratch directory. The schema pin is per thread (`_pinned_repo_root_for_schema` is a
+    `validate_compile_stage` on `<ir_ref>`. The validators read `tests.md` and the controlled
+    spec through the IR's `meta.source_refs`, which this function does NOT confine: its caller
+    passes only an IR whose refs the producer's contract (`Conductor.
+    _pure_ir_document_violations`) has pinned to the node's own spec documents. The schema pin is per thread (`_pinned_repo_root_for_schema` is a
     `ContextVar`), so a call on a wrapper handler thread does not disturb the main thread's."""
     with _pinned_repo_root_for_schema(repo_root):
         return _validate_compile_ir_dir_impl(repo_root, Path(ir_dir))
