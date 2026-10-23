@@ -1803,6 +1803,25 @@ class SandboxArgvPrefixTests(unittest.TestCase):
                 self.assertEqual(argv[0], "--", result)
                 self.assertEqual(argv[1:], result.get("command") or result["runs"][0]["command"])
 
+    def test_a_raising_on_spawn_stops_the_command_it_was_told_about(self) -> None:
+        import time
+
+        marker = self.dir / "ran_on"
+        script = self.dir / "late.sh"
+        script.write_text(f"#!/bin/sh\nsleep 2\ntouch {marker}\n")
+        script.chmod(0o755)
+
+        def refuse(pgid: int) -> None:
+            raise RuntimeError("cannot record the group")
+
+        with self.assertRaisesRegex(RuntimeError, "cannot record"):
+            self.mod.tool_run_program({
+                "project_dir": str(self.dir), "command": [str(script)],
+                "env": {"FAKE_RECORD": str(self.record)},
+                "sandbox_argv_prefix": [str(self.fake), "--"], "on_spawn": refuse})
+        time.sleep(3)
+        self.assertFalse(marker.exists(), "the command outlived the caller that lost its group")
+
     def test_an_unprefixed_timeout_returns_text(self) -> None:
         # `subprocess.TimeoutExpired` carries bytes even under `text=True`; the result is text.
         script = self.dir / "talk.sh"

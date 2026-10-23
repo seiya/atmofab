@@ -234,7 +234,13 @@ def _sandboxed_run(argv: list[str], *, cwd: str, env: dict[str, str], timeout_se
                             stderr=subprocess.PIPE, start_new_session=True)
     pgid = proc.pid
     if on_spawn is not None:
-        on_spawn(pgid)
+        try:
+            on_spawn(pgid)
+        except BaseException:
+            # A caller that cannot record the group cannot stop it later either: stop it now.
+            os.killpg(pgid, signal.SIGKILL)
+            proc.communicate()
+            raise
     try:
         stdout, stderr = proc.communicate(timeout=timeout_sec)
         return proc.returncode, stdout, stderr, pgid
