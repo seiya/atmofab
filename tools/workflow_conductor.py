@@ -9705,10 +9705,11 @@ class Conductor:
             if declared_fail is not None:
                 # As `_run_pure_producer_substep` takes it: the declared-fail projection and the
                 # per-attempt record under the off-table category, fail_closed by
-                # `classify_failure` (issue #355). Nothing will continue the lineage.
+                # `classify_failure` (issue #355). Nothing will continue the lineage, and no new one
+                # takes its work over: it is ended `declared_fail`, not `superseded`.
                 from tools.workshop_tree import end_lineage
                 assert spec.write_declared_fail is not None
-                attempt_record["ended_by"] = end_lineage(lineage.paths, "superseded")
+                attempt_record["ended_by"] = end_lineage(lineage.paths, "declared_fail")
                 self.emit(spec.declared_fail_event, node_key=refs.node_key,
                           substep=substep, detail=declared_fail[:200], leaf_mode="workshop")
                 try:

@@ -1376,9 +1376,9 @@ class WorkshopCompileProducerTests(unittest.TestCase):
         meta = self.meta()
         self.assertEqual((meta["failure_category"], meta["leaf_mode"]),
                          (wc.COMPILE_DECLARED_FAIL, "workshop"))
-        self.assertEqual(meta["per_attempt"][0]["ended_by"], "superseded")
+        self.assertEqual(meta["per_attempt"][0]["ended_by"], "declared_fail")
         self.assertEqual(workshop_tree.read_lineage_record(self.paths("child-1"))["ended_by"],
-                         "superseded")
+                         "declared_fail")
         self.assertEqual(len(self.requests()), 1, "a declaration was repaired")
         self.assertNotIn(wc.COMPILE_DECLARED_FAIL, wc.COMPILE_DOCUMENT_FAILURE_ROUTING)
 

@@ -66,9 +66,12 @@ IR_DOCUMENT_VIOLATION = "ir_document_violation"
 
 #: Why a lineage ended. `None` while it is open. `superseded`: the host continued its work in
 #: a new lineage because its session could not be resumed (issue #534 PR-3) — seeded from its
-#: snapshot when the home still holds one — so nothing will continue it.
+#: snapshot when the home still holds one — so nothing will continue it. `declared_fail`: the
+#: leaf's tree declared the phase uncompletable (`compile_fail.json`, issue #534 step 2), the
+#: run stops there, and no lineage follows.
 ENDED_BY_VALUES: tuple[str, ...] = (
-    "leaf_exit", "max_wrapper_calls", "lineage_timeout", "leaf_timeout", "superseded")
+    "leaf_exit", "max_wrapper_calls", "lineage_timeout", "leaf_timeout", "superseded",
+    "declared_fail")
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
