@@ -27,6 +27,10 @@ from tools.workshop_tree import LineagePaths
 from tools.workshop_wrapper import WRAPPER_OPS
 
 
+#: The local port of the last request `_http` made, so a row can match the recorded peer.
+_LAST_LOCAL_PORT: list[int] = []
+
+
 def _http(url: str, method: str, data: bytes | None = None
           ) -> tuple[int, bytes, dict[str, str]]:
     """One request over `http.client`, straight to the loopback port. Not `urllib.request.
@@ -40,6 +44,8 @@ def _http(url: str, method: str, data: bytes | None = None
     try:
         headers = {"Content-Type": "application/json",
                    "Accept": "application/json, text/event-stream"} if data is not None else {}
+        conn.connect()
+        _LAST_LOCAL_PORT[:] = [conn.sock.getsockname()[1]]
         conn.request(method, parts.path, body=data, headers=headers)
         resp = conn.getresponse()
         return resp.status, resp.read(), {k: v for k, v in resp.getheaders()}
@@ -194,8 +200,37 @@ class RecordTests(_Fixture):
         for entry in log:
             self.assertEqual(entry["agent_run_id"], "arid-launch-1")
             self.assertTrue(entry["peer"].startswith("127.0.0.1:"), entry["peer"])
+        # The peer is the CALLER's address: the last line names the port the last request
+        # left from.
+        self.assertEqual(log[-1]["peer"], f"127.0.0.1:{_LAST_LOCAL_PORT[0]}")
         self.assertEqual(json.loads(log[2]["response"]["result"]["content"][0]["text"]),
                          {"ok": True, "op": "lint"})
+
+
+class FailureTests(_Fixture):
+    def test_an_operation_that_raises_is_answered_and_recorded(self) -> None:
+        def boom(ctx, op, args, *, on_spawn=None):  # noqa: ANN001
+            raise RuntimeError("operation failed")
+
+        server = self._server(run_op=boom)
+        status, body, _ = _post(server.url, {"jsonrpc": "2.0", "id": 9, "method": "tools/call",
+                                             "params": {"name": "lint", "arguments": {}}})
+        self.assertEqual((status, body["id"], body["error"]["code"]), (200, 9, -32603))
+        self.assertIn("operation failed", body["error"]["message"])
+        self.assertEqual(self._log()[-1]["response"], body)
+
+    def test_an_end_whose_record_is_unreadable_still_answers_and_signals(self) -> None:
+        ends: list[str] = []
+        server = self._server(
+            run_op=lambda ctx, op, args, *, on_spawn=None: {"ok": False, "ended": True,
+                                                            "category": "max_wrapper_calls"},
+            on_end=ends.append)
+        self.paths.record_json.unlink()
+        body = _post(server.url, {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                  "params": {"name": "derive", "arguments": {}}})[1]
+        self.assertIs(body["result"]["isError"], True)
+        self.assertEqual(ends, ["max_wrapper_calls"])
+        self.assertEqual(self._log()[-1]["status"], 200)
 
 
 class EndAndTeardownTests(_Fixture):

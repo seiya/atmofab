@@ -69,6 +69,7 @@ _JSONRPC_PARSE_ERROR = -32700
 _JSONRPC_INVALID_REQUEST = -32600
 _JSONRPC_METHOD_NOT_FOUND = -32601
 _JSONRPC_INVALID_PARAMS = -32602
+_JSONRPC_INTERNAL_ERROR = -32603
 
 _NO_ARGUMENTS = {"type": "object", "properties": {}, "additionalProperties": False}
 
@@ -303,9 +304,11 @@ class WrapperMcpServer:
                                    "arguments must be an object"), {}
             result = self._call_op(name, arguments or {})
             if result.get("ended") is True:
-                ended_by = str(workshop_tree.read_lineage_record(self.ctx.paths)
-                               .get("ended_by") or result.get("category") or "")
-                self._signal_end(ended_by)
+                try:
+                    recorded = workshop_tree.read_lineage_record(self.ctx.paths).get("ended_by")
+                except ValueError:
+                    recorded = None  # the result's own category names the end just as well
+                self._signal_end(str(recorded or result.get("category") or ""))
             return 200, _ok(rid, {"content": [{"type": "text", "text": result_text(result)}],
                                   "isError": not bool(result.get("ok"))}), {}
         return 200, _error(rid, _JSONRPC_METHOD_NOT_FOUND, f"method {method!r} not found"), {}
@@ -375,7 +378,12 @@ def _handler_for(server: WrapperMcpServer) -> type[BaseHTTPRequestHandler]:
                 self._record(raw.decode("utf-8", "replace")[:2000], 200, body, started)
                 self._send(200, body)
                 return
-            status, body, headers = server.handle_message(message)
+            try:
+                status, body, headers = server.handle_message(message)
+            except Exception as exc:  # noqa: BLE001 - every exchange is answered and recorded
+                rid = message.get("id") if isinstance(message, dict) else None
+                status, headers = 200, {}
+                body = _error(rid, _JSONRPC_INTERNAL_ERROR, f"{type(exc).__name__}: {exc}")
             self._record(message, status, body, started)
             self._send(status, body, headers)
 
