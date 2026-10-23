@@ -9185,6 +9185,12 @@ class Conductor:
             write_host_file,
         )
         paths = lineage.paths
+        if warm and not paths.home.is_dir():
+            # The lineage home is gone (an operator prune): the answer `record_launch` would
+            # give (`workshop_lineage_home_missing`), given before anything is written into it.
+            self.emit("resume_session_unavailable", phase=phase, substep=substep or "",
+                      target=resume_session_id or "", reason="workshop_lineage_home_missing")
+            return None
         if warm:
             # The host's files, as the host placed them: a seed the leaf edited is restored, so
             # the wrapper's feedback reads what the gates will.
@@ -9449,8 +9455,13 @@ class Conductor:
                                       max(1, len(per_attempt)))
             except WorkshopEndpointNotStopped as exc:
                 # A host defect (a wrapper handler outlived the endpoint's stop): the tree is
-                # not read under it. The launch is recorded and unfinalized, which the
-                # transport branch tombstones, as for a host write that failed.
+                # not read under it. The launch was recorded, so it is finalized as a failed
+                # attempt before the substep fails closed.
+                self.finalize_child(
+                    child_arid, "status: fail\ncategory: workshop_wrapper_not_stopped",
+                    self._agent_run_json(
+                        refs, phase, substep, child_arid, "fail", [],
+                        "workshop_generate_fail: workshop_wrapper_not_stopped", entry=entry))
                 return SubstepOutcome(child_arid, "fail", [], 1,
                                       ("workshop_wrapper_not_stopped", str(exc)[:200]),
                                       max(1, len(per_attempt)))

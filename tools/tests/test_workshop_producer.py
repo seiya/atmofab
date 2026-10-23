@@ -267,6 +267,10 @@ class HappyPathTests(_Base):
         self.assertEqual(outcome.status, "fail")
         self.assertEqual(outcome.infra_error[0], "workshop_wrapper_not_stopped")
         self.assertFalse(any(self.paths("child-1").snapshot.iterdir()))
+        # The recorded launch is finalized, failed, rather than left dangling.
+        finals = [c[1] for c in self.c.calls if c[0] == "finalize-child"]
+        self.assertEqual(len(finals), 1)
+        self.assertEqual(finals[0]["--agent-run-json"]["status"], "fail")
 
 
 class RepairTests(_Base):
@@ -516,6 +520,24 @@ class SpentBudgetTests(_Base):
         # lineage's running total.
         self.assertEqual([r["wrapper_calls"] for r in self.bundle_meta()["per_attempt"]],
                          [29, 0])
+
+
+class PrunedHomeTests(_Base):
+    def test_a_warm_turn_whose_lineage_home_is_gone_falls_back_to_a_fresh_lineage(self) -> None:
+        self.c.leaf_actions = [_writes_nothing, _writes_bundle]
+        real_spawn = wc.Conductor._spawn_workshop_turn
+
+        def prune_before_warm(conductor, refs, request, entry, lineage, **kw):
+            if kw["warm"]:
+                __import__("shutil").rmtree(lineage.paths.home)
+            return real_spawn(conductor, refs, request, entry, lineage, **kw)
+
+        with mock.patch.object(wc.Conductor, "_spawn_workshop_turn", prune_before_warm):
+            outcome = self.run_substep()
+        self.assertEqual(outcome.status, "pass", outcome)
+        lineages = [r["workshop_lineage_id"] for r in self.requests()]
+        # The warm turn records nothing; the next launch starts a fresh lineage.
+        self.assertEqual(lineages, ["child-1", "child-3"])
 
 
 class OuterReopenTests(_Base):
