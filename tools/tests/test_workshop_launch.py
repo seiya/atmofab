@@ -521,6 +521,21 @@ class LeafCommandTests(unittest.TestCase):
             self.c.entry_for("generate", "verify"))
         self.assertNotIn("claude_mcp_config", pure)
 
+    def test_a_command_prefix_carrying_its_own_mcp_config_is_recorded_as_before(self) -> None:
+        """Round 1 (a regression against origin/main): a PURE entry whose `command:` carries
+        `--mcp-config <file>` raised JSONDecodeError here, failing every launch at
+        record-launch; origin/main records `claude_tools` alone."""
+        cfg = self.repo / "llm_cmd.yaml"
+        cfg.write_text("defaults: {provider: claude_cli, command: claude --mcp-config "
+                       "/etc/x.json}\n", encoding="utf-8")
+        c = _PureFakeConductor(repo_root=self.repo, orchestration_id="o",
+                               orchestration_agent_run_id="orch", env={},
+                               llm_config=lc.load_llm_config(cfg))
+        entry = c.entry_for("generate", "verify")
+        self.assertEqual(wc.Conductor._launch_setting_surface(
+            c, "child", {"step": "generate", "substep": "verify"}, entry),
+            {"claude_tools": [""]})
+
     def test_record_launch_passes_the_lineage_only_when_given(self) -> None:
         seen: list[list[str]] = []
         self.c.runtime = lambda argv, **kw: seen.append(list(argv)) or {}  # type: ignore

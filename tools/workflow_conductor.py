@@ -5555,8 +5555,10 @@ class Conductor:
         surface: dict[str, Any] = {}
         if "--tools" in argv:
             surface["claude_tools"] = _variadic_values(argv, "--tools")
-        if "--mcp-config" in argv:
-            servers = json.loads(argv[argv.index("--mcp-config") + 1]).get("mcpServers", {})
+        # From the JSON this launch was handed, not from argv: a configured `command:` may carry
+        # an `--mcp-config` of its own (a file path, not JSON), which argv would offer first.
+        if mcp_config_json is not None:
+            servers = json.loads(mcp_config_json).get("mcpServers", {})
             surface["claude_mcp_config"] = [
                 {"server": name, "url": str(spec.get("url", ""))}
                 for name, spec in sorted(servers.items())]
