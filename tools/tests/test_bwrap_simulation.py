@@ -1096,7 +1096,7 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
         reserved = wt.reserved_tree_names(seeds, "Makefile")
         wt.write_lineage_record(self.paths, node_key="component/x@0.1.0",
                               started_at_utc="2026-10-23T00:00:00Z")
-        (self.paths.staged_obj / "dep_model.f90").write_text(self._DEP)
+        (self.paths.staged_closure / "dep_model.f90").write_text(self._DEP)
         for name, text in (("x_model.f90", self._MODEL), ("x_runner.f90", self._RUNNER)):
             (self.paths.tree / name).write_text(text)
         (self.paths.tree / "bundle.yaml").write_text(
@@ -1107,7 +1107,8 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
             agent_run_id="arid-sim", reserved_names=reserved, control_file_basename="Makefile",
             violations=lambda doc: None, build_graph=lambda doc: {},
             render_control_file=lambda *, graph: self._CONTROL,
-            closure_file_names=("dep_model.f90",), language="fortran", build_system="make",
+            closure_file_names=("dep_model.f90",), seed_names=seeds, run_raw_dirs=("raw",),
+            language="fortran", build_system="make",
             build_overrides=(f"OBJDIR={self.paths.staged_obj}", f"BINDIR={self.paths.staged_bin}",
                              "BIN=x_runner"),
             lint_preset="fortitude", syntax_compiler="gfortran", syntax_std="f2008",
@@ -1121,6 +1122,47 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
+
+    def manifest(self, *files: str) -> None:
+        roles = {"x_model.f90": "model", "x_runner.f90": "runner"}
+        (self.paths.tree / "bundle.yaml").write_text("files:\n" + "".join(
+            f"  - logical_path: {f}\n    role: {roles.get(f, 'helper')}\n" for f in files))
+
+    def test_a_compile_never_answers_from_an_earlier_compiles_objects(self) -> None:
+        """A module the bundle no longer has must not compile from the module file an earlier
+        compile left: the host's Build starts from an empty object directory, and so must the
+        wrapper's (issue #534 round 2, measured on a real node by the blank-slate reviewer)."""
+        consts = textwrap.dedent("""\
+            module x_consts
+              implicit none
+              integer, parameter :: x_two = 2
+            end module x_consts
+            """)
+        model = self._MODEL.replace("  use dep_model, only: dep_twice\n",
+                                    "  use dep_model, only: dep_twice\n  use x_consts, only: x_two\n")
+        self.assertNotEqual(model, self._MODEL)
+        (self.paths.tree / "x_consts.f90").write_text(consts)
+        (self.paths.tree / "x_model.f90").write_text(model)
+        control = self._CONTROL.replace(
+            "$(OBJDIR)/x_model.o: x_model.f90 $(OBJDIR)/dep_model.o\n",
+            "$(OBJDIR)/x_consts.o: x_consts.f90\n\t$(FC) -J$(OBJDIR) -c x_consts.f90 -o $@\n"
+            "$(OBJDIR)/x_model.o: x_model.f90 $(OBJDIR)/dep_model.o $(OBJDIR)/x_consts.o\n"
+        ).replace("$(OBJDIR)/x_model.o $(OBJDIR)/x_runner.o\n",
+                  "$(OBJDIR)/x_consts.o $(OBJDIR)/x_model.o $(OBJDIR)/x_runner.o\n")
+        self.assertNotEqual(control, self._CONTROL)
+        import dataclasses
+        with_consts = dataclasses.replace(self.ctx, render_control_file=lambda *, graph: control)
+        self.manifest("x_model.f90", "x_runner.f90", "x_consts.f90")
+        self.assertTrue(self.ww.run_wrapper_op(with_consts, "derive")["ok"])
+        built = self.ww.run_wrapper_op(with_consts, "compile")
+        self.assertTrue(built["ok"], built)
+        # The leaf drops the module from the tree and the manifest and keeps the `use`.
+        (self.paths.tree / "x_consts.f90").unlink()
+        self.manifest("x_model.f90", "x_runner.f90")
+        self.assertTrue(self.op("derive")["ok"])
+        rebuilt = self.op("compile")
+        self.assertFalse(rebuilt["ok"], rebuilt)
+        self.assertEqual(rebuilt["binaries"], [])
 
     def op(self, name: str, args: dict | None = None) -> dict:
         return self.ww.run_wrapper_op(self.ctx, name, args)
@@ -1213,6 +1255,7 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
               end function x_value
             end module x_model
             """))
+        self.manifest("x_model.f90", "x_runner.f90", "x_helper.f90")
         out = self.op("syntax_check")
         self.assertFalse(out["ok"], out)
         self.assertEqual(out["rc"], 0, "the whole tree is expected to pass")
@@ -1221,6 +1264,7 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
         # The helper moved into the model file: both pass.
         (self.paths.tree / "x_helper.f90").unlink()
         (self.paths.tree / "x_model.f90").write_text(self._MODEL)
+        self.manifest("x_model.f90", "x_runner.f90")
         out = self.op("syntax_check")
         self.assertTrue(out["ok"], out)
         self.assertTrue(out["model_alone"]["ok"], out)

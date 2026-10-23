@@ -11,8 +11,9 @@ Two places per lineage, and the leaf sees only the first:
 
 * the LINEAGE HOME, `<homes-root>/<oid>/<backend>/<lineage_id>/` (outside the checkout, like
   the codex lineage home of issue #245): `config/` (the CLI's private config home), `tree/` (the
-  work tree), `staged/obj` + `staged/bin` (the wrapper's object and binary directories, which
-  hold the staged dependency closure), `syntax/` (syntax-check stage directories) and
+  work tree), `staged/closure` (the staged dependency closure's sources and headers),
+  `staged/obj` + `staged/bin` (the wrapper's object and binary directories, made fresh by each
+  `compile`), `syntax/` (syntax-check stage directories) and
   `snapshot/` (the tree's non-host-placed files, copied when the lineage ends);
 * the LINEAGE RECORD, `workspace/orchestrations/<oid>/workshop/<lineage_id>/`, host-written
   only: `workshop_lineage.json`, `command_log.jsonl` (every build-runtime call of the wrapper) and
@@ -97,6 +98,12 @@ class LineagePaths:
         return self.home / "staged"
 
     @property
+    def staged_closure(self) -> Path:
+        """The staged dependency closure's sources and headers, placed once per lineage. Bound
+        into no run: each `compile` copies them into a fresh `staged_obj`."""
+        return self.staged / "closure"
+
+    @property
     def staged_obj(self) -> Path:
         return self.staged / "obj"
 
@@ -134,8 +141,8 @@ class LineagePaths:
         created exclusively, 0700, by that preparer, and never here."""
         if not self.home.is_dir():
             raise ValueError(f"lineage home {self.home} does not exist")
-        for directory in (self.tree, self.staged_obj, self.staged_bin, self.syntax,
-                          self.snapshot):
+        for directory in (self.tree, self.staged_closure, self.staged_obj, self.staged_bin,
+                          self.syntax, self.snapshot):
             directory.mkdir(parents=True, exist_ok=True)
         self.record_dir.mkdir(parents=True, exist_ok=True)
 

@@ -93,8 +93,10 @@ class WrapperContext:
     #: (graph=...) -> the control file's text: the build system's `render_from_graph`, bound
     #: (keyword-only, as that renderer takes it).
     render_control_file: Callable[[dict[str, Any]], str]
-    #: The basenames the staged closure placed in `staged/obj` (sources and headers).
+    #: The basenames the staged closure placed in `staged/closure` (sources and headers).
     closure_file_names: tuple[str, ...]
+    #: The seeds' tree paths: the host-placed files a source view carries beside the bundle's.
+    seed_names: tuple[str, ...]
     language: str
     build_system: str
     #: The build system's command-line overrides for the staged object / binary directories.
@@ -113,6 +115,9 @@ class WrapperContext:
     launch_argv_prefix: tuple[str, ...] | None
     launch_env: tuple[tuple[str, str], ...]
     run_unavailable: str | None
+    #: The directories `Validate.execute` creates under the run's working directory before it
+    #: runs the binary (`Conductor._run_raw_dirs`), as one nested path.
+    run_raw_dirs: tuple[str, ...]
     base_env: tuple[tuple[str, str], ...]
     toolchain_ro_roots: tuple[str, ...]
     max_wrapper_calls: int
@@ -231,6 +236,17 @@ def _op_derive(ctx: WrapperContext, args: Mapping[str, Any],
 
 
 def _derive(ctx: WrapperContext) -> dict[str, Any]:
+    outcome = _derive_outcome(ctx)
+    if not outcome.get("ok"):
+        # A failed derive leaves no control file behind: a `compile` after it would otherwise
+        # build what an EARLIER manifest described and report it as this tree's build.
+        target = ctx.paths.tree / ctx.control_file_basename
+        if target.is_symlink() or target.is_file():
+            target.unlink()
+    return outcome
+
+
+def _derive_outcome(ctx: WrapperContext) -> dict[str, Any]:
     doc = workshop_tree.assemble_bundle_document(ctx.paths.tree, ctx.reserved_names)
     if isinstance(doc, AssemblyFailure):
         return _result(False, category=doc.category, findings=doc.findings)
@@ -242,12 +258,13 @@ def _derive(ctx: WrapperContext) -> dict[str, Any]:
         graph = ctx.build_graph(doc)
     except RuntimeError as exc:
         return _result(False, category=CATEGORY_BUILD_GRAPH, findings=str(exc))
-    workshop_tree.write_host_file(ctx.paths.tree, ctx.control_file_basename,
-                                  ctx.render_control_file(graph=graph))
-    missing = [n for n in ctx.closure_file_names if not (ctx.paths.staged_obj / n).is_file()]
+    missing = [n for n in ctx.closure_file_names
+               if not (ctx.paths.staged_closure / n).is_file()]
     if missing:
         return _result(False, category=CATEGORY_STAGED_CLOSURE,
                        findings=f"the staged dependency closure lacks {missing} (a host fault)")
+    workshop_tree.write_host_file(ctx.paths.tree, ctx.control_file_basename,
+                                  ctx.render_control_file(graph=graph))
     files = [str(e.get("logical_path")) for e in doc.get("files") or [] if isinstance(e, dict)]
     return _result(True, control_file=ctx.control_file_basename, files=files)
 
@@ -259,13 +276,30 @@ def _require_derived(ctx: WrapperContext) -> dict[str, Any] | None:
     return None
 
 
+def _fresh_dir(path: Path) -> Path:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True)
+    return path
+
+
 def _op_compile(ctx: WrapperContext, args: Mapping[str, Any],
                 on_spawn: Any) -> dict[str, Any]:
+    """Build the derived graph as the host's `Build` does: into an EMPTY object directory
+    holding the staged closure, and an empty binary directory, so no object, module file or
+    binary of an earlier compile answers for this tree (the host builds in a fresh
+    `workspace/tmp/<arid>/build` every time)."""
     from tools.build_runtime import tool_compile_project
 
     refused = _no_arguments("compile", args) or _require_derived(ctx)
     if refused is not None:
         return refused
+    _fresh_dir(ctx.paths.staged_obj)
+    _fresh_dir(ctx.paths.staged_bin)
+    for name in ctx.closure_file_names:
+        shutil.copy2(ctx.paths.staged_closure / name, ctx.paths.staged_obj / name)
     env = dict(ctx.base_env)
     result = tool_compile_project({
         "project_dir": str(ctx.paths.tree),
@@ -277,12 +311,38 @@ def _op_compile(ctx: WrapperContext, args: Mapping[str, Any],
         "capture_limit": ctx.capture_limit,
         "timeout_sec": _bounded_timeout(ctx, ctx.compile_timeout_sec),
         "sandbox_argv_prefix": _sandbox(
-            ctx, project_dir=ctx.paths.tree, rw=[ctx.paths.tree, ctx.paths.staged], env=env),
+            ctx, project_dir=ctx.paths.tree,
+            rw=[ctx.paths.tree, ctx.paths.staged_obj, ctx.paths.staged_bin], env=env),
         "on_spawn": on_spawn,
         **_attribution(ctx),
     })
     binaries = sorted(p.name for p in ctx.paths.staged_bin.iterdir() if p.is_file())
     return _command_feedback(result) | {"binaries": binaries}
+
+
+def _source_view(ctx: WrapperContext, name: str) -> Path | dict[str, Any]:
+    """What the host's `Generate.gate` reads, laid out for one lint / syntax call: the files
+    the manifest names, with the content assembly reads (`assemble_bundle_document`), plus
+    the seeds — the host-placed files `src/` also holds (the runner, the headers). A file of
+    the tree the manifest does not name (a note, a scratch source) is not in it, as it would
+    not be in `src/`. Returns the view directory, or the assembly's failure as feedback."""
+    doc = workshop_tree.assemble_bundle_document(ctx.paths.tree, ctx.reserved_names)
+    if isinstance(doc, AssemblyFailure):
+        return _result(False, category=doc.category, findings=doc.findings)
+    view = _fresh_dir(ctx.paths.syntax / name)
+    for entry in doc.get("files") or []:
+        if not isinstance(entry, dict):
+            continue
+        logical, content = entry.get("logical_path"), entry.get("content")
+        rel = workshop_tree.plain_relative_path(logical) if isinstance(logical, str) else None
+        if rel is None or not isinstance(content, str):
+            continue
+        (view / rel).parent.mkdir(parents=True, exist_ok=True)
+        (view / rel).write_text(content, encoding="utf-8")
+    workshop_tree._copy_files(
+        ctx.paths.tree, view,
+        [PurePosixPath(n) for n in ctx.seed_names if workshop_tree.plain_relative_path(n)])
+    return view
 
 
 def _op_lint(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict[str, Any]:
@@ -291,16 +351,18 @@ def _op_lint(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dic
     refused = _no_arguments("lint", args)
     if refused is not None:
         return refused
+    view = _source_view(ctx, "_lint")
+    if isinstance(view, dict):
+        return view
     env = dict(ctx.base_env)
     result = tool_run_linter({
         "preset": ctx.lint_preset,
-        "project_dir": str(ctx.paths.tree),
+        "project_dir": str(view),
         "env": env,
         "command_log_path": str(ctx.paths.command_log),
         "capture_limit": ctx.capture_limit,
         "timeout_sec": _bounded_timeout(ctx, ctx.compile_timeout_sec),
-        "sandbox_argv_prefix": _sandbox(ctx, project_dir=ctx.paths.tree,
-                                        rw=[ctx.paths.tree], env=env),
+        "sandbox_argv_prefix": _sandbox(ctx, project_dir=view, rw=[view], env=env),
         "on_spawn": on_spawn,
         **_attribution(ctx),
     })
@@ -309,16 +371,6 @@ def _op_lint(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dic
                        runs=[{"sub_preset": r.get("sub_preset"), **_command_feedback(r)}
                              for r in result.get("runs") or []])
     return _command_feedback(result) | {"preset": ctx.lint_preset}
-
-
-def _stage_dir(ctx: WrapperContext, name: str) -> Path:
-    """A fresh stage directory under the lineage's `syntax/`: a residue from an earlier call
-    would make the staged set wider than the tree is now."""
-    stage_dir = ctx.paths.syntax / name
-    if stage_dir.exists():
-        shutil.rmtree(stage_dir)
-    stage_dir.mkdir(parents=True)
-    return stage_dir
 
 
 def _syntax_run(ctx: WrapperContext, stage_dir: Path, on_spawn: Any) -> dict[str, Any]:
@@ -343,23 +395,27 @@ def _syntax_run(ctx: WrapperContext, stage_dir: Path, on_spawn: Any) -> dict[str
 
 def _op_syntax_check(ctx: WrapperContext, args: Mapping[str, Any],
                      on_spawn: Any) -> dict[str, Any]:
-    """The host gate's mandatory syntax stage over the tree, then — when it passes — its
-    model-alone probe (issue #389): the same compiler over exactly what a node depending on
-    this one is staged, the closure, the model file and the node's interface header. The tree
-    is staged as `workflow_conductor.stage_syntax_inputs` stages `src/` (every file of a staged
-    suffix, at its own relative path), read through no link."""
+    """The host gate's mandatory syntax stage over the source view (`_source_view`, what
+    `src/` would hold), then — when it passes — its model-alone probe (issue #389): the same
+    compiler over exactly what a node depending on this one is staged, the closure, the model
+    file and the node's interface header. The view is staged as
+    `workflow_conductor.stage_syntax_inputs` stages `src/` (every file of a staged suffix, at
+    its own relative path)."""
     from tools.build_runtime import SyntaxSourceNameError
 
     refused = _no_arguments("syntax_check", args)
     if refused is not None:
         return refused
-    stage_dir = _stage_dir(ctx, ctx.syntax_compiler)
-    files, _links = workshop_tree._walk_tree_files(ctx.paths.tree)
+    view = _source_view(ctx, "_src")
+    if isinstance(view, dict):
+        return view
+    stage_dir = _fresh_dir(ctx.paths.syntax / ctx.syntax_compiler)
+    files, _links = workshop_tree._walk_tree_files(view)
     workshop_tree._copy_files(
-        ctx.paths.tree, stage_dir,
+        view, stage_dir,
         [rel for rel in files if rel.suffix.lower() in ctx.syntax_staged_suffixes])
     for name in ctx.closure_file_names:
-        shutil.copy2(ctx.paths.staged_obj / name, stage_dir / name)
+        shutil.copy2(ctx.paths.staged_closure / name, stage_dir / name)
     try:
         result = _syntax_run(ctx, stage_dir, on_spawn)
     except SyntaxSourceNameError as exc:
@@ -370,18 +426,17 @@ def _op_syntax_check(ctx: WrapperContext, args: Mapping[str, Any],
     out = _command_feedback(result) | {"compiler": ctx.syntax_compiler}
     if not out["ok"]:
         return out
-    model, _why = workshop_tree.read_regular_file_under(
-        ctx.paths.tree, PurePosixPath(ctx.model_basename))
+    model, _why = workshop_tree.read_regular_file_under(view, PurePosixPath(ctx.model_basename))
     if model is None:
         # A missing model is `derive`'s finding (the bundle contract), not this probe's.
         return out
-    alone_dir = _stage_dir(ctx, f"{ctx.syntax_compiler}_model_alone")
+    alone_dir = _fresh_dir(ctx.paths.syntax / f"{ctx.syntax_compiler}_model_alone")
     for name in ctx.closure_file_names:
-        shutil.copy2(ctx.paths.staged_obj / name, alone_dir / name)
+        shutil.copy2(ctx.paths.staged_closure / name, alone_dir / name)
     (alone_dir / ctx.model_basename).write_bytes(model)
     if ctx.interface_header_basename:
         header, _ = workshop_tree.read_regular_file_under(
-            ctx.paths.tree, PurePosixPath(ctx.interface_header_basename))
+            view, PurePosixPath(ctx.interface_header_basename))
         if header is not None:
             (alone_dir / ctx.interface_header_basename).write_bytes(header)
     alone = _command_feedback(_syntax_run(ctx, alone_dir, on_spawn))
@@ -434,6 +489,16 @@ def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict
             and all(isinstance(c, str) and CASE_ID_TOKEN_RE.fullmatch(c) for c in case_ids)):
         return _result(False, category=CATEGORY_BAD_ARGUMENTS,
                        findings="case_ids must be a list of case ids")
+    if ctx.run_raw_dirs:
+        current = ctx.paths.tree
+        for part in ctx.run_raw_dirs:
+            current = current / part
+            if current.is_symlink() or (current.exists() and not current.is_dir()):
+                return _result(False, category=CATEGORY_BAD_ARGUMENTS,
+                               findings=f"{current.relative_to(ctx.paths.tree)} must be a "
+                                        f"directory of the tree (the run writes its captures "
+                                        f"there)")
+        ctx.paths.tree.joinpath(*ctx.run_raw_dirs).mkdir(parents=True, exist_ok=True)
     env = dict(ctx.base_env) | dict(ctx.launch_env)
     command = [*ctx.launch_argv_prefix, str(binary_path), "--cases", str(cases_path), *case_ids]
     result = tool_run_program({

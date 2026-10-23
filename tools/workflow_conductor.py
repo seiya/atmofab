@@ -3711,6 +3711,10 @@ class Conductor:
     #: with its default `executes` — the configuration with no `sites.yaml`, and what a conductor
     #: built without a driver gets; `run_conductor` passes the driver's resolution.
     site: Site | None = None
+    #: The local site as `sites.yaml` declares it (its `executes` may name more classes than the
+    #: default), whatever site `site` is: where a `workshop leaf`'s wrapper runs a binary
+    #: (`_local_execution_site`). None is the default local site.
+    local_site: Site | None = None
     #: The derivation record of each `(node_key, phase)` attempt in flight (issue #250): set by
     #: `run_phase` at phase start, read by `record_launch` for the key every launch of that
     #: attempt is stamped with.
@@ -10418,22 +10422,24 @@ class Conductor:
                 src / Path(binding["interface_header_ref"]).name)
 
     def _stage_workshop_closure(self, refs: NodeRefs, paths: Any) -> tuple[str, ...]:
-        """Stage the node's dependency closure into a `workshop leaf` lineage's object
-        directory (`paths.staged_obj`), from the bindings the generate key bound
+        """Stage the node's dependency closure into a `workshop leaf` lineage's
+        `paths.staged_closure` (each wrapper `compile` copies it into a fresh object
+        directory), from the bindings the generate key bound
         (`_stage_dependency_sources`, phase `generate`), and return the basenames placed there.
 
         Run in the main thread when the lineage is created, before the leaf launches, so the
         wrapper's transport threads only compile against it. The staged files are SOURCES and
-        headers, as for the syntax gate; the directory is out of the tree and absent from a
-        wrapper `run`'s sandbox, so the built program cannot open a dependency's certified
-        source. A wrapper `compile` does bind it (the build writes its objects there), and the
+        headers, as for the syntax gate; the directory is out of the tree and bound into no
+        wrapper run, and the object directory holding its copies is absent from a `run`'s
+        sandbox, so the built program cannot open a dependency's certified source. A wrapper
+        `compile` binds that object directory (the build writes its objects there), and the
         control file it runs is the tree's, which the leaf can edit: such a control file can
         print a staged source into the compile's output. That read gains the leaf nothing
         toward a verdict — the host's own Build re-stages the bound copies — and is a recorded
         departure from `docs/design/producer_workshop_leaf.md` §Tool surface ("the leaf never
         reads a dependency's source"), which holds for `run` only. Refuses a closure it could
         not stage, as the syntax gate does."""
-        staged = self._stage_dependency_sources(refs, paths.staged_obj, phase="generate")
+        staged = self._stage_dependency_sources(refs, paths.staged_closure, phase="generate")
         self._refuse_unstaged_closure(refs, staged, "workshop leaf staged closure")
         names: list[str] = []
         for binding in staged:
@@ -10442,15 +10448,26 @@ class Conductor:
                 names.append(Path(binding["interface_header_ref"]).name)
         return tuple(names)
 
+    def _local_execution_site(self) -> Any:
+        """The local execution site as the operator's `sites.yaml` declares it: `self.site`
+        when the run's target maps there, else `self.local_site` (the driver's resolution of
+        the `local` entry); None — the default `executes` — when neither is known."""
+        if self.site is not None and self.site.is_local:
+            return self.site
+        return self.local_site
+
     def _freeze_wrapper_context(self, refs: NodeRefs, paths: Any, *, agent_run_id: str,
-                                reserved_names: frozenset[str], closure_file_names: tuple[str, ...],
-                                max_wrapper_calls: int, lineage_deadline: float) -> Any:
+                                seed_names: tuple[str, ...], reserved_names: frozenset[str],
+                                closure_file_names: tuple[str, ...], max_wrapper_calls: int,
+                                lineage_deadline: float) -> Any:
         """The `workshop_wrapper.WrapperContext` of one launch of a lineage, computed here, in
         the main thread, from the same inputs the host's own gates read: the bundle contract
         (`_pure_bundle_violation_inputs`), the build graph (`_pure_bundle_graph_inputs`), the
         control file (`_control_file_render_inputs`), the lint preset `_gate_lint_check` runs,
         the mandatory syntax stage `_gate_syntax_check` runs, and the target's launch shape at
-        the local site (`host_execution.launch_shape`, as `_execute_inproc` asks it). Every
+        the LOCAL site (`host_execution.launch_shape`, as `_execute_inproc` asks it, with the
+        local site's own `executes` from `sites.yaml`, `_local_execution_site`): a wrapper run
+        happens where the conductor runs, whatever site the target's Validate maps to. Every
         callable is a module function bound to frozen arguments: an operation served on a
         transport thread calls no conductor method.
 
@@ -10502,7 +10519,7 @@ class Conductor:
         launch_prefix: tuple[str, ...] | None = None
         launch_env: tuple[tuple[str, str], ...] = ()
         try:
-            launch = launch_shape(self.target, None)
+            launch = launch_shape(self.target, self._local_execution_site())
             launch_prefix = tuple(launch.argv_prefix)
             launch_env = tuple(sorted(launch.env.items()))
         except LaunchUnavailable as exc:
@@ -10524,6 +10541,7 @@ class Conductor:
             build_graph=build_graph,
             render_control_file=partial(render, **render_inputs),
             closure_file_names=closure_file_names,
+            seed_names=tuple(seed_names),
             language=language,
             build_system=tc["build_system"],
             build_overrides=tuple(execute.build_overrides(
@@ -10541,6 +10559,7 @@ class Conductor:
             launch_argv_prefix=launch_prefix,
             launch_env=launch_env,
             run_unavailable=run_unavailable,
+            run_raw_dirs=self._run_raw_dirs(refs),
             base_env=tuple(sorted(wrapper_base_env(self.env).items())),
             toolchain_ro_roots=tuple(wrapper_toolchain_ro_roots(executables, self.repo_root)),
             max_wrapper_calls=max_wrapper_calls,
@@ -12348,6 +12367,14 @@ class Conductor:
         """repo-root-relative POSIX path for canonical refs."""
         return str(path.relative_to(self.repo_root)).replace("\\", "/")
 
+    def _run_raw_dirs(self, refs: NodeRefs) -> tuple[str, ...]:
+        """The directories created under a run's working directory before the binary runs, as
+        one nested path: `raw/state_snapshots/` for every runner, and `initial/` below it only
+        for the runner the host renders (see `_execute_inproc`). One answer, read by
+        `Validate.execute` and by a `workshop leaf`'s wrapper `run`."""
+        authors_runner = self._conductor_authors_runner(refs)
+        return ("raw", "state_snapshots", *(("initial",) if authors_runner else ()))
+
     def _execute_inproc(self, refs: NodeRefs, child_arid: str) -> dict[str, Any]:
         """Deterministic Validate.execute: in-process run_program + run_quality_checks,
         promote the runner's primary evidence to the canonical run node dir, author the
@@ -12494,7 +12521,7 @@ class Conductor:
         # file's quality-check recipe pre-creates the same set (`initial_capture_dir`), so the
         # run and the quality check see one directory set.
         authors_runner = self._conductor_authors_runner(refs)
-        run_raw_dirs = ("raw", "state_snapshots", *(("initial",) if authors_runner else ()))
+        run_raw_dirs = self._run_raw_dirs(refs)
 
         def commands(binary_path: str, spec_path: str, bin_path: str, qc_path: str,
                      obj_path: str) -> tuple[list[str], dict[str, str], list[list[str]]]:
@@ -15976,7 +16003,8 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
                   wait_usage_reset: bool = False,
                   rederive: frozenset[str] | set[str] | None = None,
                   target_profile: TargetProfile | None = None,
-                  site: Site | None = None) -> str:
+                  site: Site | None = None,
+                  local_site: Site | None = None) -> str:
     """Conductor entrypoint used by run_workflow.py (the only orchestration driver).
     Resolves the node, allocates+reserves ids (adopting an already-certified IR and the
     pipeline bound to it on a cold run; on resume, seeding the stage ids from
@@ -15988,7 +16016,7 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
     from. `target_profile` is the target the driver resolved at launch; None resolves the
     default target (`select_target_id`), which refuses when several profiles are declared.
     `site` is the execution site the driver resolved for that target (issue #293); None is the
-    local site."""
+    local site. `local_site` is the `local` entry of the same `sites.yaml` (None: the default)."""
     root = Path(repo_root)
     # Every leaf must be launchable before the first one is: a model-less codex entry would
     # otherwise surface as a mid-run `ValueError` from `_codex_pinned_model`, phases in.
@@ -16004,6 +16032,7 @@ def run_conductor(*, repo_root: Path | str, orchestration_id: str,
         rederive=frozenset(rederive or ()),
         target_profile=target_profile,
         site=site,
+        local_site=local_site,
     )
     refs = (resume_node_refs(conductor, node_key, spec_path) if resume
             else prepare_node(conductor, node_key, spec_path))

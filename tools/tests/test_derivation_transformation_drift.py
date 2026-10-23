@@ -350,6 +350,9 @@ def execute_tuple() -> dict[str, str]:
             _source_digest(server.tool_run_quality_checks),
         "build_runtime._run_command": _source_digest(server._run_command),
         "Conductor._execute_inproc": _source_digest(wc.Conductor._execute_inproc),
+        # The capture directories the run is given (issue #534 moved them into a helper the
+        # workshop wrapper reads too).
+        "Conductor._run_raw_dirs": _source_digest(wc.Conductor._run_raw_dirs),
         # The local site's record (issue #333: shared with the build's).
         "workflow_conductor._local_site_record": _source_digest(wc._local_site_record),
         # The launch shape `_execute_inproc` runs the binary with (issue #289): the neutral seam.
@@ -1512,12 +1515,15 @@ PINNED_EXECUTE: dict[str, str] = {
     # fails the shape and the post-execute gate reads. Rows moved: `_author_quality_check`,
     # `_quality_check_failure_lines`, `Conductor._execute_inproc`, the new row, and
     # `tools/host_execution.py` (the `perf_parallelism` docstring).
-    "execute-12": "fa6566def55fa6c086a61df51b741600a60049b2f1a74f14d164dabda2c655e5",
+    "execute-12": "60f80a1ccc153d67787eda960ecc432e7740713fcce0d7a0af488e05aa0e58d8",
     # Re-pinned (issue #534 PR-1), behaviour-preserving for the execute: `_run_command` and the
     # two run tools take an optional `sandbox_argv_prefix` (and `on_spawn`), which
     # `_execute_inproc` never passes; the unprefixed path is unchanged but for a timeout's
-    # result, whose `stdout` / `stderr` are now text rather than bytes (see the build pin). (Measured by diffing
-    # `execute_tuple()` against origin/main ad0393fd's: those three rows and no other.) The
+    # result, whose `stdout` / `stderr` are now text rather than bytes (see the build pin).
+    # And `_execute_inproc` reads its capture directories from `_run_raw_dirs` (joins the
+    # tuple), the same tuple it computed inline. (Measured by diffing
+    # `execute_tuple()` against origin/main ad0393fd's: those four rows moved, the helper's row
+    # was added, no other.) The
     # digest `execute-12` shipped with at ad0393fd:
     "execute-12@ad0393fd": "7d0bf312f0768f31579cf210435a16f781c9d38531db52f9d782225123a0da42",
 }

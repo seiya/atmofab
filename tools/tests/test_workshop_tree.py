@@ -365,6 +365,7 @@ def _context(paths: wt.LineagePaths, reserved, **over) -> ww.WrapperContext:
         agent_run_id="arid-1", reserved_names=reserved, control_file_basename=_CONTROL,
         violations=lambda doc: None, build_graph=lambda doc: {"compile_units": []},
         render_control_file=lambda *, graph: "all:\n", closure_file_names=(),
+        seed_names=tuple(sorted(_SEEDS)), run_raw_dirs=(),
         language="fortran", build_system="make", build_overrides=(), lint_preset="fortitude",
         syntax_compiler="gfortran", syntax_std="f2008", syntax_architecture=None,
         syntax_parallel_backend=None, syntax_staged_suffixes=(".f90",),
@@ -573,16 +574,34 @@ class WrapperCallCompositionTests(_LineageCase):
         from unittest import mock
 
         self.write(_CONTROL, "all:\n")
-        self.make_binary()
-        (self.paths.staged_bin / "a_dir").mkdir()
+        self.make_binary("left_by_an_earlier_compile")
+        (self.paths.staged_obj / "old.mod").write_text("stale\n")
+        (self.paths.staged_closure / "dep_model.f90").write_text("dep\n")
         seen: list[int] = []
-        ctx = _context(self.paths, self.reserved)
-        with mock.patch("tools.build_runtime.tool_compile_project", self.recorder()):
+        ctx = _context(self.paths, self.reserved, closure_file_names=("dep_model.f90",))
+        build = self.recorder()
+
+        def compile_project(args):
+            # What the build finds when it starts, then what it leaves.
+            self.found = sorted(p.name for p in self.paths.staged_obj.iterdir())
+            self.found_bin = sorted(p.name for p in self.paths.staged_bin.iterdir())
+            self.make_binary()
+            (self.paths.staged_bin / "a_dir").mkdir()
+            return build(args)
+
+        with mock.patch("tools.build_runtime.tool_compile_project", compile_project):
             out = ww.run_wrapper_op(ctx, "compile", on_spawn=seen.append)
+        # A fresh object directory holding the closure only, and an empty binary directory.
+        self.assertEqual((self.found, self.found_bin), (["dep_model.f90"], []))
         self.assertEqual(out["binaries"], ["x_runner"])
         prefix = self.calls[0]["sandbox_argv_prefix"]
-        for rw in (self.paths.tree, self.paths.staged):
+        for rw in (self.paths.tree, self.paths.staged_obj, self.paths.staged_bin):
             self.assertEqual(prefix[prefix.index(str(rw.resolve())) - 1], "--bind")
+        # The closure the copies come from is bound into no run.
+        self.assertNotIn(str(self.paths.staged_closure.resolve()), prefix)
+        self.assertNotIn(str(self.paths.staged.resolve()), prefix)
+        self.manifest("x_model.f90")
+        self.write("x_model.f90", "m\n")
         with mock.patch("tools.build_runtime.tool_run_linter", self.recorder()):
             ww.run_wrapper_op(ctx, "lint", on_spawn=seen.append)
         self.assertEqual(seen, [4242, 4242])
@@ -595,6 +614,8 @@ class WrapperCallCompositionTests(_LineageCase):
         stale.write_text("left by an earlier call\n")
         self.write("x_model.f90", "module x\nend module x\n")
         self.write("deep/inc.f90", "x\n")
+        self.write("scratch_try.f90", "a note the leaf kept\n")  # not in the manifest
+        self.manifest("x_model.f90", "deep/inc.f90")
         (self.paths.tree / "linked.f90").symlink_to(Path(self._tmp.name) / "outside.f90")
         staged: list[list[str]] = []
 
@@ -607,8 +628,95 @@ class WrapperCallCompositionTests(_LineageCase):
         with mock.patch("tools.build_runtime.tool_run_syntax_check", record):
             out = ww.run_wrapper_op(_context(self.paths, self.reserved), "syntax_check")
         self.assertTrue(out["ok"], out)
+        # The manifest's files and the seeds, as src/ would hold them; not the scratch file.
         self.assertEqual(staged[0], ["deep/inc.f90", "x_model.f90", "x_runner.f90"])
         self.assertEqual(staged[1], ["x_model.f90"])
+
+    def test_lint_reads_what_src_would_hold(self) -> None:
+        from unittest import mock
+
+        self.write("x_model.f90", "module x\nend module x\n")
+        self.write("scratch_try.f90", "a note the leaf kept\n")
+        self.manifest("x_model.f90")
+        seen: list[list[str]] = []
+
+        def record(args):
+            root = Path(args["project_dir"])
+            seen.append(sorted(p.relative_to(root).as_posix() for p in root.rglob("*")
+                               if p.is_file()))
+            return {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
+
+        with mock.patch("tools.build_runtime.tool_run_linter", record):
+            self.assertTrue(ww.run_wrapper_op(_context(self.paths, self.reserved), "lint")["ok"])
+        self.assertEqual(seen[0], sorted(["x_model.f90", *_SEEDS]))
+        # No manifest: the assembly's own finding, and nothing linted.
+        (self.paths.tree / "bundle.yaml").unlink()
+        out = ww.run_wrapper_op(_context(self.paths, self.reserved), "lint")
+        self.assertEqual(out["category"], wt.WORKSHOP_TREE_EMPTY)
+        self.assertEqual(len(seen), 1)
+
+    def test_the_model_alone_probe_stages_the_interface_header(self) -> None:
+        from unittest import mock
+
+        self.write("x_model.cu", "#include \"x_model.cuh\"\n")
+        self.write("x_model.cuh", "header\n")
+        self.write("x_checks.cu", "checks\n")
+        self.manifest("x_model.cu", "x_model.cuh", "x_checks.cu")
+        staged: list[list[str]] = []
+
+        def record(args):
+            root = Path(args["project_dir"])
+            staged.append(sorted(p.name for p in root.iterdir() if p.is_file()))
+            return {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
+
+        ctx = _context(self.paths, self.reserved, model_basename="x_model.cu",
+                       interface_header_basename="x_model.cuh",
+                       syntax_staged_suffixes=(".cu", ".cuh"))
+        with mock.patch("tools.build_runtime.tool_run_syntax_check", record):
+            self.assertTrue(ww.run_wrapper_op(ctx, "syntax_check")["ok"])
+        self.assertEqual(staged[1], ["x_model.cu", "x_model.cuh"])
+
+    def test_a_run_creates_the_capture_directories_validate_execute_creates(self) -> None:
+        from unittest import mock
+
+        self.make_binary()
+        ctx = _context(self.paths, self.reserved,
+                       run_raw_dirs=("raw", "state_snapshots", "initial"))
+        with mock.patch("tools.build_runtime.tool_run_program", self.recorder()):
+            self.assertTrue(ww.run_wrapper_op(ctx, "run", {"binary": "x_runner"})["ok"])
+        self.assertTrue((self.paths.tree / "raw" / "state_snapshots" / "initial").is_dir())
+        # A link where a capture directory goes is refused, not followed.
+        import shutil
+        shutil.rmtree(self.paths.tree / "raw")
+        (self.paths.tree / "raw").symlink_to(Path(self._tmp.name))
+        self.assertEqual(ww.run_wrapper_op(ctx, "run", {"binary": "x_runner"})["category"],
+                         ww.CATEGORY_BAD_ARGUMENTS)
+
+    def test_a_failed_derive_leaves_no_control_file_behind(self) -> None:
+        self.write("x_model.f90", "m\n")
+        self.manifest("x_model.f90")
+        ctx = _context(self.paths, self.reserved)
+        self.assertTrue(ww.run_wrapper_op(ctx, "derive")["ok"])
+        self.assertTrue((self.paths.tree / _CONTROL).is_file())
+        bad = _context(self.paths, self.reserved, violations=lambda doc: ("c", "f"))
+        self.assertFalse(ww.run_wrapper_op(bad, "derive")["ok"])
+        self.assertFalse((self.paths.tree / _CONTROL).exists())
+        self.assertEqual(ww.run_wrapper_op(ctx, "compile")["category"],
+                         ww.CATEGORY_NOT_DERIVED)
+
+    def test_derive_and_compile_never_write_or_trust_a_linked_control_file(self) -> None:
+        # The call sites of write_host_file / is_host_file, through run_wrapper_op.
+        victim = Path(self._tmp.name) / "victim.txt"
+        victim.write_text("untouched\n")
+        self.write("x_model.f90", "m\n")
+        self.manifest("x_model.f90")
+        (self.paths.tree / _CONTROL).symlink_to(victim)
+        ctx = _context(self.paths, self.reserved, max_wrapper_calls=10)
+        self.assertEqual(ww.run_wrapper_op(ctx, "compile")["category"],
+                         ww.CATEGORY_NOT_DERIVED)
+        self.assertTrue(ww.run_wrapper_op(ctx, "derive")["ok"])
+        self.assertEqual(victim.read_text(), "untouched\n")
+        self.assertFalse((self.paths.tree / _CONTROL).is_symlink())
 
     def test_truncated_output_is_flagged(self) -> None:
         cut = {"ok": False, "return_code": 2, "stdout": "a\n...<omitted 99 chars>...\nb",

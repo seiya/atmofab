@@ -10668,6 +10668,7 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
                 self, self.repo_root, ["spec/problem/test.md", "validate", "--target", "t_a"])
         self.assertEqual(code, 0)
         self.assertEqual((kw["site"].site_id, kw["site"].executes), ("local", ("cpu",)))
+        self.assertIs(kw["local_site"], kw["site"])
         code, events, calls = self._main()
         self.assertEqual(code, 0, events)
         inv = RunWorkflowTests._find_init_invocation(self, calls)  # type: ignore[arg-type]
@@ -10705,6 +10706,8 @@ class ExecutionSiteLaunchTests(unittest.TestCase):
                 self, self.repo_root, ["spec/problem/test.md", "validate", "--target", "t_a"])
         self.assertEqual(code, 0)
         self.assertEqual((kw["site"].site_id, kw["site"].host), ("box", "box"))
+        # The local entry travels beside it: where a workshop leaf's wrapper runs a binary.
+        self.assertEqual(kw["local_site"].site_id, "local")
 
     def test_a_run_that_stops_before_build_contacts_no_site(self) -> None:
         self._remote()

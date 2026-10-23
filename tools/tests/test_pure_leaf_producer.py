@@ -953,7 +953,7 @@ class WorkshopWrapperContextTests(unittest.TestCase):
         self.paths.home.mkdir(parents=True)
         self.paths.make_work_dirs()
         self.ctx = self.c._freeze_wrapper_context(
-            self.refs, self.paths, agent_run_id="child-1",
+            self.refs, self.paths, agent_run_id="child-1", seed_names=(),
             reserved_names=frozenset({"Makefile"}), closure_file_names=(),
             max_wrapper_calls=7, lineage_deadline=time.time() + 60)
 
@@ -988,7 +988,7 @@ class WorkshopWrapperContextTests(unittest.TestCase):
 
     def _freeze(self, **over):
         import time
-        kwargs = dict(agent_run_id="child-1", reserved_names=frozenset({"Makefile"}),
+        kwargs = dict(agent_run_id="child-1", seed_names=(), reserved_names=frozenset({"Makefile"}),
                       closure_file_names=(), max_wrapper_calls=7,
                       lineage_deadline=time.time() + 60)
         kwargs.update(over)
@@ -1014,9 +1014,24 @@ class WorkshopWrapperContextTests(unittest.TestCase):
         # The wrapper runs where the conductor runs, whatever site the target maps to.
         import tools.host_execution as he
 
-        with mock.patch.object(he, "launch_shape", wraps=he.launch_shape) as spy, \
-                mock.patch.object(type(self.c), "site", new_callable=mock.PropertyMock,
-                                  return_value=SimpleNamespace(is_local=False)):
+        from tools.execution_sites import Site
+
+        # The local site as sites.yaml declares it (here: executing a class the default does
+        # not), while the target's Validate maps to a remote site: the wrapper asks the local.
+        local = Site(site_id="local", executes=("cpu", "gpu"))
+        self.c.site = Site(site_id="far", executes=("cpu",), host="h", workdir="/w")
+        self.c.local_site = local
+        with mock.patch.object(he, "launch_shape", wraps=he.launch_shape) as spy:
+            ctx = self._freeze()
+        self.assertIs(spy.call_args.args[1], local)
+        # The target mapping to the local site: that site answers, as `_execute_inproc` reads it.
+        self.c.site, self.c.local_site = local, None
+        with mock.patch.object(he, "launch_shape", wraps=he.launch_shape) as spy:
+            self._freeze()
+        self.assertIs(spy.call_args.args[1], local)
+        # Neither known: the default local site.
+        self.c.site = None
+        with mock.patch.object(he, "launch_shape", wraps=he.launch_shape) as spy:
             ctx = self._freeze()
         self.assertIsNone(spy.call_args.args[1])
         self.assertEqual(ctx.launch_argv_prefix, tuple(he.launch_shape(self.c.target).argv_prefix))
@@ -1089,7 +1104,7 @@ class WorkshopWrapperContextTests(unittest.TestCase):
             {"interface_header_ref": hdr, "interface_header_sha256": hsha})
         self.assertEqual(self.c._stage_workshop_closure(self.refs, self.paths),
                          ("harness_fortran_cpu_model.f90", "harness_fortran_cpu_model.hdr"))
-        self.assertTrue((self.paths.staged_obj / names[0]).is_file())
+        self.assertTrue((self.paths.staged_closure / names[0]).is_file())
 
 
 # ======================================================================================
