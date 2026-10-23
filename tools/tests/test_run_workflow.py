@@ -8023,6 +8023,17 @@ class StdoutFormatTests(unittest.TestCase):
             "(cap 7200s, ATMOFAB_LEAF_TIMEOUT_SECONDS) — process group killed, "
             "phase fails closed",
         )
+        # A workshop lineage's bound (issue #534) is named as the bound that fired, not as the
+        # environment cap the operator did not set.
+        self.assertEqual(
+            f({"status": "info", "event": "leaf_timeout", "node_key": "n", "step": "generate",
+               "substep": "generate", "agent_run_id": "ar_dead", "backend": "claude",
+               "timeout_seconds": 300, "timeout_bound": "lineage_timeout_s",
+               "elapsed_seconds": 301.0, "leaf_exit": -9, "stdout_chars": 0,
+               "stderr_chars": 0, "orchestration_id": "o"}),
+            "    [warn   ] leaf timeout in generate.generate: no answer after 301.0s "
+            "(cap 300s, lineage_timeout_s) — process group killed, phase fails closed",
+        )
         # Defence for a future `spawn_leaf` caller that omits (or half-fills) `timeout_context`:
         # the line must still name the step rather than reading `leaf timeout in build.:`. No
         # production path emits this today — `Build` runs its substep in-process and never
