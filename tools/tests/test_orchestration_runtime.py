@@ -29395,7 +29395,7 @@ class WrapperSandboxRendererTests(unittest.TestCase):
         cmd = self.render()
         system = ort._runtime_ro_bind_paths()
         expected = ["bwrap", "--die-with-parent", "--new-session", "--unshare-net",
-                    "--clearenv", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]
+                    "--unshare-pid", "--clearenv", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]
         for item in system:
             expected += ["--ro-bind", item, item]
         expected += ["--tmpfs", str(self.repo.resolve()),

@@ -8393,7 +8393,9 @@ def render_wrapper_sandbox_prefix(
 ) -> list[str]:
     """The `bwrap ... --` head of one wrapper run, ending in `--`.
 
-    `--unshare-net` (no interface but loopback, and no route out), `--clearenv` with one
+    `--unshare-net` (no interface but loopback, and no route out), `--unshare-pid` (every
+    process of the run dies with the launcher, so a timeout or a lineage-end kill of the
+    launcher's process group stops the whole run), `--clearenv` with one
     `--setenv` per entry of `env` (the caller passes the SAME dict to the library as `env`, so
     the command log's `env_override_keys` names what the run was given), the system
     directories and `toolchain_ro_roots` read-only, an empty tmpfs at `repo_root` so nothing of
@@ -8452,6 +8454,12 @@ def render_wrapper_sandbox_prefix(
         "--die-with-parent",
         "--new-session",
         "--unshare-net",
+        # A pid namespace of its own: `--new-session` puts the program in a session apart from
+        # the launcher's, so a kill of the launcher's process group reached only the launcher
+        # and a background descendant survived a timeout holding the output pipe (measured,
+        # issue #534 round 1). In its own pid namespace every process of the run dies with the
+        # namespace's init, which `--die-with-parent` ties to the launcher.
+        "--unshare-pid",
         "--clearenv",
         "--proc", "/proc",
         "--dev", "/dev",

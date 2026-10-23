@@ -1188,6 +1188,35 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
             self.assertEqual(entry["agent_run_id"], "arid-sim")
         self.assertEqual(self.wt.read_lineage_record(self.paths)["wrapper_calls_used"], 5)
 
+    def test_a_timeout_stops_every_process_of_the_run(self) -> None:
+        """A background descendant of a wrapper run dies with it. Under `--new-session` alone a
+        kill of the launcher's process group reached the launcher only: the descendant kept the
+        output pipe open (the call returned when it exited, not at the timeout) and went on
+        writing into the tree after the run was over (issue #534 round 1)."""
+        import time
+
+        from tools.build_runtime import tool_run_program
+        from tools.orchestration_runtime import render_wrapper_sandbox_prefix
+
+        marker = self.paths.tree / "survivor.txt"
+        late = (f"import time; time.sleep(4); open({str(marker)!r}, 'w').write('x')")
+        hang = "import time; time.sleep(60)"
+        env = dict(self.ctx.base_env)
+        prefix = render_wrapper_sandbox_prefix(
+            repo_root=self.repo_root, project_dir=self.paths.tree, rw_binds=[self.paths.tree],
+            toolchain_ro_roots=self.ctx.toolchain_ro_roots, env=env)
+        started = time.monotonic()
+        result = tool_run_program({
+            "project_dir": str(self.paths.tree),
+            "command": ["sh", "-c", f'python3 -c "{late}" & python3 -c "{hang}"'],
+            "env": env, "timeout_sec": 2, "sandbox_argv_prefix": prefix,
+        })
+        elapsed = time.monotonic() - started
+        self.assertIsNone(result["return_code"], result)
+        self.assertLess(elapsed, 10, f"the call outlived its timeout by {elapsed - 2:.1f} s")
+        time.sleep(5)
+        self.assertFalse(marker.exists(), "a descendant of the timed-out run kept running")
+
 
 if __name__ == "__main__":
     unittest.main()
