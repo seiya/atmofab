@@ -297,9 +297,16 @@ class EndAndTeardownTests(_Fixture):
             return {"ok": False, "rc": proc.returncode}
 
         server = self._server(run_op=op)
-        caller = threading.Thread(target=_post, args=(server.url, {
-            "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-            "params": {"name": "run", "arguments": {"binary": "b"}}}), daemon=True)
+        def call() -> None:
+            # `stop()` closes the connection under the in-flight call, so this client loses
+            # its response — the call's answer goes nowhere once the endpoint is stopping.
+            try:
+                _post(server.url, {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                   "params": {"name": "run", "arguments": {"binary": "b"}}})
+            except (OSError, http.client.HTTPException):
+                pass
+
+        caller = threading.Thread(target=call, daemon=True)
         caller.start()
         self.assertTrue(started.wait(30))
         self.assertEqual(server.in_flight(), 1)
@@ -333,6 +340,40 @@ class EndAndTeardownTests(_Fixture):
             self.assertEqual(server.kill_runs(), [])
             server.stop()
         kill.assert_not_called()
+
+    def test_stop_closes_a_kept_alive_connection_and_no_call_runs_after_it(self) -> None:
+        """Codex, round 2: a client holding an HTTP/1.1 connection open kept its handler
+        reading, so `stop()` waited out its whole join and the same connection could still ask
+        for an operation afterwards. Here the connection is held open across `stop()`."""
+        import time
+        server = self._server()
+        parts = urllib.parse.urlsplit(server.url)
+        conn = http.client.HTTPConnection(parts.hostname, parts.port, timeout=10)
+        self.addCleanup(conn.close)
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                           "params": {"name": "lint", "arguments": {}}})
+        conn.request("POST", parts.path, body=body,
+                     headers={"Content-Type": "application/json"})
+        self.assertEqual(conn.getresponse().read() != b"", True)
+        self.assertEqual(server.in_flight(), 1)  # the handler waits for the next request
+        t0 = time.monotonic()
+        server.stop(join_seconds=20)
+        self.assertLess(time.monotonic() - t0, 5, "stop() waited out an idle connection")
+        self.assertEqual(server.in_flight(), 0)
+        with self.assertRaises((OSError, http.client.HTTPException)):
+            conn.request("POST", parts.path, body=body,
+                         headers={"Content-Type": "application/json"})
+            conn.getresponse().read()
+        self.assertEqual([op for op, _ in self.calls], ["lint"])
+
+    def test_a_call_while_stopping_runs_no_operation(self) -> None:
+        server = self._server()
+        server._stopping = True
+        status, body, _ = server.handle_message({"jsonrpc": "2.0", "id": 3, "method":
+                                                 "tools/call", "params": {"name": "compile"}})
+        server._stopping = False
+        self.assertEqual(body["error"]["code"], -32603)
+        self.assertEqual(self.calls, [])
 
     def test_a_run_reported_after_stop_began_is_killed_at_once(self) -> None:
         server = self._server()

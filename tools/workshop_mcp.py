@@ -35,6 +35,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import socket
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -148,6 +149,7 @@ class WrapperMcpServer:
         self._ended_lock = threading.Lock()
         self._ended_signalled = False
         self._stopping = False
+        self._connections: set[Any] = set()
         self._session_id = f"{ctx.agent_run_id}"
         self._httpd: ThreadingHTTPServer | None = None
         self._serve_thread: threading.Thread | None = None
@@ -176,11 +178,18 @@ class WrapperMcpServer:
             daemon_threads = True
 
             def process_request(self, request, client_address):
-                thread = threading.Thread(target=self.process_request_thread,
-                                          args=(request, client_address), daemon=True)
+                def serve() -> None:
+                    try:
+                        self.process_request_thread(request, client_address)
+                    finally:
+                        with server._threads_lock:
+                            server._connections.discard(request)
+
+                thread = threading.Thread(target=serve, daemon=True)
                 with server._threads_lock:
                     server._threads = [t for t in server._threads if t.is_alive()]
                     server._threads.append(thread)
+                    server._connections.add(request)
                 thread.start()
 
         self._httpd = _Httpd(("127.0.0.1", 0), _handler_for(self))
@@ -198,6 +207,18 @@ class WrapperMcpServer:
             return
         self._stopping = True
         httpd.shutdown()
+        # The ACCEPTED connections too: `shutdown()` and `server_close()` close the listening
+        # socket only, and an HTTP/1.1 client keeps its connection open, so its handler would
+        # sit reading the next request — this join would wait it out, and that connection could
+        # still ask for an operation after `stop()` returned. Shutting each socket down ends
+        # the handler's read; a `tools/call` that arrives regardless is refused (`_stopping`).
+        with self._threads_lock:
+            connections = list(self._connections)
+        for connection in connections:
+            try:
+                connection.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
         deadline = time.monotonic() + max(0.0, join_seconds)
         while True:
             self.kill_runs()
@@ -302,6 +323,9 @@ class WrapperMcpServer:
             if arguments is not None and not isinstance(arguments, dict):
                 return 200, _error(rid, _JSONRPC_INVALID_PARAMS,
                                    "arguments must be an object"), {}
+            if self._stopping:
+                return 200, _error(rid, _JSONRPC_INTERNAL_ERROR,
+                                   "the wrapper endpoint is stopping; no operation runs"), {}
             result = self._call_op(name, arguments or {})
             if result.get("ended") is True:
                 try:
