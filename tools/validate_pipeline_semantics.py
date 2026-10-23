@@ -54,7 +54,10 @@ try:
     from tools.pure_leaf import (
         PURE_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
+        WORKSHOP_PROMPT_CONTRACT_VERSION,
+        WORKSHOP_PROMPT_SENTINEL,
         is_pure_request as _pure_leaf_is_pure_request,
+        is_workshop_request as _pure_leaf_is_workshop_request,
     )
     from tools.target_profile import (
         TargetProfile,
@@ -97,7 +100,10 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     from tools.pure_leaf import (
         PURE_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
+        WORKSHOP_PROMPT_CONTRACT_VERSION,
+        WORKSHOP_PROMPT_SENTINEL,
         is_pure_request as _pure_leaf_is_pure_request,
+        is_workshop_request as _pure_leaf_is_workshop_request,
     )
     from tools.target_profile import (
         TargetProfile,
@@ -613,7 +619,8 @@ def _launch_request_is_slim_repair(request_payload: dict) -> bool:
     two classify mutually exclusively. Everything else here answers for a pre-Z4 record."""
     if request_payload.get("deterministic"):
         return False
-    if _pure_leaf_is_pure_request(request_payload):
+    if (_pure_leaf_is_pure_request(request_payload)
+            or _pure_leaf_is_workshop_request(request_payload)):
         return False
     if not request_payload.get("warm_resume"):
         return False
@@ -641,6 +648,44 @@ def _is_pure_launch_prompt_text(launch_text: str) -> bool:
 _HTTP_PURE_LEAF_BACKENDS: frozenset[str] = frozenset({"openai_compatible", "anthropic_api"})
 
 
+def _workshop_profile_violations(profile: dict) -> list[str]:
+    """What is wrong with a persisted workshop leaf's sandbox profile (issue #534): it must be
+    `leaf_mode: workshop`, `readonly: false`, `write_roots: []`, with exactly two rw binds —
+    one lineage home's `config` and `tree` — and its tree as its workdir. The persisted-record
+    twin of `workflow_conductor._admissible_leaf_profile`, which refuses the spawn."""
+    out: list[str] = []
+    if profile.get("leaf_mode") != "workshop" or profile.get("readonly") is not False:
+        out.append(f"workshop launch sandbox profile must be leaf_mode=workshop, readonly=false "
+                   f"(got leaf_mode={profile.get('leaf_mode')!r}, "
+                   f"readonly={profile.get('readonly')!r})")
+    if profile.get("write_roots") != []:
+        out.append(f"workshop launch sandbox profile write_roots must be [] (got "
+                   f"{profile.get('write_roots')!r})")
+    rw = profile.get("runtime_rw_bind_paths")
+    names = sorted(Path(p).name for p in rw) if isinstance(rw, list) and all(
+        isinstance(p, str) for p in rw) else None
+    if names != ["config", "tree"] or len({str(Path(p).parent) for p in rw}) != 1:
+        out.append(f"workshop launch sandbox profile must bind exactly one lineage home's "
+                   f"config/ and tree/ read-write (got {rw!r})")
+    elif str(profile.get("workdir") or "") not in rw or Path(
+            str(profile.get("workdir"))).name != "tree":
+        out.append(f"workshop launch sandbox profile workdir must be its tree (got "
+                   f"{profile.get('workdir')!r})")
+    return out
+
+
+def _launch_request_is_workshop(request_payload: dict) -> bool:
+    """True when the structured launch REQUEST is a `workshop leaf` (`leaf_mode == "workshop"`,
+    issue #534), by the same single detection source the runtime uses."""
+    return _pure_leaf_is_workshop_request(request_payload)
+
+
+def _is_workshop_launch_prompt_text(launch_text: str) -> bool:
+    """True when a recorded launch_prompt opens with the workshop sentinel (line 0), the
+    workshop twin of `_is_pure_launch_prompt_text`; necessary, not sufficient."""
+    return launch_text.lstrip().startswith(WORKSHOP_PROMPT_SENTINEL)
+
+
 def _launch_request_is_pure(request_payload: dict) -> bool:
     """True when the structured launch REQUEST is a Z2 pure-function leaf (`leaf_mode == "pure"`).
 
@@ -657,7 +702,17 @@ def _required_launch_prompt_markers_for_role(
     deterministic: bool = False,
     slim: bool = False,
     pure: bool = False,
+    workshop: bool = False,
 ) -> list[str]:
+    if workshop:
+        # The workshop leaf (issue #534): the pure identity block under its own sentinel.
+        # Mirror of orchestration_runtime._required_launch_prompt_markers (host-rendered branch).
+        return [
+            WORKSHOP_PROMPT_SENTINEL,
+            "Target node_key:", "Target step:", "Target substep:",
+            "orchestration_id:", "agent_run_id:",
+            "prompt_contract_version:",
+        ]
     if pure:
         # Z2 pure-function leaf (launch OR repair): sentinel + identity + contract version. No
         # skill / must-read / requirements markers — the pure prompt has no skill section and
@@ -7860,6 +7915,7 @@ def _validate_orchestration_hierarchy(
                                 # with a slim/pure-looking body escape the full markers.
                                 request_confirms_slim = False
                                 request_confirms_pure = False
+                                request_confirms_workshop = False
                                 req_payload_for_launch = None
                                 # The host-authored launch RESPONSE, read alongside the request:
                                 # it is what says an HTTP pure leaf ran in the conductor's own
@@ -7892,6 +7948,9 @@ def _validate_orchestration_hierarchy(
                                                 req_payload_for_launch)
                                             request_confirms_pure = _launch_request_is_pure(
                                                 req_payload_for_launch)
+                                            request_confirms_workshop = (
+                                                _launch_request_is_workshop(
+                                                    req_payload_for_launch))
                                 # Anchored slim/pure detection takes precedence over the substring
                                 # deterministic check when an untrusted findings excerpt happens to
                                 # embed the deterministic sentinel.
@@ -7906,13 +7965,23 @@ def _validate_orchestration_hierarchy(
                                         f"prompt-is-pure is {prompt_is_pure}"
                                     )
                                 is_pure = request_confirms_pure and prompt_is_pure
+                                # The workshop leaf (issue #534) is held to the same agreement.
+                                prompt_is_workshop = _is_workshop_launch_prompt_text(launch_text)
+                                if request_confirms_workshop != prompt_is_workshop:
+                                    violations.append(
+                                        f"{runs_path}:line {idx + 1} {key} workshop-launch "
+                                        f"mismatch: request leaf_mode=workshop is "
+                                        f"{request_confirms_workshop} but prompt-is-workshop is "
+                                        f"{prompt_is_workshop}"
+                                    )
+                                is_workshop = request_confirms_workshop and prompt_is_workshop
                                 is_slim = (
                                     request_confirms_slim
                                     and _is_slim_launch_prompt_text(launch_text))
                                 is_deterministic = DETERMINISTIC_PROMPT_SENTINEL in launch_text
                                 required_markers = _required_launch_prompt_markers_for_role(
                                     role_l, deterministic=is_deterministic, slim=is_slim,
-                                    pure=is_pure)
+                                    pure=is_pure, workshop=is_workshop)
                                 missing_markers = [
                                     marker
                                     for marker in required_markers
@@ -7922,7 +7991,7 @@ def _validate_orchestration_hierarchy(
                                     violations.append(
                                         f"{runs_path}:line {idx + 1} {key} missing launch-prompt template markers ({', '.join(missing_markers)})"
                                     )
-                                if is_pure:
+                                if is_pure or is_workshop:
                                     # Independent audit of the persisted pure record (tamper /
                                     # drift detection), so it re-checks the value invariants the
                                     # runtime enforces at launch — the marker sweep above only
@@ -7935,14 +8004,19 @@ def _validate_orchestration_hierarchy(
                                         req_payload_for_launch.get("prompt_contract_version")
                                         if isinstance(req_payload_for_launch, dict) else None
                                     )
-                                    if req_version != PURE_PROMPT_CONTRACT_VERSION:
+                                    # A workshop record carries its own counter (issue #534).
+                                    expected_version = (WORKSHOP_PROMPT_CONTRACT_VERSION
+                                                        if is_workshop
+                                                        else PURE_PROMPT_CONTRACT_VERSION)
+                                    mode_word = "workshop" if is_workshop else "pure"
+                                    if req_version != expected_version:
                                         violations.append(
-                                            f"{runs_path}:line {idx + 1} pure launch request "
-                                            f"prompt_contract_version must be "
-                                            f"{PURE_PROMPT_CONTRACT_VERSION!r} (got {req_version!r})"
+                                            f"{runs_path}:line {idx + 1} {mode_word} launch "
+                                            f"request prompt_contract_version must be "
+                                            f"{expected_version!r} (got {req_version!r})"
                                         )
                                     expected_version_line = (
-                                        f"prompt_contract_version: {PURE_PROMPT_CONTRACT_VERSION}"
+                                        f"prompt_contract_version: {expected_version}"
                                     )
                                     if expected_version_line not in launch_text:
                                         violations.append(
@@ -8034,6 +8108,14 @@ def _validate_orchestration_hierarchy(
                                             f"{runs_path}:line {idx + 1} pure launch sandbox profile "
                                             f"missing/unreadable ({sbx_path.name})"
                                         )
+                                    elif is_workshop:
+                                        # A workshop leaf's profile (issue #534) is the one
+                                        # writable profile, and only in its own lineage home:
+                                        # exactly `config/` and `tree/`, siblings, outside the
+                                        # checkout, nothing under it.
+                                        violations.extend(
+                                            f"{runs_path}:line {idx + 1} {why}"
+                                            for why in _workshop_profile_violations(sbx_doc))
                                     else:
                                         if sbx_doc.get("readonly") is not True:
                                             violations.append(

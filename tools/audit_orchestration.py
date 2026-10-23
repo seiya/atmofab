@@ -697,7 +697,10 @@ def _pure_leaf_keys_that_ran(repo_root: Path, orchestration_id: str) -> frozense
         return frozenset()
     for path in sorted(launches.glob("*.request.json")):
         row = _load_json_if_dict(path) or {}
-        if _clean_str(row.get("leaf_mode")) != "pure":
+        # A `workshop leaf` (issue #534) ran on its entry's provider just as a pure one did,
+        # and it is the leaf an A/B of the two models attributes. (The compile and validate
+        # discoveries above keep `pure`: no workshop leaf serves either phase.)
+        if _clean_str(row.get("leaf_mode")) not in ("pure", "workshop"):
             continue
         step = _clean_str(row.get("step"))
         substep = _clean_str(row.get("substep"))

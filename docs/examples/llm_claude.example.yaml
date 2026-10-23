@@ -74,12 +74,30 @@
 # directory are worked examples of each.
 #
 # `capabilities:` narrows what a provider may be used for. The key is RESTRICT-ONLY — it may
-# name a subset of what the provider has (`claude_cli`: pure, warm_resume)
+# name a subset of what the provider has (`claude_cli`: pure, warm_resume, workshop)
 # and never more, or the load is refused with
-# `llm_config_capability_exceeds_provider`. There is no configuration that puts a leaf on
-# another transport: the pure leaf is the only leaf model since Z4 (issue #171), so an entry
-# narrowed away from `pure` can run nothing and is refused with
-# `llm_config_capability_insufficient_for_substep`. No sample sets the key.
+# `llm_config_capability_exceeds_provider`. Every leaf of this sample is a pure leaf, the one
+# leaf model every LLM leaf has, so an entry narrowed away from `pure` can run nothing and is
+# refused with `llm_config_capability_insufficient_for_substep`. No sample sets the key.
+#
+# `generate.generate` alone may instead run as a WORKSHOP leaf (issue #534): it edits a
+# host-seeded work tree and asks the host to derive, compile, lint, syntax-check and run it,
+# instead of returning one document. Its entry states the leaf model and both bounds, which
+# have no default and are written on the substep only:
+#
+#       generate:
+#         provider: claude_cli
+#         model: opus
+#         effort: medium
+#         leaf: workshop
+#         max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
+#         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
+#
+# A bound that runs out ends the lineage with its tree as it stands, and a repair then starts a
+# fresh lineage with fresh counters, so one substep attempt may spend up to
+# max_wrapper_calls x 3 calls and lineage_timeout_s x 3 seconds (1 + MAX_BUNDLE_REPAIR_TURNS,
+# which is 2), and more across an outer reopen. The conductor's workshop loop is not wired yet
+# (issue #534 PR-3): until it is, such an entry loads and its substep fails closed.
 defaults:
   provider: claude_cli
   model: opus

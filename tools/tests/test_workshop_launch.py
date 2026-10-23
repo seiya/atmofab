@@ -1,0 +1,572 @@
+"""The `workshop leaf`'s launch shape (issue #534 PR-2): its sandbox profile, its lineage home,
+its launch record, its argv, and the spawn seam's admission of its one writable profile.
+
+The launch record is driven through the REAL `record_launch` — `_PureFakeConductor` stubs it,
+so without these rows the first billed run would be the first thing to cross its validators.
+The workshop templates are PR-3's: the rows that render a prompt patch a stand-in template
+into the template map, carrying the identity block the validators read.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import stat
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import tools.llm_config as lc
+import tools.orchestration_runtime as ort
+import tools.workflow_conductor as wc
+from tools import operator_private_root, pure_leaf
+from tools.orchestration_runtime import (
+    build_readonly_bwrap_profile,
+    claude_workshop_profile_kwargs,
+    init_orchestration,
+    record_launch,
+    render_bwrap_command,
+)
+from tools.pure_leaf import (
+    WORKSHOP_PROMPT_CONTRACT_VERSION,
+    WORKSHOP_PROMPT_SENTINEL,
+    workshop_mcp_config_json,
+)
+from tools.tests.test_pure_leaf_producer import _PureFakeConductor
+from tools.tests.test_pure_leaf_wiring import (
+    _mark_dependencies_ready,
+    _preflight,
+    _pure_request,
+    _spawn_response,
+)
+
+_ORCH = "orch_001"
+_REAL_TEMPLATE_LOADER = ort._load_launch_prompt_templates
+_REAL_TEMPLATE_FILES = dict(ort._PROMPT_TEMPLATE_FILES)
+
+#: A stand-in for PR-3's `workshop_generate_generate.txt`: the identity block the validators
+#: bind, under the workshop sentinel, and the five document slots of the default shape.
+_TEST_TEMPLATE = (
+    f"{WORKSHOP_PROMPT_SENTINEL}: stand-in template (issue #534 PR-2 tests).\n\n"
+    "<harness_capabilities>\n<target_profile>\n<ir_document>\n<tests_document>\n"
+    "<runner_document>\n\n"
+    "Target node_key: <node_key>\nTarget step: <step>\nTarget substep: <substep>\n"
+    "orchestration_id: <orchestration_id>\nagent_run_id: <agent_run_id>\n"
+    "prompt_contract_version: <prompt_contract_version>\n")
+_TEST_REPAIR_TEMPLATE = (
+    f"{WORKSHOP_PROMPT_SENTINEL}: stand-in repair template.\n\n<findings>\n\n"
+    "Target node_key: <node_key>\nTarget step: <step>\nTarget substep: <substep>\n"
+    "orchestration_id: <orchestration_id>\nagent_run_id: <agent_run_id>\n"
+    "prompt_contract_version: <prompt_contract_version>\n")
+
+
+def _with_test_templates(test: unittest.TestCase) -> None:
+    real = ort._load_launch_prompt_templates()
+    patched = {**real, "workshop generate.generate": _TEST_TEMPLATE,
+               "workshop bundle repair": _TEST_REPAIR_TEMPLATE}
+    for target, value in (("_load_launch_prompt_templates", lambda: patched),
+                          ("_PROMPT_TEMPLATE_FILES",
+                           {**ort._PROMPT_TEMPLATE_FILES,
+                            "workshop generate.generate": "workshop_generate_generate.txt",
+                            "workshop bundle repair": "workshop_bundle_repair.txt"})):
+        patcher = mock.patch.object(ort, target, value)
+        patcher.start()
+        test.addCleanup(patcher.stop)
+
+
+def _workshop_request(child: str, lineage: str | None = None, **overrides) -> dict:
+    req = _pure_request("generate", leaf_mode="workshop",
+                        prompt_contract_version=WORKSHOP_PROMPT_CONTRACT_VERSION,
+                        agent_run_id=child, workshop_lineage_id=lineage or child)
+    req.update(overrides)
+    return req
+
+
+class _Env(unittest.TestCase):
+    """A checkout, a homes root and an operator credentials file, all temporary and apart."""
+
+    def setUp(self) -> None:
+        repo = tempfile.TemporaryDirectory()
+        homes = tempfile.TemporaryDirectory()
+        cred = tempfile.TemporaryDirectory()
+        for d in (repo, homes, cred):
+            self.addCleanup(d.cleanup)
+        self.repo = Path(repo.name)
+        self.homes = Path(homes.name) / "homes"
+        self.credentials = Path(cred.name) / ".credentials.json"
+        self.credentials.write_text('{"claudeAiOauth": {"accessToken": "x"}}', encoding="utf-8")
+        os.chmod(self.credentials, 0o600)
+        env = {"ATMOFAB_WORKFLOW_HOMES_ROOT": str(self.homes),
+               "ATMOFAB_ORCHESTRATION_ENFORCE_LIVE_PREFLIGHT": "0",
+               "ATMOFAB_ORCHESTRATION_ASSUME_BWRAP": "1"}
+        patcher = mock.patch.dict(os.environ, env)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        cred_patch = mock.patch.object(operator_private_root, "claude_credentials_file",
+                                       lambda: self.credentials)
+        cred_patch.start()
+        self.addCleanup(cred_patch.stop)
+        init_orchestration(repo_root=self.repo, orchestration_id=_ORCH)
+
+    def _prepare(self, lineage: str, *, resume: bool) -> dict | None:
+        return ort._prepare_claude_workshop_home(self.repo, _ORCH, lineage, resume=resume)
+
+
+class LineageHomeTests(_Env):
+    def test_a_cold_preparation_creates_a_private_home_with_its_config_and_tree(self) -> None:
+        iso = self._prepare("lin_a", resume=False)
+        home = Path(iso["home"])
+        self.assertEqual(home, (self.homes / _ORCH / "claude" / "lin_a").resolve())
+        self.assertEqual(Path(iso["homes_root"]), self.homes.resolve())
+        for path in (home, Path(iso["config"]), Path(iso["tree"])):
+            self.assertEqual(stat.S_IMODE(path.lstat().st_mode), 0o700, path)
+        self.assertEqual(sorted(p.name for p in Path(iso["config"]).iterdir()),
+                         [".credentials.json"])
+        self.assertEqual(Path(iso["credentials_destination"]).read_bytes(), b"")
+        self.assertEqual(Path(iso["credentials"]), self.credentials.resolve())
+        meta = json.loads((self.repo / "workspace/orchestrations" / _ORCH
+                           / "orchestration_meta.json").read_text())
+        self.assertEqual(meta["claude_workflow_home"], str(self.homes / _ORCH / "claude"))
+        # The record directory of `workshop_tree.LineagePaths` exists too.
+        self.assertTrue((self.repo / "workspace/orchestrations" / _ORCH / "workshop"
+                         / "lin_a").is_dir())
+
+    def test_a_lineage_is_created_once(self) -> None:
+        self._prepare("lin_a", resume=False)
+        with self.assertRaises(ValueError) as ctx:
+            self._prepare("lin_a", resume=False)
+        self.assertIn("already exists", str(ctx.exception))
+
+    def test_a_warm_preparation_finds_the_home_or_answers_none(self) -> None:
+        cold = self._prepare("lin_a", resume=False)
+        (Path(cold["config"]) / "projects").mkdir()
+        self.assertEqual(self._prepare("lin_a", resume=True), cold)
+        self.assertIsNone(self._prepare("lin_gone", resume=True))
+        self.assertFalse((self.homes / _ORCH / "claude" / "lin_gone").exists())
+
+    def test_a_missing_credentials_file_is_refused(self) -> None:
+        self.credentials.unlink()
+        with self.assertRaises(ValueError) as ctx:
+            self._prepare("lin_a", resume=False)
+        self.assertIn("credentials file not found", str(ctx.exception))
+
+    def test_a_lineage_id_must_be_a_plain_token(self) -> None:
+        for bad in ("../x", "a/b", "", "x y"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self._prepare(bad, resume=False)
+
+
+class WorkshopProfileTests(_Env):
+    def _profile(self, **over) -> tuple[dict, dict]:
+        iso = self._prepare("lin_a", resume=False)
+        kwargs = {**claude_workshop_profile_kwargs(iso), **over}
+        profile = build_readonly_bwrap_profile(
+            repo_root=self.repo, orchestration_id=_ORCH, agent_run_id="lin_a",
+            backend_command="claude", backend_type="claude", **kwargs)
+        return profile, iso
+
+    def test_the_profile_binds_the_lineage_and_nothing_of_the_operators_home(self) -> None:
+        profile, iso = self._profile()
+        self.assertIs(profile["readonly"], False)
+        self.assertEqual(profile["leaf_mode"], "workshop")
+        self.assertEqual(profile["write_roots"], [])
+        self.assertEqual(profile["runtime_rw_bind_paths"], [iso["config"], iso["tree"]])
+        self.assertEqual(profile["workdir"], iso["tree"])
+        self.assertEqual(profile["env"]["CLAUDE_CONFIG_DIR"], iso["config"])
+        cmd = render_bwrap_command(profile=profile, command_argv=["claude", "-p"])
+        self.assertEqual(cmd[cmd.index("--chdir") + 1], iso["tree"])
+        binds = [(cmd[i + 1], cmd[i + 2]) for i, tok in enumerate(cmd) if tok == "--bind"]
+        self.assertIn((iso["config"], iso["config"]), binds)
+        self.assertIn((iso["tree"], iso["tree"]), binds)
+        # The credential mapping is the one file bind, AFTER its parent `config/`.
+        cred = (iso["credentials"], iso["credentials_destination"])
+        self.assertIn(cred, binds)
+        self.assertGreater(binds.index(cred), binds.index((iso["config"], iso["config"])))
+        operator_claude = str(Path(os.environ.get("HOME", "/nonexistent")) / ".claude")
+        self.assertFalse(any(src == operator_claude for src, _ in binds), binds)
+        self.assertEqual(cmd[cmd.index("CLAUDE_CONFIG_DIR") - 1], "--setenv")
+        self.assertEqual(cmd[cmd.index("CLAUDE_CONFIG_DIR") + 1], iso["config"])
+        self.assertIn(str(self.repo), [cmd[i + 1] for i, t in enumerate(cmd) if t == "--tmpfs"])
+
+    def test_the_builder_refuses_a_half_workshop_profile(self) -> None:
+        iso = self._prepare("lin_b", resume=False)
+        base = dict(repo_root=self.repo, orchestration_id=_ORCH, agent_run_id="lin_b",
+                    backend_command="claude", backend_type="claude")
+        kwargs = claude_workshop_profile_kwargs(iso)
+        for broken in ({"readonly": True}, {"leaf_mode": None}, {"leaf_mode": "agentic"},
+                       {"workdir": None}, {"credential_rw_mapping": None}):
+            with self.subTest(broken=broken), self.assertRaises(ValueError):
+                build_readonly_bwrap_profile(**base, **{**kwargs, **broken})
+        # A pure profile takes neither a workdir nor a credential mapping.
+        for extra in ({"workdir": iso["tree"]},
+                      {"credential_rw_mapping": (iso["credentials"],
+                                                 iso["credentials_destination"])},
+                      {"readonly": False}):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                build_readonly_bwrap_profile(**base, **extra)
+
+    def test_the_renderer_refuses_each_workshop_field_off_a_workshop_profile(self) -> None:
+        profile, iso = self._profile()
+        cases = {
+            "pure profile naming CLAUDE_CONFIG_DIR": lambda p: (
+                p.pop("leaf_mode"), p.pop("runtime_rw_credential_mapping"),
+                p.update(readonly=True, workdir=p["repo_root"])),
+            "pure profile with a credential mapping": lambda p: (
+                p.pop("leaf_mode"), p["env"].pop("CLAUDE_CONFIG_DIR"),
+                p.update(readonly=True, workdir=p["repo_root"])),
+            "pure profile with another workdir": lambda p: (
+                p.pop("leaf_mode"), p.pop("runtime_rw_credential_mapping"),
+                p["env"].pop("CLAUDE_CONFIG_DIR"), p.update(readonly=True)),
+            "workshop workdir outside its rw binds": lambda p: p.update(workdir="/tmp"),
+            "workshop profile marked readonly": lambda p: p.update(readonly=True),
+            "credential destination outside config": lambda p: p.update(
+                runtime_rw_credential_mapping=[iso["credentials"], iso["credentials"]]),
+            "CLAUDE_CONFIG_DIR naming another directory": lambda p: p["env"].update(
+                CLAUDE_CONFIG_DIR="/tmp"),
+            "unknown leaf_mode": lambda p: p.update(leaf_mode="agentic"),
+        }
+        for label, mutate in cases.items():
+            with self.subTest(case=label):
+                broken = json.loads(json.dumps(profile))
+                mutate(broken)
+                with self.assertRaises(ValueError):
+                    render_bwrap_command(profile=broken, command_argv=["claude"])
+
+
+class WorkshopRecordLaunchTests(_Env):
+    """The real `record_launch` with a workshop request."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        _mark_dependencies_ready(self.repo, _ORCH)
+        _preflight(self.repo)
+        _with_test_templates(self)
+
+    def _launch(self, child: str, req: dict, **kw) -> dict:
+        prepared = ort.prepare_launch_request_payload(dict(req))
+        req = dict(req, launch_prompt_full=ort.render_launch_prompt_text(prepared))
+        return record_launch(repo_root=self.repo, orchestration_id=_ORCH,
+                             parent_agent_run_id="orch_run_001", child_agent_run_id=child,
+                             request_payload=req, response_payload=_spawn_response(child),
+                             **kw)
+
+    def _base(self) -> Path:
+        return self.repo / "workspace/orchestrations" / _ORCH
+
+    def _index_row(self, child: str) -> dict:
+        doc = json.loads((self._base() / "session_run_index.json").read_text())
+        return next(e for e in doc["entries"] if e["agent_run_id"] == child)
+
+    def test_a_cold_workshop_launch_records_its_lineage_and_its_writable_profile(self) -> None:
+        self._launch("ar_ws_cold", _workshop_request("ar_ws_cold"))
+        profile = json.loads((self._base() / "sandbox_profiles/ar_ws_cold.json").read_text())
+        self.assertEqual(profile["leaf_mode"], "workshop")
+        self.assertIs(profile["readonly"], False)
+        home = (self.homes / _ORCH / "claude" / "ar_ws_cold").resolve()
+        self.assertEqual(profile["runtime_rw_bind_paths"],
+                         [str(home / "config"), str(home / "tree")])
+        response = json.loads((self._base() / "launches/ar_ws_cold.response.json").read_text())
+        self.assertEqual(response["workshop_lineage_id"], "ar_ws_cold")
+        self.assertEqual(response["claude_workflow_home"], str(home))
+        self.assertEqual(self._index_row("ar_ws_cold")["workshop_lineage_id"], "ar_ws_cold")
+        request = json.loads((self._base() / "launches/ar_ws_cold.request.json").read_text())
+        self.assertEqual(request["allowed_output_paths"], [])
+        prompt = (self._base() / "launches/ar_ws_cold.prompt.txt").read_text()
+        self.assertTrue(prompt.startswith(WORKSHOP_PROMPT_SENTINEL))
+        self.assertIn(f"prompt_contract_version: {WORKSHOP_PROMPT_CONTRACT_VERSION}", prompt)
+        # The workshop profile passes the persisted-record audit the validator runs.
+        import tools.validate_pipeline_semantics as vps
+        self.assertEqual(vps._workshop_profile_violations(profile), [])
+
+    def test_a_warm_launch_resumes_the_lineage_home_it_names(self) -> None:
+        self._launch("ar_ws_cold", _workshop_request("ar_ws_cold"))
+        _clear_active_child(self.repo)
+        self._launch("ar_ws_warm", _workshop_request("ar_ws_warm", "ar_ws_cold"),
+                     workshop_lineage_id="ar_ws_cold")
+        profile = json.loads((self._base() / "sandbox_profiles/ar_ws_warm.json").read_text())
+        home = (self.homes / _ORCH / "claude" / "ar_ws_cold").resolve()
+        self.assertEqual(profile["workdir"], str(home / "tree"))
+        self.assertEqual(self._index_row("ar_ws_warm")["workshop_lineage_id"], "ar_ws_cold")
+        self.assertFalse((self.homes / _ORCH / "claude" / "ar_ws_warm").exists())
+
+    def test_a_warm_launch_whose_home_is_gone_records_nothing(self) -> None:
+        result = self._launch("ar_ws_warm", _workshop_request("ar_ws_warm", "ar_gone"),
+                              workshop_lineage_id="ar_gone")
+        self.assertEqual(result, {"workshop_lineage_home_missing": True,
+                                  "workshop_lineage_id": "ar_gone"})
+        self.assertFalse((self._base() / "launches/ar_ws_warm.request.json").exists())
+        self.assertFalse((self._base() / "sandbox_profiles/ar_ws_warm.json").exists())
+        self.assertFalse((self.homes / _ORCH / "claude" / "ar_gone").exists())
+        # The terse projection keeps the sentinel whole, as it does the codex one.
+        self.assertEqual(ort._project_terse_result("record-launch", result), result)
+
+    def test_refusals(self) -> None:
+        cases = {
+            "no lineage id": (_workshop_request("ar_x", workshop_lineage_id=None), {}),
+            "a cold launch naming another lineage": (
+                _workshop_request("ar_x", "ar_other"), {}),
+            "a warm launch whose request names another lineage": (
+                _workshop_request("ar_x", "ar_a"), {"workshop_lineage_id": "ar_b"}),
+            "a warm launch resuming itself": (
+                _workshop_request("ar_x", "ar_x"), {"workshop_lineage_id": "ar_x"}),
+            "a lineage id on a pure request": (
+                _pure_request("generate", agent_run_id="ar_x"), {"workshop_lineage_id": "ar_a"}),
+            "a lineage field on a pure request": (
+                _pure_request("generate", agent_run_id="ar_x", workshop_lineage_id="ar_x"), {}),
+            "the pure contract version": (
+                _workshop_request("ar_x", prompt_contract_version=
+                                  pure_leaf.PURE_PROMPT_CONTRACT_VERSION), {}),
+            "a write path": (_workshop_request("ar_x", allowed_output_paths=["x"]), {}),
+        }
+        for label, (req, kw) in cases.items():
+            with self.subTest(case=label):
+                with self.assertRaises((ValueError, RuntimeError)):
+                    self._launch("ar_x", req, **kw)
+                self.assertFalse((self._base() / "launches/ar_x.request.json").exists())
+
+    def test_a_workshop_request_on_another_pair_is_refused(self) -> None:
+        """Refused twice: the renderer finds no workshop template for the pair (it renders
+        before validation), and the validator names the admissible pairs."""
+        req = _workshop_request("ar_x", substep="verify")
+        with self.assertRaises(ValueError) as ctx:
+            ort.prepare_launch_request_payload(req)
+        self.assertIn("workshop generate.verify", str(ctx.exception))
+        with self.assertRaises(ValueError) as ctx:
+            ort._validate_launch_request_payload(req)
+        self.assertIn("leaf_mode=workshop is only valid for (generate, generate)",
+                      str(ctx.exception))
+
+    def test_the_prompt_and_the_request_must_agree_on_the_leaf_model(self) -> None:
+        workshop = ort.prepare_launch_request_payload(_workshop_request("ar_x"))
+        pure = ort.prepare_launch_request_payload(_pure_request("generate"))
+        pure_prompt = ort.render_launch_prompt_text(pure)
+        workshop_prompt = ort.render_launch_prompt_text(workshop)
+        with self.assertRaises(ValueError):
+            ort._validate_launch_prompt_text(workshop, pure_prompt)
+        with self.assertRaises(ValueError):
+            ort._validate_launch_prompt_text(pure, workshop_prompt)
+        ort._validate_launch_prompt_text(workshop, workshop_prompt)
+        # The identity VALUES are bound for a workshop prompt as for a pure one.
+        with self.assertRaises(ValueError):
+            ort._validate_launch_prompt_text(
+                workshop, workshop_prompt.replace("Target step: generate", "Target step: x"))
+
+    def test_the_repair_turn_renders_from_the_workshop_family(self) -> None:
+        req = ort.prepare_launch_request_payload(_workshop_request(
+            "ar_x", repair_findings="fix it", warm_resume=True, repair_strategy="reuse"))
+        self.assertTrue(ort.render_launch_prompt_text(req).startswith(WORKSHOP_PROMPT_SENTINEL))
+
+    def test_without_its_template_a_workshop_request_is_a_named_refusal(self) -> None:
+        with mock.patch.object(ort, "_load_launch_prompt_templates", _REAL_TEMPLATE_LOADER), \
+                mock.patch.object(ort, "_PROMPT_TEMPLATE_FILES", _REAL_TEMPLATE_FILES):
+            with self.assertRaises(ValueError) as ctx:
+                ort.render_launch_prompt_text(
+                    ort.prepare_launch_request_payload(_workshop_request("ar_x")))
+        self.assertIn("workshop generate.generate", str(ctx.exception))
+
+    def test_the_marker_sets_of_the_two_modules_agree(self) -> None:
+        import tools.validate_pipeline_semantics as vps
+        prepared = ort.prepare_launch_request_payload(_workshop_request("ar_x"))
+        self.assertEqual(set(ort._required_launch_prompt_markers(prepared)),
+                         set(vps._required_launch_prompt_markers_for_role(
+                             "substep", workshop=True)))
+
+
+def _clear_active_child(repo: Path) -> None:
+    path = ort._active_child_agent_run_id_path(repo, _ORCH)
+    if path.exists():
+        path.unlink()
+
+
+class PreflightTests(unittest.TestCase):
+    _HELP = ("Usage: claude\n  --mcp-config <configs...>  x\n  --tools <tools...>  x\n"
+             "  --permission-mode <mode>  x\n  --permission-prompts <target>  x\n"
+             "  --allowedTools, --allowed-tools <tools...>  x\n")
+
+    def _runner(self, help_text: str, rc: int = 0):
+        import subprocess
+
+        def run(argv, **kw):
+            return subprocess.CompletedProcess(argv, rc, help_text, "")
+        return run
+
+    def test_the_check_requires_every_option_as_an_option_line(self) -> None:
+        self.assertIs(ort._claude_workshop_flag_set_check("claude", self._runner(self._HELP))
+                      ["pass"], True)
+        for option in ort.CLAUDE_WORKSHOP_REQUIRED_OPTIONS:
+            with self.subTest(dropped=option):
+                text = "\n".join(line for line in self._HELP.splitlines()
+                                 if not line.strip().startswith(option))
+                # A mention inside another option's description does not answer for it.
+                text += f"\n  --other  see {option}\n"
+                check = ort._claude_workshop_flag_set_check("claude", self._runner(text))
+                self.assertIs(check["pass"], False)
+                self.assertIn(option, check["detail"])
+        self.assertIs(ort._claude_workshop_flag_set_check(
+            "claude", self._runner(self._HELP, rc=1))["pass"], False)
+
+    def test_only_a_configuration_with_a_workshop_entry_takes_the_check(self) -> None:
+        def probe(**kw):
+            return {"probe_command": "claude", "checks": [], "status": "pass"}
+
+        with tempfile.TemporaryDirectory() as tmp:
+            for workshop in (False, True):
+                body = "defaults: {provider: claude_cli}\n"
+                if workshop:
+                    body += ("phases: {generate: {substeps: {generate: {leaf: workshop, "
+                             "max_wrapper_calls: 3, lineage_timeout_s: 60}}}}\n")
+                path = Path(tmp) / f"llm_{workshop}.yaml"
+                path.write_text(body, encoding="utf-8")
+                with self.subTest(workshop=workshop), \
+                        mock.patch.object(ort, "probe_execution_platform", probe), \
+                        mock.patch.object(ort, "_preflight_allows_agent_launch",
+                                          lambda p: True):
+                    providers = ort.probe_all_providers(
+                        config=lc.load_llm_config(path),
+                        runner=self._runner("no options here"))
+                    row = providers["claude"]
+                    names = [c["name"] for c in row["checks"]]
+                    self.assertEqual("claude_workshop_flag_set_available" in names, workshop)
+                    self.assertEqual(row["launchable"], not workshop)
+                    self.assertEqual(row["surfaces"][0].get("workshop"),
+                                     True if workshop else None)
+                    if workshop:
+                        # The TTL re-probe reconstructs the requirement from the surface.
+                        with mock.patch.object(ort, "_claude_workshop_flag_set_check",
+                                               lambda cmd, runner: {
+                                                   "name": "claude_workshop_flag_set_available",
+                                                   "pass": False, "detail": ""}):
+                            again = ort._reprobe_recorded_providers(providers, None)
+                        self.assertIs(again["claude"]["launchable"], False)
+                        self.assertTrue(again["claude"]["surfaces"][0]["workshop"])
+
+
+class _WorkshopConfig:
+    @staticmethod
+    def config(tmp: Path) -> lc.LlmConfig:
+        path = tmp / "llm_workshop.yaml"
+        path.write_text(
+            "defaults: {provider: claude_cli, model: opus}\n"
+            "phases: {generate: {substeps: {generate: {provider: claude_cli, model: opus, "
+            "effort: medium, leaf: workshop, max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n",
+            encoding="utf-8")
+        return lc.load_llm_config(path)
+
+
+class LeafCommandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = Path(tmp.name)
+        self.c = _PureFakeConductor(repo_root=self.repo, orchestration_id="o",
+                                    orchestration_agent_run_id="orch", env={},
+                                    llm_config=_WorkshopConfig.config(self.repo))
+        self.entry = self.c.entry_for("generate", "generate")
+        self.mcp = workshop_mcp_config_json("http://127.0.0.1:4242/mcp")
+
+    def test_the_workshop_argv(self) -> None:
+        argv = wc.Conductor.leaf_command(self.c, self.entry, session_id="sid",
+                                         mcp_config_json=self.mcp)
+        self.assertEqual(argv, ["claude", "--model", "opus", "--effort", "medium",
+                                "--session-id", "sid",
+                                *pure_leaf.workshop_leaf_flags(self.mcp), "-p"])
+        self.assertNotIn("--safe-mode", argv)
+        self.assertNotIn("", argv)
+
+    def test_the_warm_prefix(self) -> None:
+        argv = wc.Conductor.leaf_command(self.c, self.entry, session_id="new",
+                                         resume_session_id="old", mcp_config_json=self.mcp)
+        i = argv.index("--resume")
+        self.assertEqual(argv[i:i + 3], ["--resume", "old", "--fork-session"])
+        self.assertLess(i, argv.index("--restricted"))
+
+    def test_the_entry_and_the_endpoint_must_agree(self) -> None:
+        with self.assertRaises(ValueError):
+            wc.Conductor.leaf_command(self.c, self.entry, session_id="s")
+        pure = self.c.entry_for("generate", "verify")
+        with self.assertRaises(ValueError):
+            wc.Conductor.leaf_command(self.c, pure, session_id="s", mcp_config_json=self.mcp)
+
+    def test_the_setting_surface_records_the_endpoint(self) -> None:
+        surface = wc.Conductor._launch_setting_surface(
+            self.c, "child", {"step": "generate", "substep": "generate"}, self.entry,
+            mcp_config_json=self.mcp)
+        self.assertEqual(surface["claude_mcp_config"],
+                         [{"server": "wrapper", "url": "http://127.0.0.1:4242/mcp"}])
+        self.assertEqual(surface["claude_tools"], ["Read,Write,Edit,Glob,Grep"])
+        pure = wc.Conductor._launch_setting_surface(
+            self.c, "child", {"step": "generate", "substep": "verify"},
+            self.c.entry_for("generate", "verify"))
+        self.assertNotIn("claude_mcp_config", pure)
+
+    def test_record_launch_passes_the_lineage_only_when_given(self) -> None:
+        seen: list[list[str]] = []
+        self.c.runtime = lambda argv, **kw: seen.append(list(argv)) or {}  # type: ignore
+        wc.Conductor.record_launch(self.c, "child", {"node_key": "n", "step": "generate",
+                                                     "substep": "generate"},
+                                   self.entry, mcp_config_json=self.mcp)
+        wc.Conductor.record_launch(self.c, "child2", {"node_key": "n", "step": "generate",
+                                                      "substep": "generate"},
+                                   self.entry, mcp_config_json=self.mcp,
+                                   workshop_lineage_id="child")
+        self.assertNotIn("--workshop-lineage-id", seen[0])
+        self.assertEqual(seen[1][seen[1].index("--workshop-lineage-id") + 1], "child")
+        response = json.loads(seen[0][seen[0].index("--response-json") + 1])
+        self.assertEqual(response["claude_mcp_config"][0]["url"], "http://127.0.0.1:4242/mcp")
+
+    def test_a_workshop_entry_fails_closed_until_its_loop_is_wired(self) -> None:
+        from tools.tests.test_pure_leaf_producer import _write_node
+        refs = _write_node(self.repo)
+        outcome = self.c.run_substep(refs, "generate", "generate")
+        self.assertEqual(outcome.status, "fail")
+        self.assertEqual(outcome.infra_error[0], "workshop_leaf_not_wired")
+        self.assertIn("leaf: workshop", outcome.infra_error[1])
+
+
+class SpawnTimeoutTests(unittest.TestCase):
+    """`spawn_leaf(timeout_seconds=, timeout_name=)` bounds THIS leaf and names the bound."""
+
+    def test_the_marker_names_the_bound_that_killed_the_leaf(self) -> None:
+        self.assertIn("leaf exceeded ATMOFAB_LEAF_TIMEOUT_SECONDS=5",
+                      wc._leaf_timeout_marker(5, 6.0))
+        self.assertIn("leaf exceeded lineage_timeout_s=7",
+                      wc._leaf_timeout_marker(7, 8.0, "lineage_timeout_s"))
+
+    def test_the_bound_reaches_the_kill(self) -> None:
+        """A real child under the claude spawn path, with the environment cap far away and an
+        explicit bound of one second: the kill fires at the explicit bound and the marker and
+        the event name it."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            events: list[tuple[str, dict]] = []
+            c = _PureFakeConductor(repo_root=repo, orchestration_id="o",
+                                   orchestration_agent_run_id="orch", env={},
+                                   llm_config=_WorkshopConfig.config(repo))
+            c.emit = lambda name, **f: events.append((name, f))  # type: ignore[assignment]
+            c._bwrap_enabled = lambda: False  # type: ignore[assignment]
+            c.leaf_command = lambda *a, **k: ["sleep", "60"]  # type: ignore[assignment]
+            entry = c.entry_for("generate", "verify")
+            with mock.patch.dict(os.environ, {"ATMOFAB_LEAF_TIMEOUT_SECONDS": "3600"}):
+                result = wc.Conductor.spawn_leaf(
+                    c, "", {"PATH": os.environ.get("PATH", "/usr/bin:/bin")}, entry,
+                    child_arid="child", timeout_seconds=1, timeout_name="lineage_timeout_s")
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("leaf exceeded lineage_timeout_s=1", result.stderr)
+            fired = [f for name, f in events if name == "leaf_timeout"]
+            self.assertEqual(fired[0]["timeout_bound"], "lineage_timeout_s")
+            self.assertEqual(fired[0]["timeout_seconds"], 1)
+
+    def test_an_explicit_bound_is_a_positive_integer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            c = _PureFakeConductor(repo_root=Path(tmp), orchestration_id="o",
+                                   orchestration_agent_run_id="orch", env={},
+                                   llm_config=_WorkshopConfig.config(Path(tmp)))
+            for bad in (0, -1, 1.5, True, "3"):
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    wc.Conductor.spawn_leaf(c, "", {}, c.entry_for("generate", "verify"),
+                                            child_arid="c", timeout_seconds=bad)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1234,6 +1234,127 @@ class RuleTests(_Tmp):
         self.assertEqual(declared - tested, set())
 
 
+class WorkshopEntryTests(_Tmp):
+    """The `leaf:` field and the two bounds of a `workshop leaf` (issue #534)."""
+
+    BASE = "defaults:\n  provider: claude_cli\n"
+    BOUNDS = "max_wrapper_calls: 30, lineage_timeout_s: 2700"
+
+    def _gen(self, body: str, pair: str = "generate: {substeps: {generate") -> str:
+        return self.BASE + "phases: {" + pair + ": {" + body + "}}}}\n"
+
+    def test_a_workshop_entry_on_generate_generate_resolves_with_its_bounds(self) -> None:
+        cfg = lc.load_llm_config(self.write(self._gen(f"leaf: workshop, {self.BOUNDS}")))
+        entry = cfg.entry_for("generate", "generate")
+        self.assertEqual((entry.leaf, entry.max_wrapper_calls, entry.lineage_timeout_s),
+                         ("workshop", 30, 2700.0))
+        self.assertTrue(entry.is_workshop)
+        self.assertEqual(entry.provenance()["leaf"], "workshop")
+        self.assertEqual(entry.provenance()["max_wrapper_calls"], "30")
+        # Every other leaf stays pure, with no bound, and its provenance row unchanged.
+        for key, other in cfg.entries.items():
+            if key != ("generate", "generate"):
+                self.assertEqual((other.leaf, other.max_wrapper_calls,
+                                  other.lineage_timeout_s), ("pure", None, None), msg=key)
+                self.assertNotIn("leaf", other.provenance(), msg=key)
+
+    def test_an_explicit_pure_entry_is_the_default(self) -> None:
+        cfg = lc.load_llm_config(self.write(self._gen("leaf: pure")))
+        self.assertEqual(cfg.entry_for("generate", "generate").leaf, "pure")
+
+    def test_an_unknown_leaf_model_is_refused(self) -> None:
+        self.assert_rule("llm_config_invalid_field", self._gen(f"leaf: agentic, {self.BOUNDS}"))
+
+    def test_the_bounds_are_typed(self) -> None:
+        for bounds in ("max_wrapper_calls: 0, lineage_timeout_s: 10",
+                       "max_wrapper_calls: true, lineage_timeout_s: 10",
+                       "max_wrapper_calls: 2.5, lineage_timeout_s: 10",
+                       "max_wrapper_calls: 3, lineage_timeout_s: 0",
+                       "max_wrapper_calls: 3, lineage_timeout_s: .inf",
+                       "max_wrapper_calls: 3, lineage_timeout_s: x"):
+            with self.subTest(bounds=bounds):
+                self.assert_rule("llm_config_invalid_field",
+                                 self._gen(f"leaf: workshop, {bounds}"))
+
+    def test_workshop_fields_are_substep_scoped(self) -> None:
+        for body in ("defaults: {provider: claude_cli, leaf: workshop}\n",
+                     "defaults: {provider: claude_cli, max_wrapper_calls: 3}\n",
+                     self.BASE + "phases: {generate: {lineage_timeout_s: 30}}\n",
+                     self.BASE + "phases: {generate: {leaf: workshop}}\n"):
+            with self.subTest(body=body):
+                self.assert_rule("llm_config_workshop_field_not_substep_scoped", body)
+
+    def test_a_workshop_entry_is_admissible_on_generate_generate_only(self) -> None:
+        for pair in ("compile: {substeps: {generate", "generate: {substeps: {verify",
+                     "validate: {substeps: {judge", "compile: {substeps: {verify"):
+            with self.subTest(pair=pair):
+                self.assert_rule("llm_config_workshop_substep_inadmissible",
+                                 self._gen(f"leaf: workshop, {self.BOUNDS}", pair))
+
+    def test_a_workshop_entry_needs_a_provider_declaring_it(self) -> None:
+        self.assert_rule(
+            "llm_config_workshop_unsupported_on_provider",
+            self._gen(f"provider: codex_cli, model: gpt-x, leaf: workshop, {self.BOUNDS}"))
+        self.assert_rule(
+            "llm_config_workshop_unsupported_on_provider",
+            self._gen("provider: anthropic_api, model: m, api_key_env: K, "
+                      f"leaf: workshop, {self.BOUNDS}"))
+        # `capabilities:` may narrow it away, and then the entry has no workshop transport.
+        self.assert_rule(
+            "llm_config_workshop_unsupported_on_provider",
+            self._gen(f"capabilities: [pure, warm_resume], leaf: workshop, {self.BOUNDS}"))
+
+    def test_a_workshop_entry_states_both_bounds(self) -> None:
+        for body in ("leaf: workshop", "leaf: workshop, max_wrapper_calls: 3",
+                     "leaf: workshop, lineage_timeout_s: 30"):
+            with self.subTest(body=body):
+                self.assert_rule("llm_config_workshop_bound_missing", self._gen(body))
+
+    def test_a_pure_entry_states_no_bound(self) -> None:
+        for body in ("max_wrapper_calls: 3", "lineage_timeout_s: 30",
+                     "leaf: pure, max_wrapper_calls: 3"):
+            with self.subTest(body=body):
+                self.assert_rule("llm_config_workshop_bound_on_pure_entry", self._gen(body))
+        self.assert_rule("llm_config_workshop_bound_on_pure_entry",
+                         self._gen("max_wrapper_calls: 3", "generate: {substeps: {verify"))
+
+    def test_a_workshop_entry_requires_the_workshop_capability_not_pure(self) -> None:
+        self.assertEqual(lc.required_capabilities("generate", "generate", "workshop"),
+                         frozenset({lc.CAP_WORKSHOP}))
+        self.assertEqual(lc.required_capabilities("generate", "generate"),
+                         frozenset({lc.CAP_PURE}))
+        # Narrowed to workshop alone, the entry still runs its substep as a workshop leaf.
+        cfg = lc.load_llm_config(self.write(self._gen(
+            f"capabilities: [workshop], leaf: workshop, {self.BOUNDS}")))
+        self.assertEqual(cfg.entry_for("generate", "generate").capabilities,
+                         frozenset({lc.CAP_WORKSHOP}))
+
+    def test_the_sample_comment_block_loads_as_written(self) -> None:
+        """The commented workshop block of `llm_claude.example.yaml` is the operator's copy-paste
+        source, so it is uncommented and loaded here: a block that stops loading is a sample
+        that teaches a refused configuration."""
+        text = (SAMPLE_DIR / "llm_claude.example.yaml").read_text(encoding="utf-8")
+        lines = text.splitlines()
+        start = lines.index("#       generate:")
+        block = []
+        for line in lines[start:]:
+            if not line.startswith("#       "):
+                break
+            block.append(line[len("#       "):].split("#", 1)[0].rstrip())
+        self.assertIn("  leaf: workshop", block)
+        body = self.BASE + "phases:\n  generate:\n    substeps:\n" + "\n".join(
+            "      " + line for line in block) + "\n"
+        entry = lc.load_llm_config(self.write(body)).entry_for("generate", "generate")
+        self.assertTrue(entry.is_workshop)
+        self.assertIsNotNone(entry.max_wrapper_calls)
+
+    def test_the_workshop_pairs_match_the_launch_validator(self) -> None:
+        from tools import pure_leaf
+        self.assertEqual(lc.WORKSHOP_LEAF_SUBSTEPS, pure_leaf.WORKSHOP_LAUNCH_PAIRS)
+        self.assertEqual(lc.LEAF_WORKSHOP, pure_leaf.WORKSHOP_LEAF_MODE)
+        self.assertEqual(lc.LEAF_PURE, pure_leaf.PURE_LEAF_MODE)
+
+
 class DefaultsOverrideTests(unittest.TestCase):
     """`apply_defaults_overrides` applies a run-wide model / command onto a loaded config.
 

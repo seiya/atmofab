@@ -262,6 +262,17 @@ block: `--restricted` ignores the file, so every leaf there answers "Not logged 
 issue #453). A claude leaf authenticates through the CLI's own credential store (`/login` in an
 interactive `claude` session writes it).
 
+A configuration with a `leaf: workshop` entry ([issue #534](https://github.com/seiya/atmofab/issues/534);
+`docs/ORCHESTRATION.md` "Leaf LLM configuration") takes one more check on the provider row that
+entry launches through: `claude_workshop_flag_set_available` (the `--help` text names
+`--mcp-config`, `--tools`, `--permission-mode`, `--permission-prompts` and `--allowedTools` as
+options, every flag a workshop leaf's argv carries beyond a pure leaf's). It is AND-ed into that
+row's `launchable`, and the row's recorded surface says `workshop: true`, so the TTL re-probe keeps
+requiring it; a configuration without a workshop entry is not asked it. A workshop leaf runs with a
+private `CLAUDE_CONFIG_DIR` under its lineage home (§operator-private root) over which the
+operator's `~/.claude/.credentials.json` is bound read-write, so that file must exist — a machine
+that authenticates by any other means fails the workshop launch at `record-launch` naming it.
+
 Everything else this section required went with the agentic leaf in Z4
 ([issue #171](https://github.com/seiya/atmofab/issues/171)), and each is named here because an
 operator who set it up will find it no longer checked:

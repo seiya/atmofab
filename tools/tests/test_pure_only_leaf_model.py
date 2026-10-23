@@ -12,9 +12,13 @@ would couple two large files for two tests.)
    `LLM_LEAF_SUBSTEPS`, and every bundle shape, `run_substep` dispatches into one of the two
    pure loops — and on a node with NO shape the two `generate` pairs fail CLOSED instead of
    falling through to a loop that no longer exists.
-2. **Nothing launches outside a read-only sandbox.** `spawn_leaf` refuses a profile that is
-   not `readonly`, so "the leaf runs confined with no write authority" is enforced at the
-   spawn site rather than inferred from the fact that only pure callers remain.
+2. **Nothing launches outside a read-only sandbox but a workshop lineage's.** `spawn_leaf`
+   refuses a profile that is not `readonly`, so "the leaf runs confined with no write
+   authority" is enforced at the spawn site rather than inferred from the fact that only pure
+   callers remain. Since issue #534 there is ONE admitted writable profile — a `workshop
+   leaf`'s, whose two rw binds are its own lineage's `config/` and `tree/`, outside the
+   checkout — and it is admitted by its exact shape, for a workshop entry only
+   (`SpawnLeafAdmitsOneWritableProfileTests`).
 
 Both are whole-mechanism pins: reverting the dispatch to a constant, or dropping the readonly
 guard, is what they are written to catch.
@@ -242,6 +246,95 @@ class SpawnLeafRequiresAReadonlyProfileTests(unittest.TestCase):
             lambda *a, **kw: seen.append(kw["child_arid"]) or wc.ProcResult(0, "{}", ""))
         wc.Conductor.spawn_leaf(c, "PROMPT", {}, entry, child_arid="child-http")
         self.assertEqual(seen, ["child-http"])
+
+
+class SpawnLeafAdmitsOneWritableProfileTests(unittest.TestCase):
+    """The workshop lineage's profile (issue #534) is the one writable profile `spawn_leaf`
+    launches under, and only by its exact shape, for a workshop entry. Every row but the first
+    mutates ONE property of an admissible profile and is refused."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = Path(tmp.name)
+        cfg = self.repo / "llm.yaml"
+        cfg.write_text(
+            "defaults: {provider: claude_cli, model: opus}\n"
+            "phases: {generate: {substeps: {generate: {leaf: workshop, max_wrapper_calls: 3, "
+            "lineage_timeout_s: 60}}}}\n", encoding="utf-8")
+        self.c = _PureFakeConductor(repo_root=self.repo, orchestration_id="o",
+                                    orchestration_agent_run_id="orch", env={},
+                                    llm_config=lc.load_llm_config(cfg))
+        home = self.repo.parent / f"{self.repo.name}_home" / "lin"
+        self.config, self.tree = str(home / "config"), str(home / "tree")
+
+    def _profile(self) -> dict:
+        return {"orchestration_id": "o", "sandbox_runtime": "bwrap",
+                "repo_root": str(self.repo), "tmp_dir": str(self.repo / "tmp"),
+                "readonly": False, "leaf_mode": "workshop", "write_roots": [],
+                "runtime_rw_bind_paths": [self.config, self.tree], "workdir": self.tree,
+                "env": {"CLAUDE_CONFIG_DIR": self.config}}
+
+    def _write(self, arid: str, profile: dict) -> None:
+        d = self.repo / "workspace" / "orchestrations" / "o" / "sandbox_profiles"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / f"{arid}.json").write_text(json.dumps(profile), encoding="utf-8")
+
+    def _spawn(self, arid: str, entry) -> None:
+        wc.Conductor.spawn_leaf(self.c, "P", {}, entry, child_arid=arid,
+                                mcp_config_json=('{"mcpServers": {}}'
+                                                 if entry.is_workshop else None))
+
+    def test_the_exact_shape_for_a_workshop_entry_is_admitted(self) -> None:
+        """Admission is observed as reaching the renderer, which is patched to stop there."""
+        self._write("ok", self._profile())
+
+        class _Reached(Exception):
+            pass
+
+        def _render(**kw):
+            raise _Reached()
+
+        import tools.orchestration_runtime as ort_mod
+        original = ort_mod.render_bwrap_command
+        ort_mod.render_bwrap_command = _render  # type: ignore[assignment]
+        try:
+            with self.assertRaises(_Reached):
+                self._spawn("ok", self.c.entry_for("generate", "generate"))
+        finally:
+            ort_mod.render_bwrap_command = original  # type: ignore[assignment]
+
+    def test_every_other_shape_is_refused(self) -> None:
+        workshop = self.c.entry_for("generate", "generate")
+        pure = self.c.entry_for("generate", "verify")
+        third = str(Path(self.tree).parent / "other")
+        cases = {
+            "a pure entry": (lambda p: p, pure),
+            "a third rw path": (lambda p: p["runtime_rw_bind_paths"].append(third), workshop),
+            "one rw path": (lambda p: p["runtime_rw_bind_paths"].pop(), workshop),
+            "config and tree of two homes": (
+                lambda p: p.update(runtime_rw_bind_paths=[self.config,
+                                                          str(Path(third) / "tree")]),
+                workshop),
+            "renamed tree": (lambda p: p.update(
+                runtime_rw_bind_paths=[self.config, third], workdir=third), workshop),
+            "workdir is config": (lambda p: p.update(workdir=self.config), workshop),
+            "CLAUDE_CONFIG_DIR names the tree": (
+                lambda p: p["env"].update(CLAUDE_CONFIG_DIR=self.tree), workshop),
+            "no leaf_mode": (lambda p: p.pop("leaf_mode"), workshop),
+            "readonly absent": (lambda p: p.pop("readonly"), workshop),
+            "a read-only profile claiming leaf_mode": (
+                lambda p: p.update(readonly=True), workshop),
+        }
+        for label, (mutate, entry) in cases.items():
+            with self.subTest(case=label):
+                profile = self._profile()
+                mutate(profile)
+                arid = "c" + str(abs(hash(label)))
+                self._write(arid, profile)
+                with self.assertRaises(wc.SandboxEnforcementError) as ctx:
+                    self._spawn(arid, entry)
+                self.assertIn("neither read-only nor a workshop lineage", str(ctx.exception))
 
 
 class CodexLeafHasNoHookLayerTests(unittest.TestCase):
