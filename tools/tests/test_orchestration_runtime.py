@@ -24381,12 +24381,16 @@ class AgentRoleFailClosedTests(unittest.TestCase):
             Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
         )
         captured = sorted(fixture_dir.glob("*.request.json"))
-        # SEVEN: two deterministic captures and, since the re-capture that closed the
+        # EIGHT: two deterministic captures and, since the re-capture that closed the
         # `TODO.md` item issue #171 PR-1 left, five REDACTED pure ones — the role field is
-        # verbatim in a redaction, so the LLM half of the role rule is covered again.
-        # `BuildLaunchRequestTest`'s docstring carries the provenance.
-        self.assertEqual(len(captured), 7, "captured payload set changed; revisit coverage")
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        # verbatim in a redaction, so the LLM half of the role rule is covered again — and one
+        # redacted WORKSHOP one (issue #534). `BuildLaunchRequestTest`'s docstring carries the
+        # provenance.
+        self.assertEqual(len(captured), 8, "captured payload set changed; revisit coverage")
+        from tools.pure_leaf import (
+            PURE_PROMPT_CONTRACT_VERSION,
+            WORKSHOP_PROMPT_CONTRACT_VERSION,
+        )
         for path in captured:
             payload = json.loads(path.read_text(encoding="utf-8"))
             if payload.get("leaf_mode") == "pure":
@@ -24395,6 +24399,11 @@ class AgentRoleFailClosedTests(unittest.TestCase):
                 # substitution is made HERE, in the test, so the tracked fixture stays a capture
                 # (`test_workflow_conductor.BuildLaunchRequestTest`, `_HISTORICAL_KEYS`).
                 payload = {**payload, "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION}
+            if payload.get("leaf_mode") == "workshop":
+                # The same substitution, and the provider a `workshop-1` capture predates.
+                payload = {**payload,
+                           "prompt_contract_version": WORKSHOP_PROMPT_CONTRACT_VERSION,
+                           "workshop_provider": payload.get("workshop_provider", "claude_cli")}
             with self.subTest(fixture=path.name):
                 self.assertEqual(
                     payload.get("agent_role"),

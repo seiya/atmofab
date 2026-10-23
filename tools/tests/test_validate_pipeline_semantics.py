@@ -19537,10 +19537,14 @@ class ProfileSelectionGateTests(unittest.TestCase):
             self.assertEqual(len(violations), 1, violations)
 
     def test_the_gate_runs_inside_the_compile_stage(self) -> None:
-        # Pinned at the handler, not at the helper: a call site deleted from
-        # `_validate_compile_stage_impl` leaves every row above green.
+        # Pinned at the handler, not at the helper: a call site deleted from the compile
+        # stage's body (`_validate_compile_ir_dir_impl`, which `_validate_compile_stage_impl`
+        # and `validate_compile_ir_dir` both run, issue #534 step 2) leaves every row above
+        # green.
         import inspect
-        source = inspect.getsource(vps._validate_compile_stage_impl)
+        source = inspect.getsource(vps._validate_compile_ir_dir_impl)
+        self.assertIn("_validate_compile_ir_dir_impl(repo_root, ir_dir)",
+                      inspect.getsource(vps._validate_compile_stage_impl))
         self.assertIn("_validate_profile_selection(repo_root, ir_dir, violations)", source)
 
 
@@ -28443,6 +28447,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         req_path = root / "launches" / f"{self._ARID}.request.json"
         req = json.loads(req_path.read_text(encoding="utf-8"))
         req.update(leaf_mode="workshop", workshop_lineage_id=self._ARID,
+                   workshop_provider="claude_cli",
                    prompt_contract_version=WORKSHOP_PROMPT_CONTRACT_VERSION)
         req_path.write_text(json.dumps(req, ensure_ascii=False), encoding="utf-8")
         if workshop_prompt:
@@ -28459,7 +28464,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                                        "workshop generate.generate": "workshop_x.txt"}):
                 prompt = ort.render_launch_prompt_text(ort.prepare_launch_request_payload({
                     "leaf_mode": "workshop", "workshop_lineage_id": self._ARID,
-                    "agent_model": "opus", "agent_role": "substep", "node_key": self._NODE,
+                    "workshop_provider": "claude_cli", "agent_model": "opus", "agent_role": "substep", "node_key": self._NODE,
                     "step": "generate", "substep": "generate", "orchestration_id": self._ORCH,
                     "agent_run_id": self._ARID, "parent_agent_run_id": "orch_run_001",
                     "source_id": "src_20260415_001",
@@ -30776,6 +30781,69 @@ class PreflightBlockTests(unittest.TestCase):
             with self.subTest(label):
                 found = self._preflight_violations(doc)
                 self.assertTrue(any(needle in v for v in found), found)
+
+
+class CompileIrDirTests(unittest.TestCase):
+    """`validate_compile_ir_dir` (issue #534 step 2): the `Compile.static` body over a directory
+    the caller names, which a `compile.generate` workshop lineage's `check_ir` runs on a scratch
+    copy of the leaf's IR under its lineage home. MC1 of the step-2 plan: the same findings the
+    gate gives for the same IR, from a wrapper handler THREAD, while the main thread holds its
+    own schema pin."""
+
+    def test_a_scratch_copy_gives_the_gate_s_findings_from_another_thread(self) -> None:
+        import shutil
+        import threading
+
+        from tools.tests.test_pure_leaf_compile import _write_compile_node
+        with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:
+            repo = Path(tmp)
+            refs = _write_compile_node(repo, stage_ir=True)
+            gate = vps.validate_compile_stage(repo, "workspace", refs.ir_ref)
+            self.assertTrue(gate, "the fixture IR draws no finding; the comparison is vacuous")
+            scratch = Path(other) / "check"
+            shutil.copytree(repo / refs.ir_ref, scratch)
+            found: list = []
+            pinned = threading.Event()
+            release = threading.Event()
+
+            def main_pin() -> None:
+                with vps._pinned_repo_root_for_schema(Path(other)):
+                    pinned.set()
+                    release.wait(10)
+
+            holder = threading.Thread(target=main_pin)
+            holder.start()
+            self.assertTrue(pinned.wait(10))
+            entered: list = []
+            real_pin = vps._pinned_repo_root_for_schema
+
+            def recording_pin(root):
+                entered.append((threading.current_thread() is not threading.main_thread(),
+                                Path(root)))
+                return real_pin(root)
+
+            def work() -> None:
+                with unittest.mock.patch.object(vps, "_pinned_repo_root_for_schema",
+                                                recording_pin):
+                    found.append(vps.validate_compile_ir_dir(repo, scratch))
+
+            worker = threading.Thread(target=work)
+            worker.start()
+            worker.join(60)
+            release.set()
+            holder.join(10)
+            (result,) = found
+            # The function enters the schema pin itself, with the repository it judges under:
+            # the pin is a per-thread `ContextVar`, so the holder above cannot observe it, and
+            # this is what does.
+            self.assertEqual(entered, [(True, repo)])
+            norm = (lambda xs, d: [x.replace(str(d), "<ir>") for x in xs])
+            self.assertEqual(norm(result, scratch),
+                             norm(gate, (repo / refs.ir_ref).resolve()))
+            # The CLI path is unchanged: it still refuses a directory outside workspace/ir.
+            refused = vps.validate_compile_stage(repo, "workspace", str(scratch))
+            self.assertEqual(len(refused), 1)
+            self.assertIn("ir_ref must be under", refused[0])
 
 
 if __name__ == "__main__":

@@ -1,8 +1,10 @@
 """The work tree of a `workshop leaf` lineage: its paths, its seeds, its record, its snapshot.
 
 `docs/design/producer_workshop_leaf.md` decides the shape (issue #534): a PRODUCING leaf works
-in a host-seeded tree, and the host copies the tree's final state into the existing
-`CodegenBundle` contract after the leaf exits. This module is the host's half of that copy and
+in a host-seeded tree, and the host copies the tree's final state into the existing document
+contract after the leaf exits — the `CodegenBundle` of `generate.generate`
+(`assemble_bundle_document`), or the `{ir, compile_fail}` document of `compile.generate`
+(`assemble_ir_document`, step 2). This module is the host's half of that copy and
 of the lineage's bookkeeping. It holds no leaf launch and no gate: the document it assembles goes
 through the unchanged `codegen_bundle.pure_bundle_contract_violation`, and every artifact a later
 `phase` reads is still written by the conductor from that document.
@@ -48,18 +50,28 @@ import yaml
 #: The manifest the leaf writes at the tree root: the bundle document minus `files[].content`.
 BUNDLE_MANIFEST_NAME = "bundle.yaml"
 
-#: The category of a tree that holds no manifest (`docs/design/producer_workshop_leaf.md`
-#: §Output files in the tree).
+#: The IR a `compile.generate` leaf writes at the tree root, and the declaration it writes in its
+#: place when the phase cannot be completed from its inputs (issue #534 step 2).
+IR_DOCUMENT_NAME = "spec.ir.yaml"
+COMPILE_FAIL_NAME = "compile_fail.json"
+
+#: The category of a tree that holds no output file at all (`docs/design/
+#: producer_workshop_leaf.md` §Output files in the tree).
 WORKSHOP_TREE_EMPTY = "workshop_tree_empty"
 #: The category of every other assembly failure — the pure producer's own malformed-bundle
 #: category, so the routing of a defective document does not depend on its transport.
 BUNDLE_SCHEMA_VIOLATION = "bundle_schema_violation"
+#: The IR producer's own malformed-document category (`COMPILE_IR_DOCUMENT_VIOLATION`).
+IR_DOCUMENT_VIOLATION = "ir_document_violation"
 
 #: Why a lineage ended. `None` while it is open. `superseded`: the host continued its work in
 #: a new lineage because its session could not be resumed (issue #534 PR-3) — seeded from its
-#: snapshot when the home still holds one — so nothing will continue it.
+#: snapshot when the home still holds one — so nothing will continue it. `declared_fail`: the
+#: leaf's tree declared the phase uncompletable (`compile_fail.json`, issue #534 step 2), the
+#: run stops there, and no lineage follows.
 ENDED_BY_VALUES: tuple[str, ...] = (
-    "leaf_exit", "max_wrapper_calls", "lineage_timeout", "leaf_timeout", "superseded")
+    "leaf_exit", "max_wrapper_calls", "lineage_timeout", "leaf_timeout", "superseded",
+    "declared_fail")
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
@@ -153,13 +165,17 @@ class LineagePaths:
         self.record_dir.mkdir(parents=True, exist_ok=True)
 
 
-def reserved_tree_names(seed_names: Iterable[str], control_file_basename: str) -> frozenset[str]:
+def reserved_tree_names(seed_names: Iterable[str], control_file_basename: str | None,
+                        outputs: Iterable[str] = (BUNDLE_MANIFEST_NAME,)) -> frozenset[str]:
     """The tree paths a bundle may not name as one of its files: every seed, the derived
-    control file and the manifest. A bundle naming one is refused at `derive` and at the
-    snapshot alike, because the host — not the leaf — writes what these names hold."""
+    control file (a lineage that derives one) and the producer's own output files (`bundle.yaml`;
+    `spec.ir.yaml` and `compile_fail.json` on an IR lineage). A bundle naming one is refused at
+    `derive` and at the snapshot alike, because the host — or the assembly — reads what these
+    names hold as something other than a bundle file."""
     names = {str(n) for n in seed_names}
-    names.add(str(control_file_basename))
-    names.add(BUNDLE_MANIFEST_NAME)
+    if control_file_basename:
+        names.add(str(control_file_basename))
+    names.update(str(n) for n in outputs)
     return frozenset(names)
 
 
@@ -276,6 +292,19 @@ def end_lineage(paths: LineagePaths, ended_by: str) -> str:
             doc["ended_by"] = ended_by
             _write_json_atomic(paths.record_json, doc)
         return str(doc["ended_by"])
+
+
+def record_last_launch(paths: LineagePaths, *, agent_run_id: str, rc: int | None,
+                       ended_at_utc: str) -> None:
+    """Record the lineage's latest launch — its id, the leaf's return code and when it ended —
+    in `workshop_lineage.json#last_launch`. `ended_by` stays null after a clean exit (the lineage
+    is open for a warm reopen), so this is what tells a reader whether the last launch of an
+    open lineage ended cleanly."""
+    with _Locked(paths):
+        doc = read_lineage_record(paths)
+        doc["last_launch"] = {"agent_run_id": agent_run_id, "rc": rc,
+                              "ended_at_utc": ended_at_utc}
+        _write_json_atomic(paths.record_json, doc)
 
 
 def count_wrapper_call(paths: LineagePaths, cap: int) -> bool:
@@ -483,6 +512,74 @@ def _assemble(root: Path, reserved_set: frozenset[str]) -> dict[str, Any] | Asse
     if findings:
         return AssemblyFailure(BUNDLE_SCHEMA_VIOLATION, "\n".join(findings))
     return doc
+
+
+def assemble_ir_document(root: Path, reserved: Iterable[str] = ()) -> dict[str, Any] | AssemblyFailure:
+    """The `{ir, compile_fail}` document a `compile.generate` tree holds (issue #534 step 2), or
+    the `AssemblyFailure` that stops it. `root` is the work tree (the wrapper's `check_ir`) or the
+    lineage's snapshot (the hand-off); `reserved` is accepted for the assembler's common shape
+    and unused (an IR names no file).
+
+    `spec.ir.yaml` is `yaml.safe_load`ed into `ir`; `compile_fail.json` is `json.loads`ed into
+    `compile_fail`. Each absent file contributes `None`. BOTH present gives a document carrying
+    both, which the producer's contract (`Conductor._pure_ir_document_violations`, unchanged)
+    refuses as two answers; NEITHER is `workshop_tree_empty`. A file reached through a link,
+    not a regular file, not UTF-8, not parseable, or holding a value that is not a JSON value
+    is an `ir_document_violation` finding. What passes goes through the same contract a pure
+    reply goes through, which owns every other rule. Never raises on the tree's content."""
+    try:
+        return _assemble_ir(Path(root))
+    except (ValueError, UnicodeError, RecursionError, OSError) as exc:
+        return AssemblyFailure(IR_DOCUMENT_VIOLATION,
+                               f"the IR cannot be assembled: {type(exc).__name__}: {exc}")
+
+
+def _read_tree_document(root: Path, name: str,
+                        parse: Any) -> tuple[bool, Any, str | None]:
+    """`(present, value, finding)` for one output file of the tree."""
+    raw, why = read_regular_file_under(root, PurePosixPath(name))
+    if raw is None:
+        if why == "does not exist":
+            return False, None, None
+        return True, None, f"{name} {why}"
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return True, None, f"{name} is not UTF-8"
+    try:
+        value = parse(text)
+    except (yaml.YAMLError, ValueError) as exc:
+        return True, None, f"{name} cannot be parsed: {exc}"
+    try:
+        value = json.loads(json.dumps(value, ensure_ascii=False))
+    except (TypeError, ValueError) as exc:
+        return True, None, (f"{name} holds a value that is not a JSON value (a date or a "
+                            f"timestamp; quote it): {exc}")
+    return True, value, None
+
+
+def _assemble_ir(root: Path) -> dict[str, Any] | AssemblyFailure:
+    has_ir, ir, ir_why = _read_tree_document(root, IR_DOCUMENT_NAME, yaml.safe_load)
+    has_fail, declared, fail_why = _read_tree_document(root, COMPILE_FAIL_NAME, json.loads)
+    if not has_ir and not has_fail:
+        return AssemblyFailure(
+            WORKSHOP_TREE_EMPTY,
+            f"the tree holds neither {IR_DOCUMENT_NAME} nor {COMPILE_FAIL_NAME}: write the IR "
+            f"at the tree root as {IR_DOCUMENT_NAME}")
+    findings = [f for f in (ir_why, fail_why) if f]
+    if has_fail and fail_why is None and declared is None:
+        # A file that declares nothing is not the absence of a declaration: the contract says
+        # a `compile_fail.json` beside an IR is refused, and a `null` one would slip through it.
+        findings.append(f"{COMPILE_FAIL_NAME} holds null: delete it, or write the declaration "
+                        "object")
+    if findings:
+        return AssemblyFailure(IR_DOCUMENT_VIOLATION, "\n".join(findings))
+    if has_ir and not isinstance(ir, dict):
+        return AssemblyFailure(
+            IR_DOCUMENT_VIOLATION,
+            f"{IR_DOCUMENT_NAME} must be a YAML mapping holding the IR's top-level sections; "
+            f"got {type(ir).__name__}")
+    return {"ir": ir, "compile_fail": declared}
 
 
 # --- snapshot -------------------------------------------------------------------------

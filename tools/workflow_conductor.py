@@ -44,6 +44,7 @@ from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from collections.abc import Callable, Mapping, Sequence
+from types import MappingProxyType
 from typing import Any, ClassVar, NamedTuple
 
 import yaml
@@ -733,6 +734,9 @@ COMPILE_DOCUMENT_FAILURE_CATEGORIES: tuple[str, ...] = (
     "pure_response_unparseable",
     "pure_response_truncated",
     COMPILE_IR_DOCUMENT_VIOLATION,
+    # A `workshop leaf`'s tree with neither `spec.ir.yaml` nor `compile_fail.json` (issue #534
+    # step 2): its own next turn repairs it like any other IR document defect.
+    "workshop_tree_empty",
 )
 COMPILE_DOCUMENT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
     category: ("compile", "reuse") for category in COMPILE_DOCUMENT_FAILURE_CATEGORIES
@@ -1666,6 +1670,7 @@ def build_launch_request(
     pure_language: str = "",
     pure_parallel: str = "",
     workshop_lineage_id: str | None = None,
+    workshop_provider: str | None = None,
 ) -> dict[str, Any]:
     """Construct the record-launch --request-json payload for one substep.
 
@@ -1972,6 +1977,9 @@ def build_launch_request(
     if workshop_lineage_id is not None and not pure_leaf:
         raise ValueError("build_launch_request: a workshop lineage belongs to a host-rendered "
                          "(pure_leaf=True) request")
+    if (workshop_lineage_id is None) != (workshop_provider is None):
+        raise ValueError("build_launch_request: a workshop request names its lineage and its "
+                         "provider together (workshop_lineage_id, workshop_provider)")
     if pure_leaf:
         from tools.pure_leaf import (
             PURE_LEAF_MODE,
@@ -1987,6 +1995,8 @@ def build_launch_request(
             req["leaf_mode"] = WORKSHOP_LEAF_MODE
             req["prompt_contract_version"] = WORKSHOP_PROMPT_CONTRACT_VERSION
             req["workshop_lineage_id"] = workshop_lineage_id
+            # The provider whose tool surface the prompt states (`<tool_surface>`, step 2).
+            req["workshop_provider"] = workshop_provider
         req["allowed_output_paths"] = []
         req["skill_name"] = ""
         req["skill_ref"] = ""
@@ -3153,7 +3163,8 @@ def _leaf_usage_row(
     parse it themselves, which since Z4 (issue #171) is every claude leaf there is.
 
     `resumed` is `(resumed_agent_run_id, its persisted result envelope)` for a warm-resumed
-    claude turn, and only `_spawn_pure_turn` passes it. On CLI 2.1.278 and later such a
+    claude turn, passed by `_spawn_pure_turn` and by `_spawn_workshop_turn` (a warm launch of a
+    `workshop leaf` lineage, issue #534). On CLI 2.1.278 and later such a
     turn's `modelUsage` and `total_cost_usd` are the resumed session's running total, while
     the top-level `usage` stays this turn's primary-model block (issue #281). Three cases:
 
@@ -7220,6 +7231,51 @@ class Conductor:
                      f"{declared_kind!r}. It selects which deterministic gates apply, so a "
                      f"value other than the node's own turns those gates off rather than "
                      f"describing the node."))
+        # The node's key, the same way: `Compile.static` decides which of its gates apply from
+        # the IR's own `dependency.node_key`, falling back to `meta.node_key`
+        # (`_plan_dependency_node_key`) — the multi-dimensional state contract runs only on a
+        # 2-D/3-D `problem` key, and the local-operation lowering floor returns early on an
+        # `infrastructure` one — so a key the leaf chose, or omitted, would choose the gates. The
+        # dependency section must carry this node's key; `meta` may omit it, and must not
+        # disagree.
+        dep_key = (ir.get("dependency") or {}).get("node_key") \
+            if isinstance(ir.get("dependency"), dict) else None
+        meta_key = (ir.get("meta") or {}).get("node_key") \
+            if isinstance(ir.get("meta"), dict) else None
+        if dep_key != refs.node_key or (meta_key is not None and meta_key != refs.node_key):
+            return (COMPILE_IR_DOCUMENT_VIOLATION,
+                    (f"`ir.dependency.node_key` (and `ir.meta.node_key`, when present) must be "
+                     f"this node's own key {refs.node_key!r}, verbatim; got "
+                     f"dependency.node_key={dep_key!r}, meta.node_key={meta_key!r}. It selects "
+                     f"which deterministic gates apply, so another value turns gates off "
+                     f"rather than describing the node."))
+        # `meta.source_refs` names the documents every later gate reads the node's tests and
+        # contract through (`Compile.static`'s per-test coverage reads `tests.md` from
+        # `source_refs.tests`), so it is the host's fact, not the leaf's: a ref naming another
+        # file — a cut-down copy in a workshop leaf's tree, another node's `tests.md` — would
+        # have the gates judge the IR against a test set the leaf chose. Each ref present must
+        # be the node's own spec document, spelled as the phase contract's schema spells it. An
+        # absent `tests` or `controlled_spec` ref is `Compile.static`'s finding; nothing reads
+        # `deps` today, so its absence is no one's.
+        own_refs = {name: f"{refs.spec_path}/{name}{suffix}"
+                    for name, suffix in (("controlled_spec", ".md"), ("tests", ".md"),
+                                         ("deps", ".yaml"))}
+        meta = ir.get("meta")
+        source_refs = meta.get("source_refs") if isinstance(meta, dict) else None
+        if source_refs is not None:
+            if not isinstance(source_refs, dict):
+                return (COMPILE_IR_DOCUMENT_VIOLATION,
+                        (f"`ir.meta.source_refs` must be a mapping of {sorted(own_refs)} to this "
+                         f"node's spec documents; got {type(source_refs).__name__}"))
+            wrong = {name: source_refs[name] for name, want in own_refs.items()
+                     if name in source_refs and source_refs[name] != want}
+            if wrong:
+                return (COMPILE_IR_DOCUMENT_VIOLATION,
+                        ("`ir.meta.source_refs` must name this node's own spec documents, "
+                         "exactly: " + ", ".join(f"`{n}: {own_refs[n]}`" for n in sorted(wrong))
+                         + f"; got {wrong!r}. Every later gate reads the node's tests and "
+                         "contract through these refs, so a ref to any other file — a copy, "
+                         "another node's — is refused."))
         # The host serializes `ir` itself, so a value the serializer cannot express — or one that
         # does not survive the round trip — must fail here as a repairable document defect rather
         # than at the host write, where it would be mis-routed as a transport fail_closed.
@@ -7929,6 +7985,19 @@ class Conductor:
         Only the keys a reader actually reads are written: the five the stage-meta contract fixes
         plus the legacy `issue_severity` the verify-severity gate keys on. The agentic leaf's
         improvised extra keys have no reader and are not reproduced."""
+        ir_dir = self.repo_root / refs.ir_ref
+        ir_dir.mkdir(parents=True, exist_ok=True)
+        (ir_dir / "ir_meta.json").write_text(
+            self._ir_meta_text(refs, verification_status=verification_status,
+                               last_fail_reason=last_fail_reason,
+                               issue_severity=issue_severity, attempts=attempts),
+            encoding="utf-8")
+
+    def _ir_meta_text(self, refs: NodeRefs, *, verification_status: str,
+                      last_fail_reason: str | None, issue_severity: str | None,
+                      attempts: int) -> str:
+        """The text `_write_ir_meta` writes, also what a `compile.generate` workshop lineage's
+        `check_ir` places beside its scratch IR (`_freeze_ir_check_context`)."""
         meta: dict[str, Any] = {
             "ir_id": refs.ir_id,
             "node_key": refs.node_key,
@@ -7940,10 +8009,7 @@ class Conductor:
         }
         if issue_severity is not None:
             meta["issue_severity"] = issue_severity
-        ir_dir = self.repo_root / refs.ir_ref
-        ir_dir.mkdir(parents=True, exist_ok=True)
-        (ir_dir / "ir_meta.json").write_text(
-            json.dumps(meta, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        return json.dumps(meta, indent=2, ensure_ascii=False) + "\n"
 
     def _write_verify_ir_meta(self, refs: NodeRefs, verdict: dict[str, Any], *,
                               attempts: int) -> None:
@@ -7964,7 +8030,8 @@ class Conductor:
                                  failure_category: str | None, failure_excerpt: str | None,
                                  attempts: int, per_attempt: list[dict[str, Any]],
                                  parent: str | None = None,
-                                 parts: list[dict[str, Any]] | None = None) -> None:
+                                 parts: list[dict[str, Any]] | None = None,
+                                 leaf_mode: str = "pure") -> None:
         """Author `<parent>/<basename>` — the per-attempt record of a pure substep, `<ir_ref>` by
         default. Byte for byte the key set `_write_bundle_meta` / `_write_verdict_meta` author, so
         `orchestration_diagnostics._summarize_one_pure_meta` reads it unchanged. For the compile
@@ -7979,6 +8046,15 @@ class Conductor:
             "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
             "per_attempt": per_attempt,
         }
+        if leaf_mode == "workshop":
+            # A `workshop leaf` (issue #534 step 2), recorded as `_write_bundle_meta` records it:
+            # `prompt_contract_version` names the rules the document answers, the workshop
+            # template's own counter beside it.
+            from tools.pure_leaf import WORKSHOP_PROMPT_CONTRACT_VERSION
+            meta["leaf_mode"] = "workshop"
+            meta["workshop_prompt_contract_version"] = WORKSHOP_PROMPT_CONTRACT_VERSION
+        elif leaf_mode != "pure":
+            raise ValueError(f"{basename} leaf_mode must be pure or workshop (got {leaf_mode!r})")
         if failure_excerpt:
             meta["failure_excerpt"] = failure_excerpt
         # `compile.generate`'s loops, one row each (issue #526). Added, not reshaping a key, so
@@ -8229,6 +8305,30 @@ class Conductor:
         #: authors — stamped on every launch request of the loop (`pure_part`) so a record's
         #: reader can tell the part's launches from a retry. "" for every other loop.
         pure_part: str = ""
+        # --- the workshop half (issue #534): read by the workshop loop and the wrapper freeze
+        # only. A pure loop ignores every field below.
+        #: The files the leaf writes at its tree root that the host reads back as the document
+        #: (`bundle.yaml`; `spec.ir.yaml` and `compile_fail.json`). Never seeds, never snapshot-
+        #: excluded.
+        workshop_outputs: tuple[str, ...] = ()
+        #: context key -> the tree name its document is seeded under. A context key with no
+        #: entry is refused (`_workshop_seeds`), so a document added to a pure context cannot
+        #: silently miss the tree.
+        workshop_document_seeds: Mapping[str, str] = MappingProxyType({})
+        #: Whether the node's `src/` files and its interface header are seeds: True for
+        #: `generate`, whose gates compile beside them; False for `compile`, which runs before
+        #: either exists.
+        workshop_seeds_host_sources: bool = False
+        #: Whether the lineage derives a build control file (reserved in its tree).
+        workshop_control_file: bool = False
+        #: (tree, reserved names) -> the document, or an `AssemblyFailure`.
+        workshop_assemble: Callable[..., Any] | None = None
+        #: (refs, paths, **frozen) -> the launch's `WrapperContext` (`_freeze_wrapper_context` /
+        #: `_freeze_ir_check_context`).
+        workshop_freeze_context: Callable[..., Any] | None = None
+        #: (refs, paths) -> the staged closure's basenames, or None for a lineage that stages
+        #: none.
+        workshop_stage_closure: Callable[..., tuple[str, ...]] | None = None
 
     class _PureReviewerSpec(NamedTuple):
         """The phase-specific half of the pure REVIEWER loop."""
@@ -8389,6 +8489,7 @@ class Conductor:
         `generate`, where the two shapes differ in what the leaf is shown and what it authors.
         The compile spec is the IR core's base; `_run_pure_compile_producer` derives the core's
         and each `verification` part's spec from it (issue #526)."""
+        from tools import workshop_tree
         if phase == "compile":
             return self._PureProducerSpec(
                 build_context=self._build_pure_compile_context,
@@ -8413,6 +8514,11 @@ class Conductor:
                 write_declared_fail=self._write_declared_compile_fail,
                 declared_fail_category=COMPILE_DECLARED_FAIL,
                 declared_fail_event="pure_compile_fail_declared",
+                workshop_outputs=(workshop_tree.IR_DOCUMENT_NAME,
+                                  workshop_tree.COMPILE_FAIL_NAME),
+                workshop_document_seeds=self._WORKSHOP_DOCUMENT_SEEDS_BY_PHASE["compile"],
+                workshop_assemble=workshop_tree.assemble_ir_document,
+                workshop_freeze_context=self._freeze_ir_check_context,
             )
         if shape == "harness":
             # The harness self-test: the leaf authors the model AND the executable entry, so it
@@ -8439,6 +8545,13 @@ class Conductor:
                 runner_host_authored=self._node_runner_host_authored,
                 prior_document=self._pure_bundle_prior_document,
                 pure_shape="harness",
+                workshop_outputs=(workshop_tree.BUNDLE_MANIFEST_NAME,),
+                workshop_document_seeds=self._WORKSHOP_DOCUMENT_SEEDS_BY_PHASE["generate"],
+                workshop_seeds_host_sources=True,
+                workshop_control_file=True,
+                workshop_assemble=workshop_tree.assemble_bundle_document,
+                workshop_freeze_context=self._freeze_wrapper_context,
+                workshop_stage_closure=self._stage_workshop_closure,
             )
         return self._PureProducerSpec(
             build_context=self._build_pure_context,
@@ -8459,6 +8572,13 @@ class Conductor:
             wants_exemplar=True,
             runner_host_authored=_runner_host_authored_m3c,
             prior_document=self._pure_bundle_prior_document,
+            workshop_outputs=(workshop_tree.BUNDLE_MANIFEST_NAME,),
+            workshop_document_seeds=self._WORKSHOP_DOCUMENT_SEEDS_BY_PHASE["generate"],
+            workshop_seeds_host_sources=True,
+            workshop_control_file=True,
+            workshop_assemble=workshop_tree.assemble_bundle_document,
+            workshop_freeze_context=self._freeze_wrapper_context,
+            workshop_stage_closure=self._stage_workshop_closure,
         )
 
     def _write_pure_bundle_artifacts_from_doc(self, refs: NodeRefs, doc: dict[str, Any], *,
@@ -8955,24 +9075,38 @@ class Conductor:
 
     # --- the workshop producer (issue #534) -------------------------------------
     # `docs/design/producer_workshop_leaf.md`: a PRODUCING leaf may run as a `workshop leaf` —
-    # an agent editing a host-seeded work tree under its own lineage home, reaching the
-    # wrapper's five operations over a per-launch MCP endpoint — and the host snapshots the
-    # tree into the same CodegenBundle contract the pure producer returns. The phase half (the
-    # context, the bundle checks, the writers, `bundle_meta.json`) is the pure producer's spec,
-    # unchanged; this loop replaces only "parse one reply" with "assemble the snapshot".
+    # an agent editing a host-seeded work tree under its own lineage home, reaching its
+    # substep's wrapper operations over a per-launch MCP endpoint — and the host snapshots the
+    # tree into the same document contract the pure producer returns: the CodegenBundle of
+    # `generate.generate` (step 1), the `{ir, compile_fail}` document of `compile.generate`
+    # (step 2). The phase half (the context, the document checks, the writers, the per-attempt
+    # meta) is the pure producer's spec, unchanged, plus its workshop fields; this loop replaces
+    # only "parse one reply" with "assemble the snapshot".
 
-    #: The tree name each `pure_context` document is seeded under. `runner_document` has none
-    #: here: the runner is in the node's `src/` and is seeded from there under its own name. A
-    #: context key with no entry is refused (`_workshop_seeds`), so a document added to a pure
-    #: context cannot silently miss the tree.
-    _WORKSHOP_DOCUMENT_SEEDS: ClassVar[dict[str, str]] = {
-        "harness_capabilities": "harness_capabilities.json",
-        "target_profile": "target_profile.json",
-        "ir_document": "spec.ir.yaml",
-        "tests_document": "tests.md",
-        "runner_output_contract_document": "runner_output_contract.md",
-        "gate_guards_document": "gate_guards.md",
-        "lint_rules_document": "lint_rules.md",
+    #: The tree name each `pure_context` document is seeded under, by phase (the producer
+    #: spec's `workshop_document_seeds`). `runner_document` has none: the runner is in the
+    #: node's `src/` and is seeded from there under its own name.
+    _WORKSHOP_DOCUMENT_SEEDS_BY_PHASE: ClassVar[dict[str, Mapping[str, str]]] = {
+        "generate": MappingProxyType({
+            "harness_capabilities": "harness_capabilities.json",
+            "target_profile": "target_profile.json",
+            "ir_document": "spec.ir.yaml",
+            "tests_document": "tests.md",
+            "runner_output_contract_document": "runner_output_contract.md",
+            "gate_guards_document": "gate_guards.md",
+            "lint_rules_document": "lint_rules.md",
+        }),
+        "compile": MappingProxyType({
+            "controlled_spec_document": "controlled_spec.md",
+            "tests_document": "tests.md",
+            "deps_document": "deps.yaml",
+            "dependency_graph_document": "dependency_graph.json",
+            "profile_spec_document": "profile_spec.yaml",
+            "phase_contract_document": "phase_01_compile.md",
+            "ir_algorithm_example_document": "ir_algorithm_example.yaml",
+            "ir_algorithm_2d_example_document": "ir_algorithm_2d_example.yaml",
+            "checks_module_contract_document": "CHECKS_MODULE_CONTRACT.md",
+        }),
     }
     #: The host-composed orientation the pure template splices in, seeded as files.
     _WORKSHOP_DEPENDENCIES_SEED: ClassVar[str] = "DEPENDENCIES.md"
@@ -9017,31 +9151,34 @@ class Conductor:
         model_turns: int | None
 
     def _workshop_seeds(self, refs: NodeRefs, pure_context: Mapping[str, str],
-                        request: Mapping[str, Any]) -> dict[str, str]:
+                        request: Mapping[str, Any],
+                        spec: "Conductor._PureProducerSpec") -> dict[str, str]:
         """The files the host places in a new lineage's tree, by tree name (the contract seed
         is not among them: `_spawn_workshop_turn` writes it once the prompt is rendered).
 
-        Every file the host has placed in the node's `src/` at this point (the runner, the
-        checks header, each closure member's interface header — what `run_phase` writes before
-        any generate substep) plus the node's own interface header, which the host gates read
-        beside the bundle (`Conductor._freeze_wrapper_context`: a wrapper view without one of
-        them disagrees with the gate); each document of the pure context under
-        `_WORKSHOP_DOCUMENT_SEEDS`; and the dependency facts and the exemplar the pure template
+        On a lineage whose spec seeds host sources (`generate`): every file the host has placed
+        in the node's `src/` at this point (the runner, the checks header, each closure member's
+        interface header — what `run_phase` writes before any generate substep) plus the node's
+        own interface header, which the host gates read beside the bundle
+        (`Conductor._freeze_wrapper_context`: a wrapper view without one of them disagrees with
+        the gate). Then, on every lineage, each document of the pure context under the spec's
+        `workshop_document_seeds`, and the dependency facts and the exemplar the pure template
         splices in, when there are any. Raises `RuntimeError` on a context key with no seed
-        name and on two seeds of one name: a host defect, routed like an unassemblable
-        context."""
+        name, on a seed named after one of the spec's output files, and on two seeds of one
+        name: a host defect, routed like an unassemblable context."""
         from tools.orchestration_runtime import _build_dependency_facts, _build_exemplar
         seeds: dict[str, str] = {}
-        control = self._control_file_basename(refs)
-        src = self.repo_root / refs.source_dir() / "src"
-        if src.is_dir():
-            for path in sorted(src.iterdir()):
-                if path.name == control or path.is_symlink() or not path.is_file():
-                    continue
-                seeds[path.name] = path.read_text(encoding="utf-8")
-        header = self._interface_header_text(refs)
-        if header is not None:
-            seeds[header[0]] = header[1]
+        if spec.workshop_seeds_host_sources:
+            control = self._control_file_basename(refs)
+            src = self.repo_root / refs.source_dir() / "src"
+            if src.is_dir():
+                for path in sorted(src.iterdir()):
+                    if path.name == control or path.is_symlink() or not path.is_file():
+                        continue
+                    seeds[path.name] = path.read_text(encoding="utf-8")
+            header = self._interface_header_text(refs)
+            if header is not None:
+                seeds[header[0]] = header[1]
         for key, value in pure_context.items():
             if key == "runner_document":
                 runner = self._runner_basename(refs)
@@ -9050,7 +9187,7 @@ class Conductor:
                         f"workshop seeds: the context carries the runner and {runner} is not "
                         f"in {refs.source_dir()}/src")
                 continue
-            name = self._WORKSHOP_DOCUMENT_SEEDS.get(key)
+            name = spec.workshop_document_seeds.get(key)
             if name is None:
                 raise RuntimeError(f"workshop seeds: context key {key!r} has no tree name")
             if name in seeds:
@@ -9065,6 +9202,9 @@ class Conductor:
         if self._WORKSHOP_CONTRACT_SEED in seeds:
             raise RuntimeError(
                 f"workshop seeds: two seeds named {self._WORKSHOP_CONTRACT_SEED!r}")
+        clash = sorted(set(seeds) & set(spec.workshop_outputs))
+        if clash:
+            raise RuntimeError(f"workshop seeds: a seed is named after an output file {clash}")
         return seeds
 
     def _prepare_workshop_home(self, lineage_id: str, *, resume: bool) -> dict[str, str] | None:
@@ -9088,20 +9228,26 @@ class Conductor:
         return WrapperMcpServer(ctx, on_end=on_end).start()
 
     def _workshop_lineage_from_seeds(self, refs: NodeRefs, paths: Any, seeds: dict[str, str],
-                                     deadline: float) -> "Conductor._WorkshopLineage":
+                                     deadline: float, spec: "Conductor._PureProducerSpec"
+                                     ) -> "Conductor._WorkshopLineage":
         """The loop's handle on a lineage whose tree holds `seeds`: the closure (re)staged into
-        its `staged/closure` from the bindings the generate key bound, and the name sets."""
-        from tools.workshop_tree import BUNDLE_MANIFEST_NAME, reserved_tree_names
-        closure = self._stage_workshop_closure(refs, paths)
+        its `staged/closure` from the bindings the generate key bound (a lineage whose spec
+        stages one), and the name sets."""
+        from tools.workshop_tree import reserved_tree_names
+        closure = (spec.workshop_stage_closure(refs, paths)
+                   if spec.workshop_stage_closure is not None else ())
         names = tuple(sorted([*seeds, self._WORKSHOP_CONTRACT_SEED]))
-        reserved = reserved_tree_names(names, self._control_file_basename(refs))
+        reserved = reserved_tree_names(
+            names, self._control_file_basename(refs) if spec.workshop_control_file else None,
+            spec.workshop_outputs)
         return self._WorkshopLineage(
             paths=paths, seeds=dict(seeds), seed_names=names, reserved=reserved,
-            host_placed=frozenset(reserved - {BUNDLE_MANIFEST_NAME}),
+            host_placed=frozenset(reserved - set(spec.workshop_outputs)),
             closure_file_names=closure, deadline=deadline)
 
     def _open_workshop_lineage(self, refs: NodeRefs, entry: Any, lineage_id: str,
-                               seeds: dict[str, str], prior: Any | None
+                               seeds: dict[str, str], prior: Any | None,
+                               spec: "Conductor._PureProducerSpec"
                                ) -> "Conductor._WorkshopLineage":
         """Start a lineage: its home (exclusively), its work directories, its seeds, its staged
         closure, its record, and — for a COLD REUSE — the ended lineage `prior`'s snapshot
@@ -9116,7 +9262,7 @@ class Conductor:
         seed_tree(paths, seeds)
         started = datetime.now(timezone.utc)
         lineage = self._workshop_lineage_from_seeds(
-            refs, paths, seeds, started.timestamp() + float(entry.lineage_timeout_s))
+            refs, paths, seeds, started.timestamp() + float(entry.lineage_timeout_s), spec)
         if prior is not None:
             seed_from_snapshot(paths, prior, lineage.host_placed)
         write_lineage_record(paths, node_key=refs.node_key,
@@ -9164,7 +9310,8 @@ class Conductor:
     def _spawn_workshop_turn(self, refs: NodeRefs, request: dict[str, Any], entry: Any,
                              lineage: "Conductor._WorkshopLineage", *, child_arid: str,
                              phase: str, substep: str | None,
-                             resume_session_id: str | None, warm: bool
+                             resume_session_id: str | None, warm: bool,
+                             spec: "Conductor._PureProducerSpec"
                              ) -> "Conductor._WorkshopTurn | None":
         """One launch of a lineage: freeze the wrapper context, start the endpoint, record the
         launch, spawn the leaf under its bound, stop the endpoint, record why the lineage ended
@@ -9183,6 +9330,7 @@ class Conductor:
         from tools.workshop_tree import (
             end_lineage,
             read_lineage_record,
+            record_last_launch,
             snapshot_tree,
             write_host_file,
         )
@@ -9198,8 +9346,9 @@ class Conductor:
             # the wrapper's feedback reads what the gates will.
             for name, text in lineage.seeds.items():
                 write_host_file(paths.tree, name, text)
+        assert spec.workshop_freeze_context is not None
         try:
-            ctx = self._freeze_wrapper_context(
+            ctx = spec.workshop_freeze_context(
                 refs, paths, agent_run_id=child_arid, seed_names=lineage.seed_names,
                 reserved_names=lineage.reserved, closure_file_names=lineage.closure_file_names,
                 max_wrapper_calls=int(entry.max_wrapper_calls),
@@ -9252,6 +9401,11 @@ class Conductor:
             elif proc.returncode != 0:
                 # A leaf that died is not resumed: its session may hold a half-written turn.
                 end_lineage(paths, "leaf_exit")
+        # Whether the LAST launch ended cleanly, which `ended_by` (null on a clean exit, so the
+        # lineage can be reopened warm) does not say.
+        record_last_launch(
+            paths, agent_run_id=child_arid, rc=proc.returncode,
+            ended_at_utc=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
         record = read_lineage_record(paths)
         snapshot_tree(paths, lineage.host_placed)
         envelope = parse_result_envelope(proc.stdout)
@@ -9277,19 +9431,23 @@ class Conductor:
     def _run_workshop_producer_substep(self, refs: NodeRefs, phase: str, substep: str | None,
                                        repair: dict[str, str] | None,
                                        resolved_dependencies: tuple[dict[str, str], ...],
-                                       spec: "Conductor._PureProducerSpec"
+                                       spec: "Conductor._PureProducerSpec",
+                                       dependency_surface: tuple[dict[str, Any], ...] = ()
                                        ) -> "SubstepOutcome":
         """Run a PRODUCER substep as a `workshop leaf` (issue #534): the pure producer's outer
         contract — the same `spec`, `SubstepOutcome`, failure categories and routing,
-        finalize-then-write order, `bundle_meta.json` — with the leaf editing a lineage's tree.
+        finalize-then-write order, per-attempt meta (`bundle_meta.json` /
+        `compile_generate_meta.json`), and the declared-fail third exit where the spec has one
+        — with the leaf editing a lineage's tree. `dependency_surface` is the compile producer's
+        published-operation catalog, rendered into the tree's `DEPENDENCIES.md`.
 
         A LINEAGE is one CLI session and its tree; it starts at a cold launch (lineage id = that
         launch's agent_run_id) and continues across warm `--resume --fork-session` launches
         while it is OPEN (`ended_by` null). A bound — `max_wrapper_calls`, `lineage_timeout_s`,
         the per-process `leaf_timeout` — or a dead leaf ENDS it; its tree is taken as it stands.
 
-        Each attempt: launch, snapshot, assemble the snapshot (`workshop_tree.
-        assemble_bundle_document`), then the spec's own checks. Clean -> pass, the artifacts
+        Each attempt: launch, snapshot, assemble the snapshot (the spec's `workshop_assemble`),
+        then the spec's own checks. Clean -> pass, the artifacts
         written from the assembled document exactly as the pure path writes a returned one. A
         defect within `MAX_BUNDLE_REPAIR_TURNS` -> a WARM turn over the same lineage when it is
         open and its transcript is in the lineage's home, else a COLD REUSE: a new lineage
@@ -9302,9 +9460,11 @@ class Conductor:
         lineage to find) a cold launch carrying the findings. Any other repair starts afresh."""
         from tools.orchestration_runtime import _read_launch_request_payload
         from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS, is_workshop_request
-        from tools.workshop_tree import AssemblyFailure, assemble_bundle_document
+        from tools.workshop_tree import AssemblyFailure
 
+        assert spec.workshop_assemble is not None
         entry = self.entry_for(phase, substep)
+        summary = f"workshop_{phase}"
         try:
             pure_context = spec.build_context(refs)
         except Exception as exc:  # noqa: BLE001 — any context-assembly failure must recover
@@ -9356,7 +9516,7 @@ class Conductor:
                         lineage = self._reattach_workshop_lineage(
                             refs, entry, paths, lineage_record, phase, substep,
                             resolved_dependencies, exemplar, runner_host_authored,
-                            pure_context, spec)
+                            pure_context, spec, dependency_surface)
                     except Exception as exc:  # noqa: BLE001 — a host precondition
                         self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
                                   detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
@@ -9433,12 +9593,15 @@ class Conductor:
                 pure_language=self._pure_language(phase),
                 pure_parallel=self._pure_parallel(phase),
                 pure_context=(None if (warm and findings_turn) else pure_context),
+                dependency_surface=dependency_surface,
                 workshop_lineage_id=lineage_id,
+                workshop_provider=entry.provider,
             )
             if not warm:
                 try:
-                    seeds = self._workshop_seeds(refs, pure_context, request)
-                    lineage = self._open_workshop_lineage(refs, entry, child_arid, seeds, prior)
+                    seeds = self._workshop_seeds(refs, pure_context, request, spec)
+                    lineage = self._open_workshop_lineage(refs, entry, child_arid, seeds, prior,
+                                                          spec)
                 except Exception as exc:  # noqa: BLE001 — a host precondition, fail_closed
                     self.emit("workshop_lineage_setup_failed", node_key=refs.node_key,
                               detail=str(exc)[:_PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS])
@@ -9451,7 +9614,7 @@ class Conductor:
             try:
                 turn = self._spawn_workshop_turn(
                     refs, request, entry, lineage, child_arid=child_arid, phase=phase,
-                    substep=substep, resume_session_id=resume_session_id, warm=warm)
+                    substep=substep, resume_session_id=resume_session_id, warm=warm, spec=spec)
             except WorkshopSetupFailed as exc:
                 # Nothing was launched or recorded: a host precondition (the wrapper's
                 # context could not be frozen), routed like an unassemblable context.
@@ -9468,7 +9631,7 @@ class Conductor:
                     child_arid, "status: fail\ncategory: workshop_wrapper_not_stopped",
                     self._agent_run_json(
                         refs, phase, substep, child_arid, "fail", [],
-                        "workshop_generate_fail: workshop_wrapper_not_stopped", entry=entry))
+                        f"{summary}_fail: workshop_wrapper_not_stopped", entry=entry))
                 return SubstepOutcome(child_arid, "fail", [], 1,
                                       ("workshop_wrapper_not_stopped", str(exc)[:200]),
                                       max(1, len(per_attempt)))
@@ -9505,7 +9668,7 @@ class Conductor:
                 findings = self._leaf_failure_summary(proc)
             else:
                 # The tree is the answer, whatever the leaf said or however it was ended.
-                assembled = assemble_bundle_document(lineage.paths.snapshot, lineage.reserved)
+                assembled = spec.workshop_assemble(lineage.paths.snapshot, lineage.reserved)
                 if isinstance(assembled, AssemblyFailure):
                     category, findings = assembled.category, assembled.findings
                 else:
@@ -9523,7 +9686,13 @@ class Conductor:
                 if category is not None and turn.ended_by is not None:
                     findings = (f"{findings}\n(the lineage ended by {turn.ended_by}; the tree "
                                 "was taken as it stood)")
-            status = "pass" if category is None else "fail"
+            # The THIRD exit, as on the pure path: a valid document can carry the leaf's own
+            # declaration that the phase cannot be completed from its inputs
+            # (`compile_fail.json`). Neither a pass nor a repairable defect.
+            declared_fail = (
+                spec.declared_fail(accepted_doc)
+                if (accepted_doc is not None and spec.declared_fail is not None) else None)
+            status = "pass" if (category is None and declared_fail is None) else "fail"
             this_excerpt: str | None = None
             if category is not None:
                 this_excerpt = (findings.encode("utf-8", "backslashreplace").decode("utf-8")
@@ -9538,16 +9707,44 @@ class Conductor:
                           detail=(this_excerpt or "")[:200])
             reply = (f"status: {status}\nleaf rc={proc.returncode}\n"
                      f"category: {category or 'none'}")
-            result_summary = (
-                f"workshop_generate_fail: {category}" if status != "pass"
-                else f"workshop_generate_pass: {spec.accept_noun} accepted "
-                     f"(attempts={len(per_attempt)})")
+            if declared_fail is not None:
+                result_summary = (f"{summary}_fail: {spec.declared_fail_category}: "
+                                  f"{declared_fail[:300]}")
+            elif status != "pass":
+                result_summary = f"{summary}_fail: {category}"
+            else:
+                result_summary = (f"{summary}_pass: {spec.accept_noun} accepted "
+                                  f"(attempts={len(per_attempt)})")
             self.finalize_child(
                 child_arid, reply,
                 self._agent_run_json(refs, phase, substep, child_arid, status,
                                      [], result_summary, entry=entry,
                                      agent_model_override=turn.model,
                                      usage=turn.usage, resume_mode=proc.resume_mode))
+            if declared_fail is not None:
+                # As `_run_pure_producer_substep` takes it: the declared-fail projection and the
+                # per-attempt record under the off-table category, fail_closed by
+                # `classify_failure` (issue #355). Nothing will continue the lineage, and no new one
+                # takes its work over: it is ended `declared_fail`, not `superseded`.
+                from tools.workshop_tree import end_lineage
+                assert spec.write_declared_fail is not None
+                attempt_record["ended_by"] = end_lineage(lineage.paths, "declared_fail")
+                self.emit(spec.declared_fail_event, node_key=refs.node_key,
+                          substep=substep, detail=declared_fail[:200], leaf_mode="workshop")
+                try:
+                    spec.write_declared_fail(refs, declared_fail, attempts=len(per_attempt))
+                    spec.write_meta(
+                        refs, result="fail", failure_category=spec.declared_fail_category,
+                        failure_excerpt=declared_fail[:_PURE_ATTEMPT_EXCERPT_MAX_CHARS],
+                        attempts=len(per_attempt), per_attempt=per_attempt,
+                        leaf_mode="workshop")
+                except Exception as exc:  # noqa: BLE001 — any host-write failure must recover
+                    return SubstepOutcome(
+                        child_arid, "fail", [], 1,
+                        (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
+                        len(per_attempt))
+                return SubstepOutcome(child_arid, "fail", [], proc.returncode,
+                                      None, len(per_attempt))
             if status == "pass":
                 assert accepted_doc is not None
                 try:
@@ -9614,7 +9811,8 @@ class Conductor:
                                    resolved_dependencies: tuple[dict[str, str], ...],
                                    exemplar: dict[str, Any] | None, runner_host_authored: bool,
                                    pure_context: dict[str, str],
-                                   spec: "Conductor._PureProducerSpec"
+                                   spec: "Conductor._PureProducerSpec",
+                                   dependency_surface: tuple[dict[str, Any], ...] = ()
                                    ) -> "Conductor._WorkshopLineage":
         """The loop's handle on an OPEN lineage an outer reopen continues warm: the current
         seeds (re-placed before the launch), the closure restaged, and the deadline its record's
@@ -9623,7 +9821,8 @@ class Conductor:
         seeds = self._workshop_seeds(
             refs, pure_context, self._workshop_seed_request(
                 refs, phase, substep, entry, resolved_dependencies, exemplar,
-                runner_host_authored, pure_context, paths.lineage_id, spec))
+                runner_host_authored, pure_context, paths.lineage_id, spec,
+                dependency_surface), spec)
         # An orientation seed the lineage was created with and the host no longer resolves (the
         # certified siblings moved under the run) is removed, not left behind as a leaf file:
         # the tree then holds what this launch's seeds and record say.
@@ -9635,13 +9834,15 @@ class Conductor:
         return self._workshop_lineage_from_seeds(
             refs, paths, seeds,
             (started.timestamp() if started is not None else time.time())
-            + float(entry.lineage_timeout_s))
+            + float(entry.lineage_timeout_s), spec)
 
     def _workshop_seed_request(self, refs: NodeRefs, phase: str, substep: str | None,
                                entry: Any, resolved_dependencies: tuple[dict[str, str], ...],
                                exemplar: dict[str, Any] | None, runner_host_authored: bool,
                                pure_context: dict[str, str], lineage_id: str,
-                               spec: "Conductor._PureProducerSpec") -> dict[str, Any]:
+                               spec: "Conductor._PureProducerSpec",
+                               dependency_surface: tuple[dict[str, Any], ...] = ()
+                               ) -> dict[str, Any]:
         """A request carrying what `_workshop_seeds` renders the orientation seeds from (the
         dependency facts and the exemplar), for a lineage the loop re-attaches to without a
         cold launch to build it from. Built, never recorded."""
@@ -9653,7 +9854,8 @@ class Conductor:
             resolved_dependencies=resolved_dependencies, exemplar=exemplar, pure_leaf=True,
             pure_shape=spec.pure_shape, pure_language=self._pure_language(phase),
             pure_parallel=self._pure_parallel(phase), pure_context=pure_context,
-            workshop_lineage_id=lineage_id)
+            dependency_surface=dependency_surface, workshop_lineage_id=lineage_id,
+            workshop_provider=entry.provider)
         return request
 
     # --- Z2 pure-leaf verify reviewer (M-D) ------------------------------------
@@ -11534,6 +11736,59 @@ class Conductor:
             toolchain_ro_roots=tuple(wrapper_toolchain_ro_roots(executables, self.repo_root)),
             max_wrapper_calls=max_wrapper_calls,
             lineage_deadline=lineage_deadline,
+            seed_texts=tuple(sorted((seed_texts or {}).items())),
+        )
+
+    #: The host's `<ir_ref>` sidecars a `check_ir` call's scratch IR directory holds beside the
+    #: leaf's IR: what the `Compile.static` validators read there besides the IR and its meta.
+    _IR_CHECK_SIDECARS: ClassVar[tuple[str, ...]] = (
+        "dependency_graph.json", "dependency_surface.json")
+
+    def _freeze_ir_check_context(self, refs: NodeRefs, paths: Any, *, agent_run_id: str,
+                                 seed_names: tuple[str, ...], reserved_names: frozenset[str],
+                                 closure_file_names: tuple[str, ...], max_wrapper_calls: int,
+                                 lineage_deadline: float,
+                                 seed_texts: Mapping[str, str] | None = None) -> Any:
+        """The `workshop_wrapper.WrapperContext` of one launch of a `compile.generate` lineage
+        (issue #534 step 2), computed in the main thread: the one operation `check_ir`, bound
+        to what the host's own path runs on the snapshot — the IR assembly, the producer's
+        document contract (`_pure_ir_document_violations`), the declaration reader, the IR
+        serializer `_write_pure_ir_artifacts` writes with, the pending `ir_meta.json` it writes
+        beside it, the `<ir_ref>` sidecars as they stand now, and the `Compile.static`
+        validators (`validate_pipeline_semantics.validate_compile_ir_dir`). An absent sidecar
+        is not copied, so the validators report it as the gate would. `closure_file_names` is
+        unused (a compile lineage stages no closure)."""
+        from functools import partial
+
+        from tools.validate_pipeline_semantics import validate_compile_ir_dir
+        from tools.workshop_tree import assemble_ir_document
+        from tools.workshop_wrapper import IR_CHECK_OPS, WrapperContext
+
+        ir_dir = self.repo_root / refs.ir_ref
+        sidecars: list[tuple[str, str]] = []
+        for name in self._IR_CHECK_SIDECARS:
+            path = ir_dir / name
+            if path.is_file() and not path.is_symlink():
+                sidecars.append((name, path.read_text(encoding="utf-8")))
+        return WrapperContext(
+            paths=paths,
+            repo_root=self.repo_root,
+            orchestration_id=self.orchestration_id,
+            agent_run_id=agent_run_id,
+            reserved_names=reserved_names,
+            seed_names=tuple(seed_names),
+            max_wrapper_calls=max_wrapper_calls,
+            lineage_deadline=lineage_deadline,
+            ops=IR_CHECK_OPS,
+            violations=partial(self._pure_ir_document_violations, refs),
+            assemble=assemble_ir_document,
+            declared_fail=self._pure_ir_declared_fail,
+            ir_yaml=self._pure_ir_yaml,
+            ir_meta_text=self._ir_meta_text(refs, verification_status="pending",
+                                            last_fail_reason=None, issue_severity=None,
+                                            attempts=1),
+            sidecar_texts=tuple(sidecars),
+            validate_ir_dir=validate_compile_ir_dir,
             seed_texts=tuple(sorted((seed_texts or {}).items())),
         )
 
@@ -14052,17 +14307,20 @@ class Conductor:
             # The pure producer. `dependency_surface` is threaded through for the compile
             # producer, whose `<dependency_facts>` block is the published-operation catalog it
             # must transcribe verbatim; `build_launch_request` attaches it to that substep only.
+            if entry.is_workshop:
+                # A `leaf: workshop` entry (issue #534): the same producer half, the leaf editing
+                # a host-seeded work tree instead of returning the document. Before the compile
+                # branch below: a workshop `compile.generate` leaf authors the WHOLE IR in its
+                # tree (step 2), and the part split is a pure entry's.
+                return self._run_workshop_producer_substep(
+                    refs, phase, substep, repair, resolved_dependencies,
+                    self._pure_producer_spec(phase, self._shape_for_spec(refs, phase)),
+                    dependency_surface)
             # Compile runs as a core and one part per group of tests, and the host assembles
             # the IR.
             if phase == "compile":
                 return self._run_pure_compile_producer(
                     refs, repair, resolved_dependencies, dependency_surface)
-            if entry.is_workshop:
-                # A `leaf: workshop` entry (issue #534): the same producer half, the leaf editing
-                # a host-seeded work tree instead of returning the document.
-                return self._run_workshop_producer_substep(
-                    refs, phase, substep, repair, resolved_dependencies,
-                    self._pure_producer_spec(phase, self._shape_for_spec(refs, phase)))
             return self._run_pure_producer_substep(
                 refs, phase, substep, repair, resolved_dependencies,
                 self._pure_producer_spec(phase, self._shape_for_spec(refs, phase)),

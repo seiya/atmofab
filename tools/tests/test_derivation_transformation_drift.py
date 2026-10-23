@@ -728,7 +728,14 @@ PINNED_COMPILE_DOCUMENTS: dict[str, str] = {
     # its scope evaluates (X under `case: X`) and `at('<case>').inputs.<path>` in that case —
     # they said "every target case", and a codex leaf declared `compile_fail` on that reading.
     # A bump: the producer and every verification part read those sections.
-    "compile-docs-20": "39978e082a639ad84b4cc444c3c0e5e3bf4a80b43360c16814ad0bd5b1f0079c",
+    # Re-pinned (issue #534 step 2 PR-1), and NOT bumped: the substep bullet and "How a
+    # `Compile fail` is declared" name the `workshop leaf` transport of `Compile.generate` (the
+    # IR written in its tree, the declaration as `compile_fail.json`). No rule of the IR a leaf
+    # authors changes, so a bump would re-derive every node's Compile for nothing.
+    "compile-docs-20": "38edd6ce85608dbe230211bb6346dcc90229040847bea06e6901de4119b19321",
+    # The digest `compile-docs-20` SHIPPED with (origin/main f684c756), kept so a later version
+    # returning to those bytes collides (`test_no_empty_bump_or_silent_revert`).
+    "compile-docs-20@f684c756": "39978e082a639ad84b4cc444c3c0e5e3bf4a80b43360c16814ad0bd5b1f0079c",
 }
 PINNED_RENDER: dict[str, str] = {
     "render-1": "f70621b85c8d456126b20eed138facf20a56d2b2feb257c1a34d1245cd21cf43",

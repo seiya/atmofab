@@ -300,7 +300,7 @@ class RepairTests(_Base):
         self.c.leaf_actions = [_writes_nothing, _writes_bundle]
         outcome = self.run_substep()
         self.assertEqual(outcome.status, "pass", outcome)
-        first, second = self.requests()
+        _first, second = self.requests()
         self.assertEqual(second["workshop_lineage_id"], "child-1")
         self.assertTrue(second["warm_resume"])
         self.assertEqual(second["repair_target_agent_run_id"], "child-1")
@@ -347,7 +347,7 @@ class RepairTests(_Base):
         self.c.leaf_actions = [ends_by_the_cap, finishes]
         outcome = self.run_substep()
         self.assertEqual(outcome.status, "pass", outcome)
-        first, second = self.requests()
+        _first, second = self.requests()
         self.assertEqual(second["workshop_lineage_id"], "child-2")
         self.assertFalse(second.get("warm_resume"))
         self.assertIn("pure_context", second)
@@ -496,8 +496,8 @@ class EndOfLineageTests(_Base):
         self.c.leaf_actions = [_writes_nothing, _writes_bundle]
         real_open = wc.Conductor._open_workshop_lineage
 
-        def short_lived(conductor, refs, entry, lineage_id, seeds, prior):
-            lineage = real_open(conductor, refs, entry, lineage_id, seeds, prior)
+        def short_lived(conductor, refs, entry, lineage_id, seeds, prior, spec):
+            lineage = real_open(conductor, refs, entry, lineage_id, seeds, prior, spec)
             return lineage._replace(deadline=0.0) if lineage_id == "child-1" else lineage
 
         with mock.patch.object(wc.Conductor, "_open_workshop_lineage", short_lived), \
@@ -660,10 +660,16 @@ class OuterReopenTests(_Base):
         self.assertNotIn("repair_findings", self.requests()[-1])
 
 
+def _seeds(conductor, refs, context, request=None):
+    """`_workshop_seeds` under the generate producer spec the loop seeds a lineage by."""
+    spec = conductor._pure_producer_spec("generate", conductor._bundle_shape(refs))
+    return conductor._workshop_seeds(refs, context, request or {}, spec)
+
+
 class SeedTests(_Base):
     def test_a_context_key_with_no_tree_name_is_refused(self) -> None:
         with self.assertRaises(RuntimeError) as ctx:
-            self.c._workshop_seeds(self.refs, {"new_document": "x"}, {})
+            _seeds(self.c, self.refs, {"new_document": "x"})
         self.assertIn("new_document", str(ctx.exception))
 
     def test_every_pure_context_key_of_the_generate_producer_has_a_tree_name(self) -> None:
@@ -673,20 +679,20 @@ class SeedTests(_Base):
                     else ort.PURE_CONTEXT_REQUIRED_KEYS[key])
             with self.subTest(shape=shape):
                 self.assertEqual(
-                    set(keys) - set(self.c._WORKSHOP_DOCUMENT_SEEDS) - {"runner_document"},
+                    set(keys) - set(wc.Conductor._WORKSHOP_DOCUMENT_SEEDS_BY_PHASE["generate"]) - {"runner_document"},
                     set())
 
     def test_the_node_s_own_interface_header_is_a_seed(self) -> None:
         with mock.patch.object(wc.Conductor, "_interface_header_text",
                                return_value=("node_model.h", "// header\n")):
-            seeds = self.c._workshop_seeds(self.refs, self.c._build_pure_context(self.refs), {})
+            seeds = _seeds(self.c, self.refs, self.c._build_pure_context(self.refs))
         self.assertEqual(seeds["node_model.h"], "// header\n")
 
     def test_every_file_the_host_placed_in_src_is_a_seed(self) -> None:
         src = self.repo / self.refs.source_dir() / "src"
         (src / "dep_model.h").write_text("// dep\n", encoding="utf-8")
         (src / self.c._control_file_basename(self.refs)).write_text("x", encoding="utf-8")
-        seeds = self.c._workshop_seeds(self.refs, self.c._build_pure_context(self.refs), {})
+        seeds = _seeds(self.c, self.refs, self.c._build_pure_context(self.refs))
         self.assertEqual(seeds["dep_model.h"], "// dep\n")
         self.assertNotIn(self.c._control_file_basename(self.refs), seeds)
 
@@ -694,14 +700,18 @@ class SeedTests(_Base):
 # --- the templates ---------------------------------------------------------------------
 
 _TEMPLATES = ("workshop_generate_generate.txt", "workshop_generate_generate_harness.txt",
-              "workshop_bundle_repair.txt")
+              "workshop_bundle_repair.txt", "workshop_compile_generate.txt",
+              "workshop_ir_repair.txt")
 _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
 
-#: `WORKSHOP_PROMPT_CONTRACT_VERSION` -> sha256 over the three templates and
-#: `WORKSHOP_SYSTEM_PROMPT`. A change to either is a change of the workshop leaf's contract and
-#: takes a new version, keeping every shipped pin (the no-revert check reads them).
+#: `WORKSHOP_PROMPT_CONTRACT_VERSION` -> sha256 over the workshop templates,
+#: `WORKSHOP_SYSTEM_PROMPT` and `WORKSHOP_TOOL_SURFACE_TEXT`. A change to any is a change of the
+#: workshop leaf's contract and takes a new version, keeping every shipped pin (the no-revert
+#: check reads them). `workshop-1` (shipped in step 1's A/B, main f684c756) was taken over the
+#: first three templates and the system prompt alone.
 _WORKSHOP_CONTRACT_DIGESTS = {
     "workshop-1": "434bbd2a7d61d8ad6352b857a08398ed9ea0c33af5f7904823a841af6cc0d17e",
+    "workshop-2": "79daa75c9cdc3233d8ea0697e63d0b4c2d1a1cf8d7ad60eaaed39066dae66c14",
 }
 
 
@@ -710,6 +720,7 @@ def _workshop_digest() -> str:
     for name in _TEMPLATES:
         h.update(name.encode() + b"\0" + (_DIR / name).read_bytes() + b"\0")
     h.update(pure_leaf.WORKSHOP_SYSTEM_PROMPT.encode("utf-8"))
+    h.update(json.dumps(pure_leaf.WORKSHOP_TOOL_SURFACE_TEXT, sort_keys=True).encode("utf-8"))
     return h.hexdigest()
 
 
@@ -747,13 +758,50 @@ class TemplateTests(unittest.TestCase):
                     self.assertIn(line, workshop[position:], line[:80])
                     position = workshop.index(line, position) + 1
 
+    def test_the_compile_rules_are_the_pure_templates_verbatim_but_the_part_split(self) -> None:
+        """Issue #534 step 2: the compile twin carries every unit of `pure_compile_generate.txt`
+        after its persona — each line, and each numbered rule of the one-line authoring rules —
+        in order and verbatim, except EXACTLY the three units that exist for the part split of
+        issue #526 (the output contract, which leaves the per-test lists out; the "Repair turns
+        on the whole IR" paragraph; rule (5), which says who authors them). The whole-IR rule
+        (5) it carries instead holds the verification part's predicate rules verbatim, so a
+        rule edited in either pure template and not here fails."""
+        import re as _re
+        pure = (_DIR / "pure_compile_generate.txt").read_text().split("\n")[2:]
+        twin = (_DIR / "workshop_compile_generate.txt").read_text()
+        units: list[str] = []
+        for line in pure:
+            if ort._PURE_PLACEHOLDER_RE.fullmatch(line) or not line:
+                continue
+            units += (_re.split(r" (?=\(\d\) )", line) if line.startswith("Authoring rules")
+                      else [line])
+        missing, position = [], 0
+        for unit in units:
+            found = twin.find(unit, position)
+            if found == -1:
+                missing.append(unit[:30])
+            else:
+                position = found + len(unit)
+        self.assertEqual(missing, [
+            "Output contract (IR document):"[:30],
+            "Repair turns on the whole IR: the"[:30],
+            "(5) Author `io_contract.diagnostics"[:30]])
+        part = (_DIR / "pure_compile_generate_verification.txt").read_text().split("\n")
+        rules = next(ln for ln in part if ln.startswith("Authoring rules"))
+        predicate_rules = rules[rules.index("Alongside each test's predicate"):]
+        self.assertIn(predicate_rules, twin)
+        self.assertNotIn("WITHOUT the three per-test verification lists", twin)
+
     def test_no_document_is_inlined(self) -> None:
-        documents = set(wc.Conductor._WORKSHOP_DOCUMENT_SEEDS) | {
-            "runner_document", "dependency_facts", "exemplar"}
-        for name in _TEMPLATES[:2]:
-            with self.subTest(template=name):
-                slots = set(ort._PURE_PLACEHOLDER_RE.findall((_DIR / name).read_text()))
-                self.assertEqual(slots & documents, set())
+        for phase, names in (("generate", _TEMPLATES[:2]),
+                             ("compile", ("workshop_compile_generate.txt",))):
+            documents = set(wc.Conductor._WORKSHOP_DOCUMENT_SEEDS_BY_PHASE[phase]) | {
+                "runner_document", "dependency_facts", "exemplar"}
+            for name in names:
+                with self.subTest(template=name):
+                    slots = set(ort._PURE_PLACEHOLDER_RE.findall((_DIR / name).read_text()))
+                    self.assertEqual(slots & documents, set())
+                    self.assertIn("tool_surface", slots)
 
     def test_each_seed_name_the_templates_cite_is_one_the_loop_places(self) -> None:
         text = (_DIR / "workshop_generate_generate.txt").read_text()
@@ -761,7 +809,7 @@ class TemplateTests(unittest.TestCase):
                      "tests.md", "DEPENDENCIES.md", "EXEMPLAR.md", "CONTRACT.md",
                      workshop_tree.BUNDLE_MANIFEST_NAME):
             self.assertIn(f"`{name}`", text)
-        placed = set(wc.Conductor._WORKSHOP_DOCUMENT_SEEDS.values()) | {
+        placed = set(wc.Conductor._WORKSHOP_DOCUMENT_SEEDS_BY_PHASE["generate"].values()) | {
             wc.Conductor._WORKSHOP_DEPENDENCIES_SEED, wc.Conductor._WORKSHOP_EXEMPLAR_SEED,
             wc.Conductor._WORKSHOP_CONTRACT_SEED}
         harness = (_DIR / "workshop_generate_generate_harness.txt").read_text()
@@ -769,6 +817,15 @@ class TemplateTests(unittest.TestCase):
             self.assertTrue(f"`{name}`" in text or f"`{name}`" in harness, name)
         for op in ("derive", "compile", "lint", "syntax_check", "run"):
             self.assertIn(f"`{op}`", text)
+        compile_text = (_DIR / "workshop_compile_generate.txt").read_text()
+        compile_placed = set(
+            wc.Conductor._WORKSHOP_DOCUMENT_SEEDS_BY_PHASE["compile"].values()) | {
+            wc.Conductor._WORKSHOP_DEPENDENCIES_SEED, wc.Conductor._WORKSHOP_CONTRACT_SEED,
+            workshop_tree.IR_DOCUMENT_NAME, workshop_tree.COMPILE_FAIL_NAME, "check_ir"}
+        for name in sorted(compile_placed):
+            self.assertIn(f"`{name}`", compile_text, name)
+        self.assertNotIn("`derive`", compile_text)
+        self.assertNotIn("`bundle.yaml`", compile_text)
 
     def _render(self, **overrides) -> str:
         from tools.tests.test_workshop_launch import _workshop_request
@@ -1020,7 +1077,7 @@ class SeedRefusalTests(_Base):
         src = self.repo / self.refs.source_dir() / "src"
         (src / "tests.md").write_text("x", encoding="utf-8")
         with self.assertRaises(RuntimeError) as ctx:
-            self.c._workshop_seeds(self.refs, self.c._build_pure_context(self.refs), {})
+            _seeds(self.c, self.refs, self.c._build_pure_context(self.refs))
         self.assertIn("tests.md", str(ctx.exception))
 
     def test_a_context_carrying_the_runner_needs_it_in_src(self) -> None:
@@ -1028,14 +1085,14 @@ class SeedRefusalTests(_Base):
         (self.repo / self.refs.source_dir() / "src"
          / self.c._runner_basename(self.refs)).unlink()
         with self.assertRaises(RuntimeError) as ctx:
-            self.c._workshop_seeds(self.refs, context, {})
+            _seeds(self.c, self.refs, context)
         self.assertIn("runner", str(ctx.exception))
 
     def test_a_host_file_named_like_the_contract_is_refused(self) -> None:
         src = self.repo / self.refs.source_dir() / "src"
         (src / "CONTRACT.md").write_text("x", encoding="utf-8")
         with self.assertRaises(RuntimeError) as ctx:
-            self.c._workshop_seeds(self.refs, self.c._build_pure_context(self.refs), {})
+            _seeds(self.c, self.refs, self.c._build_pure_context(self.refs))
         self.assertIn("CONTRACT.md", str(ctx.exception))
 
 
@@ -1155,3 +1212,357 @@ class Round3Tests(_Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# --- `compile.generate` (issue #534 step 2) -----------------------------------------------
+
+def _compile_config(repo: Path) -> lc.LlmConfig:
+    path = repo / "llm_workshop_compile.yaml"
+    path.write_text(
+        "defaults: {provider: claude_cli, model: opus}\n"
+        "phases: {compile: {substeps: {generate: {provider: claude_cli, model: opus, "
+        "leaf: workshop, max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n",
+        encoding="utf-8")
+    return lc.load_llm_config(path)
+
+
+def _writes_ir(ir: dict | None = None):
+    from tools.tests.test_pure_leaf_compile import _assembled_ir
+
+    def action(c, tree, kwargs):
+        (tree / workshop_tree.IR_DOCUMENT_NAME).write_text(
+            yaml.safe_dump(ir if ir is not None else _assembled_ir(), sort_keys=False),
+            encoding="utf-8")
+    return action
+
+
+def _writes_declaration(c, tree, kwargs):
+    (tree / workshop_tree.COMPILE_FAIL_NAME).write_text(
+        json.dumps({"input": "tests", "where": "§1", "what": "declares no test"}),
+        encoding="utf-8")
+
+
+#: A declaration whose reason is longer than the 300 characters a summary keeps.
+_LONG_WHAT = "the section declares no test id the host can read; " * 8
+
+
+def _writes_long_declaration(c, tree, kwargs):
+    (tree / workshop_tree.COMPILE_FAIL_NAME).write_text(
+        json.dumps({"input": "tests", "where": "§1", "what": _LONG_WHAT}), encoding="utf-8")
+
+
+_SURFACE = ({"node_key": "component/dep@0.1.0",
+             "published_operations": ["dep__apply"], "source": "ir_public_api",
+             "public_api": {}},)
+
+
+class WorkshopCompileProducerTests(unittest.TestCase):
+    """The loop on a `compile.generate` workshop entry: the leaf authors the WHOLE IR in its
+    tree (`spec.ir.yaml`, or `compile_fail.json` instead), and the host takes it through the
+    pure IR producer's own checks, writers, routing and declared-fail exit. The wrapper's
+    context is the REAL `_freeze_ir_check_context` (no subprocess), the endpoint the fake."""
+
+    def setUp(self) -> None:
+        from tools.tests.test_pure_leaf_compile import _write_compile_node
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = Path(tmp.name)
+        (self.repo / "workspace" / "orchestrations" / _ORCH).mkdir(parents=True)
+        self.refs = _write_compile_node(self.repo)
+        self.c = _WorkshopFakeConductor(
+            repo_root=self.repo, orchestration_id=_ORCH, orchestration_agent_run_id="orch",
+            llm_config=_compile_config(self.repo), env={})
+        self.c.homes = self.repo.parent / (self.repo.name + "_homes")
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.c.homes, ignore_errors=True))
+        self.c.leaf_actions = [_writes_ir()]
+
+    def run_substep(self, repair=None) -> wc.SubstepOutcome:
+        return self.c.run_substep(self.refs, "compile", "generate", repair=repair,
+                                  dependency_surface=_SURFACE)
+
+    def requests(self) -> list[dict]:
+        return [c[1]["--request-json"] for c in getattr(self.c, "calls", [])
+                if c[0] == "record-launch"]
+
+    def paths(self, lineage: str) -> workshop_tree.LineagePaths:
+        return workshop_tree.LineagePaths(
+            homes_root=self.c.homes, orchestration_id=_ORCH, lineage_id=lineage,
+            orchestration_dir=self.repo / "workspace" / "orchestrations" / _ORCH)
+
+    def meta(self) -> dict:
+        return json.loads((self.repo / self.refs.ir_ref
+                           / "compile_generate_meta.json").read_text())
+
+    def test_a_tree_holding_the_whole_ir_passes_and_is_written_as_the_pure_path_writes(
+            self) -> None:
+        from tools.tests.test_pure_leaf_compile import _assembled_ir
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "pass", outcome)
+        ir_dir = self.repo / self.refs.ir_ref
+        self.assertEqual((ir_dir / "spec.ir.yaml").read_text(),
+                         wc.Conductor._pure_ir_yaml(_assembled_ir()))
+        self.assertEqual(json.loads((ir_dir / "ir_meta.json").read_text())
+                         ["verification_status"], "pending")
+        meta = self.meta()
+        self.assertEqual((meta["result"], meta["leaf_mode"],
+                          meta["workshop_prompt_contract_version"],
+                          meta["prompt_contract_version"]),
+                         ("pass", "workshop", pure_leaf.WORKSHOP_PROMPT_CONTRACT_VERSION,
+                          pure_leaf.PURE_PROMPT_CONTRACT_VERSION))
+        self.assertNotIn("parts", meta)
+        row = meta["per_attempt"][0]
+        self.assertEqual((row["lineage_id"], row["warm"], row["ended_by"]),
+                         ("child-1", False, None))
+        # The part split did not run: one launch, one lineage.
+        self.assertEqual(len(self.requests()), 1)
+        self.assertEqual(json.loads(
+            self.paths("child-1").record_json.read_text())["last_launch"]["rc"], 0)
+
+    def test_the_request_is_a_whole_ir_workshop_request(self) -> None:
+        self.run_substep()
+        (request,) = self.requests()
+        self.assertEqual((request["leaf_mode"], request["workshop_provider"],
+                          request["workshop_lineage_id"]), ("workshop", "claude_cli", "child-1"))
+        self.assertNotIn("pure_shape", request)
+        self.assertNotIn("pure_part", request)
+        self.assertEqual(request["dependency_surface"], list(_SURFACE))
+        payload = ort.prepare_launch_request_payload(dict(request))
+        ort._validate_launch_request_payload(payload)
+        prompt = ort.render_launch_prompt_text(payload)
+        ort._validate_launch_prompt_text(payload, prompt)
+        self.assertTrue(prompt.startswith(pure_leaf.WORKSHOP_PROMPT_SENTINEL))
+        self.assertIn("`compile.generate` producer", prompt.splitlines()[0])
+        self.assertIn(pure_leaf.WORKSHOP_TOOL_SURFACE_TEXT["claude_cli"], prompt)
+        self.assertIn("`check_ir`", prompt)
+
+    def test_the_tree_holds_the_compile_documents_and_the_published_catalog(self) -> None:
+        self.run_substep()
+        tree = self.paths("child-1").tree
+        names = {p.name for p in tree.iterdir()}
+        expected = set(wc.Conductor._WORKSHOP_DOCUMENT_SEEDS_BY_PHASE["compile"].values())
+        self.assertTrue(expected <= names, expected - names)
+        self.assertEqual((tree / "tests.md").read_text(),
+                         (self.repo / self.refs.spec_path / "tests.md").read_text())
+        self.assertIn("dep__apply", (tree / "DEPENDENCIES.md").read_text())
+        # Nothing of Generate's: no src/ file, no interface header, no exemplar.
+        self.assertFalse(names & {"EXEMPLAR.md", "harness_capabilities.json",
+                                  "target_profile.json"})
+        self.assertEqual(names - expected - {"DEPENDENCIES.md", "CONTRACT.md",
+                                             workshop_tree.IR_DOCUMENT_NAME}, set())
+
+    def test_no_generate_source_is_seeded_even_where_one_would_render(self) -> None:
+        """Round 1: the fixture's language renders no interface header and its node has no
+        `src/` at compile time, so "nothing of Generate's" was observed only by absence. Here a
+        header WOULD render; the compile lineage still does not seed it."""
+        with mock.patch.object(wc.Conductor, "_interface_header_text",
+                               return_value=("node_model.h", "// header\n")):
+            self.assertEqual(self.run_substep().status, "pass")
+        self.assertFalse((self.paths("child-1").tree / "node_model.h").exists())
+
+    def test_every_pure_context_key_of_the_compile_producer_has_a_tree_name(self) -> None:
+        self.assertEqual(set(ort.PURE_CONTEXT_REQUIRED_KEYS[("compile", "generate")]),
+                         set(wc.Conductor._WORKSHOP_DOCUMENT_SEEDS_BY_PHASE["compile"]))
+
+    def test_the_wrapper_context_serves_check_ir_over_the_host_s_sidecars(self) -> None:
+        frozen: list = []
+        real = wc.Conductor._freeze_ir_check_context
+
+        def spy(conductor, refs, paths, **kw):
+            ctx = real(conductor, refs, paths, **kw)
+            frozen.append(ctx)
+            return ctx
+
+        with mock.patch.object(wc.Conductor, "_freeze_ir_check_context", spy):
+            self.run_substep()
+        (ctx,) = frozen
+        self.assertEqual(ctx.ops, ("check_ir",))
+        self.assertEqual({n for n, _ in ctx.sidecar_texts},
+                         {"dependency_graph.json", "dependency_surface.json"})
+        self.assertEqual(json.loads(ctx.ir_meta_text)["verification_status"], "pending")
+        self.assertIn(workshop_tree.IR_DOCUMENT_NAME, ctx.reserved_names)
+        self.assertIn(workshop_tree.COMPILE_FAIL_NAME, ctx.reserved_names)
+
+    def test_a_declaration_is_the_third_exit_and_ends_the_lineage(self) -> None:
+        self.c.leaf_actions = [_writes_declaration]
+        outcome = self.run_substep()
+        self.assertEqual((outcome.status, outcome.infra_error), ("fail", None))
+        ir_dir = self.repo / self.refs.ir_ref
+        self.assertFalse((ir_dir / "spec.ir.yaml").exists())
+        ir_meta = json.loads((ir_dir / "ir_meta.json").read_text())
+        self.assertEqual((ir_meta["verification_status"], ir_meta["last_fail_reason"]),
+                         ("fail", "tests §1: declares no test"))
+        meta = self.meta()
+        self.assertEqual((meta["failure_category"], meta["leaf_mode"]),
+                         (wc.COMPILE_DECLARED_FAIL, "workshop"))
+        self.assertEqual(meta["per_attempt"][0]["ended_by"], "declared_fail")
+        self.assertEqual(workshop_tree.read_lineage_record(self.paths("child-1"))["ended_by"],
+                         "declared_fail")
+        self.assertEqual(len(self.requests()), 1, "a declaration was repaired")
+        finals = [c[1]["--agent-run-json"] for c in self.c.calls if c[0] == "finalize-child"]
+        self.assertEqual(finals[-1]["result_summary"],
+                         f"workshop_compile_fail: {wc.COMPILE_DECLARED_FAIL}: "
+                         "tests §1: declares no test")
+        self.assertNotIn(wc.COMPILE_DECLARED_FAIL, wc.COMPILE_DOCUMENT_FAILURE_ROUTING)
+
+    def test_the_summary_keeps_300_characters_of_a_long_declaration(self) -> None:
+        self.c.leaf_actions = [_writes_long_declaration]
+        self.run_substep()
+        reason = f"tests §1: {_LONG_WHAT.strip()}"
+        self.assertGreater(len(reason), 300)
+        finals = [c[1]["--agent-run-json"] for c in self.c.calls if c[0] == "finalize-child"]
+        self.assertEqual(finals[-1]["result_summary"],
+                         f"workshop_compile_fail: {wc.COMPILE_DECLARED_FAIL}: {reason[:300]}")
+
+    def test_a_declaration_beside_an_ir_is_repaired_warm_with_the_ir_repair_turn(self) -> None:
+        def both(c, tree, kwargs):
+            _writes_ir()(c, tree, kwargs)
+            _writes_declaration(c, tree, kwargs)
+
+        def fixed(c, tree, kwargs):
+            (tree / workshop_tree.COMPILE_FAIL_NAME).unlink()
+
+        self.c.leaf_actions = [both, fixed]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "pass", outcome)
+        _first, second = self.requests()
+        self.assertTrue(second["warm_resume"])
+        self.assertEqual(second["workshop_lineage_id"], "child-1")
+        self.assertIn("two different answers", second["repair_findings"])
+        prompt = ort.render_launch_prompt_text(ort.prepare_launch_request_payload(dict(second)))
+        self.assertIn("The IR the host read from your work tree", prompt)
+        self.assertEqual(self.meta()["per_attempt"][0]["failure_category"],
+                         wc.COMPILE_IR_DOCUMENT_VIOLATION)
+
+    def test_an_empty_tree_is_workshop_tree_empty_routed_to_a_compile_reuse(self) -> None:
+        self.c.leaf_actions = [_writes_nothing]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "fail")
+        meta = self.meta()
+        self.assertEqual(meta["failure_category"], workshop_tree.WORKSHOP_TREE_EMPTY)
+        self.assertEqual(wc.COMPILE_DOCUMENT_FAILURE_ROUTING[meta["failure_category"]],
+                         ("compile", "reuse"))
+        self.assertEqual(len(meta["per_attempt"]), 1 + pure_leaf.MAX_BUNDLE_REPAIR_TURNS)
+
+    def test_a_non_mapping_ir_is_a_finding_not_a_raise(self) -> None:
+        def scalar(c, tree, kwargs):
+            (tree / workshop_tree.IR_DOCUMENT_NAME).write_text("just a string\n")
+
+        self.c.leaf_actions = [scalar, _writes_ir()]
+        self.assertEqual(self.run_substep().status, "pass")
+        self.assertEqual(self.meta()["per_attempt"][0]["failure_category"],
+                         wc.COMPILE_IR_DOCUMENT_VIOLATION)
+
+    def test_the_document_contract_judges_the_tree_s_ir(self) -> None:
+        from tools.tests.test_pure_leaf_compile import _assembled_ir
+        wrong = _assembled_ir()
+        wrong["meta"]["spec_kind"] = "problem"
+        self.c.leaf_actions = [_writes_ir(wrong), _writes_ir()]
+        self.assertEqual(self.run_substep().status, "pass")
+        self.assertIn("ir.meta.spec_kind",
+                      self.meta()["per_attempt"][0]["failure_excerpt"])
+
+    def test_an_ir_judged_against_a_tests_copy_in_the_tree_is_refused(self) -> None:
+        """Round 1 (issue #534 step 2): the leaf writes a cut-down `tests.md` into its tree and
+        points `meta.source_refs.tests` at it. The ref is the host's fact, so the document
+        contract refuses it, the repair turn names the node's own path, and nothing of the
+        copy reaches the written IR."""
+        from tools.tests.test_pure_leaf_compile import _assembled_ir
+
+        def decoy(c, tree, kwargs):
+            (tree / "mytests.md").write_text("## 1. Tests\n", encoding="utf-8")
+            ir = _assembled_ir()
+            ir["meta"]["source_refs"] = {"tests": str(tree / "mytests.md")}
+            _writes_ir(ir)(c, tree, kwargs)
+
+        self.c.leaf_actions = [decoy, _writes_ir()]
+        self.assertEqual(self.run_substep().status, "pass")
+        first = self.meta()["per_attempt"][0]
+        self.assertEqual(first["failure_category"], wc.COMPILE_IR_DOCUMENT_VIOLATION)
+        self.assertIn(f"{self.refs.spec_path}/tests.md", first["failure_excerpt"])
+        self.assertNotIn("mytests.md", (self.repo / self.refs.ir_ref / "spec.ir.yaml").read_text())
+
+    def test_a_compile_static_reopen_continues_the_open_lineage_warm(self) -> None:
+        self.assertEqual(self.run_substep().status, "pass")
+        evidence = self.c.__dict__.setdefault("evidence", {})
+        self.c.leaf_actions = [_writes_ir()]
+        with mock.patch.object(ort, "_read_launch_request_payload",
+                               lambda r, o, *, agent_run_id:
+                               evidence.get(f"{agent_run_id}.request.input.json")):
+            outcome = self.run_substep(repair={
+                "repair_strategy": "reuse", "repair_target_agent_run_id": "child-1",
+                "repair_findings": "zero_rhs_invariance carries per_case_status",
+                "issue_severity": "major", "repair_reason": "compile_static_violation"})
+        self.assertEqual(outcome.status, "pass", outcome)
+        request = self.requests()[-1]
+        self.assertEqual((request["workshop_lineage_id"], request["warm_resume"]),
+                         ("child-1", True))
+        self.assertEqual(self.c.spawns[-1]["resume_session_id"], "child-1")
+        # The re-attached lineage's seeds are rendered with the surface too: its catalog stays.
+        self.assertIn("dep__apply",
+                      (self.paths("child-1").tree / "DEPENDENCIES.md").read_text())
+
+    def test_a_handler_outliving_the_stop_is_summarized_as_a_compile_failure(self) -> None:
+        self.c.live_handlers = 1
+        outcome = self.run_substep()
+        self.assertEqual(outcome.infra_error[0], "workshop_wrapper_not_stopped")
+        finals = [c[1]["--agent-run-json"] for c in self.c.calls if c[0] == "finalize-child"]
+        self.assertEqual(finals[0]["result_summary"],
+                         "workshop_compile_fail: workshop_wrapper_not_stopped")
+
+    def test_a_seed_named_after_an_output_file_is_refused(self) -> None:
+        spec = self.c._pure_producer_spec("compile")
+        bad = spec._replace(workshop_document_seeds={
+            **spec.workshop_document_seeds, "tests_document": workshop_tree.IR_DOCUMENT_NAME})
+        with self.assertRaises(RuntimeError) as ctx:
+            self.c._workshop_seeds(self.refs, self.c._build_pure_compile_context(self.refs),
+                                   {}, bad)
+        self.assertIn("named after an output file", str(ctx.exception))
+
+    def test_the_pure_entry_still_runs_the_part_split(self) -> None:
+        """Dispatch: the workshop branch precedes the compile one only for a workshop entry."""
+        with mock.patch.object(wc.Conductor, "_run_pure_compile_producer",
+                               return_value="PURE") as pure, \
+                mock.patch.object(wc.Conductor, "_run_workshop_producer_substep",
+                                  return_value="WORKSHOP") as workshop:
+            self.assertEqual(self.run_substep(), "WORKSHOP")
+            self.assertEqual(workshop.call_args.args[-1], _SURFACE)
+            pure_c = _WorkshopFakeConductor(
+                repo_root=self.repo, orchestration_id=_ORCH,
+                orchestration_agent_run_id="orch",
+                llm_config=lc.load_llm_config(_write_pure_config(self.repo)), env={})
+            self.assertEqual(pure_c.run_substep(self.refs, "compile", "generate"), "PURE")
+        self.assertEqual((pure.call_count, workshop.call_count), (1, 1))
+
+
+class WorkshopSpecTests(_Base):
+    def test_both_generate_shapes_carry_the_same_workshop_half(self) -> None:
+        default = self.c._pure_producer_spec("generate", "m3c")
+        harness = self.c._pure_producer_spec("generate", "harness")
+        fields = [f for f in wc.Conductor._PureProducerSpec._fields if f.startswith("workshop_")]
+        self.assertEqual(len(fields), 7)
+        for name in fields:
+            with self.subTest(field=name):
+                self.assertEqual(getattr(harness, name), getattr(default, name))
+                self.assertIsNotNone(getattr(default, name))
+        self.assertTrue(default.workshop_seeds_host_sources and default.workshop_control_file)
+
+    def test_a_workshop_request_names_its_lineage_and_provider_together(self) -> None:
+        base = dict(step="generate", substep="generate", orchestration_id="o",
+                    orchestration_agent_run_id="orch", child_agent_run_id="c",
+                    agent_model="opus", workflow_mode="dev", pure_leaf=True,
+                    pure_context=self.c._build_pure_context(self.refs))
+        for kw in ({"workshop_lineage_id": "c"}, {"workshop_provider": "claude_cli"}):
+            with self.subTest(given=kw):
+                with self.assertRaises(ValueError) as ctx:
+                    wc.build_launch_request(self.refs, **base, **kw)
+                self.assertIn("names its lineage and its provider together", str(ctx.exception))
+        req = wc.build_launch_request(self.refs, **base, workshop_lineage_id="c",
+                                      workshop_provider="claude_cli")
+        self.assertEqual(req["workshop_provider"], "claude_cli")
+        self.assertNotIn("workshop_provider", wc.build_launch_request(self.refs, **base))
+
+
+def _write_pure_config(repo: Path) -> Path:
+    path = repo / "llm_pure.yaml"
+    path.write_text("defaults: {provider: claude_cli, model: opus}\n", encoding="utf-8")
+    return path

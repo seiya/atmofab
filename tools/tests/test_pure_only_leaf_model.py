@@ -100,6 +100,12 @@ class _DispatchProbe(_PureFakeConductor):
         self.__dict__.setdefault("dispatch", []).append(("reviewer", phase, substep))
         return wc.SubstepOutcome("child-r", "pass", [], 0, None, 1)
 
+    def _run_workshop_producer_substep(self, refs, phase, substep, repair, resolved,  # type: ignore[override]
+                                       spec, dependency_surface=()):
+        self.__dict__.setdefault("dispatch", []).append(
+            ("workshop", phase, substep, tuple(dependency_surface)))
+        return wc.SubstepOutcome("child-w", "pass", [], 0, None, 1)
+
     def spawn_leaf(self, *a, **kw):  # type: ignore[override]
         raise AssertionError("spawn_leaf reached: an LLM leaf launched outside the pure loops")
 
@@ -139,6 +145,31 @@ class EveryLlmLaunchIsPureTests(unittest.TestCase):
                     self.assertEqual(c.__dict__.get("dispatch"),
                                      [(expect, phase, substep)],
                                      msg=f"{provider} {shape} {phase}.{substep}")
+
+    def test_a_workshop_entry_dispatches_into_the_workshop_loop_on_both_producers(
+            self) -> None:
+        """Issue #534 step 2: a `leaf: workshop` entry on `compile.generate` reaches the
+        workshop loop BEFORE the compile branch would take the part split, and carries the
+        dependency surface; the pure entry beside it still takes the pure producer."""
+        cfg = self.repo / "llm_ws.yaml"
+        cfg.write_text(
+            "defaults: {provider: claude_cli, model: opus}\n"
+            "phases:\n"
+            "  compile: {substeps: {generate: {leaf: workshop, max_wrapper_calls: 3, "
+            "lineage_timeout_s: 60}}}\n"
+            "  generate: {substeps: {generate: {leaf: workshop, max_wrapper_calls: 3, "
+            "lineage_timeout_s: 60}}}\n", encoding="utf-8")
+        surface = ({"node_key": "component/d@0.1.0", "published_operations": ["d__x"]},)
+        for phase, substep, expect in (
+                ("compile", "generate", ("workshop", "compile", "generate", surface)),
+                ("generate", "generate", ("workshop", "generate", "generate", surface)),
+                ("compile", "verify", ("reviewer", "compile", "verify"))):
+            c = _DispatchProbe(repo_root=self.repo, orchestration_id="o",
+                               orchestration_agent_run_id="orch", env={},
+                               llm_config=lc.load_llm_config(cfg))
+            c._bundle_shape = lambda refs: "m3c"  # type: ignore[assignment]
+            c.run_substep(self.refs, phase, substep, dependency_surface=surface)
+            self.assertEqual(c.__dict__.get("dispatch"), [expect], f"{phase}.{substep}")
 
     def test_a_shapeless_node_fails_the_generate_pairs_closed(self) -> None:
         """With no bundle shape there is no pure path for the two `generate` pairs, and there

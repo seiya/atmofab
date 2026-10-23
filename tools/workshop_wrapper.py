@@ -1,10 +1,15 @@
-"""The wrapper of a `workshop leaf`: the five operations it may ask the host to run.
+"""The wrapper of a `workshop leaf`: the operations it may ask the host to run.
 
-`docs/design/producer_workshop_leaf.md` §Tool surface (issue #534): a `workshop leaf` derives,
-compiles, lints, syntax-checks and runs through the host, never by itself. Each operation here
+`docs/design/producer_workshop_leaf.md` §Tool surface (issue #534): a `generate.generate`
+`workshop leaf` derives, compiles, lints, syntax-checks and runs through the host, never by
+itself (`WRAPPER_OPS`); a `compile.generate` one has its IR checked the way `Compile.static`
+will check it (`IR_CHECK_OPS`, step 2). Each operation here
 runs in the conductor's process, from a `WrapperContext` the conductor freezes in its main thread
-before the leaf is launched (`Conductor._freeze_wrapper_context`), so a call — served on a
-transport thread while the leaf runs — reads no conductor state and calls no conductor method.
+before the leaf is launched (`Conductor._freeze_wrapper_context` / `_freeze_ir_check_context`),
+so a call — served on a transport thread while the leaf runs — reads no conductor state. The
+one conductor method it calls is the IR contract an IR context binds
+(`Conductor._pure_ir_document_violations`, and the declaration reader beside it), which reads
+only the frozen node refs and class constants.
 
 What the leaf chooses is the CONTENT of its tree and, for `run`, a binary basename, a
 tree-relative case file and case ids. Every path and every build-runtime argument is composed
@@ -39,8 +44,12 @@ from typing import Any
 from tools import workshop_tree
 from tools.workshop_tree import AssemblyFailure, LineagePaths
 
-#: The operations, in the order the leaf is told them.
+#: The operations of a bundle (`generate.generate`) lineage, in the order the leaf is told them.
 WRAPPER_OPS: tuple[str, ...] = ("derive", "compile", "lint", "syntax_check", "run")
+#: The operation of an IR (`compile.generate`) lineage.
+IR_CHECK_OPS: tuple[str, ...] = ("check_ir",)
+#: Every operation any lineage may serve.
+ALL_OPS: tuple[str, ...] = WRAPPER_OPS + IR_CHECK_OPS
 
 #: The categories a refused call carries. A bound's category ends the lineage.
 CATEGORY_MAX_WRAPPER_CALLS = "max_wrapper_calls"
@@ -51,6 +60,7 @@ CATEGORY_WRAPPER_ERROR = "wrapper_error"
 CATEGORY_RUN_UNAVAILABLE = "run_unavailable"
 CATEGORY_STAGED_CLOSURE = "staged_closure_incomplete"
 CATEGORY_BUILD_GRAPH = "build_graph_failed"
+CATEGORY_IR_STATIC = "compile_static_violation"
 
 #: The text a leaf is shown of a command's output, per stream.
 DEFAULT_CAPTURE_LIMIT = 20000
@@ -89,52 +99,80 @@ def wrapper_base_env(host_env: Mapping[str, str] | None = None) -> dict[str, str
 
 @dataclass(frozen=True)
 class WrapperContext:
-    """Everything an operation reads, frozen before the launch."""
+    """Everything an operation reads, frozen before the launch.
+
+    One class for both producing substeps (issue #534 step 2): `ops` names the operations the
+    lineage serves — `WRAPPER_OPS` on a `generate.generate` lineage, `IR_CHECK_OPS` on a
+    `compile.generate` one — and each operation reads only the fields of its own kind. The
+    fields below the common block default to "absent", and an operation whose fields are absent
+    is refused by `run_wrapper_op` before it is counted, because `ops` does not name it."""
 
     paths: LineagePaths
     repo_root: Path
     orchestration_id: str
     agent_run_id: str
-    #: Tree paths a bundle may not name (`workshop_tree.reserved_tree_names`).
+    #: Tree paths a document may not name (`workshop_tree.reserved_tree_names`).
     reserved_names: frozenset[str]
-    control_file_basename: str
-    #: (document) -> None, or (category, findings): `pure_bundle_contract_violation`, bound.
-    violations: Callable[[dict[str, Any]], tuple[str, str] | None]
-    #: (document) -> the build graph: `derive_build_graph`, bound.
-    build_graph: Callable[[dict[str, Any]], dict[str, Any]]
-    #: (graph=...) -> the control file's text: the build system's `render_from_graph`, bound
-    #: (keyword-only, as that renderer takes it).
-    render_control_file: Callable[[dict[str, Any]], str]
-    #: The basenames the staged closure placed in `staged/closure` (sources and headers).
-    closure_file_names: tuple[str, ...]
     #: The seeds' tree paths: the host-placed files a source view carries beside the bundle's.
     seed_names: tuple[str, ...]
-    language: str
-    build_system: str
-    #: The build system's command-line overrides for the staged object / binary directories.
-    build_overrides: tuple[str, ...]
-    lint_preset: str
-    syntax_compiler: str
-    syntax_std: str
-    syntax_architecture: str | None
-    syntax_parallel_backend: str | None
-    syntax_staged_suffixes: tuple[str, ...]
-    #: The node's model file and its host-rendered interface header (None for a language
-    #: with none): what the model-alone probe stages.
-    model_basename: str
-    interface_header_basename: str | None
-    #: The local launch shape (`host_execution.launch_shape`), or None with `run_unavailable`.
-    launch_argv_prefix: tuple[str, ...] | None
-    launch_env: tuple[tuple[str, str], ...]
-    run_unavailable: str | None
-    #: The directories `Validate.execute` creates under the run's working directory before it
-    #: runs the binary (`Conductor._run_raw_dirs`), as one nested path.
-    run_raw_dirs: tuple[str, ...]
-    base_env: tuple[tuple[str, str], ...]
-    toolchain_ro_roots: tuple[str, ...]
     max_wrapper_calls: int
     #: Epoch seconds at which the lineage's `lineage_timeout_s` runs out.
     lineage_deadline: float
+    #: The operations this lineage serves, in the order the leaf is told them.
+    ops: tuple[str, ...] = WRAPPER_OPS
+    #: (document) -> None, or (category, findings): `pure_bundle_contract_violation` bound on a
+    #: bundle lineage, `Conductor._pure_ir_document_violations` bound on an IR one.
+    violations: Callable[[dict[str, Any]], tuple[str, str] | None] | None = None
+    # --- a bundle lineage (`WRAPPER_OPS`) ---------------------------------------------------
+    control_file_basename: str = ""
+    #: (document) -> the build graph: `derive_build_graph`, bound.
+    build_graph: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+    #: (graph=...) -> the control file's text: the build system's `render_from_graph`, bound
+    #: (keyword-only, as that renderer takes it).
+    render_control_file: Callable[..., str] | None = None
+    #: The basenames the staged closure placed in `staged/closure` (sources and headers).
+    closure_file_names: tuple[str, ...] = ()
+    language: str = ""
+    build_system: str = ""
+    #: The build system's command-line overrides for the staged object / binary directories.
+    build_overrides: tuple[str, ...] = ()
+    lint_preset: str = ""
+    syntax_compiler: str = ""
+    syntax_std: str = ""
+    syntax_architecture: str | None = None
+    syntax_parallel_backend: str | None = None
+    syntax_staged_suffixes: tuple[str, ...] = ()
+    #: The node's model file and its host-rendered interface header (None for a language
+    #: with none): what the model-alone probe stages.
+    model_basename: str = ""
+    interface_header_basename: str | None = None
+    #: The local launch shape (`host_execution.launch_shape`), or None with `run_unavailable`.
+    launch_argv_prefix: tuple[str, ...] | None = None
+    launch_env: tuple[tuple[str, str], ...] = ()
+    run_unavailable: str | None = None
+    #: The directories `Validate.execute` creates under the run's working directory before it
+    #: runs the binary (`Conductor._run_raw_dirs`), as one nested path.
+    run_raw_dirs: tuple[str, ...] = ()
+    base_env: tuple[tuple[str, str], ...] = ()
+    toolchain_ro_roots: tuple[str, ...] = ()
+    # --- an IR lineage (`IR_CHECK_OPS`) -----------------------------------------------------
+    #: (tree, reserved names) -> the document, or an `AssemblyFailure`:
+    #: `workshop_tree.assemble_ir_document`.
+    assemble: Callable[[Path, frozenset[str]], Any] | None = None
+    #: (document) -> the leaf's own "cannot be completed" declaration as one line, or None:
+    #: `Conductor._pure_ir_declared_fail`.
+    declared_fail: Callable[[dict[str, Any]], str | None] | None = None
+    #: (ir object) -> the IR text the host would write: `Conductor._pure_ir_yaml`.
+    ir_yaml: Callable[[dict[str, Any]], str] | None = None
+    #: (ir_meta text) the pending `ir_meta.json` the host would write beside it.
+    ir_meta_text: str = ""
+    #: `(name, text)` of the host's sidecars the validators read beside the IR
+    #: (`dependency_graph.json`, `dependency_surface.json`), copied from `<ir_ref>`.
+    sidecar_texts: tuple[tuple[str, str], ...] = ()
+    #: (repo_root, ir directory) -> the `Compile.static` violations:
+    #: `validate_pipeline_semantics.validate_compile_ir_dir`.
+    validate_ir_dir: Callable[[Path, Path], list[str]] | None = None
+    # --- both -------------------------------------------------------------------------------
     #: `(name, text)` of every seed the host re-places before each operation (the contract
     #: copy excepted, which no operation reads), so an operation reads the host's seeds rather
     #: than a copy the leaf edited (issue #534 PR-3). Empty: nothing is re-placed.
@@ -188,9 +226,12 @@ def run_wrapper_op(ctx: WrapperContext, op: str, arguments: Mapping[str, Any] | 
     ended (`ended_by` recorded) and the call is refused with `ended: True`, which the transport
     (issue #534 PR-2's) turns into the end of the leaf. `on_spawn` is told the process-group id of every sandboxed
     command as it starts, so the host can kill a run still in flight when it ends the lineage."""
-    if op not in WRAPPER_OPS:
+    if op not in ctx.ops or op not in _OPS:
+        # Before the bounds: a call to an operation this lineage does not serve is not counted
+        # and ends nothing (a bundle lineage has no `check_ir`, an IR one no `compile`).
         return _result(False, category=CATEGORY_BAD_ARGUMENTS,
-                       findings=f"unknown operation {op!r}; the operations are {WRAPPER_OPS}")
+                       findings=f"unknown operation {op!r}; this lineage's operations are "
+                                f"{list(ctx.ops)}")
     args = dict(arguments or {})
     try:
         ended_by = workshop_tree.read_lineage_record(ctx.paths).get("ended_by")
@@ -276,6 +317,9 @@ def _derivation(ctx: WrapperContext) -> tuple[dict[str, Any], str] | dict[str, A
     """`(document, control file text)` for the tree as it stands — the host's Generate-time
     derivation: assembly, the producer's contract, the build graph, the control file — or the
     failure as feedback."""
+    if ctx.violations is None or ctx.build_graph is None or ctx.render_control_file is None:
+        return _result(False, category=CATEGORY_WRAPPER_ERROR,
+                       findings="this lineage serves no bundle operation (a host fault)")
     doc = workshop_tree.assemble_bundle_document(ctx.paths.tree, ctx.reserved_names)
     if isinstance(doc, AssemblyFailure):
         return _result(False, category=doc.category, findings=doc.findings)
@@ -562,7 +606,78 @@ def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict
     return _command_feedback(result)
 
 
+def _op_check_ir(ctx: WrapperContext, args: Mapping[str, Any],
+                 on_spawn: Any) -> dict[str, Any]:
+    """Check the tree's IR the way the host will (issue #534 step 2): assemble it
+    (`workshop_tree.assemble_ir_document`), judge the document by the producer's contract
+    (`Conductor._pure_ir_document_violations`), and — when it carries an IR rather than a
+    declaration — run the `Compile.static` validators over a scratch IR directory holding the
+    host-normalized `spec.ir.yaml`, a pending `ir_meta.json` and the host's sidecars, as
+    `<ir_ref>` would hold them. Feedback only: the host's own `Compile.static` runs on the
+    snapshot and is the authority. No subprocess (`on_spawn` is unused).
+
+    The scratch directory is the lineage home's `check/`, outside the tree, emptied on every
+    call. The validators read `tests.md` and the controlled spec through the IR's
+    `meta.source_refs`, which the document contract has already pinned to the node's own spec
+    documents (step (2) below), so they read the host's copies under `repo_root` — never a seed
+    the leaf edited, nor a copy it wrote into its tree."""
+    refused = _no_arguments("check_ir", args)
+    if refused is not None:
+        return refused
+    if (ctx.assemble is None or ctx.violations is None or ctx.declared_fail is None
+            or ctx.ir_yaml is None or ctx.validate_ir_dir is None):
+        return _result(False, category=CATEGORY_WRAPPER_ERROR,
+                       findings="check_ir is not served by this lineage (a host fault)")
+    started = _utc_now_iso()
+    outcome = _check_ir(ctx)
+    workshop_tree.append_jsonl(ctx.paths.command_log, {
+        "version": 1,
+        "command_id": uuid.uuid4().hex,
+        "tool_name": "check_ir",
+        "started_at_utc": started,
+        "ended_at_utc": _utc_now_iso(),
+        "ok": bool(outcome.get("ok")),
+        **({"category": outcome["category"]} if "category" in outcome else {}),
+        **_attribution(ctx),
+    })
+    return outcome
+
+
+def _check_ir(ctx: WrapperContext) -> dict[str, Any]:
+    assert (ctx.assemble is not None and ctx.violations is not None
+            and ctx.declared_fail is not None and ctx.ir_yaml is not None
+            and ctx.validate_ir_dir is not None)
+    doc = ctx.assemble(ctx.paths.tree, ctx.reserved_names)
+    if isinstance(doc, AssemblyFailure):
+        return _result(False, category=doc.category, findings=doc.findings)
+    violation = ctx.violations(doc)
+    if violation is not None:
+        category, findings = violation
+        return _result(False, category=category, findings=findings)
+    declared = ctx.declared_fail(doc)
+    if declared is not None:
+        # The host would take its third exit on this tree: no IR, the declaration recorded.
+        return _result(True, declared_fail=declared)
+    scratch = _fresh_dir(ctx.paths.home / "check")
+    (scratch / "spec.ir.yaml").write_text(ctx.ir_yaml(doc["ir"]), encoding="utf-8")
+    (scratch / "ir_meta.json").write_text(ctx.ir_meta_text, encoding="utf-8")
+    for name, text in ctx.sidecar_texts:
+        (scratch / name).write_text(text, encoding="utf-8")
+    violations = [str(v) for v in ctx.validate_ir_dir(ctx.repo_root, scratch)]
+    if not violations:
+        return _result(True)
+    # The HEAD is kept: the validators report in their own order, and the first findings are
+    # the ones a later one may follow from.
+    text = "\n".join(violations)
+    truncated = len(text) > ctx.capture_limit
+    if truncated:
+        text = text[:ctx.capture_limit] + f"...<omitted {len(text) - ctx.capture_limit} chars>"
+    return _result(False, category=CATEGORY_IR_STATIC, findings=text,
+                   truncated=truncated or None)
+
+
 _OPS: dict[str, Callable[[WrapperContext, Mapping[str, Any], Any], dict[str, Any]]] = {
+    "check_ir": _op_check_ir,
     "derive": _op_derive,
     "compile": _op_compile,
     "lint": _op_lint,

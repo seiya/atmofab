@@ -1,0 +1,55 @@
+{
+  "agent_role": "substep",
+  "node_key": "component/dynamics_shallow_water_time_update_2d_rk4@0.1.1",
+  "step": "generate",
+  "orchestration_id": "orch_20261023T105639Z_3106b29e",
+  "agent_run_id": "bf1381b2-0e08-4b65-99a7-642ea358ec25",
+  "parent_agent_run_id": "4f7e2b82-f707-430b-accf-fef8f0f391e4",
+  "agent_model": "opus",
+  "workflow_mode": "dev",
+  "ir_ref": "workspace/ir/component__dynamics_shallow_water_time_update_2d_rk4__0.1.1/dynamics-shallow-water-time-update-2d-rk4_20261023_003",
+  "pipeline_ref": "workspace/pipelines/component__dynamics_shallow_water_time_update_2d_rk4__0.1.1/fortran_cpu/dynamics-shallow-water-time-update-2d-rk4_20261023_002",
+  "substep": "generate",
+  "runner_host_authored": true,
+  "source_id": "src_20261023_002",
+  "dependency_ref": "workspace/ir/component__dynamics_shallow_water_time_update_2d_rk4__0.1.1/dynamics-shallow-water-time-update-2d-rk4_20261023_003",
+  "allowed_output_paths": [],
+  "resolved_dependencies": [
+    {
+      "node_key": "infrastructure/harness_fortran_cpu@0.8.0",
+      "pipeline_ref": "workspace/pipelines/infrastructure__harness_fortran_cpu__0.8.0/fortran_cpu/harness-fortran-cpu_20261023_001",
+      "run_id": "run_20261023_001",
+      "aggregate_verdict_ref": "workspace/pipelines/infrastructure__harness_fortran_cpu__0.8.0/fortran_cpu/harness-fortran-cpu_20261023_001/runs/run_20261023_001/infrastructure__harness_fortran_cpu__0.8.0/aggregate_verdict.json"
+    }
+  ],
+  "issue_severity": "none",
+  "repair_strategy": "none",
+  "repair_target_agent_run_id": "none",
+  "repair_reason": "none",
+  "leaf_mode": "workshop",
+  "prompt_contract_version": "workshop-1",
+  "workshop_lineage_id": "bf1381b2-0e08-4b65-99a7-642ea358ec25",
+  "skill_name": "",
+  "skill_ref": "",
+  "skill_must_read_refs": "",
+  "pure_language": "fortran",
+  "pure_parallel": "openmp",
+  "pure_context": {
+    "harness_capabilities": "<redacted: 226 bytes sha256:6267c55b988e6ed02633a87d9cacbb8a2434e2495bc0f3a6c76cd486c37d4c84>",
+    "target_profile": "<redacted: 517 bytes sha256:f037029363c7606f732d2506fbb7bcc3d52f3bd6a2e69578e9c8e3133bf7c2a2>",
+    "ir_document": "<redacted: 38876 bytes sha256:17730e7b35816fe07236a2b434efe195405806c6c809e1d240cd88c111510c90>",
+    "tests_document": "<redacted: 18256 bytes sha256:ff9e2f34ca7a788b8a3ececcceefdfe48c026a1dbe697b1961588028e4c071f6>",
+    "runner_document": "<redacted: 16875 bytes sha256:9581755fa379f56d023f08d0a50c1e6af2cee596b0ffdc1406b45c42e60ef344>"
+  },
+  "derivation_key": "sha256:5fadeace7126957a2d2d980c9b04f0d1816c3710981701382f4f2e4cd030c91c",
+  "launch_prompt_full": "<redacted: 40968 bytes sha256:1284f02ef00b2456fcca9002cb0c11974f563a2b89b9e537d26c257caab636bc>",
+  "launch_prompt_ref": "workspace/orchestrations/orch_20261023T105639Z_3106b29e/launches/bf1381b2-0e08-4b65-99a7-642ea358ec25.prompt.txt",
+  "_resolved_build_system": "make",
+  "_resolved_makefile_host_authored": true,
+  "sandbox_profile_ref": "workspace/orchestrations/orch_20261023T105639Z_3106b29e/sandbox_profiles/bf1381b2-0e08-4b65-99a7-642ea358ec25.json",
+  "_capture_source": {
+    "path": "workspace/orchestrations/orch_20261023T105639Z_3106b29e/launches/bf1381b2-0e08-4b65-99a7-642ea358ec25.request.json",
+    "bytes": 120157,
+    "sha256": "9f88a20224255f8d4b9892f35d6525af00f44b8b818a21fc3b93bf9d491c24fd"
+  }
+}

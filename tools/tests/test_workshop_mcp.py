@@ -24,7 +24,7 @@ from unittest import mock
 
 from tools import workshop_mcp, workshop_tree
 from tools.workshop_tree import LineagePaths
-from tools.workshop_wrapper import WRAPPER_OPS
+from tools.workshop_wrapper import ALL_OPS, IR_CHECK_OPS, WRAPPER_OPS
 
 #: The local port of the last request `_http` made, so a row can match the recorded peer.
 _LAST_LOCAL_PORT: list[int] = []
@@ -74,7 +74,7 @@ class _Fixture(unittest.TestCase):
         workshop_tree.write_lineage_record(self.paths, node_key="component/x/y",
                                            started_at_utc="2026-10-23T00:00:00Z")
         self.ctx = SimpleNamespace(paths=self.paths, agent_run_id="arid-launch-1",
-                                   max_wrapper_calls=3, seed_texts=())
+                                   max_wrapper_calls=3, seed_texts=(), ops=WRAPPER_OPS)
         self.calls: list[tuple[str, dict]] = []
 
     def _server(self, run_op=None, on_end=None) -> workshop_mcp.WrapperMcpServer:
@@ -136,6 +136,68 @@ class ProtocolTests(_Fixture):
         run = next(t for t in tools if t["name"] == "run")
         self.assertEqual(set(run["inputSchema"]["properties"]),
                          {"binary", "cases_file", "case_ids"})
+
+    def test_an_ir_lineage_is_served_check_ir_and_nothing_else(self) -> None:
+        """Issue #534 step 2: the tools are the context's operations. A bundle operation named
+        on an IR lineage's endpoint is refused there, never dispatched."""
+        self.ctx.ops = IR_CHECK_OPS
+        server = self._server()
+        body = _post(server.url, {"jsonrpc": "2.0", "id": 3, "method": "tools/list"})[1]
+        self.assertEqual([t["name"] for t in body["result"]["tools"]], ["check_ir"])
+        self.assertIs(body["result"]["tools"][0]["inputSchema"]["additionalProperties"], False)
+        for name in ("compile", "run"):
+            refused = _post(server.url, {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+                                         "params": {"name": name, "arguments": {}}})[1]
+            self.assertEqual(refused["error"]["code"], -32602, name)
+        ok = _post(server.url, {"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                                "params": {"name": "check_ir", "arguments": {}}})[1]
+        self.assertFalse(ok["result"]["isError"])
+        self.assertEqual(self.calls, [("check_ir", {})])
+
+    def test_every_operation_has_one_tool_definition(self) -> None:
+        self.assertEqual(set(workshop_mcp.TOOL_DEFINITIONS), set(ALL_OPS))
+        for op, tool in workshop_mcp.TOOL_DEFINITIONS.items():
+            self.assertEqual(tool["name"], op)
+
+    def test_a_client_that_drops_the_connection_is_one_row_and_no_traceback(self) -> None:
+        """Issue #534 step 1's A/B: a client that closes before the response is written left a
+        `ConnectionResetError` traceback on the conductor's stderr (`socketserver`'s default
+        `handle_error`). It is a `connection_error` row of the record now, and nothing else."""
+        import contextlib
+        import io
+        import socket
+
+        started, dropped = threading.Event(), threading.Event()
+
+        def slow(ctx, op, args, *, on_spawn=None):
+            # The request is read; the client drops the connection before the answer.
+            started.set()
+            dropped.wait(10)
+            return {"ok": True}
+
+        server = self._server(run_op=slow)
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                           "params": {"name": "derive", "arguments": {}}}).encode()
+        stderr = io.StringIO()
+        with contextlib.redirect_stderr(stderr):
+            sock = socket.create_connection(("127.0.0.1", server.port))
+            sock.sendall(b"POST /mcp HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\n"
+                         + f"Content-Length: {len(body)}\r\n\r\n".encode() + body)
+            self.assertTrue(started.wait(10))
+            # SO_LINGER 0: the close sends a RST, so the server's write of the answer fails.
+            sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER,
+                            b"\x01\x00\x00\x00\x00\x00\x00\x00")
+            sock.close()
+            dropped.set()
+            deadline = time.monotonic() + 10
+            while server.in_flight() and time.monotonic() < deadline:
+                time.sleep(0.05)
+            server.stop()
+        rows = [r for r in self._log() if r.get("event") == "connection_error"]
+        self.assertEqual(len(rows), 1, self._log())
+        self.assertEqual(rows[0]["agent_run_id"], "arid-launch-1")
+        self.assertIn("Error", rows[0]["error"])
+        self.assertEqual(stderr.getvalue(), "")
 
     def test_tools_call_dispatches_and_answers_the_result_as_text(self) -> None:
         server = self._server()

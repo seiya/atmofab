@@ -97,6 +97,7 @@ try:
         WORKSHOP_LEAF_MODE,
         WORKSHOP_PROMPT_CONTRACT_VERSION,
         WORKSHOP_PROMPT_SENTINEL,
+        WORKSHOP_TOOL_SURFACE_TEXT,
         is_host_rendered_request as _pure_leaf_is_host_rendered_request,
         is_pure_request as _pure_leaf_is_pure_request,
         is_workshop_request as _pure_leaf_is_workshop_request,
@@ -144,6 +145,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         WORKSHOP_LEAF_MODE,
         WORKSHOP_PROMPT_CONTRACT_VERSION,
         WORKSHOP_PROMPT_SENTINEL,
+        WORKSHOP_TOOL_SURFACE_TEXT,
         is_host_rendered_request as _pure_leaf_is_host_rendered_request,
         is_pure_request as _pure_leaf_is_pure_request,
         is_workshop_request as _pure_leaf_is_workshop_request,
@@ -9297,6 +9299,10 @@ _PROMPT_TEMPLATE_FILES = {
     "workshop generate.generate": "workshop_generate_generate.txt",
     "workshop generate.generate.harness": "workshop_generate_generate_harness.txt",
     "workshop bundle repair": "workshop_bundle_repair.txt",
+    # Step 2 of the same issue: the `compile.generate` producer authors the WHOLE IR in its tree
+    # (the part split of issue #526 is a pure entry's), and has its own repair turn.
+    "workshop compile.generate": "workshop_compile_generate.txt",
+    "workshop ir repair": "workshop_ir_repair.txt",
     # The escalate diagnostician: one template, four (step, substep) keys, because the pair is
     # what the renderer looks up and the prompt does not vary with the failed phase (the phase
     # is a field of the diagnosis document).
@@ -10086,6 +10092,17 @@ def _render_pure_launch_prompt(request_payload: dict[str, Any]) -> str:
     subs["orchestration_id"] = str(request_payload.get("orchestration_id", ""))
     subs["agent_run_id"] = str(request_payload.get("agent_run_id", ""))
     subs["prompt_contract_version"] = str(request_payload.get("prompt_contract_version", ""))
+    if _pure_leaf_is_workshop_request(request_payload):
+        # The one sentence of a workshop contract that differs by transport: what the leaf
+        # holds besides the wrapper (issue #534 step 2). A NAMED refusal for a provider with no
+        # row, for the reason a missing template is one above: the render runs before
+        # `_validate_pure_launch_request_payload`, which refuses the same request.
+        provider = request_payload.get("workshop_provider")
+        if not (isinstance(provider, str) and provider in WORKSHOP_TOOL_SURFACE_TEXT):
+            raise ValueError(
+                f"workshop launch request must name its provider in workshop_provider, one of "
+                f"{', '.join(sorted(WORKSHOP_TOOL_SURFACE_TEXT))}; got {provider!r}")
+        subs["tool_surface"] = WORKSHOP_TOOL_SURFACE_TEXT[provider]
     return _substitute_pure_placeholders(template, subs)
 
 
@@ -10139,6 +10156,17 @@ def _pure_launch_body(request_payload: dict[str, Any]) -> str:
     return body.strip()
 
 
+def _pure_repair_template_name(request_payload: dict[str, Any]) -> str:
+    """The template key of a host-rendered repair turn. A workshop producer's repair turn is its
+    substep's — the IR's on `compile`, the bundle's otherwise (issue #534 step 2); a pure one
+    has one template for every producer and reviewer."""
+    if _pure_leaf_is_workshop_request(request_payload):
+        if str(request_payload.get("step", "")).strip().lower() == "compile":
+            return "workshop ir repair"
+        return "workshop bundle repair"
+    return "pure bundle repair"
+
+
 def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
     """Render a bounded pure schema-repair turn (`pure_bundle_repair.txt`).
 
@@ -10156,8 +10184,7 @@ def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
     label paragraph the launch template gives it (issue #510; it replaced a by-prefix lift of
     named paragraphs plus a bare-key re-inline of the context)."""
     templates = _load_launch_prompt_templates()
-    repair_key = ("workshop bundle repair" if _pure_leaf_is_workshop_request(request_payload)
-                  else "pure bundle repair")
+    repair_key = _pure_repair_template_name(request_payload)
     if repair_key not in templates:
         raise ValueError(f"launch request names no rendered prompt: no template for "
                          f"{repair_key!r}")
@@ -11165,10 +11192,19 @@ def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> No
                 "workshop launch request must name its lineage in workshop_lineage_id (a plain "
                 f"[A-Za-z0-9_-] token: the agent_run_id of the lineage's cold launch); got "
                 f"{lineage!r}")
+        # The provider whose tool surface the prompt states (`<tool_surface>`): one with a row.
+        provider = request_payload.get("workshop_provider")
+        if not (isinstance(provider, str) and provider in WORKSHOP_TOOL_SURFACE_TEXT):
+            raise ValueError(
+                f"workshop launch request must name its provider in workshop_provider, one of "
+                f"{', '.join(sorted(WORKSHOP_TOOL_SURFACE_TEXT))}; got {provider!r}")
     elif lineage is not None:
         raise ValueError(
             f"launch request carries workshop_lineage_id={lineage!r} and is not a workshop "
             "request; only a workshop leaf has a lineage")
+    elif request_payload.get("workshop_provider") is not None:
+        raise ValueError(
+            "launch request carries workshop_provider and is not a workshop request")
     # A declared bundle SHAPE selects a different template and a different required-key set, so
     # it is validated before either is looked up: the vocabulary is closed, and the shape must be
     # declared on a pair that HAS one. An unknown value never falls back to the default.
@@ -14790,6 +14826,14 @@ def record_launch(
             raise ValueError(
                 f"record-launch: a workshop launch runs on the claude backend only; this launch "
                 f"names {_launch_backend or backend_token!r}")
+        # The provider the prompt's `<tool_surface>` was rendered for is THIS launch's: a
+        # prompt stating another transport's tools would describe a surface the leaf lacks.
+        from tools.llm_config import PROVIDER_BACKEND_TOKENS
+        named = request_payload.get("workshop_provider")
+        if PROVIDER_BACKEND_TOKENS.get(named if isinstance(named, str) else "") != backend_token:
+            raise ValueError(
+                f"record-launch: the workshop request's workshop_provider {named!r} is not this "
+                f"launch's provider (backend {backend_token!r})")
         requested = request_payload.get("workshop_lineage_id")
         if not (isinstance(requested, str) and _AGENT_RUN_ID_RE.match(requested.strip())):
             raise ValueError(

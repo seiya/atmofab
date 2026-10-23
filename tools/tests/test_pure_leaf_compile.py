@@ -674,6 +674,72 @@ class PureIrDocumentViolationTests(_Fixture):
     def test_a_declared_fail_has_no_violations_and_needs_no_ir(self) -> None:
         self.assertIsNone(self.violations(_declared()))
 
+    def test_the_source_refs_must_name_the_node_s_own_spec_documents(self) -> None:
+        """Issue #534 step 2 round 1: `Compile.static` reads the node's tests through
+        `meta.source_refs.tests`, so a ref to any other file has the gate judge the IR against a
+        test set the leaf chose (measured on a workshop tree: a cut-down copy cleared the gate
+        with a test's entries dropped). Each present ref must be the node's own document; an
+        absent one is the gate's to refuse."""
+        own = {"controlled_spec": f"{_SPEC_PATH}/controlled_spec.md",
+               "tests": f"{_SPEC_PATH}/tests.md", "deps": f"{_SPEC_PATH}/deps.yaml"}
+
+        def with_refs(refs):
+            ir = _valid_ir()
+            ir["meta"]["source_refs"] = refs
+            return _doc(ir)
+
+        self.assertIsNone(self.violations(with_refs(dict(own))))
+        self.assertIsNone(self.violations(_doc()))           # absent: Compile.static's finding
+        self.assertIsNone(self.violations(with_refs({"tests": own["tests"]})))
+        other = "spec/component/dynamics/advection_diffusion/other_node/tests.md"
+        for label, refs in (
+                ("an absolute path to a copy", dict(own, tests="/tmp/tree/mytests.md")),
+                ("a relative path out of the spec dir", dict(own, tests="../tree/tests.md")),
+                ("another node's tests", dict(own, tests=other)),
+                ("a respelled own path", dict(own, tests="./" + own["tests"])),
+                ("another controlled spec", dict(own, controlled_spec=other)),
+                ("another deps", dict(own, deps=other)),
+                ("not a mapping", own["tests"])):
+            with self.subTest(case=label):
+                result = self.violations(with_refs(refs))
+                self.assertIsNotNone(result)
+                self.assertEqual(result[0], wc.COMPILE_IR_DOCUMENT_VIOLATION)
+                self.assertIn("source_refs", result[1])
+        result = self.violations(with_refs(dict(own, tests=other)))
+        self.assertIn(f"`tests: {own['tests']}`", result[1])
+
+    def test_the_node_keys_must_be_the_node_s_own(self) -> None:
+        """Round 2 (issue #534 step 2): `Compile.static` chooses its 2-D/3-D state-contract and
+        lowering-floor gates from `dependency.node_key`, falling back to `meta.node_key`, so an
+        omitted or foreign key turned gates off (measured on a real `problem` IR: two refused
+        defects passed). `dependency.node_key` must be the node's; `meta.node_key` may be
+        absent and must not disagree."""
+        def with_keys(dep=..., meta=...):
+            ir = _valid_ir()
+            if dep is not ...:
+                if dep is None:
+                    ir["dependency"].pop("node_key", None)
+                else:
+                    ir["dependency"]["node_key"] = dep
+            if meta is not ...:
+                ir["meta"]["node_key"] = meta
+            return _doc(ir)
+
+        self.assertIsNone(self.violations(with_keys()))
+        self.assertIsNone(self.violations(with_keys(meta=_NODE)))
+        for label, doc in (
+                ("dependency key absent", with_keys(dep=None)),
+                ("dependency key absent, meta foreign",
+                 with_keys(dep=None, meta="infrastructure/harness_fortran_cpu@0.8.0")),
+                ("dependency key foreign", with_keys(dep="problem/shallow_water2d@0.4.0")),
+                ("meta key foreign", with_keys(meta="infrastructure/harness_fortran_cpu@0.8.0")),
+                ("another version", with_keys(dep=_NODE.replace("0.2.0", "0.2.1")))):
+            with self.subTest(case=label):
+                result = self.violations(doc)
+                self.assertIsNotNone(result)
+                self.assertEqual(result[0], wc.COMPILE_IR_DOCUMENT_VIOLATION)
+                self.assertIn(repr(_NODE), result[1])
+
     def test_each_shape_defect_is_one_ir_document_violation(self) -> None:
         for label, doc in (
             ("not an object", ["ir"]),
@@ -777,6 +843,7 @@ class PureIrDocumentViolationTests(_Fixture):
             refs = _write_compile_node(repo, kind="problem")
             c = _conductor(repo)
             ir = _valid_ir("problem")
+            ir["dependency"]["node_key"] = refs.node_key   # the node's own key, not the fixture's
             self.assertIsNone(c._pure_ir_document_violations(refs, {"ir": ir,
                                                                     "compile_fail": None}))
 
@@ -1238,10 +1305,12 @@ class PureCompileTransportCategoryTests(_Fixture):
         from tools.pure_leaf import RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE
         self.assertEqual(
             set(wc.COMPILE_DOCUMENT_FAILURE_CATEGORIES),
-            {RESPONSE_UNPARSEABLE, RESPONSE_TRUNCATED, wc.COMPILE_IR_DOCUMENT_VIOLATION},
+            {RESPONSE_UNPARSEABLE, RESPONSE_TRUNCATED, wc.COMPILE_IR_DOCUMENT_VIOLATION,
+             "workshop_tree_empty"},
             "the producer table's members are the shared loop's own categories plus this "
-            "phase's document violation; a member added to one side and not the other is what "
-            "this row exists to catch")
+            "phase's document violation and the workshop leaf's empty tree (issue #534 step "
+            "2); a member added to one side and not the other is what this row exists to "
+            "catch")
         for category in wc.COMPILE_DOCUMENT_FAILURE_CATEGORIES:
             with self.subTest(category=category):
                 self.assertEqual(wc.COMPILE_DOCUMENT_FAILURE_ROUTING[category],
@@ -1433,6 +1502,28 @@ class PureCompileFailDeclarationTests(_Fixture):
         self.assertEqual(tuple(slots) + ("published_operations",), tuple(listed))
         self.assertLess(tpl.index("<checks_module_contract_document>"),
                         tpl.index("<dependency_facts>"))
+
+    def test_the_workshop_template_enumerates_exactly_the_admissible_inputs(self) -> None:
+        """The `compile.generate` workshop twin (issue #534 step 2) states the same list at its
+        own statement position, element by element, and its order claim — the seed documents
+        "in the order they appear there" — holds against the tree names its Inputs give, each
+        of which is the seed of the context key the name stands for."""
+        tpl = (Path(ort.__file__).resolve().parent / "prompt_templates"
+               / "workshop_compile_generate.txt").read_text(encoding="utf-8")
+        head = ("the input at fault, which is one of these names and nothing else (they name "
+                "the seed documents whose labels follow below, in the order the labels appear, "
+                "then the catalog): ")
+        self.assertEqual(tpl.count(head), 1)
+        statement = tpl.split(head, 1)[1].split(";", 1)[0]
+        self.assertLess(len(statement), 400, "the reader ran past the enumeration")
+        listed = re.findall(r"`([a-z0-9_]+)`", statement)
+        self.assertEqual(tuple(listed), wc.Conductor._compile_fail_inputs(""))
+        seeds = wc.Conductor._WORKSHOP_DOCUMENT_SEEDS_BY_PHASE["compile"]
+        by_name = {name: key.removesuffix("_document") for key, name in seeds.items()}
+        named = re.findall(r"^In your tree: `([^`]+)`\.$", tpl, flags=re.MULTILINE)
+        self.assertEqual(tuple(by_name[n] for n in named) + ("published_operations",),
+                         tuple(listed))
+        self.assertIn("(the published-operations catalog in `DEPENDENCIES.md`)", statement)
 
     def test_the_inputs_are_the_inlined_documents_plus_the_catalog(self) -> None:
         names = wc.Conductor._compile_fail_inputs("")

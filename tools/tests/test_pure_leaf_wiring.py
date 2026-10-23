@@ -47,6 +47,9 @@ from tools.pure_leaf import (
     PURE_PROMPT_SENTINEL,
     PURE_SYSTEM_PROMPT,
     VERDICT_SEVERITIES,
+    WORKSHOP_LAUNCH_PAIRS,
+    WORKSHOP_PROMPT_SENTINEL,
+    WORKSHOP_SYSTEM_PROMPT,
 )
 
 _NODE = "problem/shallow_water2d@0.3.0"
@@ -1406,6 +1409,8 @@ class PureRenderTests(unittest.TestCase):
         ("tools/prompt_templates/workshop_generate_generate.txt", None, None),
         ("tools/prompt_templates/workshop_generate_generate_harness.txt", None, None),
         ("tools/prompt_templates/workshop_bundle_repair.txt", None, None),
+        ("tools/prompt_templates/workshop_compile_generate.txt", None, None),
+        ("tools/prompt_templates/workshop_ir_repair.txt", None, None),
         # Issue #289 (R4-b PR-2): the generate templates' language rules moved into fragment
         # files the host composes into them, so each fragment file is a leaf-read template
         # surface of its own — a severity spelled in one reaches the leaf exactly as one spelled
@@ -1551,7 +1556,7 @@ class PureRenderTests(unittest.TestCase):
         # replaced the dangling pointer to an "agent-driven `attribution=ir` route" entry.
         # READ: same tokens, nothing assigned.
         ("docs/RUNBOOK.md: - Recovery from a **`conductor_phase_fail_closed` whose `rea"
-         " #92d095c5c044"),
+         " #3b60c8d416a3"),
         # Issue #455: the cross-phase re-derivation bullet names what reaches it — a judge
         # `fail` or, in `prod`, a `Generate.verify` `major` naming `ir_inconsistency`, each by
         # the reason it escalates under (`verify_severity_major`). READ: it states what the
@@ -2103,7 +2108,32 @@ class PureRenderTests(unittest.TestCase):
                     req["prior_document"] = '{"files": []}'
                 reqs.append((f"{step}.{substep}{'.' + pure_shape if pure_shape else ''}"
                              f"/{shape}", req))
+        # The `workshop leaf`'s pairs (issue #534): the same closed context seeded into a tree
+        # rather than inlined, so a cold launch splices no document, and its repair turns are
+        # its substep's own templates.
+        for step, substep in sorted(WORKSHOP_LAUNCH_PAIRS):
+            ctx = _pure_context_for(step, substep)
+            for shape in self._RENDER_WORKSHOP_SHAPES:
+                kw = dict(self._RENDER_COMMON, pure_leaf=True, runner_host_authored=True,
+                          pure_language=("fortran" if step == "generate" else ""),
+                          pure_parallel=("openmp" if step == "generate" else ""),
+                          pure_context=ctx, workshop_lineage_id="ar_lineage",
+                          workshop_provider="claude_cli",
+                          resolved_dependencies=(self._RENDER_DEP,),
+                          dependency_surface=self._RENDER_SURFACE)
+                if shape != "workshop-cold":
+                    kw["repair"] = dict(self._RENDER_REPAIR,
+                                        repair_findings=self._RENDER_FINDINGS,
+                                        repair_reason="pure_ir_document_repair")
+                    kw["warm_resume"] = shape == "workshop-repair-warm"
+                    if kw["warm_resume"]:
+                        kw["pure_context"] = None
+                req = wc.build_launch_request(refs, step=step, substep=substep, **kw)
+                reqs.append((f"{step}.{substep}/{shape}", req))
         return reqs
+
+    _RENDER_WORKSHOP_SHAPES: ClassVar[tuple[str, ...]] = (
+        "workshop-cold", "workshop-repair-warm", "workshop-repair-cold")
 
     @staticmethod
     def _request_data_lines(request_payload: dict) -> set[str]:
@@ -2158,11 +2188,11 @@ class PureRenderTests(unittest.TestCase):
         """
         templates = ort._load_launch_prompt_templates()
         texts: list[str] = []
-        if ort._is_pure_launch_request(request_payload):
+        if ort._pure_leaf_is_host_rendered_request(request_payload):
             launch = (not str(request_payload.get("repair_findings", "")).strip()
                       or not request_payload.get("warm_resume"))
             if str(request_payload.get("repair_findings", "")).strip():
-                texts.append(templates["pure bundle repair"])
+                texts.append(templates[ort._pure_repair_template_name(request_payload)])
             if launch and ort._pure_launch_template_name(request_payload) in templates:
                 # COMPOSED for the request's language (issue #289): the fragment lines are
                 # template text the leaf reads, reviewed where they live — the fragment files
@@ -2202,7 +2232,9 @@ class PureRenderTests(unittest.TestCase):
                 # (b) family witness: the config reached the renderer branch it claims.
                 ort._validate_launch_prompt_text(prepared, rendered)
                 first = rendered.splitlines()[0]
-                self.assertTrue(first.startswith(PURE_PROMPT_SENTINEL), label)
+                self.assertTrue(first.startswith(
+                    WORKSHOP_PROMPT_SENTINEL if "/workshop-" in label
+                    else PURE_PROMPT_SENTINEL), label)
             data_lines = self._request_data_lines(prepared)
             template_lines = self._request_template_lines(prepared)
             rendered_lines = rendered.splitlines()
@@ -2212,8 +2244,18 @@ class PureRenderTests(unittest.TestCase):
                 # (c) each subtraction removed something exactly where its input exists, derived
                 # from the request rather than from a hand-written table of labels.
                 present = {ln for ln in rendered_lines if ln.strip()}
+                checked = data_lines
+                if "/workshop-" in label:
+                    # A workshop prompt inlines NO context document: each is a seed of the
+                    # tree (issue #534), so none of their lines may reach the render; the rest
+                    # of the data (the findings) is held to the pure rule.
+                    context = prepared.get("pure_context") or {}
+                    context_lines = {ln for v in context.values()
+                                     for ln in str(v).splitlines() if ln.strip()}
+                    self.assertEqual(context_lines & present, set(), label)
+                    checked = data_lines - context_lines
                 self.assertEqual(
-                    bool(data_lines & present), bool(data_lines),
+                    bool(checked & present), bool(checked),
                     f"{label}: the request carries data values that do not appear in its own "
                     f"render, so subtracting them removes nothing here")
                 self.assertEqual(
@@ -2239,13 +2281,17 @@ class PureRenderTests(unittest.TestCase):
                  for pair in ([f"{s}.{ss}" for s, ss in LLM_LEAF_SUBSTEPS]
                               + ["compile.generate.verification"])
                  for shape in (*self._RENDER_COLD_SHAPES,
-                               "pure-repair-warm", "pure-repair-cold")},
+                               "pure-repair-warm", "pure-repair-cold")}
+                | {(f"{s}.{ss}", shape) for s, ss in WORKSHOP_LAUNCH_PAIRS
+                   for shape in self._RENDER_WORKSHOP_SHAPES},
                 "the rendered configurations do not cover the substep tables the conductor "
                 "dispatches on")
-        for line in PURE_SYSTEM_PROMPT.splitlines():
-            if self._SEVERITY_LITERAL_RE.search(line):
-                key = f"{line[:60]} #{hashlib.sha256(line.encode()).hexdigest()[:12]}"
-                found.setdefault(key, set()).add("PURE_SYSTEM_PROMPT")
+        for name, prompt in (("PURE_SYSTEM_PROMPT", PURE_SYSTEM_PROMPT),
+                             ("WORKSHOP_SYSTEM_PROMPT", WORKSHOP_SYSTEM_PROMPT)):
+            for line in prompt.splitlines():
+                if self._SEVERITY_LITERAL_RE.search(line):
+                    key = f"{line[:60]} #{hashlib.sha256(line.encode()).hexdigest()[:12]}"
+                    found.setdefault(key, set()).add(name)
         return found
 
     def test_no_host_built_launch_prompt_line_hand_assigns_a_severity_outside_the_rubric(
@@ -2342,6 +2388,7 @@ class PureRenderTests(unittest.TestCase):
     _NON_PROSE_PROMPT_HELPERS = frozenset({
         "_load_launch_prompt_templates",     # reads the template files verbatim
         "_pure_launch_template_name",        # returns a template NAME
+        "_pure_repair_template_name",        # returns a template NAME
         "_pure_launch_template",             # reads + composes a template (fragments are swept)
         "_compose_language_fragments",       # splices fragment FILE text, adds none of its own
         "_fence_pure_doc",                   # wraps a value in the data fence

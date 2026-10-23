@@ -205,10 +205,11 @@ LEAF_PURE = "pure"
 LEAF_WORKSHOP = "workshop"
 LEAF_MODELS: frozenset[str] = frozenset({LEAF_PURE, LEAF_WORKSHOP})
 
-# The pairs a `workshop leaf` may serve: step 1 of `docs/design/producer_workshop_leaf.md`
-# §Migration order adopts `generate.generate` alone. Mirror of `pure_leaf.WORKSHOP_LAUNCH_PAIRS`
-# (the launch validator's table), compared by `test_llm_config`.
-WORKSHOP_LEAF_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({("generate", "generate")})
+# The pairs a `workshop leaf` may serve: both producing substeps (`docs/design/
+# producer_workshop_leaf.md` §Migration order, steps 1 and 2). Mirror of
+# `pure_leaf.WORKSHOP_LAUNCH_PAIRS` (the launch validator's table), compared by `test_llm_config`.
+WORKSHOP_LEAF_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({
+    ("generate", "generate"), ("compile", "generate")})
 
 # The entry fields of the workshop leaf. SUBSTEP-SCOPED: admissible only at
 # `phases.<phase>.substeps.<substep>`, so no level inherits one and no question of inheritance

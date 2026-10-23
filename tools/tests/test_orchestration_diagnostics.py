@@ -1293,14 +1293,17 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
         # The second cell of every row this branch added ends in ``(`pure` only)``
         # and no other row in the table carries it, so it is the document's own statement of
         # which rows claim to be pure per-attempt records. Compared as a SET against the code.
+        # A producer's record is written by a `workshop leaf` too (issue #534), and its row says
+        # so with the second marker; the claim is the same, so both spellings count.
         pure_marker = "(`pure` only)"
+        markers = (pure_marker, "(`pure` or `workshop`)")
         claimed = set()
         for line in doc.splitlines():
             stripped = line.strip()
-            if not (stripped.startswith("| `workspace/") and pure_marker in stripped):
+            if not (stripped.startswith("| `workspace/") and any(m in stripped for m in markers)):
                 continue
             cells = stripped.split(" | ")
-            if len(cells) > 1 and cells[1].rstrip().endswith(pure_marker):
+            if len(cells) > 1 and cells[1].rstrip().endswith(markers):
                 claimed.add(cells[0].removeprefix("| `").rstrip("`").rsplit("/", 1)[-1])
         self.assertEqual(
             claimed, expected,

@@ -135,6 +135,9 @@ _FIXTURE_DIR = Path(__file__).resolve().parent / "data" / "conductor_launch_requ
 _SPEC_PATH_BY_NODE_KEY = {
     "component/dynamics_shallow_water_flux_2d_rusanov@0.1.0":
         "spec/component/dynamics/shallow_water/dynamics_shallow_water_flux_2d_rusanov",
+    # The workshop capture's node (issue #534 step 1's A/B run 2).
+    "component/dynamics_shallow_water_time_update_2d_rk4@0.1.1":
+        "spec/component/dynamics/shallow_water/dynamics_shallow_water_time_update_2d_rk4",
 }
 
 # Fields record-launch adds/derives; not produced by build_launch_request.
@@ -172,14 +175,21 @@ _DETERMINISTIC_ONLY_NON_BUILDER_KEYS = {"skill_must_read_refs"}
 # constant, and the capture carries a well-formed version of the same family.
 _HISTORICAL_KEYS = {"prompt_contract_version"}
 _CONTRACT_VERSION_FORM = re.compile(r"^pure-\d+$")
+_WORKSHOP_CONTRACT_VERSION_FORM = re.compile(r"^workshop-\d+$")
+#: Builder fields a `workshop leaf` capture taken under `workshop-1` (issue #534 step 1's A/B,
+#: before step 2 added them) does not carry. Exempt on such a capture only: a later capture
+#: carries them and is held to them like any other field.
+_WORKSHOP_1_ABSENT_KEYS = {"workshop_provider"}
 
 
-def _load_real_requests() -> dict[tuple[str, str | None], dict]:
-    """One representative real request per (step, substep), from tracked fixtures."""
-    out: dict[tuple[str, str | None], dict] = {}
+def _load_real_requests() -> dict[tuple[str, str | None, str], dict]:
+    """One representative real request per (step, substep, leaf model), from tracked
+    fixtures. The leaf model is `deterministic`, `pure` or `workshop` (issue #534)."""
+    out: dict[tuple[str, str | None, str], dict] = {}
     for f in sorted(glob.glob(str(_FIXTURE_DIR / "*.request.json"))):
         d = json.load(open(f, encoding="utf-8"))
-        key = (d.get("step"), d.get("substep"))
+        key = (d.get("step"), d.get("substep"),
+               "deterministic" if d.get("deterministic") else str(d.get("leaf_mode")))
         if key in out:  # a second file for one pair would silently shadow the first
             raise AssertionError(f"two fixtures for {key}: {f}")
         out[key] = d
@@ -288,12 +298,22 @@ def _assert_builder_reproduces(tc: unittest.TestCase, req: dict) -> None:
         dependency_surface=tuple(req.get("dependency_surface", ())),
         exemplar=req.get("exemplar"),
         warm_resume=bool(req.get("warm_resume")),
-        pure_leaf=req.get("leaf_mode") == "pure",
+        pure_leaf=req.get("leaf_mode") in ("pure", "workshop"),
         pure_context=req.get("pure_context"),
         pure_shape=req.get("pure_shape", ""),
+        pure_language=req.get("pure_language", ""),
+        pure_parallel=req.get("pure_parallel", ""),
+        workshop_lineage_id=req.get("workshop_lineage_id"),
+        # A `workshop-1` capture names no provider; claude_cli was the one workshop provider.
+        workshop_provider=(req.get("workshop_provider", "claude_cli")
+                           if req.get("leaf_mode") == "workshop" else None),
     )
+    workshop_1 = (req.get("leaf_mode") == "workshop"
+                  and req.get("prompt_contract_version") == "workshop-1")
     # every field the builder produces must match the real payload
     for key, value in built.items():
+        if workshop_1 and key in _WORKSHOP_1_ABSENT_KEYS:
+            continue
         tc.assertIn(key, req, f"{step}/{substep}: builder emitted unknown key {key}")
         if key in _HISTORICAL_KEYS:
             continue
@@ -302,6 +322,10 @@ def _assert_builder_reproduces(tc: unittest.TestCase, req: dict) -> None:
         from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
         tc.assertEqual(built["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
         tc.assertRegex(req["prompt_contract_version"], _CONTRACT_VERSION_FORM)
+    if req.get("leaf_mode") == "workshop":
+        from tools.pure_leaf import WORKSHOP_PROMPT_CONTRACT_VERSION
+        tc.assertEqual(built["prompt_contract_version"], WORKSHOP_PROMPT_CONTRACT_VERSION)
+        tc.assertRegex(req["prompt_contract_version"], _WORKSHOP_CONTRACT_VERSION_FORM)
     # the builder must cover every real field except record-launch extras
     real_business_keys = set(req) - _NON_BUILDER_KEYS
     if req.get("deterministic"):
@@ -330,7 +354,10 @@ class BuildLaunchRequestTest(unittest.TestCase):
     The fixtures under `data/conductor_launch_requests/` are CAPTURES of real runs, and that is
     what makes this row evidence rather than a restatement of the builder.
 
-    SEVEN ROWS: two DETERMINISTIC captures and five PURE ones. The pure five were re-captured
+    EIGHT ROWS: two DETERMINISTIC captures, five PURE ones and one WORKSHOP one (issue #534:
+    `generate.generate` from run 2 of step 1's A/B, taken under `workshop-1`, so it carries no
+    `workshop_provider` — `_WORKSHOP_1_ABSENT_KEYS`; the `compile.generate` workshop row
+    follows step 2 PR-1's billed run). The pure five were re-captured
     (a `TODO.md` item filed by issue #171 PR-1's round-1 review and closed by the commit that
     added them, 9158667e) after Z4 deleted the agentic shape their predecessors recorded; they
     were deleted rather than hand-converted at the time, because a
@@ -367,7 +394,7 @@ class BuildLaunchRequestTest(unittest.TestCase):
     them; a `problem` pair was the corpus itself), and that pull request records the probe.
     Since issue #284 no recorded `problem` request carries the target segment a `pipeline_ref`
     needs, so that shape cannot be re-driven until a `problem` node runs on the per-target store. The CORPUS is one row per
-    (step, substep) — `_load_real_requests` refuses a second file for a pair, `expected_keys`
+    (step, substep, leaf model) — `_load_real_requests` refuses a second file for one, `expected_keys`
     below and the count in `test_orchestration_runtime` pin the set, and the script names its
     output by pair and overwrites — so adding a capture of one of those shapes means either
     replacing that pair's row or widening the loader's key, and is a test change either way.
@@ -381,20 +408,24 @@ class BuildLaunchRequestTest(unittest.TestCase):
         real = _load_real_requests()
         self.assertTrue(real, "no captured request.json artifacts found")
         expected_keys = {
-            ("build", None), ("validate", "execute"),
-            ("compile", "generate"), ("compile", "verify"),
-            ("generate", "generate"), ("generate", "verify"), ("validate", "judge"),
+            ("build", None, "deterministic"), ("validate", "execute", "deterministic"),
+            ("compile", "generate", "pure"), ("compile", "verify", "pure"),
+            ("generate", "generate", "pure"), ("generate", "verify", "pure"),
+            ("validate", "judge", "pure"),
+            # Issue #534: run 2 of step 1's A/B (`orch_20261023T105639Z_3106b29e`).
+            ("generate", "generate", "workshop"),
         }
         self.assertEqual(set(real), expected_keys, "captured fixture set changed")
-        # Every row is EITHER deterministic OR pure, asserted rather than assumed: a row that is
-        # neither would be an agentic-shaped capture coming back, which is the thing the
-        # docstring above says this corpus no longer holds.
-        for (step, substep), req in real.items():
+        # Every row is EITHER deterministic OR host-rendered (pure or workshop), asserted rather
+        # than assumed: a row that is neither would be an agentic-shaped capture coming back,
+        # which is the thing the docstring above says this corpus no longer holds.
+        for (step, substep, _mode), req in real.items():
             self.assertNotEqual(
-                bool(req.get("deterministic")), req.get("leaf_mode") == "pure",
-                f"{step}/{substep} is neither deterministic nor pure, or both")
+                bool(req.get("deterministic")),
+                req.get("leaf_mode") in ("pure", "workshop"),
+                f"{step}/{substep} is neither deterministic nor host-rendered, or both")
 
-        for (step, substep), req in real.items():
+        for (step, substep, _mode), req in real.items():
             with self.subTest(step=step, substep=substep):
                 _assert_builder_reproduces(self, req)
 
@@ -462,9 +493,9 @@ class BuildLaunchRequestTest(unittest.TestCase):
 
         from tools.orchestration_runtime import PURE_CONTEXT_REQUIRED_KEYS
         pure_rows = {k: v for k, v in _load_real_requests().items()
-                     if v.get("leaf_mode") == "pure"}
-        self.assertEqual(len(pure_rows), 5)
-        for (step, substep), req in pure_rows.items():
+                     if v.get("leaf_mode") in ("pure", "workshop")}
+        self.assertEqual(len(pure_rows), 6)
+        for (step, substep, _mode), req in pure_rows.items():
             with self.subTest(step=step, substep=substep):
                 if "pure_context" not in req:
                     # a warm reuse repair turn omits it (the resumed session holds it)

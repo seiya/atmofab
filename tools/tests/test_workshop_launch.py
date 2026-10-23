@@ -80,7 +80,8 @@ def _with_test_templates(test: unittest.TestCase) -> None:
 def _workshop_request(child: str, lineage: str | None = None, **overrides) -> dict:
     req = _pure_request("generate", leaf_mode="workshop",
                         prompt_contract_version=WORKSHOP_PROMPT_CONTRACT_VERSION,
-                        agent_run_id=child, workshop_lineage_id=lineage or child)
+                        agent_run_id=child, workshop_lineage_id=lineage or child,
+                        workshop_provider="claude_cli")
     req.update(overrides)
     return req
 
@@ -381,6 +382,38 @@ class WorkshopRecordLaunchTests(_Env):
                     self._launch("ar_x", req, **kw)
                 self.assertFalse((self._base() / "launches/ar_x.request.json").exists())
 
+    def test_the_request_names_this_launch_s_provider(self) -> None:
+        """Issue #534 step 2: the `<tool_surface>` a prompt states is its request's
+        `workshop_provider`'s, so a request naming a provider other than this launch's is
+        refused by `record_launch` before anything is recorded — reached here by giving a second
+        provider a surface row, as PR-2 will."""
+        self._prepare("ar_x", resume=False)
+        with mock.patch.dict(pure_leaf.WORKSHOP_TOOL_SURFACE_TEXT,
+                             {"codex_cli": "Your shell reaches your tree."}):
+            with self.assertRaises(ValueError) as ctx:
+                self._launch("ar_x", _workshop_request("ar_x", workshop_provider="codex_cli"))
+        self.assertIn("is not this launch's provider", str(ctx.exception))
+        self.assertFalse((self._base() / "launches/ar_x.request.json").exists())
+
+    def test_the_validator_holds_workshop_provider_to_the_workshop_request(self) -> None:
+        for label, req, needle in (
+                ("absent", _workshop_request("ar_x", workshop_provider=None),
+                 "must name its provider in workshop_provider"),
+                ("a provider with no surface row",
+                 _workshop_request("ar_x", workshop_provider="anthropic_api"),
+                 "must name its provider in workshop_provider"),
+                ("on a pure request", _pure_request("generate", workshop_provider="claude_cli"),
+                 "carries workshop_provider and is not a workshop request")):
+            with self.subTest(case=label):
+                with self.assertRaises(ValueError) as ctx:
+                    ort._validate_pure_launch_request_payload(req)
+                self.assertIn(needle, str(ctx.exception))
+                if label != "on a pure request":
+                    with self.assertRaises(ValueError) as rendered:
+                        ort.prepare_launch_request_payload(dict(req))
+                    self.assertIn(needle, str(rendered.exception))
+        ort._validate_pure_launch_request_payload(_workshop_request("ar_x"))
+
     def test_a_workshop_request_on_another_pair_is_refused(self) -> None:
         """Refused twice: the renderer finds no workshop template for the pair (it renders
         before validation), and the validator names the admissible pairs."""
@@ -390,8 +423,8 @@ class WorkshopRecordLaunchTests(_Env):
         self.assertIn("workshop generate.verify", str(ctx.exception))
         with self.assertRaises(ValueError) as ctx:
             ort._validate_launch_request_payload(req)
-        self.assertIn("leaf_mode=workshop is only valid for (generate, generate)",
-                      str(ctx.exception))
+        self.assertIn("leaf_mode=workshop is only valid for (compile, generate), "
+                      "(generate, generate);", str(ctx.exception))
 
     def test_the_prompt_and_the_request_must_agree_on_the_leaf_model(self) -> None:
         workshop = ort.prepare_launch_request_payload(_workshop_request("ar_x"))
@@ -696,7 +729,7 @@ class SpawnTimeoutTests(unittest.TestCase):
             cancel = threading.Event()
             server = workshop_mcp.WrapperMcpServer(
                 SimpleNamespace(paths=paths, agent_run_id="child", max_wrapper_calls=1,
-                                lineage_deadline=time.time() + 600),
+                                lineage_deadline=time.time() + 600, ops=("derive",)),
                 on_end=lambda _why: cancel.set()).start()
             self.addCleanup(server.stop)
             leaf = ("import http.client, json, time, urllib.parse\n"

@@ -854,6 +854,18 @@ class PureLeafABSummaryTest(unittest.TestCase):
             out["pure_compile_nodes"][1]["generate"]["usage_total"]["total_tokens"], 1000)
         self.assertEqual(out["pure_compile_nodes"][1]["verify"]["result"], "pass")
 
+    def test_a_workshop_compile_launch_is_discovered_too(self) -> None:
+        """Issue #534 step 2: a `compile.generate` workshop leaf writes the same
+        `compile_generate_meta.json` into the `ir_ref` its request names."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            self._lay_out(repo, with_metas=False)
+            self._launch(repo, "a1", step="compile", ir_ref=self.IR_A, leaf_mode="workshop")
+            self._compile_metas(repo, self.IR_A)
+            out = collect_pure_leaf_ab_summary(
+                repo, self.ORCH, {"invocation": {"generate_executor": "pure"}})
+        self.assertEqual([n["ir_ref"] for n in out["pure_compile_nodes"]], [self.IR_A])
+
     def test_discovery_ignores_a_launch_that_is_not_a_pure_compile_leaf(self) -> None:
         """Three rejections, one row each, because a single combined fixture would let two of
         them stop working unnoticed: another step, an agentic compile launch (no `leaf_mode`),
