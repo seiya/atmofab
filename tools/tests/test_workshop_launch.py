@@ -578,6 +578,115 @@ class SpawnTimeoutTests(unittest.TestCase):
             self.assertEqual(fired[0]["timeout_bound"], "lineage_timeout_s")
             self.assertEqual(fired[0]["timeout_seconds"], 1)
 
+    def _claude_conductor(self, tmp: Path, argv: list[str]):
+        c = _PureFakeConductor(repo_root=tmp, orchestration_id="o",
+                               orchestration_agent_run_id="orch", env={},
+                               llm_config=_WorkshopConfig.config(tmp))
+        self.events: list[tuple[str, dict]] = []
+        c.emit = lambda name, **f: self.events.append((name, f))  # type: ignore[assignment]
+        c._bwrap_enabled = lambda: False  # type: ignore[assignment]
+        c.leaf_command = lambda *a, **k: list(argv)  # type: ignore[assignment]
+        return c
+
+    def test_a_cancel_event_ends_the_leaf_and_says_so(self) -> None:
+        import threading
+        import time
+        with tempfile.TemporaryDirectory() as tmp:
+            c = self._claude_conductor(Path(tmp), ["sleep", "60"])
+            cancel = threading.Event()
+            threading.Timer(0.5, cancel.set).start()
+            t0 = time.monotonic()
+            result = wc.Conductor.spawn_leaf(
+                c, "", {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+                c.entry_for("generate", "verify"), child_arid="child", cancel_event=cancel)
+            self.assertLess(time.monotonic() - t0, 30)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertTrue(result.stderr.endswith(wc.LEAF_CANCELLED_MARKER), result.stderr)
+            self.assertNotIn("leaf_timeout", [name for name, _ in self.events])
+
+    def test_an_unset_cancel_event_changes_nothing(self) -> None:
+        import threading
+        with tempfile.TemporaryDirectory() as tmp:
+            c = self._claude_conductor(Path(tmp), ["sh", "-c", "echo out; exit 3"])
+            result = wc.Conductor.spawn_leaf(
+                c, "", {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+                c.entry_for("generate", "verify"), child_arid="child",
+                cancel_event=threading.Event())
+            self.assertEqual((result.returncode, result.stdout.strip()), (3, "out"))
+            self.assertNotIn(wc.LEAF_CANCELLED_MARKER, result.stderr)
+
+    def test_the_wrapper_ending_the_lineage_ends_the_leaf(self) -> None:
+        """How PR-3 composes the two halves: the endpoint's `on_end` sets the spawn's cancel
+        event. The leaf here is a real process that calls the endpoint once and then hangs; the
+        call is answered `ended: true` (the cap is spent), and the leaf is killed."""
+        import sys
+        import threading
+        import time
+        from types import SimpleNamespace
+
+        from tools import workshop_mcp, workshop_tree
+        from tools.workshop_tree import LineagePaths
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            paths = LineagePaths(homes_root=root / "h", orchestration_id="o", lineage_id="l",
+                                 orchestration_dir=root / "orch")
+            paths.home.mkdir(parents=True)
+            paths.make_work_dirs()
+            workshop_tree.write_lineage_record(paths, node_key="n",
+                                               started_at_utc="2026-10-23T00:00:00Z")
+            workshop_tree.end_lineage(paths, "max_wrapper_calls")
+            cancel = threading.Event()
+            server = workshop_mcp.WrapperMcpServer(
+                SimpleNamespace(paths=paths, agent_run_id="child", max_wrapper_calls=1,
+                                lineage_deadline=time.time() + 600),
+                on_end=lambda _why: cancel.set()).start()
+            self.addCleanup(server.stop)
+            leaf = ("import http.client, json, time, urllib.parse\n"
+                    f"u = urllib.parse.urlsplit({server.url!r})\n"
+                    "c = http.client.HTTPConnection(u.hostname, u.port)\n"
+                    "c.request('POST', u.path, json.dumps({'jsonrpc': '2.0', 'id': 1, "
+                    "'method': 'tools/call', 'params': {'name': 'derive', 'arguments': {}}}), "
+                    "{'Content-Type': 'application/json'})\n"
+                    "print(c.getresponse().read().decode(), flush=True)\n"
+                    "time.sleep(60)\n")
+            c = self._claude_conductor(root, [sys.executable, "-c", leaf])
+            t0 = time.monotonic()
+            result = wc.Conductor.spawn_leaf(
+                c, "", {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+                c.entry_for("generate", "verify"), child_arid="child", cancel_event=cancel)
+            self.assertLess(time.monotonic() - t0, 30)
+            self.assertIn('\\"ended\\": true', result.stdout)
+            self.assertTrue(result.stderr.endswith(wc.LEAF_CANCELLED_MARKER), result.stderr)
+
+    def test_a_cancel_event_is_a_claude_leafs(self) -> None:
+        import threading
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg = Path(tmp) / "llm.yaml"
+            cfg.write_text("defaults: {provider: codex_cli, model: gpt-x}\n", encoding="utf-8")
+            c = _PureFakeConductor(repo_root=Path(tmp), orchestration_id="o",
+                                   orchestration_agent_run_id="orch", env={},
+                                   llm_config=lc.load_llm_config(cfg))
+            with self.assertRaises(ValueError):
+                wc.Conductor.spawn_leaf(c, "", {}, c.entry_for(None, None), child_arid="c",
+                                        cancel_event=threading.Event())
+
+    def test_an_explicit_bound_is_clamped_to_the_ceiling(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            c = self._claude_conductor(Path(tmp), ["true"])
+            seen: list[int] = []
+            original = wc._wait_for_leaf_exit
+
+            def spy(process, deadline, cancel_event):  # noqa: ANN001
+                import time
+                seen.append(int(deadline - time.monotonic()) if deadline else -1)
+                return original(process, deadline, cancel_event)
+
+            with mock.patch.object(wc, "_wait_for_leaf_exit", spy):
+                wc.Conductor.spawn_leaf(c, "", {"PATH": os.environ.get("PATH", "")},
+                                        c.entry_for("generate", "verify"), child_arid="child",
+                                        timeout_seconds=10 ** 12)
+            self.assertLessEqual(seen[0], wc.LEAF_TIMEOUT_MAX_SECONDS)
+
     def test_an_explicit_bound_is_a_positive_integer(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             c = _PureFakeConductor(repo_root=Path(tmp), orchestration_id="o",

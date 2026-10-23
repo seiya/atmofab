@@ -2192,6 +2192,38 @@ def _leaf_timeout_marker(timeout_seconds: int, elapsed: float,
             f"{timeout_seconds} (elapsed {elapsed:.0f}s); process group killed")
 
 
+#: The line appended to the stderr of a leaf ended through `spawn_leaf(cancel_event=)`.
+LEAF_CANCELLED_MARKER = ("[conductor] leaf_cancelled: the leaf was ended from outside "
+                         "(its cancel event was set); process group killed")
+
+#: How often a cancellable wait looks at its event.
+LEAF_CANCEL_POLL_SECONDS = 0.2
+
+
+def _wait_for_leaf_exit(process: Any, deadline: float | None,
+                        cancel_event: threading.Event | None) -> str:
+    """Wait for `process` to exit: `"exited"`, `"cancelled"` when `cancel_event` was set first,
+    or `subprocess.TimeoutExpired` raised at `deadline`. Without an event this is the one
+    deadline-bounded `wait` it always was."""
+    if cancel_event is None:
+        process.wait(timeout=None if deadline is None
+                     else max(deadline - time.monotonic(), 0.0))
+        return "exited"
+    while True:
+        if cancel_event.is_set():
+            return "cancelled"
+        remaining = None if deadline is None else deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            raise subprocess.TimeoutExpired(getattr(process, "args", ""), 0)
+        step = (LEAF_CANCEL_POLL_SECONDS if remaining is None
+                else min(remaining, LEAF_CANCEL_POLL_SECONDS))
+        try:
+            process.wait(timeout=step)
+            return "exited"
+        except subprocess.TimeoutExpired:
+            continue
+
+
 def _admissible_leaf_profile(profile: Mapping[str, Any], entry: Any) -> bool:
     """Whether `spawn_leaf` may launch a leaf under `profile`: a READ-ONLY profile (every pure
     leaf's), or a WORKSHOP lineage's (issue #534) for a workshop entry — `leaf_mode:
@@ -4399,8 +4431,16 @@ class Conductor:
         timeout_seconds: int | None = None,
         timeout_name: str | None = None,
         mcp_config_json: str | None = None,
+        cancel_event: threading.Event | None = None,
     ) -> ProcResult:
         """Launch one leaf and return its captured result.
+
+        `cancel_event` ends the leaf from another thread (issue #534): when it is set while the
+        leaf runs, the leaf's process group is terminated as at the cap and the result carries
+        `LEAF_CANCELLED_MARKER` instead of a timeout marker — no `leaf_timeout` event, because
+        no bound of this function fired. A workshop lineage's wrapper endpoint sets it when an
+        operation reports the lineage ENDED (`workshop_mcp.WrapperMcpServer(on_end=)`). Claude
+        leaves only: the workshop leaf is the one caller, and a codex or HTTP entry refuses it.
 
         `timeout_seconds` replaces the environment cap (`_leaf_timeout_seconds()`) for this one
         leaf, and `timeout_name` names that bound in the `leaf_timeout` marker and event: a
@@ -4417,6 +4457,9 @@ class Conductor:
         `test_every_leaf_launch_site_passes_its_own_entry` pins by introspecting this module.
         """
         entry = entry if entry is not None else self.entry_for(None, None)
+        if cancel_event is not None and entry.provider != "claude_cli":
+            raise ValueError(f"spawn_leaf cancel_event is a claude leaf's (provider "
+                             f"{entry.provider!r})")
         if entry.is_http:
             # No process, so nothing below applies: no codex feature cache, no bwrap profile
             # (an HTTP pure leaf runs no model-directed tool — see tools/llm_http_leaf.py), no
@@ -4431,6 +4474,11 @@ class Conductor:
                 or timeout_seconds < 1):
             raise ValueError(f"spawn_leaf timeout_seconds must be an integer >= 1 (got "
                              f"{timeout_seconds!r})")
+        if timeout_seconds is not None:
+            # The same sanity ceiling the environment cap is clamped to: a deadline past it
+            # cannot be handed to a selecting wait.
+            timeout_seconds = min(timeout_seconds, LEAF_TIMEOUT_MAX_SECONDS)
+
         # Resolved HERE, before the codex branch below returns: a name left None would reach
         # the codex marker as `leaf exceeded None=<n>` on every launch that passes no bound.
         timeout_name = timeout_name or LEAF_TIMEOUT_ENV_BOUND_NAME
@@ -4624,8 +4672,22 @@ class Conductor:
             # case is structural here rather than something a poll has to notice in time, and
             # the quadratic re-join the growing slice existed to bound is gone with it.
             try:
-                process.wait(timeout=None if deadline is None
-                             else max(deadline - time.monotonic(), 0.0))
+                if _wait_for_leaf_exit(process, deadline, cancel_event) == "cancelled":
+                    # Ended from outside (a workshop lineage's bound): the same teardown as the
+                    # cap, reported as what it is.
+                    _terminate_leaf_process_group(process, pgid=leaf_pgid,
+                                                  pgid_start_ticks=leaf_start_ticks)
+                    try:
+                        returncode = process.wait(timeout=LEAF_TERMINATE_GRACE_SECONDS)
+                    except subprocess.TimeoutExpired:
+                        returncode = -int(signal.SIGKILL)
+                    _finish_streams()
+                    stderr_tail.publish(stderr_chunks)
+                    stderr = "".join(list(stderr_chunks))
+                    if stream_abandoned:
+                        stderr = (stderr.rstrip() + "\n" + LEAF_STREAM_ABANDONED_MARKER).strip()
+                    stderr = (stderr.rstrip() + "\n" + LEAF_CANCELLED_MARKER).strip()
+                    return ProcResult(returncode or 1, "".join(list(stdout_chunks)), stderr)
             except subprocess.TimeoutExpired:
                 # Still running with the cap spent: this is the wedge.
                 _terminate_leaf_process_group(process, pgid=leaf_pgid,
