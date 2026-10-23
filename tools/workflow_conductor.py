@@ -9345,7 +9345,12 @@ class Conductor:
                 located = None
             if located is not None:
                 paths, lineage_record = located
+                # Warm only with findings to send: a resumed session given no findings would be
+                # re-sent the whole cold launch prompt, which describes a fresh tree carried
+                # over from an ended session — false for the session it continues. Without
+                # findings the reopen is a cold reuse, whose tree that prompt describes.
                 if (lineage_record.get("ended_by") is None and warm_capable
+                        and last_excerpt is not None
                         and self._workshop_session_resumable(paths, target_arid)):
                     try:
                         lineage = self._reattach_workshop_lineage(
@@ -9468,7 +9473,10 @@ class Conductor:
                                       ("workshop_wrapper_not_stopped", str(exc)[:200]),
                                       max(1, len(per_attempt)))
             if turn is None:
-                # The lineage's home is gone: nothing to resume and no snapshot to seed from.
+                # The lineage's home is gone: nothing to resume and no snapshot to seed from. Its
+                # record (in the workspace, not the home) says nothing will continue it.
+                from tools.workshop_tree import end_lineage
+                end_lineage(lineage.paths, "superseded")
                 lineage, resume_session_id, prior = None, None, None
                 continue
             proc = turn.proc

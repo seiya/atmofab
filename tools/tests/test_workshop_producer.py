@@ -110,9 +110,14 @@ class _WorkshopFakeConductor(_PureFakeConductor):
         return self.resumable
 
     numbered_prompts = False
+    #: When true, a WARM record-launch answers `workshop_lineage_home_missing`.
+    home_missing_on_warm = False
 
     def runtime(self, args, *, input=None):  # type: ignore[override]
         self.__dict__.setdefault("argvs", []).append(list(args))
+        if (args[0] == "record-launch" and self.home_missing_on_warm
+                and "--workshop-lineage-id" in args):
+            return {"workshop_lineage_home_missing": True}
         result = super().runtime(args, input=input)
         if args[0] == "record-launch" and self.numbered_prompts:
             n = sum(1 for a in self.argvs if a[0] == "record-launch")
@@ -305,6 +310,7 @@ class RepairTests(_Base):
         rows = self.bundle_meta()["per_attempt"]
         self.assertEqual(rows[0]["failure_category"], "workshop_tree_empty")
         self.assertEqual([r["lineage_id"] for r in rows], ["child-1", "child-1"])
+        self.assertEqual([r["warm"] for r in rows], [False, True])
         self.assertFalse(self.paths("child-2").home.exists())
 
     def test_a_seed_the_leaf_edited_is_restored_before_a_warm_launch(self) -> None:
@@ -553,8 +559,11 @@ class PrunedHomeTests(_Base):
             outcome = self.run_substep()
         self.assertEqual(outcome.status, "pass", outcome)
         lineages = [r["workshop_lineage_id"] for r in self.requests()]
-        # The warm turn records nothing; the next launch starts a fresh lineage.
+        # The warm turn records nothing; the next launch starts a fresh lineage, and the
+        # pruned lineage's record says nothing will continue it.
         self.assertEqual(lineages, ["child-1", "child-3"])
+        self.assertEqual(workshop_tree.read_lineage_record(self.paths("child-1"))["ended_by"],
+                         "superseded")
 
 
 class OuterReopenTests(_Base):
@@ -1112,6 +1121,36 @@ class Round2Tests(_Base):
             reserved_names=frozenset({"tests.md"}), closure_file_names=(),
             max_wrapper_calls=3, lineage_deadline=1.0, seed_texts={"tests.md": "T"})
         self.assertEqual(ctx.seed_texts, (("tests.md", "T"),))
+
+
+
+class Round3Tests(_Base):
+    def test_record_launch_answering_home_missing_falls_back_without_a_launch(self) -> None:
+        self.c.home_missing_on_warm = True
+        self.c.leaf_actions = [_writes_nothing, _writes_bundle]
+        self.assertEqual(self.run_substep().status, "pass")
+        # Two launches spawned (cold, then a fresh cold lineage); the warm attempt spawned none.
+        self.assertEqual(len(self.c.spawns), 2)
+        self.assertEqual(self.requests()[-1]["workshop_lineage_id"], "child-3")
+        self.assertEqual(workshop_tree.read_lineage_record(self.paths("child-1"))["ended_by"],
+                         "superseded")
+
+    def test_a_reopen_carrying_no_findings_is_a_cold_reuse(self) -> None:
+        self.assertEqual(self.run_substep().status, "pass")
+        self.fresh_source()
+        evidence = self.c.__dict__["evidence"]
+        self.c.leaf_actions = [_writes_bundle]
+        with mock.patch.object(ort, "_read_launch_request_payload",
+                               lambda r, o, *, agent_run_id:
+                               evidence.get(f"{agent_run_id}.request.input.json")):
+            self.assertEqual(self.run_substep(repair={
+                "repair_strategy": "reuse", "repair_target_agent_run_id": "child-1",
+                "issue_severity": "major", "repair_reason": "r"}).status, "pass")
+        request = self.requests()[-1]
+        self.assertEqual(request["workshop_lineage_id"], "child-2")
+        self.assertFalse(request.get("warm_resume"))
+        self.assertEqual(workshop_tree.read_lineage_record(self.paths("child-1"))["ended_by"],
+                         "superseded")
 
 
 if __name__ == "__main__":
