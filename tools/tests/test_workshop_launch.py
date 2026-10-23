@@ -568,5 +568,152 @@ class SpawnTimeoutTests(unittest.TestCase):
                                             child_arid="c", timeout_seconds=bad)
 
 
+
+class WorkshopRecordLaunchCliTests(WorkshopRecordLaunchTests):
+    """The `record-launch` CLI carries `--workshop-lineage-id` through to `record_launch` and
+    prints the warm sentinel whole."""
+
+    def test_the_cli_flag_reaches_the_warm_check(self) -> None:
+        import contextlib
+        import io
+        req = _workshop_request("ar_cli", "ar_gone")
+        prepared = ort.prepare_launch_request_payload(dict(req))
+        req["launch_prompt_full"] = ort.render_launch_prompt_text(prepared)
+        req_file = self.repo / "req.json"
+        req_file.write_text(json.dumps(req), encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = ort.main(["record-launch", "--repo-root", str(self.repo),
+                           "--orchestration-id", _ORCH, "--parent-agent-run-id", "orch_run_001",
+                           "--child-agent-run-id", "ar_cli", "--request-json-file",
+                           str(req_file), "--response-json",
+                           json.dumps({**_spawn_response("ar_cli"), "agent_run_id": "ar_cli",
+                                       "started_at": "2026-10-23T00:00:00Z",
+                                       "backend": "claude"}),
+                           "--workshop-lineage-id", "ar_gone"])
+        self.assertEqual(rc, 0)
+        self.assertEqual(json.loads(out.getvalue()),
+                         {"workshop_lineage_home_missing": True,
+                          "workshop_lineage_id": "ar_gone"})
+
+
+class WorkshopLaunchRecordTests(unittest.TestCase):
+    """The smaller record surfaces a workshop launch reaches."""
+
+    def test_the_session_index_keeps_the_lineage_across_updates(self) -> None:
+        doc: dict = {}
+        common = dict(agent_session_id="s", context_id=None, agent_role="substep")
+        ort._upsert_session_run_index_entry(doc, agent_run_id="a", status="running",
+                                            workshop_lineage_id="lin", **common)
+        self.assertEqual(doc["entries"][0]["workshop_lineage_id"], "lin")
+        ort._upsert_session_run_index_entry(doc, agent_run_id="a", status="pass", **common)
+        self.assertEqual(doc["entries"][0]["workshop_lineage_id"], "lin")
+        ort._upsert_session_run_index_entry(doc, agent_run_id="a", status="pass",
+                                            workshop_lineage_id="lin2", **common)
+        self.assertEqual(doc["entries"][0]["workshop_lineage_id"], "lin2")
+        ort._upsert_session_run_index_entry(doc, agent_run_id="b", status="running", **common)
+        self.assertNotIn("workshop_lineage_id", doc["entries"][1])
+
+    def test_a_workshop_request_reads_no_skill(self) -> None:
+        _with_test_templates(self)
+        prepared = ort.prepare_launch_request_payload(
+            _workshop_request("ar_x", skill_name="x", skill_ref="skills/x/SKILL.md"))
+        self.assertEqual((prepared["skill_name"], prepared["skill_ref"]), ("", ""))
+
+    def test_a_deterministic_request_with_a_workshop_prompt_is_refused(self) -> None:
+        """Only the workshop arm refuses this: the deterministic markers are all present and
+        neither pure arm fires on a prompt that does not open with the pure sentinel."""
+        req = ort.prepare_launch_request_payload({
+            "node_key": "component/x/y@0.1.0", "step": "build", "deterministic": True,
+            "orchestration_id": _ORCH, "agent_run_id": "ar_d", "parent_agent_run_id": "o",
+            "ir_ref": "workspace/ir/x", "pipeline_ref": "workspace/pipelines/x",
+            "agent_role": "step"})
+        prompt = ort.render_launch_prompt_text(req)
+        ort._validate_launch_prompt_text(req, prompt)
+        with self.assertRaises(ValueError) as ctx:
+            ort._validate_launch_prompt_text(req, WORKSHOP_PROMPT_SENTINEL + "\n" + prompt)
+        self.assertIn("workshop", str(ctx.exception))
+
+    def test_a_workshop_pass_row_declares_no_output_refs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            launches = repo / "workspace" / "orchestrations" / "o" / "launches"
+            launches.mkdir(parents=True)
+            (launches / "ar_w.request.json").write_text(json.dumps(
+                {"leaf_mode": "workshop", "step": "generate", "substep": "generate"}),
+                encoding="utf-8")
+            row = {"agent_role": "substep", "status": "pass", "agent_run_id": "ar_w"}
+            ort._validate_terminal_run_payload(repo, "o", {**row, "output_refs": []})
+            for bad in ({"output_refs": ["x"]}, {}):
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    ort._validate_terminal_run_payload(repo, "o", {**row, **bad})
+
+    def test_the_audit_attributes_a_workshop_launch(self) -> None:
+        from tools import audit_orchestration as ao
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            launches = repo / "workspace" / "orchestrations" / "o" / "launches"
+            launches.mkdir(parents=True)
+            for arid, mode, substep in (("a", "workshop", "generate"), ("b", "pure", "verify"),
+                                        ("c", "agentic", "judge")):
+                (launches / f"{arid}.request.json").write_text(json.dumps(
+                    {"leaf_mode": mode, "step": "validate" if arid == "c" else "generate",
+                     "substep": substep}), encoding="utf-8")
+            self.assertEqual(ao._pure_leaf_keys_that_ran(repo, "o"),
+                             frozenset({"generate.generate", "generate.verify"}))
+
+    def test_the_slim_repair_classifier_excludes_a_workshop_repair(self) -> None:
+        import tools.validate_pipeline_semantics as vps
+        shape = {"warm_resume": True, "repair_strategy": "reuse", "repair_findings": "x"}
+        self.assertTrue(vps._launch_request_is_slim_repair(dict(shape)))
+        self.assertFalse(vps._launch_request_is_slim_repair({**shape, "leaf_mode": "workshop"}))
+
+
+class WorkshopSpawnArgvTests(unittest.TestCase):
+    """`spawn_leaf` launches the workshop argv: the endpoint it is handed reaches `leaf_command`."""
+
+    def test_the_endpoint_reaches_the_launched_argv(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            c = _PureFakeConductor(repo_root=repo, orchestration_id="o",
+                                   orchestration_agent_run_id="orch", env={},
+                                   llm_config=_WorkshopConfig.config(repo))
+            c._bwrap_enabled = lambda: False  # type: ignore[assignment]
+            seen: list[list[str]] = []
+
+            class _Stop(Exception):
+                pass
+
+            def popen(argv, **kw):  # noqa: ANN001 - subprocess.Popen's shape
+                seen.append(list(argv))
+                raise _Stop()
+
+            mcp = workshop_mcp_config_json("http://127.0.0.1:7/mcp")
+            with mock.patch.object(wc.subprocess, "Popen", popen), self.assertRaises(_Stop):
+                wc.Conductor.spawn_leaf(c, "P", {}, c.entry_for("generate", "generate"),
+                                        child_arid="child", session_id="sid",
+                                        mcp_config_json=mcp)
+            self.assertEqual(seen[0][seen[0].index("--mcp-config") + 1], mcp)
+
+    def test_the_codex_spawn_takes_the_explicit_bound_too(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            cfg = repo / "llm.yaml"
+            cfg.write_text("defaults: {provider: codex_cli, model: gpt-x}\n", encoding="utf-8")
+            c = _PureFakeConductor(repo_root=repo, orchestration_id="o",
+                                   orchestration_agent_run_id="orch", env={},
+                                   llm_config=lc.load_llm_config(cfg))
+            events: list[tuple[str, dict]] = []
+            c.emit = lambda name, **f: events.append((name, f))  # type: ignore[assignment]
+            with mock.patch.dict(os.environ, {"ATMOFAB_LEAF_TIMEOUT_SECONDS": "3600"}):
+                result = wc.Conductor._spawn_codex_json_leaf(
+                    c, ["sleep", "60"], {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+                    "child", prompt_text="", entry=c.entry_for(None, None),
+                    timeout_seconds=1, timeout_name="lineage_timeout_s")
+            self.assertIn("leaf exceeded lineage_timeout_s=1", result.stderr)
+            fired = [f for name, f in events if name == "leaf_timeout"]
+            self.assertEqual(fired[0]["timeout_bound"], "lineage_timeout_s")
+
+
 if __name__ == "__main__":
     unittest.main()

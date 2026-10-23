@@ -28541,6 +28541,17 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 self.assertTrue(any("workshop launch sandbox profile" in v
                                     for v in self._workshop_violations(repo_root)), label)
 
+    def test_a_workshop_prompt_whose_request_is_unreadable_is_flagged(self) -> None:
+        """The request half defaults to "not workshop" when its file is gone, so the prompt
+        alone is a mismatch rather than a crash."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_workshop(repo_root)
+            (self._orch_root(repo_root) / "launches" / f"{self._ARID}.request.json").unlink()
+            self.assertTrue(any("workshop-launch mismatch" in v
+                                for v in self._workshop_violations(repo_root)))
+
     def test_a_pure_request_with_a_workshop_prompt_is_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
