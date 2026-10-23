@@ -10432,13 +10432,13 @@ class Conductor:
         headers, as for the syntax gate; the directory is out of the tree and bound into no
         wrapper run, and the object directory holding its copies is absent from a `run`'s
         sandbox, so the built program cannot open a dependency's certified source. A wrapper
-        `compile` binds that object directory (the build writes its objects there), and the
-        control file it runs is the tree's, which the leaf can edit: such a control file can
-        print a staged source into the compile's output. That read gains the leaf nothing
-        toward a verdict — the host's own Build re-stages the bound copies — and is a recorded
-        departure from `docs/design/producer_workshop_leaf.md` §Tool surface ("the leaf never
-        reads a dependency's source"), which holds for `run` only. Refuses a closure it could
-        not stage, as the syntax gate does."""
+        `compile` runs the host-rendered control file (never one the leaf edited), but the
+        closure's sources sit on its compiler's search path, as they do in the host's Build,
+        so a leaf-authored source that includes one can see its text in a diagnostic. That read
+        gains the leaf nothing toward a verdict — the host's own Build re-stages the bound
+        copies — and is a recorded qualification of `docs/design/producer_workshop_leaf.md`
+        §Tool surface ("the leaf never reads a dependency's source"), which holds for `run`.
+        Refuses a closure it could not stage, as the syntax gate does."""
         staged = self._stage_dependency_sources(refs, paths.staged_closure, phase="generate")
         self._refuse_unstaged_closure(refs, staged, "workshop leaf staged closure")
         names: list[str] = []
@@ -10472,11 +10472,13 @@ class Conductor:
         transport thread calls no conductor method.
 
         What it does NOT carry is what the gates' DIRECTORY holds: the host gates read `src/`
-        with the host-rendered headers in it (the node's interface header and checks header,
-        and each closure member's interface header `_write_dependency_headers` copies), while
-        the wrapper's lint and syntax stages read the work tree, so those headers have to be
-        seeds of the tree (issue #534 PR-3; measured on a `cuda_cpp` node in round 1, where a
-        correct tree without them fails the wrapper's lint and syntax and passes the host's).
+        with the host-rendered files in it (the runner, the node's interface header and checks
+        header, and each closure member's interface header `_write_dependency_headers`
+        copies), while the wrapper's compile, lint and syntax stages read a source view of the
+        manifest's files and the SEEDS (`workshop_wrapper._source_view`), so every one of those
+        files has to be a seed of the tree (issue #534 PR-3; measured on a `cuda_cpp` node,
+        where a correct tree without the headers fails the wrapper's lint and syntax and passes
+        the host's).
 
         Raises `RuntimeError` on a host precondition (a language with no lint preset or no
         syntax stage) — the gates raise the same for the same node. A target whose class this
@@ -10520,10 +10522,21 @@ class Conductor:
         launch_env: tuple[tuple[str, str], ...] = ()
         try:
             launch = launch_shape(self.target, self._local_execution_site())
-            launch_prefix = tuple(launch.argv_prefix)
-            launch_env = tuple(sorted(launch.env.items()))
         except LaunchUnavailable as exc:
             run_unavailable = f"this host cannot run the target's binaries: {exc}"
+        else:
+            if launch.platform_probe is not None:
+                # A class that names a device runs on device nodes a wrapper run's `/dev` does
+                # not hold (bwrap's `--dev` is the minimal set), and which nodes to bind is
+                # undecided (issue #534 step 1): say so rather than run a binary that cannot
+                # reach its device and report its failure as the tree's.
+                run_unavailable = (
+                    f"the {self.target.hardware_class} class's binaries are not run by the "
+                    f"wrapper: a wrapper run binds no device node; the host's Validate.execute "
+                    f"runs them")
+            else:
+                launch_prefix = tuple(launch.argv_prefix)
+                launch_env = tuple(sorted(launch.env.items()))
         executables = [
             build_system_executable(tc["build_system"]), build_compiler(tc),
             *lint_preset_executables(lint_preset),

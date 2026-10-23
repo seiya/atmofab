@@ -27,6 +27,7 @@ import json
 import os
 import re
 import shutil
+import threading
 import time
 import uuid
 from collections.abc import Callable, Mapping
@@ -46,7 +47,6 @@ CATEGORY_MAX_WRAPPER_CALLS = "max_wrapper_calls"
 CATEGORY_LINEAGE_TIMEOUT = "lineage_timeout"
 CATEGORY_LINEAGE_ENDED = "lineage_ended"
 CATEGORY_BAD_ARGUMENTS = "wrapper_arguments_invalid"
-CATEGORY_NOT_DERIVED = "control_file_not_derived"
 CATEGORY_WRAPPER_ERROR = "wrapper_error"
 CATEGORY_RUN_UNAVAILABLE = "run_unavailable"
 CATEGORY_STAGED_CLOSURE = "staged_closure_incomplete"
@@ -57,6 +57,18 @@ DEFAULT_CAPTURE_LIMIT = 20000
 
 _BINARY_NAME_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
 
+#: One lock per lineage home: the operations share the lineage's view, stage, object and
+#: binary directories, which each call empties and refills, so two calls of one lineage (a
+#: harness's sub-agents share the surface, `docs/design/producer_workshop_leaf.md`) run one
+#: after the other rather than through each other's directories.
+_OP_LOCKS: dict[str, threading.Lock] = {}
+_OP_LOCKS_GUARD = threading.Lock()
+
+
+def _op_lock(ctx: "WrapperContext") -> threading.Lock:
+    with _OP_LOCKS_GUARD:
+        return _OP_LOCKS.setdefault(str(ctx.paths.home), threading.Lock())
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -64,8 +76,8 @@ def _utc_now_iso() -> str:
 
 def wrapper_base_env(host_env: Mapping[str, str] | None = None) -> dict[str, str]:
     """The environment every wrapper run is declared (`--clearenv` drops the rest): the host's
-    `PATH`, so the toolchain resolves as it does for the host's own gates, and a `HOME` and
-    `TMPDIR` on the run's private `/tmp`."""
+    `PATH`, so the toolchain resolves as it does for the host's own gates, a `HOME` and
+    `TMPDIR` on the run's private `/tmp`, and `LANG=C.UTF-8`."""
     source = os.environ if host_env is None else host_env
     return {
         "PATH": str(source.get("PATH") or "/usr/bin:/bin"),
@@ -170,7 +182,7 @@ def run_wrapper_op(ctx: WrapperContext, op: str, arguments: Mapping[str, Any] | 
 
     The bounds come first: a lineage whose time has run out, or whose call budget is spent, is
     ended (`ended_by` recorded) and the call is refused with `ended: True`, which the transport
-    turns into the end of the leaf. `on_spawn` is told the process-group id of every sandboxed
+    (issue #534 PR-2's) turns into the end of the leaf. `on_spawn` is told the process-group id of every sandboxed
     command as it starts, so the host can kill a run still in flight when it ends the lineage."""
     if op not in WRAPPER_OPS:
         return _result(False, category=CATEGORY_BAD_ARGUMENTS,
@@ -187,7 +199,8 @@ def run_wrapper_op(ctx: WrapperContext, op: str, arguments: Mapping[str, Any] | 
             # The recorded reason answers, whichever bound this call would also have hit.
             return _ended(ctx, str(ended_by))
         handler = _OPS[op]
-        return handler(ctx, args, on_spawn)
+        with _op_lock(ctx):
+            return handler(ctx, args, on_spawn)
     except Exception as exc:  # noqa: BLE001 - every failure is feedback, never a raise
         return _result(False, category=CATEGORY_WRAPPER_ERROR,
                        findings=f"{type(exc).__name__}: {exc}")
@@ -238,15 +251,18 @@ def _op_derive(ctx: WrapperContext, args: Mapping[str, Any],
 def _derive(ctx: WrapperContext) -> dict[str, Any]:
     outcome = _derive_outcome(ctx)
     if not outcome.get("ok"):
-        # A failed derive leaves no control file behind: a `compile` after it would otherwise
-        # build what an EARLIER manifest described and report it as this tree's build.
+        # A failed derive leaves no control file behind, so the tree never shows the leaf a
+        # control file derived from an EARLIER manifest. (`compile` derives for itself.)
         target = ctx.paths.tree / ctx.control_file_basename
         if target.is_symlink() or target.is_file():
             target.unlink()
     return outcome
 
 
-def _derive_outcome(ctx: WrapperContext) -> dict[str, Any]:
+def _derivation(ctx: WrapperContext) -> tuple[dict[str, Any], str] | dict[str, Any]:
+    """`(document, control file text)` for the tree as it stands — the host's Generate-time
+    derivation: assembly, the producer's contract, the build graph, the control file — or the
+    failure as feedback."""
     doc = workshop_tree.assemble_bundle_document(ctx.paths.tree, ctx.reserved_names)
     if isinstance(doc, AssemblyFailure):
         return _result(False, category=doc.category, findings=doc.findings)
@@ -263,17 +279,17 @@ def _derive_outcome(ctx: WrapperContext) -> dict[str, Any]:
     if missing:
         return _result(False, category=CATEGORY_STAGED_CLOSURE,
                        findings=f"the staged dependency closure lacks {missing} (a host fault)")
-    workshop_tree.write_host_file(ctx.paths.tree, ctx.control_file_basename,
-                                  ctx.render_control_file(graph=graph))
+    return doc, ctx.render_control_file(graph=graph)
+
+
+def _derive_outcome(ctx: WrapperContext) -> dict[str, Any]:
+    derived = _derivation(ctx)
+    if isinstance(derived, dict):
+        return derived
+    doc, control = derived
+    workshop_tree.write_host_file(ctx.paths.tree, ctx.control_file_basename, control)
     files = [str(e.get("logical_path")) for e in doc.get("files") or [] if isinstance(e, dict)]
     return _result(True, control_file=ctx.control_file_basename, files=files)
-
-
-def _require_derived(ctx: WrapperContext) -> dict[str, Any] | None:
-    if not workshop_tree.is_host_file(ctx.paths.tree, ctx.control_file_basename):
-        return _result(False, category=CATEGORY_NOT_DERIVED,
-                       findings="run derive first: the tree holds no derived control file")
-    return None
 
 
 def _fresh_dir(path: Path) -> Path:
@@ -287,22 +303,33 @@ def _fresh_dir(path: Path) -> Path:
 
 def _op_compile(ctx: WrapperContext, args: Mapping[str, Any],
                 on_spawn: Any) -> dict[str, Any]:
-    """Build the derived graph as the host's `Build` does: into an EMPTY object directory
-    holding the staged closure, and an empty binary directory, so no object, module file or
-    binary of an earlier compile answers for this tree (the host builds in a fresh
+    """Build the tree as the host's `Build` would build its snapshot: the derivation of the
+    tree as it stands NOW (`_derivation`; not an earlier `derive`'s control file, and not a
+    control file the leaf edited), in a source view of the manifest's files and the seeds
+    with the host-rendered control file beside them (what `src/` holds), into an EMPTY object
+    directory holding the staged closure and an empty binary directory, so no object, module
+    file or binary of an earlier compile answers for this tree (the host builds in a fresh
     `workspace/tmp/<arid>/build` every time)."""
     from tools.build_runtime import tool_compile_project
 
-    refused = _no_arguments("compile", args) or _require_derived(ctx)
+    refused = _no_arguments("compile", args)
     if refused is not None:
         return refused
+    derived = _derivation(ctx)
+    if isinstance(derived, dict):
+        return derived
+    doc, control = derived
+    view = _source_view(ctx, "_build", doc)
+    if isinstance(view, dict):
+        return view
+    workshop_tree.write_host_file(view, ctx.control_file_basename, control)
     _fresh_dir(ctx.paths.staged_obj)
     _fresh_dir(ctx.paths.staged_bin)
     for name in ctx.closure_file_names:
         shutil.copy2(ctx.paths.staged_closure / name, ctx.paths.staged_obj / name)
     env = dict(ctx.base_env)
     result = tool_compile_project({
-        "project_dir": str(ctx.paths.tree),
+        "project_dir": str(view),
         "language": ctx.language,
         "build_system": ctx.build_system,
         "extra_args": list(ctx.build_overrides),
@@ -311,8 +338,8 @@ def _op_compile(ctx: WrapperContext, args: Mapping[str, Any],
         "capture_limit": ctx.capture_limit,
         "timeout_sec": _bounded_timeout(ctx, ctx.compile_timeout_sec),
         "sandbox_argv_prefix": _sandbox(
-            ctx, project_dir=ctx.paths.tree,
-            rw=[ctx.paths.tree, ctx.paths.staged_obj, ctx.paths.staged_bin], env=env),
+            ctx, project_dir=view, rw=[view, ctx.paths.staged_obj, ctx.paths.staged_bin],
+            env=env),
         "on_spawn": on_spawn,
         **_attribution(ctx),
     })
@@ -320,15 +347,20 @@ def _op_compile(ctx: WrapperContext, args: Mapping[str, Any],
     return _command_feedback(result) | {"binaries": binaries}
 
 
-def _source_view(ctx: WrapperContext, name: str) -> Path | dict[str, Any]:
+def _source_view(ctx: WrapperContext, name: str,
+                 doc: dict[str, Any] | None = None) -> Path | dict[str, Any]:
     """What the host's `Generate.gate` reads, laid out for one lint / syntax call: the files
     the manifest names, with the content assembly reads (`assemble_bundle_document`), plus
-    the seeds — the host-placed files `src/` also holds (the runner, the headers). A file of
+    the seeds — among them the host-placed files `src/` also holds (the runner, the headers),
+    and the contract documents `src/` does not hold, which no linter or compiler reads. A file of
     the tree the manifest does not name (a note, a scratch source) is not in it, as it would
-    not be in `src/`. Returns the view directory, or the assembly's failure as feedback."""
-    doc = workshop_tree.assemble_bundle_document(ctx.paths.tree, ctx.reserved_names)
-    if isinstance(doc, AssemblyFailure):
-        return _result(False, category=doc.category, findings=doc.findings)
+    not be in `src/`. `doc` is an assembly the caller already holds. Returns the view
+    directory, or the assembly's failure as feedback."""
+    if doc is None:
+        assembled = workshop_tree.assemble_bundle_document(ctx.paths.tree, ctx.reserved_names)
+        if isinstance(assembled, AssemblyFailure):
+            return _result(False, category=assembled.category, findings=assembled.findings)
+        doc = assembled
     view = _fresh_dir(ctx.paths.syntax / name)
     for entry in doc.get("files") or []:
         if not isinstance(entry, dict):

@@ -7,7 +7,9 @@ of the lineage's bookkeeping. It holds no leaf launch and no gate: the document 
 through the unchanged `codegen_bundle.pure_bundle_contract_violation`, and every artifact a later
 `phase` reads is still written by the conductor from that document.
 
-Two places per lineage, and the leaf sees only the first:
+Two places per lineage. The leaf's CLI sees only the first (its `config/` and `tree/`; a
+program the wrapper runs for it sees `tree/` and, for `run`, `staged/bin`), and nothing
+leaf-side sees the second:
 
 * the LINEAGE HOME, `<homes-root>/<oid>/<backend>/<lineage_id>/` (outside the checkout, like
   the codex lineage home of issue #245): `config/` (the CLI's private config home), `tree/` (the
@@ -136,14 +138,16 @@ class LineagePaths:
         return self.record_dir / "wrapper_calls.jsonl"
 
     def make_work_dirs(self) -> None:
-        """Create the home's work directories (all but `config/`, which the CLI home's own
-        preparer owns) and the record directory. The home itself must already exist: it is
-        created exclusively, 0700, by that preparer, and never here."""
+        """Create the home's work directories, 0700 (all but `config/`, which the CLI home's own
+        preparer owns — issue #534 PR-2's) and the record directory. The home itself must
+        already exist: its preparer creates it exclusively, 0700, and it is never created
+        here."""
         if not self.home.is_dir():
             raise ValueError(f"lineage home {self.home} does not exist")
-        for directory in (self.tree, self.staged_closure, self.staged_obj, self.staged_bin,
-                          self.syntax, self.snapshot):
-            directory.mkdir(parents=True, exist_ok=True)
+        for directory in (self.tree, self.staged, self.staged_closure, self.staged_obj,
+                          self.staged_bin, self.syntax, self.snapshot):
+            directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+            os.chmod(directory, 0o700)
         self.record_dir.mkdir(parents=True, exist_ok=True)
 
 
@@ -383,14 +387,6 @@ def write_host_file(root: Path, name: str, text: str) -> None:
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
     with os.fdopen(fd, "w", encoding="utf-8") as stream:
         stream.write(text)
-
-
-def is_host_file(root: Path, name: str) -> bool:
-    """Whether `<root>/<name>` is a regular file (not a link to one)."""
-    try:
-        return stat.S_ISREG((Path(root) / name).lstat().st_mode)
-    except OSError:
-        return False
 
 
 def assemble_bundle_document(root: Path, reserved: Iterable[str]) -> dict[str, Any] | AssemblyFailure:

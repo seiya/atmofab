@@ -1040,6 +1040,42 @@ class WorkshopWrapperContextTests(unittest.TestCase):
         self.assertIsNone(ctx.launch_argv_prefix)
         self.assertIn("no gpu", ctx.run_unavailable)
 
+    def test_the_run_and_view_inputs_are_wired(self) -> None:
+        ctx = self._freeze(seed_names=("spec.ir.yaml", "x_runner.f90"))
+        self.assertEqual(ctx.seed_names, ("spec.ir.yaml", "x_runner.f90"))
+        # The fixture node's runner is host-rendered, so `initial/` is among them.
+        self.assertEqual(ctx.run_raw_dirs, self.c._run_raw_dirs(self.refs))
+        self.assertEqual(ctx.run_raw_dirs, ("raw", "state_snapshots", "initial"))
+
+    def test_a_device_class_is_not_run_by_the_wrapper(self) -> None:
+        # A wrapper run binds no device node, so a class whose launch names a device probe is
+        # declared unavailable rather than run to a failure the leaf cannot repair.
+        import tools.host_execution as he
+
+        real = he.launch_shape(self.c.target)
+        device = he.LaunchShape(argv_prefix=real.argv_prefix, env=real.env,
+                                platform_probe=("probe",))
+        with mock.patch.object(he, "launch_shape", return_value=device):
+            ctx = self._freeze()
+        self.assertIsNone(ctx.launch_argv_prefix)
+        self.assertIn("binds no device node", ctx.run_unavailable)
+
+    def test_the_syntax_compiler_and_the_launcher_are_bound(self) -> None:
+        import tools.host_execution as he
+        import tools.orchestration_runtime as ort_mod
+
+        real = he.launch_shape(self.c.target)
+        launched = he.LaunchShape(argv_prefix=("the_launcher", "-n", "2"), env=real.env)
+        adapter = SimpleNamespace(EXECUTABLE="the_syntax_compiler", LANGUAGE="fortran")
+        with mock.patch.object(he, "launch_shape", return_value=launched), \
+                mock.patch("tools.build_runtime.syntax_adapter", return_value=adapter), \
+                mock.patch.object(ort_mod, "wrapper_toolchain_ro_roots",
+                                  return_value=[]) as spy:
+            self._freeze()
+        executables = spy.call_args.args[0]
+        self.assertIn("the_syntax_compiler", executables)
+        self.assertIn("the_launcher", executables)
+
     def test_a_language_with_no_lint_preset_is_a_host_precondition(self) -> None:
         with mock.patch.object(wc.backend_registry, "linter_for_language", return_value=None):
             with self.assertRaisesRegex(RuntimeError, "no static lint preset"):
@@ -1063,7 +1099,10 @@ class WorkshopWrapperContextTests(unittest.TestCase):
     def test_the_base_env_carries_the_conductors_path(self) -> None:
         self.c.env = {"PATH": "/tools/bin:/usr/bin", "SECRET": "x"}
         self.assertEqual(dict(self._freeze().base_env)["PATH"], "/tools/bin:/usr/bin")
-        self.assertNotIn("SECRET", dict(self._freeze().base_env))
+        # The conductor's PATH, and of its environment nothing else.
+        self.assertEqual(dict(self._freeze().base_env),
+                         {"PATH": "/tools/bin:/usr/bin", "HOME": "/tmp", "TMPDIR": "/tmp",
+                          "LANG": "C.UTF-8"})
 
     def test_an_unstaged_closure_is_refused(self) -> None:
         with mock.patch.object(wc.Conductor, "_stage_dependency_sources", return_value=[]):

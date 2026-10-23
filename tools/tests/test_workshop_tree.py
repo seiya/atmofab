@@ -325,17 +325,11 @@ class HostFileWriteTests(_LineageCase):
         self.assertEqual(victim.read_text(), "untouched\n")
         self.assertFalse((self.paths.tree / _CONTROL).is_symlink())
         self.assertEqual((self.paths.tree / _CONTROL).read_text(), "rendered\n")
-        self.assertTrue(wt.is_host_file(self.paths.tree, _CONTROL))
 
     def test_a_directory_at_the_name_is_replaced(self) -> None:
         (self.paths.tree / _CONTROL).mkdir()
         wt.write_host_file(self.paths.tree, _CONTROL, "rendered\n")
         self.assertEqual((self.paths.tree / _CONTROL).read_text(), "rendered\n")
-
-    def test_a_link_at_the_name_is_not_a_derived_control_file(self) -> None:
-        target = self.write("real_control", "all:\n")
-        (self.paths.tree / _CONTROL).symlink_to(target)
-        self.assertFalse(wt.is_host_file(self.paths.tree, _CONTROL))
 
 
 def _count_in_child(args) -> int:
@@ -450,10 +444,15 @@ class WrapperBoundsAndDeriveTests(_LineageCase):
         self.assertEqual(ww.run_wrapper_op(ctx, "derive")["category"],
                          ww.CATEGORY_STAGED_CLOSURE)
 
-    def test_compile_before_derive_is_refused(self) -> None:
+    def test_compile_derives_for_itself_and_reports_its_derivation(self) -> None:
+        # No `derive` first, and no manifest: compile answers with the assembly's finding.
         ctx = _context(self.paths, self.reserved)
-        self.assertEqual(ww.run_wrapper_op(ctx, "compile")["category"],
-                         ww.CATEGORY_NOT_DERIVED)
+        self.assertEqual(ww.run_wrapper_op(ctx, "compile")["category"], wt.WORKSHOP_TREE_EMPTY)
+        self.write("x_model.f90", "m\n")
+        self.manifest("x_model.f90")
+        bad = _context(self.paths, self.reserved, violations=lambda doc: ("bundle_x", "why"))
+        self.assertEqual(ww.run_wrapper_op(bad, "compile"),
+                         {"ok": False, "category": "bundle_x", "findings": "why"})
 
     def test_operations_taking_no_arguments_refuse_some(self) -> None:
         ctx = _context(self.paths, self.reserved)
@@ -573,7 +572,10 @@ class WrapperCallCompositionTests(_LineageCase):
     def test_compile_lists_built_files_only_and_spawns_are_reported(self) -> None:
         from unittest import mock
 
-        self.write(_CONTROL, "all:\n")
+        self.write(_CONTROL, "a control file the leaf edited\n")
+        self.write("x_model.f90", "m\n")
+        self.write("scratch_try.f90", "not in the manifest\n")
+        self.manifest("x_model.f90")
         self.make_binary("left_by_an_earlier_compile")
         (self.paths.staged_obj / "old.mod").write_text("stale\n")
         (self.paths.staged_closure / "dep_model.f90").write_text("dep\n")
@@ -583,6 +585,9 @@ class WrapperCallCompositionTests(_LineageCase):
 
         def compile_project(args):
             # What the build finds when it starts, then what it leaves.
+            root = Path(args["project_dir"])
+            self.view = sorted(p.relative_to(root).as_posix() for p in root.rglob("*"))
+            self.control = (root / _CONTROL).read_text()
             self.found = sorted(p.name for p in self.paths.staged_obj.iterdir())
             self.found_bin = sorted(p.name for p in self.paths.staged_bin.iterdir())
             self.make_binary()
@@ -594,14 +599,18 @@ class WrapperCallCompositionTests(_LineageCase):
         # A fresh object directory holding the closure only, and an empty binary directory.
         self.assertEqual((self.found, self.found_bin), (["dep_model.f90"], []))
         self.assertEqual(out["binaries"], ["x_runner"])
+        # It builds what src/ would hold — the manifest's files, the seeds and the host's
+        # control file of the tree as it is now — not the tree, and not the leaf's control file.
+        self.assertEqual(self.view, sorted([_CONTROL, "x_model.f90", *_SEEDS]))
+        self.assertEqual(self.control, "all:\n")
         prefix = self.calls[0]["sandbox_argv_prefix"]
-        for rw in (self.paths.tree, self.paths.staged_obj, self.paths.staged_bin):
+        self.assertNotIn(str(self.paths.tree.resolve()), prefix)
+        for rw in (Path(self.calls[0]["project_dir"]), self.paths.staged_obj,
+                   self.paths.staged_bin):
             self.assertEqual(prefix[prefix.index(str(rw.resolve())) - 1], "--bind")
         # The closure the copies come from is bound into no run.
         self.assertNotIn(str(self.paths.staged_closure.resolve()), prefix)
         self.assertNotIn(str(self.paths.staged.resolve()), prefix)
-        self.manifest("x_model.f90")
-        self.write("x_model.f90", "m\n")
         with mock.patch("tools.build_runtime.tool_run_linter", self.recorder()):
             ww.run_wrapper_op(ctx, "lint", on_spawn=seen.append)
         self.assertEqual(seen, [4242, 4242])
@@ -701,22 +710,77 @@ class WrapperCallCompositionTests(_LineageCase):
         bad = _context(self.paths, self.reserved, violations=lambda doc: ("c", "f"))
         self.assertFalse(ww.run_wrapper_op(bad, "derive")["ok"])
         self.assertFalse((self.paths.tree / _CONTROL).exists())
-        self.assertEqual(ww.run_wrapper_op(ctx, "compile")["category"],
-                         ww.CATEGORY_NOT_DERIVED)
 
-    def test_derive_and_compile_never_write_or_trust_a_linked_control_file(self) -> None:
-        # The call sites of write_host_file / is_host_file, through run_wrapper_op.
+    def test_derive_never_writes_through_a_linked_control_file(self) -> None:
+        # The call site of write_host_file, through run_wrapper_op.
         victim = Path(self._tmp.name) / "victim.txt"
         victim.write_text("untouched\n")
         self.write("x_model.f90", "m\n")
         self.manifest("x_model.f90")
         (self.paths.tree / _CONTROL).symlink_to(victim)
         ctx = _context(self.paths, self.reserved, max_wrapper_calls=10)
-        self.assertEqual(ww.run_wrapper_op(ctx, "compile")["category"],
-                         ww.CATEGORY_NOT_DERIVED)
         self.assertTrue(ww.run_wrapper_op(ctx, "derive")["ok"])
         self.assertEqual(victim.read_text(), "untouched\n")
         self.assertFalse((self.paths.tree / _CONTROL).is_symlink())
+
+    def test_calls_of_one_lineage_run_one_after_the_other(self) -> None:
+        # The operations empty and refill the lineage's shared directories, so two calls of one
+        # lineage (a harness's sub-agents) must not overlap (round 3: 5 of 8 concurrent lint /
+        # syntax_check calls failed on a correct tree before the lock).
+        from unittest import mock
+
+        self.write("x_model.f90", "m\n")
+        self.manifest("x_model.f90")
+        inside = {"now": 0, "max": 0}
+        guard = threading.Lock()
+
+        def record(args):
+            with guard:
+                inside["now"] += 1
+                inside["max"] = max(inside["max"], inside["now"])
+            time.sleep(0.05)
+            with guard:
+                inside["now"] -= 1
+            return {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
+
+        ctx = _context(self.paths, self.reserved, max_wrapper_calls=100)
+        with mock.patch("tools.build_runtime.tool_run_linter", record), \
+                mock.patch("tools.build_runtime.tool_run_syntax_check", record):
+            threads = [threading.Thread(target=ww.run_wrapper_op, args=(ctx, op))
+                       for op in ("lint", "syntax_check") * 4]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        self.assertEqual(inside["max"], 1)
+
+    def test_a_view_holds_only_the_manifest_of_this_call(self) -> None:
+        from unittest import mock
+
+        self.write("x_model.f90", "m\n")
+        self.write("x_helper.f90", "h\n")
+        self.manifest("x_model.f90", "x_helper.f90")
+        seen: list[list[str]] = []
+
+        def record(args):
+            root = Path(args["project_dir"])
+            seen.append(sorted(p.name for p in root.iterdir()))
+            return {"ok": True, "return_code": 0, "stdout": "", "stderr": ""}
+
+        ctx = _context(self.paths, self.reserved, max_wrapper_calls=10)
+        with mock.patch("tools.build_runtime.tool_run_linter", record):
+            ww.run_wrapper_op(ctx, "lint")
+            self.manifest("x_model.f90")  # the leaf drops the helper from its bundle
+            ww.run_wrapper_op(ctx, "lint")
+        self.assertIn("x_helper.f90", seen[0])
+        self.assertNotIn("x_helper.f90", seen[1])
+
+    def test_the_recorded_reason_answers_whatever_else_is_spent(self) -> None:
+        # Ended by the cap, then past its deadline too: the record's reason is the answer.
+        wt.end_lineage(self.paths, "max_wrapper_calls")
+        late = _context(self.paths, self.reserved, lineage_deadline=time.time() - 5)
+        out = ww.run_wrapper_op(late, "lint")
+        self.assertEqual((out["category"], out["ended"]), (ww.CATEGORY_MAX_WRAPPER_CALLS, True))
 
     def test_truncated_output_is_flagged(self) -> None:
         cut = {"ok": False, "return_code": 2, "stdout": "a\n...<omitted 99 chars>...\nb",
