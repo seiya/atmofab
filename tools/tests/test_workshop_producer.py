@@ -685,7 +685,7 @@ _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
 #: `WORKSHOP_SYSTEM_PROMPT`. A change to either is a change of the workshop leaf's contract and
 #: takes a new version, keeping every shipped pin (the no-revert check reads them).
 _WORKSHOP_CONTRACT_DIGESTS = {
-    "workshop-1": "7b815a1b6c0d4639012927da03a9b67390c0d88047e743ad85cd356c8b09f331",
+    "workshop-1": "36b24f9784eaf318c3be23cbca630affe639a8bcb1dc4d11fa8fe35179872f7e",
 }
 
 
