@@ -53,8 +53,9 @@ workspace/
 │       │   └── ...                                (the actual bwrap mount-composition snapshot)
 │       │
 │       ├── workshop/
-│       │   └── <lineage_id>/                      (one `workshop leaf` lineage's record, host-written only; issue #534. The lineage's work tree is NOT here: it lives in the lineage home outside the checkout, `docs/RUNBOOK.md` §operator-private root)
+│       │   └── <lineage_id>/                      (proposed, issue #534: one `workshop leaf` lineage's record, host-written only. The lineage's work tree is NOT here: it lives in the lineage home outside the checkout, `docs/RUNBOOK.md` §operator-private root)
 │       │       ├── workshop_lineage.json          (`lineage_id`, `node_key`, `started_at_utc`, `wrapper_calls_used`, `ended_by`)
+│       │       ├── .lineage.lock                  (the advisory lock the record's writers take)
 │       │       ├── command_log.jsonl              (every build-runtime call the wrapper made, and each `derive`)
 │       │       └── wrapper_calls.jsonl            (every request the wrapper's transport served, with the launch's agent_run_id; the transport and its writer land in issue #534 PR-2)
 │       │
