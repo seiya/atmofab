@@ -1380,6 +1380,10 @@ class WorkshopCompileProducerTests(unittest.TestCase):
         self.assertEqual(workshop_tree.read_lineage_record(self.paths("child-1"))["ended_by"],
                          "declared_fail")
         self.assertEqual(len(self.requests()), 1, "a declaration was repaired")
+        finals = [c[1]["--agent-run-json"] for c in self.c.calls if c[0] == "finalize-child"]
+        self.assertEqual(finals[-1]["result_summary"],
+                         f"workshop_compile_fail: {wc.COMPILE_DECLARED_FAIL}: "
+                         "tests §1: declares no test")
         self.assertNotIn(wc.COMPILE_DECLARED_FAIL, wc.COMPILE_DOCUMENT_FAILURE_ROUTING)
 
     def test_a_declaration_beside_an_ir_is_repaired_warm_with_the_ir_repair_turn(self) -> None:

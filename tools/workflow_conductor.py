@@ -9690,7 +9690,7 @@ class Conductor:
                      f"category: {category or 'none'}")
             if declared_fail is not None:
                 result_summary = (f"{summary}_fail: {spec.declared_fail_category}: "
-                                  f"{declared_fail[:200]}")
+                                  f"{declared_fail[:300]}")
             elif status != "pass":
                 result_summary = f"{summary}_fail: {category}"
             else:
