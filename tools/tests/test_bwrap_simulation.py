@@ -1009,5 +1009,185 @@ class ClaudeSettingsIsolationTests(unittest.TestCase):
                 self.assertIn(marker, self._request(settings, extra, restricted=False))
 
 
+class WorkshopWrapperSandboxTests(unittest.TestCase):
+    """The wrapper's runs of a `workshop leaf` under a REAL bwrap (issue #534 PR-1;
+    `docs/design/producer_workshop_leaf.md` §Sandbox, row 2).
+
+    A two-file bundle that `use`s a staged dependency module is derived, compiled, linted,
+    syntax-checked and run through `workshop_wrapper.run_wrapper_op`, each step under
+    `render_wrapper_sandbox_prefix`. The built program — leaf-authored code — then probes what
+    it can reach: the staged dependency SOURCE, the checkout's `tools/`, the lineage's config
+    home, and a TCP listener on the host's loopback. Each must be out of reach."""
+
+    _DEP = textwrap.dedent("""\
+        module dep_model
+          implicit none
+        contains
+          pure integer function dep_twice(n)
+            integer, intent(in) :: n
+            dep_twice = 2 * n
+          end function dep_twice
+        end module dep_model
+        """)
+    _MODEL = textwrap.dedent("""\
+        module x_model
+          use dep_model, only: dep_twice
+          implicit none
+        contains
+          integer function x_value()
+            x_value = dep_twice(21)
+          end function x_value
+        end module x_model
+        """)
+    _RUNNER = textwrap.dedent("""\
+        program x_runner
+          use x_model, only: x_value
+          implicit none
+          print '(a,i0)', 'VALUE:', x_value()
+          call execute_command_line('python3 probe.py')
+        end program x_runner
+        """)
+    _CONTROL = textwrap.dedent("""\
+        OBJDIR ?= obj
+        BINDIR ?= bin
+        BIN ?= x_runner
+        FC = gfortran
+        all: $(BINDIR)/$(BIN)
+        $(OBJDIR)/dep_model.o: $(OBJDIR)/dep_model.f90
+        \t$(FC) -J$(OBJDIR) -c $(OBJDIR)/dep_model.f90 -o $@
+        $(OBJDIR)/x_model.o: x_model.f90 $(OBJDIR)/dep_model.o
+        \t$(FC) -J$(OBJDIR) -I$(OBJDIR) -c x_model.f90 -o $@
+        $(OBJDIR)/x_runner.o: x_runner.f90 $(OBJDIR)/x_model.o
+        \t$(FC) -J$(OBJDIR) -I$(OBJDIR) -c x_runner.f90 -o $@
+        $(BINDIR)/$(BIN): $(OBJDIR)/dep_model.o $(OBJDIR)/x_model.o $(OBJDIR)/x_runner.o
+        \tmkdir -p $(BINDIR)
+        \t$(FC) $^ -o $@
+        """)
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not _bwrap_usable():
+            raise AssertionError(
+                "bwrap is absent or unprivileged user namespaces are disabled; see "
+                "docs/BWRAP_ENABLEMENT.md (CI lifts kernel.apparmor_restrict_unprivileged_userns)")
+        for tool in ("gfortran", "make", "fortitude"):
+            if shutil.which(tool) is None:
+                raise AssertionError(
+                    f"{tool} is not installed (docs/DEVELOPMENT.md §Fresh-machine setup)")
+
+    def setUp(self) -> None:
+        import time
+
+        from tools import workshop_tree as wt
+        from tools import workshop_wrapper as ww
+        from tools.build_runtime import lint_preset_executables
+        from tools.orchestration_runtime import wrapper_toolchain_ro_roots
+
+        self.wt, self.ww = wt, ww
+        self._tmp = tempfile.TemporaryDirectory()
+        base = Path(self._tmp.name)
+        self.repo_root = Path(wc.__file__).resolve().parents[1]
+        self.paths = wt.LineagePaths(base / "homes", "orch_sim", "arid-sim", base / "record")
+        self.paths.home.mkdir(parents=True, mode=0o700)
+        self.paths.config.mkdir()
+        (self.paths.config / ".credentials.json").write_text("{}")
+        self.paths.make_work_dirs()
+        seeds = wt.seed_tree(self.paths, {"spec.ir.yaml": "cases: []\n"})
+        reserved = wt.reserved_tree_names(seeds, "Makefile")
+        wt.write_lineage_record(self.paths, node_key="component/x@0.1.0",
+                              started_at_utc="2026-10-23T00:00:00Z")
+        (self.paths.staged_obj / "dep_model.f90").write_text(self._DEP)
+        for name, text in (("x_model.f90", self._MODEL), ("x_runner.f90", self._RUNNER)):
+            (self.paths.tree / name).write_text(text)
+        (self.paths.tree / "bundle.yaml").write_text(
+            "files:\n  - logical_path: x_model.f90\n    role: model\n"
+            "  - logical_path: x_runner.f90\n    role: runner\n")
+        self.ctx = ww.WrapperContext(
+            paths=self.paths, repo_root=self.repo_root, orchestration_id="orch_sim",
+            agent_run_id="arid-sim", reserved_names=reserved, control_file_basename="Makefile",
+            violations=lambda doc: None, build_graph=lambda doc: {},
+            render_control_file=lambda *, graph: self._CONTROL,
+            closure_file_names=("dep_model.f90",), language="fortran", build_system="make",
+            build_overrides=(f"OBJDIR={self.paths.staged_obj}", f"BINDIR={self.paths.staged_bin}",
+                             "BIN=x_runner"),
+            lint_preset="fortitude", syntax_compiler="gfortran", syntax_std="f2008",
+            syntax_architecture=None, syntax_parallel_backend=None,
+            syntax_staged_suffixes=(".f90",), launch_argv_prefix=(), launch_env=(),
+            run_unavailable=None, base_env=tuple(sorted(ww.wrapper_base_env().items())),
+            toolchain_ro_roots=tuple(wrapper_toolchain_ro_roots(
+                ["make", "gfortran", "python3", *lint_preset_executables("fortitude")])),
+            max_wrapper_calls=20, lineage_deadline=time.time() + 900)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def op(self, name: str, args: dict | None = None) -> dict:
+        return self.ww.run_wrapper_op(self.ctx, name, args)
+
+    def test_the_operations_build_and_run_a_bundle_that_reaches_nothing_else(self) -> None:
+        import socket
+
+        derived = self.op("derive")
+        self.assertTrue(derived["ok"], derived)
+        built = self.op("compile")
+        self.assertTrue(built["ok"], built)
+        self.assertEqual(built["binaries"], ["x_runner"])
+        # The objects and module files land beside the staged source, outside the tree.
+        self.assertTrue((self.paths.staged_obj / "dep_model.mod").is_file())
+        self.assertFalse(any(p.suffix == ".o" for p in self.paths.tree.iterdir()))
+
+        syntax = self.op("syntax_check")
+        self.assertTrue(syntax["ok"], syntax)
+        lint = self.op("lint")
+        # A verdict, not a refusal to start: the linter scanned the tree's sources.
+        self.assertIsNotNone(lint.get("rc"), lint)
+        self.assertIn("files scanned", lint["stdout"], lint)
+
+        listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(1)
+        port = listener.getsockname()[1]
+        self.addCleanup(listener.close)
+        # Control: the listener answers on the host.
+        socket.create_connection(("127.0.0.1", port), timeout=5).close()
+        listener.accept()[0].close()
+        probe = textwrap.dedent(f"""\
+            import os, socket
+            def reach(tag, path):
+                print(tag + (":REACHABLE" if os.path.exists(path) else ":ABSENT"), flush=True)
+            reach("DEP_SOURCE", {str(self.paths.staged_obj / "dep_model.f90")!r})
+            reach("STAGED_OBJ", {str(self.paths.staged_obj)!r})
+            reach("REPO_TOOLS", {str(self.repo_root / "tools" / "workflow_conductor.py")!r})
+            reach("CONFIG_HOME", {str(self.paths.config / ".credentials.json")!r})
+            reach("RECORD", {str(self.paths.record_json)!r})
+            try:
+                socket.create_connection(("127.0.0.1", {port}), timeout=3).close()
+                print("HOST_TCP:CONNECTED", flush=True)
+            except OSError as e:
+                print("HOST_TCP:REFUSED", type(e).__name__, flush=True)
+            open("captured.txt", "w").write("written by the run")
+            """)
+        (self.paths.tree / "probe.py").write_text(probe)
+        ran = self.op("run", {"binary": "x_runner"})
+        self.assertTrue(ran["ok"], ran)
+        out = ran["stdout"]
+        self.assertIn("VALUE:42", out)
+        for tag in ("DEP_SOURCE", "STAGED_OBJ", "REPO_TOOLS", "CONFIG_HOME", "RECORD"):
+            self.assertIn(f"{tag}:ABSENT", out, out)
+        self.assertIn("HOST_TCP:REFUSED", out, out)
+        # The run's cwd is the tree, read-write.
+        self.assertEqual((self.paths.tree / "captured.txt").read_text(), "written by the run")
+        # Every build-runtime call is in the lineage's command log, under its sandbox.
+        entries = [json.loads(line)
+                   for line in self.paths.command_log.read_text().splitlines()]
+        sandboxed = [e for e in entries if e["tool_name"] != "derive"]
+        self.assertTrue(sandboxed)
+        for entry in sandboxed:
+            self.assertEqual(entry["sandbox_argv_prefix"][:4],
+                             ["bwrap", "--die-with-parent", "--new-session", "--unshare-net"])
+            self.assertEqual(entry["agent_run_id"], "arid-sim")
+        self.assertEqual(self.wt.read_lineage_record(self.paths)["wrapper_calls_used"], 5)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -8334,6 +8334,151 @@ def render_bwrap_command(
     return cmd
 
 
+
+# --- the wrapper's runs (a `workshop leaf`'s second sandbox row, issue #534) ---------------
+#
+# `docs/design/producer_workshop_leaf.md` §Sandbox, row 2: the toolchain, the lint tool and the
+# built binary a `workshop leaf`'s wrapper runs are the LEAF's actions, and the binary is
+# leaf-authored code, so each runs confined to what the leaf is confined to and no more. The
+# conductor renders the head below and hands it to the build-runtime library as
+# `sandbox_argv_prefix`; the library splices it in front of the command it composes.
+
+#: The environment names every wrapper run is declared, beside the ones its caller declares
+#: (the launch shape's, for `run`). `--clearenv` drops the rest.
+WRAPPER_ENV_BASE_NAMES: tuple[str, ...] = ("PATH", "HOME", "TMPDIR", "LANG", "LC_ALL")
+
+_ENV_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def wrapper_toolchain_ro_roots(executables: Sequence[str]) -> list[str]:
+    """The host directories a wrapper run binds read-only so that `executables` (the compiler,
+    the build tool, the linter, the launcher, as named on `PATH`) start inside it: for each one
+    `shutil.which` finds, the install root of that path and of its `os.path.realpath`
+    (`_install_root_for`, the rule the leaf's own CLI root uses), except that an install
+    outside `$HOME` whose parent is a `bin/` directory binds the prefix above it, because such
+    an installer keeps the libraries the program loads beside `bin/` (`<prefix>/lib`). Roots
+    the system binds already cover are dropped. An executable `PATH` does not hold contributes
+    nothing: the run then fails as it would on the host, inside the sandbox."""
+    home = (os.environ.get("HOME") or "").strip()
+    system = [Path(p) for p in _runtime_ro_bind_paths()]
+    roots: set[str] = set()
+    for name in executables:
+        found = shutil.which(name)
+        if not found:
+            continue
+        for candidate in (Path(found), Path(os.path.realpath(found))):
+            inside_home = bool(home) and Path(os.path.normpath(candidate)).is_relative_to(
+                Path(os.path.normpath(home)))
+            if inside_home:
+                root = _install_root_for(candidate, home)
+            elif candidate.parent.name == "bin" and candidate.parent.parent != Path("/"):
+                root = candidate.parent.parent
+            else:
+                root = candidate.parent
+            if any(root == s or root.is_relative_to(s) for s in system):
+                continue
+            roots.add(str(root))
+    return sorted(roots)
+
+
+def render_wrapper_sandbox_prefix(
+    *,
+    repo_root: Path,
+    project_dir: Path,
+    rw_binds: Sequence[Path],
+    ro_binds: Sequence[Path] = (),
+    toolchain_ro_roots: Sequence[str] = (),
+    env: Mapping[str, str],
+    declared_env_names: Sequence[str] = (),
+) -> list[str]:
+    """The `bwrap ... --` head of one wrapper run, ending in `--`.
+
+    `--unshare-net` (no interface but loopback, and no route out), `--clearenv` with one
+    `--setenv` per entry of `env` (the caller passes the SAME dict to the library as `env`, so
+    the command log's `env_override_keys` names what the run was given), the system
+    directories and `toolchain_ro_roots` read-only, an empty tmpfs at `repo_root` so nothing of
+    the checkout — `tools/` among it — is in reach of a leaf-authored program, then exactly
+    `rw_binds` read-write and `ro_binds` read-only, each at its own host path, and `--chdir
+    project_dir`.
+
+    Refuses (`ValueError`): a bind that is not an existing absolute path or that has a
+    containment relation with the checkout (a bind at or under it would mount the checkout
+    back over the tmpfs; one covering it would expose all of it); a `project_dir` not inside
+    a read-write bind; an install root that aliases the checkout
+    (`_refuse_backend_ro_alias_of_repo`); an env name outside `WRAPPER_ENV_BASE_NAMES` and
+    `declared_env_names`, or a non-string value."""
+    resolved_repo = repo_root.resolve()
+
+    def _checked(paths: Sequence[Path], kind: str) -> list[str]:
+        out: list[str] = []
+        for raw in paths:
+            path = Path(raw)
+            if not path.is_absolute():
+                raise ValueError(f"wrapper {kind} bind {str(raw)!r} must be absolute")
+            if not path.exists():
+                raise ValueError(f"wrapper {kind} bind {str(raw)!r} does not exist")
+            resolved = path.resolve()
+            if (resolved == resolved_repo or resolved.is_relative_to(resolved_repo)
+                    or resolved_repo.is_relative_to(resolved)):
+                raise ValueError(
+                    f"wrapper {kind} bind {str(raw)!r} is not outside the checkout "
+                    f"{resolved_repo}; a wrapper run is granted no path of the checkout")
+            out.append(str(resolved))
+        return out
+
+    rw = _checked(rw_binds, "rw")
+    ro = _checked(ro_binds, "ro")
+    if not rw:
+        raise ValueError("a wrapper run needs at least one read-write bind (its project_dir)")
+    project = str(Path(project_dir).resolve())
+    if not any(project == r or Path(project).is_relative_to(Path(r)) for r in rw):
+        raise ValueError(
+            f"wrapper project_dir {project} is not inside a read-write bind of the run")
+    system_ro = _runtime_ro_bind_paths()
+    toolchain = [str(r) for r in toolchain_ro_roots]
+    _refuse_backend_ro_alias_of_repo(repo_root, toolchain, system_ro)
+    allowed = set(WRAPPER_ENV_BASE_NAMES) | {str(n) for n in declared_env_names}
+    for name, value in env.items():
+        if not isinstance(name, str) or not isinstance(value, str):
+            raise ValueError(f"wrapper env entries must be str -> str, got {name!r}")
+        if not _ENV_NAME_RE.fullmatch(name):
+            raise ValueError(f"wrapper env name {name!r} is not a variable name")
+        if name not in allowed:
+            raise ValueError(
+                f"wrapper env carries undeclared name {name!r}; a wrapper run is declared "
+                f"{sorted(allowed)}")
+    cmd: list[str] = [
+        "bwrap",
+        "--die-with-parent",
+        "--new-session",
+        "--unshare-net",
+        "--clearenv",
+        "--proc", "/proc",
+        "--dev", "/dev",
+        "--tmpfs", "/tmp",
+    ]
+    for item in system_ro + toolchain:
+        cmd.extend(["--ro-bind", item, item])
+    cmd.extend(["--tmpfs", str(resolved_repo)])
+    for item in rw:
+        cmd.extend(["--bind", item, item])
+    for item in ro:
+        cmd.extend(["--ro-bind", item, item])
+    for name, value in sorted(env.items()):
+        cmd.extend(["--setenv", name, value])
+    cmd.extend(["--chdir", project, "--"])
+    return cmd
+
+
+def render_wrapper_run_command(*, command_argv: Sequence[str], **prefix_kwargs: Any) -> list[str]:
+    """`render_wrapper_sandbox_prefix(**prefix_kwargs)` followed by `command_argv`: the whole
+    argv of one wrapper run, for a caller that runs it itself rather than through the
+    build-runtime library."""
+    if not command_argv:
+        raise ValueError("command_argv must be non-empty")
+    return render_wrapper_sandbox_prefix(**prefix_kwargs) + [str(a) for a in command_argv]
+
+
 def _compute_sha256(path: Path) -> str:
     """Return the file's SHA-256 hash in the form "sha256:<hex>".
 

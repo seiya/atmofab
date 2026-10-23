@@ -18,6 +18,7 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
 import time
 import uuid
@@ -188,6 +189,64 @@ def _attribution(args: dict[str, Any]) -> dict[str, str]:
     return out
 
 
+def _sandbox_argv_prefix(args: dict[str, Any]) -> list[str]:
+    """The optional `sandbox_argv_prefix` of a call: the argv the caller confines the command
+    under (a `bwrap ... --` head the conductor renders for a `workshop leaf`'s wrapper,
+    `orchestration_runtime.render_wrapper_sandbox_prefix`), spliced in front of the command by
+    `_run_command`. Type-only, as every other argument (`docs/BUILD_RUNTIME.md` §Operations
+    rules): an array of non-empty strings, or absent. The content is the caller's."""
+    raw = args.get("sandbox_argv_prefix")
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(a, str) and a for a in raw):
+        raise ValueError("sandbox_argv_prefix must be an array of non-empty strings")
+    return list(raw)
+
+
+def _on_spawn(args: dict[str, Any]) -> Any:
+    """The optional `on_spawn` callable of a call: told the process-group id of a sandboxed
+    command as soon as it starts, so an in-process caller can kill the group while the call
+    is still blocked (the wrapper stops every run of a lineage the host ends). Only meaningful
+    with `sandbox_argv_prefix`, the case in which the command runs in a session of its own."""
+    raw = args.get("on_spawn")
+    if raw is None:
+        return None
+    if not callable(raw):
+        raise ValueError("on_spawn must be callable")
+    if args.get("sandbox_argv_prefix") is None:
+        raise ValueError("on_spawn requires sandbox_argv_prefix")
+    return raw
+
+
+def _sandbox_args(args: dict[str, Any]) -> dict[str, Any]:
+    """Both sandbox keys of a call, validated at the entry point before anything runs or is
+    skipped, as the `_run_command` keywords they become."""
+    return {"sandbox_argv_prefix": _sandbox_argv_prefix(args), "on_spawn": _on_spawn(args)}
+
+
+def _sandboxed_run(argv: list[str], *, cwd: str, env: dict[str, str], timeout_sec: int,
+                   on_spawn: Any) -> tuple[int | None, str, str, int]:
+    """Run `argv` in a session of its own and return `(return_code, stdout, stderr, pgid)`;
+    `return_code` is None when the timeout killed it. A timeout kills the whole PROCESS GROUP,
+    not only the direct child: under a sandbox the direct child is the sandbox launcher, and
+    the program it started is what has to stop."""
+    proc = subprocess.Popen(argv, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, start_new_session=True)
+    pgid = proc.pid
+    if on_spawn is not None:
+        on_spawn(pgid)
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout_sec)
+        return proc.returncode, stdout, stderr, pgid
+    except subprocess.TimeoutExpired:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        stdout, stderr = proc.communicate()
+        return None, stdout or "", stderr or "", pgid
+
+
 def _run_command(
     command: list[str],
     cwd: str,
@@ -197,6 +256,8 @@ def _run_command(
     capture_limit: int,
     command_log_path: str | None,
     attribution: dict[str, str] | None = None,
+    sandbox_argv_prefix: list[str] | None = None,
+    on_spawn: Any = None,
 ) -> dict[str, Any]:
     if not command:
         raise ValueError("command must not be empty")
@@ -215,88 +276,80 @@ def _run_command(
     command_id = uuid.uuid4().hex
     started_at = _utc_now_iso()
     started = time.monotonic()
+    prefix = list(sandbox_argv_prefix or [])
+    # `command` stays the command the caller asked for in the log and the result, and the
+    # confinement it ran under is recorded beside it: a reader of `command` (the quality-check
+    # preset match, `build_execute.quality_check_preset`) reads the same argv either way.
+    sandbox_fields: dict[str, Any] = {"sandbox_argv_prefix": prefix} if prefix else {}
+    pgid: int | None = None
 
-    try:
-        proc = subprocess.run(
-            command,
-            cwd=str(path),
-            env=merged_env,
-            text=True,
-            capture_output=True,
-            timeout=timeout_sec,
-            check=False,
-        )
-        elapsed_ms = int((time.monotonic() - started) * 1000)
-        result = {
-            "ok": proc.returncode == 0,
-            "return_code": proc.returncode,
-            "command": command,
-            "executed_command": shlex.join(command),
-            "cwd": str(path),
-            "stdout": _trim(proc.stdout, capture_limit),
-            "stderr": _trim(proc.stderr, capture_limit),
-        }
-        entry = {
-            "version": 1,
-            "command_id": command_id,
-            "tool_name": tool_name,
-            "started_at_utc": started_at,
-            "ended_at_utc": _utc_now_iso(),
-            "elapsed_ms": elapsed_ms,
-            "cwd": str(path),
-            "command": command,
-            "executed_command": shlex.join(command),
-            "timeout_sec": timeout_sec,
-            "capture_limit": capture_limit,
-            "env_override_keys": sorted(env.keys()) if env else [],
-            "ok": result["ok"],
-            "return_code": result["return_code"],
-            **(attribution or {}),
-        }
-        _append_command_log(log_path, entry)
-        result["command_id"] = command_id
-        result["command_log_path"] = str(log_path)
-        log_ref = _path_to_ref(log_path)
-        if log_ref is not None:
-            result["command_log_ref"] = log_ref
-        return result
-    except subprocess.TimeoutExpired as exc:
-        elapsed_ms = int((time.monotonic() - started) * 1000)
-        result = {
-            "ok": False,
-            "return_code": None,
-            "command": command,
-            "executed_command": shlex.join(command),
-            "cwd": str(path),
-            "stdout": _trim(exc.stdout or "", capture_limit),
-            "stderr": _trim(exc.stderr or "", capture_limit),
-            "error": f"timeout: exceeded {timeout_sec} sec",
-        }
-        entry = {
-            "version": 1,
-            "command_id": command_id,
-            "tool_name": tool_name,
-            "started_at_utc": started_at,
-            "ended_at_utc": _utc_now_iso(),
-            "elapsed_ms": elapsed_ms,
-            "cwd": str(path),
-            "command": command,
-            "executed_command": shlex.join(command),
-            "timeout_sec": timeout_sec,
-            "capture_limit": capture_limit,
-            "env_override_keys": sorted(env.keys()) if env else [],
-            "ok": result["ok"],
-            "return_code": result["return_code"],
-            "error": result["error"],
-            **(attribution or {}),
-        }
-        _append_command_log(log_path, entry)
-        result["command_id"] = command_id
-        result["command_log_path"] = str(log_path)
-        log_ref = _path_to_ref(log_path)
-        if log_ref is not None:
-            result["command_log_ref"] = log_ref
-        return result
+    timed_out = False
+    if prefix:
+        return_code, stdout, stderr, pgid = _sandboxed_run(
+            prefix + command, cwd=str(path), env=merged_env, timeout_sec=timeout_sec,
+            on_spawn=on_spawn)
+        timed_out = return_code is None
+    else:
+        try:
+            proc = subprocess.run(
+                command,
+                cwd=str(path),
+                env=merged_env,
+                text=True,
+                capture_output=True,
+                timeout=timeout_sec,
+                check=False,
+            )
+            return_code, stdout, stderr = proc.returncode, proc.stdout, proc.stderr
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            return_code, stdout, stderr = None, exc.stdout or "", exc.stderr or ""
+    if isinstance(stdout, bytes):
+        stdout = stdout.decode("utf-8", errors="replace")
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", errors="replace")
+
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    result: dict[str, Any] = {
+        "ok": (not timed_out) and return_code == 0,
+        "return_code": return_code,
+        "command": command,
+        "executed_command": shlex.join(command),
+        "cwd": str(path),
+        "stdout": _trim(stdout, capture_limit),
+        "stderr": _trim(stderr, capture_limit),
+    }
+    if timed_out:
+        result["error"] = f"timeout: exceeded {timeout_sec} sec"
+    entry = {
+        "version": 1,
+        "command_id": command_id,
+        "tool_name": tool_name,
+        "started_at_utc": started_at,
+        "ended_at_utc": _utc_now_iso(),
+        "elapsed_ms": elapsed_ms,
+        "cwd": str(path),
+        "command": command,
+        "executed_command": shlex.join(command),
+        "timeout_sec": timeout_sec,
+        "capture_limit": capture_limit,
+        "env_override_keys": sorted(env.keys()) if env else [],
+        "ok": result["ok"],
+        "return_code": result["return_code"],
+        **({"error": result["error"]} if timed_out else {}),
+        **sandbox_fields,
+        **(attribution or {}),
+    }
+    _append_command_log(log_path, entry)
+    result["command_id"] = command_id
+    result["command_log_path"] = str(log_path)
+    if prefix:
+        result["sandbox_argv_prefix"] = prefix
+        result["process_group_id"] = pgid
+    log_ref = _path_to_ref(log_path)
+    if log_ref is not None:
+        result["command_log_ref"] = log_ref
+    return result
 
 
 #: The marker files of the build systems no backend owns yet, in detection order, each mapped
@@ -483,6 +536,7 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
+    sandbox = _sandbox_args(args)
     if target is not None and not isinstance(target, str):
         raise ValueError("compile_project target must be a string")
     if not isinstance(extra_args, list) or not all(isinstance(a, str) for a in extra_args):
@@ -514,6 +568,7 @@ def tool_compile_project(args: dict[str, Any]) -> dict[str, Any]:
         capture_limit=capture_limit,
         command_log_path=command_log_path,
         attribution=_attribution(args),
+        **sandbox,
     )
     result["language"] = language or None
     result["build_system"] = build_system
@@ -588,6 +643,7 @@ def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
     command = [str(item) for item in command]
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
+    sandbox = _sandbox_args(args)
 
     run_env: dict[str, str] | None
     if env is None:
@@ -604,6 +660,7 @@ def tool_run_program(args: dict[str, Any]) -> dict[str, Any]:
         capture_limit=capture_limit,
         command_log_path=command_log_path,
         attribution=_attribution(args),
+        **sandbox,
     )
 
 
@@ -617,6 +674,7 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
+    sandbox = _sandbox_args(args)
     # Required: which preset runs is the target's build system's (the conductor always passes
     # it), and a default would be one build system's preset answering for every target.
     preset = args.get("preset")
@@ -655,6 +713,7 @@ def tool_run_quality_checks(args: dict[str, Any]) -> dict[str, Any]:
         capture_limit=capture_limit,
         command_log_path=command_log_path,
         attribution=_attribution(args),
+        **sandbox,
     )
     result["preset"] = preset
     return result
@@ -820,6 +879,7 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
+    sandbox = _sandbox_args(args)
 
     if "command" in args:
         raise ValueError("run_linter does not allow custom command; use preset")
@@ -854,6 +914,7 @@ def tool_run_linter(args: dict[str, Any]) -> dict[str, Any]:
             capture_limit=capture_limit,
             command_log_path=command_log_path,
             attribution=_attribution(args),
+        **sandbox,
         ))
     # A simple preset keeps the FLAT result shape (the command's own keys plus `preset`); a
     # composite keeps the `runs` shape, one entry per sub-run in order. Both are what the
@@ -998,6 +1059,7 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
     env = args.get("env")
     if env is not None and not isinstance(env, dict):
         raise ValueError("env must be an object")
+    sandbox = _sandbox_args(args)
 
     if "command" in args:
         raise ValueError(
@@ -1090,6 +1152,7 @@ def tool_run_syntax_check(args: dict[str, Any]) -> dict[str, Any]:
         capture_limit=capture_limit,
         command_log_path=command_log_path,
         attribution=_attribution(args),
+        **sandbox,
     )
     return result | {
         "compiler": compiler,

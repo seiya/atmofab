@@ -29365,5 +29365,113 @@ class CrossTargetNotReadyReasonTests(unittest.TestCase):
         self.assertEqual(short, "cross_target_unevaluable:e")
 
 
+class WrapperSandboxRendererTests(unittest.TestCase):
+    """`render_wrapper_sandbox_prefix` (issue #534 PR-1): the head a `workshop leaf`'s wrapper
+    runs every build-runtime command under — no network, a declared environment, an empty
+    checkout, and exactly the binds its caller names."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        base = Path(self._tmp.name)
+        self.repo = base / "repo"
+        (self.repo / "tools").mkdir(parents=True)
+        self.tree = base / "home" / "tree"
+        self.bin = base / "home" / "staged" / "bin"
+        self.tree.mkdir(parents=True)
+        self.bin.mkdir(parents=True)
+        self.env = {"PATH": "/usr/bin:/bin", "HOME": "/tmp", "TMPDIR": "/tmp",
+                    "LANG": "C.UTF-8"}
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def render(self, **over):
+        kwargs = dict(repo_root=self.repo, project_dir=self.tree, rw_binds=[self.tree],
+                      ro_binds=[self.bin], env=self.env)
+        kwargs.update(over)
+        return ort.render_wrapper_sandbox_prefix(**kwargs)
+
+    def test_golden_head(self) -> None:
+        cmd = self.render()
+        system = ort._runtime_ro_bind_paths()
+        expected = ["bwrap", "--die-with-parent", "--new-session", "--unshare-net",
+                    "--clearenv", "--proc", "/proc", "--dev", "/dev", "--tmpfs", "/tmp"]
+        for item in system:
+            expected += ["--ro-bind", item, item]
+        expected += ["--tmpfs", str(self.repo.resolve()),
+                     "--bind", str(self.tree.resolve()), str(self.tree.resolve()),
+                     "--ro-bind", str(self.bin.resolve()), str(self.bin.resolve())]
+        for name in sorted(self.env):
+            expected += ["--setenv", name, self.env[name]]
+        expected += ["--chdir", str(self.tree.resolve()), "--"]
+        self.assertEqual(cmd, expected)
+        # Nothing of the checkout is bound: `tools/` is under the tmpfs, not over it.
+        self.assertNotIn(str((self.repo / "tools").resolve()), cmd)
+
+    def test_the_whole_command_appends_the_argv(self) -> None:
+        cmd = ort.render_wrapper_run_command(
+            command_argv=["make", "-j2"], repo_root=self.repo, project_dir=self.tree,
+            rw_binds=[self.tree], env=self.env)
+        self.assertEqual(cmd[-3:], ["--", "make", "-j2"])
+        with self.assertRaises(ValueError):
+            ort.render_wrapper_run_command(command_argv=[], repo_root=self.repo,
+                                           project_dir=self.tree, rw_binds=[self.tree],
+                                           env=self.env)
+
+    def test_a_bind_related_to_the_checkout_is_refused(self) -> None:
+        for bad in (self.repo, self.repo / "tools", self.repo.parent):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(ValueError, "not outside the checkout"):
+                    self.render(rw_binds=[self.tree, bad])
+                with self.assertRaisesRegex(ValueError, "not outside the checkout"):
+                    self.render(ro_binds=[bad])
+
+    def test_a_bind_that_is_relative_or_absent_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "absolute"):
+            self.render(rw_binds=[Path("tree")])
+        with self.assertRaisesRegex(ValueError, "does not exist"):
+            self.render(ro_binds=[self.tree / "absent"])
+
+    def test_the_project_dir_must_be_writable(self) -> None:
+        with self.assertRaisesRegex(ValueError, "not inside a read-write bind"):
+            self.render(project_dir=self.bin)
+        with self.assertRaisesRegex(ValueError, "at least one read-write bind"):
+            self.render(rw_binds=[])
+
+    def test_an_undeclared_env_name_is_refused(self) -> None:
+        with self.assertRaisesRegex(ValueError, "undeclared name 'OMP_NUM_THREADS'"):
+            self.render(env={**self.env, "OMP_NUM_THREADS": "2"})
+        cmd = self.render(env={**self.env, "OMP_NUM_THREADS": "2"},
+                          declared_env_names=("OMP_NUM_THREADS",))
+        self.assertIn("OMP_NUM_THREADS", cmd)
+        for bad in ({"A=B": "x"}, {"PATH": 3}):
+            with self.subTest(bad=bad):
+                with self.assertRaises(ValueError):
+                    self.render(env=bad, declared_env_names=tuple(bad))
+
+    def test_toolchain_roots_are_bound_read_only_and_may_not_alias_the_checkout(self) -> None:
+        root = Path(self._tmp.name) / "opt" / "mpi"
+        root.mkdir(parents=True)
+        cmd = self.render(toolchain_ro_roots=[str(root)])
+        i = cmd.index(str(root))
+        self.assertEqual(cmd[i - 1], "--ro-bind")
+        # A root that reaches the checkout under a second name would mount it back where the
+        # tmpfs does not cover it (`_refuse_backend_ro_alias_of_repo`, the leaf's own rule).
+        alias = Path(self._tmp.name) / "alias"
+        alias.symlink_to(self.repo)
+        with self.assertRaises(ValueError):
+            self.render(toolchain_ro_roots=[str(alias)])
+
+    def test_toolchain_roots_cover_a_prefix_install_and_skip_system_dirs(self) -> None:
+        prefix = Path(self._tmp.name) / "opt" / "tool" / "1.0"
+        (prefix / "bin").mkdir(parents=True)
+        exe = prefix / "bin" / "launcher"
+        exe.write_text("#!/bin/sh\n")
+        exe.chmod(0o755)
+        with mock.patch.dict(os.environ, {"PATH": f"{prefix / 'bin'}:/usr/bin:/bin"}):
+            roots = ort.wrapper_toolchain_ro_roots(["launcher", "sh", "no-such-tool"])
+        self.assertEqual(roots, [str(prefix)])
+
+
 if __name__ == "__main__":
     unittest.main()

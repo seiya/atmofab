@@ -1681,5 +1681,115 @@ class BuildExecuteBackendTests(unittest.TestCase):
             self.mod._quality_check_preset_commands()
         self.assertIn("'pytest' is declared by both", str(caught.exception))
 
+
+class SandboxArgvPrefixTests(unittest.TestCase):
+    """`sandbox_argv_prefix` (issue #534 PR-1): the confinement a `workshop leaf`'s wrapper runs
+    a command under. Type-only, spliced in front of the command, recorded beside it, and run in
+    a session of its own whose process-group id the caller is told."""
+
+    def setUp(self) -> None:
+        self.mod = _load_module()
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+        # A stand-in for the sandbox launcher: records its argv, its process group and its
+        # environment, then runs whatever follows `--`.
+        self.fake = self.dir / "fake_bwrap"
+        self.fake.write_text(
+            "#!/usr/bin/env python3\n"
+            "import json, os, sys\n"
+            "argv = sys.argv[1:]\n"
+            "open(os.environ['FAKE_RECORD'], 'w').write(json.dumps({'argv': argv, "
+            "'pgid': os.getpgid(0), 'pid': os.getpid(), 'env': dict(os.environ)}))\n"
+            "rest = argv[argv.index('--') + 1:]\n"
+            "os.execvp(rest[0], rest)\n")
+        self.fake.chmod(0o755)
+        self.record = self.dir / "record.json"
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _run(self, **extra):
+        return self.mod.tool_run_program({
+            "project_dir": str(self.dir),
+            "command": ["/bin/echo", "hello"],
+            "env": {"FAKE_RECORD": str(self.record), "OMP_NUM_THREADS": "2"},
+            "command_log_path": str(self.dir / "log.jsonl"),
+            **extra,
+        })
+
+    def test_a_non_list_prefix_is_refused_before_anything_runs(self) -> None:
+        for bad in ("bwrap --", ["bwrap", 3], ["bwrap", ""], {"a": 1}):
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(ValueError, "sandbox_argv_prefix"):
+                    self._run(sandbox_argv_prefix=bad)
+        self.assertFalse((self.dir / "log.jsonl").exists())
+
+    def test_on_spawn_needs_a_prefix_and_a_callable(self) -> None:
+        with self.assertRaisesRegex(ValueError, "requires sandbox_argv_prefix"):
+            self._run(on_spawn=lambda pgid: None)
+        with self.assertRaisesRegex(ValueError, "callable"):
+            self._run(sandbox_argv_prefix=[str(self.fake), "--"], on_spawn="x")
+
+    def test_the_prefix_is_spliced_logged_and_the_env_passed(self) -> None:
+        seen: list[int] = []
+        result = self._run(sandbox_argv_prefix=[str(self.fake), "--flag", "--"],
+                           on_spawn=seen.append)
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["stdout"].strip(), "hello")
+        record = json.loads(self.record.read_text())
+        self.assertEqual(record["argv"], ["--flag", "--", "/bin/echo", "hello"])
+        # A session of its own: the launcher leads its process group, and the caller was told
+        # that group's id as it started.
+        self.assertEqual(record["pgid"], record["pid"])
+        self.assertEqual(seen, [record["pgid"]])
+        self.assertEqual(result["process_group_id"], record["pgid"])
+        self.assertEqual(record["env"]["OMP_NUM_THREADS"], "2")
+        entry = json.loads((self.dir / "log.jsonl").read_text().splitlines()[-1])
+        self.assertEqual(entry["command"], ["/bin/echo", "hello"])
+        self.assertEqual(entry["sandbox_argv_prefix"], [str(self.fake), "--flag", "--"])
+        self.assertEqual(entry["env_override_keys"], ["FAKE_RECORD", "OMP_NUM_THREADS"])
+
+    def test_an_unprefixed_call_records_no_sandbox_fields(self) -> None:
+        result = self._run()
+        self.assertTrue(result["ok"], result)
+        self.assertNotIn("process_group_id", result)
+        entry = json.loads((self.dir / "log.jsonl").read_text().splitlines()[-1])
+        self.assertNotIn("sandbox_argv_prefix", entry)
+
+    def test_a_timeout_kills_the_whole_group(self) -> None:
+        import time
+
+        marker = self.dir / "survived"
+        script = self.dir / "slow.sh"
+        # The grandchild outlives its parent unless the GROUP is killed.
+        script.write_text(f"#!/bin/sh\n(sleep 2; touch {marker}) &\nsleep 30\n")
+        script.chmod(0o755)
+        result = self.mod.tool_run_program({
+            "project_dir": str(self.dir),
+            "command": [str(script)],
+            "env": {"FAKE_RECORD": str(self.record)},
+            "timeout_sec": 1,
+            "sandbox_argv_prefix": [str(self.fake), "--"],
+        })
+        self.assertFalse(result["ok"])
+        self.assertIsNone(result["return_code"])
+        self.assertIn("timeout", result["error"])
+        time.sleep(3)
+        self.assertFalse(marker.exists(), "a process of the timed-out group survived")
+
+    def test_every_entry_point_reads_the_key(self) -> None:
+        bad = {"sandbox_argv_prefix": "bwrap"}
+        calls = [
+            (self.mod.tool_compile_project, {"build_system": "make"}),
+            (self.mod.tool_run_quality_checks, {"preset": "make_test"}),
+            (self.mod.tool_run_linter, {"preset": "fortitude"}),
+            (self.mod.tool_run_syntax_check, {"compiler": "gfortran", "std": "f2008"}),
+        ]
+        for fn, args in calls:
+            with self.subTest(fn=fn.__name__):
+                with self.assertRaisesRegex(ValueError, "sandbox_argv_prefix"):
+                    fn({"project_dir": str(self.dir), **args, **bad})
+
+
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

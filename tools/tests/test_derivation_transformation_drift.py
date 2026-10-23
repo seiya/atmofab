@@ -136,6 +136,10 @@ def render_tuple() -> dict[str, str]:
             _file_digest("tools/backends/language/fortran/__init__.py"),
         "Conductor._render_pure_makefile_from_graph":
             _source_digest(wc.Conductor._render_pure_makefile_from_graph),
+        # What `_render_pure_makefile_from_graph` hands the renderer (issue #534 PR-1 moved it
+        # into a helper the workshop wrapper binds too).
+        "Conductor._control_file_render_inputs":
+            _source_digest(wc.Conductor._control_file_render_inputs),
         "Conductor._write_pure_bundle_artifacts":
             _source_digest(wc.Conductor._write_pure_bundle_artifacts),
         # The second language's host renders (issue #289, R4-b PR-4): its control-file rules,
@@ -984,7 +988,14 @@ PINNED_RENDER: dict[str, str] = {
     # profile's count; the renderer's pin of that harness carries the seven-argument writer.
     # Rows moved: `fortran/runner.py`, and the docstrings of `tools/host_execution.py`
     # (`perf_parallelism`) and `tools/host_render.py` (`render_runner`).
-    "render-12": "67911b82b871d27a4b45aeaf8679f736cdd7aebf115970e5a43378cfafd33e90",
+    "render-12": "9bafc15cbd642af8b5ac4ba07f1dc7efdf574978408a3e52338373913f21123f",
+    # Re-pinned (issue #534 PR-1), behaviour-preserving: `_render_pure_makefile_from_graph`
+    # reads the renderer and its host-owned arguments from `_control_file_render_inputs`
+    # (joins the tuple), so a `workshop leaf`'s wrapper binds the same ones; the control file
+    # rendered from a graph is byte-identical. (Measured by diffing `render_tuple()` against
+    # origin/main ad0393fd's: that row moved and one row was added.) The digest `render-12`
+    # shipped with at ad0393fd:
+    "render-12@ad0393fd": "67911b82b871d27a4b45aeaf8679f736cdd7aebf115970e5a43378cfafd33e90",
     # Re-pinned (issue #469), behaviour-preserving: `make/control_file.py` gains
     # `CONTROL_FILE_BASENAMES`, the names `make` reads without `-f`, which `codegen_bundle`
     # derives its reserved bundle basenames from; nothing it renders moved. (Measured by diffing
@@ -1085,7 +1096,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "8607644d9d7dc718cc7dabac0481be902360ce0f08aad91257e9e9e1f94d1793",
+    "build-2": "64c97d62cdd775f0e98d12bf19964a514264c9534bc8b03ff2d4f3ce0e102b65",
     # Re-pinned (issue #512, PR-4b), behaviour-preserving: `tools/host_execution.py` gains
     # `serial_execution_env` and an execution-shape argument to `launch_shape`, whose default is
     # the certified shape — the one the build's backstop call asks for, with the argv prefix,
@@ -1217,6 +1228,12 @@ PINNED_BUILD: dict[str, str] = {
     # origin/main ea903073's: that row and no other.) The digest `build-2` shipped with at
     # ea903073:
     "build-2@ea903073": "af361cddb5c06ef041a7038f6651a7c393fbc7eb08aa425731fcf8fedba36597",
+    # Re-pinned (issue #534 PR-1), behaviour-preserving for the build: `_run_command` and
+    # `tool_compile_project` take an optional `sandbox_argv_prefix` (and `on_spawn`), which
+    # `_build_inproc` never passes; the unprefixed path runs the same `subprocess.run` and
+    # writes the same `command_log.jsonl` entry. (Measured by diffing `build_tuple()` against
+    # origin/main ad0393fd's: those two rows and no other.) The digest `build-2` shipped with at ad0393fd:
+    "build-2@ad0393fd": "8607644d9d7dc718cc7dabac0481be902360ce0f08aad91257e9e9e1f94d1793",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -1492,7 +1509,13 @@ PINNED_EXECUTE: dict[str, str] = {
     # fails the shape and the post-execute gate reads. Rows moved: `_author_quality_check`,
     # `_quality_check_failure_lines`, `Conductor._execute_inproc`, the new row, and
     # `tools/host_execution.py` (the `perf_parallelism` docstring).
-    "execute-12": "7d0bf312f0768f31579cf210435a16f781c9d38531db52f9d782225123a0da42",
+    "execute-12": "fa6566def55fa6c086a61df51b741600a60049b2f1a74f14d164dabda2c655e5",
+    # Re-pinned (issue #534 PR-1), behaviour-preserving for the execute: `_run_command` and the
+    # two run tools take an optional `sandbox_argv_prefix` (and `on_spawn`), which
+    # `_execute_inproc` never passes; the unprefixed path is unchanged. (Measured by diffing
+    # `execute_tuple()` against origin/main ad0393fd's: those three rows and no other.) The
+    # digest `execute-12` shipped with at ad0393fd:
+    "execute-12@ad0393fd": "7d0bf312f0768f31579cf210435a16f781c9d38531db52f9d782225123a0da42",
 }
 PINNED_VERDICT: dict[str, str] = {
     "verdict-1": "06eb14a32fac4eb5353837261702121c19275f1b3cb61aa9d8dc44a7550a31cb",

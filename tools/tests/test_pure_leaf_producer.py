@@ -935,6 +935,86 @@ class PureMakefileTests(unittest.TestCase):
             self.assertIn("test:", mk)
 
 
+class WorkshopWrapperContextTests(unittest.TestCase):
+    """`_freeze_wrapper_context` (issue #534 PR-1): a `workshop leaf`'s wrapper judges, derives
+    and renders from the SAME inputs as the pure path, bound once in the main thread."""
+
+    def setUp(self) -> None:
+        import time
+
+        from tools import workshop_tree as wt
+
+        self._tmp = tempfile.TemporaryDirectory()
+        self.repo = Path(self._tmp.name) / "repo"
+        self.refs = _write_node(self.repo)
+        self.c = _conductor(self.repo)
+        self.paths = wt.LineagePaths(Path(self._tmp.name) / "homes", "o", "child-1",
+                                     self.repo / "workspace" / "orchestrations" / "o")
+        self.paths.home.mkdir(parents=True)
+        self.paths.make_work_dirs()
+        self.ctx = self.c._freeze_wrapper_context(
+            self.refs, self.paths, agent_run_id="child-1",
+            reserved_names=frozenset({"Makefile"}), closure_file_names=(),
+            max_wrapper_calls=7, lineage_deadline=time.time() + 60)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_the_contract_is_the_pure_paths(self) -> None:
+        self.assertIsNone(self.ctx.violations(_valid_bundle()))
+        bad = _valid_bundle()
+        bad["capability_requirements"] = ["batched_cases@1", "state_registration@1"]
+        self.assertEqual(self.ctx.violations(bad), self.c._pure_bundle_violations(self.refs, bad))
+
+    def test_the_control_file_is_the_pure_paths(self) -> None:
+        doc = _valid_bundle()
+        self.assertEqual(
+            self.ctx.render_control_file(graph=self.ctx.build_graph(doc)),
+            self.c._render_pure_makefile_from_graph(
+                self.refs, self.c._build_pure_bundle_graph(self.refs, doc)))
+
+    def test_the_toolchain_facts_are_the_gates(self) -> None:
+        self.assertEqual(self.ctx.lint_preset, _backend_registry.linter_for_language("fortran"))
+        self.assertEqual(self.ctx.syntax_compiler, str(_backend_registry.capability_module(
+            "language", "fortran", "bundle_facts").MANDATORY_SYNTAX_COMPILER))
+        self.assertEqual(self.ctx.control_file_basename,
+                         self.c._control_file_basename(self.refs))
+        overrides = " ".join(self.ctx.build_overrides)
+        self.assertIn(str(self.paths.staged_obj), overrides)
+        self.assertIn(str(self.paths.staged_bin), overrides)
+        self.assertIn(self.c._resolve_exe_name(self.refs), overrides)
+        self.assertIsNone(self.ctx.run_unavailable)
+        self.assertEqual((self.ctx.max_wrapper_calls, self.ctx.agent_run_id), (7, "child-1"))
+
+    def test_the_context_calls_no_conductor_method(self) -> None:
+        # Every callable is a module function bound to frozen arguments: a transport thread
+        # that runs one cannot reach the conductor.
+        import functools
+        for name in ("violations", "build_graph", "render_control_file"):
+            with self.subTest(name=name):
+                fn = getattr(self.ctx, name)
+                self.assertIsInstance(fn, functools.partial)
+                self.assertNotIsInstance(getattr(fn.func, "__self__", None), wc.Conductor)
+
+    def test_staging_refuses_a_closure_with_no_bindings(self) -> None:
+        # The fixture node's closure holds the target's harness; no generate key was computed,
+        # so there is nothing to stage from (`_stage_dependency_sources`' own refusal).
+        with self.assertRaisesRegex(RuntimeError, "no derivation record"):
+            self.c._stage_workshop_closure(self.refs, self.paths)
+
+    def test_staging_places_the_bound_sources(self) -> None:
+        import hashlib
+        ref = "workspace/certified/harness_fortran_cpu_model.f90"
+        (self.repo / ref).parent.mkdir(parents=True)
+        (self.repo / ref).write_text("module harness_fortran_cpu_model\nend module\n")
+        sha = hashlib.sha256((self.repo / ref).read_bytes()).hexdigest()
+        self.c._phase_closure_bindings[(self.refs.node_key, "generate")] = [
+            {"node_key": _HARNESS, "model_source_ref": ref, "model_source_sha256": sha}]
+        names = self.c._stage_workshop_closure(self.refs, self.paths)
+        self.assertEqual(names, ("harness_fortran_cpu_model.f90",))
+        self.assertTrue((self.paths.staged_obj / names[0]).is_file())
+
+
 # ======================================================================================
 # _run_pure_generate_substep: happy path + bounded repair + exhaustion
 # ======================================================================================
