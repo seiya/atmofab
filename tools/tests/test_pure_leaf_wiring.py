@@ -1618,8 +1618,8 @@ class PureRenderTests(unittest.TestCase):
         ("tools/prompt_templates/pure_generate_verify_harness.txt: Output contract (verify "
          "verdict): return one JSON object wit #44453a0a4418"),
         # Issue #534 step 3: the reading workshop twins carry the four lines above verbatim
-        # (`TemplateTests.test_the_reviewer_rules_are_the_pure_templates_verbatim` in
-        # `test_workshop_producer.py`). READ: the same digests, so the same judgments — each
+        # (`ReaderTemplateTests.test_the_reviewer_rules_are_the_pure_templates_verbatim` in
+        # `test_workshop_reviewer.py`). READ: the same digests, so the same judgments — each
         # routes or points at the rubric, and none assigns a value.
         "tools/prompt_templates/workshop_generate_verify.txt: Review checklist (the semantic "
         "items to judge the bundle aga #b31abbfa9532",
