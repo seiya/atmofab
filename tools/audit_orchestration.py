@@ -1521,8 +1521,10 @@ def main() -> None:
             "Read-only orchestration audit helper. Exits 2 when the audit cannot be "
             "trusted at face value: log corruption was detected "
             "(`data_integrity_warning`), a best-effort diagnostic section raised and "
-            "its result is UNKNOWN rather than negative (`diagnostic_failures`), or "
-            "there is no such orchestration under --repo-root (`orchestration_found`)."
+            "its result is UNKNOWN rather than negative (`diagnostic_failures`), "
+            "there is no such orchestration under --repo-root (`orchestration_found`), "
+            "or the orchestration is a judge replay (tools/judge_replay.py; read its "
+            "replay_result.json instead)."
         )
     )
     parser.add_argument("--orchestration-id", required=True, help="Orchestration ID to audit")

@@ -885,7 +885,8 @@ _FAILURE_STATUS_VALUES: frozenset[str] = frozenset(
 # latest for an implicit `--resume` — on the reasoning that a non-terminal status is ambiguous
 # between a live concurrent run and a crashed one. Issue #177's PR-3 removed that: the exclusive
 # claim answers the ambiguity directly, so implicit resume no longer filters by status at all
-# (`_find_latest_orchestration` takes the latest, whatever it is) and a `running` prior is
+# (`_find_latest_orchestration` takes the latest whatever its status — a judge replay, which
+# is not a run, being the one directory it skips) and a `running` prior is
 # resumed rather than refused. The name is kept because these ARE the terminal statuses; what
 # changed is that "resumable" is no longer a property they decide.
 _RESUMABLE_TERMINAL_STATUSES: frozenset[str] = frozenset(

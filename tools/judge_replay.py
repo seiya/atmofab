@@ -17,7 +17,8 @@ reviewer substep, with its schema repairs, under the leaf model the configuratio
 that substep names; `--leaf` must agree with it (the configuration file is the only thing that
 says what a leaf launches).
 
-`--mutate` is a JSON object `{document_key: [{"old": "...", "new": "..."}, ...]}`: each
+`--mutate` is a JSON object `{document_key: [{"old": "...", "new": "..."}, ...]}` (or
+`@<path>` to a file holding one): each
 replacement is applied to the recorded document in order and must match EXACTLY ONCE, or the
 replay is refused before anything is launched. The same mutated context is handed to either
 leaf model, so a seeded defect is the same defect on both arms.
@@ -30,6 +31,24 @@ recorded ones and the reviewer's two host writers are replaced by writers that k
 document in memory. Its only result is `<replay dir>/replay_result.json`, one JSON line per
 repetition; no audit or node-directory discovery reads a replay (`tools/audit_orchestration.py`
 must not be run on one: it composes the SOURCE run's directories from the recorded requests).
+
+Refusals (exit 2, nothing launched, no orchestration created): a pair other than the three
+judging ones; a request with no `pure_context` (a warm repair turn: replay its cold launch);
+a context whose key set is not the CURRENT one; a `--mutate` that does not match exactly once
+or breaks a recorded JSON document; a source orchestration whose `spec_ref` no longer resolves,
+through the catalog, to the request's node (a node whose spec VERSION moved since the record:
+its replay window is closed); `--leaf` disagreeing with the configuration; a failing preflight
+(this one after the orchestration was created; it ends `fail`).
+
+Each `replay_result.json` row: the head (`replay_orchestration_id`, `source_*`, `step`,
+`substep`, `leaf`, `label`, `mutated_keys`, `repetition`); the outcome (`status`,
+`leaf_returncode`, `infra_error`, `document` — the accepted verdict or review, else null —
+and `failure_category`); `attempts` (the reviewer's `per_attempt` rows); `schema_repairs`
+(turns launched because the previous document was refused); the sums over the attempts of
+`cost_usd`, `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`,
+`output_tokens`, `leaf_wall_s`, `duration_ms` (claude envelope) and `model_turns`; on the pure
+arm of a pure record `prompt_matches_record` (null on a mutated row); on the workshop arm
+`cli_versions` and `coverage` (below).
 
 `--check` creates the orchestration and answers, without launching, whether a launch of this
 row would pass the two launch gates that depend on the workspace rather than on the request:
