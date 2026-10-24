@@ -892,4 +892,10 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
+    # SIGTERM / SIGHUP (a `timeout`, a closed ssh session) become `SystemExit(143)`, as for
+    # the driver (`run_workflow._install_signal_handlers`), so `replay`'s `finally`
+    # terminalizes the replay orchestration instead of leaving it `running` — where
+    # `run_workflow` would offer it as a run to resume.
+    from tools.run_workflow import _install_signal_handlers
+    _install_signal_handlers()
     sys.exit(main())
