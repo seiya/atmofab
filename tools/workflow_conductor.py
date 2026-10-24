@@ -3157,6 +3157,13 @@ def _envelope_is_per_turn(envelope: dict[str, Any], totals: dict[str, Any], turn
         for row in rows)
 
 
+def _codex_usage_counts(raw: Any) -> dict[str, int]:
+    """The integer counts of a raw codex `turn.completed` usage object (booleans excluded)."""
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(v, int) and not isinstance(v, bool)}
+
+
 def _leaf_usage_row(
     proc: ProcResult,
     entry: ResolvedLeafEntry,
@@ -3202,6 +3209,13 @@ def _leaf_usage_row(
     - neither holds (a negative class of the difference never equals a count), the resumed
       envelope is unreadable, or either total is partial — `unavailable`, with both sets of
       numbers in the reason. A guessed number is not written.
+
+    On a codex entry `resumed` is `(resumed_agent_run_id, the raw turn.completed counts that
+    launch reported)` — the previous launch of the same thread (`Conductor.
+    _codex_thread_resumed_usage`). A warm codex turn's counts are always the thread's running
+    total, so the difference is recorded (every class non-negative, the resumed total covering
+    no class the current one lacks), with the running total and the resumed launch under
+    `provider_details`; otherwise `unavailable`.
     """
     if deterministic:
         return leaf_usage_not_measured(
@@ -3273,10 +3287,33 @@ def _leaf_usage_row(
         # the names this repository can name — and there is no captured codex `turn.completed`
         # here to say what the others are called. Before this, codex usage was persisted
         # verbatim; carrying it forward costs nothing and loses nothing.
-        usage = normalize_leaf_usage(
-            proc.usage, source=source,
-            details={"turn_usage": {k: v for k, v in proc.usage.items()
-                                    if isinstance(v, int) and not isinstance(v, bool)}})
+        counts = _codex_usage_counts(proc.usage)
+        if entry.provider == "codex_cli" and resumed is not None:
+            # A warm `codex exec resume` turn's `turn.completed` counts are the THREAD's running
+            # total (measured on codex-cli 0.164.0: 101 / 202 / 303 input over a cold launch and
+            # two resumes, one request each), so this turn's own figure is the difference from
+            # the total the resumed launch reported, every class non-negative. A resumed launch
+            # that recorded no total, or a difference that goes negative, is `unavailable` with
+            # both sets of numbers — a guessed number is not written (issue #281's rule).
+            resumed_arid, prev = resumed
+            if not isinstance(prev, dict) or not prev:
+                return leaf_usage_unavailable(
+                    f"warm-resumed codex turn: its counts {counts} are the thread's running "
+                    f"total, and the resumed launch {resumed_arid} recorded no total to "
+                    f"subtract")
+            diff = {key: value - prev.get(key, 0) for key, value in counts.items()}
+            if (set(prev) - set(counts)) or any(v < 0 for v in diff.values()):
+                return leaf_usage_unavailable(
+                    f"warm-resumed codex turn: its running total {counts} does not cover the "
+                    f"resumed launch {resumed_arid}'s total {prev}")
+            usage = normalize_leaf_usage(
+                diff, source=source,
+                details={"turn_usage": diff, "thread_running_total": counts,
+                         "decumulated_against": resumed_arid})
+            return usage or leaf_usage_unavailable(
+                f"warm-resumed codex turn: the difference {diff} from {resumed_arid}'s total "
+                "holds no usable count")
+        usage = normalize_leaf_usage(proc.usage, source=source, details={"turn_usage": counts})
         if usage is not None:
             return usage
     return leaf_usage_unavailable(
@@ -8549,6 +8586,8 @@ class Conductor:
         resumed = None
         if warm and entry.provider == "claude_cli" and resume_session_id:
             resumed = (resume_session_id, self._persisted_result_envelope(resume_session_id))
+        elif warm and entry.provider == "codex_cli" and resume_session_id:
+            resumed = self._codex_warm_resumed(resume_session_id, child_arid)
         usage = _leaf_usage_row(
             proc, entry,
             envelope=envelope if entry.provider == "claude_cli" else None,
@@ -9549,7 +9588,10 @@ class Conductor:
                 proc.usage if proc.usage is not None else _MISSING,
                 self._session_id_for_child(child_arid, entry) or _MISSING, None, None)
             model, provenance = self._codex_model_provenance(entry)
-            usage = _leaf_usage_row(proc, entry, envelope=None)
+            usage = _leaf_usage_row(
+                proc, entry, envelope=None,
+                resumed=(self._codex_warm_resumed(resume_session_id, child_arid)
+                         if warm and resume_session_id else None))
             turns = None
             items_completed = getattr(proc, "items_completed", None)
         wrapper_calls = int(record.get("wrapper_calls_used") or 0) - calls_before
@@ -14709,6 +14751,46 @@ class Conductor:
         return (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
                 / "agents" / child_arid / "dialogs")
 
+    def _codex_warm_resumed(self, thread_id: str, child_arid: str) -> tuple[str, Any]:
+        """`_leaf_usage_row`'s `resumed` for a warm codex launch: the resumed launch and its
+        stored total — `("(none)", None)` when no other launch recorded the thread, which the
+        usage row records as `unavailable` rather than as a total it cannot decumulate."""
+        found = self._codex_thread_resumed_usage(thread_id, child_arid)
+        return found if found is not None else ("(none)", None)
+
+    def _codex_thread_resumed_usage(self, thread_id: str | None,
+                                    child_arid: str) -> tuple[str, dict[str, int] | None] | None:
+        """`(arid, raw counts)` of the launch a warm codex launch of `thread_id` resumes: the
+        latest session-index row recording that thread BEFORE `child_arid`'s own row (rows are
+        appended in launch order), and the `turn.completed` counts `_persist_leaf_output` stored for it (None when
+        it stored none — a launch that died before its turn completed). None when no other
+        launch recorded the thread. Never raises."""
+        if not isinstance(thread_id, str) or not thread_id.strip():
+            return None
+        from tools.orchestration_runtime import _read_session_run_index_consistent
+        try:
+            index = _read_session_run_index_consistent(self.repo_root, self.orchestration_id)
+        except Exception:  # noqa: BLE001 — an unreadable index records no decumulation
+            return None
+        previous = None
+        for row in index.get("entries", []):
+            if not isinstance(row, dict):
+                continue
+            if row.get("agent_run_id") == child_arid:
+                break  # the launches before this one; a later row is not what it resumed
+            if (row.get("agent_session_id") == thread_id.strip()
+                    and isinstance(row.get("agent_run_id"), str)):
+                previous = row["agent_run_id"]
+        if previous is None:
+            return None
+        try:
+            doc = json.loads((self._dialogs_dir(previous) / "leaf.turn_usage.json").read_text(
+                encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            return previous, None
+        counts = _codex_usage_counts(doc)
+        return previous, (counts or None)
+
     def _persisted_result_envelope(self, child_arid: str) -> Any:
         """The result envelope `_persist_leaf_output` stored for a claude leaf. Never raises."""
         from tools.pure_leaf import _MISSING, ResultEnvelope, parse_result_envelope
@@ -14757,6 +14839,18 @@ class Conductor:
                                   errors="backslashreplace")
         else:
             jsonl_path.unlink(missing_ok=True)
+        # Codex: the raw `turn.completed` counts as the CLI reported them — on a resumed thread
+        # the running total, which the NEXT warm launch of the thread subtracts
+        # (`_codex_thread_resumed_usage`). Its own file because the stream above is capped and
+        # the turn's last event is the one a cap drops. Removed when absent, as above.
+        usage_path = dialogs / f"{prefix}.turn_usage.json"
+        counts = (_codex_usage_counts(proc.usage)
+                  if proc.raw_stdout is not None and isinstance(proc.usage, dict)
+                  and not proc.usage.get("usage_source") else {})
+        if counts:
+            usage_path.write_text(json.dumps(counts, sort_keys=True), encoding="utf-8")
+        else:
+            usage_path.unlink(missing_ok=True)
 
     @staticmethod
     def _leaf_failure_summary(proc: ProcResult) -> str:

@@ -1982,6 +1982,33 @@ class CodexWorkshopLeafCliTests(unittest.TestCase):
         blob = b"".join(api2.bodies)
         self.assertNotIn(b"PLANTED-AGENTS-MARKER", blob)
 
+    @staticmethod
+    def _turn_usage(stdout: str) -> dict:
+        for line in stdout.splitlines():
+            event = wc._parse_codex_line(line)
+            if event is not None and event.get("type") == "turn.completed":
+                return dict(event["usage"])
+        raise AssertionError(f"no turn.completed in {stdout[-2000:]}")
+
+    def test_mx6_a_warm_turn_reports_the_thread_total_and_the_row_records_its_own(
+            self) -> None:
+        """MX6: the stand-in answers every request with the same usage, and a resumed turn of
+        one request reports twice the cold turn's counts — the thread's running total. The
+        usage row `_leaf_usage_row` records for it, decumulated against the cold launch's
+        total, is the one request's counts again."""
+        server = self._endpoint([])
+        cold = self._launch(self._api([]), server)
+        self.assertEqual(cold.returncode, 0, cold.stdout + cold.stderr)
+        warm = self._launch(self._api([]), server, resume=self._thread_id(cold.stdout))
+        self.assertEqual(warm.returncode, 0, warm.stdout + warm.stderr)
+        first, total = self._turn_usage(cold.stdout), self._turn_usage(warm.stdout)
+        self.assertEqual(first["input_tokens"], 10)
+        self.assertEqual(total, {k: 2 * v for k, v in first.items()})
+        row = wc._leaf_usage_row(wc.ProcResult(0, "done", "", usage=total, raw_stdout="x"),
+                                 self.entry, resumed=("cold", first))
+        self.assertEqual((row["input_tokens"], row["output_tokens"]),
+                         (first["input_tokens"], first["output_tokens"]))
+
     def test_mx5_a_warm_resume_continues_the_thread_and_reaches_the_wrapper(self) -> None:
         """MX5: `exec resume <thread>` with `sandbox_mode="workspace-write"` and the same
         overrides, from the lineage home: the resumed thread's history is in the request, a

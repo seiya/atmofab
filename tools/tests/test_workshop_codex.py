@@ -580,5 +580,98 @@ class CodexWorkshopSpawnTests(unittest.TestCase):
             self.assertNotIn(wc.LEAF_CANCELLED_MARKER, result.stderr)
 
 
+
+class CodexWarmUsageTests(unittest.TestCase):
+    """A warm `codex exec resume` turn's `turn.completed` counts are the THREAD's running total
+    (issue #281's codex half; the premise is pinned against the real CLI by
+    `test_bwrap_simulation.CodexWorkshopLeafCliTests.test_mx6_…`). The recorded usage is the
+    difference from the total the resumed launch of the thread reported."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = Path(tmp.name)
+        (self.repo / "workspace" / "orchestrations" / "o").mkdir(parents=True)
+        self.c = _PureFakeConductor(repo_root=self.repo, orchestration_id="o",
+                                    orchestration_agent_run_id="orch", env={},
+                                    llm_config=_codex_config(self.repo))
+        self.entry = self.c.entry_for("generate", "generate")
+
+    @staticmethod
+    def _proc(counts: dict) -> wc.ProcResult:
+        return wc.ProcResult(0, "done", "", usage=dict(counts), raw_stdout="{}\n")
+
+    def test_a_warm_turn_records_the_difference_from_the_resumed_total(self) -> None:
+        prev = {"input_tokens": 101, "cached_input_tokens": 10, "output_tokens": 8,
+                "reasoning_output_tokens": 1}
+        total = {"input_tokens": 202, "cached_input_tokens": 20, "output_tokens": 16,
+                 "reasoning_output_tokens": 2}
+        row = wc._leaf_usage_row(self._proc(total), self.entry, resumed=("child-1", prev))
+        self.assertEqual((row["input_tokens"], row["output_tokens"]), (101, 8))
+        self.assertEqual(row["provider_details"]["thread_running_total"], total)
+        self.assertEqual(row["provider_details"]["turn_usage"]["input_tokens"], 101)
+        self.assertEqual(row["provider_details"]["decumulated_against"], "child-1")
+        cold = wc._leaf_usage_row(self._proc(total), self.entry)
+        self.assertEqual(cold["input_tokens"], 202)
+        self.assertNotIn("thread_running_total", cold["provider_details"])
+
+    def test_no_resumed_total_or_a_negative_difference_is_unavailable(self) -> None:
+        total = {"input_tokens": 202, "output_tokens": 16}
+        for label, resumed in (
+                ("no total recorded", ("child-1", None)),
+                ("no launch found", ("(none)", None)),
+                ("a class goes negative", ("child-1", {"input_tokens": 300,
+                                                       "output_tokens": 1})),
+                ("a class the total lacks", ("child-1", {"input_tokens": 1,
+                                                         "output_tokens": 1,
+                                                         "cached_input_tokens": 5}))):
+            with self.subTest(case=label):
+                row = wc._leaf_usage_row(self._proc(total), self.entry, resumed=resumed)
+                self.assertEqual(row["status"], "unavailable", row)
+                self.assertIn("running total", row["reason"])
+
+    def test_the_raw_total_is_persisted_per_launch_and_removed_when_absent(self) -> None:
+        total = {"input_tokens": 202, "output_tokens": 16}
+        self.c._persist_leaf_output("child-2", self._proc(total))
+        path = self.c._dialogs_dir("child-2") / "leaf.turn_usage.json"
+        self.assertEqual(json.loads(path.read_text()), total)
+        # A claude (normalized, no raw stream) result writes none, and a stale one goes.
+        self.c._persist_leaf_output("child-2", wc.ProcResult(
+            0, "x", "", usage={"input_tokens": 1, "usage_source": "result_envelope"}))
+        self.assertFalse(path.exists())
+
+    def test_the_resumed_launch_is_the_latest_other_launch_of_the_thread(self) -> None:
+        from tools.orchestration_runtime import _session_run_index_path
+        index = _session_run_index_path(self.repo, "o")
+        index.parent.mkdir(parents=True, exist_ok=True)
+        rows = [("child-1", "t1"), ("child-x", "t2"), ("child-2", "t1"), ("child-3", "t1")]
+        index.write_text(json.dumps({"entries": [
+            {"agent_run_id": a, "agent_session_id": t} for a, t in rows]}))
+        self.c._persist_leaf_output("child-2", self._proc({"input_tokens": 5}))
+        self.assertEqual(self.c._codex_thread_resumed_usage("t1", "child-3"),
+                         ("child-2", {"input_tokens": 5}))
+        self.assertEqual(self.c._codex_thread_resumed_usage("t1", "child-2"),
+                         ("child-1", None))
+        self.assertIsNone(self.c._codex_thread_resumed_usage("t9", "child-3"))
+        self.assertEqual(self.c._codex_warm_resumed("t9", "child-3"), ("(none)", None))
+
+    def test_a_warm_pure_codex_turn_records_its_own_usage(self) -> None:
+        """Through `_spawn_pure_turn`, the transport every pure codex repair turn takes."""
+        from tools.tests.test_pure_leaf_wiring import _pure_request
+        c, entry = self.c, self.c.entry_for("generate", "verify")
+        c.spawn_leaf = lambda *a, **k: self._proc(  # type: ignore[assignment]
+            {"input_tokens": 250, "output_tokens": 30})
+        c._codex_lineage_for_session = lambda sid, entry=None: "child-1"  # type: ignore
+        c._codex_thread_resumed_usage = (  # type: ignore[assignment]
+            lambda tid, arid: ("child-1", {"input_tokens": 200, "output_tokens": 20}))
+        turn = c._spawn_pure_turn(_pure_request("verify", agent_run_id="child-2"), entry,
+                                  child_arid="child-2", phase="generate", substep="verify",
+                                  node_key="n", resume_session_id="t1", warm=True)
+        self.assertEqual((turn.usage["input_tokens"], turn.usage["output_tokens"]), (50, 10))
+        cold = c._spawn_pure_turn(_pure_request("verify", agent_run_id="child-3"), entry,
+                                  child_arid="child-3", phase="generate", substep="verify",
+                                  node_key="n")
+        self.assertEqual(cold.usage["input_tokens"], 250)
+
 if __name__ == "__main__":
     unittest.main()

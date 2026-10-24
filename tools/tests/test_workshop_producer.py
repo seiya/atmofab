@@ -1294,6 +1294,31 @@ class CodexWorkshopLoopTests(OuterReopenTests):
         self.assertEqual(self.c.spawns[1]["resume_session_id"], "thread-child-1")
         self.assertEqual(self.requests()[1]["workshop_lineage_id"], "child-1")
 
+    def test_a_warm_attempt_records_its_turn_not_the_thread_total(self) -> None:
+        """The warm attempt's row is decumulated against the resumed launch of its thread
+        (`_codex_thread_resumed_usage`, asked for the thread the launch resumed)."""
+        asked: list[tuple] = []
+
+        def resumed(tid, arid):
+            asked.append((tid, arid))
+            return "child-1", {"output_tokens": 7}
+
+        self.c._codex_thread_resumed_usage = resumed  # type: ignore[assignment]
+
+        def warm(c, tree, kw):
+            _write_bundle(tree)
+            proc = _codex_proc()
+            proc.usage = {"output_tokens": 19}
+            return proc
+
+        self.c.leaf_actions = [lambda c, tree, kw: _codex_proc(), warm]
+        self.assertEqual(self.run_substep().status, "pass")
+        rows = self.bundle_meta()["per_attempt"]
+        self.assertEqual([r["usage"]["output_tokens"] for r in rows], [7, 12])
+        self.assertEqual(rows[1]["usage"]["provider_details"]["thread_running_total"],
+                         {"output_tokens": 19})
+        self.assertEqual(asked, [("thread-child-1", "child-2")])
+
     def test_an_open_lineage_is_reopened_warm(self) -> None:
         self.c.leaf_actions = [lambda c, tree, kw: (_write_bundle(tree), _codex_proc())[1]]
         self.assertEqual(self.run_substep().status, "pass")
