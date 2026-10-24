@@ -365,6 +365,12 @@ class CodexPreflightTests(unittest.TestCase):
         mentioned = (self._EXEC_HELP.replace("workspace-write, ", "")
                      + "      --approve-for-me\n          using the workspace-write sandbox\n")
         self.assertIs(check("codex", self._runner(mentioned, self._MCP_HELP))["pass"], False)
+        # Nor do the possible values of the NEXT option, when `--sandbox` lists none of its own.
+        borrowed = (self._EXEC_HELP.replace(
+            "      [possible values: read-only, workspace-write, danger-full-access]\n", "")
+            + "      --color <COLOR>\n      [possible values: always, workspace-write]\n")
+        self.assertNotIn("possible values: read-only", borrowed)
+        self.assertIs(check("codex", self._runner(borrowed, self._MCP_HELP))["pass"], False)
         result = check("codex", self._runner(self._EXEC_HELP, "Usage: codex mcp add\n"))
         self.assertIs(result["pass"], False)
         self.assertIn("mcp add --url", result["detail"])
