@@ -460,9 +460,14 @@ def read_coverage(transcripts: Iterable[Path], tree_roots: Iterable[str],
     over the CLI's size limit) covers nothing; a `Read` result without the line triple makes
     the answer `unmeasured`. A `Grep` in `content` mode covers each numbered line it returned
     (`N:` hits and `N-` context lines); `count` / `files_with_matches` modes and `Glob` cover
-    nothing. `tree_roots` are the lineages' tree directories as the leaf saw them."""
+    nothing. `tree_roots` are the lineages' tree directories as the leaf saw them; the tree is
+    the leaf's working directory, so a path the CLI records RELATIVE (`tests.md`, `./tests.md`;
+    CLI 2.1.309 records a relative `file_path` as given) names the same seed."""
     roots = [str(r).rstrip("/") for r in tree_roots]
     by_path: dict[str, str] = {}
+    for name in seeds:
+        by_path[name] = name
+        by_path[f"./{name}"] = name
     for root in roots:
         for name in seeds:
             by_path[f"{root}/{name}"] = name
@@ -492,7 +497,7 @@ def read_coverage(transcripts: Iterable[Path], tree_roots: Iterable[str],
                 continue
             target = str(call.input.get("path") or "").rstrip("/")
             single = by_path.get(target)
-            if single is None and target in roots:
+            if single is None and (target in roots or target in ("", ".")):
                 filenames = result.get("filenames")
                 if isinstance(filenames, list) and len(filenames) == 1:
                     single = by_path.get(str(filenames[0]))

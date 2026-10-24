@@ -499,6 +499,29 @@ class ReadCoverageTests(unittest.TestCase):
         # The oversize Read errored: no read, not an unmeasured one.
         self.assertEqual(out["coverage"]["host_verdict.json"]["covered"], 0)
 
+    def test_a_relative_path_names_the_seed_in_the_tree(self) -> None:
+        """CLI 2.1.309 records a relative `file_path` as given (16 of 141 real Read results,
+        in two lineages of 2026-10-23); the tree is the leaf's working directory."""
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(Path(tmp), "t.jsonl", [
+                self._use("r1", "Read", file_path="tests.md"),
+                self._result("r1", {"file": {"filePath": "tests.md", "startLine": 1,
+                                             "numLines": 4, "totalLines": 4}}),
+                self._use("r2", "Read", file_path="./spec.ir.yaml", offset=5, limit=2),
+                self._result("r2", {"file": {"filePath": "./spec.ir.yaml", "startLine": 5,
+                                             "numLines": 2, "totalLines": 100}}),
+                self._use("g1", "Grep", path="host_verdict.json", pattern="x",
+                          output_mode="content"),
+                self._result("g1", {"mode": "content", "numFiles": 1, "filenames": [],
+                                    "content": "7:x"}),
+                self._use("g2", "Grep", pattern="y", output_mode="content"),
+                self._result("g2", {"mode": "content", "numFiles": 1,
+                                    "filenames": ["host_verdict.json"], "content": "9:y"})])
+            out = jr.read_coverage([path], [self.TREE], self._seeds())
+        self.assertEqual(out["coverage"]["tests.md"]["covered"], 4)
+        self.assertEqual(out["coverage"]["spec.ir.yaml"]["covered"], 2)
+        self.assertEqual(out["coverage"]["host_verdict.json"]["covered"], 2)
+
     def test_a_read_result_without_its_line_triple_is_unmeasured_not_zero(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = self._write(Path(tmp), "t.jsonl", [
