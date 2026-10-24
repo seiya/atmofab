@@ -432,7 +432,10 @@ class ResolvedLeafEntry:
         # invocation carries — stays what it was.
         if self.is_workshop:
             row["leaf"] = self.leaf
-            row["max_wrapper_calls"] = str(self.max_wrapper_calls)
+            # A judging (reading) entry states no call budget (issue #534 step 3): the row
+            # names the bounds the entry has, never a `"None"` it does not.
+            if self.max_wrapper_calls is not None:
+                row["max_wrapper_calls"] = str(self.max_wrapper_calls)
             row["lineage_timeout_s"] = str(self.lineage_timeout_s)
         return row
 

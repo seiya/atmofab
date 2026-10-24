@@ -1315,6 +1315,11 @@ class WorkshopEntryTests(_Tmp):
                 self.assertTrue(entry.is_workshop)
                 self.assertEqual((entry.max_wrapper_calls, entry.lineage_timeout_s),
                                  (None, 2700.0))
+                # The provenance row names the bounds the entry has, not a `"None"`.
+                self.assertEqual(
+                    {k: v for k, v in entry.provenance().items()
+                     if k in ("leaf", "max_wrapper_calls", "lineage_timeout_s")},
+                    {"leaf": "workshop", "lineage_timeout_s": "2700.0"})
 
     def test_the_substep_rule_still_refuses_a_pair_no_workshop_leaf_serves(self) -> None:
         """Every LLM substep admits a workshop entry now and a deterministic one cannot be
