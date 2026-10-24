@@ -1069,6 +1069,29 @@ class GapTests(_Base):
             self.assertEqual(self.run_substep().status, "pass")
         self.assertEqual(seen, ["kept\n"])
 
+    def test_a_dead_warm_repair_is_retried_in_a_new_lineage_never_resumed(self) -> None:
+        """A warm repair turn that dies — waited out as a usage limit, or retried as a
+        transient — ended its lineage `leaf_exit`; the re-launch is a cold reuse of that
+        lineage's snapshot in a NEW lineage, never a resume of the dead session
+        (`_WorkshopLineageMachine.after_transport`)."""
+        def dies(c, tree, kwargs):
+            return wc.ProcResult(1, "", "x")
+
+        for label, extra in (
+                ("usage wait", mock.patch.object(wc, "_leaf_infra_error",
+                                                 return_value=("llm_usage_limit", "limit"))),
+                ("transient retry", mock.patch.object(wc.Conductor, "_pure_transient_retry",
+                                                      return_value=True))):
+            with self.subTest(retry=label):
+                self.setUp()
+                self.c.leaf_actions = [_writes_nothing, dies, _writes_bundle]
+                with extra, mock.patch.object(self.c, "_usage_limit_wait", return_value=True):
+                    self.assertEqual(self.run_substep().status, "pass")
+                self.assertEqual([s["resume_session_id"] for s in self.c.spawns],
+                                 [None, "child-1", None])
+                self.assertEqual([r["workshop_lineage_id"] for r in self.requests()],
+                                 ["child-1", "child-1", "child-3"])
+
     def test_the_wrapper_is_given_the_lineage_deadline(self) -> None:
         import time
         before = time.time()
