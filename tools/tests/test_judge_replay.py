@@ -270,6 +270,10 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
             self.assertEqual(row["source_prompt_contract_version"],
                              PURE_PROMPT_CONTRACT_VERSION)
             self.assertEqual(row["label"], "agreement")
+            # The scripted envelope's figures, summed over the one attempt.
+            self.assertEqual((row["duration_ms"], row["model_turns"], row["input_tokens"],
+                              row["output_tokens"], row["schema_repairs"]),
+                             (10.0, 1.0, 1.0, 2.0, 0))
         first = rows[0]["attempts"][0]["agent_run_id"]
         replayed = (replay / "launches" / f"{first}.prompt.txt").read_text(encoding="utf-8")
         self.assertNotEqual(replayed, self.source_prompt)       # the identity differs ...
@@ -309,6 +313,13 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         [row] = self._rows(self._replays()[0])
         self.assertEqual(row["source_leaf_mode"], "workshop")
         self.assertNotIn("prompt_matches_record", row)
+
+    def test_a_mutated_pure_replay_makes_no_prompt_comparison(self) -> None:
+        rc, out = self._main("--mutate", json.dumps({"tests_document": [
+            {"old": "tests_document line 2\n", "new": "DEFECT\n"}]}))
+        self.assertEqual(rc, 0, out)
+        [row] = self._rows(self._replays()[0])
+        self.assertIsNone(row["prompt_matches_record"])
 
     def test_a_template_change_is_reported_as_a_prompt_mismatch(self) -> None:
         real = ort._load_launch_prompt_templates()

@@ -640,7 +640,9 @@ def run_repetition(conductor: Any, repo_root: Path, source: SourceLaunch, refs: 
                               if before.get("failure_category")
                               and before.get("failure_category") != "pure_transport"),
         "cost_usd": _sum((a.get("usage") or {}).get("cost_usd") for a in attempts),
-        "output_tokens": _sum((a.get("usage") or {}).get("output_tokens") for a in attempts),
+        **{name: _sum((a.get("usage") or {}).get(name) for a in attempts)
+           for name in ("input_tokens", "cache_creation_input_tokens",
+                        "cache_read_input_tokens", "output_tokens")},
         "leaf_wall_s": _sum(a.get("leaf_wall_s") for a in attempts),
         "duration_ms": _sum(e.get("duration_ms") for e in envelopes),
         "model_turns": (_sum(a.get("model_turns") for a in attempts) if entry.is_workshop
@@ -651,7 +653,12 @@ def run_repetition(conductor: Any, repo_root: Path, source: SourceLaunch, refs: 
         first = str(attempts[0].get("agent_run_id"))
         prompt_path = (repo_root / "workspace" / "orchestrations" / oid / "launches"
                        / f"{first}.prompt.txt")
-        if prompt_path.is_file():
+        if context != source.request.get("pure_context"):
+            # A mutated context renders a different prompt by design: the comparison says
+            # nothing about the template, so it is not made (the unmutated row of the same
+            # launch answers it).
+            row["prompt_matches_record"] = None
+        elif prompt_path.is_file():
             row["prompt_matches_record"] = (
                 _identity_free(prompt_path.read_text(encoding="utf-8"), oid, first)
                 == _identity_free(source.prompt_text, source.orchestration_id,
