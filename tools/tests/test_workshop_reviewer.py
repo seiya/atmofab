@@ -253,6 +253,56 @@ class CompileVerifyTests(_Base):
         self.assertIn("ended by its bound", meta["failure_excerpt"])
         self.assertEqual(len(meta["per_attempt"]), 1 + pure_leaf.MAX_BUNDLE_REPAIR_TURNS)
 
+    def test_a_document_that_is_not_an_object_is_repaired_like_any_schema_defect(
+            self) -> None:
+        """`assemble_document_file` refuses a JSON value that is not one object (a list here):
+        it costs one counted schema repair under the kind's category, never an uncategorised
+        terminal failure."""
+        self.c.leaf_actions = [_writes(self.OUTPUT, [self.passing()]),
+                               _writes(self.OUTPUT, self.passing())]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "pass")
+        first = self.attempt_meta()["per_attempt"][0]
+        self.assertEqual(first["failure_category"],
+                         wc.SEMANTIC_REVIEW_DOCUMENT_VIOLATION if self.PHASE == "validate"
+                         else wc.GENERATE_VERDICT_SCHEMA_VIOLATION)
+        self.assertIn("must hold one JSON object; got list", first["failure_excerpt"])
+
+    def test_a_lineage_a_bound_ended_is_repaired_cold_never_resumed(self) -> None:
+        """A repair after a launch its bound killed is a cold reuse from the snapshot
+        (`after_repair` on an ENDED lineage): the killed session may hold a half-written
+        turn, so it is never resumed."""
+        self.c.leaf_actions = [_times_out_after(self.OUTPUT, {"not": "a document"}),
+                               _writes(self.OUTPUT, self.passing())]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "pass")
+        second = self.requests()[1]
+        self.assertEqual(second["workshop_lineage_id"], "child-2")
+        self.assertFalse(second.get("warm_resume"))
+        self.assertIsNone(self.c.spawns[1]["resume_session_id"])
+        self.assertEqual(
+            workshop_tree.read_lineage_record(self.paths("child-1"))["ended_by"],
+            "lineage_timeout")
+
+    def test_a_seed_the_reviewer_edited_is_restored_before_its_warm_turn(self) -> None:
+        """The host's documents, as the host placed them: an edit the reviewer made to a seed
+        in one turn is gone when its warm repair turn starts."""
+        name = next(iter(self.seeds().values()))
+        seen: list[str] = []
+
+        def edits_a_seed(c, tree, kwargs):
+            (tree / name).write_text("EDITED BY THE LEAF\n", encoding="utf-8")
+
+        def reads_the_seed(c, tree, kwargs):
+            seen.append((tree / name).read_text())
+            (tree / self.OUTPUT).write_text(json.dumps(self.passing()), encoding="utf-8")
+
+        self.c.leaf_actions = [edits_a_seed, reads_the_seed]
+        self.assertEqual(self.run_substep().status, "pass")
+        self.assertTrue(self.c.spawns[1]["resume_session_id"])
+        self.assertNotEqual(seen, ["EDITED BY THE LEAF\n"])
+        self.assertTrue(seen[0])
+
     def test_an_absent_document_is_the_schema_category_and_is_repaired_warm(self) -> None:
         self.c.leaf_actions = [_writes_nothing, _writes(self.OUTPUT, self.passing())]
         outcome = self.run_substep()
