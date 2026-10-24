@@ -374,7 +374,8 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
 
     def test_a_recorded_document_naming_the_source_orchestration_still_matches(self) -> None:
         """A remote site's `remote_dir` puts the SOURCE orchestration id inside a recorded
-        document (149 cpp_gpu judge records); masking every occurrence of it on the source
+        document (149 judge records: 146 cpp_gpu, 3 fortran_cpu); masking every occurrence of
+        it on the source
         side only would make an unchanged template read as moved."""
         arid = "22222222-2222-4333-8444-555555555555"
         recorded = self._record_another(arid, {"trial_meta_document":

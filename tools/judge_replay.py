@@ -74,7 +74,14 @@ and a copy with those substeps' `leaf: workshop` / `lineage_timeout_s` removed.
 row would pass the two launch gates that depend on the workspace rather than on the request:
 the dependency readiness (`_dependency_ready`, recomputed against the CURRENT transformation
 versions, so a row of a node whose dependency key moved answers
-`derivation_key_mismatch:<input>`) and the downstream artifact gate. Exit 0 when both pass.
+`derivation_key_mismatch:<input>`) and the downstream artifact gate. Exit 0 when both pass, 1
+when either does not (2 is a refusal). A replay that is not ready is refused anyway, so
+`--check` is the dry run over the A/B's rows, not a precondition of a launch.
+
+A replay orchestration and its lineage homes stay after the run, like any run's (its trees
+and transcripts are what `coverage` was computed from). Remove them when the measurement is
+recorded: the homes with `tools/prune_workflow_homes.py --orchestration-id <replay id>
+--delete` (a finished replay is terminal), the directory with `rm -r`.
 
 Read coverage (workshop arm, claude): per seed, the fraction of its lines covered by the union,
 over the transcript files of every lineage the repetition opened (a cold reuse or a re-run is a
