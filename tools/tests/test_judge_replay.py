@@ -182,6 +182,11 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
                               lambda: credentials),
             mock.patch.object(ort, "probe_execution_platform",
                               lambda *a, **k: json.loads(json.dumps(preflight))),
+            # A workshop surface's preflight row runs the CLI's own `--help`; the scripted leaf
+            # has no CLI behind it (and CI has no `claude` on PATH).
+            mock.patch.object(ort, "_workshop_flag_set_check",
+                              lambda *a, **k: {"name": "claude_workshop_flag_set_available",
+                                               "pass": True, "detail": "stubbed"}),
             mock.patch.object(rw, "_runtime_command",
                               lambda root, env, args: rw.RuntimeResult(
                                   _in_process_runtime(root, args), "")),
