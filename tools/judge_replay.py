@@ -192,7 +192,11 @@ def parse_mutations(text: str | None) -> dict[str, list[tuple[str, str]]]:
 def apply_mutations(context: Mapping[str, str],
                     mutations: Mapping[str, list[tuple[str, str]]]) -> dict[str, str]:
     """The context with every replacement applied in order. Each `old` must occur EXACTLY ONCE
-    in the document as the replacements before it left it: a zero or a double match refuses."""
+    in the document as the replacements before it left it: a zero or a double match refuses.
+    The text matched is the document AS RECORDED: in a JSON document (the bundle under review)
+    a source line break is the two characters `\\n`. A replacement that leaves a recorded JSON
+    document unparseable is refused too, because only the workshop arm parses it (to seed the
+    bundle's files): the pair would have a pure half and no workshop half."""
     out = dict(context)
     for key, pairs in mutations.items():
         if key not in out:
@@ -206,8 +210,21 @@ def apply_mutations(context: Mapping[str, str],
                     "judge_replay_mutation_not_once",
                     f"{key}[{index}]: 'old' matches {count} times (exactly once required)")
             text = text.replace(old, new, 1)
+        if _parses_as_json(out[key]) and not _parses_as_json(text):
+            raise ReplayRefused(
+                "judge_replay_mutation_breaks_document",
+                f"{key}: the recorded document is JSON and the mutated one does not parse "
+                "(spell a line break inside a JSON string as \\n)")
         out[key] = text
     return out
+
+
+def _parses_as_json(text: str) -> bool:
+    try:
+        json.loads(text)
+    except ValueError:
+        return False
+    return True
 
 
 def node_refs_of(repo_root: Path, source: SourceLaunch) -> Any:

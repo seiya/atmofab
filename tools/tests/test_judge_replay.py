@@ -420,6 +420,19 @@ class SourceRefusalTests(unittest.TestCase):
         out = jr.apply_mutations(_CONTEXT, mutations)
         self.assertTrue(out["tests_document"].startswith("tests_document line ONE\n"))
         self.assertEqual(out["verdict_document"], _CONTEXT["verdict_document"])
+        # A recorded JSON document stays JSON: a raw line break inside one of its strings
+        # would seed nothing on the workshop arm while the pure arm ran.
+        bundle = {"bundle_document": json.dumps({"files": [{"content": "a\nb\n"}]})}
+        self.assertIn("a\\nb", bundle["bundle_document"])
+        ok = jr.apply_mutations(bundle, jr.parse_mutations(json.dumps(
+            {"bundle_document": [{"old": "a\\nb", "new": "a\\nB"}]})))
+        self.assertEqual(json.loads(ok["bundle_document"])["files"][0]["content"], "a\nB\n")
+        with self.assertRaises(jr.ReplayRefused) as ctx:
+            jr.apply_mutations(bundle, jr.parse_mutations(json.dumps(
+                {"bundle_document": [{"old": "a\\nb", "new": "a\nB"}]})))
+        self.assertEqual(ctx.exception.code, "judge_replay_mutation_breaks_document")
+        # A document that was never JSON is not held to it.
+        self.assertEqual(jr.apply_mutations({"k": "x: [1"}, {"k": [("[1", "{1")]}), {"k": "x: {1"})
         for text in ('{"tests_document": [{"old": "a", "new": "a"}]}', "[]", "{}",
                      '{"tests_document": [{"old": "", "new": "x"}]}',
                      '{"tests_document": [{"old": "a"}]}'):
