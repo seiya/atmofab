@@ -218,6 +218,8 @@ class CompileVerifyTests(_Base):
                          ("fail", 0, None))
         row = self.attempt_meta()["per_attempt"][0]
         self.assertEqual(row["ended_by"], "lineage_timeout")
+        # The kill's own exit is on the attempt row, though the outcome's is 0.
+        self.assertEqual(row["leaf_rc"], 124)
         decision = self.c.classify_failure(self.refs, self.PHASE, [None, None, outcome])
         self.assertEqual((decision.action, decision.repair_strategy), ("retry", "reuse"))
 

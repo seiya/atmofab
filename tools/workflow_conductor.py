@@ -9818,6 +9818,9 @@ class Conductor:
                 "items_completed": turn.items_completed,
                 "wrapper_calls": turn.wrapper_calls,
                 "ended_by": turn.ended_by,
+                # The launch's own exit, which a bound-ended or accepted attempt's outcome does
+                # not carry (its `leaf_returncode` is 0 by the reviewer's rule).
+                "leaf_rc": turn.proc.returncode,
                 "leaf_wall_s": turn.leaf_wall_s,
             }
 
@@ -10799,7 +10802,8 @@ class Conductor:
         `leaf_returncode` 0 whatever the leaf's exit — a lineage killed at its bound with a
         valid `fail` verdict in its tree must reach the severity route, not `run_phase`'s
         transport branch — and so does a schema exhaustion (its category is the route); the
-        kill's rc stays on the attempt row and the agent run. And a transport death's retry is
+        kill's rc stays on the attempt row (`leaf_rc`), in the reply text and in the lineage
+        record's `last_launch`. And a transport death's retry is
         seeded from the seeds alone (`_WorkshopLineageMachine.after_transport`)."""
         from tools.pure_leaf import (
             extract_json_document,
