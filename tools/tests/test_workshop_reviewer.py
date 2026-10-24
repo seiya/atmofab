@@ -181,6 +181,25 @@ class CompileVerifyTests(_Base):
                          ("child-1", False, 4, 0, None))
         self.assertIsInstance(row["leaf_wall_s"], float)
 
+    def test_the_reading_launch_is_bounded_by_its_lineage_timeout(self) -> None:
+        """The reading kind's ONLY bound is the spawn timeout (`_workshop_timeout`): the
+        lineage's remaining `lineage_timeout_s`, named so, or the environment cap when that is
+        smaller."""
+        with mock.patch.object(wc, "_leaf_timeout_seconds", return_value=0):
+            self.run_substep()
+        (spawn,) = self.c.spawns
+        self.assertEqual(spawn["timeout_name"], "lineage_timeout_s")
+        self.assertTrue(2690 <= spawn["timeout_seconds"] <= 2700, spawn["timeout_seconds"])
+
+    def test_the_kill_s_exit_code_is_in_the_reply_and_the_lineage_record(self) -> None:
+        """The two places beside `leaf_rc` the docs name for a bound-ended launch's exit."""
+        self.c.leaf_actions = [_times_out_after(self.OUTPUT, self.failing())]
+        self.run_substep()
+        (reply,) = [c[1]["--reply-text"] for c in self.c.calls if c[0] == "finalize-child"]
+        self.assertIn("leaf rc=124", reply)
+        record = workshop_tree.read_lineage_record(self.paths("child-1"))
+        self.assertEqual(record["last_launch"]["rc"], 124)
+
     def test_the_launch_is_a_reading_workshop_launch_served_no_endpoint(self) -> None:
         self.run_substep()
         (request,) = self.requests()
@@ -712,9 +731,6 @@ class ReaderTemplateTests(unittest.TestCase):
              "prompt_contract_version", "repair_scope", "findings", "launch_body"})
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class HarnessSpecTests(unittest.TestCase):
     """The `harness` shape's reviewer carries its own seed table: its context has the
@@ -790,3 +806,6 @@ class LaunchSiteTests(unittest.TestCase):
                     offenders.append(f"line {node.lineno}: {node.func.attr}")
         self.assertGreaterEqual(sites, 3)
         self.assertEqual(offenders, [])
+
+if __name__ == "__main__":
+    unittest.main()
