@@ -15139,7 +15139,8 @@ def record_launch(
                 raise RuntimeError(
                     f"record-launch: the cold workshop launch {child_agent_run_id!r} has no "
                     "lineage home; the host prepares it before recording the launch "
-                    "(`prepare_workshop_home(..., resume=False)`)")
+                    "(`Conductor._prepare_workshop_home(..., resume=False)`, the backend's "
+                    "`WORKSHOP_HOME_PREPARERS` entry)")
             return {
                 "workshop_lineage_home_missing": True,
                 "workshop_lineage_id": workshop_lineage_id,

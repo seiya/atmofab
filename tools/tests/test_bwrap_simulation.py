@@ -1769,9 +1769,9 @@ class _ScriptedResponsesApi:
 
 
 def _exec_call(js: str, n: int = 1) -> dict:
-    """A codex `exec` tool call (codex-cli 0.164.0's code-mode surface, measured: the one
-    top-level tool, whose nested tools — `exec_command`, `apply_patch`, the MCP servers'
-    `mcp__<server>__<tool>` — are reached on its `tools` object)."""
+    """A codex `exec` tool call (codex-cli 0.164.0's code-mode surface, measured: the
+    `functions` namespace's JavaScript tool, whose nested tools — `exec_command`, `apply_patch`,
+    the MCP servers' `mcp__<server>__<tool>` — are reached on its `tools` object)."""
     return {"type": "custom_tool_call", "id": f"ctc_{n}", "call_id": f"call_{n}",
             "name": "exec", "input": js}
 

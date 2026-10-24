@@ -371,10 +371,12 @@ def codex_workshop_overrides(mcp_config_json: str) -> list[str]:
       MCP server the launch did not name, as `--strict-mcp-config` keeps one out for claude.
 
     The tool surface the CLI then offers the model is its own (measured on 0.164.0 with a model
-    the stand-in does not describe: one JavaScript `exec` tool whose nested tools are
-    `exec_command`, `apply_patch`, `view_image`, … and, as "deferred" nested tools, the
-    wrapper's `mcp__wrapper__<op>`); the launch prompt names the wrapper's tools by that name
-    (`WORKSHOP_TOOL_SURFACE_TEXT`)."""
+    the stand-in does not describe): a `functions` namespace — a JavaScript `exec` tool, `wait`
+    and `request_user_input` — whose `exec` reaches nested tools (`exec_command`,
+    `apply_patch`, `view_image`, … and, as "deferred" nested tools, the wrapper's
+    `mcp__wrapper__<op>`), and a `collaboration` namespace of sub-agent tools (`spawn_agent`,
+    `send_message`, `wait_agent`, …; `features.multi_agent=false` does not remove it). The
+    launch prompt names the wrapper's tools by their name (`WORKSHOP_TOOL_SURFACE_TEXT`)."""
     url = workshop_mcp_url(mcp_config_json)
     server = f"mcp_servers.{WORKSHOP_MCP_SERVER_NAME}"
     return ["--config", 'approval_policy="never"',
