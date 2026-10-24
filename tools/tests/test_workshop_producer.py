@@ -709,7 +709,8 @@ _TEMPLATES = ("workshop_generate_generate.txt", "workshop_generate_generate_harn
 _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
 
 #: `WORKSHOP_PROMPT_CONTRACT_VERSION` -> sha256 over the workshop templates,
-#: `WORKSHOP_SYSTEM_PROMPT` and `WORKSHOP_TOOL_SURFACE_TEXT`. A change to any is a change of the
+#: `WORKSHOP_SYSTEM_PROMPT` and `WORKSHOP_TOOL_SURFACE_TEXT` (and, from `workshop-4`, the reading
+#: kind's `WORKSHOP_READER_SYSTEM_PROMPT` and `WORKSHOP_READER_TOOL_SURFACE_TEXT`). A change to any is a change of the
 #: workshop leaf's contract and takes a new version, keeping every shipped pin (the no-revert
 #: check reads them). `workshop-1` (shipped in step 1's A/B, main f684c756) was taken over the
 #: first three templates and the system prompt alone.
@@ -721,7 +722,7 @@ _WORKSHOP_CONTRACT_DIGESTS = {
     "workshop-3": "1aee42ef7d0c2df40921cec4baecf3ab10af42c3386dfda58520b265b7b6ab4c",
     # Step 3 PR-J1: the reading kind — five templates, its system prompt and tool surface
     # (`workshop-3` shipped with step 2 PR-2, main ca41247f).
-    "workshop-4": "0cd8b24430398489f3c5e12691ccb896772108ff961ac1b11b45126ec67fc19a",
+    "workshop-4": "69d6a21bea79dd5eeb5984836cb6409740bfc0d1148823ab68418e8e72ec1e58",
 }
 
 

@@ -303,21 +303,58 @@ class CompileVerifyTests(_Base):
                          else wc.GENERATE_VERDICT_SCHEMA_VIOLATION)
         self.assertIn("must hold one JSON object; got list", first["failure_excerpt"])
 
-    def test_a_lineage_a_bound_ended_is_repaired_cold_never_resumed(self) -> None:
-        """A repair after a launch its bound killed is a cold reuse from the snapshot
-        (`after_repair` on an ENDED lineage): the killed session may hold a half-written
-        turn, so it is never resumed."""
-        self.c.leaf_actions = [_times_out_after(self.OUTPUT, {"not": "a document"}),
+    def test_anything_but_a_valid_fail_at_the_bound_is_run_again_from_the_seeds(self) -> None:
+        """Round 3: the unfinished-review rule keyed on a schema-VALID `pass` only, so a
+        malformed `pass` (or no document) at the bound took the ordinary repair — a cold reuse
+        CARRYING the document under the shape-only framing — and a shape edit certified it.
+        Now a launch its bound ended is accepted only with a schema-valid `fail`; anything
+        else is re-run fresh from the seeds, carrying nothing and resuming nothing."""
+        broken = (dict(self.passing(), unexpected=1) if self.PHASE != "validate"
+                  else dict(self.passing(), decision="maybe"))
+        for label, left in (("malformed pass", broken), ("no document", None)):
+            with self.subTest(left=label):
+                self.setUp()
+                carried: list[bool] = []
+
+                def first(c, tree, kwargs, left=left):
+                    if left is not None:
+                        (tree / self.OUTPUT).write_text(json.dumps(left), encoding="utf-8")
+                    return wc.ProcResult(124, _envelope(), "", timed_out=True)
+
+                def second(c, tree, kwargs):
+                    carried.append((tree / self.OUTPUT).exists())
+                    (tree / self.OUTPUT).write_text(json.dumps(self.passing()),
+                                                    encoding="utf-8")
+
+                self.c.leaf_actions = [first, second]
+                self.assertEqual(self.run_substep().status, "pass")
+                self.assertEqual(carried, [False])
+                req = self.requests()[1]
+                self.assertEqual((req["workshop_lineage_id"], req["repair_strategy"]),
+                                 ("child-2", "none"))
+                self.assertNotIn("repair_findings", req)
+                self.assertIsNone(self.c.spawns[1]["resume_session_id"])
+                row = self.attempt_meta()["per_attempt"][0]
+                self.assertIn("run again from the seeds alone", row["failure_excerpt"])
+                self.assertIn(f"{self.OUTPUT} was refused", row["failure_excerpt"])
+
+    def test_a_killed_warm_repair_is_re_run_with_no_repair_payload(self) -> None:
+        """A schema repair in progress whose warm turn is killed with a `pass` in its tree:
+        the re-run drops the repair target (no payload naming a document that is not there),
+        and runs in a fresh tree."""
+        broken = (dict(self.passing(), unexpected=1) if self.PHASE != "validate"
+                  else dict(self.passing(), decision="maybe"))
+        self.c.leaf_actions = [_writes(self.OUTPUT, broken),
+                               _times_out_after(self.OUTPUT, self.passing()),
                                _writes(self.OUTPUT, self.passing())]
-        outcome = self.run_substep()
-        self.assertEqual(outcome.status, "pass")
-        second = self.requests()[1]
-        self.assertEqual(second["workshop_lineage_id"], "child-2")
-        self.assertFalse(second.get("warm_resume"))
-        self.assertIsNone(self.c.spawns[1]["resume_session_id"])
-        self.assertEqual(
-            workshop_tree.read_lineage_record(self.paths("child-1"))["ended_by"],
-            "lineage_timeout")
+        self.assertEqual(self.run_substep().status, "pass")
+        first, second, third = self.requests()
+        self.assertEqual((second["workshop_lineage_id"], second["repair_strategy"]),
+                         ("child-1", "reuse"))
+        self.assertEqual((third["workshop_lineage_id"], third["repair_strategy"]),
+                         ("child-3", "none"))
+        self.assertNotIn("repair_findings", third)
+        self.assertIn("pure_context", third)
 
     def test_a_seed_the_reviewer_edited_is_restored_before_its_warm_turn(self) -> None:
         """The host's documents, as the host placed them: an edit the reviewer made to a seed

@@ -10796,11 +10796,12 @@ class Conductor:
         alone, and its home is under `config/` of that lineage, never the operator's
         `~/.claude` (`_pure_session_resumable` is not consulted). Three rules are the workshop
         branch's own. The result envelope's checks (`response_truncated`, `is_error`) do not
-        apply: a lineage a bound ended is judged by its tree — except that a `pass` there is an
-        UNFINISHED review, not repaired but run again as a fresh cold launch from the seeds
-        alone (a provisional `pass` written before the bound would otherwise certify what was
-        never read, and a repair turn carrying it could certify it by ending at once). An
-        ACCEPTED document returns
+        apply. A launch a bound ended is judged by its tree only when the tree holds a
+        schema-valid `fail`; anything else there is an UNFINISHED review, not repaired but run
+        again as a fresh cold launch from the seeds alone (a provisional document written before
+        the bound would otherwise certify what was never read, and a repair turn carrying it
+        could certify it by ending at once or by a shape-only edit). An ACCEPTED document
+        returns
         `leaf_returncode` 0 whatever the leaf's exit — a lineage killed at its bound with a
         valid `fail` verdict in its tree must reach the severity route, not `run_phase`'s
         transport branch — and so does a schema exhaustion (its category is the route); the
@@ -10998,24 +10999,6 @@ class Conductor:
                         violations = [
                             "verdict contains characters that cannot be encoded as UTF-8 "
                             "(e.g. an unpaired surrogate); re-emit the verdict with valid text"]
-                if (not violations and machine is not None and proc.timed_out
-                        and spec.status_of(extracted) == "pass"):
-                    # A `pass` in the tree of a launch a BOUND ended (`lineage_timeout` /
-                    # `leaf_timeout`) is an UNFINISHED review: no finished turn stood behind it,
-                    # and a provisional `pass` written before the review ends would otherwise
-                    # certify what was never read. It is not repaired: a repair turn — cold,
-                    # with the document carried in its tree — certifies it by ending at once,
-                    # and the host cannot tell "re-read everything and agreed" from "did
-                    # nothing". The review is run AGAIN, as a fresh cold launch seeded from the
-                    # seeds alone (below), the transport-death rule; it counts against the
-                    # repair budget, under the kind's schema category. A `fail` is accepted (it
-                    # routes to a repair or an escalation, never to a certification).
-                    output = (spec.workshop_outputs or ("the document",))[0]
-                    unfinished_review = True
-                    violations = [
-                        f"the session was ended by its bound before the review finished, and "
-                        f"{output} said pass: an unfinished review certifies nothing, so the "
-                        f"review is run again from the seeds alone"]
                 if violations:
                     category = spec.schema_category
                     findings = "; ".join(violations)[:1000]
@@ -11023,6 +11006,28 @@ class Conductor:
                         findings = machine.ended_note(findings, turn)
                 else:
                     accepted_verdict = extracted
+            if (machine is not None and proc.timed_out
+                    and not (accepted_verdict is not None
+                             and spec.status_of(accepted_verdict) == "fail")):
+                # A reading launch its BOUND ended (`lineage_timeout` / `leaf_timeout`) is an
+                # UNFINISHED review unless its tree holds a schema-valid `fail` (accepted: it
+                # routes to a repair or an escalation, never to a certification). Anything
+                # else — a `pass`, valid or not, or no document — is not accepted and not
+                # repaired: a repair turn carrying a provisional document certifies it by
+                # ending at once (or by a shape-only edit), and the host cannot tell "re-read
+                # everything and agreed" from "did nothing". The review is run AGAIN, as a
+                # fresh cold launch seeded from the seeds alone (below), the transport-death
+                # rule; it counts against the repair budget, under the kind's schema category.
+                output = (spec.workshop_outputs or ("the document",))[0]
+                held = ("said pass" if accepted_verdict is not None
+                        else f"was refused ({(findings or 'no document').splitlines()[0]})")
+                unfinished_review = True
+                accepted_verdict = None
+                category = spec.schema_category
+                findings = machine.ended_note(
+                    f"the session was ended by its bound before the review finished, and "
+                    f"{output} {held}: an unfinished review certifies nothing, so the review "
+                    f"is run again from the seeds alone"[:1000], turn)
 
             # A schema-valid verdict terminates the loop regardless of pass/fail; the SUBSTEP status
             # is the verdict's own verification_status (a `fail` verdict is a legitimate verify
