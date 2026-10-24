@@ -223,26 +223,42 @@ class CompileVerifyTests(_Base):
         decision = self.c.classify_failure(self.refs, self.PHASE, [None, None, outcome])
         self.assertEqual((decision.action, decision.repair_strategy), ("retry", "reuse"))
 
-    def test_a_pass_left_by_a_lineage_its_bound_ended_is_not_certified(self) -> None:
-        """Round-1 finding F1: a reviewer that writes a provisional `pass` and is killed at its
-        bound has stood behind no finished review. The `pass` is a schema finding, repaired by
-        a cold reuse that carries the document; it is accepted only from a turn that finishes."""
-        self.c.leaf_actions = [_times_out_after(self.OUTPUT, self.passing()), _writes_nothing]
+    def test_a_pass_left_by_a_lineage_its_bound_ended_is_run_again_from_the_seeds(
+            self) -> None:
+        """Round-1 F1 and round-2 F-A: a reviewer that writes a provisional `pass` and is
+        killed at its bound has stood behind no finished review. It is not REPAIRED — a repair
+        turn carrying the document certified it by ending at once (round 2 measured it) — but
+        run again: a fresh cold launch, the whole launch prompt and no repair turn, in a tree
+        seeded from the seeds alone. A turn that then does nothing leaves no document."""
+        trees: list[bool] = []
+
+        def does_nothing(c, tree, kwargs):
+            trees.append((tree / self.OUTPUT).exists())
+
+        self.c.leaf_actions = [_times_out_after(self.OUTPUT, self.passing()), does_nothing,
+                               _writes(self.OUTPUT, self.passing())]
         outcome = self.run_substep()
         self.assertEqual(outcome.status, "pass")
+        self.assertEqual(trees, [False])
         rows = self.attempt_meta()["per_attempt"]
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), 3)
+        category = (wc.SEMANTIC_REVIEW_DOCUMENT_VIOLATION if self.PHASE == "validate"
+                    else wc.GENERATE_VERDICT_SCHEMA_VIOLATION)
         self.assertEqual((rows[0]["ended_by"], rows[0]["failure_category"]),
-                         ("lineage_timeout",
-                          wc.SEMANTIC_REVIEW_DOCUMENT_VIOLATION if self.PHASE == "validate"
-                          else wc.GENERATE_VERDICT_SCHEMA_VIOLATION))
+                         ("lineage_timeout", category))
+        # The finding names THIS kind's document and says what happens next.
+        self.assertIn(f"{self.OUTPUT} said pass", rows[0]["failure_excerpt"])
+        self.assertIn("run again from the seeds alone", rows[0]["failure_excerpt"])
         second = self.requests()[1]
         self.assertEqual(second["workshop_lineage_id"], "child-2")
         self.assertFalse(second.get("warm_resume"))
-        self.assertIn("ended by its bound before you finished", second["repair_findings"])
-        # The cold reuse carried the provisional document; the finishing turn stood behind it.
-        self.assertEqual(json.loads((self.paths("child-2").tree / self.OUTPUT).read_text()),
-                         self.passing())
+        self.assertNotIn("repair_findings", second)
+        self.assertEqual(second["repair_strategy"], "none")
+        self.assertIn("pure_context", second)
+        self.assertIsNone(self.c.spawns[1]["resume_session_id"])
+        # The re-run's own empty tree is an ordinary schema repair of ITS lineage.
+        self.assertEqual(rows[1]["failure_category"], category)
+        self.assertEqual(self.requests()[2]["workshop_lineage_id"], "child-2")
 
     def test_a_pass_never_finished_exhausts_into_the_schema_category(self) -> None:
         self.c.leaf_actions = [_times_out_after(self.OUTPUT, self.passing())]

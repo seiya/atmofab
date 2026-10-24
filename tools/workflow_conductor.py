@@ -10796,9 +10796,11 @@ class Conductor:
         alone, and its home is under `config/` of that lineage, never the operator's
         `~/.claude` (`_pure_session_resumable` is not consulted). Three rules are the workshop
         branch's own. The result envelope's checks (`response_truncated`, `is_error`) do not
-        apply: a lineage a bound ended is judged by its tree — except that a `pass` there is a
-        schema finding, repaired by a turn that finishes (a provisional `pass` written before
-        the bound would otherwise certify what was never read). An ACCEPTED document returns
+        apply: a lineage a bound ended is judged by its tree — except that a `pass` there is an
+        UNFINISHED review, not repaired but run again as a fresh cold launch from the seeds
+        alone (a provisional `pass` written before the bound would otherwise certify what was
+        never read, and a repair turn carrying it could certify it by ending at once). An
+        ACCEPTED document returns
         `leaf_returncode` 0 whatever the leaf's exit — a lineage killed at its bound with a
         valid `fail` verdict in its tree must reach the severity route, not `run_phase`'s
         transport branch — and so does a schema exhaustion (its category is the route); the
@@ -10945,6 +10947,8 @@ class Conductor:
             #: The one JSON object to validate: the reply's on the pure path, the tree's on the
             #: workshop branch.
             extracted: Any = None
+            #: A `pass` left by a launch its bound ended (the workshop branch only).
+            unfinished_review = False
             if machine is not None:
                 # The tree is the answer, whatever the leaf said or however a bound ended it.
                 category, findings, extracted, infra_error = machine.assemble(turn)
@@ -10997,17 +11001,21 @@ class Conductor:
                 if (not violations and machine is not None and proc.timed_out
                         and spec.status_of(extracted) == "pass"):
                     # A `pass` in the tree of a launch a BOUND ended (`lineage_timeout` /
-                    # `leaf_timeout`) is not accepted: no finished turn stood behind it, and a
-                    # provisional `pass` written before the review ends would otherwise certify
-                    # what was never read — the reason a transport death's retry carries no
-                    # snapshot. A `fail` is accepted (it routes to a repair or an escalation,
-                    # never to a certification); a `pass` is a schema finding, repaired by a
-                    # turn that finishes.
+                    # `leaf_timeout`) is an UNFINISHED review: no finished turn stood behind it,
+                    # and a provisional `pass` written before the review ends would otherwise
+                    # certify what was never read. It is not repaired: a repair turn — cold,
+                    # with the document carried in its tree — certifies it by ending at once,
+                    # and the host cannot tell "re-read everything and agreed" from "did
+                    # nothing". The review is run AGAIN, as a fresh cold launch seeded from the
+                    # seeds alone (below), the transport-death rule; it counts against the
+                    # repair budget, under the kind's schema category. A `fail` is accepted (it
+                    # routes to a repair or an escalation, never to a certification).
                     output = (spec.workshop_outputs or ("the document",))[0]
+                    unfinished_review = True
                     violations = [
-                        f"your session was ended by its bound before you finished, and "
-                        f"{output} says pass: the host does not accept a pass that no finished "
-                        f"turn stands behind — finish your review and rewrite {output}"]
+                        f"the session was ended by its bound before the review finished, and "
+                        f"{output} said pass: an unfinished review certifies nothing, so the "
+                        f"review is run again from the seeds alone"]
                 if violations:
                     category = spec.schema_category
                     findings = "; ".join(violations)[:1000]
@@ -11190,6 +11198,13 @@ class Conductor:
                     (0 if (machine is not None and category != "pure_transport")
                      else proc.returncode),
                     infra_error, len(per_attempt))
+            if machine is not None and unfinished_review:
+                # An unfinished `pass` (above): a fresh cold launch from the seeds alone, with
+                # the whole launch prompt and no repair turn, carrying nothing of this lineage.
+                workshop_repair_target = None
+                machine.after_transport()
+                attempt += 1
+                continue
             if machine is not None:
                 # The repair turn: warm over the reviewer's own lineage while it is open, else a
                 # cold reuse from its snapshot (`_WorkshopLineageMachine.next_launch`).

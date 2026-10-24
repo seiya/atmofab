@@ -721,7 +721,7 @@ _WORKSHOP_CONTRACT_DIGESTS = {
     "workshop-3": "1aee42ef7d0c2df40921cec4baecf3ab10af42c3386dfda58520b265b7b6ab4c",
     # Step 3 PR-J1: the reading kind — five templates, its system prompt and tool surface
     # (`workshop-3` shipped with step 2 PR-2, main ca41247f).
-    "workshop-4": "c01962d5f653d22e509a997a7b35d7dba0da2b7d84a5e662d4e0aa676aff1111",
+    "workshop-4": "0cd8b24430398489f3c5e12691ccb896772108ff961ac1b11b45126ec67fc19a",
 }
 
 
