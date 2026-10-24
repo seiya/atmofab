@@ -654,6 +654,11 @@ _HTTP_PURE_LEAF_BACKENDS: frozenset[str] = frozenset({"openai_compatible", "anth
 #: compared with it by `test_validate_pipeline_semantics`.
 _WORKSHOP_PROFILE_HOME_ENV: dict[str, str] = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"}
 
+#: The CLI family of a workshop request's `workshop_provider`: the providers' backend tokens
+#: (`llm_config.PROVIDER_BACKEND_TOKENS`, compared by `test_validate_pipeline_semantics`) for the
+#: providers that run a workshop leaf.
+_WORKSHOP_PROVIDER_FAMILY: dict[str, str] = {"claude_cli": "claude", "codex_cli": "codex"}
+
 
 def _workshop_profile_violations(profile: dict, request: dict | None = None,
                                  repo_root: Path | None = None) -> list[str]:
@@ -664,8 +669,10 @@ def _workshop_profile_violations(profile: dict, request: dict | None = None,
     (`workshop_lineage_id`) — and its tree as its workdir; and its CLI home is `config/`, with
     the claude credential mapped read-write onto `config/.credentials.json`, or codex's
     `auth.json` and `config.toml` remounted read-only into it and no credential read-write
-    (issue #534 step 2 PR-2). The persisted-record twin of
-    `workflow_conductor._admissible_leaf_profile`, which refuses the spawn."""
+    (issue #534 step 2 PR-2) — the family being, when the request names a `workshop_provider`,
+    the one it names. The persisted-record twin of
+    `workflow_conductor._admissible_leaf_profile`, which refuses the spawn and keys the family
+    on the entry's provider instead."""
     out: list[str] = []
     if profile.get("leaf_mode") != "workshop" or profile.get("readonly") is not False:
         out.append(f"workshop launch sandbox profile must be leaf_mode=workshop, readonly=false "
@@ -711,6 +718,14 @@ def _workshop_profile_violations(profile: dict, request: dict | None = None,
         out.append(f"workshop launch sandbox profile must declare exactly one CLI home "
                    f"({' or '.join(_WORKSHOP_PROFILE_HOME_ENV.values())}) naming {config} "
                    f"(got {homes!r})")
+    elif (request is not None and request.get("workshop_provider") is not None
+          and _WORKSHOP_PROVIDER_FAMILY.get(str(request.get("workshop_provider"))) != family):
+        # The spawn-side twin keys the family on the ENTRY's provider; the record's is the
+        # request's `workshop_provider`, which the prompt's tool surface was rendered for. A
+        # request that names none claims nothing to disagree with: the field arrived with step 2
+        # PR-1, and every step-1 record (claude, the only family then) lacks it.
+        out.append(f"workshop launch sandbox profile is a {family} profile, but the request's "
+                   f"workshop_provider is {request.get('workshop_provider')!r}")
     elif family == "claude":
         if not (isinstance(credential, list) and len(credential) == 2
                 and str(credential[1]) == str(config / ".credentials.json")):

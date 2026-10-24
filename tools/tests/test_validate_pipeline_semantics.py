@@ -28589,7 +28589,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 "runtime_ro_bind_mappings": [["/operator/auth.json", f"{home}/config/auth.json"],
                                              [f"{home}/config/config.toml",
                                               f"{home}/config/config.toml"]]}
-        request = {"workshop_lineage_id": self._ARID}
+        request = {"workshop_lineage_id": self._ARID, "workshop_provider": "codex_cli"}
         self.assertEqual(_workshop_profile_violations(good, request), [])
         for label, change in (
                 ("the claude credential mapping", {"runtime_rw_credential_mapping": [
@@ -28608,9 +28608,52 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                                 label)
 
     def test_the_cli_home_table_is_the_runtime_s(self) -> None:
+        from tools import llm_config
         from tools import orchestration_runtime as ort_
-        from tools.validate_pipeline_semantics import _WORKSHOP_PROFILE_HOME_ENV
+        from tools.validate_pipeline_semantics import (
+            _WORKSHOP_PROFILE_HOME_ENV,
+            _WORKSHOP_PROVIDER_FAMILY,
+        )
         self.assertEqual(_WORKSHOP_PROFILE_HOME_ENV, ort_.WORKSHOP_PROFILE_HOME_ENV)
+        self.assertEqual(_WORKSHOP_PROVIDER_FAMILY, {
+            p: llm_config.PROVIDER_BACKEND_TOKENS[p] for p in llm_config.PROVIDER_CAPABILITIES
+            if llm_config.CAP_WORKSHOP in llm_config.PROVIDER_CAPABILITIES[p]})
+
+    def test_a_profile_of_the_other_family_than_the_request_s_provider_is_flagged(self) -> None:
+        """Round 3 of step 2 PR-2: a codex profile under a request naming `claude_cli` (and the
+        reverse) was `[]` once the family came from the profile's env alone — red on
+        origin/main, where every workshop profile had to carry the claude credential."""
+        from tools.validate_pipeline_semantics import _workshop_profile_violations
+        codex_home = f"/tmp/homes/{self._ORCH}/codex/{self._ARID}"
+        claude_home = f"/tmp/homes/{self._ORCH}/claude/{self._ARID}"
+        codex = {"agent_run_id": self._ARID, "readonly": False, "leaf_mode": "workshop",
+                 "write_roots": [], "runtime_rw_bind_paths": [f"{codex_home}/config",
+                                                              f"{codex_home}/tree"],
+                 "workdir": f"{codex_home}/tree", "env": {"CODEX_HOME": f"{codex_home}/config"},
+                 "runtime_ro_bind_mappings": [
+                     ["/operator/auth.json", f"{codex_home}/config/auth.json"],
+                     [f"{codex_home}/config/config.toml", f"{codex_home}/config/config.toml"]]}
+        claude = {"agent_run_id": self._ARID, "readonly": False, "leaf_mode": "workshop",
+                  "write_roots": [], "runtime_rw_bind_paths": [f"{claude_home}/config",
+                                                               f"{claude_home}/tree"],
+                  "workdir": f"{claude_home}/tree",
+                  "env": {"CLAUDE_CONFIG_DIR": f"{claude_home}/config"},
+                  "runtime_rw_credential_mapping": ["/operator/.credentials.json",
+                                                    f"{claude_home}/config/.credentials.json"]}
+        for profile, own, other in ((codex, "codex_cli", "claude_cli"),
+                                    (claude, "claude_cli", "codex_cli")):
+            with self.subTest(own=own):
+                request = {"workshop_lineage_id": self._ARID}
+                self.assertEqual(_workshop_profile_violations(
+                    profile, {**request, "workshop_provider": own}), [])
+                for named in (other, "anthropic_api"):
+                    self.assertTrue(any("workshop_provider" in v for v in
+                                        _workshop_profile_violations(
+                                            profile, {**request, "workshop_provider": named})),
+                                    named)
+                # A step-1 record names no provider (the field came with step 2 PR-1): it claims
+                # nothing to disagree with, and is not refused for it.
+                self.assertEqual(_workshop_profile_violations(profile, request), [])
 
     def test_a_workshop_profile_under_the_checkout_or_without_a_lineage_is_flagged(self) -> None:
         for label in ("under the checkout", "no lineage in the request"):
