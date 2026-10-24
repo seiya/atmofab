@@ -57,8 +57,9 @@ and `failure_category`); `attempts` (the reviewer's `per_attempt` rows); `schema
 `cost_usd`, `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`,
 `output_tokens`, `leaf_wall_s`, `duration_ms` (claude envelope) and `model_turns`, each over the
 attempts that recorded it, with `usage_unrecorded_attempts` counting the attempts whose usage
-was not recorded (a launch a bound killed leaves no envelope: the cost sums are then a lower
-bound); on the pure
+channel failed (a launch a bound killed leaves no envelope: the sums are then a lower bound;
+a provider that reports tokens and no cost, as codex does, leaves `cost_usd` null without
+counting there); on the pure
 arm of a pure record `prompt_matches_record` (null on a mutated row); on the workshop arm
 `cli_versions` and `coverage` (below): per seed `lines`, `covered`, `fraction` and `ranges`, the
 covered lines as `[first, last]` runs — what the deep row's "was the defect's span read" is
@@ -698,6 +699,7 @@ def _sum(values: Iterable[Any]) -> float | None:
 def run_repetition(conductor: Any, repo_root: Path, source: SourceLaunch, refs: Any,
                    context: dict[str, str], repetition: int) -> dict[str, Any]:
     """One reviewer substep over the recorded context, and its row."""
+    from tools.leaf_usage import LEAF_USAGE_UNAVAILABLE
     from tools.workshop_tree import LineagePaths
     from tools.operator_private_root import workflow_homes_root
     step, substep = source.pair
@@ -724,11 +726,14 @@ def run_repetition(conductor: Any, repo_root: Path, source: SourceLaunch, refs: 
                               if before.get("failure_category")
                               and before.get("failure_category") != "pure_transport"),
         "cost_usd": _sum((a.get("usage") or {}).get("cost_usd") for a in attempts),
-        # An attempt a bound killed has no envelope, so no usage: the sums below leave it out,
-        # and this says how many they left out (the sums are then a lower bound).
+        # An attempt a bound killed has no envelope, so its usage channel failed
+        # (`leaf_usage.leaf_usage_unavailable`): the sums below leave it out, and this says how
+        # many they left out (the sums are then a lower bound). An attempt whose usage was
+        # recorded without a cost (a codex turn reports tokens and no money) is not counted.
         "usage_unrecorded_attempts": sum(
             1 for a in attempts
-            if not isinstance((a.get("usage") or {}).get("cost_usd"), (int, float))),
+            if not isinstance(a.get("usage"), dict)
+            or a["usage"].get("status") == LEAF_USAGE_UNAVAILABLE),
         **{name: _sum((a.get("usage") or {}).get(name) for a in attempts)
            for name in ("input_tokens", "cache_creation_input_tokens",
                         "cache_read_input_tokens", "output_tokens")},

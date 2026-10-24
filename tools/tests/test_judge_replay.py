@@ -339,10 +339,27 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         [row] = self._rows(self._replays()[0])
         self.assertEqual((row["status"], row["document"]), ("fail", None))
         self.assertEqual(len(row["attempts"]), MAX_BUNDLE_REPAIR_TURNS + 1)
-        # The scripted envelope carries no usage: every attempt is unrecorded, no sum is made.
+        # The scripted envelope carries no usage: every attempt's usage channel failed, and
+        # no sum is made.
+        self.assertTrue(all(a["usage"]["status"] == "unavailable" for a in row["attempts"]))
         self.assertEqual((row["usage_unrecorded_attempts"], row["cost_usd"]),
                          (MAX_BUNDLE_REPAIR_TURNS + 1, None))
         self.assertEqual(row["schema_repairs"], MAX_BUNDLE_REPAIR_TURNS)
+
+    def test_usage_recorded_without_a_cost_is_not_unrecorded(self) -> None:
+        """A codex turn reports tokens and no money: its attempt's usage is recorded."""
+        tokens_only = wc.ProcResult(0, json.dumps({
+            "type": "result", "is_error": False, "result": json.dumps(_REVIEW),
+            "num_turns": 1, "duration_ms": 1,
+            "usage": {"input_tokens": 5, "output_tokens": 6, "cache_creation_input_tokens": 0,
+                      "cache_read_input_tokens": 0}}), "")
+        with mock.patch.object(wc.Conductor, "spawn_leaf", lambda self, *a, **k: tokens_only):
+            rc, out = self._main()
+        self.assertEqual(rc, 0, out)
+        [row] = self._rows(self._replays()[0])
+        self.assertNotIn("cost_usd", row["attempts"][0]["usage"])
+        self.assertEqual((row["usage_unrecorded_attempts"], row["cost_usd"],
+                          row["output_tokens"]), (0, None, 6.0))
 
     def test_a_workshop_record_is_not_compared_with_a_pure_prompt(self) -> None:
         path = (self.repo / "workspace/orchestrations" / _SRC / "launches"
