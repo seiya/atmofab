@@ -2308,10 +2308,11 @@ def _admissible_leaf_profile(profile: Mapping[str, Any], entry: Any,
         return False
     # The CLI family is the ENTRY's, and the profile must be that family's: the home its
     # environment declares is `config/`, and the other family's home name is absent.
-    family = {"claude_cli": "claude", "codex_cli": "codex"}.get(getattr(entry, "provider", ""))
-    if family is None:
-        return False
+    from tools.llm_config import PROVIDER_BACKEND_TOKENS
     from tools.orchestration_runtime import WORKSHOP_PROFILE_HOME_ENV
+    family = PROVIDER_BACKEND_TOKENS.get(getattr(entry, "provider", ""))
+    if family not in WORKSHOP_PROFILE_HOME_ENV:
+        return False
     if any(bool(env.get(name)) != (fam == family)
            for fam, name in WORKSHOP_PROFILE_HOME_ENV.items()):
         return False
@@ -9297,14 +9298,14 @@ class Conductor:
             raise RuntimeError(f"workshop seeds: a seed is named after an output file {clash}")
         return seeds
 
-    #: The lineage-home backend of a workshop entry's provider (`workshop_tree.LINEAGE_BACKENDS`,
-    #: the keys of `orchestration_runtime.WORKSHOP_HOME_PREPARERS`).
-    _WORKSHOP_BACKEND_OF_PROVIDER: ClassVar[dict[str, str]] = {"claude_cli": "claude",
-                                                              "codex_cli": "codex"}
-
     def _workshop_backend(self, entry: Any) -> str:
-        backend = self._WORKSHOP_BACKEND_OF_PROVIDER.get(getattr(entry, "provider", ""))
-        if backend is None:
+        """The lineage-home backend of a workshop entry: its provider's backend token
+        (`llm_config.PROVIDER_BACKEND_TOKENS`), when that is one of `workshop_tree.
+        LINEAGE_BACKENDS` (the keys of `orchestration_runtime.WORKSHOP_HOME_PREPARERS`)."""
+        from tools.llm_config import PROVIDER_BACKEND_TOKENS
+        from tools.workshop_tree import LINEAGE_BACKENDS
+        backend = PROVIDER_BACKEND_TOKENS.get(getattr(entry, "provider", ""))
+        if backend not in LINEAGE_BACKENDS:
             raise ValueError(f"provider {getattr(entry, 'provider', None)!r} runs no workshop "
                              "leaf")
         return backend
