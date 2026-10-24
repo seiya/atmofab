@@ -248,6 +248,27 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.source_prompt = (self.repo / "workspace/orchestrations" / _SRC / "launches"
                               / f"{_SRC_ARID}.prompt.txt").read_text(encoding="utf-8")
 
+    def _record_another(self, arid: str, overrides: dict) -> str:
+        """Record a second judge launch of the source orchestration, with some context
+        documents replaced; returns the recorded prompt."""
+        conductor = self._conductor(_SRC, self.pure_cfg)
+        request = wc.build_launch_request(
+            self.node_refs, step=_STEP, substep=_SUBSTEP, orchestration_id=_SRC,
+            orchestration_agent_run_id="orch-arid", child_agent_run_id=arid,
+            agent_model="opus", workflow_mode="dev", runner_host_authored=True,
+            resolved_dependencies=_FACTS, pure_leaf=True,
+            pure_context={**_CONTEXT, **overrides},
+            pure_language=conductor._pure_language(_STEP),
+            pure_parallel=conductor._pure_parallel(_STEP))
+        # The first recorded launch was never finalized (nothing replays a finalize); close its
+        # window the way a finished launch leaves it, so the sequential-child gate admits this.
+        for marker in (self.repo / "workspace/orchestrations" / _SRC).rglob(
+                "active_child_agent_run_id.txt"):
+            marker.unlink()
+        conductor.record_launch(arid, request, conductor.entry_for(_STEP, _SUBSTEP))
+        return (self.repo / "workspace/orchestrations" / _SRC / "launches"
+                / f"{arid}.prompt.txt").read_text(encoding="utf-8")
+
     # --- helpers ----------------------------------------------------------------------------
 
     def _main(self, *extra: str, cfg: Path | None = None, leaf: str = "pure") -> tuple[int, str]:
@@ -289,8 +310,9 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         first = rows[0]["attempts"][0]["agent_run_id"]
         replayed = (replay / "launches" / f"{first}.prompt.txt").read_text(encoding="utf-8")
         self.assertNotEqual(replayed, self.source_prompt)       # the identity differs ...
-        self.assertEqual(jr._identity_free(replayed, replay.name, first),
-                         jr._identity_free(self.source_prompt, _SRC, _SRC_ARID))  # ... only
+        source = jr.load_source(self.repo, _SRC, _SRC_ARID)
+        self.assertEqual(jr._as_source(replayed, replay.name, first, source),
+                         self.source_prompt)                    # ... only
         # The recorded dependency facts reached the replayed request verbatim.
         request = json.loads((replay / "launches" / f"{first}.request.json")
                              .read_text(encoding="utf-8"))
@@ -325,6 +347,22 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         [row] = self._rows(self._replays()[0])
         self.assertEqual(row["source_leaf_mode"], "workshop")
         self.assertNotIn("prompt_matches_record", row)
+
+    def test_a_recorded_document_naming_the_source_orchestration_still_matches(self) -> None:
+        """A remote site's `remote_dir` puts the SOURCE orchestration id inside a recorded
+        document (149 cpp_gpu judge records); masking every occurrence of it on the source
+        side only would make an unchanged template read as moved."""
+        arid = "22222222-2222-4333-8444-555555555555"
+        recorded = self._record_another(arid, {"trial_meta_document":
+                                               f"remote_dir: /site/jobs/{_SRC}/run\n"})
+        self.assertIn(f"/site/jobs/{_SRC}/run", recorded)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = jr.main([_SRC, arid, "--leaf", "pure", "--llm-config", str(self.pure_cfg),
+                          "--repo-root", str(self.repo)])
+        self.assertEqual(rc, 0, out.getvalue())
+        [row] = self._rows(self._replays()[0])
+        self.assertIs(row["prompt_matches_record"], True)
 
     def test_a_mutated_pure_replay_makes_no_prompt_comparison(self) -> None:
         rc, out = self._main("--mutate", json.dumps({"tests_document": [

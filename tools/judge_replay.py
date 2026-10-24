@@ -657,8 +657,12 @@ def _envelope(repo_root: Path, oid: str, arid: str) -> dict[str, Any]:
     return doc if isinstance(doc, dict) else {}
 
 
-def _identity_free(text: str, oid: str, arid: str) -> str:
-    return text.replace(oid, "<orchestration_id>").replace(arid, "<agent_run_id>")
+def _as_source(text: str, oid: str, arid: str, source: SourceLaunch) -> str:
+    """The replay's prompt with ITS identity tokens put back to the source's. Only the
+    replay's own ids are rewritten: a recorded document may carry the SOURCE ids (a remote
+    site's `remote_dir` names the source orchestration), and those stay as they are on both
+    sides. The replay's ids are fresh, so the context cannot carry them."""
+    return text.replace(oid, source.orchestration_id).replace(arid, source.agent_run_id)
 
 
 def _sum(values: Iterable[Any]) -> float | None:
@@ -715,9 +719,8 @@ def run_repetition(conductor: Any, repo_root: Path, source: SourceLaunch, refs: 
             row["prompt_matches_record"] = None
         elif prompt_path.is_file():
             row["prompt_matches_record"] = (
-                _identity_free(prompt_path.read_text(encoding="utf-8"), oid, first)
-                == _identity_free(source.prompt_text, source.orchestration_id,
-                                  source.agent_run_id))
+                _as_source(prompt_path.read_text(encoding="utf-8"), oid, first, source)
+                == source.prompt_text)
     if entry.is_workshop:
         seeds = conductor._workshop_seeds(
             refs, context, {"resolved_dependencies": list(resolved)}, spec)
