@@ -150,11 +150,12 @@ WORKSHOP_SYSTEM_PROMPT = (
 WORKSHOP_TOOL_SURFACE_TEXT: dict[str, str] = {
     "claude_cli": ("You have no shell: your file tools (Read, Write, Edit, Glob, Grep) reach "
                    "your work tree and nothing else."),
-    "codex_cli": ("Your shell and patch tools run with your work tree as the working directory "
-                  "and can write only inside it. The host's toolchain and the staged "
-                  "dependencies are not in your sandbox: the wrapper's operations are the "
-                  "`wrapper` MCP server's tools (`mcp__wrapper__<operation>`), and they are your "
-                  "route to both."),
+    "codex_cli": ("Your shell and patch tools run with your work tree as the working directory, "
+                  "and the host reads your tree and nothing else you write. The staged "
+                  "dependencies are not in your sandbox, and a command you run there is not the "
+                  "host's check: the host's operations are the `wrapper` MCP server's tools "
+                  "(`mcp__wrapper__<operation>`), which run the target's own toolchain and checks "
+                  "as the host will."),
 }
 
 #: The MCP server name the wrapper is registered under in `--mcp-config`. The CLI names its

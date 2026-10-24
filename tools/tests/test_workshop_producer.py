@@ -714,7 +714,7 @@ _WORKSHOP_CONTRACT_DIGESTS = {
     "workshop-2": "79daa75c9cdc3233d8ea0697e63d0b4c2d1a1cf8d7ad60eaaed39066dae66c14",
     # Step 2 PR-2: the `codex_cli` row of `WORKSHOP_TOOL_SURFACE_TEXT` (`workshop-2` shipped
     # with step 2 PR-1, main 7cfbe1b5).
-    "workshop-3": "631d07e844e030ff4f48a978a6ed26ba8a525c581aaaafceeb3a156b7889ff71",
+    "workshop-3": "bf7f9d82750178816e10729262221aa0235f01ae68653301cdff84f5d5261427",
 }
 
 
