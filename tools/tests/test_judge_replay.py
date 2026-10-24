@@ -286,6 +286,19 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual((meta["status"], meta.get("reason_code")),
                          ("cancel", "judge_replay_finished"))
 
+    def test_an_exhausted_repair_budget_counts_the_repair_turns(self) -> None:
+        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        bad = wc.ProcResult(0, json.dumps({"type": "result", "is_error": False,
+                                           "result": json.dumps({"decision": "maybe"}),
+                                           "num_turns": 1, "duration_ms": 1}), "")
+        with mock.patch.object(wc.Conductor, "spawn_leaf", lambda self, *a, **k: bad):
+            rc, out = self._main()
+        self.assertEqual(rc, 0, out)
+        [row] = self._rows(self._replays()[0])
+        self.assertEqual((row["status"], row["document"]), ("fail", None))
+        self.assertEqual(len(row["attempts"]), MAX_BUNDLE_REPAIR_TURNS + 1)
+        self.assertEqual(row["schema_repairs"], MAX_BUNDLE_REPAIR_TURNS)
+
     def test_a_workshop_record_is_not_compared_with_a_pure_prompt(self) -> None:
         path = (self.repo / "workspace/orchestrations" / _SRC / "launches"
                 / f"{_SRC_ARID}.request.json")

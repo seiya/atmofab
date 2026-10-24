@@ -617,9 +617,11 @@ def run_repetition(conductor: Any, repo_root: Path, source: SourceLaunch, refs: 
         "document": captured.document,
         "failure_category": captured.meta.get("failure_category"),
         "attempts": attempts,
-        "schema_repairs": sum(1 for a in attempts
-                              if a.get("failure_category")
-                              and a.get("failure_category") != "pure_transport"),
+        # The turns launched because the previous one's document was refused (a repair, or the
+        # re-run of an unfinished review): an exhausted budget's last refusal launched nothing.
+        "schema_repairs": sum(1 for before in attempts[:-1]
+                              if before.get("failure_category")
+                              and before.get("failure_category") != "pure_transport"),
         "cost_usd": _sum((a.get("usage") or {}).get("cost_usd") for a in attempts),
         "output_tokens": _sum((a.get("usage") or {}).get("output_tokens") for a in attempts),
         "leaf_wall_s": _sum(a.get("leaf_wall_s") for a in attempts),
