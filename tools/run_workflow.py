@@ -885,7 +885,8 @@ _FAILURE_STATUS_VALUES: frozenset[str] = frozenset(
 # latest for an implicit `--resume` — on the reasoning that a non-terminal status is ambiguous
 # between a live concurrent run and a crashed one. Issue #177's PR-3 removed that: the exclusive
 # claim answers the ambiguity directly, so implicit resume no longer filters by status at all
-# (`_find_latest_orchestration` takes the latest, whatever it is) and a `running` prior is
+# (`_find_latest_orchestration` takes the latest whatever its status — a judge replay, which
+# is not a run, being the one directory it skips) and a `running` prior is
 # resumed rather than refused. The name is kept because these ARE the terminal statuses; what
 # changed is that "resumable" is no longer a property they decide.
 _RESUMABLE_TERMINAL_STATUSES: frozenset[str] = frozenset(
@@ -1210,8 +1211,10 @@ def _find_latest_orchestration(repo_root: Path) -> str | None:
 
     Any subdirectory carrying an orchestration_meta.json is an orchestration —
     the id need not start with `orch_`, since --orchestration-id accepts arbitrary
-    caller-supplied ids and those runs must remain resumable as "the latest".
+    caller-supplied ids and those runs must remain resumable as "the latest" — except a
+    judge replay's (`tools/judge_replay.py`), which is a measurement, not a run.
     """
+    from tools.judge_replay import REPLAY_KIND
     orch_root = repo_root / "workspace" / "orchestrations"
     if not orch_root.is_dir():
         return None
@@ -1221,6 +1224,9 @@ def _find_latest_orchestration(repo_root: Path) -> str | None:
             continue
         meta = _read_json_if_exists(path / "orchestration_meta.json")
         if not isinstance(meta, dict):
+            continue
+        invocation = meta.get("invocation")
+        if isinstance(invocation, dict) and invocation.get("kind") == REPLAY_KIND:
             continue
         started_at = meta.get("started_at")
         started_key = started_at.strip() if isinstance(started_at, str) else ""

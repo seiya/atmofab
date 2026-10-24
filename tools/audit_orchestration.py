@@ -1521,8 +1521,10 @@ def main() -> None:
             "Read-only orchestration audit helper. Exits 2 when the audit cannot be "
             "trusted at face value: log corruption was detected "
             "(`data_integrity_warning`), a best-effort diagnostic section raised and "
-            "its result is UNKNOWN rather than negative (`diagnostic_failures`), or "
-            "there is no such orchestration under --repo-root (`orchestration_found`)."
+            "its result is UNKNOWN rather than negative (`diagnostic_failures`), "
+            "there is no such orchestration under --repo-root (`orchestration_found`), "
+            "or the orchestration is a judge replay (tools/judge_replay.py; read its "
+            "replay_result.json instead)."
         )
     )
     parser.add_argument("--orchestration-id", required=True, help="Orchestration ID to audit")
@@ -1540,6 +1542,16 @@ def main() -> None:
     args = parser.parse_args()
 
     repo_root = Path(args.repo_root).resolve()
+    # A judge replay is not audited: its launch requests name the SOURCE run's refs, so every
+    # run-node section below would report the source's records as the replay's. Its record is
+    # its own `replay_result.json` (`tools/judge_replay.py`).
+    from tools.judge_replay import REPLAY_KIND, REPLAY_RESULT_NAME
+    invocation = (_load_json_if_dict(_orch_root(repo_root, args.orchestration_id)
+                                     / "orchestration_meta.json") or {}).get("invocation")
+    if isinstance(invocation, dict) and invocation.get("kind") == REPLAY_KIND:
+        print(f"{args.orchestration_id} is a judge replay; read its {REPLAY_RESULT_NAME}",
+              file=sys.stderr)
+        sys.exit(2)
     result = audit(repo_root, args.orchestration_id)
 
     if args.format == "json":

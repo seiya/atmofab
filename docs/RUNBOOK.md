@@ -555,6 +555,7 @@ The canonical path to resume a workflow that failed midway, from the failure poi
 
 ```bash
 # resume the most recent orchestration with the previous spec_ref / until_phase / leaf-LLM configuration
+# (a judge replay's `replay_*` orchestration, `tools/judge_replay.py`, is never the most recent)
 # (the recorded configuration file is re-hashed; see the llm_config_changed_since_launch note below)
 python3 tools/run_workflow.py --resume
 
