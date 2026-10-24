@@ -478,6 +478,27 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertIn("derivation_key_mismatch:spec.tests", check["dependency_reason"])
         self.assertEqual(self.leaf.calls, [])
 
+    def test_a_row_that_is_not_ready_is_refused_before_any_launch(self) -> None:
+        (self.repo / spec_ref_of(_DEP) / "tests.md").write_text("changed\n", encoding="utf-8")
+        rc, out = self._main()
+        refusal = json.loads(out.strip().splitlines()[-1])
+        self.assertEqual((rc, refusal["reason"]), (2, "judge_replay_not_ready"))
+        self.assertIn("derivation_key_mismatch", refusal["detail"]["dependency_reason"])
+        [replay] = self._replays()
+        self.assertEqual(self._status(replay), ("fail", "judge_replay_not_ready"))
+        self.assertEqual(self.leaf.calls, [])
+
+    def test_finishing_an_orchestration_the_runtime_terminalized_keeps_its_status(self) -> None:
+        rc, _ = self._main("--check")
+        [replay] = self._replays()
+        meta_path = replay / "orchestration_meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta_path.write_text(json.dumps({**meta, "status": "fail_closed"}), encoding="utf-8")
+        handle = jr.ReplayOrchestration(replay.name, meta["orchestration_agent_run_id"], {},
+                                        self.repo / "workspace" / "tmp" / "x")
+        jr.finish_replay_orchestration(self.repo, handle, "fail", "judge_replay_error", "x")
+        self.assertEqual(self._status(replay)[0], "fail_closed")
+
     def test_a_mutation_that_does_not_match_once_refuses_before_any_orchestration(self) -> None:
         for items in ([{"old": "absent text", "new": "x"}],
                       [{"old": "tests_document line", "new": "x"}]):

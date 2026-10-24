@@ -37,8 +37,9 @@ judging ones; a request with no `pure_context` (a warm repair turn: replay its c
 a context whose key set is not the CURRENT one; a `--mutate` that does not match exactly once
 or breaks a recorded JSON document; a source orchestration whose `spec_ref` no longer resolves,
 through the catalog, to the request's node (a node whose spec VERSION moved since the record:
-its replay window is closed); `--leaf` disagreeing with the configuration; a failing preflight
-(this one after the orchestration was created; it ends `fail`).
+its replay window is closed); `--leaf` disagreeing with the configuration; a failing preflight, or a launch gate (the two
+`--check` answers) that does not pass — these two after the orchestration was created; it ends
+`fail` (`preflight_failed` / `judge_replay_not_ready`).
 
 Each `replay_result.json` row: the head (`replay_orchestration_id`, `source_*`, `step`,
 `substep`, `leaf`, `label`, `mutated_keys`, `repetition`); the outcome (`status`,
@@ -403,8 +404,16 @@ def create_replay_orchestration(repo_root: Path, source: SourceLaunch, llm_confi
 def finish_replay_orchestration(repo_root: Path, replay: ReplayOrchestration, status: str,
                                 reason_code: str | None = None,
                                 detail: str | None = None) -> None:
-    """Terminalize the replay orchestration and remove its scratch directory."""
-    from tools.run_workflow import _runtime_command
+    """Terminalize the replay orchestration and remove its scratch directory. An orchestration
+    the runtime already terminalized (`record-launch` ends a refused launch `fail_closed`) keeps
+    its status: a terminal-to-terminal transition is refused."""
+    from tools.orchestration_runtime import IDEMPOTENT_TERMINAL_STATUSES
+    from tools.run_workflow import _read_orchestration_meta, _runtime_command
+    if _read_orchestration_meta(repo_root, replay.orchestration_id).get("status") in (
+            IDEMPOTENT_TERMINAL_STATUSES):
+        if replay.tmp_dir.exists():
+            shutil.rmtree(replay.tmp_dir, ignore_errors=True)
+        return
     args = ["set-status", "--repo-root", str(repo_root),
             "--orchestration-id", replay.orchestration_id, "--status", status]
     if reason_code:
@@ -795,6 +804,13 @@ def replay(repo_root: Path, args: argparse.Namespace, argv: list[str]) -> int:
         if args.check:
             print(json.dumps({**head, "check": gates}, ensure_ascii=False))
             return 0 if gates["ready"] else 1
+        if not gates["ready"]:
+            # `record-launch` would refuse it and terminalize the orchestration `fail_closed`.
+            status, reason = "fail", "judge_replay_not_ready"
+            detail = json.dumps(gates, ensure_ascii=False)
+            print(json.dumps({"status": "refused", "reason": reason, "detail": gates,
+                              "replay_orchestration_id": oid}, ensure_ascii=False))
+            return 2
         conductor = Conductor(
             repo_root=repo_root, orchestration_id=oid,
             orchestration_agent_run_id=replay_orch.orchestration_agent_run_id,
