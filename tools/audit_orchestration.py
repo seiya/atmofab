@@ -1192,7 +1192,10 @@ def _render_pure_leaf_row(label: str, row: dict[str, Any], lines: list[str]) -> 
         lines.append(
             f"  - workshop leaf — lineages {len(lineages)} "
             f"({', '.join(f'`{x}`' for x in lineages) or 'none recorded'}), "
-            f"wrapper calls {row.get('wrapper_calls')}, model turns {row.get('model_turns')}")
+            f"wrapper calls {row.get('wrapper_calls')}"
+            + "".join(f", {label} {row[key]}" for key, label in (
+                ("model_turns", "model turns"), ("items_completed", "items completed"))
+                if row.get(key) is not None))
     # `total` sums all four token classes; show cache_creation too so the four
     # displayed numbers reconcile with `total`.
     lines.append(

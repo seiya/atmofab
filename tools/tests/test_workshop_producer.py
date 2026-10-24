@@ -884,6 +884,24 @@ class AuditTests(unittest.TestCase):
         pure = _summarize_one_pure_meta({**meta, "leaf_mode": None})
         self.assertNotIn("lineages", pure)
 
+    def test_a_codex_workshop_meta_reports_its_items_not_a_zero_turn_count(self) -> None:
+        """A codex attempt records `model_turns: null` and `items_completed` (issue #534 step 2
+        PR-2): the summary sums the items and leaves the turn count unrecorded, not 0."""
+        from tools.audit_orchestration import _render_pure_leaf_row
+        from tools.orchestration_diagnostics import _summarize_one_pure_meta
+        meta = {"result": "pass", "attempts": 2, "leaf_mode": "workshop", "per_attempt": [
+            {"lineage_id": "c1", "wrapper_calls": 2, "model_turns": None,
+             "items_completed": 41},
+            {"lineage_id": "c1", "wrapper_calls": 1, "model_turns": None,
+             "items_completed": 12}]}
+        row = _summarize_one_pure_meta(meta)
+        self.assertEqual((row["model_turns"], row["items_completed"]), (None, 53))
+        lines: list[str] = []
+        _render_pure_leaf_row("compile", row, lines)
+        text = "\n".join(lines)
+        self.assertIn("wrapper calls 3, items completed 53", text)
+        self.assertNotIn("model turns", text)
+
 
 class TimeoutEventTests(_Base):
     def test_the_workshop_launch_labels_its_timeout_event(self) -> None:
