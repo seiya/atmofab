@@ -593,6 +593,67 @@ def _assemble_ir(root: Path) -> dict[str, Any] | AssemblyFailure:
     return {"ir": ir, "compile_fail": declared}
 
 
+# --- the reading kind (issue #534 step 3) ---------------------------------------------
+
+
+def assemble_document_file(root: Path, name: str,
+                           category: str) -> dict[str, Any] | AssemblyFailure:
+    """The one JSON object a READING lineage writes at its tree root (`verdict.json`,
+    `review.json`), or the `AssemblyFailure` that stops it. A reviewer's document has one
+    category for every defect, the reviewer's own schema category (`category`), so an absent
+    file, a link, a file that is not UTF-8, not JSON or not an object all come back as that
+    category with a finding, and the reviewer loop's repair turn handles them as it handles a
+    malformed reply. Never raises on the tree's content."""
+    try:
+        present, value, why = _read_tree_document(Path(root), name, json.loads)
+    except (ValueError, UnicodeError, RecursionError, OSError) as exc:
+        return AssemblyFailure(category, f"{name} cannot be read: {type(exc).__name__}: {exc}")
+    if not present:
+        return AssemblyFailure(
+            category, f"no `{name}` in the tree: write your document at the tree root as {name}")
+    if why is not None:
+        return AssemblyFailure(category, why)
+    if not isinstance(value, dict):
+        return AssemblyFailure(
+            category, f"{name} must hold one JSON object; got {type(value).__name__}")
+    return value
+
+
+def expand_bundle_document(document: Mapping[str, Any],
+                           manifest_name: str = BUNDLE_MANIFEST_NAME) -> dict[str, str]:
+    """The tree files a CodegenBundle document is seeded as for the reviewer that judges it: the
+    document without `files[].content` as YAML under `manifest_name`, and each file's text at
+    its `logical_path` — the producer's own tree contract read back, so the reviewer reads
+    source rather than JSON string escapes. The inverse of `assemble_bundle_document` (which
+    reads the manifest from `BUNDLE_MANIFEST_NAME`). Raises `ValueError` on a document the host
+    cannot expand (a `logical_path` that is not a plain relative path, that names the manifest
+    or that two entries share, a `content` that is not a string): the document is a certified
+    host artifact, so that is a host defect, not a finding."""
+    if not isinstance(document, Mapping):
+        raise ValueError("the bundle document is not a mapping")
+    manifest = copy.deepcopy(dict(document))
+    files = manifest.get("files")
+    if not isinstance(files, list):
+        raise ValueError("the bundle document carries no files[] list")
+    out: dict[str, str] = {}
+    for index, entry in enumerate(files):
+        if not isinstance(entry, dict):
+            raise ValueError(f"files[{index}] is not a mapping")
+        logical = entry.get("logical_path")
+        content = entry.pop("content", None)
+        if not isinstance(logical, str) or plain_relative_path(logical) is None:
+            raise ValueError(f"files[{index}]: logical_path {logical!r} is not a plain "
+                             "relative path")
+        if not isinstance(content, str):
+            raise ValueError(f"files[{index}]: {logical} carries no text content")
+        if logical == manifest_name or logical in out:
+            raise ValueError(f"files[{index}]: logical_path {logical!r} names the manifest or "
+                             "another file of the bundle")
+        out[logical] = content
+    out[manifest_name] = yaml.safe_dump(manifest, sort_keys=False, allow_unicode=True)
+    return out
+
+
 # --- snapshot -------------------------------------------------------------------------
 
 

@@ -77,7 +77,7 @@
 # name a subset of what the provider has (`claude_cli`: pure, warm_resume, workshop)
 # and never more, or the load is refused with
 # `llm_config_capability_exceeds_provider`. Every leaf of this sample is a pure leaf, the
-# leaf model of every judging leaf and the default of a producing one, so a pure entry
+# default leaf model of every substep, so a pure entry
 # narrowed away from `pure` can run nothing and is refused with
 # `llm_config_capability_insufficient_for_substep`. No sample sets the key.
 #
@@ -107,6 +107,20 @@
 # Generate alone). The leaf runs in a private config home under
 # its lineage home, over which `~/.claude/.credentials.json` is bound, so that file must exist
 # (`docs/ORCHESTRATION.md` §workshop leaf; `docs/RUNBOOK.md` §0-2).
+#
+# The three judging substeps, `compile.verify`, `generate.verify` and `validate.judge`, may run
+# as a READING workshop leaf (issue #534 step 3, under A/B): the documents the pure judge is
+# shown inline are seed files of its tree, and it writes its one verdict document there. It is
+# served no host operation, so its entry states `lineage_timeout_s` alone — `max_wrapper_calls`
+# is refused on a judging substep — and it runs on claude_cli only for now. The same block under
+# each judging substep, with the substep's own name in place of `judge`:
+#
+#       judge:
+#         provider: claude_cli
+#         model: opus
+#         effort: medium
+#         leaf: workshop
+#         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 defaults:
   provider: claude_cli
   model: opus

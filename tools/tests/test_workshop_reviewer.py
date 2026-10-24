@@ -1,0 +1,573 @@
+"""The READING kind of `workshop leaf` (issue #534 step 3): the three judging substeps run by
+`Conductor._run_pure_reviewer_substep`'s workshop branch.
+
+The leaf is a fake `spawn_leaf` that writes the reviewer's one document into the lineage's
+tree, the way the real CLI's file tools would; the lineage home is a temporary directory.
+Everything host-side — the seeds (the bundle under review expanded into files), the lineage
+record, the snapshot, the one-file assembly, the document validators, the host projection, the
+per-attempt meta — is real. The launch record is the stubbed `runtime` of `_PureFakeConductor`;
+the real request builder, renderer and validator are driven for every judging pair below.
+"""
+
+from __future__ import annotations
+
+import json
+import shutil
+import tempfile
+import unittest
+from pathlib import Path
+from unittest import mock
+
+import tools.llm_config as lc
+import tools.orchestration_runtime as ort
+import tools.workflow_conductor as wc
+from tools import pure_leaf, workshop_tree
+from tools.tests.test_pure_leaf_compile import _write_compile_node
+from tools.tests.test_pure_leaf_judge import _review, _write_run_node
+from tools.tests.test_pure_leaf_producer import _PureFakeConductor, _valid_bundle
+from tools.tests.test_pure_leaf_verify import _verdict, _verify_node
+
+_ORCH = "o"
+
+
+def _config(repo: Path, phase: str, substep: str, extra: str = "") -> lc.LlmConfig:
+    path = repo / "llm_reading.yaml"
+    path.write_text(
+        "defaults: {provider: claude_cli, model: opus}\n"
+        f"phases: {{{phase}: {{substeps: {{{substep}: {{provider: claude_cli, model: opus, "
+        f"leaf: workshop, lineage_timeout_s: 2700{extra}" + "}}}}\n",
+        encoding="utf-8")
+    return lc.load_llm_config(path)
+
+
+def _envelope() -> str:
+    return json.dumps({"result": "done", "is_error": False, "model": "claude-opus-5-5",
+                       "usage": {"output_tokens": 10}, "session_id": "s", "num_turns": 4})
+
+
+class _ReviewerFake(_PureFakeConductor):
+    """The pure fake, with the lineage home faked and the leaf scripted:
+    `self.leaf_actions[i](conductor, tree, kwargs)` runs as launch i and may return a
+    `ProcResult` (default: an envelope, rc 0). No wrapper is faked: a reading lineage is served
+    none, and a call to `_start_wrapper_endpoint` / a freeze is a failure here."""
+
+    homes: Path
+    leaf_actions: list
+    resumable = True
+
+    def _prepare_workshop_home(self, entry, lineage_id, *, resume):  # type: ignore[override]
+        home = self.homes / self.orchestration_id / self._workshop_backend(entry) / lineage_id
+        if resume:
+            if not home.is_dir():
+                return None
+        else:
+            home.mkdir(parents=True)
+            (home / "config").mkdir()
+        return {"homes_root": str(self.homes), "home": str(home),
+                "config": str(home / "config"), "tree": str(home / "tree"),
+                "lineage_id": lineage_id}
+
+    def _start_wrapper_endpoint(self, ctx, on_end):  # type: ignore[override]
+        raise AssertionError("a reading lineage is served no endpoint")
+
+    def _workshop_session_resumable(self, paths, session_id):  # type: ignore[override]
+        return self.resumable
+
+    def _pure_session_resumable(self, *args, **kwargs):  # type: ignore[override]
+        raise AssertionError("the workshop branch never consults the operator's sessions")
+
+    def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore
+        self.__dict__.setdefault("spawns", []).append(kwargs)
+        request = [c for c in self.calls if c[0] == "record-launch"][-1][1]["--request-json"]
+        tree = (self.homes / self.orchestration_id / self._workshop_backend(entry)
+                / request["workshop_lineage_id"] / "tree")
+        index = len(self.spawns) - 1
+        if index > len(self.leaf_actions) + 6:
+            raise AssertionError(f"unbounded re-launch: {index + 1} launches")
+        action = self.leaf_actions[min(index, len(self.leaf_actions) - 1)]
+        result = action(self, tree, kwargs)
+        return result if result is not None else wc.ProcResult(0, _envelope(), "")
+
+
+def _writes(name: str, doc):
+    def action(c, tree, kwargs):
+        (tree / name).write_text(doc if isinstance(doc, str) else json.dumps(doc),
+                                 encoding="utf-8")
+    return action
+
+
+def _writes_nothing(c, tree, kwargs):
+    return None
+
+
+def _dies(c, tree, kwargs):
+    return wc.ProcResult(1, "", "boom")
+
+
+def _times_out_after(name: str, doc):
+    def action(c, tree, kwargs):
+        (tree / name).write_text(json.dumps(doc), encoding="utf-8")
+        return wc.ProcResult(124, _envelope(), "", timed_out=True)
+    return action
+
+
+class _Base(unittest.TestCase):
+    PHASE = "compile"
+    SUBSTEP = "verify"
+    OUTPUT = "verdict.json"
+
+    def stage(self, repo: Path) -> wc.NodeRefs:
+        return _write_compile_node(repo, stage_ir=True)
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = Path(tmp.name)
+        (self.repo / "workspace" / "orchestrations" / _ORCH).mkdir(parents=True)
+        self.refs = self.stage(self.repo)
+        self.c = _ReviewerFake(
+            repo_root=self.repo, orchestration_id=_ORCH, orchestration_agent_run_id="orch",
+            llm_config=_config(self.repo, self.PHASE, self.SUBSTEP), env={})
+        self.c.calls = []
+        self.c.homes = self.repo.parent / (self.repo.name + "_homes")
+        self.addCleanup(lambda: shutil.rmtree(self.c.homes, ignore_errors=True))
+        self.c.leaf_actions = [_writes(self.OUTPUT, self.passing())]
+
+    def passing(self) -> dict:
+        return _verdict("pass")
+
+    def failing(self) -> dict:
+        return _verdict("fail", severity="minor")
+
+    def run_substep(self) -> wc.SubstepOutcome:
+        return self.c.run_substep(self.refs, self.PHASE, self.SUBSTEP)
+
+    def requests(self) -> list[dict]:
+        return [c[1]["--request-json"] for c in self.c.calls if c[0] == "record-launch"]
+
+    def paths(self, lineage: str) -> workshop_tree.LineagePaths:
+        return workshop_tree.LineagePaths(
+            homes_root=self.c.homes, orchestration_id=_ORCH, lineage_id=lineage,
+            orchestration_dir=self.repo / "workspace" / "orchestrations" / _ORCH)
+
+    def attempt_meta(self) -> dict:
+        return json.loads((self.repo / self.refs.ir_ref
+                           / "compile_verify_meta.json").read_text())
+
+    def assert_projected_pass(self) -> None:
+        meta = json.loads((self.repo / self.refs.ir_ref / "ir_meta.json").read_text())
+        self.assertEqual((meta["verification_status"], meta["issue_severity"]),
+                         ("pass", "none"))
+
+    def seeds(self) -> dict[str, str]:
+        return dict(wc.Conductor._WORKSHOP_REVIEWER_DOCUMENT_SEEDS[
+            (self.PHASE, self.SUBSTEP, "")])
+
+
+class CompileVerifyTests(_Base):
+    def test_a_pass_verdict_in_the_tree_is_projected_as_a_pure_reply_is(self) -> None:
+        outcome = self.run_substep()
+        self.assertEqual((outcome.status, outcome.leaf_returncode), ("pass", 0))
+        self.assert_projected_pass()
+        vmeta = self.attempt_meta()
+        self.assertEqual((vmeta["result"], vmeta["leaf_mode"],
+                          vmeta["workshop_prompt_contract_version"],
+                          vmeta["prompt_contract_version"]),
+                         ("pass", "workshop", pure_leaf.WORKSHOP_PROMPT_CONTRACT_VERSION,
+                          pure_leaf.PURE_PROMPT_CONTRACT_VERSION))
+        row = vmeta["per_attempt"][0]
+        self.assertEqual((row["lineage_id"], row["warm"], row["model_turns"],
+                          row["wrapper_calls"], row["ended_by"]),
+                         ("child-1", False, 4, 0, None))
+        self.assertIsInstance(row["leaf_wall_s"], float)
+
+    def test_the_launch_is_a_reading_workshop_launch_served_no_endpoint(self) -> None:
+        self.run_substep()
+        (request,) = self.requests()
+        self.assertEqual((request["leaf_mode"], request["workshop_lineage_id"],
+                          request["workshop_provider"], request["prompt_contract_version"]),
+                         ("workshop", "child-1", "claude_cli",
+                          pure_leaf.WORKSHOP_PROMPT_CONTRACT_VERSION))
+        (spawn,) = self.c.spawns
+        self.assertIsNone(spawn["mcp_config_json"])
+        self.assertIsNone(spawn["cancel_event"])
+        self.assertTrue(spawn["reading"])
+        record = workshop_tree.read_lineage_record(self.paths("child-1"))
+        self.assertEqual(record["wrapper_calls_used"], 0)
+
+    def test_the_tree_holds_every_context_document_under_its_seed_name(self) -> None:
+        self.run_substep()
+        tree = self.paths("child-1").tree
+        context = self.c._build_pure_compile_verify_context(self.refs)
+        for key, name in self.seeds().items():
+            with self.subTest(key=key):
+                self.assertEqual((tree / name).read_text(), context[key])
+        self.assertEqual((tree / "CONTRACT.md").read_text(), "PROMPT")
+        # The snapshot holds the reviewer's document and no seed.
+        names = sorted(p.name for p in self.paths("child-1").snapshot.iterdir())
+        self.assertEqual(names, [self.OUTPUT])
+
+    def test_a_valid_fail_verdict_left_by_a_lineage_its_bound_ended_reaches_the_severity_gate(
+            self) -> None:
+        """MR1's routing row: a lineage killed at its bound whose tree holds a schema-valid
+        `fail` verdict returns rc 0, so `run_phase` routes the VERDICT (verify severity), not
+        the kill (`leaf_transport_error`)."""
+        self.c.leaf_actions = [_times_out_after(self.OUTPUT, self.failing())]
+        outcome = self.run_substep()
+        self.assertEqual((outcome.status, outcome.leaf_returncode, outcome.infra_error),
+                         ("fail", 0, None))
+        row = self.attempt_meta()["per_attempt"][0]
+        self.assertEqual(row["ended_by"], "lineage_timeout")
+        decision = self.c.classify_failure(self.refs, self.PHASE, [None, None, outcome])
+        self.assertEqual((decision.action, decision.repair_strategy), ("retry", "reuse"))
+
+    def test_an_absent_document_is_the_schema_category_and_is_repaired_warm(self) -> None:
+        self.c.leaf_actions = [_writes_nothing, _writes(self.OUTPUT, self.passing())]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "pass")
+        first, second = self.requests()
+        self.assertEqual(second["workshop_lineage_id"], "child-1")
+        self.assertTrue(second.get("warm_resume"))
+        self.assertIn(f"no `{self.OUTPUT}` in the tree", second["repair_findings"])
+        self.assertNotIn("prior_document", second)
+        self.assertEqual(self.c.spawns[1]["resume_session_id"], "child-1")
+        rows = self.attempt_meta()["per_attempt"]
+        self.assertEqual(rows[0]["failure_category"], wc.GENERATE_VERDICT_SCHEMA_VIOLATION
+                         if self.PHASE != "validate"
+                         else wc.SEMANTIC_REVIEW_DOCUMENT_VIOLATION)
+        self.assertEqual((rows[1]["lineage_id"], rows[1]["warm"]), ("child-1", True))
+
+    def test_an_unresumable_lineage_is_repaired_by_a_cold_reuse_carrying_the_document(
+            self) -> None:
+        """A schema repair whose session cannot be resumed is a cold reuse seeded from the
+        lineage's snapshot — the document under repair — and its prompt re-states the launch
+        body (the verdict repair template)."""
+        self.c.resumable = False
+        broken = dict(self.passing(), unexpected=1) if self.PHASE != "validate" else dict(
+            self.passing(), decision="maybe")
+        self.c.leaf_actions = [_writes(self.OUTPUT, broken), _writes_nothing]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "fail")
+        requests = self.requests()
+        self.assertEqual(requests[1]["workshop_lineage_id"], "child-2")
+        self.assertFalse(requests[1].get("warm_resume"))
+        self.assertEqual(json.loads((self.paths("child-2").tree / self.OUTPUT).read_text()),
+                         broken)
+        self.assertEqual(ort._pure_repair_template_name(requests[1]),
+                         "workshop verdict repair")
+        self.assertEqual(workshop_tree.read_lineage_record(self.paths("child-1"))["ended_by"],
+                         "superseded")
+
+    def test_a_dead_leaf_s_document_is_not_carried_into_its_retry(self) -> None:
+        """The reading kind's own reseed rule: a transport death's retry is seeded from the
+        seeds ALONE. The dead leaf wrote a passing document and died; had its snapshot been
+        carried, the retry — which writes nothing — would have certified it."""
+        def writes_pass_and_dies(c, tree, kwargs):
+            (tree / self.OUTPUT).write_text(json.dumps(self.passing()), encoding="utf-8")
+            return wc.ProcResult(1, "", "connection reset by peer (ECONNRESET)")
+        self.c.leaf_actions = [writes_pass_and_dies, _writes_nothing]
+        with mock.patch.object(wc.Conductor, "_pure_transient_retry", return_value=True):
+            outcome = self.run_substep()
+        self.assertEqual(outcome.status, "fail")
+        self.assertFalse((self.paths("child-2").tree / self.OUTPUT).exists())
+        self.assertNotEqual(self.attempt_meta()["result"], "pass")
+
+    def test_a_transport_death_keeps_its_rc(self) -> None:
+        self.c.leaf_actions = [_dies]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "fail")
+        self.assertEqual(outcome.leaf_returncode, 1)
+        self.assertEqual(self.attempt_meta()["failure_category"], "pure_transport")
+
+    def test_a_schema_exhaustion_is_routed_by_its_category_not_by_a_kill(self) -> None:
+        self.c.leaf_actions = [_times_out_after(self.OUTPUT, {"not": "a verdict"})]
+        outcome = self.run_substep()
+        self.assertEqual((outcome.status, outcome.leaf_returncode, outcome.infra_error),
+                         ("fail", 0, None))
+        meta = self.attempt_meta()
+        self.assertEqual(meta["result"], "fail")
+        self.assertIn("the lineage ended by lineage_timeout", meta["failure_excerpt"])
+
+
+class GenerateVerifyTests(CompileVerifyTests):
+    PHASE = "generate"
+
+    def stage(self, repo: Path) -> wc.NodeRefs:
+        return _verify_node(repo)
+
+    def attempt_meta(self) -> dict:
+        return json.loads((self.repo / self.refs.source_dir() / "verdict_meta.json").read_text())
+
+    def assert_projected_pass(self) -> None:
+        meta = json.loads((self.repo / self.refs.source_dir() / "source_meta.json").read_text())
+        self.assertEqual((meta["verification_status"], meta["issue_severity"]),
+                         ("pass", "none"))
+
+    def test_the_tree_holds_every_context_document_under_its_seed_name(self) -> None:
+        """The bundle under review is EXPANDED: its manifest under `bundle_manifest.yaml` and
+        each file at its `logical_path`, which assemble back to the certified document."""
+        self.run_substep()
+        tree = self.paths("child-1").tree
+        context = self.c._build_pure_verify_context(self.refs)
+        for key, name in self.seeds().items():
+            with self.subTest(key=key):
+                self.assertEqual((tree / name).read_text(), context[key])
+        for entry in _valid_bundle()["files"]:
+            self.assertEqual((tree / entry["logical_path"]).read_text(), entry["content"])
+        scratch = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, scratch, True)
+        for entry in _valid_bundle()["files"]:
+            shutil.copyfile(tree / entry["logical_path"], scratch / entry["logical_path"])
+        shutil.copyfile(tree / "bundle_manifest.yaml",
+                        scratch / workshop_tree.BUNDLE_MANIFEST_NAME)
+        self.assertEqual(workshop_tree.assemble_bundle_document(scratch, ()),
+                         json.loads(context["bundle_document"]))
+        self.assertFalse((tree / workshop_tree.BUNDLE_MANIFEST_NAME).exists())
+        names = sorted(p.name for p in self.paths("child-1").snapshot.iterdir())
+        self.assertEqual(names, [self.OUTPUT])
+
+
+class ValidateJudgeTests(CompileVerifyTests):
+    PHASE = "validate"
+    SUBSTEP = "judge"
+    OUTPUT = "review.json"
+
+    def stage(self, repo: Path) -> wc.NodeRefs:
+        return _write_run_node(repo)
+
+    def passing(self) -> dict:
+        return _review("pass")
+
+    def failing(self) -> dict:
+        return _review("fail")
+
+    def attempt_meta(self) -> dict:
+        return json.loads((self.repo / self.refs.run_node_dir() / "judge_meta.json").read_text())
+
+    def assert_projected_pass(self) -> None:
+        review = json.loads((self.repo / self.refs.run_node_dir()
+                             / "semantic_review.json").read_text())
+        self.assertEqual((review["decision"], review["review_method"]),
+                         ("pass", "llm_semantic_review"))
+
+    def test_the_tree_holds_every_context_document_under_its_seed_name(self) -> None:
+        self.run_substep()
+        tree = self.paths("child-1").tree
+        context = self.c._build_pure_judge_context(self.refs)
+        for key, name in self.seeds().items():
+            with self.subTest(key=key):
+                self.assertEqual((tree / name).read_text(), context[key])
+        # The host's verdict is a seed under its own name, never the output's.
+        self.assertTrue((tree / "host_verdict.json").is_file())
+        names = sorted(p.name for p in self.paths("child-1").snapshot.iterdir())
+        self.assertEqual(names, [self.OUTPUT])
+
+    def test_a_valid_fail_verdict_left_by_a_lineage_its_bound_ended_reaches_the_severity_gate(
+            self) -> None:
+        """The judge's twin: a `fail` review in the tree of a lineage its bound ended reaches
+        `escalate("judge_semantic_review_fail")`, not the transport route."""
+        self.c.leaf_actions = [_times_out_after(self.OUTPUT, self.failing())]
+        outcome = self.run_substep()
+        self.assertEqual((outcome.status, outcome.leaf_returncode, outcome.infra_error),
+                         ("fail", 0, None))
+        review = json.loads((self.repo / self.refs.run_node_dir()
+                             / "semantic_review.json").read_text())
+        self.assertEqual(review["decision"], "fail")
+        # `evidence_refs` name document KEYS, resolved by the host to workspace paths.
+        self.assertTrue(review["findings"][0]["evidence_refs"][0].startswith(
+            f"{self.refs.run_node_dir()}/diagnostics.json#"))
+
+    def test_an_evidence_ref_naming_a_seed_file_is_refused(self) -> None:
+        """The tree shows file names; `evidence_refs` still name document keys, and a file name
+        there is a schema violation repaired as any other (a cost, never a resolution)."""
+        bad = _review("fail")
+        bad["findings"][0]["evidence_refs"] = ["diagnostics.json#per_case"]
+        self.c.leaf_actions = [_writes(self.OUTPUT, bad), _writes(self.OUTPUT, _review("fail"))]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "fail")
+        self.assertIn("diagnostics.json", self.requests()[1]["repair_findings"])
+        self.assertEqual(len(self.attempt_meta()["per_attempt"]), 2)
+
+
+class LaunchShapeTests(unittest.TestCase):
+    """The argv and the recorded setting surface of a reading launch."""
+
+    def _conductor(self, phase: str = "validate", substep: str = "judge") -> wc.Conductor:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = Path(tmp.name)
+        return _PureFakeConductor(repo_root=repo, orchestration_id=_ORCH,
+                                  orchestration_agent_run_id="orch",
+                                  llm_config=_config(repo, phase, substep), env={})
+
+    def test_a_reading_argv_carries_no_endpoint_and_no_wrapper_grant(self) -> None:
+        c = self._conductor()
+        entry = c.entry_for("validate", "judge")
+        argv = c.leaf_command(entry, session_id="a", reading=True)
+        self.assertNotIn("--mcp-config", argv)
+        self.assertNotIn("--allowedTools", argv)
+        self.assertIn("--strict-mcp-config", argv)
+        self.assertEqual(argv[argv.index("--tools") + 1], "Read,Write,Edit,Glob,Grep")
+        self.assertEqual(argv[argv.index("--system-prompt") + 1],
+                         pure_leaf.WORKSHOP_READER_SYSTEM_PROMPT)
+
+    def test_the_kind_and_the_endpoint_must_agree(self) -> None:
+        c = self._conductor()
+        entry = c.entry_for("validate", "judge")
+        mcp = pure_leaf.workshop_mcp_config_json("http://127.0.0.1:5/mcp")
+        with self.assertRaises(ValueError):
+            c.leaf_command(entry, session_id="a", reading=True, mcp_config_json=mcp)
+        with self.assertRaises(ValueError):
+            c.leaf_command(entry, session_id="a")
+        with self.assertRaises(ValueError):
+            c.leaf_command(c.entry_for("compile", "generate"), session_id="a", reading=True)
+
+    def test_the_recorded_surface_of_a_reading_launch_names_no_endpoint(self) -> None:
+        c = self._conductor()
+        entry = c.entry_for("validate", "judge")
+        surface = c._launch_setting_surface(
+            "a", {"step": "validate", "substep": "judge"}, entry)
+        self.assertEqual(surface, {"claude_tools": ["Read,Write,Edit,Glob,Grep"]})
+
+    def test_the_codex_reading_overrides_name_no_wrapper(self) -> None:
+        self.assertEqual(pure_leaf.codex_workshop_overrides(None, reading=True),
+                         ["--config", 'approval_policy="never"',
+                          "--config", "features.apps=false"])
+        with self.assertRaises(ValueError):
+            pure_leaf.codex_workshop_overrides(
+                pure_leaf.workshop_mcp_config_json("http://127.0.0.1:5/mcp"), reading=True)
+
+
+class RenderTests(unittest.TestCase):
+    """Every judging pair's workshop request renders through the production entry point and
+    passes the launch validator; the cold prompt states the seed names, not the documents."""
+
+    def _request(self, step: str, substep: str, shape: str = "", **extra) -> dict:
+        keys = (ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[(step, substep, shape)] if shape
+                else ort.PURE_CONTEXT_REQUIRED_KEYS[(step, substep)])
+        refs = wc.NodeRefs(target_id="fortran_cpu", node_key="component/x@0.1.0",
+                           spec_path="spec/component/x", ir_id="ir_20260908_001",
+                           pipeline_id="p_20260908_001", source_id="src_20260908_001",
+                           binary_id="bin_20260908_001", run_id="run_20260908_001")
+        req = wc.build_launch_request(
+            refs, step=step, substep=substep, orchestration_id=_ORCH,
+            orchestration_agent_run_id="orch", child_agent_run_id="ar_x",
+            agent_model="opus", workflow_mode="dev", pure_leaf=True, pure_shape=shape,
+            pure_language="fortran", pure_parallel="openmp",
+            pure_context={k: f"DOCUMENT-{k}" for k in keys},
+            workshop_lineage_id="ar_x", workshop_provider="claude_cli")
+        req.update(extra)
+        return req
+
+    PAIRS = (("compile", "verify", ""), ("generate", "verify", ""),
+             ("generate", "verify", "harness"), ("validate", "judge", ""))
+
+    def test_each_pair_renders_its_reading_template_and_passes_the_validator(self) -> None:
+        for step, substep, shape in self.PAIRS:
+            with self.subTest(pair=(step, substep, shape)):
+                req = ort.prepare_launch_request_payload(self._request(step, substep, shape))
+                ort._validate_launch_request_payload(req)
+                text = ort.render_launch_prompt_text(req)
+                self.assertTrue(text.startswith(pure_leaf.WORKSHOP_PROMPT_SENTINEL))
+                self.assertNotIn("DOCUMENT-", text)
+                self.assertNotIn("mcp__wrapper", text)
+                self.assertIn(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["claude_cli"], text)
+                output = wc.Conductor._WORKSHOP_REVIEW_OUTPUT_BY_SUBSTEP[substep]
+                self.assertIn(f"`{output}`", text)
+                for key, name in wc.Conductor._WORKSHOP_REVIEWER_DOCUMENT_SEEDS[
+                        (step, substep, shape)].items():
+                    self.assertIn(f"In your tree: `{name}` (document key `{key}`)", text)
+
+    def test_a_reading_request_on_a_provider_with_no_reader_row_is_refused(self) -> None:
+        req = self._request("validate", "judge", workshop_provider="codex_cli")
+        with self.assertRaises(ValueError) as ctx:
+            ort.prepare_launch_request_payload(req)
+        self.assertIn("one of claude_cli", str(ctx.exception))
+
+    def test_the_repair_turn_of_a_reviewer_is_the_verdict_repair(self) -> None:
+        for step, substep, shape in self.PAIRS:
+            with self.subTest(pair=(step, substep, shape)):
+                req = self._request(step, substep, shape, repair_strategy="reuse",
+                                    repair_findings="bad shape", warm_resume=False)
+                self.assertEqual(ort._pure_repair_template_name(req),
+                                 "workshop verdict repair")
+                text = ort._render_pure_repair_prompt(req)
+                self.assertIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH, text)
+                self.assertNotIn("Your prior document under repair", text)
+                # The cold repair re-states the whole launch body, seeds included.
+                self.assertIn("Work tree contract", text)
+
+
+class ReaderTemplateTests(unittest.TestCase):
+    _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
+    _PAIRS = (("pure_compile_verify.txt", "workshop_compile_verify.txt"),
+              ("pure_generate_verify.txt", "workshop_generate_verify.txt"),
+              ("pure_generate_verify_harness.txt", "workshop_generate_verify_harness.txt"),
+              ("pure_validate_judge.txt", "workshop_validate_judge.txt"))
+    #: The one pure unit a reading twin REPLACES: a reviewer in a tree reads with file tools.
+    _REPLACED = "Do not use filesystem or shell tools: everything you need is inlined below."
+
+    def test_the_reviewer_rules_are_the_pure_templates_verbatim(self) -> None:
+        """Every line of a pure reviewer template after its persona — the output contract, the
+        checklist, the input labels, the language and parallel markers, the identity block — is
+        in its reading twin, in order, except the document slots, which the twin replaces with
+        the seed's tree name and document key; and the persona's no-tools sentence is the one
+        unit replaced. So a rule edited in one and not the other fails here."""
+        for pure_name, twin_name in self._PAIRS:
+            with self.subTest(template=twin_name):
+                pure = (self._DIR / pure_name).read_text().split("\n")
+                twin = (self._DIR / twin_name).read_text().split("\n")
+                self.assertIn(self._REPLACED, pure[0])
+                self.assertNotIn(self._REPLACED, "\n".join(twin))
+                kept = [ln for ln in pure[2:] if not ort._PURE_PLACEHOLDER_RE.fullmatch(ln)]
+                position = 0
+                for line in kept:
+                    self.assertIn(line, twin[position:], line[:80])
+                    position = twin.index(line, position) + 1
+
+    def test_no_document_is_inlined(self) -> None:
+        for _pure, name in self._PAIRS:
+            with self.subTest(template=name):
+                slots = set(ort._PURE_PLACEHOLDER_RE.findall((self._DIR / name).read_text()))
+                documents = set().union(*(set(v) for v in
+                                          wc.Conductor._WORKSHOP_REVIEWER_DOCUMENT_SEEDS
+                                          .values())) | {"bundle_document", "dependency_facts"}
+                self.assertEqual(slots & documents, set())
+                self.assertIn("tool_surface", slots)
+
+    def test_the_verdict_repair_has_the_slots_its_renderer_fills(self) -> None:
+        text = (self._DIR / "workshop_verdict_repair.txt").read_text()
+        self.assertTrue(text.startswith(pure_leaf.WORKSHOP_PROMPT_SENTINEL))
+        self.assertEqual(
+            set(ort._PURE_PLACEHOLDER_RE.findall(text)),
+            {"node_key", "step", "substep", "orchestration_id", "agent_run_id",
+             "prompt_contract_version", "repair_scope", "findings", "launch_body"})
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class LaunchSiteTests(unittest.TestCase):
+    def test_every_launch_site_passing_an_endpoint_passes_the_kind(self) -> None:
+        """The kind is passed in (`ResolvedLeafEntry` names no substep), so a production call
+        to `leaf_command` / `spawn_leaf` that hands over `mcp_config_json` must hand over
+        `reading` beside it: one that did not would launch a reviewer with the producer's flag
+        set, or refuse every reading launch. Read off the conductor's own source; the twin of
+        `test_every_leaf_launch_site_passes_its_own_entry`."""
+        import ast
+        src = Path(wc.__file__).read_text(encoding="utf-8")
+        sites, offenders = 0, []
+        for node in ast.walk(ast.parse(src)):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in ("leaf_command", "spawn_leaf")
+                    and isinstance(node.func.value, ast.Name)
+                    and node.func.value.id == "self"):
+                continue
+            names = {k.arg for k in node.keywords}
+            if "mcp_config_json" in names:
+                sites += 1
+                if "reading" not in names:
+                    offenders.append(f"line {node.lineno}: {node.func.attr}")
+        self.assertGreaterEqual(sites, 3)
+        self.assertEqual(offenders, [])

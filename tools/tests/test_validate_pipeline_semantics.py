@@ -28450,6 +28450,12 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                    workshop_provider="claude_cli",
                    prompt_contract_version=WORKSHOP_PROMPT_CONTRACT_VERSION)
         req_path.write_text(json.dumps(req, ensure_ascii=False), encoding="utf-8")
+        # A producing launch records the wrapper endpoint it was served
+        # (`Conductor._launch_setting_surface`).
+        resp_path = root / "launches" / f"{self._ARID}.response.json"
+        resp = json.loads(resp_path.read_text(encoding="utf-8"))
+        resp["claude_mcp_config"] = [{"server": "wrapper", "url": "http://127.0.0.1:5/mcp"}]
+        resp_path.write_text(json.dumps(resp, ensure_ascii=False), encoding="utf-8")
         if workshop_prompt:
             template = (f"{WORKSHOP_PROMPT_SENTINEL}: stand-in.\n\n<tests_document>\n\n"
                         "Target node_key: <node_key>\nTarget step: <step>\n"
@@ -28506,6 +28512,60 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             self._build_tree(control)
             self._make_pure(control)
             self.assertEqual(self._all_violations(repo_root), self._all_violations(control))
+
+    def _edit_launch(self, repo_root: Path, kind: str, **fields) -> None:
+        path = self._orch_root(repo_root) / "launches" / f"{self._ARID}.{kind}.json"
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        for key, value in fields.items():
+            if value is None:
+                doc.pop(key, None)
+            else:
+                doc[key] = value
+        path.write_text(json.dumps(doc), encoding="utf-8")
+
+    def _endpoint_violations(self, repo_root: Path) -> list[str]:
+        return [v for v in self._workshop_violations(repo_root) if "wrapper endpoint" in v]
+
+    def test_a_producing_workshop_record_naming_no_endpoint_is_flagged(self) -> None:
+        """Issue #534 step 3: the endpoint a launch was served is decided by the KIND of its
+        pair. A producing record that names none was served no operation, which is not a
+        producing launch."""
+        for field in ("claude_mcp_config", "codex_mcp_config"):
+            with self.subTest(served_by=field), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._build_tree(repo_root)
+                self._make_workshop(repo_root)
+                self._edit_launch(repo_root, "response",
+                                  **{"claude_mcp_config": None,
+                                     field: [{"server": "wrapper", "url": "u"}]})
+                self.assertEqual(self._endpoint_violations(repo_root), [])
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_workshop(repo_root)
+            self._edit_launch(repo_root, "response", claude_mcp_config=None)
+            self.assertEqual(len(self._endpoint_violations(repo_root)), 1)
+            self.assertIn("producing launch (generate.generate) must name its wrapper "
+                          "endpoint", self._endpoint_violations(repo_root)[0])
+
+    def test_a_reading_workshop_record_naming_an_endpoint_is_flagged(self) -> None:
+        """The other direction: a judging pair's lineage is served no operation, so a record
+        of one naming an endpoint is a reviewer that held the wrapper. The kind is read from
+        the REQUEST's pair, so a response cannot choose it."""
+        for step, substep in (("compile", "verify"), ("generate", "verify"),
+                              ("validate", "judge")):
+            with self.subTest(pair=f"{step}.{substep}"), \
+                    tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._build_tree(repo_root)
+                self._make_workshop(repo_root)
+                self._edit_launch(repo_root, "request", step=step, substep=substep)
+                found = self._endpoint_violations(repo_root)
+                self.assertEqual(len(found), 1, found)
+                self.assertIn(f"reading launch ({step}.{substep}) must name no wrapper "
+                              "endpoint (got claude_mcp_config)", found[0])
+                self._edit_launch(repo_root, "response", claude_mcp_config=None)
+                self.assertEqual(self._endpoint_violations(repo_root), [])
 
     def test_a_workshop_record_disagreeing_with_its_prompt_is_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

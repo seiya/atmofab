@@ -771,7 +771,9 @@ class PureLeafABSummaryTest(unittest.TestCase):
             self.assertTrue(result["pure_leaf_ab_summary"]["available"])
             md = _render_markdown(result)
         self.assertIn("Pure-leaf A/B metrics", md)
-        self.assertIn("generate-executor: `pure`", md)
+        # Issue #534 step 3: the executor header is gone (it printed `pure` above workshop
+        # rows); the per-substep rows say which leaf model ran.
+        self.assertNotIn("generate-executor", md)
         self.assertIn("claude --version", md)
         self.assertIn(self.SRC, md)
 
@@ -1315,8 +1317,7 @@ class PureLeafABSummaryTest(unittest.TestCase):
             lines,
         )
         md = "\n".join(lines)
-        self.assertIn("generate-executor: `purre`", md)  # verbatim, not corrected
-        self.assertIn("unrecognized executor value", md)
+        self.assertIn("unrecognized generate_executor value `purre`", md)  # verbatim
         self.assertNotIn("legacy/agentic run", md)
 
     def test_unrecorded_executor_does_not_claim_legacy(self) -> None:
@@ -1327,9 +1328,9 @@ class PureLeafABSummaryTest(unittest.TestCase):
             lines,
         )
         md = "\n".join(lines)
-        self.assertIn("generate-executor: `unknown`", md)
+        self.assertNotIn("generate-executor", md)
         self.assertNotIn("legacy/agentic run", md)
-        self.assertNotIn("unrecognized executor value", md)  # absent != invalid
+        self.assertNotIn("unrecognized generate_executor value", md)  # absent != invalid
 
     def test_render_legacy_notes_no_pure_node(self) -> None:
         lines: list[str] = []
@@ -1562,6 +1563,30 @@ class PureJudgeAbRollupTests(unittest.TestCase):
     def test_a_launched_judge_with_no_record_leaves_no_row(self) -> None:
         summary, _ = self._rollup(request=self._REQUEST, meta=None)
         self.assertEqual(summary["pure_validate_nodes"], [])
+
+    def test_a_workshop_judge_run_reports_its_lineage_and_wall_clock(self) -> None:
+        """Issue #534 step 3: a workshop `validate.judge` writes the same `judge_meta.json`;
+        dropping it from the discovery would make the judge vanish from the A/B section. Its
+        row carries the lineage, the model turns and the summed `leaf_wall_s`."""
+        meta = dict(self._META, leaf_mode="workshop", per_attempt=[
+            dict(self._META["per_attempt"][0], lineage_id="c1", warm=False, model_turns=9,
+                 items_completed=None, wrapper_calls=0, ended_by=None, leaf_wall_s=61.5),
+            dict(self._META["per_attempt"][0], agent_run_id="c2", lineage_id="c1", warm=True,
+                 model_turns=3, items_completed=None, wrapper_calls=0, ended_by=None,
+                 leaf_wall_s=10.25)])
+        summary, rendered = self._rollup(
+            request=dict(self._REQUEST, leaf_mode="workshop"), meta=meta)
+        row = summary["pure_validate_nodes"][0]["judge"]
+        self.assertEqual((row["leaf_mode"], row["lineages"], row["model_turns"],
+                          row["wrapper_calls"], row["leaf_wall_s"]),
+                         ("workshop", ["c1"], 12, 0, 71.75))
+        self.assertIn("workshop leaf — lineages 1 (`c1`), wrapper calls 0, model turns 12",
+                      rendered)
+        self.assertIn("leaf wall 71.75 s", rendered)
+        # A pure row from before the field reports no wall clock rather than a 0.
+        summary, rendered = self._rollup(request=self._REQUEST, meta=self._META)
+        self.assertIsNone(summary["pure_validate_nodes"][0]["judge"]["leaf_wall_s"])
+        self.assertNotIn("leaf wall", rendered)
 
 
 class ScriptPathDanglingLaunchWitnessTests(unittest.TestCase):

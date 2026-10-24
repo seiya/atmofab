@@ -1293,19 +1293,62 @@ class WorkshopEntryTests(_Tmp):
                 entry = cfg.entry_for(pair.split(":")[0], "generate")
                 self.assertEqual((entry.provider, entry.is_workshop), ("codex_cli", True))
 
-    def test_a_workshop_entry_is_admissible_on_the_two_producing_substeps_only(self) -> None:
-        for pair in ("generate: {substeps: {verify", "validate: {substeps: {judge",
-                     "compile: {substeps: {verify"):
-            with self.subTest(pair=pair):
-                self.assert_rule("llm_config_workshop_substep_inadmissible",
-                                 self._gen(f"leaf: workshop, {self.BOUNDS}", pair))
-        # Issue #534 step 2: `compile.generate` joins `generate.generate`.
+    READING = "lineage_timeout_s: 2700"
+
+    def test_a_workshop_entry_is_admissible_on_every_llm_substep(self) -> None:
+        """Issue #534 step 3: the three judging substeps join the two producing ones, so every
+        LLM substep admits a workshop entry; each kind with the bounds it is served."""
+        self.assertEqual(lc.WORKSHOP_LEAF_SUBSTEPS, lc.LLM_LEAF_SUBSTEPS)
         for pair in ("generate: {substeps: {generate", "compile: {substeps: {generate"):
             with self.subTest(admitted=pair):
                 cfg = lc.load_llm_config(self.write(
                     self._gen(f"leaf: workshop, {self.BOUNDS}", pair)))
                 phase = pair.split(":")[0]
                 self.assertTrue(cfg.entry_for(phase, "generate").is_workshop)
+        for pair in ("generate: {substeps: {verify", "validate: {substeps: {judge",
+                     "compile: {substeps: {verify"):
+            with self.subTest(admitted=pair):
+                phase, substep = pair.split(":")[0], pair.rsplit("{", 1)[1]
+                entry = lc.load_llm_config(self.write(
+                    self._gen(f"leaf: workshop, {self.READING}", pair))).entry_for(
+                        phase, substep)
+                self.assertTrue(entry.is_workshop)
+                self.assertEqual((entry.max_wrapper_calls, entry.lineage_timeout_s),
+                                 (None, 2700.0))
+
+    def test_the_substep_rule_still_refuses_a_pair_no_workshop_leaf_serves(self) -> None:
+        """Every LLM substep admits a workshop entry now and a deterministic one cannot be
+        configured at all (`llm_config_unknown_substep`), so no file reaches this rule; it
+        stays as the backstop of `_validate_assignment`, driven directly."""
+        entry = lc.load_llm_config(self.write(self._gen(
+            f"leaf: workshop, {self.BOUNDS}"))).entry_for("generate", "generate")
+        with self.assertRaises(lc.LlmConfigError) as ctx:
+            lc._validate_assignment("generate", "gate", entry, "phases.generate.substeps.gate")
+        self.assertEqual(ctx.exception.rule, "llm_config_workshop_substep_inadmissible")
+
+    def test_a_judging_workshop_entry_is_served_no_wrapper_call_budget(self) -> None:
+        """A reading lineage is served no operation, so `max_wrapper_calls` there bounds
+        nothing and is refused; `lineage_timeout_s` is still required."""
+        for pair in ("generate: {substeps: {verify", "validate: {substeps: {judge",
+                     "compile: {substeps: {verify"):
+            with self.subTest(pair=pair):
+                self.assert_rule("llm_config_workshop_bound_not_served",
+                                 self._gen(f"leaf: workshop, {self.BOUNDS}", pair))
+                self.assert_rule("llm_config_workshop_bound_missing",
+                                 self._gen("leaf: workshop", pair))
+                self.assert_rule("llm_config_workshop_bound_missing",
+                                 self._gen("leaf: workshop, max_wrapper_calls: 3", pair))
+
+    def test_a_judging_workshop_entry_runs_on_a_measured_provider_only(self) -> None:
+        """The reading lineage's argv is measured on claude; codex's lands with PR-J2, and
+        until then a judging workshop entry on codex is refused at load, not at launch."""
+        self.assert_rule(
+            "llm_config_workshop_reading_unsupported_on_provider",
+            self._gen(f"provider: codex_cli, model: m, leaf: workshop, {self.READING}",
+                      "validate: {substeps: {judge"))
+        # The producing substeps run on codex as before.
+        lc.load_llm_config(self.write(self._gen(
+            f"provider: codex_cli, model: m, leaf: workshop, {self.BOUNDS}")))
 
     def test_a_workshop_entry_needs_a_provider_declaring_it(self) -> None:
         self.assert_rule(
@@ -1370,9 +1413,37 @@ class WorkshopEntryTests(_Tmp):
                 self.assertTrue(entry.is_workshop)
                 self.assertIsNotNone(entry.max_wrapper_calls)
 
+    def test_the_sample_reading_block_loads_on_each_judging_substep(self) -> None:
+        """The commented READING block (issue #534 step 3) is uncommented and loaded under each
+        judging substep, renamed as the sample says: a block that stops loading teaches a
+        refused configuration."""
+        text = (SAMPLE_DIR / "llm_claude.example.yaml").read_text(encoding="utf-8")
+        lines = text.splitlines()
+        start = lines.index("#       judge:")
+        block = []
+        for line in lines[start:]:
+            if not line.startswith("#       "):
+                break
+            block.append(line[len("#       "):].split("#", 1)[0].rstrip())
+        self.assertIn("  leaf: workshop", block)
+        self.assertNotIn("max_wrapper_calls", "\n".join(block))
+        for phase, substep in sorted(lc.WORKSHOP_READING_SUBSTEPS):
+            with self.subTest(pair=f"{phase}.{substep}"):
+                renamed = [f"{substep}:"] + block[1:]
+                body = (self.BASE + f"phases:\n  {phase}:\n    substeps:\n"
+                        + "\n".join("      " + line for line in renamed) + "\n")
+                entry = lc.load_llm_config(self.write(body)).entry_for(phase, substep)
+                self.assertTrue(entry.is_workshop)
+                self.assertIsNone(entry.max_wrapper_calls)
+                self.assertIsNotNone(entry.lineage_timeout_s)
+
     def test_the_workshop_pairs_match_the_launch_validator(self) -> None:
         from tools import pure_leaf
         self.assertEqual(lc.WORKSHOP_LEAF_SUBSTEPS, pure_leaf.WORKSHOP_LAUNCH_PAIRS)
+        self.assertEqual(lc.WORKSHOP_PRODUCING_SUBSTEPS, pure_leaf.WORKSHOP_PRODUCING_PAIRS)
+        self.assertEqual(lc.WORKSHOP_READING_SUBSTEPS, pure_leaf.WORKSHOP_READING_PAIRS)
+        self.assertEqual(lc.WORKSHOP_READING_PROVIDERS,
+                         frozenset(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT))
         self.assertEqual(lc.LEAF_WORKSHOP, pure_leaf.WORKSHOP_LEAF_MODE)
         self.assertEqual(lc.LEAF_PURE, pure_leaf.PURE_LEAF_MODE)
 

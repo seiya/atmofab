@@ -660,6 +660,32 @@ _WORKSHOP_PROFILE_HOME_ENV: dict[str, str] = {"claude": "CLAUDE_CONFIG_DIR", "co
 _WORKSHOP_PROVIDER_FAMILY: dict[str, str] = {"claude_cli": "claude", "codex_cli": "codex"}
 
 
+#: The launch-response fields a workshop launch records the wrapper's endpoint under
+#: (`Conductor._launch_setting_surface`), one per CLI family.
+_WORKSHOP_ENDPOINT_RESPONSE_FIELDS: tuple[str, ...] = ("claude_mcp_config", "codex_mcp_config")
+
+
+def _workshop_endpoint_violations(request: dict, response: dict) -> list[str]:
+    """What is wrong with the endpoint a persisted workshop launch names (issue #534 step 3): a
+    READING launch — a judging pair (`pure_leaf.WORKSHOP_READING_PAIRS`) — is served no wrapper
+    operation, so its response names no endpoint; a PRODUCING launch is served its operations
+    over one, so its response names one. The kind is the request's pair, never a field of the
+    response."""
+    from tools.pure_leaf import is_workshop_reading_pair
+    named = [f for f in _WORKSHOP_ENDPOINT_RESPONSE_FIELDS if response.get(f)]
+    if is_workshop_reading_pair(request.get("step"), request.get("substep")):
+        if named:
+            return [(f"workshop reading launch ({request.get('step')}."
+                     f"{request.get('substep')}) must name no wrapper endpoint (got "
+                     f"{', '.join(named)})")]
+        return []
+    if not named:
+        return [(f"workshop producing launch ({request.get('step')}."
+                 f"{request.get('substep')}) must name its wrapper endpoint "
+                 "(claude_mcp_config / codex_mcp_config)")]
+    return []
+
+
 def _workshop_profile_violations(profile: dict, request: dict | None = None,
                                  repo_root: Path | None = None) -> list[str]:
     """What is wrong with a persisted workshop leaf's sandbox profile (issue #534): it must be
@@ -8196,6 +8222,19 @@ def _validate_orchestration_hierarchy(
                                                 if isinstance(req_payload_for_launch, dict)
                                                 else {},
                                                 workspace_path.parent))
+                                        # The KIND the pair is decides whether the launch was
+                                        # served the wrapper's endpoint (issue #534 step 3): a
+                                        # producing record names one, a reading record (a
+                                        # judging substep) names none.
+                                        violations.extend(
+                                            f"{runs_path}:line {idx + 1} {why}"
+                                            for why in _workshop_endpoint_violations(
+                                                req_payload_for_launch
+                                                if isinstance(req_payload_for_launch, dict)
+                                                else {},
+                                                resp_payload_for_launch
+                                                if isinstance(resp_payload_for_launch, dict)
+                                                else {}))
                                     else:
                                         if sbx_doc.get("readonly") is not True:
                                             violations.append(

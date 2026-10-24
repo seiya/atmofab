@@ -701,7 +701,11 @@ class SeedTests(_Base):
 
 _TEMPLATES = ("workshop_generate_generate.txt", "workshop_generate_generate_harness.txt",
               "workshop_bundle_repair.txt", "workshop_compile_generate.txt",
-              "workshop_ir_repair.txt")
+              "workshop_ir_repair.txt",
+              # Step 3: the reading kind's templates (the judging substeps).
+              "workshop_compile_verify.txt", "workshop_generate_verify.txt",
+              "workshop_generate_verify_harness.txt", "workshop_validate_judge.txt",
+              "workshop_verdict_repair.txt")
 _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
 
 #: `WORKSHOP_PROMPT_CONTRACT_VERSION` -> sha256 over the workshop templates,
@@ -715,6 +719,9 @@ _WORKSHOP_CONTRACT_DIGESTS = {
     # Step 2 PR-2: the `codex_cli` row of `WORKSHOP_TOOL_SURFACE_TEXT` (`workshop-2` shipped
     # with step 2 PR-1, main 7cfbe1b5).
     "workshop-3": "1aee42ef7d0c2df40921cec4baecf3ab10af42c3386dfda58520b265b7b6ab4c",
+    # Step 3 PR-J1: the reading kind — five templates, its system prompt and tool surface
+    # (`workshop-3` shipped with step 2 PR-2, main ca41247f).
+    "workshop-4": "8ba308dfba092acb4b393accfc9db598cd40176b4e13d3657138e96461f0f2ac",
 }
 
 
@@ -724,6 +731,10 @@ def _workshop_digest() -> str:
         h.update(name.encode() + b"\0" + (_DIR / name).read_bytes() + b"\0")
     h.update(pure_leaf.WORKSHOP_SYSTEM_PROMPT.encode("utf-8"))
     h.update(json.dumps(pure_leaf.WORKSHOP_TOOL_SURFACE_TEXT, sort_keys=True).encode("utf-8"))
+    # Step 3: the reading kind's system prompt and tool surface (`workshop-4` onward).
+    h.update(pure_leaf.WORKSHOP_READER_SYSTEM_PROMPT.encode("utf-8"))
+    h.update(json.dumps(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT,
+                        sort_keys=True).encode("utf-8"))
     return h.hexdigest()
 
 
@@ -1671,7 +1682,7 @@ class WorkshopSpecTests(_Base):
         default = self.c._pure_producer_spec("generate", "m3c")
         harness = self.c._pure_producer_spec("generate", "harness")
         fields = [f for f in wc.Conductor._PureProducerSpec._fields if f.startswith("workshop_")]
-        self.assertEqual(len(fields), 7)
+        self.assertEqual(len(fields), 8)
         for name in fields:
             with self.subTest(field=name):
                 self.assertEqual(getattr(harness, name), getattr(default, name))

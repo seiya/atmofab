@@ -633,8 +633,8 @@ def _pure_ir_dirs_of(
 
 
 def _pure_run_node_dirs_of(repo_root: Path, orchestration_id: str) -> list[str]:
-    """Every repo-relative run-node directory this orchestration launched a PURE `validate`
-    leaf into, in sorted order (Z3, issue #169).
+    """Every repo-relative run-node directory this orchestration launched a PURE or WORKSHOP
+    `validate` leaf into, in sorted order (Z3, issue #169; issue #534 step 3).
 
     Discovered from the persisted launch requests for the same reason `_pure_ir_dirs_of` is:
     one row per attempt, never rewritten. A `validate` request carries `pipeline_ref` and
@@ -654,7 +654,9 @@ def _pure_run_node_dirs_of(repo_root: Path, orchestration_id: str) -> list[str]:
         row = _load_json_if_dict(path) or {}
         if _clean_str(row.get("step")) != "validate":
             continue
-        if _clean_str(row.get("leaf_mode")) != "pure":
+        # A workshop `validate.judge` (issue #534 step 3) writes the same `judge_meta.json`
+        # into the same run node, and a judge it drops would vanish from the A/B section.
+        if _clean_str(row.get("leaf_mode")) not in ("pure", "workshop"):
             continue
         pipeline_ref = _clean_str(row.get("pipeline_ref"))
         run_id = _clean_str(row.get("run_id"))
@@ -699,8 +701,8 @@ def _pure_leaf_keys_that_ran(repo_root: Path, orchestration_id: str) -> frozense
     for path in sorted(launches.glob("*.request.json")):
         row = _load_json_if_dict(path) or {}
         # A `workshop leaf` (issue #534) ran on its entry's provider just as a pure one did,
-        # and it is the leaf an A/B of the two models attributes. (The validate discovery
-        # above keeps `pure`: no workshop leaf serves that phase. The compile one admits both.)
+        # and it is the leaf an A/B of the two models attributes. (Both discoveries above
+        # admit it too: compile since step 2, validate since step 3.)
         if _clean_str(row.get("leaf_mode")) not in ("pure", "workshop"):
             continue
         step = _clean_str(row.get("step"))
@@ -1153,6 +1155,8 @@ def _render_pure_leaf_row(label: str, row: dict[str, Any], lines: list[str]) -> 
         lines.append(f"- `{label}`: no {label} meta recorded")
         return
     usage = row.get("usage_total") or {}
+    wall = row.get("leaf_wall_s")
+    wall_str = f", leaf wall {wall} s" if isinstance(wall, (int, float)) else ""
     # Collapse the per-attempt model list: a repair loop normally resolves the same
     # alias every turn, and joining it raw renders "model(s): m, m, m", which reads
     # as several distinct models (or as an attempt count). Distinct-in-order keeps
@@ -1203,7 +1207,7 @@ def _render_pure_leaf_row(label: str, row: dict[str, Any], lines: list[str]) -> 
         f"out {_fmt_tok(usage.get('output_tokens'))}, "
         f"cache_read {_fmt_tok(usage.get('cache_read_input_tokens'))}, "
         f"cache_creation {_fmt_tok(usage.get('cache_creation_input_tokens'))}, "
-        f"total {_fmt_tok(usage.get('total_tokens'))}{model_str}"
+        f"total {_fmt_tok(usage.get('total_tokens'))}{model_str}{wall_str}"
     )
 
 
@@ -1225,13 +1229,15 @@ def _render_pure_leaf_ab(summary: dict[str, Any] | None, lines: list[str]) -> No
     # An EXPLICIT flag from the collector, not "the version is blank": a uniform run whose
     # preflight recorded no version still reports `unrecorded` against its own backend.
     provider_differs = bool(summary.get("pure_leaf_provider_differs"))
-    lines.append(f"- generate-executor: `{executor}`")
-    # Report the recorded value verbatim (diagnostics say what IS recorded, not what
-    # should be) but flag an out-of-vocabulary one: the branches below key on the
+    # No `generate-executor:` header line (issue #534 step 3): the recorded value is the
+    # literal `pure` on every run since M-F whatever leaf model ran — a workshop run printed
+    # `pure` above workshop rows — and the per-substep rows below say which model ran. The
+    # value still selects the hint of a run with no pure node, so an out-of-vocabulary one is
+    # flagged, verbatim (diagnostics say what IS recorded): the branches below key on the
     # exact value, so an unrecognized executor must not be silently read as legacy.
     if recorded_executor and recorded_executor not in _KNOWN_GENERATE_EXECUTORS:
         lines.append(
-            f"  - ⚠ unrecognized executor value (expected one of "
+            f"- ⚠ unrecognized generate_executor value `{recorded_executor}` (expected one of "
             f"{', '.join(f'`{e}`' for e in _KNOWN_GENERATE_EXECUTORS)})"
         )
     # Label the version by the backend that was actually probed. `agent_version` is
@@ -1252,7 +1258,7 @@ def _render_pure_leaf_ab(summary: dict[str, Any] | None, lines: list[str]) -> No
     validate_nodes = summary.get("pure_validate_nodes") or []
     if not summary.get("available") or not (nodes or compile_nodes or validate_nodes):
         # Say which case this is. Under executor=pure, "legacy/agentic run" would
-        # contradict the executor line rendered directly above; under an unknown or
+        # contradict the recorded executor; under an unknown or
         # unrecognized executor we cannot claim either arm.
         reason = summary.get("reason")
         if executor == "pure":

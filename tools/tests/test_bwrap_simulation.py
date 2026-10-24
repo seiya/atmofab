@@ -1696,6 +1696,79 @@ class WorkshopLeafCliTests(unittest.TestCase):
 
 
 
+
+class ReadingWorkshopLeafCliTests(WorkshopLeafCliTests):
+    """UNBILLED (issue #534 step 3, MR1): the real claude CLI under a READING workshop leaf's
+    launch shape — the production argv (`Conductor.leaf_command(reading=True)`, no endpoint)
+    under the same writable lineage profile — against the scripted API stand-in. A judging
+    lineage is served no operation: the request lists the five file tools and no
+    `mcp__wrapper__*` tool, the reviewer's `Write` of its document lands in the tree, and the
+    snapshot carries that document and no seed. The inherited M rows run again under the
+    producing launch, unchanged."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        from tools import llm_config
+        cfg = self.repo.parent / "llm_reading.yaml"
+        cfg.write_text("defaults: {provider: claude_cli}\nphases: {validate: {substeps: "
+                       "{judge: {leaf: workshop, lineage_timeout_s: 600}}}}\n",
+                       encoding="utf-8")
+        self.reader = wc.Conductor(
+            repo_root=self.repo, orchestration_id=self.orch, orchestration_agent_run_id="ORCH",
+            llm_config=llm_config.load_llm_config(cfg), env={})
+        self.reader_entry = self.reader.entry_for("validate", "judge")
+
+    def _read_launch(self, api: _ScriptedApi, *, session: str) -> subprocess.CompletedProcess:
+        argv = self.reader.leaf_command(self.reader_entry, session_id=session, reading=True)
+        profile = build_readonly_bwrap_profile(
+            repo_root=self.repo, orchestration_id=self.orch, agent_run_id=session,
+            backend_command="claude", backend_type="claude",
+            **ort.claude_workshop_profile_kwargs(self.iso))
+        command = ["env", f"ANTHROPIC_BASE_URL={api.base_url}",
+                   "ANTHROPIC_API_KEY=atmofab-loopback", *argv]
+        return subprocess.run(render_bwrap_command(profile=profile, command_argv=command),
+                              input="Review the run.", capture_output=True, text=True,
+                              timeout=240, check=False)
+
+    def test_mr1_a_reading_lineage_writes_its_document_and_holds_no_wrapper(self) -> None:
+        from tools import workshop_tree
+        paths = workshop_tree.LineagePaths(
+            homes_root=Path(self.iso["homes_root"]), orchestration_id=self.orch,
+            lineage_id=self.lineage,
+            orchestration_dir=self.repo / "workspace" / "orchestrations" / self.orch)
+        paths.make_work_dirs()
+        workshop_tree.seed_tree(paths, {"tests.md": "# tests\n", "host_verdict.json": "{}\n"})
+        review = {"decision": "pass", "findings": []}
+        api = self._api([
+            ([{"type": "tool_use", "id": "toolu_1", "name": "Read",
+               "input": {"file_path": str(self.tree / "tests.md")}}], "tool_use"),
+            ([{"type": "tool_use", "id": "toolu_2", "name": "Write",
+               "input": {"file_path": str(self.tree / "review.json"),
+                         "content": json.dumps(review)}}], "tool_use"),
+            ([{"type": "tool_use", "id": "toolu_3", "name": "Write",
+               "input": {"file_path": str(self.tree / "tests.md"),
+                         "content": "# edited by the leaf\n"}}], "tool_use"),
+            ([{"type": "text", "text": "done"}], "end_turn")])
+        argv = self.reader.leaf_command(self.reader_entry, session_id="s", reading=True)
+        self.assertNotIn("--mcp-config", argv)
+        self.assertNotIn("--allowedTools", argv)
+        res = self._read_launch(api, session=str(uuid.uuid4()))
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual(json.loads(res.stdout)["permission_denials"], [])
+        tools = {t["name"] for t in api.main_requests()[0]["tools"]}
+        self.assertTrue({"Read", "Write", "Edit", "Glob", "Grep"} <= tools, tools)
+        self.assertFalse({t for t in tools if t.startswith("mcp__")}, tools)
+        self.assertFalse(tools & {"Bash", "WebFetch"}, tools)
+        self.assertIn("# tests", json.dumps(api.tool_results()[0]))
+        # The document landed; the snapshot carries it and not the seed the leaf edited.
+        host_placed = workshop_tree.reserved_tree_names(
+            ("tests.md", "host_verdict.json"), None, ("review.json",)) - {"review.json"}
+        workshop_tree.snapshot_tree(paths, host_placed)
+        self.assertEqual(sorted(p.name for p in paths.snapshot.iterdir()), ["review.json"])
+        self.assertEqual(
+            workshop_tree.assemble_document_file(paths.snapshot, "review.json", "x"), review)
+
+
 class _ScriptedResponsesApi:
     """An OpenAI Responses API stand-in that answers with a SCRIPT, streamed as codex reads it.
 

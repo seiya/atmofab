@@ -97,8 +97,10 @@ try:
         WORKSHOP_LEAF_MODE,
         WORKSHOP_PROMPT_CONTRACT_VERSION,
         WORKSHOP_PROMPT_SENTINEL,
+        WORKSHOP_READER_TOOL_SURFACE_TEXT,
         WORKSHOP_TOOL_SURFACE_TEXT,
         is_host_rendered_request as _pure_leaf_is_host_rendered_request,
+        is_workshop_reading_pair as _pure_leaf_is_workshop_reading_pair,
         is_pure_request as _pure_leaf_is_pure_request,
         is_workshop_request as _pure_leaf_is_workshop_request,
     )
@@ -145,8 +147,10 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         WORKSHOP_LEAF_MODE,
         WORKSHOP_PROMPT_CONTRACT_VERSION,
         WORKSHOP_PROMPT_SENTINEL,
+        WORKSHOP_READER_TOOL_SURFACE_TEXT,
         WORKSHOP_TOOL_SURFACE_TEXT,
         is_host_rendered_request as _pure_leaf_is_host_rendered_request,
+        is_workshop_reading_pair as _pure_leaf_is_workshop_reading_pair,
         is_pure_request as _pure_leaf_is_pure_request,
         is_workshop_request as _pure_leaf_is_workshop_request,
     )
@@ -9358,6 +9362,15 @@ _PROMPT_TEMPLATE_FILES = {
     # (the part split of issue #526 is a pure entry's), and has its own repair turn.
     "workshop compile.generate": "workshop_compile_generate.txt",
     "workshop ir repair": "workshop_ir_repair.txt",
+    # Step 3: the three judging substeps as READING workshop leaves (under A/B). The judge's
+    # rules and output contract verbatim, each document a seed file of its tree, and one output
+    # document at the tree root in place of the one-reply instruction. One repair turn for the
+    # three, as the pure verdict pairs share one.
+    "workshop compile.verify": "workshop_compile_verify.txt",
+    "workshop generate.verify": "workshop_generate_verify.txt",
+    "workshop generate.verify.harness": "workshop_generate_verify_harness.txt",
+    "workshop validate.judge": "workshop_validate_judge.txt",
+    "workshop verdict repair": "workshop_verdict_repair.txt",
     # The escalate diagnostician: one template, four (step, substep) keys, because the pair is
     # what the renderer looks up and the prompt does not vary with the failed phase (the phase
     # is a field of the diagnosis document).
@@ -10153,11 +10166,12 @@ def _render_pure_launch_prompt(request_payload: dict[str, Any]) -> str:
         # row, for the reason a missing template is one above: the render runs before
         # `_validate_pure_launch_request_payload`, which refuses the same request.
         provider = request_payload.get("workshop_provider")
-        if not (isinstance(provider, str) and provider in WORKSHOP_TOOL_SURFACE_TEXT):
+        surface = _workshop_tool_surface_table(request_payload)
+        if not (isinstance(provider, str) and provider in surface):
             raise ValueError(
                 f"workshop launch request must name its provider in workshop_provider, one of "
-                f"{', '.join(sorted(WORKSHOP_TOOL_SURFACE_TEXT))}; got {provider!r}")
-        subs["tool_surface"] = WORKSHOP_TOOL_SURFACE_TEXT[provider]
+                f"{', '.join(sorted(surface))}; got {provider!r}")
+        subs["tool_surface"] = surface[provider]
     return _substitute_pure_placeholders(template, subs)
 
 
@@ -10211,11 +10225,26 @@ def _pure_launch_body(request_payload: dict[str, Any]) -> str:
     return body.strip()
 
 
+def _workshop_tool_surface_table(request_payload: dict[str, Any]) -> dict[str, str]:
+    """The `<tool_surface>` table a workshop request is rendered and validated against, by the
+    KIND its pair is: a judging pair's reading lineage holds no wrapper
+    (`WORKSHOP_READER_TOOL_SURFACE_TEXT`), a producing pair's does (`WORKSHOP_TOOL_SURFACE_TEXT`).
+    Both are keyed by provider."""
+    if _pure_leaf_is_workshop_reading_pair(request_payload.get("step"),
+                                           request_payload.get("substep")):
+        return WORKSHOP_READER_TOOL_SURFACE_TEXT
+    return WORKSHOP_TOOL_SURFACE_TEXT
+
+
 def _pure_repair_template_name(request_payload: dict[str, Any]) -> str:
     """The template key of a host-rendered repair turn. A workshop producer's repair turn is its
-    substep's — the IR's on `compile`, the bundle's otherwise (issue #534 step 2); a pure one
-    has one template for every producer and reviewer."""
+    substep's — the IR's on `compile`, the bundle's otherwise (issue #534 step 2), and a
+    workshop REVIEWER's is the verdict repair whatever its step (step 3); a pure one has one
+    template for every producer and reviewer."""
     if _pure_leaf_is_workshop_request(request_payload):
+        if _pure_leaf_is_workshop_reading_pair(request_payload.get("step"),
+                                               request_payload.get("substep")):
+            return "workshop verdict repair"
         if str(request_payload.get("step", "")).strip().lower() == "compile":
             return "workshop ir repair"
         return "workshop bundle repair"
@@ -11247,12 +11276,14 @@ def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> No
                 "workshop launch request must name its lineage in workshop_lineage_id (a plain "
                 f"[A-Za-z0-9_-] token: the agent_run_id of the lineage's cold launch); got "
                 f"{lineage!r}")
-        # The provider whose tool surface the prompt states (`<tool_surface>`): one with a row.
+        # The provider whose tool surface the prompt states (`<tool_surface>`): one with a row
+        # in the table of the request's KIND (a reading lineage's table names fewer providers).
         provider = request_payload.get("workshop_provider")
-        if not (isinstance(provider, str) and provider in WORKSHOP_TOOL_SURFACE_TEXT):
+        surface = _workshop_tool_surface_table(request_payload)
+        if not (isinstance(provider, str) and provider in surface):
             raise ValueError(
                 f"workshop launch request must name its provider in workshop_provider, one of "
-                f"{', '.join(sorted(WORKSHOP_TOOL_SURFACE_TEXT))}; got {provider!r}")
+                f"{', '.join(sorted(surface))}; got {provider!r}")
     elif lineage is not None:
         raise ValueError(
             f"launch request carries workshop_lineage_id={lineage!r} and is not a workshop "
