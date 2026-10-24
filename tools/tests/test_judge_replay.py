@@ -360,7 +360,7 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
             self.assertEqual((tree / name).read_text(encoding="utf-8"), expected[key], key)
         self.assertEqual(row["cli_versions"], ["9.9.9"])
         self.assertEqual(row["coverage"]["tests.md"],
-                         {"lines": 5, "covered": 5, "fraction": 1.0})
+                         {"lines": 5, "covered": 5, "fraction": 1.0, "ranges": [[1, 5]]})
         self.assertEqual(row["coverage"]["host_verdict.json"]["covered"], 0)
         self.assertNotIn("prompt_matches_record", row)
 
@@ -619,9 +619,10 @@ class ReadCoverageTests(unittest.TestCase):
         self.assertEqual(out["cli_versions"], ["2.1.310"])
         self.assertEqual(out["coverage"]["spec.ir.yaml"],
                          {"lines": 100, "covered": len(covered),
-                          "fraction": round(len(covered) / 100, 4)})
+                          "fraction": round(len(covered) / 100, 4),
+                          "ranges": [[1, 30], [39, 41], [60, 69], [90, 90]]})
         self.assertEqual(out["coverage"]["tests.md"],
-                         {"lines": 4, "covered": 1, "fraction": 0.25})
+                         {"lines": 4, "covered": 1, "fraction": 0.25, "ranges": [[2, 2]]})
         # The oversize Read errored: no read, not an unmeasured one.
         self.assertEqual(out["coverage"]["host_verdict.json"]["covered"], 0)
 

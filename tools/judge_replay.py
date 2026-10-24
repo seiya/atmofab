@@ -48,7 +48,14 @@ and `failure_category`); `attempts` (the reviewer's `per_attempt` rows); `schema
 `cost_usd`, `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`,
 `output_tokens`, `leaf_wall_s`, `duration_ms` (claude envelope) and `model_turns`; on the pure
 arm of a pure record `prompt_matches_record` (null on a mutated row); on the workshop arm
-`cli_versions` and `coverage` (below).
+`cli_versions` and `coverage` (below): per seed `lines`, `covered`, `fraction` and `ranges`, the
+covered lines as `[first, last]` runs — what the deep row's "was the defect's span read" is
+checked against. A seeded defect in `bundle_document` lands in the expanded file named by its
+`logical_path`, so its span is that file's lines in the lineage's tree, not the document's.
+
+Configuration: `--leaf` must agree with the configuration's entry for the substep, so the two
+arms of one A/B row take two files — the A/B's `llm.yaml` (workshop on the judging substeps)
+and a copy with those substeps' `leaf: workshop` / `lineage_timeout_s` removed.
 
 `--check` creates the orchestration and answers, without launching, whether a launch of this
 row would pass the two launch gates that depend on the workspace rather than on the request:
@@ -591,8 +598,21 @@ def read_coverage(transcripts: Iterable[Path], tree_roots: Iterable[str],
         total = _line_count(text)
         lines = {n for n in covered[name] if 1 <= n <= total}
         per_seed[name] = {"lines": total, "covered": len(lines),
-                          "fraction": (round(len(lines) / total, 4) if total else None)}
+                          "fraction": (round(len(lines) / total, 4) if total else None),
+                          "ranges": _ranges(lines)}
     out["coverage"] = per_seed
+    return out
+
+
+def _ranges(lines: set[int]) -> list[list[int]]:
+    """The covered line numbers as inclusive `[first, last]` runs, so a defect's span can be
+    checked against them (`all(any(a <= n <= b for a, b in ranges) for n in span)`)."""
+    out: list[list[int]] = []
+    for n in sorted(lines):
+        if out and n == out[-1][1] + 1:
+            out[-1][1] = n
+        else:
+            out.append([n, n])
     return out
 
 
