@@ -655,6 +655,25 @@ class CodexWarmUsageTests(unittest.TestCase):
         self.assertIsNone(self.c._codex_thread_resumed_usage("t9", "child-3"))
         self.assertEqual(self.c._codex_warm_resumed("t9", "child-3"), ("(none)", None))
 
+    def test_an_unreadable_record_is_a_missing_total_never_a_raise(self) -> None:
+        """`_codex_thread_resumed_usage` never raises out of a launch: a corrupt stored total is
+        no total (the row becomes `unavailable`), and an unreadable session index is no
+        resumed launch."""
+        from tools.orchestration_runtime import _session_run_index_path
+        index = _session_run_index_path(self.repo, "o")
+        index.parent.mkdir(parents=True, exist_ok=True)
+        index.write_text(json.dumps({"entries": [
+            {"agent_run_id": "child-1", "agent_session_id": "t1"},
+            {"agent_run_id": "child-2", "agent_session_id": "t1"}]}))
+        dialogs = self.c._dialogs_dir("child-1")
+        dialogs.mkdir(parents=True)
+        (dialogs / "leaf.turn_usage.json").write_text("{not json")
+        self.assertEqual(self.c._codex_thread_resumed_usage("t1", "child-2"),
+                         ("child-1", None))
+        with mock.patch("tools.orchestration_runtime._read_session_run_index_consistent",
+                        side_effect=OSError("locked")):
+            self.assertIsNone(self.c._codex_thread_resumed_usage("t1", "child-2"))
+
     def test_a_warm_pure_codex_turn_records_its_own_usage(self) -> None:
         """Through `_spawn_pure_turn`, the transport every pure codex repair turn takes."""
         from tools.tests.test_pure_leaf_wiring import _pure_request
