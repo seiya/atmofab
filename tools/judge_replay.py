@@ -47,7 +47,10 @@ Each `replay_result.json` row: the head (`replay_orchestration_id`, `source_*`, 
 and `failure_category`); `attempts` (the reviewer's `per_attempt` rows); `schema_repairs`
 (turns launched because the previous document was refused); the sums over the attempts of
 `cost_usd`, `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`,
-`output_tokens`, `leaf_wall_s`, `duration_ms` (claude envelope) and `model_turns`; on the pure
+`output_tokens`, `leaf_wall_s`, `duration_ms` (claude envelope) and `model_turns`, each over the
+attempts that recorded it, with `usage_unrecorded_attempts` counting the attempts whose usage
+was not recorded (a launch a bound killed leaves no envelope: the cost sums are then a lower
+bound); on the pure
 arm of a pure record `prompt_matches_record` (null on a mutated row); on the workshop arm
 `cli_versions` and `coverage` (below): per seed `lines`, `covered`, `fraction` and `ranges`, the
 covered lines as `[first, last]` runs — what the deep row's "was the defect's span read" is
@@ -708,6 +711,11 @@ def run_repetition(conductor: Any, repo_root: Path, source: SourceLaunch, refs: 
                               if before.get("failure_category")
                               and before.get("failure_category") != "pure_transport"),
         "cost_usd": _sum((a.get("usage") or {}).get("cost_usd") for a in attempts),
+        # An attempt a bound killed has no envelope, so no usage: the sums below leave it out,
+        # and this says how many they left out (the sums are then a lower bound).
+        "usage_unrecorded_attempts": sum(
+            1 for a in attempts
+            if not isinstance((a.get("usage") or {}).get("cost_usd"), (int, float))),
         **{name: _sum((a.get("usage") or {}).get(name) for a in attempts)
            for name in ("input_tokens", "cache_creation_input_tokens",
                         "cache_read_input_tokens", "output_tokens")},

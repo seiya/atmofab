@@ -122,9 +122,9 @@ class _Leaf:
                     "session_id": sid, "num_turns": 1, "duration_ms": 10,
                     "total_cost_usd": 0.25,
                     "usage": {"input_tokens": 1, "output_tokens": 2,
-                              "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                              "cache_creation_input_tokens": 0, "cache_read_input_tokens": 3},
                     "modelUsage": {"claude-opus-5-5": {
-                        "inputTokens": 1, "outputTokens": 2, "cacheReadInputTokens": 0,
+                        "inputTokens": 1, "outputTokens": 2, "cacheReadInputTokens": 3,
                         "cacheCreationInputTokens": 0}}}
         if entry is not None and entry.is_workshop:
             home = self.homes / conductor.orchestration_id / "claude" / sid
@@ -305,8 +305,11 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
             self.assertEqual(row["label"], "agreement")
             # The scripted envelope's figures, summed over the one attempt.
             self.assertEqual((row["duration_ms"], row["model_turns"], row["input_tokens"],
-                              row["output_tokens"], row["schema_repairs"], row["cost_usd"]),
-                             (10.0, 1.0, 1.0, 2.0, 0, 0.25))
+                              row["output_tokens"], row["cache_read_input_tokens"],
+                              row["schema_repairs"], row["cost_usd"],
+                              row["usage_unrecorded_attempts"]),
+                             (10.0, 1.0, 1.0, 2.0, 3.0, 0, 0.25, 0))
+            self.assertIsInstance(row["leaf_wall_s"], float)
         first = rows[0]["attempts"][0]["agent_run_id"]
         replayed = (replay / "launches" / f"{first}.prompt.txt").read_text(encoding="utf-8")
         self.assertNotEqual(replayed, self.source_prompt)       # the identity differs ...
@@ -335,6 +338,9 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         [row] = self._rows(self._replays()[0])
         self.assertEqual((row["status"], row["document"]), ("fail", None))
         self.assertEqual(len(row["attempts"]), MAX_BUNDLE_REPAIR_TURNS + 1)
+        # The scripted envelope carries no usage: every attempt is unrecorded, no sum is made.
+        self.assertEqual((row["usage_unrecorded_attempts"], row["cost_usd"]),
+                         (MAX_BUNDLE_REPAIR_TURNS + 1, None))
         self.assertEqual(row["schema_repairs"], MAX_BUNDLE_REPAIR_TURNS)
 
     def test_a_workshop_record_is_not_compared_with_a_pure_prompt(self) -> None:
@@ -410,6 +416,10 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         lineages = [a["lineage_id"] for a in row["attempts"]]
         self.assertEqual(len(set(lineages)), 2, row["attempts"])
         self.assertEqual(row["schema_repairs"], 1)
+        # Both attempts recorded their usage, and the sums are over both.
+        self.assertEqual((row["usage_unrecorded_attempts"], row["cost_usd"],
+                          row["output_tokens"]), (0, 0.5, 4.0))
+        self.assertGreater(row["leaf_wall_s"], 0)
         self.assertEqual(row["coverage"]["io_contract.yaml"]["covered"], 5)
         self.assertEqual(row["coverage"]["tests.md"]["covered"], 5)
 
