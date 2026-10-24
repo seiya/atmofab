@@ -452,6 +452,36 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual(json.loads(out)["reason"], "judge_replay_mutation_unknown_key")
         self.assertEqual(self._replays(), [])
 
+    def test_check_answers_the_downstream_gate(self) -> None:
+        (self.repo / self.node_refs.run_node_dir() / "diagnostics.json").unlink()
+        rc, out = self._main("--check")
+        check = json.loads(out.strip().splitlines()[-1])["check"]
+        self.assertEqual((rc, check["dependency_ready"], check["downstream_ready"]),
+                         (1, True, False))
+        self.assertIn("diagnostics.json", check["downstream_reason"])
+
+    def test_refusals_before_any_orchestration(self) -> None:
+        # A prefix naming two launches.
+        launches = self.repo / "workspace/orchestrations" / _SRC / "launches"
+        (launches / "11111111-ffff.request.json").write_text("{}", encoding="utf-8")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = jr.main([_SRC, "11111111", "--leaf", "pure", "--llm-config",
+                          str(self.pure_cfg), "--repo-root", str(self.repo)])
+        self.assertEqual((rc, json.loads(out.getvalue())["reason"]),
+                         (2, "judge_replay_source_ambiguous"))
+        # A repeat count below one.
+        rc, out = self._main("--repeat", "0")
+        self.assertEqual((rc, json.loads(out)["reason"]), (2, "judge_replay_repeat_invalid"))
+        # A source whose spec_ref now resolves to another node (its version moved).
+        meta_path = self.repo / "workspace/orchestrations" / _SRC / "orchestration_meta.json"
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        meta_path.write_text(json.dumps({**meta, "spec_ref": spec_ref_of(_DEP)}),
+                             encoding="utf-8")
+        rc, out = self._main()
+        self.assertEqual((rc, json.loads(out)["reason"]), (2, "judge_replay_spec_unresolved"))
+        self.assertEqual(self._replays(), [])
+
     def test_the_leaf_must_be_the_configurations(self) -> None:
         rc, out = self._main(cfg=self.pure_cfg, leaf="workshop")
         self.assertEqual((rc, json.loads(out)["reason"]), (2, "judge_replay_leaf_mismatch"))
