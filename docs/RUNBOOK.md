@@ -277,16 +277,6 @@ home is prepared (the conductor's workshop loop prepares a cold lineage's home b
 records the launch, and the substep then fails closed as `workshop_lineage_setup_failed`, §3; a
 warm one is located inside `record-launch`).
 
-A `leaf: workshop` entry on `codex_cli` (issue #534 step 2 PR-2) takes
-`codex_workshop_flag_set_available` instead: `codex exec --help` names
-`CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS` (`--model`, `--sandbox`, `--config`, `--json`,
-`--skip-git-repo-check`, `--ignore-rules`) as option lines and lists the `workspace-write`
-sandbox mode, and `codex mcp add --help` names `--url` (the streamable-HTTP route the wrapper's
-endpoint takes). The `--config` keys the workshop argv sets (`pure_leaf.codex_workshop_overrides`)
-are not in any help text; the unbilled CLI rows pin them. Each CLI's workshop surface takes its
-own CLI's row and not the other's. A codex workshop leaf reads the operator's `auth.json` through
-a read-only bind, as a pure codex leaf does.
-
 Everything else this section required went with the agentic leaf in Z4
 ([issue #171](https://github.com/seiya/atmofab/issues/171)), and each is named here because an
 operator who set it up will find it no longer checked:
@@ -330,6 +320,8 @@ When any leaf runs on the `codex_cli` provider (preflight `--backend codex`), th
 - **The credential must exist — and NOTHING CHECKS IT AT PREFLIGHT.** `~/.codex/auth.json` (or the `CODEX_HOME` relocation of it) is bound read-only into each isolated lineage home. Its absence is refused by `_prepare_codex_workflow_home`, which runs when the FIRST codex leaf is prepared, so a missing credential terminalizes part-way into a billed run rather than at the gate. There is no `auth`-named entry in the check set. Run the CLI's own login once before the first run; the failure it prevents is the one the rest of this section is gated to avoid.
 
 - **The state home must be writable.** `checks.codex_home_writable.pass` resolves `CODEX_HOME`, else the deprecated `ATMOFAB_HOME`, else `~/.codex`, and requires the directory (or its parent, when it does not exist yet) to be writable. `CODEX_HOME` and `ATMOFAB_HOME` set to different paths is a refusal rather than a precedence rule.
+
+- **A `leaf: workshop` entry on `codex_cli` takes one more row** ([issue #534](https://github.com/seiya/atmofab/issues/534) step 2 PR-2; `docs/ORCHESTRATION.md` §workshop leaf): `codex_workshop_flag_set_available`, AND-ed into that provider row's `launchable` and kept by the TTL re-probe through the surface's recorded `workshop: true`, as the claude workshop row is (§0-2). It requires `codex exec --help` to name `CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS` (`--model`, `--sandbox`, `--config`, `--json`, `--skip-git-repo-check`, `--ignore-rules`) as option lines and to list `workspace-write` among the possible values of `--sandbox`, and `codex mcp add --help` to name `--url` (the streamable-HTTP route the wrapper's endpoint takes). The `--config` keys the workshop argv sets (`pure_leaf.codex_workshop_overrides`) are in no help text; the unbilled CLI rows pin them. Each CLI's workshop surface takes its own CLI's row and not the other's. A codex workshop leaf reads `auth.json` through the same read-only bind as a pure codex leaf, into its lineage's own `CODEX_HOME`.
 
 - **The prompt-on-stdin contract must hold.** `checks.codex_prompt_stdin.pass` requires `codex exec --help` and `codex exec resume --help` to document the `-` stdin sentinel. A failure means the installed build no longer accepts a prompt on stdin; install one that does, and do not move the prompt back onto argv — see §1-3.
 
