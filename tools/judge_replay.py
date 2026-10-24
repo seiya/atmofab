@@ -32,14 +32,22 @@ document in memory. Its only result is `<replay dir>/replay_result.json`, one JS
 repetition; no audit or node-directory discovery reads a replay (`tools/audit_orchestration.py`
 must not be run on one: it composes the SOURCE run's directories from the recorded requests).
 
-Refusals (exit 2, nothing launched, no orchestration created): a pair other than the three
-judging ones; a request with no `pure_context` (a warm repair turn: replay its cold launch);
-a context whose key set is not the CURRENT one; a `--mutate` that does not match exactly once
-or breaks a recorded JSON document; a source orchestration whose `spec_ref` no longer resolves,
-through the catalog, to the request's node (a node whose spec VERSION moved since the record:
-its replay window is closed); `--leaf` disagreeing with the configuration; a failing preflight, or a launch gate (the two
-`--check` answers) that does not pass — these two after the orchestration was created; it ends
-`fail` (`preflight_failed` / `judge_replay_not_ready`).
+Refusals print `{"status": "refused", "reason": <code>, "detail": ...}` and exit 2, before
+any launch. Before the orchestration is created: `judge_replay_repeat_invalid` (`--repeat` below
+1); `judge_replay_source_unreadable` / `judge_replay_source_ambiguous` (no such record, or an
+arid prefix naming several); `judge_replay_pair_not_admitted` (not one of the three judging
+pairs); `judge_replay_no_context` (no `pure_context`, or a non-string value: a warm repair
+turn — replay its cold launch); `judge_replay_shape_unknown` (a `pure_shape` the current tables
+do not declare); `judge_replay_context_keys_moved` (the key set is not the CURRENT one);
+`judge_replay_mutation_invalid` / `_unknown_key` / `_not_once` / `_breaks_document` (below);
+`judge_replay_spec_unresolved` (the source's `spec_ref` no longer resolves, through the catalog,
+to the request's node — its spec VERSION moved since the record, so its replay window is
+closed); `judge_replay_refs_invalid` (the request's `ir_ref` / `pipeline_ref` are not this
+node's store refs); `judge_replay_llm_config_invalid`; `judge_replay_leaf_mismatch` (`--leaf`
+disagrees with the configuration). After it is created, ending it `fail`:
+`judge_replay_preflight_failed` (reason code `preflight_failed`) and `judge_replay_not_ready`
+(a launch gate — the two `--check` answers — does not pass). An exception ends it `fail` /
+`judge_replay_error` and propagates.
 
 Each `replay_result.json` row: the head (`replay_orchestration_id`, `source_*`, `step`,
 `substep`, `leaf`, `label`, `mutated_keys`, `repetition`); the outcome (`status`,
@@ -175,8 +183,11 @@ def check_source(source: SourceLaunch) -> None:
     if not all(isinstance(v, str) for v in context.values()):
         raise ReplayRefused("judge_replay_no_context", "a pure_context value is not a string")
     shape_key = (*source.pair, source.shape)
-    required = (PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[shape_key]
-                if source.shape and shape_key in PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE
+    if source.shape and shape_key not in PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE:
+        raise ReplayRefused("judge_replay_shape_unknown",
+                            f"pure_shape {source.shape!r} is not declared for "
+                            f"{'.'.join(source.pair)}")
+    required = (PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[shape_key] if source.shape
                 else PURE_CONTEXT_REQUIRED_KEYS[source.pair])
     if set(context) != set(required):
         raise ReplayRefused(
@@ -225,8 +236,10 @@ def apply_mutations(context: Mapping[str, str],
     in the document as the replacements before it left it: a zero or a double match refuses.
     The text matched is the document AS RECORDED: in a JSON document (the bundle under review)
     a source line break is the two characters `\\n`. A replacement that leaves a recorded JSON
-    document unparseable is refused too, because only the workshop arm parses it (to seed the
-    bundle's files): the pair would have a pure half and no workshop half."""
+    document unparseable is refused too: the workshop arm parses `bundle_document` to seed the
+    bundle's files, so a broken one would give the pair a pure half and no workshop half; and
+    every other JSON document a judge is shown was written and checked by the host, so an
+    unparseable one is not a defect any run presents to a judge."""
     out = dict(context)
     for key, pairs in mutations.items():
         if key not in out:

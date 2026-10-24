@@ -320,6 +320,7 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         request = json.loads((replay / "launches" / f"{first}.request.json")
                              .read_text(encoding="utf-8"))
         self.assertEqual(request["resolved_dependencies"], list(_FACTS))
+        self.assertIs(request["runner_host_authored"], True)
         self.assertEqual(request["pure_context"], _CONTEXT)
         meta = json.loads((replay / "orchestration_meta.json").read_text(encoding="utf-8"))
         self.assertEqual(meta["invocation"]["kind"], jr.REPLAY_KIND)
@@ -551,6 +552,24 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual((rc, json.loads(out)["reason"]), (2, "judge_replay_spec_unresolved"))
         self.assertEqual(self._replays(), [])
 
+    def test_a_request_whose_refs_are_not_its_nodes_is_refused(self) -> None:
+        path = (self.repo / "workspace/orchestrations" / _SRC / "launches"
+                / f"{_SRC_ARID}.request.json")
+        request = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps({**request, "ir_ref": "workspace/ir/other__x__1/ir_1"}),
+                        encoding="utf-8")
+        rc, out = self._main()
+        self.assertEqual((rc, json.loads(out)["reason"]), (2, "judge_replay_refs_invalid"))
+        self.assertEqual(self._replays(), [])
+
+    def test_a_failure_after_init_ends_the_orchestration_fail(self) -> None:
+        with mock.patch.object(rw, "_write_llm_config_snapshot",
+                               side_effect=OSError("disk full")), \
+                self.assertRaises(OSError):
+            self._main()
+        [replay] = self._replays()
+        self.assertEqual(self._status(replay), ("fail", "judge_replay_error"))
+
     def test_the_leaf_must_be_the_configurations(self) -> None:
         rc, out = self._main(cfg=self.pure_cfg, leaf="workshop")
         self.assertEqual((rc, json.loads(out)["reason"]), (2, "judge_replay_leaf_mismatch"))
@@ -568,6 +587,9 @@ class SourceRefusalTests(unittest.TestCase):
                 ({"step": "generate", "substep": "generate"}, "judge_replay_pair_not_admitted"),
                 ({"step": "build", "substep": "diagnose"}, "judge_replay_pair_not_admitted"),
                 ({"pure_context": None}, "judge_replay_no_context"),
+                ({"pure_context": {**_CONTEXT, "tests_document": None}},
+                 "judge_replay_no_context"),
+                ({"pure_shape": "no_such_shape"}, "judge_replay_shape_unknown"),
                 ({"pure_context": {**_CONTEXT, "extra_document": "x"}},
                  "judge_replay_context_keys_moved")):
             with self.subTest(code=code), self.assertRaises(jr.ReplayRefused) as ctx:
@@ -710,7 +732,8 @@ class ReadCoverageTests(unittest.TestCase):
                           output_mode="content"),
                 self._result("g1", {"mode": "content", "numFiles": 1, "filenames": [],
                                     "content": "7:x"}),
-                self._use("g2", "Grep", pattern="y", output_mode="content"),
+                self._use("g2", "Grep", path=f"{self.TREE}/", pattern="y",
+                          output_mode="content"),
                 self._result("g2", {"mode": "content", "numFiles": 1,
                                     "filenames": ["host_verdict.json"], "content": "9:y"})])
             out = jr.read_coverage([path], [self.TREE], self._seeds())
