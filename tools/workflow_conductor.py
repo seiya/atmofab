@@ -2277,8 +2277,12 @@ def _admissible_leaf_profile(profile: Mapping[str, Any], entry: Any,
     leaf's), or a WORKSHOP lineage's (issue #534) for a workshop entry — `leaf_mode:
     workshop`, `readonly: False`, and rw binds that are EXACTLY two sibling directories of one
     lineage home, `config` and `tree`, spelled as normalized absolute paths outside the
-    checkout (`repo_root`), with the tree as the working directory and `CLAUDE_CONFIG_DIR`
-    naming `config`. Fail-closed: any other shape answers False."""
+    checkout (`repo_root`), with the tree as the working directory and the ENTRY's CLI home
+    naming `config` — `CLAUDE_CONFIG_DIR` with the credential mapped onto
+    `config/.credentials.json` for claude, `CODEX_HOME` with `auth.json` and `config.toml`
+    remounted read-only into it and no credential read-write for codex (issue #534 step 2
+    PR-2), and the other family's home undeclared. Fail-closed: any other shape answers
+    False."""
     if profile.get("readonly") is True:
         # A WORKSHOP entry under a read-only profile is refused too: its edits would land on
         # the sandbox's own tmpfs and vanish, and the snapshot would read an empty tree.
@@ -2299,12 +2303,29 @@ def _admissible_leaf_profile(profile: Mapping[str, Any], entry: Any,
     config, tree = paths
     env = profile.get("env") if isinstance(profile.get("env"), dict) else {}
     credential = profile.get("runtime_rw_credential_mapping")
-    return (config.name == "config" and tree.name == "tree" and config.parent == tree.parent
-            and str(profile.get("workdir") or "") == str(tree)
-            and env.get("CLAUDE_CONFIG_DIR") == str(config)
-            # The credential lands in the CLI's own home, never in the tree the host snapshots.
-            and isinstance(credential, list) and len(credential) == 2
-            and str(credential[1]) == str(config / ".credentials.json"))
+    if not (config.name == "config" and tree.name == "tree" and config.parent == tree.parent
+            and str(profile.get("workdir") or "") == str(tree)):
+        return False
+    # The CLI family is the ENTRY's, and the profile must be that family's: the home its
+    # environment declares is `config/`, and the other family's home name is absent.
+    from tools.llm_config import PROVIDER_BACKEND_TOKENS
+    from tools.orchestration_runtime import WORKSHOP_PROFILE_HOME_ENV
+    family = PROVIDER_BACKEND_TOKENS.get(getattr(entry, "provider", ""))
+    if family not in WORKSHOP_PROFILE_HOME_ENV:
+        return False
+    if any(bool(env.get(name)) != (fam == family)
+           for fam, name in WORKSHOP_PROFILE_HOME_ENV.items()):
+        return False
+    if env.get(WORKSHOP_PROFILE_HOME_ENV[family]) != str(config):
+        return False
+    if family == "claude":
+        # The credential lands in the CLI's own home, never in the tree the host snapshots.
+        return (isinstance(credential, list) and len(credential) == 2
+                and str(credential[1]) == str(config / ".credentials.json"))
+    mappings = profile.get("runtime_ro_bind_mappings")
+    return (credential is None and isinstance(mappings, list)
+            and sorted(str(m[1]) for m in mappings if isinstance(m, list) and len(m) == 2)
+            == sorted(str(config / name) for name in ("auth.json", "config.toml")))
 
 
 def _leaf_stream_encoding() -> str:
@@ -2999,6 +3020,9 @@ class ProcResult:
     # Codex only: the untouched JSONL event stream (`stdout` keeps just the final
     # agent_message), which is otherwise unrecoverable from any artifact.
     raw_stdout: str | None = None
+    # Codex only: the `item.completed` events the read loop parsed — counted from the stream
+    # itself, not from `raw_stdout`, which is capped (`LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS`).
+    items_completed: int | None = None
     # The CONDUCTOR killed this leaf at the per-leaf cap (`_leaf_timeout_seconds`). Carried on
     # the result object rather than recognised from the captured output: the kill is the
     # conductor's own act, and routing it back through a regex over leaf-written text would let
@@ -3133,6 +3157,13 @@ def _envelope_is_per_turn(envelope: dict[str, Any], totals: dict[str, Any], turn
         for row in rows)
 
 
+def _codex_usage_counts(raw: Any) -> dict[str, int]:
+    """The integer counts of a raw codex `turn.completed` usage object (booleans excluded)."""
+    if not isinstance(raw, dict):
+        return {}
+    return {k: v for k, v in raw.items() if isinstance(v, int) and not isinstance(v, bool)}
+
+
 def _leaf_usage_row(
     proc: ProcResult,
     entry: ResolvedLeafEntry,
@@ -3178,6 +3209,13 @@ def _leaf_usage_row(
     - neither holds (a negative class of the difference never equals a count), the resumed
       envelope is unreadable, or either total is partial — `unavailable`, with both sets of
       numbers in the reason. A guessed number is not written.
+
+    On a codex entry `resumed` is `(resumed_agent_run_id, the raw turn.completed counts that
+    launch reported)` — the previous launch of the same thread (`Conductor.
+    _codex_thread_resumed_usage`). A warm codex turn's counts are always the thread's running
+    total, so the difference is recorded (every class non-negative, the resumed total covering
+    no class the current one lacks), with the running total and the resumed launch under
+    `provider_details`; otherwise `unavailable`.
     """
     if deterministic:
         return leaf_usage_not_measured(
@@ -3249,10 +3287,33 @@ def _leaf_usage_row(
         # the names this repository can name — and there is no captured codex `turn.completed`
         # here to say what the others are called. Before this, codex usage was persisted
         # verbatim; carrying it forward costs nothing and loses nothing.
-        usage = normalize_leaf_usage(
-            proc.usage, source=source,
-            details={"turn_usage": {k: v for k, v in proc.usage.items()
-                                    if isinstance(v, int) and not isinstance(v, bool)}})
+        counts = _codex_usage_counts(proc.usage)
+        if entry.provider == "codex_cli" and resumed is not None:
+            # A warm `codex exec resume` turn's `turn.completed` counts are the THREAD's running
+            # total (measured on codex-cli 0.164.0: 101 / 202 / 303 input over a cold launch and
+            # two resumes, one request each), so this turn's own figure is the difference from
+            # the total the resumed launch reported, every class non-negative. A resumed launch
+            # that recorded no total, or a difference that goes negative, is `unavailable` with
+            # both sets of numbers — a guessed number is not written (issue #281's rule).
+            resumed_arid, prev = resumed
+            if not isinstance(prev, dict) or not prev:
+                return leaf_usage_unavailable(
+                    f"warm-resumed codex turn: its counts {counts} are the thread's running "
+                    f"total, and the resumed launch {resumed_arid} recorded no total to "
+                    f"subtract")
+            diff = {key: value - prev.get(key, 0) for key, value in counts.items()}
+            if (set(prev) - set(counts)) or any(v < 0 for v in diff.values()):
+                return leaf_usage_unavailable(
+                    f"warm-resumed codex turn: its running total {counts} does not cover the "
+                    f"resumed launch {resumed_arid}'s total {prev}")
+            usage = normalize_leaf_usage(
+                diff, source=source,
+                details={"turn_usage": diff, "thread_running_total": counts,
+                         "decumulated_against": resumed_arid})
+            return usage or leaf_usage_unavailable(
+                f"warm-resumed codex turn: the difference {diff} from {resumed_arid}'s total "
+                "holds no usable count")
+        usage = normalize_leaf_usage(proc.usage, source=source, details={"turn_usage": counts})
         if usage is not None:
             return usage
     return leaf_usage_unavailable(
@@ -4241,7 +4302,7 @@ class Conductor:
                 "leaf_command: a workshop entry takes its wrapper's mcp_config_json and a pure "
                 f"entry takes none (leaf={getattr(entry, 'leaf', 'pure')!r}, "
                 f"mcp_config_json={'given' if mcp_config_json is not None else 'absent'})")
-        if workshop and entry.provider != "claude_cli":
+        if workshop and entry.provider not in ("claude_cli", "codex_cli"):
             raise ValueError(f"provider {entry.provider!r} runs no workshop leaf")
         if entry.provider == "claude_cli":
             # `-p` runs non-interactively, and `pure_leaf_flags()` below is the whole of the
@@ -4317,6 +4378,23 @@ class Conductor:
             # subcommands. Spelled explicitly rather than omitted: `codex exec` reads stdin
             # when the prompt is absent, but `codex exec resume` documents only the `-`
             # form, and an omitted positional there would be read as the session id.
+            if workshop:
+                # A `workshop leaf` (issue #534 step 2 PR-2): the same argv with codex's
+                # `workspace-write` sandbox in place of `read-only` — its shell and patch tool
+                # write inside the working directory, which the profile makes the tree — and the
+                # wrapper's endpoint (`pure_leaf.codex_workshop_overrides`). Resume re-pins the
+                # policy through `sandbox_mode`, for the reason the pure resume does.
+                from tools.pure_leaf import codex_workshop_overrides
+                assert mcp_config_json is not None
+                overrides = codex_workshop_overrides(mcp_config_json)
+                if resume_session_id:
+                    return [*base, "exec", "resume", "--model", model, resume_session_id,
+                            *effort_flags, "--ignore-rules",
+                            "--config", 'sandbox_mode="workspace-write"',
+                            "--skip-git-repo-check", *overrides, "--json", "-"]
+                return [*base, "exec", "--model", model, *effort_flags,
+                        "--ignore-rules", "--sandbox", "workspace-write",
+                        "--skip-git-repo-check", *overrides, "--json", "-"]
             if resume_session_id:
                 return [*base, "exec", "resume", "--model", model, resume_session_id,
                         *effort_flags, *pure_resume_flags, "--json", "-"]
@@ -4501,8 +4579,9 @@ class Conductor:
         leaf runs, the leaf's process group is terminated as at the cap and the result carries
         `LEAF_CANCELLED_MARKER` instead of a timeout marker — no `leaf_timeout` event, because
         no bound of this function fired. A workshop lineage's wrapper endpoint sets it when an
-        operation reports the lineage ENDED (`workshop_mcp.WrapperMcpServer(on_end=)`). Claude
-        leaves only: the workshop leaf is the one caller, and a codex or HTTP entry refuses it.
+        operation reports the lineage ENDED (`workshop_mcp.WrapperMcpServer(on_end=)`). CLI
+        leaves only (claude, and codex since issue #534 step 2 PR-2): the workshop leaf is the
+        one caller, and an HTTP entry, which has no process to end, refuses it.
 
         `timeout_seconds` replaces the environment cap (`_leaf_timeout_seconds()`) for this one
         leaf, and `timeout_name` names that bound in the `leaf_timeout` marker and event. It
@@ -4523,8 +4602,8 @@ class Conductor:
         `test_every_leaf_launch_site_passes_its_own_entry` pins by introspecting this module.
         """
         entry = entry if entry is not None else self.entry_for(None, None)
-        if cancel_event is not None and entry.provider != "claude_cli":
-            raise ValueError(f"spawn_leaf cancel_event is a claude leaf's (provider "
+        if cancel_event is not None and entry.provider not in ("claude_cli", "codex_cli"):
+            raise ValueError(f"spawn_leaf cancel_event is a CLI leaf's (provider "
                              f"{entry.provider!r})")
         if entry.is_http:
             # No process, so nothing below applies: no codex feature cache, no bwrap profile
@@ -4609,7 +4688,8 @@ class Conductor:
                     prompt_text=prompt_text,
                     resume=bool(resume_session_id),
                     timeout_context=timeout_context,
-                    timeout_seconds=timeout_seconds, timeout_name=timeout_name)
+                    timeout_seconds=timeout_seconds, timeout_name=timeout_name,
+                    cancel_event=cancel_event)
             # A raw Popen, not `subprocess.run(timeout=)`: on a timeout `run` calls `kill()`,
             # which signals the DIRECT child only — and under mandatory bwrap the direct child
             # is the wrapper, so the CLI behind it would survive. `start_new_session=True`
@@ -4956,7 +5036,30 @@ class Conductor:
         timeout_context: dict[str, str] | None = None,
         timeout_seconds: int | None = None,
         timeout_name: str = LEAF_TIMEOUT_ENV_BOUND_NAME,
+        cancel_event: threading.Event | None = None,
     ) -> ProcResult:
+        """`cancel_event` (a codex `workshop leaf`'s, issue #534 step 2 PR-2) ends the leaf from
+        another thread as `spawn_leaf`'s claude path does: checked at the head of the read loop,
+        it takes the cap's teardown and returns a result carrying `LEAF_CANCELLED_MARKER`.
+
+        Every result carries `items_completed`, the `item.completed` events the read parsed (the
+        live loop and the post-break drain both count), whichever way the read ended."""
+        items = [0]
+        result = self._read_codex_json_leaf(
+            argv, child_env, child_arid, prompt_text=prompt_text, entry=entry, resume=resume,
+            timeout_context=timeout_context, timeout_seconds=timeout_seconds,
+            timeout_name=timeout_name, cancel_event=cancel_event, items=items)
+        result.items_completed = items[0]
+        return result
+
+    def _read_codex_json_leaf(
+        self, argv: list[str], child_env: dict[str, str], child_arid: str,
+        *, prompt_text: str, entry: ResolvedLeafEntry | None,
+        resume: bool, timeout_context: dict[str, str] | None,
+        timeout_seconds: int | None, timeout_name: str,
+        cancel_event: threading.Event | None, items: list[int],
+    ) -> ProcResult:
+        """`_spawn_codex_json_leaf`'s body; `items[0]` counts the `item.completed` events."""
         entry = entry if entry is not None else self.entry_for(None, None)
         # Every leaf supplies its child ARID so the emitted thread can be registered before
         # file tools run — the diagnostician included since issue #169 put it on the pure
@@ -5026,6 +5129,8 @@ class Conductor:
         usage: dict[str, Any] | None = None
         model: str | None = None
         resume_mode = "in_place" if resume else None
+        # Set by THIS thread when it sees `cancel_event` at the loop head.
+        cancelled = False
 
         # Codex may emit diagnostics before it emits (or closes) its JSONL stdout.
         # Drain stderr concurrently: reading it only after the stdout stream
@@ -5196,6 +5301,10 @@ class Conductor:
                 # not run at all. That includes noticing the leaf's EXIT: a descendant still
                 # flooding the pipe would otherwise hide it until the cap.
                 now = time.monotonic()
+                if (grace_deadline is None and cancel_event is not None
+                        and cancel_event.is_set()):
+                    cancelled = True
+                    break
                 if grace_deadline is None and now >= next_poll_at:
                     next_poll_at = now + LEAF_STREAM_POLL_SECONDS
                     if process.poll() is not None:
@@ -5240,6 +5349,8 @@ class Conductor:
                     continue
                 usage, model, final_text, turn_failed = _absorb_codex_event(
                     event, usage, model, final_text, turn_failed, failure_events)
+                if event.get("type") == "item.completed":
+                    items[0] += 1
                 kind = str(event.get("type") or "")
                 candidate = event.get("thread_id")
                 if kind == "thread.started" and isinstance(candidate, str) and candidate.strip():
@@ -5250,7 +5361,7 @@ class Conductor:
                         registration_error = self._bind_codex_thread(child_arid, thread_id)
                         if registration_error is not None:
                             break
-            if registration_error is not None or timed_out:
+            if registration_error is not None or timed_out or cancelled:
                 # Read BEFORE the kill: `returncode` afterwards says nothing about whether the
                 # leaf had finished on its own, and a CLI that handles SIGTERM and exits 0
                 # would otherwise satisfy the clean-finish guard below — reporting a leaf the
@@ -5312,6 +5423,8 @@ class Conductor:
                 if leftover_event is not None:
                     usage, model, final_text, turn_failed = _absorb_codex_event(
                         leftover_event, usage, model, final_text, turn_failed, failure_events)
+                    if leftover_event.get("type") == "item.completed":
+                        items[0] += 1
                     # The identity is only REMEMBERED here, never bound: registration is a host
                     # write, and a leaf the conductor has already killed must not have one made
                     # on its behalf. It is bound below, and only if this turn is accepted.
@@ -5404,6 +5517,13 @@ class Conductor:
         if failure_events:
             stderr = (stderr.rstrip() + "\n" + "\n".join(failure_events)).strip()
         raw_stdout = "".join(raw_lines)
+        if cancelled:
+            # Ended from outside (a workshop lineage's bound), reported as what it is: no
+            # timeout marker, no `leaf_timeout` event — no bound of this function fired.
+            stderr = (stderr.rstrip() + "\n" + LEAF_CANCELLED_MARKER).strip()
+            return ProcResult(returncode or 1, final_text or "", stderr,
+                              usage=usage, model=model, resume_mode=resume_mode,
+                              raw_stdout=raw_stdout)
         if timed_out and not (
                 pre_kill_status == 0 and final_text is not None and not turn_failed):
             # FIRST, ahead of the `thread_id is None` diagnostic: a leaf killed before
@@ -5597,8 +5717,9 @@ class Conductor:
         Two launches are declined outright, because they have no argv to describe at all — an
         HTTP leaf (no process) and a deterministic substep (in-process).
 
-        A WORKSHOP leaf (issue #534) records one more field, `claude_mcp_config`: the server
-        name and URL its `--mcp-config` names. The URL is per launch (an ephemeral loopback
+        A WORKSHOP leaf (issue #534) records one more field, `claude_mcp_config` (codex:
+        `codex_mcp_config`, issue #534 step 2 PR-2): the server name and URL its `--mcp-config`
+        (codex: its `mcp_servers.wrapper.url` override) names. The URL is per launch (an ephemeral loopback
         port), so it is not a constant of the flag set the way the rest of it is; it is the
         record that ties this launch to the endpoint every line of its `wrapper_calls.jsonl`
         was served on (no reader compares the two; `tools/audit_orchestration.py` renders the
@@ -5629,9 +5750,13 @@ class Conductor:
             surface["claude_tools"] = _variadic_values(argv, "--tools")
         # From the JSON this launch was handed, not from argv: a configured `command:` may carry
         # an `--mcp-config` of its own (a file path, not JSON), which argv would offer first.
+        # A codex workshop launch carries the same endpoint as `--config` overrides
+        # (`pure_leaf.codex_workshop_overrides`), recorded under its own name.
         if mcp_config_json is not None:
             servers = json.loads(mcp_config_json).get("mcpServers", {})
-            surface["claude_mcp_config"] = [
+            field = ("codex_mcp_config" if entry.provider == "codex_cli"
+                     else "claude_mcp_config")
+            surface[field] = [
                 {"server": name, "url": str(spec.get("url", ""))}
                 for name, spec in sorted(servers.items())]
         return surface
@@ -8461,6 +8586,8 @@ class Conductor:
         resumed = None
         if warm and entry.provider == "claude_cli" and resume_session_id:
             resumed = (resume_session_id, self._persisted_result_envelope(resume_session_id))
+        elif warm and entry.provider == "codex_cli" and resume_session_id:
+            resumed = self._codex_warm_resumed(resume_session_id, child_arid)
         usage = _leaf_usage_row(
             proc, entry,
             envelope=envelope if entry.provider == "claude_cli" else None,
@@ -9149,6 +9276,9 @@ class Conductor:
         cancelled: bool
         wrapper_calls: int
         model_turns: int | None
+        #: The `item.completed` events of a codex launch's JSONL (its tool calls and messages;
+        #: codex reports no turn count). None on claude, which reports `num_turns`.
+        items_completed: int | None = None
 
     def _workshop_seeds(self, refs: NodeRefs, pure_context: Mapping[str, str],
                         request: Mapping[str, Any],
@@ -9207,20 +9337,35 @@ class Conductor:
             raise RuntimeError(f"workshop seeds: a seed is named after an output file {clash}")
         return seeds
 
-    def _prepare_workshop_home(self, lineage_id: str, *, resume: bool) -> dict[str, str] | None:
-        """The lineage home (`orchestration_runtime._prepare_claude_workshop_home`): created
-        exclusively when `resume` is False, required (None when gone) when True."""
-        from tools.orchestration_runtime import _prepare_claude_workshop_home
-        return _prepare_claude_workshop_home(self.repo_root, self.orchestration_id, lineage_id,
-                                             resume=resume)
+    def _workshop_backend(self, entry: Any) -> str:
+        """The lineage-home backend of a workshop entry: its provider's backend token
+        (`llm_config.PROVIDER_BACKEND_TOKENS`), when that is one of `workshop_tree.
+        LINEAGE_BACKENDS` (the keys of `orchestration_runtime.WORKSHOP_HOME_PREPARERS`)."""
+        from tools.llm_config import PROVIDER_BACKEND_TOKENS
+        from tools.workshop_tree import LINEAGE_BACKENDS
+        backend = PROVIDER_BACKEND_TOKENS.get(getattr(entry, "provider", ""))
+        if backend not in LINEAGE_BACKENDS:
+            raise ValueError(f"provider {getattr(entry, 'provider', None)!r} runs no workshop "
+                             "leaf")
+        return backend
 
-    def _workshop_paths(self, isolation: Mapping[str, str], lineage_id: str) -> Any:
+    def _prepare_workshop_home(self, entry: Any, lineage_id: str, *,
+                               resume: bool) -> dict[str, str] | None:
+        """The lineage home of the entry's CLI (`orchestration_runtime.
+        WORKSHOP_HOME_PREPARERS`): created exclusively when `resume` is False, required (None
+        when gone) when True."""
+        from tools.orchestration_runtime import WORKSHOP_HOME_PREPARERS
+        return WORKSHOP_HOME_PREPARERS[self._workshop_backend(entry)](
+            self.repo_root, self.orchestration_id, lineage_id, resume=resume)
+
+    def _workshop_paths(self, entry: Any, isolation: Mapping[str, str], lineage_id: str) -> Any:
         from tools.workshop_tree import LineagePaths
         return LineagePaths(
             homes_root=Path(isolation["homes_root"]), orchestration_id=self.orchestration_id,
             lineage_id=lineage_id,
             orchestration_dir=self.repo_root / "workspace" / "orchestrations"
-            / self.orchestration_id)
+            / self.orchestration_id,
+            backend=self._workshop_backend(entry))
 
     def _start_wrapper_endpoint(self, ctx: Any, on_end: Callable[[str], None]) -> Any:
         """Start one launch's MCP endpoint (`workshop_mcp.WrapperMcpServer`)."""
@@ -9254,10 +9399,10 @@ class Conductor:
         copied over the seeds (`workshop_tree.seed_from_snapshot`: a host-placed name is never
         copied back). Raises on a host precondition; the loop routes it fail_closed."""
         from tools.workshop_tree import seed_from_snapshot, seed_tree, write_lineage_record
-        isolation = self._prepare_workshop_home(lineage_id, resume=False)
+        isolation = self._prepare_workshop_home(entry, lineage_id, resume=False)
         if isolation is None:  # pragma: no cover - a cold preparation creates or raises
             raise RuntimeError(f"workshop lineage {lineage_id}: no home was prepared")
-        paths = self._workshop_paths(isolation, lineage_id)
+        paths = self._workshop_paths(entry, isolation, lineage_id)
         paths.make_work_dirs()
         seed_tree(paths, seeds)
         started = datetime.now(timezone.utc)
@@ -9269,32 +9414,41 @@ class Conductor:
                              started_at_utc=started.isoformat().replace("+00:00", "Z"))
         return lineage
 
-    def _locate_workshop_lineage(self, lineage_id: str) -> tuple[Any, dict[str, Any]] | None:
-        """The paths and record of an EXISTING lineage, or None when its home or record is
-        gone. Prepares nothing but the container (`resume=True`)."""
+    def _locate_workshop_lineage(self, entry: Any,
+                                 lineage_id: str) -> tuple[Any, dict[str, Any]] | None:
+        """The paths and record of an EXISTING lineage of the entry's CLI, or None when its home
+        or record is gone. Prepares nothing but the container (`resume=True`)."""
         from tools.workshop_tree import read_lineage_record
         try:
-            isolation = self._prepare_workshop_home(lineage_id, resume=True)
+            isolation = self._prepare_workshop_home(entry, lineage_id, resume=True)
         except ValueError:
             return None
         if isolation is None:
             return None
-        paths = self._workshop_paths(isolation, lineage_id)
+        paths = self._workshop_paths(entry, isolation, lineage_id)
         try:
             return paths, read_lineage_record(paths)
         except ValueError:
             return None
 
     def _workshop_session_resumable(self, paths: Any, session_id: str | None) -> bool:
-        """Whether the claude transcript of `session_id` is in THIS lineage's config home
-        (`<home>/config/projects/*/<sid>.jsonl`) — the home a warm launch of the lineage is
-        served from. The twin of `_claude_session_resumable`, whose root is the operator's
-        `~/.claude`, which a workshop leaf never writes."""
+        """Whether the session `session_id` is in THIS lineage's CLI home — the home a warm
+        launch of the lineage is served from. Claude: its transcript,
+        `<config>/projects/*/<sid>.jsonl` (the twin of `_claude_session_resumable`, whose root is
+        the operator's `~/.claude`, which a workshop leaf never writes). Codex: the thread's
+        rollout, `<config>/sessions/<yyyy>/<mm>/<dd>/rollout-<timestamp>-<thread_id>.jsonl`
+        (measured on codex-cli 0.164.0, MX4; `exec resume` reads it from there)."""
         if not isinstance(session_id, str) or not session_id.strip():
             return False
+        sid = session_id.strip()
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", sid):
+            return False
+        # The rollout name's timestamp is fixed-width, so the glob names the WHOLE thread id
+        # (a `*` before it would also match a thread whose id ends with this one).
+        pattern = (("sessions", f"*/*/*/rollout-????-??-??T??-??-??-{sid}.jsonl")
+                   if paths.backend == "codex" else ("projects", f"*/{sid}.jsonl"))
         try:
-            return bool(sorted((Path(paths.config) / "projects").glob(
-                f"*/{session_id.strip()}.jsonl")))
+            return bool(sorted((Path(paths.config) / pattern[0]).glob(pattern[1])))
         except OSError:
             return False
 
@@ -9326,7 +9480,12 @@ class Conductor:
         Returns None when a WARM launch finds the lineage home gone (`record_launch` answers
         `workshop_lineage_home_missing`): nothing was launched and the loop falls back to a
         cold launch."""
-        from tools.pure_leaf import _MISSING, parse_result_envelope, workshop_mcp_config_json
+        from tools.pure_leaf import (
+            _MISSING,
+            ResultEnvelope,
+            parse_result_envelope,
+            workshop_mcp_config_json,
+        )
         from tools.workshop_tree import (
             end_lineage,
             read_lineage_record,
@@ -9408,14 +9567,33 @@ class Conductor:
             ended_at_utc=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
         record = read_lineage_record(paths)
         snapshot_tree(paths, lineage.host_placed)
-        envelope = parse_result_envelope(proc.stdout)
-        model = None if envelope.model is _MISSING else envelope.model
-        resumed = None
-        if warm and resume_session_id:
-            resumed = (resume_session_id, self._persisted_result_envelope(resume_session_id))
-        usage = _leaf_usage_row(proc, entry, envelope=envelope, resumed=resumed)
-        raw = envelope.raw if isinstance(envelope.raw, dict) else {}
-        turns = raw.get("num_turns")
+        items_completed: int | None = None
+        if entry.provider == "claude_cli":
+            envelope = parse_result_envelope(proc.stdout)
+            model = None if envelope.model is _MISSING else envelope.model
+            provenance = "result_envelope" if model is not None else None
+            resumed = None
+            if warm and resume_session_id:
+                resumed = (resume_session_id,
+                           self._persisted_result_envelope(resume_session_id))
+            usage = _leaf_usage_row(proc, entry, envelope=envelope, resumed=resumed)
+            raw = envelope.raw if isinstance(envelope.raw, dict) else {}
+            turns = raw.get("num_turns")
+        else:
+            # Codex: the synthetic envelope `_spawn_pure_turn` builds (the CLI has none), the
+            # host-pinned model (issue #348), its turn event's usage, and no turn count — the
+            # number of completed items its JSONL reported stands beside it.
+            envelope = ResultEnvelope(
+                True, proc.stdout, False, proc.model if proc.model else _MISSING,
+                proc.usage if proc.usage is not None else _MISSING,
+                self._session_id_for_child(child_arid, entry) or _MISSING, None, None)
+            model, provenance = self._codex_model_provenance(entry)
+            usage = _leaf_usage_row(
+                proc, entry, envelope=None,
+                resumed=(self._codex_warm_resumed(resume_session_id, child_arid)
+                         if warm and resume_session_id else None))
+            turns = None
+            items_completed = getattr(proc, "items_completed", None)
         wrapper_calls = int(record.get("wrapper_calls_used") or 0) - calls_before
         ended_by = record.get("ended_by")
         self.emit("workshop_launch_complete", node_key=refs.node_key, substep=substep or "",
@@ -9423,10 +9601,11 @@ class Conductor:
                   wrapper_calls=wrapper_calls, ended_by=ended_by or "",
                   leaf_exit=proc.returncode)
         return self._WorkshopTurn(
-            proc, envelope, model, "result_envelope" if model is not None else None, usage,
+            proc, envelope, model, provenance, usage,
             launched_monotonic, ended_by if isinstance(ended_by, str) else None, cancelled,
             wrapper_calls,
-            turns if isinstance(turns, int) and not isinstance(turns, bool) else None)
+            turns if isinstance(turns, int) and not isinstance(turns, bool) else None,
+            items_completed)
 
     def _run_workshop_producer_substep(self, refs: NodeRefs, phase: str, substep: str | None,
                                        repair: dict[str, str] | None,
@@ -9498,20 +9677,24 @@ class Conductor:
                 if usable else None)
             located = None
             if record is not None and is_workshop_request(record):
-                located = self._locate_workshop_lineage(str(record.get("workshop_lineage_id")))
+                located = self._locate_workshop_lineage(
+                    entry, str(record.get("workshop_lineage_id")))
             if located is not None and located[1].get("node_key") != refs.node_key:
                 # A lineage is one node's: a record naming another node is not continued, and
                 # its snapshot does not seed this one (PR-2 left this to the loop).
                 located = None
             if located is not None:
                 paths, lineage_record = located
+                # The session a warm launch resumes: the target's own id on claude, the thread
+                # its launch emitted on codex (`_session_id_for_child`).
+                target_session = self._session_id_for_child(target_arid, entry)
                 # Warm only with findings to send: a resumed session given no findings would be
                 # re-sent the whole cold launch prompt, which describes a fresh tree carried
                 # over from an ended session — false for the session it continues. Without
                 # findings the reopen is a cold reuse, whose tree that prompt describes.
                 if (lineage_record.get("ended_by") is None and warm_capable
                         and last_excerpt is not None
-                        and self._workshop_session_resumable(paths, target_arid)):
+                        and self._workshop_session_resumable(paths, target_session)):
                     try:
                         lineage = self._reattach_workshop_lineage(
                             refs, entry, paths, lineage_record, phase, substep,
@@ -9523,7 +9706,7 @@ class Conductor:
                         return SubstepOutcome(
                             self.new_agent_run_id(), "fail", [], 1,
                             ("workshop_lineage_setup_failed", _pure_assembly_detail(exc)), 1)
-                    resume_session_id = target_arid
+                    resume_session_id = target_session
                     repair_target = target_arid
                     mode = "warm"
                 else:
@@ -9653,6 +9836,7 @@ class Conductor:
                 "lineage_id": lineage.paths.lineage_id,
                 "warm": warm,
                 "model_turns": turn.model_turns,
+                "items_completed": turn.items_completed,
                 "wrapper_calls": turn.wrapper_calls,
                 "ended_by": turn.ended_by,
             }
@@ -14567,6 +14751,46 @@ class Conductor:
         return (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
                 / "agents" / child_arid / "dialogs")
 
+    def _codex_warm_resumed(self, thread_id: str, child_arid: str) -> tuple[str, Any]:
+        """`_leaf_usage_row`'s `resumed` for a warm codex launch: the resumed launch and its
+        stored total — `("(none)", None)` when no other launch recorded the thread, which the
+        usage row records as `unavailable` rather than as a total it cannot decumulate."""
+        found = self._codex_thread_resumed_usage(thread_id, child_arid)
+        return found if found is not None else ("(none)", None)
+
+    def _codex_thread_resumed_usage(self, thread_id: str | None,
+                                    child_arid: str) -> tuple[str, dict[str, int] | None] | None:
+        """`(arid, raw counts)` of the launch a warm codex launch of `thread_id` resumes: the
+        latest session-index row recording that thread BEFORE `child_arid`'s own row (rows are
+        appended in launch order), and the `turn.completed` counts `_persist_leaf_output` stored for it (None when
+        it stored none — a launch that died before its turn completed). None when no other
+        launch recorded the thread. Never raises."""
+        if not isinstance(thread_id, str) or not thread_id.strip():
+            return None
+        from tools.orchestration_runtime import _read_session_run_index_consistent
+        try:
+            index = _read_session_run_index_consistent(self.repo_root, self.orchestration_id)
+        except Exception:  # noqa: BLE001 — an unreadable index records no decumulation
+            return None
+        previous = None
+        for row in index.get("entries", []):
+            if not isinstance(row, dict):
+                continue
+            if row.get("agent_run_id") == child_arid:
+                break  # the launches before this one; a later row is not what it resumed
+            if (row.get("agent_session_id") == thread_id.strip()
+                    and isinstance(row.get("agent_run_id"), str)):
+                previous = row["agent_run_id"]
+        if previous is None:
+            return None
+        try:
+            doc = json.loads((self._dialogs_dir(previous) / "leaf.turn_usage.json").read_text(
+                encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, ValueError):
+            return previous, None
+        counts = _codex_usage_counts(doc)
+        return previous, (counts or None)
+
     def _persisted_result_envelope(self, child_arid: str) -> Any:
         """The result envelope `_persist_leaf_output` stored for a claude leaf. Never raises."""
         from tools.pure_leaf import _MISSING, ResultEnvelope, parse_result_envelope
@@ -14615,6 +14839,18 @@ class Conductor:
                                   errors="backslashreplace")
         else:
             jsonl_path.unlink(missing_ok=True)
+        # Codex: the raw `turn.completed` counts as the CLI reported them — on a resumed thread
+        # the running total, which the NEXT warm launch of the thread subtracts
+        # (`_codex_thread_resumed_usage`). Its own file because the stream above is capped and
+        # the turn's last event is the one a cap drops. Removed when absent, as above.
+        usage_path = dialogs / f"{prefix}.turn_usage.json"
+        counts = (_codex_usage_counts(proc.usage)
+                  if proc.raw_stdout is not None and isinstance(proc.usage, dict)
+                  and not proc.usage.get("usage_source") else {})
+        if counts:
+            usage_path.write_text(json.dumps(counts, sort_keys=True), encoding="utf-8")
+        else:
+            usage_path.unlink(missing_ok=True)
 
     @staticmethod
     def _leaf_failure_summary(proc: ProcResult) -> str:

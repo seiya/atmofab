@@ -8,7 +8,10 @@ entry is a CONTAINER since issue #245: each codex thread's own `CODEX_HOME` is a
 lineage directory beneath it, `codex/<codex_lineage_id>/`. The `claude` entry is a run's
 pre-Z4 private claude home where one was recorded, and is the container a `workshop leaf`
 lineage (issue #534) is laid out in, `claude/<lineage_id>/` holding that lineage's
-private config home, work tree, staged closure and snapshot. This tool neither
+private config home, work tree, staged closure and snapshot; a codex `workshop leaf`
+lineage (issue #534 step 2) is laid out the same way under the `codex` container,
+`codex/<lineage_id>/{config,tree,staged,syntax,snapshot}` (and `check/` on a
+`compile.generate` lineage), its `config/` the `CODEX_HOME`. This tool neither
 reads nor names that level — it judges the entry by its `<orchestration_id>/` children and
 walks the whole tree for the size. They hold the ONLY record of what a leaf actually
 did — the claude transcript, the codex rollout — so **nothing deletes them

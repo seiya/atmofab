@@ -116,10 +116,11 @@ def _is_loopback(host: str) -> bool:
 #   warm_resume  a finished leaf session can be reopened for a repair turn carrying the prior
 #                context (claude `--resume --fork-session`, codex `exec resume`).
 #   workshop     the provider can run a `workshop leaf` (issue #534): a producing leaf that edits a
-#                host-seeded work tree under file tools confined to it and reaches the host's
-#                build operations through the wrapper's MCP endpoint, its tree snapshotted into
-#                the same document a pure producer returns. Declared by `claude_cli` alone: the
-#                launch shape is measured on that CLI only (`pure_leaf.workshop_leaf_flags`).
+#                host-seeded work tree with the CLI's own tools confined to it and reaches the
+#                host's operations through the wrapper's MCP endpoint, its tree snapshotted into
+#                the same document a pure producer returns. Declared by the two CLI providers,
+#                whose launch shapes are measured (`pure_leaf.workshop_leaf_flags`,
+#                `pure_leaf.codex_workshop_overrides`); an HTTP provider has no agent loop yet.
 CAP_PURE = "pure"
 CAP_WARM_RESUME = "warm_resume"
 CAP_WORKSHOP = "workshop"
@@ -141,7 +142,7 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset({
 # THE capability authority. A config may restrict a provider's set; it may never exceed it.
 PROVIDER_CAPABILITIES: Mapping[str, frozenset[str]] = {
     "claude_cli": frozenset({CAP_PURE, CAP_WARM_RESUME, CAP_WORKSHOP}),
-    "codex_cli": frozenset({CAP_PURE, CAP_WARM_RESUME}),
+    "codex_cli": frozenset({CAP_PURE, CAP_WARM_RESUME, CAP_WORKSHOP}),
     # HTTP providers: one request, one response. No session to reopen, no tools to grant.
     "openai_compatible": frozenset({CAP_PURE}),
     "anthropic_api": frozenset({CAP_PURE}),
@@ -644,7 +645,8 @@ def _finalize_entry(fields: Mapping[str, Any], where: str,
                 f"`leaf: workshop` needs a provider with the {CAP_WORKSHOP!r} capability; "
                 f"provider {provider!r} has "
                 f"{', '.join(sorted(capabilities)) or '(none)'} (the workshop launch shape is "
-                f"measured on claude_cli only)", where=f"{where}.leaf")
+                f"measured on the CLI providers, claude_cli and codex_cli)",
+                where=f"{where}.leaf")
         missing = [f for f in WORKSHOP_BOUND_FIELDS if fields.get(f) is None]
         if missing:
             raise LlmConfigError(

@@ -1284,6 +1284,15 @@ class WorkshopEntryTests(_Tmp):
             with self.subTest(body=body):
                 self.assert_rule("llm_config_workshop_field_not_substep_scoped", body)
 
+    def test_a_codex_workshop_entry_loads(self) -> None:
+        """Issue #534 step 2 PR-2: `codex_cli` declares `workshop`, on both producing substeps."""
+        for pair in ("generate: {substeps: {generate", "compile: {substeps: {generate"):
+            with self.subTest(pair=pair):
+                cfg = lc.load_llm_config(self.write(self._gen(
+                    f"provider: codex_cli, model: gpt-x, leaf: workshop, {self.BOUNDS}", pair)))
+                entry = cfg.entry_for(pair.split(":")[0], "generate")
+                self.assertEqual((entry.provider, entry.is_workshop), ("codex_cli", True))
+
     def test_a_workshop_entry_is_admissible_on_the_two_producing_substeps_only(self) -> None:
         for pair in ("generate: {substeps: {verify", "validate: {substeps: {judge",
                      "compile: {substeps: {verify"):
@@ -1299,9 +1308,6 @@ class WorkshopEntryTests(_Tmp):
                 self.assertTrue(cfg.entry_for(phase, "generate").is_workshop)
 
     def test_a_workshop_entry_needs_a_provider_declaring_it(self) -> None:
-        self.assert_rule(
-            "llm_config_workshop_unsupported_on_provider",
-            self._gen(f"provider: codex_cli, model: gpt-x, leaf: workshop, {self.BOUNDS}"))
         self.assert_rule(
             "llm_config_workshop_unsupported_on_provider",
             self._gen("provider: anthropic_api, model: m, api_key_env: K, "

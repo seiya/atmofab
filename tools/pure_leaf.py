@@ -127,7 +127,7 @@ WORKSHOP_LAUNCH_PAIRS: frozenset[tuple[str, str]] = frozenset({
 #: The prompt-contract version a workshop request carries in `prompt_contract_version` (the
 #: field the pure request uses for its own). Its own counter, so a workshop template change
 #: never moves `PURE_PROMPT_CONTRACT_VERSION` and the reverse.
-WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-2"
+WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-3"
 
 #: The first line of every host-rendered workshop launch prompt, anchored as the pure sentinel
 #: is (`startswith`). A distinct literal, so a record's prompt says which of the two leaf
@@ -150,6 +150,10 @@ WORKSHOP_SYSTEM_PROMPT = (
 WORKSHOP_TOOL_SURFACE_TEXT: dict[str, str] = {
     "claude_cli": ("You have no shell: your file tools (Read, Write, Edit, Glob, Grep) reach "
                    "your work tree and nothing else."),
+    "codex_cli": ("Your shell and patch tools run with your work tree as the working directory, "
+                  "and the host reads your tree and nothing else you write. A command you run "
+                  "there is not one of the host's operations: those are the `wrapper` MCP "
+                  "server's tools (`mcp__wrapper__<operation>`)."),
 }
 
 #: The MCP server name the wrapper is registered under in `--mcp-config`. The CLI names its
@@ -330,6 +334,55 @@ def workshop_leaf_flags(mcp_config_json: str) -> list[str]:
             "--permission-mode", "acceptEdits", "--permission-prompts", "none",
             "--allowedTools", f"mcp__{WORKSHOP_MCP_SERVER_NAME}",
             "--disable-slash-commands", "--output-format", "json"]
+
+
+def workshop_mcp_url(mcp_config_json: str) -> str:
+    """The wrapper endpoint's URL out of `workshop_mcp_config_json`'s JSON: the one value the
+    codex launch carries (`codex_workshop_overrides`), so both CLIs are handed one endpoint
+    description."""
+    try:
+        url = json.loads(mcp_config_json)["mcpServers"][WORKSHOP_MCP_SERVER_NAME]["url"]
+    except (TypeError, ValueError, KeyError) as exc:
+        raise ValueError(f"not a workshop --mcp-config JSON: {mcp_config_json!r}") from exc
+    if not (isinstance(url, str) and url.startswith("http://127.0.0.1:")):
+        raise ValueError(f"the wrapper endpoint is a loopback http URL (got {url!r})")
+    return url
+
+
+def codex_workshop_overrides(mcp_config_json: str) -> list[str]:
+    """The `--config` overrides a codex `workshop leaf` launch adds on BOTH subcommands (issue
+    #534 step 2 PR-2). A fresh list per call. Measured on codex-cli 0.164.0 against a loopback
+    Responses-API stand-in and the real wrapper endpoint (unbilled;
+    `tools/tests/test_bwrap_simulation.py` `CodexWorkshopLeafCliTests`, MX2):
+
+    - `mcp_servers.wrapper.url="<url>"`: the wrapper's streamable-HTTP endpoint for this launch,
+      the per-launch twin of claude's `--mcp-config` (`initialize`, `tools/list` and
+      `tools/call` reach `tools/workshop_mcp.py`; no `features.*` flag is needed for it).
+    - `mcp_servers.wrapper.default_tools_approval_mode="approve"`: an MCP tool call needs
+      approval under every policy, and under `approval_policy="never"` nobody can give it, so
+      without this every wrapper call fails with "MCP tool call requires approval, but approval
+      policy is never" (measured; `"auto"` fails the same way). It is the twin of claude's
+      `--allowedTools mcp__wrapper`.
+    - `approval_policy="never"`: no command or patch waits for an approver (`codex exec`'s own
+      default, pinned rather than inherited).
+    - `features.apps=false`: the CLI otherwise starts its own `codex_apps` MCP client, which
+      connects to the vendor's connector service with the operator's credential at every
+      launch (measured: an `initialize` refused with HTTP 451 from outside the loopback) — an
+      MCP server the launch did not name, as `--strict-mcp-config` keeps one out for claude.
+
+    The tool surface the CLI then offers the model is its own (measured on 0.164.0 with a model
+    the stand-in does not describe): a `functions` namespace — a JavaScript `exec` tool, `wait`
+    and `request_user_input` — whose `exec` reaches nested tools (`exec_command`,
+    `apply_patch`, `view_image`, … and, as "deferred" nested tools, the wrapper's
+    `mcp__wrapper__<op>`), and a `collaboration` namespace of sub-agent tools (`spawn_agent`,
+    `send_message`, `wait_agent`, …; `features.multi_agent=false` does not remove it). The
+    launch prompt names the wrapper's tools by their name (`WORKSHOP_TOOL_SURFACE_TEXT`)."""
+    url = workshop_mcp_url(mcp_config_json)
+    server = f"mcp_servers.{WORKSHOP_MCP_SERVER_NAME}"
+    return ["--config", 'approval_policy="never"',
+            "--config", "features.apps=false",
+            "--config", f"{server}.url={json.dumps(url)}",
+            "--config", f'{server}.default_tools_approval_mode="approve"']
 
 
 # --------------------------------------------------------------------------------------

@@ -77,8 +77,8 @@ class _WorkshopFakeConductor(_PureFakeConductor):
     #: How many launches past the end of `leaf_actions` the fake serves before raising.
     MAX_SPAWNS_PAST_SCRIPT = 8
 
-    def _prepare_workshop_home(self, lineage_id, *, resume):  # type: ignore[override]
-        home = self.homes / self.orchestration_id / "claude" / lineage_id
+    def _prepare_workshop_home(self, entry, lineage_id, *, resume):  # type: ignore[override]
+        home = self.homes / self.orchestration_id / self._workshop_backend(entry) / lineage_id
         if resume:
             if not home.is_dir():
                 return None
@@ -127,7 +127,7 @@ class _WorkshopFakeConductor(_PureFakeConductor):
     def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore
         self.__dict__.setdefault("spawns", []).append(kwargs)
         request = [c for c in self.calls if c[0] == "record-launch"][-1][1]["--request-json"]
-        tree = (self.homes / self.orchestration_id / "claude"
+        tree = (self.homes / self.orchestration_id / self._workshop_backend(entry)
                 / request["workshop_lineage_id"] / "tree")
         self.__dict__.setdefault("order", []).append(("spawn", kwargs["child_arid"]))
         index = len(self.spawns) - 1
@@ -712,6 +712,9 @@ _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
 _WORKSHOP_CONTRACT_DIGESTS = {
     "workshop-1": "434bbd2a7d61d8ad6352b857a08398ed9ea0c33af5f7904823a841af6cc0d17e",
     "workshop-2": "79daa75c9cdc3233d8ea0697e63d0b4c2d1a1cf8d7ad60eaaed39066dae66c14",
+    # Step 2 PR-2: the `codex_cli` row of `WORKSHOP_TOOL_SURFACE_TEXT` (`workshop-2` shipped
+    # with step 2 PR-1, main 7cfbe1b5).
+    "workshop-3": "1aee42ef7d0c2df40921cec4baecf3ab10af42c3386dfda58520b265b7b6ab4c",
 }
 
 
@@ -880,6 +883,24 @@ class AuditTests(unittest.TestCase):
                       "\n".join(lines))
         pure = _summarize_one_pure_meta({**meta, "leaf_mode": None})
         self.assertNotIn("lineages", pure)
+
+    def test_a_codex_workshop_meta_reports_its_items_not_a_zero_turn_count(self) -> None:
+        """A codex attempt records `model_turns: null` and `items_completed` (issue #534 step 2
+        PR-2): the summary sums the items and leaves the turn count unrecorded, not 0."""
+        from tools.audit_orchestration import _render_pure_leaf_row
+        from tools.orchestration_diagnostics import _summarize_one_pure_meta
+        meta = {"result": "pass", "attempts": 2, "leaf_mode": "workshop", "per_attempt": [
+            {"lineage_id": "c1", "wrapper_calls": 2, "model_turns": None,
+             "items_completed": 41},
+            {"lineage_id": "c1", "wrapper_calls": 1, "model_turns": None,
+             "items_completed": 12}]}
+        row = _summarize_one_pure_meta(meta)
+        self.assertEqual((row["model_turns"], row["items_completed"]), (None, 53))
+        lines: list[str] = []
+        _render_pure_leaf_row("compile", row, lines)
+        text = "\n".join(lines)
+        self.assertIn("wrapper calls 3, items completed 53", text)
+        self.assertNotIn("model turns", text)
 
 
 class TimeoutEventTests(_Base):
@@ -1209,6 +1230,117 @@ class Round3Tests(_Base):
         self.assertEqual(workshop_tree.read_lineage_record(self.paths("child-1"))["ended_by"],
                          "superseded")
 
+
+
+def _codex_config(repo: Path) -> lc.LlmConfig:
+    path = repo / "llm_codex_workshop.yaml"
+    path.write_text(
+        "defaults: {provider: codex_cli, model: gpt-x}\n"
+        "phases: {generate: {substeps: {generate: {provider: codex_cli, model: gpt-x, "
+        "leaf: workshop, max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n",
+        encoding="utf-8")
+    return lc.load_llm_config(path)
+
+
+def _codex_proc(text: str = "done", items: int = 3) -> wc.ProcResult:
+    lines = [json.dumps({"type": "thread.started", "thread_id": "t"})]
+    lines += [json.dumps({"type": "item.completed", "item": {"type": "command_execution"}})
+              for _ in range(items)]
+    lines.append(json.dumps({"type": "turn.completed", "usage": {"output_tokens": 7}}))
+    return wc.ProcResult(0, text, "", usage={"output_tokens": 7, "usage_source": "codex"},
+                         raw_stdout="\n".join(lines) + "\n", items_completed=items)
+
+
+class CodexWorkshopLoopTests(OuterReopenTests):
+    """The loop on a `codex_cli` workshop entry (issue #534 step 2 PR-2): the lineage lives
+    under the codex container, the attempt record is the synthetic envelope's (the host-pinned
+    model, codex's usage, no turn count, the completed-item count), and a warm turn resumes the
+    THREAD the launch emitted, not the agent_run_id."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.c.llm_config = _codex_config(self.repo)
+        self.c._session_id_for_child = (  # type: ignore[assignment]
+            lambda arid, entry=None: f"thread-{arid}")
+
+    def paths(self, lineage: str) -> workshop_tree.LineagePaths:
+        return workshop_tree.LineagePaths(
+            homes_root=self.c.homes, orchestration_id=_ORCH, lineage_id=lineage,
+            orchestration_dir=self.repo / "workspace" / "orchestrations" / _ORCH,
+            backend="codex")
+
+    def test_a_codex_attempt_records_the_synthetic_envelope(self) -> None:
+        def writes(c, tree, kwargs):
+            _write_bundle(tree)
+            proc = _codex_proc(items=4)
+            # The read loop's count, not a re-count of the capped raw capture (4 here).
+            proc.items_completed = 9
+            return proc
+
+        self.c.leaf_actions = [writes]
+        self.assertEqual(self.run_substep().status, "pass")
+        self.assertTrue(self.paths("child-1").tree.is_dir())
+        self.assertFalse((self.c.homes / _ORCH / "claude").exists())
+        row = self.bundle_meta()["per_attempt"][0]
+        self.assertEqual((row["model"], row["model_turns"], row["items_completed"]),
+                         ("gpt-x", None, 9))
+        self.assertEqual(row["usage"]["output_tokens"], 7)
+        self.assertEqual(self.requests()[0]["workshop_provider"], "codex_cli")
+
+    def test_a_warm_repair_resumes_the_emitted_thread(self) -> None:
+        self.c.leaf_actions = [lambda c, tree, kw: _codex_proc(),
+                               lambda c, tree, kw: (_write_bundle(tree), _codex_proc())[1]]
+        self.assertEqual(self.run_substep().status, "pass")
+        self.assertEqual(self.c.spawns[1]["resume_session_id"], "thread-child-1")
+        self.assertEqual(self.requests()[1]["workshop_lineage_id"], "child-1")
+
+    def test_a_warm_attempt_records_its_turn_not_the_thread_total(self) -> None:
+        """The warm attempt's row is decumulated against the resumed launch of its thread
+        (`_codex_thread_resumed_usage`, asked for the thread the launch resumed)."""
+        asked: list[tuple] = []
+
+        def resumed(tid, arid):
+            asked.append((tid, arid))
+            return "child-1", {"output_tokens": 7}
+
+        self.c._codex_thread_resumed_usage = resumed  # type: ignore[assignment]
+
+        def warm(c, tree, kw):
+            _write_bundle(tree)
+            proc = _codex_proc()
+            proc.usage = {"output_tokens": 19}
+            return proc
+
+        self.c.leaf_actions = [lambda c, tree, kw: _codex_proc(), warm]
+        self.assertEqual(self.run_substep().status, "pass")
+        rows = self.bundle_meta()["per_attempt"]
+        self.assertEqual([r["usage"]["output_tokens"] for r in rows], [7, 12])
+        self.assertEqual(rows[1]["usage"]["provider_details"]["thread_running_total"],
+                         {"output_tokens": 19})
+        self.assertEqual(asked, [("thread-child-1", "child-2")])
+
+    def test_an_open_lineage_is_reopened_warm(self) -> None:
+        self.c.leaf_actions = [lambda c, tree, kw: (_write_bundle(tree), _codex_proc())[1]]
+        self.assertEqual(self.run_substep().status, "pass")
+        self.assertEqual(self._reopen("child-1").status, "pass")
+        self.assertTrue(self.requests()[-1]["warm_resume"])
+        self.assertEqual(self.c.spawns[-1]["resume_session_id"], "thread-child-1")
+
+    def test_the_real_session_check_reads_the_rollout_under_codex_home(self) -> None:
+        paths = self.paths("lin")
+        check = wc.Conductor._workshop_session_resumable
+        self.assertFalse(check(self.c, paths, "01a1-thread"))
+        day = paths.config / "sessions" / "2026" / "10" / "24"
+        day.mkdir(parents=True)
+        (day / "rollout-2026-10-24T10-47-36-01a1-thread.jsonl").write_text("{}\n")
+        self.assertTrue(check(self.c, paths, "01a1-thread"))
+        for other in ("01a1", "thread", "", None, "../x", "*"):
+            self.assertFalse(check(self.c, paths, other), other)
+        # A claude transcript of the same id is not a codex session.
+        claude = workshop_tree.LineagePaths(
+            homes_root=self.c.homes, orchestration_id=_ORCH, lineage_id="lin",
+            orchestration_dir=paths.orchestration_dir)
+        self.assertFalse(check(self.c, claude, "01a1-thread"))
 
 if __name__ == "__main__":
     unittest.main()

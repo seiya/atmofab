@@ -585,15 +585,19 @@ def _summarize_one_pure_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
     }
     if meta.get("leaf_mode") == "workshop":
         # A `workshop leaf` (issue #534): the lineages its attempts ran in, and the wrapper
-        # calls and model turns they spent — the A/B's own dimensions besides tokens.
+        # calls and model turns they spent — the A/B's own dimensions besides tokens. A codex
+        # attempt reports no turn count (`model_turns: null`) and its completed items instead
+        # (step 2 PR-2): a count no attempt recorded is None, never a 0 it did not measure.
         rows = [a for a in per_attempt if isinstance(a, dict)]
         row["leaf_mode"] = "workshop"
         row["lineages"] = list(dict.fromkeys(
             str(a["lineage_id"]) for a in rows if isinstance(a.get("lineage_id"), str)))
         row["wrapper_calls"] = sum(_nonneg_int_or_none(a.get("wrapper_calls")) or 0
                                    for a in rows)
-        row["model_turns"] = sum(_nonneg_int_or_none(a.get("model_turns")) or 0
-                                 for a in rows)
+        for key in ("model_turns", "items_completed"):
+            counts = [n for n in (_nonneg_int_or_none(a.get(key)) for a in rows)
+                      if n is not None]
+            row[key] = sum(counts) if counts else None
     return row
 
 
