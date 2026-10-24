@@ -110,30 +110,42 @@ class _Leaf:
     def __init__(self, homes: Path) -> None:
         self.homes = homes
         self.calls: list[dict] = []
+        #: Workshop launches that read `io_contract.yaml`, write NO document and leave their
+        #: transcript under another session's name (so the lineage cannot be resumed and the
+        #: repair is a cold reuse in a new lineage).
+        self.unfinished = 0
 
     def __call__(self, conductor, prompt_text, child_env, entry=None, **kw):
         self.calls.append({"prompt": prompt_text, **kw})
         sid = kw.get("session_id") or kw["child_arid"]
         envelope = {"type": "result", "is_error": False, "result": json.dumps(_REVIEW),
                     "session_id": sid, "num_turns": 1, "duration_ms": 10,
-                    "usage": {"input_tokens": 1, "output_tokens": 2}}
+                    "total_cost_usd": 0.25,
+                    "usage": {"input_tokens": 1, "output_tokens": 2,
+                              "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0},
+                    "modelUsage": {"claude-opus-5-5": {
+                        "inputTokens": 1, "outputTokens": 2, "cacheReadInputTokens": 0,
+                        "cacheCreationInputTokens": 0}}}
         if entry is not None and entry.is_workshop:
             home = self.homes / conductor.orchestration_id / "claude" / sid
             tree = home / "tree"
-            (tree / "review.json").write_text(json.dumps(_REVIEW), encoding="utf-8")
+            unfinished = self.unfinished > 0
+            self.unfinished -= 1
+            if not unfinished:
+                (tree / "review.json").write_text(json.dumps(_REVIEW), encoding="utf-8")
             project = home / "config" / "projects" / "p"
             project.mkdir(parents=True, exist_ok=True)
-            tests = f"{tree}/tests.md"
+            tests = f"{tree}/{'io_contract.yaml' if unfinished else 'tests.md'}"
             lines = [
                 {"version": "9.9.9", "message": {"content": [
-                    {"type": "tool_use", "id": "r1", "name": "Read",
+                    {"type": "tool_use", "id": f"r1-{sid}", "name": "Read",
                      "input": {"file_path": tests}}]}},
                 {"version": "9.9.9", "message": {"content": [
-                    {"type": "tool_result", "tool_use_id": "r1"}]},
+                    {"type": "tool_result", "tool_use_id": f"r1-{sid}"}]},
                  "toolUseResult": {"file": {"filePath": tests, "startLine": 1,
                                             "numLines": 5, "totalLines": 5}}},
             ]
-            (project / f"{sid}.jsonl").write_text(
+            (project / f"{'other' if unfinished else sid}.jsonl").write_text(
                 "".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
             envelope["result"] = "wrote review.json"
         return wc.ProcResult(0, json.dumps(envelope), "")
@@ -272,8 +284,8 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
             self.assertEqual(row["label"], "agreement")
             # The scripted envelope's figures, summed over the one attempt.
             self.assertEqual((row["duration_ms"], row["model_turns"], row["input_tokens"],
-                              row["output_tokens"], row["schema_repairs"]),
-                             (10.0, 1.0, 1.0, 2.0, 0))
+                              row["output_tokens"], row["schema_repairs"], row["cost_usd"]),
+                             (10.0, 1.0, 1.0, 2.0, 0, 0.25))
         first = rows[0]["attempts"][0]["agent_run_id"]
         replayed = (replay / "launches" / f"{first}.prompt.txt").read_text(encoding="utf-8")
         self.assertNotEqual(replayed, self.source_prompt)       # the identity differs ...
@@ -351,6 +363,45 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
                          {"lines": 5, "covered": 5, "fraction": 1.0})
         self.assertEqual(row["coverage"]["host_verdict.json"]["covered"], 0)
         self.assertNotIn("prompt_matches_record", row)
+
+    def test_coverage_is_the_union_over_the_repetitions_lineages(self) -> None:
+        self.leaf.unfinished = 1
+        rc, out = self._main(leaf="workshop")
+        self.assertEqual(rc, 0, out)
+        [row] = self._rows(self._replays()[0])
+        lineages = [a["lineage_id"] for a in row["attempts"]]
+        self.assertEqual(len(set(lineages)), 2, row["attempts"])
+        self.assertEqual(row["schema_repairs"], 1)
+        self.assertEqual(row["coverage"]["io_contract.yaml"]["covered"], 5)
+        self.assertEqual(row["coverage"]["tests.md"]["covered"], 5)
+
+    def _status(self, replay: Path) -> tuple[str, str | None]:
+        meta = json.loads((replay / "orchestration_meta.json").read_text(encoding="utf-8"))
+        return meta["status"], meta.get("reason_code")
+
+    def test_a_replay_that_raises_ends_fail_and_leaves_no_scratch(self) -> None:
+        def die(self, *a, **k):
+            raise RuntimeError("leaf host broke")
+        with mock.patch.object(wc.Conductor, "spawn_leaf", die), \
+                self.assertRaises(RuntimeError):
+            self._main()
+        [replay] = self._replays()
+        self.assertEqual(self._status(replay), ("fail", "judge_replay_error"))
+        meta = json.loads((replay / "orchestration_meta.json").read_text(encoding="utf-8"))
+        self.assertFalse((self.repo / "workspace" / "tmp"
+                          / meta["orchestration_agent_run_id"]).exists())
+
+    def test_a_failing_preflight_refuses_and_ends_fail(self) -> None:
+        with mock.patch.object(ort, "probe_execution_platform",
+                               lambda *a, **k: {"status": "fail", "backend": "claude",
+                                                "checks": [], "can_launch_step_agents": False,
+                                                "can_launch_substep_agents": False}):
+            rc, out = self._main()
+        self.assertEqual((rc, json.loads(out.strip().splitlines()[-1])["reason"]),
+                         (2, "judge_replay_preflight_failed"))
+        [replay] = self._replays()
+        self.assertEqual(self._status(replay), ("fail", "preflight_failed"))
+        self.assertEqual(self.leaf.calls, [])
 
     def test_a_replay_writes_nothing_a_run_or_a_rollup_reads(self) -> None:
         from tools.audit_orchestration import collect_pure_leaf_ab_summary
