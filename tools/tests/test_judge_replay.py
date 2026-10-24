@@ -458,6 +458,14 @@ class ReadCoverageTests(unittest.TestCase):
             self._result("g3", {"mode": "content", "numFiles": 2,
                                 "filenames": [ir, f"{self.TREE}/tests.md"],
                                 "content": f"{ir}:90:z\n{self.TREE}/tests.md:2:z"}),
+            # CLI 2.1.310 then writes an `api-request-blob` line that repeats the conversation
+            # (tool uses and their results) with no `toolUseResult` (86 of 148 real Read ids):
+            # neither the repeat of a use nor the result-less repeat of a result is a new call.
+            {"type": "api-request-blob", "message": {"content": [
+                {"type": "tool_use", "id": "r1", "name": "Read", "input": {"file_path": ir}},
+                {"type": "tool_result", "tool_use_id": "r1"},
+                {"type": "tool_result", "tool_use_id": "r2"},
+                {"type": "tool_result", "tool_use_id": "g1"}]}},
         ]
 
     def _write(self, base: Path, name: str, lines: list[dict]) -> Path:
