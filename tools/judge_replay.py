@@ -541,7 +541,9 @@ def read_coverage(transcripts: Iterable[Path], tree_roots: Iterable[str],
 
     A `Read` result covers `[startLine, startLine + numLines)`; an errored `Read` (the file is
     over the CLI's size limit) covers nothing; a `Read` result without the line triple makes
-    the answer `unmeasured`, and so do transcripts that hold no tool call at all (no
+    the answer `unmeasured` (a `file_unchanged` result — the CLI's answer to a repeated Read
+    of an unchanged file, which shows nothing new — covers nothing and is not one), and so do
+    transcripts that hold no tool call at all (no
     transcript was found, or the CLI wrote it elsewhere): a row says 0 only when a read was
     observed to be absent. A `Grep` in `content` mode covers each numbered line it SHOWED
     (`N:` hits and `N-` context lines); a line the CLI omitted as too long, a `-o` (only the
@@ -571,6 +573,10 @@ def read_coverage(transcripts: Iterable[Path], tree_roots: Iterable[str],
             continue
         if call.name == "Read":
             if not call.has_result or call.is_error or not isinstance(call.result, dict):
+                continue
+            if call.result.get("type") == "file_unchanged":
+                # A repeat of an earlier Read of an unchanged file: the CLI shows nothing new
+                # and records no line triple; the earlier Read carries what was shown.
                 continue
             file = call.result.get("file")
             triple = (file.get("filePath"), file.get("startLine"), file.get("numLines"),

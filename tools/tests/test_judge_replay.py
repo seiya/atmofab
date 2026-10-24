@@ -796,6 +796,47 @@ class ReadCoverageTests(unittest.TestCase):
         self.assertEqual(out["coverage"], ordered["coverage"])
         self.assertEqual(only_blob["coverage"], "unmeasured")
 
+    def test_a_repeated_read_of_an_unchanged_file_covers_nothing_new(self) -> None:
+        tests = f"{self.TREE}/tests.md"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(Path(tmp), "t.jsonl", [
+                self._use("r1", "Read", file_path=tests, limit=2),
+                self._result("r1", {"file": {"filePath": tests, "startLine": 1,
+                                             "numLines": 2, "totalLines": 4}}),
+                self._use("r2", "Read", file_path=tests, limit=2),
+                self._result("r2", {"type": "file_unchanged", "file": {"filePath": tests}})])
+            out = jr.read_coverage([path], [self.TREE], self._seeds())
+        self.assertEqual(out["coverage"]["tests.md"]["ranges"], [[1, 2]])
+
+    def test_only_a_line_answering_one_call_with_its_result_settles_it(self) -> None:
+        """Three shapes a line can take; only the first is attributable."""
+        ir = f"{self.TREE}/spec.ir.yaml"
+        measured = {"file": {"filePath": ir, "startLine": 1, "numLines": 10, "totalLines": 100}}
+        cases = {
+            # one result, with toolUseResult: settles r1 (10 lines), and is not overwritten by
+            # a later attributable line for the same id (first wins)
+            "first_wins": ([self._result("r1", measured),
+                            self._result("r1", {**measured, "file": {
+                                **measured["file"], "numLines": 90}})], 10),
+            # one result, no toolUseResult: not attributable
+            "no_payload": ([{"message": {"content": [
+                {"type": "tool_result", "tool_use_id": "r1"}]}},
+                self._result("r1", measured)], 10),
+            # two results with a toolUseResult: the payload is the line's, not either call's
+            "two_results": ([{"message": {"content": [
+                {"type": "tool_result", "tool_use_id": "r1"},
+                {"type": "tool_result", "tool_use_id": "r2"}]},
+                "toolUseResult": {**measured, "file": {**measured["file"], "numLines": 90}}},
+                self._result("r1", measured)], 10),
+        }
+        for name, (lines, expected) in cases.items():
+            with self.subTest(name), tempfile.TemporaryDirectory() as tmp:
+                path = self._write(Path(tmp), "t.jsonl", [
+                    self._use("r1", "Read", file_path=ir),
+                    self._use("r2", "Glob", pattern="*"), *lines])
+                out = jr.read_coverage([path], [self.TREE], self._seeds())
+                self.assertEqual(out["coverage"]["spec.ir.yaml"]["covered"], expected)
+
     def test_a_read_result_without_its_line_triple_is_unmeasured_not_zero(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = self._write(Path(tmp), "t.jsonl", [
