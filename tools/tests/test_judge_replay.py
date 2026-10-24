@@ -671,6 +671,21 @@ class ReadCoverageTests(unittest.TestCase):
         out = jr.read_coverage([], [self.TREE], self._seeds())
         self.assertEqual(out["coverage"], "unmeasured")
 
+    def test_a_result_less_repeat_read_first_does_not_hide_the_measured_result(self) -> None:
+        """Transcript files are read in name order, not in time order: a fork file sorting
+        before the cold one would put the CLI's result-less repeat first."""
+        cold = self._cold()
+        blob = cold[-1]
+        self.assertEqual(blob["type"], "api-request-blob")
+        with tempfile.TemporaryDirectory() as tmp:
+            first = self._write(Path(tmp), "a.jsonl", [blob])
+            second = self._write(Path(tmp), "b.jsonl", cold)
+            out = jr.read_coverage([first, second], [self.TREE], self._seeds())
+            ordered = jr.read_coverage([second], [self.TREE], self._seeds())
+            only_blob = jr.read_coverage([first], [self.TREE], self._seeds())
+        self.assertEqual(out["coverage"], ordered["coverage"])
+        self.assertEqual(only_blob["coverage"], "unmeasured")
+
     def test_a_read_result_without_its_line_triple_is_unmeasured_not_zero(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = self._write(Path(tmp), "t.jsonl", [

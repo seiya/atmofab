@@ -442,7 +442,12 @@ class _ToolCall:
     input: dict[str, Any]
     result: Any = None
     is_error: bool = False
+    #: A result attributable to this call was read (its line answers this call alone and
+    #: carries the CLI's `toolUseResult`).
     has_result: bool = False
+    #: Some line answered this call, attributable or not (the CLI's `api-request-blob` line
+    #: repeats results with no `toolUseResult`).
+    answered: bool = False
 
 
 def _transcript_calls(files: Iterable[Path]) -> tuple[dict[str, _ToolCall], set[str]]:
@@ -473,15 +478,21 @@ def _transcript_calls(files: Iterable[Path]) -> tuple[dict[str, _ToolCall], set[
                     calls.setdefault(block["id"], _ToolCall(
                         str(block.get("name") or ""),
                         block.get("input") if isinstance(block.get("input"), dict) else {}))
+            # `toolUseResult` belongs to the line: it is attributable only when the line answers
+            # one call. Only an attributable result settles a call, whatever the order the
+            # files are read in, so a result-less repeat read FIRST does not hide the measured
+            # one.
+            attributable = len(results) == 1 and "toolUseResult" in obj
             for block in results:
                 call = calls.get(str(block.get("tool_use_id") or ""))
-                if call is None or call.has_result:
+                if call is None:
+                    continue
+                call.answered = True
+                if call.has_result or not attributable:
                     continue
                 call.has_result = True
                 call.is_error = block.get("is_error") is True
-                # `toolUseResult` belongs to the line; it is attributable only when the line
-                # answers one call.
-                call.result = obj.get("toolUseResult") if len(results) == 1 else None
+                call.result = obj.get("toolUseResult")
     return calls, versions
 
 
@@ -502,7 +513,8 @@ def read_coverage(transcripts: Iterable[Path], tree_roots: Iterable[str],
     observed to be absent. A `Grep` in `content` mode covers each numbered line it SHOWED
     (`N:` hits and `N-` context lines); a line the CLI omitted as too long, a `-o` (only the
     matched part) search and a `-n false` (unnumbered) search show no whole line and cover
-    nothing, as do `count` / `files_with_matches` modes and `Glob`. `tree_roots` are the lineages' tree directories as the leaf saw them; the tree is
+    nothing, as do `count` / `files_with_matches` modes and `Glob`. A `Read` or `Grep` answered
+    only by lines that carry no attributable result is `unmeasured` too. `tree_roots` are the lineages' tree directories as the leaf saw them; the tree is
     the leaf's working directory, so a path the CLI records RELATIVE (`tests.md`, `./tests.md`;
     CLI 2.1.309 records a relative `file_path` as given) names the same seed."""
     roots = [str(r).rstrip("/") for r in tree_roots]
@@ -520,6 +532,10 @@ def read_coverage(transcripts: Iterable[Path], tree_roots: Iterable[str],
     prefixes = sorted(by_path.items(), key=lambda kv: -len(kv[0]))
     names_longest = sorted(seeds, key=len, reverse=True)
     for tool_id, call in calls.items():
+        if call.name in ("Read", "Grep") and call.answered and not call.has_result:
+            # Answered, but by no line that says what was shown: not a measured "no read".
+            unmeasured.append(tool_id)
+            continue
         if call.name == "Read":
             if not call.has_result or call.is_error or not isinstance(call.result, dict):
                 continue
