@@ -522,6 +522,29 @@ class ReadCoverageTests(unittest.TestCase):
         self.assertEqual(out["coverage"]["spec.ir.yaml"]["covered"], 2)
         self.assertEqual(out["coverage"]["host_verdict.json"]["covered"], 2)
 
+    def test_a_grep_covers_only_the_whole_lines_it_showed(self) -> None:
+        ir = f"{self.TREE}/spec.ir.yaml"
+        with tempfile.TemporaryDirectory() as tmp:
+            path = self._write(Path(tmp), "t.jsonl", [
+                # The CLI omits a line too long to show (measured, CLI 2.1.309).
+                self._use("g1", "Grep", path=ir, pattern="x", output_mode="content"),
+                self._result("g1", {"mode": "content", "filenames": [],
+                                    "content": "1:[Omitted long matching line]\n2:shown"}),
+                # `-o` shows the matched fragment only; `-n false` shows no line number.
+                self._use("g2", "Grep", path=ir, pattern="x", output_mode="content",
+                          **{"-o": True}),
+                self._result("g2", {"mode": "content", "filenames": [], "content": "3:x"}),
+                self._use("g3", "Grep", path=ir, pattern="x", output_mode="content",
+                          **{"-n": False}),
+                self._result("g3", {"mode": "content", "filenames": [],
+                                    "content": "4: text that begins with digits"})])
+            out = jr.read_coverage([path], [self.TREE], self._seeds())
+        self.assertEqual(out["coverage"]["spec.ir.yaml"]["covered"], 1)
+
+    def test_no_transcript_is_unmeasured_not_zero(self) -> None:
+        out = jr.read_coverage([], [self.TREE], self._seeds())
+        self.assertEqual(out["coverage"], "unmeasured")
+
     def test_a_read_result_without_its_line_triple_is_unmeasured_not_zero(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = self._write(Path(tmp), "t.jsonl", [

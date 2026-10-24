@@ -449,7 +449,10 @@ def _transcript_calls(files: Iterable[Path]) -> tuple[dict[str, _ToolCall], set[
     return calls, versions
 
 
-_GREP_LINE = re.compile(r"(\d+)[:-]")
+_GREP_LINE = re.compile(r"(\d+)[:-](.*)\Z", re.S)
+#: What the CLI prints in place of a matched or context line too long to show (measured on
+#: CLI 2.1.309: `1:[Omitted long matching line]`): the line was not shown, so it was not read.
+_GREP_OMITTED = re.compile(r"\[Omitted long [a-z ]*line\]")
 
 
 def read_coverage(transcripts: Iterable[Path], tree_roots: Iterable[str],
@@ -458,9 +461,12 @@ def read_coverage(transcripts: Iterable[Path], tree_roots: Iterable[str],
 
     A `Read` result covers `[startLine, startLine + numLines)`; an errored `Read` (the file is
     over the CLI's size limit) covers nothing; a `Read` result without the line triple makes
-    the answer `unmeasured`. A `Grep` in `content` mode covers each numbered line it returned
-    (`N:` hits and `N-` context lines); `count` / `files_with_matches` modes and `Glob` cover
-    nothing. `tree_roots` are the lineages' tree directories as the leaf saw them; the tree is
+    the answer `unmeasured`, and so do transcripts that hold no tool call at all (no
+    transcript was found, or the CLI wrote it elsewhere): a row says 0 only when a read was
+    observed to be absent. A `Grep` in `content` mode covers each numbered line it SHOWED
+    (`N:` hits and `N-` context lines); a line the CLI omitted as too long, a `-o` (only the
+    matched part) search and a `-n false` (unnumbered) search show no whole line and cover
+    nothing, as do `count` / `files_with_matches` modes and `Glob`. `tree_roots` are the lineages' tree directories as the leaf saw them; the tree is
     the leaf's working directory, so a path the CLI records RELATIVE (`tests.md`, `./tests.md`;
     CLI 2.1.309 records a relative `file_path` as given) names the same seed."""
     roots = [str(r).rstrip("/") for r in tree_roots]
@@ -493,7 +499,8 @@ def read_coverage(transcripts: Iterable[Path], tree_roots: Iterable[str],
         elif call.name == "Grep":
             result = call.result
             if (not call.has_result or call.is_error or not isinstance(result, dict)
-                    or result.get("mode") != "content"):
+                    or result.get("mode") != "content"
+                    or call.input.get("-o") is True or call.input.get("-n") is False):
                 continue
             target = str(call.input.get("path") or "").rstrip("/")
             single = by_path.get(target)
@@ -515,9 +522,14 @@ def read_coverage(transcripts: Iterable[Path], tree_roots: Iterable[str],
                 if name is None:
                     name = single
                 match = _GREP_LINE.match(rest)
-                if name is not None and match:
+                if (name is not None and match
+                        and not _GREP_OMITTED.fullmatch(match.group(2).strip())):
                     covered[name].add(int(match.group(1)))
     out: dict[str, Any] = {"cli_versions": sorted(versions)}
+    if not calls:
+        out["coverage"] = "unmeasured"
+        out["unmeasured_reads"] = 0
+        return out
     if unmeasured:
         out["coverage"] = "unmeasured"
         out["unmeasured_reads"] = len(unmeasured)
