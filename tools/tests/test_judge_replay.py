@@ -286,6 +286,17 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual((meta["status"], meta.get("reason_code")),
                          ("cancel", "judge_replay_finished"))
 
+    def test_a_workshop_record_is_not_compared_with_a_pure_prompt(self) -> None:
+        path = (self.repo / "workspace/orchestrations" / _SRC / "launches"
+                / f"{_SRC_ARID}.request.json")
+        request = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps({**request, "leaf_mode": "workshop"}), encoding="utf-8")
+        rc, out = self._main()
+        self.assertEqual(rc, 0, out)
+        [row] = self._rows(self._replays()[0])
+        self.assertEqual(row["source_leaf_mode"], "workshop")
+        self.assertNotIn("prompt_matches_record", row)
+
     def test_a_template_change_is_reported_as_a_prompt_mismatch(self) -> None:
         real = ort._load_launch_prompt_templates()
         moved = {**real, "pure validate.judge": real["pure validate.judge"] + "\nMOVED\n"}
@@ -464,6 +475,16 @@ class ReadCoverageTests(unittest.TestCase):
             # The fork repeats the cold history, then reads one more range.
             fork = self._write(Path(tmp), "fork.jsonl", [
                 *self._cold(),
+                # A hit past the end of the seed (a stale transcript line) counts for nothing,
+                # and an errored result is no read whatever it carries.
+                self._use("g4", "Grep", path=f"{self.TREE}/tests.md", pattern="w",
+                          output_mode="content"),
+                self._result("g4", {"mode": "content", "numFiles": 1, "filenames": [],
+                                    "content": "900:w"}),
+                self._use("r5", "Read", file_path=f"{self.TREE}/host_verdict.json"),
+                self._result("r5", {"file": {"filePath": f"{self.TREE}/host_verdict.json",
+                                             "startLine": 1, "numLines": 50,
+                                             "totalLines": 50}}, error=True),
                 self._use("r4", "Read", file_path=f"{self.TREE}/spec.ir.yaml",
                           offset=60, limit=10),
                 self._result("r4", self._read(60, 10))])
