@@ -118,16 +118,37 @@ def is_pure_request(request_payload: Any) -> bool:
 #: The `leaf_mode` value that selects the workshop path.
 WORKSHOP_LEAF_MODE = "workshop"
 
-#: The `(step, substep)` pairs a workshop leaf may serve: both producing substeps. Step 1 of the
-#: design note's migration order adopted `generate.generate`, step 2 `compile.generate`
-#: (`tools/llm_config.py` refuses any other entry).
-WORKSHOP_LAUNCH_PAIRS: frozenset[tuple[str, str]] = frozenset({
+#: The PRODUCING pairs a workshop leaf may serve. Step 1 of the design note's migration order
+#: adopted `generate.generate`, step 2 `compile.generate`. A producing lineage is served the
+#: wrapper's operations over a per-launch MCP endpoint.
+WORKSHOP_PRODUCING_PAIRS: frozenset[tuple[str, str]] = frozenset({
     ("generate", "generate"), ("compile", "generate")})
+
+#: The JUDGING pairs a workshop leaf may serve (step 3, under A/B): the READING kind — a seeded
+#: tree, file tools, NO wrapper operation and no endpoint, one output document at the tree
+#: root (`docs/ORCHESTRATION.md` §workshop leaf). The judge contract already forbids running a
+#: validator or a gate, so there is nothing for an endpoint to serve.
+WORKSHOP_READING_PAIRS: frozenset[tuple[str, str]] = frozenset({
+    ("compile", "verify"), ("generate", "verify"), ("validate", "judge")})
+
+#: Every `(step, substep)` pair a workshop leaf may serve (`tools/llm_config.py` refuses any
+#: other entry, and mirrors this table as `WORKSHOP_LEAF_SUBSTEPS`).
+WORKSHOP_LAUNCH_PAIRS: frozenset[tuple[str, str]] = (
+    WORKSHOP_PRODUCING_PAIRS | WORKSHOP_READING_PAIRS)
+
+
+def is_workshop_reading_pair(step: Any, substep: Any) -> bool:
+    """True when `(step, substep)` is one of `WORKSHOP_READING_PAIRS`, case/space-insensitively:
+    the one predicate that says which KIND a workshop launch of that pair is."""
+    return (str(step or "").strip().lower(),
+            str(substep or "").strip().lower()) in WORKSHOP_READING_PAIRS
+
 
 #: The prompt-contract version a workshop request carries in `prompt_contract_version` (the
 #: field the pure request uses for its own). Its own counter, so a workshop template change
-#: never moves `PURE_PROMPT_CONTRACT_VERSION` and the reverse.
-WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-3"
+#: never moves `PURE_PROMPT_CONTRACT_VERSION` and the reverse. `workshop-4`: the reading kind's
+#: templates, system prompt and tool surface (step 3; `workshop-3` shipped in step 2 PR-2).
+WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-4"
 
 #: The first line of every host-rendered workshop launch prompt, anchored as the pure sentinel
 #: is (`startswith`). A distinct literal, so a record's prompt says which of the two leaf
@@ -143,6 +164,16 @@ WORKSHOP_SYSTEM_PROMPT = (
     "finish. The user message is your complete task."
 )
 
+#: The system prompt a READING workshop leaf (a judging substep, step 3) runs under. Its own
+#: text because the producer's names the `wrapper` tools, which a reading lineage is not
+#: served.
+WORKSHOP_READER_SYSTEM_PROMPT = (
+    "You are a reviewer of a host-mediated workflow, working in a host-seeded work tree. Your "
+    "file tools reach that tree and nothing else; you hold no shell and run no operation. The "
+    "host reads the one document you write and judges nothing else. The user message is your "
+    "complete task."
+)
+
 #: What a workshop launch prompt's `<tool_surface>` slot says the leaf holds, by the provider
 #: the launch request names (`workshop_provider`): the one sentence of the contract that
 #: differs by transport (`docs/design/producer_workshop_leaf.md` §Provider neutrality). A
@@ -154,6 +185,15 @@ WORKSHOP_TOOL_SURFACE_TEXT: dict[str, str] = {
                   "and the host reads your tree and nothing else you write. A command you run "
                   "there is not one of the host's operations: those are the `wrapper` MCP "
                   "server's tools (`mcp__wrapper__<operation>`)."),
+}
+
+#: The `<tool_surface>` sentence of a READING workshop launch, keyed by provider as
+#: `WORKSHOP_TOOL_SURFACE_TEXT` is. A provider with no row cannot serve a reading launch: the
+#: `codex_cli` row (its shell reads the tree; no `wrapper` server exists on such a lineage)
+#: lands with its measured argv (step 3, PR-J2), and `tools/llm_config.py` refuses a judging
+#: workshop entry on a provider this table does not name.
+WORKSHOP_READER_TOOL_SURFACE_TEXT: dict[str, str] = {
+    "claude_cli": WORKSHOP_TOOL_SURFACE_TEXT["claude_cli"],
 }
 
 #: The MCP server name the wrapper is registered under in `--mcp-config`. The CLI names its
@@ -290,8 +330,16 @@ def pure_leaf_flags() -> list[str]:
             "--strict-mcp-config", "--disable-slash-commands", "--output-format", "json"]
 
 
-def workshop_leaf_flags(mcp_config_json: str) -> list[str]:
+def workshop_leaf_flags(mcp_config_json: str | None, *, reading: bool = False) -> list[str]:
     """The `claude -p` flags of a `workshop leaf` (issue #534). A fresh list per call.
+
+    `reading=True` is the READING kind (a judging substep, step 3): no `mcp_config_json` (a
+    reading lineage is served no endpoint), so `--mcp-config` and `--allowedTools
+    mcp__wrapper` are dropped and `--strict-mcp-config` is kept, so no MCP server from any
+    configuration is loaded; the system prompt is `WORKSHOP_READER_SYSTEM_PROMPT`. Everything
+    else is the producer's set below. A producing call without the JSON, or a reading call with
+    it, is refused: the two must agree or a reviewer would hold the wrapper, or a producer lack
+    it.
 
     Measured on CLI 2.1.309 against a loopback API stand-in and a loopback wrapper endpoint
     (`tools/tests/test_bwrap_simulation.py` `WorkshopLeafCliTests`, unbilled):
@@ -326,6 +374,13 @@ def workshop_leaf_flags(mcp_config_json: str) -> list[str]:
     lineage live there and the operator's `~/.claude` is not bound at all; the operator's
     credentials file is bound over `config/.credentials.json`, read-write, because the CLI
     refreshes the OAuth token in place."""
+    if reading:
+        if mcp_config_json is not None:
+            raise ValueError("workshop_leaf_flags: a reading lineage is served no endpoint")
+        return ["--restricted", "--system-prompt", WORKSHOP_READER_SYSTEM_PROMPT,
+                "--tools", ",".join(WORKSHOP_FILE_TOOLS), "--strict-mcp-config",
+                "--permission-mode", "acceptEdits", "--permission-prompts", "none",
+                "--disable-slash-commands", "--output-format", "json"]
     if not isinstance(mcp_config_json, str) or not mcp_config_json.strip():
         raise ValueError("workshop_leaf_flags requires the wrapper's --mcp-config JSON")
     return ["--restricted", "--system-prompt", WORKSHOP_SYSTEM_PROMPT,
@@ -349,7 +404,8 @@ def workshop_mcp_url(mcp_config_json: str) -> str:
     return url
 
 
-def codex_workshop_overrides(mcp_config_json: str) -> list[str]:
+def codex_workshop_overrides(mcp_config_json: str | None, *,
+                             reading: bool = False) -> list[str]:
     """The `--config` overrides a codex `workshop leaf` launch adds on BOTH subcommands (issue
     #534 step 2 PR-2). A fresh list per call. Measured on codex-cli 0.164.0 against a loopback
     Responses-API stand-in and the real wrapper endpoint (unbilled;
@@ -376,7 +432,19 @@ def codex_workshop_overrides(mcp_config_json: str) -> list[str]:
     `apply_patch`, `view_image`, … and, as "deferred" nested tools, the wrapper's
     `mcp__wrapper__<op>`), and a `collaboration` namespace of sub-agent tools (`spawn_agent`,
     `send_message`, `wait_agent`, …; `features.multi_agent=false` does not remove it). The
-    launch prompt names the wrapper's tools by their name (`WORKSHOP_TOOL_SURFACE_TEXT`)."""
+    launch prompt names the wrapper's tools by their name (`WORKSHOP_TOOL_SURFACE_TEXT`).
+
+    `reading=True` (a judging substep, step 3) takes no `mcp_config_json` and keeps only the
+    two overrides that do not name the wrapper. Shaped here so the codex reading lineage adds a
+    row; it is not launched before that lineage's argv is measured (PR-J2), and no reading
+    launch reaches it until then (`WORKSHOP_READER_TOOL_SURFACE_TEXT` names no codex row)."""
+    if reading:
+        if mcp_config_json is not None:
+            raise ValueError("codex_workshop_overrides: a reading lineage is served no "
+                             "endpoint")
+        return ["--config", 'approval_policy="never"', "--config", "features.apps=false"]
+    if mcp_config_json is None:
+        raise ValueError("codex_workshop_overrides requires the wrapper's --mcp-config JSON")
     url = workshop_mcp_url(mcp_config_json)
     server = f"mcp_servers.{WORKSHOP_MCP_SERVER_NAME}"
     return ["--config", 'approval_policy="never"',

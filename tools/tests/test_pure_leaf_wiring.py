@@ -1411,6 +1411,13 @@ class PureRenderTests(unittest.TestCase):
         ("tools/prompt_templates/workshop_bundle_repair.txt", None, None),
         ("tools/prompt_templates/workshop_compile_generate.txt", None, None),
         ("tools/prompt_templates/workshop_ir_repair.txt", None, None),
+        # Issue #534 step 3: the reading kind's templates, which carry the reviewers' rules —
+        # the severity rubric's consumers among them — verbatim.
+        ("tools/prompt_templates/workshop_compile_verify.txt", None, None),
+        ("tools/prompt_templates/workshop_generate_verify.txt", None, None),
+        ("tools/prompt_templates/workshop_generate_verify_harness.txt", None, None),
+        ("tools/prompt_templates/workshop_validate_judge.txt", None, None),
+        ("tools/prompt_templates/workshop_verdict_repair.txt", None, None),
         # Issue #289 (R4-b PR-2): the generate templates' language rules moved into fragment
         # files the host composes into them, so each fragment file is a leaf-read template
         # surface of its own — a severity spelled in one reaches the leaf exactly as one spelled
@@ -1609,6 +1616,20 @@ class PureRenderTests(unittest.TestCase):
         ("tools/prompt_templates/pure_generate_verify.txt: Output contract (verify verdict): "
          "return one JSON object wit #44453a0a4418"),
         ("tools/prompt_templates/pure_generate_verify_harness.txt: Output contract (verify "
+         "verdict): return one JSON object wit #44453a0a4418"),
+        # Issue #534 step 3: the reading workshop twins carry the four lines above verbatim
+        # (`ReaderTemplateTests.test_the_reviewer_rules_are_the_pure_templates_verbatim` in
+        # `test_workshop_reviewer.py`). READ: the same digests, so the same judgments — each
+        # routes or points at the rubric, and none assigns a value.
+        "tools/prompt_templates/workshop_generate_verify.txt: Review checklist (the semantic "
+        "items to judge the bundle aga #b31abbfa9532",
+        "tools/prompt_templates/workshop_generate_verify_harness.txt: One kind of finding is NOT "
+        "code-vs-IR and is still yours to  #18a97797a2d9",
+        ("tools/prompt_templates/workshop_compile_verify.txt: Output contract (verify verdict): "
+         "return one JSON object wit #44453a0a4418"),
+        ("tools/prompt_templates/workshop_generate_verify.txt: Output contract (verify verdict): "
+         "return one JSON object wit #44453a0a4418"),
+        ("tools/prompt_templates/workshop_generate_verify_harness.txt: Output contract (verify "
          "verdict): return one JSON object wit #44453a0a4418"),
     )
 
@@ -2389,6 +2410,8 @@ class PureRenderTests(unittest.TestCase):
         "_load_launch_prompt_templates",     # reads the template files verbatim
         "_pure_launch_template_name",        # returns a template NAME
         "_pure_repair_template_name",        # returns a template NAME
+        "_workshop_tool_surface_table",      # returns the tool-surface TABLE (its rows are pinned
+                                             # by `test_workshop_producer`'s contract digest)
         "_pure_launch_template",             # reads + composes a template (fragments are swept)
         "_compose_language_fragments",       # splices fragment FILE text, adds none of its own
         "_fence_pure_doc",                   # wraps a value in the data fence
@@ -3539,14 +3562,17 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
     A backend that declares no fragments composes every marker to nothing; every other failure
     is a NAMED refusal, as for a language."""
 
-    #: The workshop producer's template (issue #534) carries the pure producer's rules
-    #: verbatim, composed from the same fragments.
-    _KEYS = ("pure generate.generate", "pure generate.verify", "workshop generate.generate")
+    #: The workshop templates (issue #534) carry their pure twins' rules verbatim, composed
+    #: from the same fragments: the producer's (step 1) and the reviewer's (step 3).
+    _KEYS = ("pure generate.generate", "pure generate.verify", "workshop generate.generate",
+             "workshop generate.verify")
     #: The opening words of the OpenMP floor paragraph in each template (the fragment's text).
     _OPENMP_FLOOR = {
         "pure generate.generate": "For a `cpu` target whose `parallel.backend` is `openmp`",
         "workshop generate.generate": "For a `cpu` target whose `parallel.backend` is `openmp`",
         "pure generate.verify": "on a `component`/`problem` node whose target is cpu+openmp+",
+        "workshop generate.verify": "on a `component`/`problem` node whose target is "
+                                    "cpu+openmp+",
     }
 
     #: The opening words of the MPI floor paragraph in each template (issue #316, R4-c PR-4).
@@ -3554,6 +3580,7 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
         "pure generate.generate": "For a `cpu` target whose `parallel.backend` is `mpi`",
         "workshop generate.generate": "For a `cpu` target whose `parallel.backend` is `mpi`",
         "pure generate.verify": "on a `component`/`problem` node whose target is cpu+mpi+",
+        "workshop generate.verify": "on a `component`/`problem` node whose target is cpu+mpi+",
     }
 
     @staticmethod

@@ -13,7 +13,7 @@ layer carried — `read_manifest_read_guard`, `output_manifest_write_guard`, `fo
 `forbid_tools_direct_read`, `extract_bash_read_targets` and the rest — has no subject left. A
 `workshop leaf` ([issue #534](https://github.com/seiya/atmofab/issues/534)) does make tool calls —
 file tools confined to its work tree by `--restricted`, and the operations the host-served
-wrapper serves its substep — and no hook judges them either: what bounds them is the launch placement
+wrapper serves a producing substep (a judging substep's reading lineage is served none) — and no hook judges them either: what bounds them is the launch placement
 (an empty tmpfs at the checkout path, a private config home), the writable profile limited to
 its own lineage, and the wrapper, which resolves every path under the tree and counts every call
 (`docs/ORCHESTRATION.md` §workshop leaf). What

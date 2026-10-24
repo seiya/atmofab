@@ -78,6 +78,11 @@
 # leaf's `CODEX_HOME` is a private directory under its lineage home, into which
 # `~/.codex/auth.json` is bound read-only (`docs/ORCHESTRATION.md` §workshop leaf;
 # `docs/RUNBOOK.md` §0-3).
+#
+# The three judging substeps run as a pure leaf on codex_cli. Their READING workshop leaf
+# (issue #534 step 3) runs on claude_cli only until its codex launch shape is measured, and a
+# `leaf: workshop` entry on a judging substep naming codex_cli is refused at load
+# (`llm_config_workshop_reading_unsupported_on_provider`).
 defaults:
   provider: codex_cli
   model: gpt-5.6-sol

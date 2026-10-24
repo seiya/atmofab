@@ -701,11 +701,16 @@ class SeedTests(_Base):
 
 _TEMPLATES = ("workshop_generate_generate.txt", "workshop_generate_generate_harness.txt",
               "workshop_bundle_repair.txt", "workshop_compile_generate.txt",
-              "workshop_ir_repair.txt")
+              "workshop_ir_repair.txt",
+              # Step 3: the reading kind's templates (the judging substeps).
+              "workshop_compile_verify.txt", "workshop_generate_verify.txt",
+              "workshop_generate_verify_harness.txt", "workshop_validate_judge.txt",
+              "workshop_verdict_repair.txt")
 _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
 
 #: `WORKSHOP_PROMPT_CONTRACT_VERSION` -> sha256 over the workshop templates,
-#: `WORKSHOP_SYSTEM_PROMPT` and `WORKSHOP_TOOL_SURFACE_TEXT`. A change to any is a change of the
+#: `WORKSHOP_SYSTEM_PROMPT` and `WORKSHOP_TOOL_SURFACE_TEXT` (and, from `workshop-4`, the reading
+#: kind's `WORKSHOP_READER_SYSTEM_PROMPT` and `WORKSHOP_READER_TOOL_SURFACE_TEXT`). A change to any is a change of the
 #: workshop leaf's contract and takes a new version, keeping every shipped pin (the no-revert
 #: check reads them). `workshop-1` (shipped in step 1's A/B, main f684c756) was taken over the
 #: first three templates and the system prompt alone.
@@ -715,6 +720,9 @@ _WORKSHOP_CONTRACT_DIGESTS = {
     # Step 2 PR-2: the `codex_cli` row of `WORKSHOP_TOOL_SURFACE_TEXT` (`workshop-2` shipped
     # with step 2 PR-1, main 7cfbe1b5).
     "workshop-3": "1aee42ef7d0c2df40921cec4baecf3ab10af42c3386dfda58520b265b7b6ab4c",
+    # Step 3 PR-J1: the reading kind — five templates, its system prompt and tool surface
+    # (`workshop-3` shipped with step 2 PR-2, main ca41247f).
+    "workshop-4": "69d6a21bea79dd5eeb5984836cb6409740bfc0d1148823ab68418e8e72ec1e58",
 }
 
 
@@ -724,6 +732,10 @@ def _workshop_digest() -> str:
         h.update(name.encode() + b"\0" + (_DIR / name).read_bytes() + b"\0")
     h.update(pure_leaf.WORKSHOP_SYSTEM_PROMPT.encode("utf-8"))
     h.update(json.dumps(pure_leaf.WORKSHOP_TOOL_SURFACE_TEXT, sort_keys=True).encode("utf-8"))
+    # Step 3: the reading kind's system prompt and tool surface (`workshop-4` onward).
+    h.update(pure_leaf.WORKSHOP_READER_SYSTEM_PROMPT.encode("utf-8"))
+    h.update(json.dumps(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT,
+                        sort_keys=True).encode("utf-8"))
     return h.hexdigest()
 
 
@@ -1057,6 +1069,29 @@ class GapTests(_Base):
                 mock.patch.object(self.c, "_usage_limit_wait", return_value=True):
             self.assertEqual(self.run_substep().status, "pass")
         self.assertEqual(seen, ["kept\n"])
+
+    def test_a_dead_warm_repair_is_retried_in_a_new_lineage_never_resumed(self) -> None:
+        """A warm repair turn that dies — waited out as a usage limit, or retried as a
+        transient — ended its lineage `leaf_exit`; the re-launch is a cold reuse of that
+        lineage's snapshot in a NEW lineage, never a resume of the dead session
+        (`_WorkshopLineageMachine.after_transport`)."""
+        def dies(c, tree, kwargs):
+            return wc.ProcResult(1, "", "x")
+
+        for label, extra in (
+                ("usage wait", mock.patch.object(wc, "_leaf_infra_error",
+                                                 return_value=("llm_usage_limit", "limit"))),
+                ("transient retry", mock.patch.object(wc.Conductor, "_pure_transient_retry",
+                                                      return_value=True))):
+            with self.subTest(retry=label):
+                self.setUp()
+                self.c.leaf_actions = [_writes_nothing, dies, _writes_bundle]
+                with extra, mock.patch.object(self.c, "_usage_limit_wait", return_value=True):
+                    self.assertEqual(self.run_substep().status, "pass")
+                self.assertEqual([s["resume_session_id"] for s in self.c.spawns],
+                                 [None, "child-1", None])
+                self.assertEqual([r["workshop_lineage_id"] for r in self.requests()],
+                                 ["child-1", "child-1", "child-3"])
 
     def test_the_wrapper_is_given_the_lineage_deadline(self) -> None:
         import time
@@ -1671,7 +1706,7 @@ class WorkshopSpecTests(_Base):
         default = self.c._pure_producer_spec("generate", "m3c")
         harness = self.c._pure_producer_spec("generate", "harness")
         fields = [f for f in wc.Conductor._PureProducerSpec._fields if f.startswith("workshop_")]
-        self.assertEqual(len(fields), 7)
+        self.assertEqual(len(fields), 8)
         for name in fields:
             with self.subTest(field=name):
                 self.assertEqual(getattr(harness, name), getattr(default, name))

@@ -6,7 +6,7 @@ This document defines the reference conventions for the `skills` used in the pro
 > every LLM substep of the core workflow runs as a `pure-function leaf`: it holds no tools, reads
 > nothing from disk, and receives its whole contract inlined in the launch prompt the host renders
 > (`tools/prompt_templates/pure_*.txt`). The one other leaf shape, a `workshop leaf`
-> (`Compile.generate` or `Generate.generate` on a `leaf: workshop` entry, `docs/ORCHESTRATION.md` §workshop leaf), reads
+> (any of the five LLM substeps but `escalate` on a `leaf: workshop` entry, `docs/ORCHESTRATION.md` §workshop leaf), reads
 > its contract from the prompt the host renders (`tools/prompt_templates/workshop_*.txt`) and the
 > `seed` files the host places in its `work tree`; no `SKILL` is among them. The five core phase `SKILL`s are deleted with the agentic
 > leaf that read them. What is left under `skills/` is the procedures an OPERATOR runs — the
@@ -58,15 +58,15 @@ names a `SKILL`.
 
 - `Compile generate`: `tools/prompt_templates/pure_compile_generate.txt` for the IR core, with `phase_01_compile.md` and the node's `spec` documents inlined (`_build_pure_compile_context`), then `pure_compile_generate_verification.txt` once per group of consecutive `tests.md` tests, shown an excerpt of `phase_01_compile.md` (issue #526); on a `leaf: workshop` entry, a `workshop leaf` authoring the whole IR, rendered from `tools/prompt_templates/workshop_compile_generate.txt` with the same documents as `seed` files, its repair turns from `workshop_ir_repair.txt` (`docs/ORCHESTRATION.md` §workshop leaf)
 - `Compile static`: conductor in-process (deterministic `validate_workspace_root` + `validate_pipeline_semantics --stage compile`, see `docs/workflow/phases/phase_01_compile.md`)
-- `Compile verify`: `tools/prompt_templates/pure_compile_verify.txt` (`_build_pure_compile_verify_context`)
+- `Compile verify`: `tools/prompt_templates/pure_compile_verify.txt` (`_build_pure_compile_verify_context`); on a `leaf: workshop` entry, a reading `workshop leaf` rendered from `tools/prompt_templates/workshop_compile_verify.txt` with the same documents as `seed` files (`docs/ORCHESTRATION.md` §workshop leaf)
 - `Generate generate`: `tools/prompt_templates/pure_generate_generate.txt` on the `m3c` bundle shape, `pure_generate_generate_harness.txt` on the `harness` shape; on a `leaf: workshop` entry, a `workshop leaf` rendered from `tools/prompt_templates/workshop_generate_generate.txt` / `workshop_generate_generate_harness.txt` per bundle shape, its repair turns from `workshop_bundle_repair.txt` (`docs/ORCHESTRATION.md` §workshop leaf)
 - `Generate gate`: conductor in-process (deterministic lint check `run_linter`, syntax check `run_syntax_check` compiler front-end gate — the target language's mandatory syntax-only stage, for `fortran` [GENERATE_RULES.md](backends/language/fortran/GENERATE_RULES.md) §2 — and static check `validate_workspace_root` + `validate_pipeline_semantics --stage post_generate` — the static check runs only when the lint and syntax checks both pass; see `docs/workflow/phases/phase_02_generate.md`)
-- `Generate verify`: `tools/prompt_templates/pure_generate_verify.txt` / `pure_generate_verify_harness.txt`, per bundle shape
+- `Generate verify`: `tools/prompt_templates/pure_generate_verify.txt` / `pure_generate_verify_harness.txt`, per bundle shape; on a `leaf: workshop` entry, a reading `workshop leaf` rendered from `tools/prompt_templates/workshop_generate_verify.txt` / `workshop_generate_verify_harness.txt` per bundle shape
 - `Build`: conductor in-process (see `docs/workflow/phases/phase_03_build.md`)
 - `Validate execute`: conductor in-process (see `docs/workflow/phases/phase_04_validate.md`)
-- `Validate judge`: `tools/prompt_templates/pure_validate_judge.txt`
+- `Validate judge`: `tools/prompt_templates/pure_validate_judge.txt`; on a `leaf: workshop` entry, a reading `workshop leaf` rendered from `tools/prompt_templates/workshop_validate_judge.txt`
 - `Escalate diagnose`: `tools/prompt_templates/pure_escalate_diagnose.txt`
-- Repair turns: `tools/prompt_templates/pure_bundle_repair.txt`; a `workshop leaf`'s, `tools/prompt_templates/workshop_bundle_repair.txt` on `Generate.generate` and `tools/prompt_templates/workshop_ir_repair.txt` on `Compile.generate`
+- Repair turns: `tools/prompt_templates/pure_bundle_repair.txt`; a `workshop leaf`'s, `tools/prompt_templates/workshop_bundle_repair.txt` on `Generate.generate`, `tools/prompt_templates/workshop_ir_repair.txt` on `Compile.generate`, and `tools/prompt_templates/workshop_verdict_repair.txt` on the three judging substeps
 
 ## phase-to-Skill correspondence table (optional flows)
 - `Tune generate`: `skills/workflow-tune-generate/SKILL.md`

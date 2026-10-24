@@ -417,14 +417,17 @@ class WorkshopRecordLaunchTests(_Env):
     def test_a_workshop_request_on_another_pair_is_refused(self) -> None:
         """Refused twice: the renderer finds no workshop template for the pair (it renders
         before validation), and the validator names the admissible pairs."""
-        req = _workshop_request("ar_x", substep="verify")
+        # Every LLM substep admits a workshop entry since issue #534 step 3; the escalate
+        # diagnostician's pair is the one host-rendered pair no workshop leaf serves.
+        req = _workshop_request("ar_x", substep="diagnose")
         with self.assertRaises(ValueError) as ctx:
             ort.prepare_launch_request_payload(req)
-        self.assertIn("workshop generate.verify", str(ctx.exception))
+        self.assertIn("workshop generate.diagnose", str(ctx.exception))
         with self.assertRaises(ValueError) as ctx:
             ort._validate_launch_request_payload(req)
         self.assertIn("leaf_mode=workshop is only valid for (compile, generate), "
-                      "(generate, generate);", str(ctx.exception))
+                      "(compile, verify), (generate, generate), (generate, verify), "
+                      "(validate, judge);", str(ctx.exception))
 
     def test_the_prompt_and_the_request_must_agree_on_the_leaf_model(self) -> None:
         workshop = ort.prepare_launch_request_payload(_workshop_request("ar_x"))

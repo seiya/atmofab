@@ -583,6 +583,13 @@ def _summarize_one_pure_meta(meta: dict[str, Any] | None) -> dict[str, Any]:
         "usage_total": usage_total,
         "models": models,
     }
+    # The conductor's own bracket of each launch (`per_attempt[].leaf_wall_s`, issue #534 step
+    # 3), summed; None when no attempt recorded one (a record from before the field), never a 0
+    # it did not measure.
+    walls = [float(a["leaf_wall_s"]) for a in per_attempt
+             if isinstance(a, dict) and isinstance(a.get("leaf_wall_s"), (int, float))
+             and not isinstance(a.get("leaf_wall_s"), bool) and a["leaf_wall_s"] >= 0]
+    row["leaf_wall_s"] = round(sum(walls), 3) if walls else None
     if meta.get("leaf_mode") == "workshop":
         # A `workshop leaf` (issue #534): the lineages its attempts ran in, and the wrapper
         # calls and model turns they spent — the A/B's own dimensions besides tokens. A codex
