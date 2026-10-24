@@ -779,11 +779,14 @@ class SpawnTimeoutTests(unittest.TestCase):
             self.assertIn("leaf exceeded lineage_timeout_s=1", result.stderr)
             self.assertNotIn(wc.LEAF_CANCELLED_MARKER, result.stderr)
 
-    def test_a_cancel_event_is_a_claude_leafs(self) -> None:
+    def test_a_cancel_event_is_a_cli_leafs(self) -> None:
+        """An HTTP entry has no process to end, so it refuses the event (a codex entry takes it
+        since issue #534 step 2 PR-2: `CodexWorkshopSpawnTests`)."""
         import threading
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Path(tmp) / "llm.yaml"
-            cfg.write_text("defaults: {provider: codex_cli, model: gpt-x}\n", encoding="utf-8")
+            cfg.write_text("defaults: {provider: anthropic_api, model: m, api_key_env: K}\n"
+                           "phases: {generate: {provider: claude_cli}}\n", encoding="utf-8")
             c = _PureFakeConductor(repo_root=Path(tmp), orchestration_id="o",
                                    orchestration_agent_run_id="orch", env={},
                                    llm_config=lc.load_llm_config(cfg))

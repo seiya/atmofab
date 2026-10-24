@@ -7994,6 +7994,26 @@ def _resolve_backend_rw_binds(repo_root: Path, backend_rw_desired: Sequence[str]
     return backend_rw
 
 
+#: The env name that declares a workshop profile's CLI home, by backend family: exactly one of
+#: them is set on a workshop profile, and which one says whose profile it is (issue #534 step 2
+#: PR-2). Both name `<lineage home>/config`.
+WORKSHOP_PROFILE_HOME_ENV: dict[str, str] = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"}
+
+
+def workshop_profile_family(env: Mapping[str, Any]) -> str:
+    """The backend family of a WORKSHOP profile, read from the home name its environment
+    declares (`WORKSHOP_PROFILE_HOME_ENV`). Raises unless exactly one is declared: a profile
+    naming both, or neither, is no family's, and every check keyed on the family would then
+    answer for the wrong CLI."""
+    declared = sorted(family for family, name in WORKSHOP_PROFILE_HOME_ENV.items()
+                      if isinstance(env.get(name), str) and env.get(name))
+    if len(declared) != 1:
+        raise ValueError(
+            "a workshop profile declares exactly one CLI home "
+            f"({' or '.join(WORKSHOP_PROFILE_HOME_ENV.values())}); got {declared or 'none'}")
+    return declared[0]
+
+
 def build_readonly_bwrap_profile(
     *,
     repo_root: Path,
@@ -8081,16 +8101,24 @@ def build_readonly_bwrap_profile(
             f"workshop one (leaf_mode={leaf_mode!r}, readonly={readonly!r})")
     if (credential_rw_mapping is not None or workdir is not None) and not workshop:
         raise ValueError("workdir and credential_rw_mapping belong to a workshop profile only")
-    if workshop and (workdir is None or credential_rw_mapping is None):
-        raise ValueError("a workshop profile needs its tree as workdir and its credential "
-                         "mapping")
+    if workshop:
+        family = workshop_profile_family(env_overrides or {})
+        if workdir is None:
+            raise ValueError("a workshop profile needs its tree as workdir")
+        # The claude CLI refreshes its OAuth token in place, so its credential is bound
+        # read-write; codex reads `auth.json`, remounted read-only (`codex_workshop_profile_
+        # kwargs`), and a codex workshop profile binding a credential read-write is refused.
+        if (credential_rw_mapping is not None) != (family == "claude"):
+            raise ValueError(
+                f"a {family} workshop profile "
+                + ("needs its credential mapping" if family == "claude"
+                   else "binds no credential read-write"))
     profile_extra: dict[str, Any] = {}
     if workshop:
-        profile_extra = {
-            "leaf_mode": WORKSHOP_PROFILE_LEAF_MODE,
-            "runtime_rw_credential_mapping": [str(credential_rw_mapping[0]),
-                                              str(credential_rw_mapping[1])],
-        }
+        profile_extra = {"leaf_mode": WORKSHOP_PROFILE_LEAF_MODE}
+        if credential_rw_mapping is not None:
+            profile_extra["runtime_rw_credential_mapping"] = [str(credential_rw_mapping[0]),
+                                                              str(credential_rw_mapping[1])]
     return {
         "orchestration_id": orchestration_id,
         "agent_run_id": agent_run_id,
@@ -8226,10 +8254,12 @@ def render_bwrap_command(
             raise ValueError(
                 f"profile field {field!r} must be empty: a leaf is granted no path under the "
                 f"checkout beyond its own scratch roots (got {profile.get(field)!r})")
-    # THE WORKSHOP PROFILE (issue #534) differs in three renderings, each refused on any other
-    # profile: its working directory is its tree, it declares `CLAUDE_CONFIG_DIR`, and it binds
-    # one credential file read-write. Each names a path the profile's own rw binds hold, so
-    # none of the three can reach a path the mount set above does not already grant.
+    # THE WORKSHOP PROFILE (issue #534) differs in its renderings, each refused on any other
+    # profile: its working directory is its tree, and its CLI home is one of its rw binds — a
+    # claude one declares `CLAUDE_CONFIG_DIR` and binds one credential file read-write, a codex
+    # one declares `CODEX_HOME` and remounts its two host files read-only into it (step 2
+    # PR-2). Each names a path the profile's own rw binds hold, so none can reach a path the
+    # mount set above does not already grant.
     leaf_mode = profile.get("leaf_mode")
     workshop = leaf_mode == WORKSHOP_PROFILE_LEAF_MODE
     if leaf_mode is not None and not workshop:
@@ -8249,20 +8279,45 @@ def render_bwrap_command(
     credential = profile.get("runtime_rw_credential_mapping")
     if credential is not None and not workshop:
         raise ValueError("runtime_rw_credential_mapping belongs to a workshop profile only")
+    cred_src = cred_dst = ""
+    family = ""
     if workshop:
+        env_of_profile = profile.get("env") if isinstance(profile.get("env"), dict) else {}
+        family = workshop_profile_family(env_of_profile)
+        cli_home = str(env_of_profile.get(WORKSHOP_PROFILE_HOME_ENV[family]) or "")
+        if cli_home not in rw_paths or cli_home == workdir:
+            raise ValueError(
+                f"a {family} workshop profile's {WORKSHOP_PROFILE_HOME_ENV[family]} is one of its "
+                f"rw binds and not its tree (got {cli_home!r})")
+    if family == "claude":
         if not (isinstance(credential, list) and len(credential) == 2
                 and all(isinstance(part, str) and part.strip() for part in credential)):
             raise ValueError("a workshop profile carries one runtime_rw_credential_mapping "
                              "[source, destination]")
         cred_src, cred_dst = credential[0].strip(), credential[1].strip()
-        claude_home = str((profile.get("env") or {}).get("CLAUDE_CONFIG_DIR") or "")
         if not (Path(cred_src).is_file() and Path(cred_dst).is_file()
-                and not Path(cred_dst).is_symlink() and claude_home in rw_paths
-                and Path(cred_dst) == Path(claude_home) / ".credentials.json"):
+                and not Path(cred_dst).is_symlink()
+                and Path(cred_dst) == Path(cli_home) / ".credentials.json"):
             raise ValueError(
                 "runtime_rw_credential_mapping must map an existing file onto the existing "
                 "regular file `.credentials.json` of the profile's CLAUDE_CONFIG_DIR, one of its "
                 f"rw binds — never into the tree the host snapshots (got {credential!r})")
+    elif family == "codex":
+        # Codex's two host files are remounted read-only INTO its home, and nothing is bound
+        # read-write over a file: a mapping that landed in the tree would be snapshotted as the
+        # leaf's work, and one onto any other name would be a file the profile does not
+        # describe.
+        if credential is not None:
+            raise ValueError("a codex workshop profile binds no credential read-write (got "
+                             f"{credential!r})")
+        destinations = sorted(
+            str(m[1]).strip() for m in profile.get("runtime_ro_bind_mappings", [])
+            if isinstance(m, list) and len(m) == 2)
+        expected = sorted(str(Path(cli_home) / name) for name in ("auth.json", "config.toml"))
+        if destinations != expected:
+            raise ValueError(
+                "a codex workshop profile remounts exactly auth.json and config.toml of its "
+                f"CODEX_HOME read-only (got {destinations!r})")
     cmd: list[str] = [
         "bwrap",
         "--die-with-parent",
@@ -8352,7 +8407,7 @@ def render_bwrap_command(
     for item in profile.get("runtime_rw_bind_paths", []):
         if isinstance(item, str) and item.strip():
             cmd.extend(["--bind", item.strip(), item.strip()])
-    if workshop:
+    if family == "claude":
         # After its parent `config/` bind, which would otherwise cover it.
         cmd.extend(["--bind", cred_src, cred_dst])
     # Apply file mappings AFTER their parent writable homes.  In particular,
@@ -8397,10 +8452,10 @@ def render_bwrap_command(
         if not isinstance(name, str) or not isinstance(value, str):
             raise ValueError(f"profile env entries must be str -> str, got {name!r}")
     claude_home = profile_env.get("CLAUDE_CONFIG_DIR")
-    if claude_home is not None and not (workshop and claude_home in rw_paths):
+    if claude_home is not None and not (family == "claude" and claude_home in rw_paths):
         raise ValueError(
-            "profile env CLAUDE_CONFIG_DIR is declared only on a workshop profile, naming one of "
-            f"its own rw binds (got {claude_home!r})")
+            "profile env CLAUDE_CONFIG_DIR is declared only on a claude workshop profile, naming "
+            f"one of its own rw binds (got {claude_home!r})")
     for name, value in sorted(profile_env.items()):
         allowed = (
             name in LEAF_ENV_ALLOWLIST
@@ -9049,8 +9104,8 @@ def _reprobe_recorded_providers(
                     "launchable": _preflight_allows_agent_launch(probe),
                 }
                 if surface.get("workshop") is True:
-                    check = _claude_workshop_flag_set_check(
-                        probed["probe_command"], subprocess.run)
+                    check = _workshop_flag_set_check(
+                        str(token), probed["probe_command"], subprocess.run)
                     probed["checks"] = list(probed["checks"]) + [check]
                     probed["launchable"] = bool(probed["launchable"]) and check["pass"] is True
             else:
@@ -13264,9 +13319,42 @@ def codex_isolation_profile_kwargs(isolation: Mapping[str, str]) -> dict[str, An
     }
 
 
+def codex_workshop_profile_kwargs(isolation: Mapping[str, str]) -> dict[str, Any]:
+    """The bwrap profile kwargs a prepared codex WORKSHOP lineage home implies — ONE spelling,
+    the codex twin of `claude_workshop_profile_kwargs` (issue #534 step 2 PR-2). `config/` (the
+    `CODEX_HOME`) and `tree/` are the two rw binds; the host-authored `config.toml` and the
+    operator's `auth.json` are remounted read-only INTO `config/`, as the pure lineage remounts
+    them into its home, and no credential is bound read-write (codex reads `auth.json`; the pure
+    leaf has always run with it read-only)."""
+    return {
+        "backend_ro_mappings": [
+            (isolation["auth"], isolation["auth_destination"]),
+            (isolation["config_toml"], isolation["config_toml"]),
+        ],
+        "backend_rw_override": [isolation["config"], isolation["tree"]],
+        "env_overrides": {"CODEX_HOME": isolation["config"]},
+        "readonly": False,
+        "workdir": isolation["tree"],
+        "leaf_mode": WORKSHOP_PROFILE_LEAF_MODE,
+    }
+
+
 def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage_id: str,
-                                 *, resume: bool) -> dict[str, str] | None:
+                                 *, resume: bool, workshop: bool = False
+                                 ) -> dict[str, str] | None:
     """Prepare the private Codex home for ONE THREAD LINEAGE of an orchestration.
+
+    ``workshop=True`` prepares a `workshop leaf`'s lineage instead (issue #534 step 2 PR-2):
+    the same container and the same cold/warm rules, but the lineage home is
+    `workshop_tree.LineagePaths(backend="codex").home` — `config/` (0700, the leaf's
+    `CODEX_HOME`, holding the `config.toml` that marks the TREE untrusted and the `auth.json`
+    placeholder) beside the work directories `make_work_dirs` creates (`tree/`, `staged/`,
+    `syntax/`, `snapshot/`). The two layouts share the container and cannot collide: a lineage
+    id is an `agent_run_id`, minted once, and names one directory under it whichever kind it
+    is. A cold workshop preparation is the CONDUCTOR's (`Conductor._open_workshop_lineage`,
+    before the launch is recorded, as for claude); `record_launch` prepares it warm on both of
+    the lineage's launches. Returns `{home, config, tree, auth, auth_destination, config_toml,
+    lineage_id, homes_root}`.
 
     Two levels, and the leaf sees only the lower one:
 
@@ -13379,6 +13467,9 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
             meta["codex_workflow_home"] = str(container)
             _write_json(meta_path, meta)
         home = container / lineage_token
+        if workshop:
+            return _prepare_codex_workshop_lineage(
+                repo_root, orchestration_id, container, home, lineage_token, resume=resume)
         if resume:
             try:
                 home.lstat()
@@ -13430,6 +13521,68 @@ def _prepare_codex_workflow_home(repo_root: Path, orchestration_id: str, lineage
         "config": str(config_path.resolve()),
         "lineage_id": lineage_token,
     }
+
+def _prepare_codex_workshop_lineage(repo_root: Path, orchestration_id: str, container: Path,
+                                    home: Path, lineage_token: str, *, resume: bool
+                                    ) -> dict[str, str] | None:
+    """The lineage half of `_prepare_codex_workflow_home(workshop=True)`, run under its
+    metadata lock with the container already established. The claude preparer's lineage half
+    (`_prepare_claude_workshop_home`), with codex's two files in `config/`."""
+    from tools.workshop_tree import LineagePaths
+    config = home / "config"
+    if resume:
+        try:
+            home.lstat()
+        except FileNotFoundError:
+            return None
+        _require_secure_backend_home(home, "Codex", tighten=True)
+        _require_secure_backend_home(config, "Codex", tighten=True)
+    else:
+        try:
+            os.mkdir(home, 0o700)
+        except FileExistsError as exc:
+            raise ValueError(
+                f"isolated Codex lineage home already exists: {home}. A lineage is created "
+                f"once, by the cold launch whose agent_run_id names it ({lineage_token}); a "
+                "directory already there was made by hand or left by a run that crashed "
+                "between creating it and recording the launch. Inspect it; if it is debris, "
+                "remove that one directory and re-run.") from exc
+        except OSError as exc:
+            raise ValueError(f"cannot create isolated Codex lineage home {home}: {exc}") from exc
+        os.chmod(home, 0o700)
+        _require_secure_backend_home(home, "Codex")
+        os.mkdir(config, 0o700)
+        os.chmod(config, 0o700)
+        _require_secure_backend_home(config, "Codex")
+        LineagePaths(homes_root=container.parent.parent, orchestration_id=orchestration_id,
+                     lineage_id=lineage_token,
+                     orchestration_dir=_orchestration_root(repo_root, orchestration_id),
+                     backend="codex").make_work_dirs()
+    tree = home / "tree"
+    # The trust key is the leaf's working directory, the tree (the pure lineage's is the
+    # checkout path, its cwd): codex reads project-scoped configuration — `.codex/` and the
+    # hooks in it — only from a TRUSTED project, so the tree, which the leaf writes, is marked
+    # untrusted. `config.toml` is remounted read-only, so the leaf cannot re-mark it.
+    config_text = ("[projects." + json.dumps(str(tree.resolve()))
+                   + "]\ntrust_level = \"untrusted\"\n")
+    config_toml = config / "config.toml"
+    _secure_backend_home_file(config_toml, config_text.encode("utf-8"))
+    auth = codex_origin_home() / "auth.json"
+    if not auth.is_file():
+        raise ValueError(f"Codex auth.json not found for isolated home: {auth}")
+    auth_destination = config / "auth.json"
+    _secure_backend_home_file(auth_destination)
+    return {
+        "home": str(home.resolve()),
+        "config": str(config.resolve()),
+        "tree": str(tree.resolve()),
+        "auth": str(auth.resolve()),
+        "auth_destination": str(auth_destination.resolve()),
+        "config_toml": str(config_toml.resolve()),
+        "lineage_id": lineage_token,
+        "homes_root": str(container.resolve().parent.parent),
+    }
+
 
 def claude_workshop_profile_kwargs(isolation: Mapping[str, str]) -> dict[str, Any]:
     """The bwrap profile kwargs a prepared claude workshop lineage home implies — ONE spelling,
@@ -13560,6 +13713,26 @@ def _prepare_claude_workshop_home(repo_root: Path, orchestration_id: str, lineag
         "lineage_id": lineage_token,
         "homes_root": str(container.resolve().parent.parent),
     }
+
+
+def _prepare_codex_workshop_home(repo_root: Path, orchestration_id: str, lineage_id: str,
+                                 *, resume: bool) -> dict[str, str] | None:
+    """`_prepare_codex_workflow_home(workshop=True)`, in the claude preparer's signature."""
+    return _prepare_codex_workflow_home(repo_root, orchestration_id, lineage_id,
+                                        resume=resume, workshop=True)
+
+
+#: A `workshop leaf`'s lineage-home preparer and the profile kwargs a prepared home implies, by
+#: backend token (issue #534 step 2 PR-2). The conductor and `record_launch` read the same
+#: tables, so the home a launch is recorded against is the one the conductor seeded.
+WORKSHOP_HOME_PREPARERS: dict[str, Callable[..., dict[str, str] | None]] = {
+    "claude": _prepare_claude_workshop_home,
+    "codex": _prepare_codex_workshop_home,
+}
+WORKSHOP_PROFILE_KWARGS: dict[str, Callable[[Mapping[str, str]], dict[str, Any]]] = {
+    "claude": claude_workshop_profile_kwargs,
+    "codex": codex_workshop_profile_kwargs,
+}
 
 
 def codex_origin_home() -> Path:
@@ -13931,6 +14104,81 @@ def _claude_workshop_flag_set_check(
     }
 
 
+#: The `codex exec --help` options a codex `workshop leaf`'s cold argv spells (issue #534 step 2
+#: PR-2; `Conductor.leaf_command`'s workshop branch). The warm argv's are
+#: `CODEX_EXEC_RESUME_REQUIRED_FLAGS`, which `codex_exec_resume` already certifies; the
+#: `--config` overrides both carry (`pure_leaf.codex_workshop_overrides`) are config keys, which
+#: no help text lists, and are pinned by the unbilled CLI rows instead.
+CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS: tuple[str, ...] = (
+    "--model", "--sandbox", "--config", "--json", "--skip-git-repo-check", "--ignore-rules")
+
+#: The sandbox mode the workshop argv names, which `codex exec --help` lists among the values of
+#: `--sandbox`.
+CODEX_WORKSHOP_SANDBOX_MODE = "workspace-write"
+
+
+def _codex_option_line_re(option: str) -> re.Pattern[str]:
+    """An OPTION LINE of a codex `--help` naming `option`, after an optional short alias, and
+    not a longer option's prefix — the claude rule, `_claude_option_line_re`."""
+    return re.compile(r"(?m)^[ \t]{0,8}(?:-\w,[ \t]*)?" + re.escape(option) + r"(?![\w-])")
+
+
+def _codex_workshop_flag_set_check(
+    command: str | Sequence[str],
+    runner: Callable[..., subprocess.CompletedProcess[str]],
+) -> dict[str, Any]:
+    """`codex_workshop_flag_set_available`: `exec --help` names every option of
+    `CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS` as an option line and the `workspace-write` sandbox
+    mode, and `mcp add --help` names `--url` — the streamable-HTTP route the wrapper's endpoint
+    takes exists on this CLI (`codex mcp add <name> --url <url>` is the persisted spelling of
+    the per-launch `mcp_servers.<name>.url` override)."""
+    command_argv = list(command) if not isinstance(command, str) else shlex.split(command)
+    texts: dict[str, str] = {}
+    rcs: dict[str, Any] = {}
+    for key, tail in (("exec", ["exec", "--help"]), ("mcp add", ["mcp", "add", "--help"])):
+        try:
+            proc = runner([*command_argv, *tail], text=True, capture_output=True, check=False)
+            texts[key], rcs[key] = proc.stdout or "", proc.returncode
+        except Exception as exc:  # an unavailable CLI is a capability failure, as elsewhere
+            texts[key], rcs[key] = "", f"{type(exc).__name__}: {exc}"
+    missing = [f"exec {opt}" for opt in CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS
+               if _codex_option_line_re(opt).search(texts["exec"]) is None]
+    if CODEX_WORKSHOP_SANDBOX_MODE not in texts["exec"]:
+        missing.append(f"exec --sandbox {CODEX_WORKSHOP_SANDBOX_MODE}")
+    if _codex_option_line_re("--url").search(texts["mcp add"]) is None:
+        missing.append("mcp add --url")
+    ok = all(rc == 0 for rc in rcs.values()) and not missing
+    return {
+        "name": "codex_workshop_flag_set_available",
+        "pass": ok,
+        "detail": ("`exec --help` and `mcp add --help` name every workshop-leaf option" if ok
+                   else f"exit {rcs}; no option line for {', '.join(missing) or '-'}; this CLI "
+                        "cannot run a workshop leaf (issue #534)"),
+    }
+
+
+#: The preflight row a `workshop leaf` surface takes, by backend token: the check function's
+#: NAME, resolved at call time, so the one function each row runs is the module attribute.
+WORKSHOP_FLAG_SET_CHECKS: dict[str, str] = {
+    "claude": "_claude_workshop_flag_set_check",
+    "codex": "_codex_workshop_flag_set_check",
+}
+
+
+def _workshop_flag_set_check(
+    backend_token: str, command: str | Sequence[str],
+    runner: Callable[..., subprocess.CompletedProcess[str]],
+) -> dict[str, Any]:
+    """The workshop preflight row of `backend_token`'s CLI (`WORKSHOP_FLAG_SET_CHECKS`); a
+    backend with no row fails it, so a workshop surface is never certified by the other CLI's
+    probe."""
+    name = WORKSHOP_FLAG_SET_CHECKS.get(backend_token)
+    if name is None:
+        return {"name": "workshop_flag_set_available", "pass": False,
+                "detail": f"backend {backend_token!r} runs no workshop leaf"}
+    return globals()[name](command, runner)
+
+
 def _claude_global_config_paths() -> tuple[Path, ...]:
     """The files the claude CLI may read as its GLOBAL config, both under the leaf's `HOME`.
 
@@ -14162,7 +14410,8 @@ def probe_all_providers(
         config, model=model_override, command=command_override)
     providers: dict[str, dict[str, Any]] = {}
     # The (backend token, command) surfaces some `leaf: workshop` entry launches through: only
-    # those take `claude_workshop_flag_set_available`, and their recorded surface says so, so
+    # those take their CLI's workshop row (`claude_workshop_flag_set_available` /
+    # `codex_workshop_flag_set_available`), and their recorded surface says so, so
     # the TTL re-probe (`_reprobe_recorded_providers`) keeps requiring it.
     workshop_surfaces = {(e.backend_token, e.command) for e in cfg.entries.values()
                          if getattr(e, "is_workshop", False)}
@@ -14180,7 +14429,7 @@ def probe_all_providers(
                 "launchable": _preflight_allows_agent_launch(probe),
             }
             if workshop:
-                check = _claude_workshop_flag_set_check(entry["probe_command"], runner)
+                check = _workshop_flag_set_check(token, entry["probe_command"], runner)
                 entry["checks"] = list(entry["checks"]) + [check]
                 entry["launchable"] = bool(entry["launchable"]) and check["pass"] is True
         else:
@@ -14822,10 +15071,17 @@ def record_launch(
     if workshop_lineage_id is not None or is_workshop:
         if not is_workshop:
             raise ValueError("workshop_lineage_id is valid only for a workshop launch request")
-        if backend_token != "claude" or (_launch_backend and _launch_backend != "claude"):
+        if (backend_token not in WORKSHOP_HOME_PREPARERS
+                or (_launch_backend and _launch_backend != backend_token)):
             raise ValueError(
-                f"record-launch: a workshop launch runs on the claude backend only; this launch "
-                f"names {_launch_backend or backend_token!r}")
+                f"record-launch: a workshop launch runs on a CLI backend "
+                f"({', '.join(sorted(WORKSHOP_HOME_PREPARERS))}); this launch names "
+                f"{_launch_backend or backend_token!r}")
+        if codex_lineage_id is not None:
+            # A workshop lineage is named by `workshop_lineage_id` on both CLIs; the pure codex
+            # thread lineage is a different home layout under the same container.
+            raise ValueError("codex_lineage_id names a pure codex thread lineage; a workshop "
+                             "launch names its lineage with workshop_lineage_id")
         # The provider the prompt's `<tool_surface>` was rendered for is THIS launch's: a
         # prompt stating another transport's tools would describe a surface the leaf lacks.
         from tools.llm_config import PROVIDER_BACKEND_TOKENS
@@ -14860,14 +15116,14 @@ def record_launch(
                     f"{workshop_lineage_id!r}, so the request's workshop_lineage_id must name "
                     f"it and the child must be a new run (got request {requested!r}, child "
                     f"{child_agent_run_id!r})")
-        workshop_isolation = _prepare_claude_workshop_home(
+        workshop_isolation = WORKSHOP_HOME_PREPARERS[backend_token](
             repo_root, orchestration_id, requested, resume=True)
         if workshop_isolation is None:
             if workshop_lineage_id is None:
                 raise RuntimeError(
                     f"record-launch: the cold workshop launch {child_agent_run_id!r} has no "
                     "lineage home; the host prepares it before recording the launch "
-                    "(`_prepare_claude_workshop_home(..., resume=False)`)")
+                    "(`prepare_workshop_home(..., resume=False)`)")
             return {
                 "workshop_lineage_home_missing": True,
                 "workshop_lineage_id": workshop_lineage_id,
@@ -15315,7 +15571,7 @@ def record_launch(
                 _backend_family = _resolve_backend_type(
                     _resp_backend if isinstance(_resp_backend, str) else "",
                     backend_command)
-                if _backend_family == "codex":
+                if _backend_family == "codex" and not is_workshop:
                     # A warm launch prepared its lineage home before any durable
                     # mutation and is not re-prepared here (a second preparation
                     # could not create anything, but it would be a second existence
@@ -15342,13 +15598,19 @@ def record_launch(
                 if codex_isolation is not None:
                     profile_kwargs = codex_isolation_profile_kwargs(codex_isolation)
                 if is_workshop:
-                    if _backend_family != "claude":
-                        raise ValueError("a workshop launch's profile is a claude profile")
+                    # The family the profile is built for is the one whose home was prepared
+                    # above: the same resolver answers both, or the record would describe one
+                    # CLI's home under another's profile.
+                    if _backend_family != backend_token:
+                        raise ValueError(
+                            f"a workshop launch's profile is its backend's ({backend_token!r}); "
+                            f"the command resolves to {_backend_family!r}")
                     # Its lineage home was found above, cold and warm alike.
                     assert workshop_isolation is not None
-                    response_payload["claude_workflow_home"] = workshop_isolation["home"]
+                    response_payload[f"{backend_token}_workflow_home"] = (
+                        workshop_isolation["home"])
                     response_payload["workshop_lineage_id"] = workshop_isolation["lineage_id"]
-                    profile_kwargs = claude_workshop_profile_kwargs(workshop_isolation)
+                    profile_kwargs = WORKSHOP_PROFILE_KWARGS[backend_token](workshop_isolation)
                 # Every CLI leaf is pure (Z4, issue #171), so there is one profile builder.
                 # The read-write arm that stood beside it built a profile carrying the
                 # capability's `write_roots` as `--bind` mounts; with no capability and no

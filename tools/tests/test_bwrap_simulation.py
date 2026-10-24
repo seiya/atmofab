@@ -1695,5 +1695,295 @@ class WorkshopLeafCliTests(unittest.TestCase):
                             self.assertIn(text, seen, f"control {label}: {text}")
 
 
+
+class _ScriptedResponsesApi:
+    """An OpenAI Responses API stand-in that answers with a SCRIPT, streamed as codex reads it.
+
+    The i-th `POST …/responses` is answered `script[i]` — a list of output items (a
+    `custom_tool_call` of codex's `exec` tool carries JavaScript; a `message` ends the turn) —
+    and every later one with a one-word message. Request bodies are kept: the next request
+    carries the previous call's `custom_tool_call_output`, which is how a row reads what a tool
+    returned. Any other path is a 404 (the CLI's model-list refresh). Unbilled: the CLI talks to
+    loopback with a placeholder `auth.json`."""
+
+    def __init__(self, script: list[list[dict]]) -> None:
+        bodies: list[bytes] = []
+
+        def sse(items: list[dict], n: int) -> bytes:
+            events = [{"type": "response.created", "response": {"id": f"resp_{n}"}}]
+            events += [{"type": "response.output_item.done", "output_index": i, "item": item}
+                       for i, item in enumerate(items)]
+            events.append({"type": "response.completed", "response": {
+                "id": f"resp_{n}", "usage": {
+                    "input_tokens": 10, "input_tokens_details": {"cached_tokens": 0},
+                    "output_tokens": 3, "output_tokens_details": {"reasoning_tokens": 0},
+                    "total_tokens": 13}}})
+            return "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n"
+                           for e in events).encode()
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
+                if not self.path.endswith("/responses"):
+                    self.send_response(404)
+                    self.end_headers()
+                    return
+                bodies.append(body)
+                n = len(bodies)
+                items = script[n - 1] if n <= len(script) else [
+                    {"type": "message", "role": "assistant", "id": f"msg_{n}",
+                     "content": [{"type": "output_text", "text": "done"}]}]
+                data = sse(items, n)
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def do_GET(self) -> None:
+                self.send_response(404)
+                self.end_headers()
+
+            def log_message(self, *args) -> None:  # BaseHTTPRequestHandler's spelling
+                pass
+
+        self.bodies = bodies
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        self.base_url = f"http://127.0.0.1:{self._server.server_address[1]}"
+        self.port = self._server.server_address[1]
+
+    def requests(self) -> list[dict]:
+        return [json.loads(b) for b in self.bodies]
+
+    def tool_output(self, index: int) -> str:
+        """The text of the `custom_tool_call_output` request `index` carries."""
+        for item in reversed(self.requests()[index]["input"]):
+            if item.get("type") == "custom_tool_call_output":
+                return "".join(part.get("text", "") for part in item.get("output", []))
+        raise AssertionError(f"request {index} carries no tool output")
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+
+
+def _exec_call(js: str, n: int = 1) -> dict:
+    """A codex `exec` tool call (codex-cli 0.164.0's code-mode surface, measured: the one
+    top-level tool, whose nested tools — `exec_command`, `apply_patch`, the MCP servers'
+    `mcp__<server>__<tool>` — are reached on its `tools` object)."""
+    return {"type": "custom_tool_call", "id": f"ctc_{n}", "call_id": f"call_{n}",
+            "name": "exec", "input": js}
+
+
+@skip_probes.skip_unless_installed("codex")
+class CodexWorkshopLeafCliTests(unittest.TestCase):
+    """UNBILLED (issue #534 step 2 PR-2): the real codex CLI under a codex workshop leaf's
+    launch shape — the production argv (`Conductor.leaf_command` with the wrapper's endpoint)
+    under the rendered profile (`_prepare_codex_workflow_home(workshop=True)` +
+    `codex_workshop_profile_kwargs`, a real bwrap) against a scripted Responses-API stand-in and
+    the real wrapper endpoint (its operation stubbed). The measurements MX1-MX5 of the step-2
+    plan, kept as rows so a CLI version that moves one turns a row red. The stand-in's provider
+    is named by `--config model_provider…` overrides spliced before `--json -`."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not _bwrap_usable():
+            raise AssertionError("bwrap is absent or unprivileged user namespaces are disabled")
+
+    def setUp(self) -> None:
+        from tools.orchestration_runtime import init_orchestration
+        from tools.tests.private_root_fixture import seed_codex_auth
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        base = Path(tmp.name).resolve()
+        self.repo = base / "repo"
+        self.repo.mkdir()
+        self.origin = seed_codex_auth(base / "operator-codex")
+        patcher = mock.patch.dict(os.environ, {
+            "ATMOFAB_WORKFLOW_HOMES_ROOT": str(base / "homes"),
+            "CODEX_HOME": str(self.origin)})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.orch = "orch_cx_ws"
+        init_orchestration(repo_root=self.repo, orchestration_id=self.orch)
+        _ensure_orchestration_audit_dirs(self.repo, self.orch)
+        cfg = base / "llm.yaml"
+        cfg.write_text("defaults: {provider: codex_cli, model: gpt-5.6-sol}\nphases: {generate: "
+                       "{substeps: {generate: {leaf: workshop, max_wrapper_calls: 5, "
+                       "lineage_timeout_s: 600}}}}\n", encoding="utf-8")
+        from tools import llm_config
+        self.conductor = wc.Conductor(
+            repo_root=self.repo, orchestration_id=self.orch, orchestration_agent_run_id="ORCH",
+            llm_config=llm_config.load_llm_config(cfg), env={})
+        self.entry = self.conductor.entry_for("generate", "generate")
+        self.lineage = str(uuid.uuid4())
+        self.iso = ort._prepare_codex_workflow_home(self.repo, self.orch, self.lineage,
+                                                    resume=False, workshop=True)
+        self.config, self.tree = Path(self.iso["config"]), Path(self.iso["tree"])
+        self.paths = self.conductor._workshop_paths(self.entry, self.iso, self.lineage)
+
+    def _endpoint(self, calls: list[str]):
+        from tools import workshop_mcp, workshop_wrapper
+        ctx = mock.Mock()
+        ctx.agent_run_id = self.lineage
+        ctx.ops = workshop_wrapper.WRAPPER_OPS
+        ctx.paths = self.paths
+
+        def op(ctx, name, args, *, on_spawn=None):
+            calls.append(name)
+            return {"ok": True, "marker": "WRAPPER-DERIVED-42"}
+
+        server = workshop_mcp.WrapperMcpServer(ctx, run_op=op).start()
+        self.addCleanup(server.stop)
+        return server
+
+    def _api(self, script) -> _ScriptedResponsesApi:
+        api = _ScriptedResponsesApi(script)
+        self.addCleanup(api.close)
+        return api
+
+    def _launch(self, api, server, *, resume: str | None = None,
+                drop: tuple[str, ...] = ()) -> subprocess.CompletedProcess:
+        from tools.pure_leaf import workshop_mcp_config_json
+        argv = self.conductor.leaf_command(
+            self.entry, session_id=self.lineage, resume_session_id=resume,
+            mcp_config_json=workshop_mcp_config_json(server.url))
+        for token in drop:
+            i = argv.index(token)
+            del argv[i - 1:i + 1]
+        self.assertEqual(argv[-2:], ["--json", "-"])
+        overrides = ["--config", 'model_provider="loopback"',
+                     "--config", 'model_providers.loopback.name="loopback"',
+                     "--config", f'model_providers.loopback.base_url="{api.base_url}/v1"',
+                     "--config", 'model_providers.loopback.wire_api="responses"']
+        profile = build_readonly_bwrap_profile(
+            repo_root=self.repo, orchestration_id=self.orch, agent_run_id=str(uuid.uuid4()),
+            backend_command="codex", backend_type="codex",
+            **ort.codex_workshop_profile_kwargs(self.iso))
+        command = render_bwrap_command(
+            profile=profile, command_argv=[*argv[:-2], *overrides, *argv[-2:]])
+        return subprocess.run(command, input="Do the task.", capture_output=True, text=True,
+                              timeout=240, check=False)  # the rc is asserted by each row
+
+    @staticmethod
+    def _thread_id(stdout: str) -> str:
+        for line in stdout.splitlines():
+            event = wc._parse_codex_line(line)
+            if event is not None and event.get("type") == "thread.started":
+                return str(event["thread_id"])
+        raise AssertionError(f"no thread.started in {stdout[-2000:]}")
+
+    def test_mx1_mx4_an_empty_codex_home_runs_and_holds_the_resumable_rollout(self) -> None:
+        """MX1: `config/` holds only `config.toml` and the `auth.json` placeholder (bound over
+        by the operator's file), and `exec` runs from it. MX4: the thread's rollout is written
+        under `config/sessions/` with the thread id in its name, which is what
+        `_workshop_session_resumable` globs; the operator's own codex home is untouched."""
+        self.assertEqual(sorted(p.name for p in self.config.iterdir()),
+                         ["auth.json", "config.toml"])
+        before = sorted(p.name for p in self.origin.iterdir())
+        res = self._launch(self._api([]), self._endpoint([]))
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        thread = self._thread_id(res.stdout)
+        self.assertIn('"type":"turn.completed"', res.stdout)
+        rollouts = sorted(self.config.glob("sessions/*/*/*/rollout-*.jsonl"))
+        self.assertEqual(len(rollouts), 1, rollouts)
+        self.assertTrue(rollouts[0].name.endswith(f"-{thread}.jsonl"), rollouts)
+        self.assertTrue(self.conductor._workshop_session_resumable(self.paths, thread))
+        self.assertEqual(sorted(p.name for p in self.origin.iterdir()), before)
+        self.assertEqual((self.origin / "auth.json").read_text(), "{}\n")
+
+    def test_mx2_the_wrapper_is_reached_and_its_answer_returned(self) -> None:
+        """MX2: `mcp_servers.wrapper.url` reaches the endpoint (`initialize`, `tools/list`,
+        `tools/call`), the wrapper's tools are offered under `mcp__wrapper__<op>`, and the
+        answer is handed back to the model. CONTROL: without
+        `default_tools_approval_mode="approve"` the call is refused before it reaches the
+        endpoint — the override is load-bearing."""
+        js = ("text(JSON.stringify(ALL_TOOLS.map(t => t.name)));"
+              "text(JSON.stringify(await tools.mcp__wrapper__derive({})));")
+        calls: list[str] = []
+        server = self._endpoint(calls)
+        api = self._api([[_exec_call(js)]])
+        res = self._launch(api, server)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual(calls, ["derive"])
+        methods = [json.loads(line)["request"].get("method")
+                   for line in self.paths.wrapper_calls.read_text().splitlines()
+                   if json.loads(line)["request"]]
+        for method in ("initialize", "tools/list", "tools/call"):
+            self.assertIn(method, methods)
+        output = api.tool_output(1)
+        for op in ("derive", "compile", "lint", "syntax_check", "run"):
+            self.assertIn(f"mcp__wrapper__{op}", output)
+        self.assertIn("WRAPPER-DERIVED-42", output)
+        calls.clear()
+        api = self._api([[_exec_call(js)]])
+        res = self._launch(api, server, drop=(
+            'mcp_servers.wrapper.default_tools_approval_mode="approve"',))
+        self.assertEqual(calls, [])
+        self.assertIn("requires approval", api.tool_output(1))
+
+    def test_mx3_the_shell_writes_the_tree_and_reaches_nothing_else(self) -> None:
+        """MX3: codex's `workspace-write` sandbox initializes inside bwrap: a command writes
+        the tree, and the host sees no write beside it; the checkout is the empty tmpfs; a
+        command's network is refused (the stand-in itself is unreachable from the shell); an
+        escalated command is refused under `approval_policy="never"`. And M2's twin: an
+        `AGENTS.md` and a `.codex/AGENTS.md` planted in the tree reach no request."""
+        (self.tree / "AGENTS.md").write_text("PLANTED-AGENTS-MARKER-1\n", encoding="utf-8")
+        (self.tree / ".codex").mkdir()
+        (self.tree / ".codex" / "AGENTS.md").write_text("PLANTED-AGENTS-MARKER-2\n",
+                                                        encoding="utf-8")
+        api = self._api([])
+        probes = {
+            "tree": "echo hi > in_tree.txt && cat in_tree.txt",
+            "beside": "echo x > ../beside.txt; echo rc=$?",
+            "checkout": f"ls {self.repo}/tools 2>&1; echo rc=$?",
+            "net": ("python3 -c 'import socket; socket.create_connection((\"127.0.0.1\", "
+                    f"{api.port}), 3)' 2>&1 | tail -1; echo rc=$?"),
+        }
+        js = ["const out = {};"]
+        for key, cmd in probes.items():
+            js.append(f"out[{json.dumps(key)}] = (await tools.exec_command("
+                      f"{{cmd: {json.dumps(cmd)}, login: false}})).output;")
+        js.append("try { await tools.exec_command({cmd: 'echo esc > ../esc.txt', "
+                  "sandbox_permissions: 'require_escalated', justification: 'x', "
+                  "login: false}); out.escalated = 'ran'; } "
+                  "catch (e) { out.escalated = 'refused: ' + e; }")
+        js.append("text(JSON.stringify(out));")
+        api2 = self._api([[_exec_call("\n".join(js))]])
+        res = self._launch(api2, self._endpoint([]))
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        text = api2.tool_output(1)
+        out = json.loads(text[text.index("{"):])
+        self.assertEqual(out["tree"].strip(), "hi")
+        self.assertEqual((self.tree / "in_tree.txt").read_text(), "hi\n")
+        self.assertFalse((Path(self.iso["home"]) / "beside.txt").exists())
+        self.assertIn("No such file or directory", out["checkout"])
+        # Measured: `PermissionError: [Errno 1] Operation not permitted` (codex's seccomp
+        # filter refuses the socket), while the same host reaches the stand-in.
+        self.assertIn("Operation not permitted", out["net"])
+        self.assertTrue(out["escalated"].startswith("refused"), out["escalated"])
+        self.assertFalse((Path(self.iso["home"]) / "esc.txt").exists())
+        blob = b"".join(api2.bodies)
+        self.assertNotIn(b"PLANTED-AGENTS-MARKER", blob)
+
+    def test_mx5_a_warm_resume_continues_the_thread_and_reaches_the_wrapper(self) -> None:
+        """MX5: `exec resume <thread>` with `sandbox_mode="workspace-write"` and the same
+        overrides, from the lineage home: the resumed thread's history is in the request, and
+        the wrapper is called."""
+        calls: list[str] = []
+        server = self._endpoint(calls)
+        res = self._launch(self._api([]), server)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        thread = self._thread_id(res.stdout)
+        api = self._api([[_exec_call(
+            "text(JSON.stringify(await tools.mcp__wrapper__compile({})));")]])
+        res = self._launch(api, server, resume=thread)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual(self._thread_id(res.stdout), thread)
+        self.assertEqual(calls, ["compile"])
+        self.assertIn("Do the task.", json.dumps(api.requests()[0]["input"]))
+        self.assertGreater(len(api.requests()[0]["input"]), 2)
+
 if __name__ == "__main__":
     unittest.main()

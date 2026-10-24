@@ -50,6 +50,34 @@
 # functions; see
 # `llm_openai_compatible.example.yaml` and `llm_anthropic_api.example.yaml` in this directory for
 # worked examples of each.
+#
+# The two producing substeps, `compile.generate` and `generate.generate`, may instead run as a
+# WORKSHOP leaf (issue #534): the leaf edits a host-seeded work tree with its own shell and
+# patch tools, inside codex's `workspace-write` sandbox, and asks the host for the operations
+# of its substep (`generate.generate`: derive, compile, lint, syntax-check, run;
+# `compile.generate`: check the WHOLE IR the way `Compile.static` will). The entry states the
+# leaf model and both bounds, which have no default and are written on the substep only — the
+# same block under `phases.compile.substeps` and under `phases.generate.substeps`:
+#
+#       generate:
+#         provider: codex_cli
+#         model: gpt-5.6-sol
+#         effort: medium
+#         leaf: workshop
+#         max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
+#         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
+#
+# A bound that runs out ends the lineage with its tree as it stands. A repair, a transient
+# retry and a usage-limit wait each start a fresh lineage with fresh counters, so one substep
+# run may open up to 8 lineages (1 + 2 repair turns + 2 transient retries + 3 usage waits; 5
+# without --wait-usage-reset): up to max_wrapper_calls x 8 calls and lineage_timeout_s x 8
+# seconds, and more across an outer reopen. The shell's own commands are not wrapper calls and
+# are not counted. Neither derivation key names the leaf model: on a node whose Compile or
+# Generate is already certified, a workshop entry reuses it unless the run passes --rederive
+# (compile,generate,build,validate for both; generate,build,validate for Generate alone). The
+# leaf's `CODEX_HOME` is a private directory under its lineage home, into which
+# `~/.codex/auth.json` is bound read-only (`docs/ORCHESTRATION.md` §workshop leaf;
+# `docs/RUNBOOK.md` §0-2).
 defaults:
   provider: codex_cli
   model: gpt-5.6-sol

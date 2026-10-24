@@ -75,6 +75,12 @@ ENDED_BY_VALUES: tuple[str, ...] = (
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
+#: The CLI backends a lineage home is prepared for: the directory under
+#: `<homes-root>/<oid>/` that holds it, which is `orchestration_runtime.
+#: WORKFLOW_BACKEND_HOME_DIRNAMES` (the prune tool walks those names), and the backend token of
+#: the provider that launches it (`claude_cli`, issue #534 step 1; `codex_cli`, step 2 PR-2).
+LINEAGE_BACKENDS: tuple[str, ...] = ("claude", "codex")
+
 _LINEAGE_LOCKS: dict[str, threading.Lock] = {}
 _LINEAGE_LOCKS_GUARD = threading.Lock()
 
@@ -82,7 +88,9 @@ _LINEAGE_LOCKS_GUARD = threading.Lock()
 @dataclass(frozen=True)
 class LineagePaths:
     """Every path of one lineage. `homes_root` is `operator_private_root.workflow_homes_root()`
-    in production; `orchestration_dir` is `workspace/orchestrations/<oid>`."""
+    in production; `orchestration_dir` is `workspace/orchestrations/<oid>`; `backend` is the
+    CLI's (`LINEAGE_BACKENDS`). `config` is that CLI's private home in both: the claude
+    lineage's `CLAUDE_CONFIG_DIR`, the codex lineage's `CODEX_HOME`."""
 
     homes_root: Path
     orchestration_id: str
@@ -91,11 +99,14 @@ class LineagePaths:
     backend: str = "claude"
 
     def __post_init__(self) -> None:
-        for name in ("orchestration_id", "lineage_id", "backend"):
+        for name in ("orchestration_id", "lineage_id"):
             value = getattr(self, name)
             if not (isinstance(value, str) and _SAFE_ID_RE.fullmatch(value)):
                 raise ValueError(
                     f"lineage {name} must be a plain [A-Za-z0-9_-] token (got {value!r})")
+        if self.backend not in LINEAGE_BACKENDS:
+            raise ValueError(f"lineage backend must be one of {list(LINEAGE_BACKENDS)} (got "
+                             f"{self.backend!r})")
 
     @property
     def home(self) -> Path:

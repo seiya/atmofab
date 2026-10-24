@@ -28480,7 +28480,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             "agent_run_id": self._ARID, "readonly": False, "leaf_mode": "workshop",
             "write_roots": [], "read_roots": [],
             "runtime_rw_bind_paths": [f"{home}/config", f"{home}/tree"],
-            "workdir": f"{home}/tree",
+            "workdir": f"{home}/tree", "env": {"CLAUDE_CONFIG_DIR": f"{home}/config"},
             "runtime_rw_credential_mapping": ["/operator/.credentials.json",
                                               f"{home}/config/.credentials.json"]}
         (root / "sandbox_profiles" / f"{self._ARID}.json").write_text(json.dumps(body),
@@ -28532,7 +28532,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         home = f"/tmp/homes/{self._ORCH}/claude/{self._ARID}"
         good = {"agent_run_id": self._ARID, "readonly": False, "leaf_mode": "workshop",
                 "write_roots": [], "runtime_rw_bind_paths": [f"{home}/config", f"{home}/tree"],
-                "workdir": f"{home}/tree",
+                "workdir": f"{home}/tree", "env": {"CLAUDE_CONFIG_DIR": f"{home}/config"},
                 "runtime_rw_credential_mapping": ["/operator/.credentials.json",
                                                   f"{home}/config/.credentials.json"]}
         for label, change in (("read-only", {"readonly": True}),
@@ -28563,13 +28563,54 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                                       "/operator/.credentials.json",
                                       f"{home}/tree/.credentials.json"]}),
                               ("no credential mapping", {
-                                  "runtime_rw_credential_mapping": None})):
+                                  "runtime_rw_credential_mapping": None}),
+                              ("no CLI home", {"env": {}}),
+                              ("the CLI home on the tree", {
+                                  "env": {"CLAUDE_CONFIG_DIR": f"{home}/tree"}}),
+                              ("both CLI homes", {"env": {
+                                  "CLAUDE_CONFIG_DIR": f"{home}/config",
+                                  "CODEX_HOME": f"{home}/config"}})):
             with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
                 repo_root = Path(tmp)
                 self._build_tree(repo_root)
                 self._make_workshop(repo_root, profile={**good, **change})
                 self.assertTrue(any("workshop launch sandbox profile" in v
                                     for v in self._workshop_violations(repo_root)), label)
+
+    def test_a_codex_workshop_profile_is_judged_by_its_own_family(self) -> None:
+        """Issue #534 step 2 PR-2: a codex workshop profile declares `CODEX_HOME` = `config/`,
+        remounts exactly its `auth.json` and `config.toml` read-only, and binds no credential
+        read-write — and each other shape is refused, the claude credential mapping among them."""
+        from tools.validate_pipeline_semantics import _workshop_profile_violations
+        home = f"/tmp/homes/{self._ORCH}/codex/{self._ARID}"
+        good = {"agent_run_id": self._ARID, "readonly": False, "leaf_mode": "workshop",
+                "write_roots": [], "runtime_rw_bind_paths": [f"{home}/config", f"{home}/tree"],
+                "workdir": f"{home}/tree", "env": {"CODEX_HOME": f"{home}/config"},
+                "runtime_ro_bind_mappings": [["/operator/auth.json", f"{home}/config/auth.json"],
+                                             [f"{home}/config/config.toml",
+                                              f"{home}/config/config.toml"]]}
+        request = {"workshop_lineage_id": self._ARID}
+        self.assertEqual(_workshop_profile_violations(good, request), [])
+        for label, change in (
+                ("the claude credential mapping", {"runtime_rw_credential_mapping": [
+                    "/operator/.credentials.json", f"{home}/config/.credentials.json"]}),
+                ("no ro mappings", {"runtime_ro_bind_mappings": []}),
+                ("auth.json into the tree", {"runtime_ro_bind_mappings": [
+                    ["/operator/auth.json", f"{home}/tree/auth.json"],
+                    [f"{home}/config/config.toml", f"{home}/config/config.toml"]]}),
+                ("a third mapping", {"runtime_ro_bind_mappings": [
+                    *good["runtime_ro_bind_mappings"], ["/x", f"{home}/config/x"]]}),
+                ("CODEX_HOME on the tree", {"env": {"CODEX_HOME": f"{home}/tree"}}),
+                ("both CLI homes", {"env": {"CODEX_HOME": f"{home}/config",
+                                            "CLAUDE_CONFIG_DIR": f"{home}/config"}})):
+            with self.subTest(case=label):
+                self.assertTrue(_workshop_profile_violations({**good, **change}, request),
+                                label)
+
+    def test_the_cli_home_table_is_the_runtime_s(self) -> None:
+        from tools import orchestration_runtime as ort_
+        from tools.validate_pipeline_semantics import _WORKSHOP_PROFILE_HOME_ENV
+        self.assertEqual(_WORKSHOP_PROFILE_HOME_ENV, ort_.WORKSHOP_PROFILE_HOME_ENV)
 
     def test_a_workshop_profile_under_the_checkout_or_without_a_lineage_is_flagged(self) -> None:
         for label in ("under the checkout", "no lineage in the request"):

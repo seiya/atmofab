@@ -649,13 +649,22 @@ def _is_pure_launch_prompt_text(launch_text: str) -> bool:
 _HTTP_PURE_LEAF_BACKENDS: frozenset[str] = frozenset({"openai_compatible", "anthropic_api"})
 
 
+#: A workshop profile's CLI-home env name by backend family. Duplicated from
+#: `orchestration_runtime.WORKSHOP_PROFILE_HOME_ENV` under the module-boundary rule, and
+#: compared with it by `test_validate_pipeline_semantics`.
+_WORKSHOP_PROFILE_HOME_ENV: dict[str, str] = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"}
+
+
 def _workshop_profile_violations(profile: dict, request: dict | None = None,
                                  repo_root: Path | None = None) -> list[str]:
     """What is wrong with a persisted workshop leaf's sandbox profile (issue #534): it must be
     `leaf_mode: workshop`, `readonly: false`, `write_roots: []`, with exactly two rw binds —
     the `config` and `tree` of ONE lineage home, spelled as normalized absolute paths, outside
     the checkout (`repo_root`), in the lineage directory the request names
-    (`workshop_lineage_id`) — and its tree as its workdir. The persisted-record twin of
+    (`workshop_lineage_id`) — and its tree as its workdir; and its CLI home is `config/`, with
+    the claude credential mapped read-write onto `config/.credentials.json`, or codex's
+    `auth.json` and `config.toml` remounted read-only into it and no credential read-write
+    (issue #534 step 2 PR-2). The persisted-record twin of
     `workflow_conductor._admissible_leaf_profile`, which refuses the spawn."""
     out: list[str] = []
     if profile.get("leaf_mode") != "workshop" or profile.get("readonly") is not False:
@@ -691,10 +700,34 @@ def _workshop_profile_violations(profile: dict, request: dict | None = None,
     tree = next(p for p in paths if p.name == "tree")
     config = next(p for p in paths if p.name == "config")
     credential = profile.get("runtime_rw_credential_mapping")
-    if not (isinstance(credential, list) and len(credential) == 2
-            and str(credential[1]) == str(config / ".credentials.json")):
-        out.append(f"workshop launch sandbox profile must map the credential onto "
-                   f"{config / '.credentials.json'} (got {credential!r})")
+    env = profile.get("env") if isinstance(profile.get("env"), dict) else {}
+    # The CLI family is the one whose home the environment declares — exactly one (the
+    # runtime's `workshop_profile_family`, duplicated under the module-boundary rule), and it
+    # must name the lineage's `config/`.
+    homes = {family: env.get(name) for family, name in _WORKSHOP_PROFILE_HOME_ENV.items()
+             if env.get(name)}
+    family = next(iter(homes)) if len(homes) == 1 else None
+    if family is None or homes[family] != str(config):
+        out.append(f"workshop launch sandbox profile must declare exactly one CLI home "
+                   f"({' or '.join(_WORKSHOP_PROFILE_HOME_ENV.values())}) naming {config} "
+                   f"(got {homes!r})")
+    elif family == "claude":
+        if not (isinstance(credential, list) and len(credential) == 2
+                and str(credential[1]) == str(config / ".credentials.json")):
+            out.append(f"workshop launch sandbox profile must map the credential onto "
+                       f"{config / '.credentials.json'} (got {credential!r})")
+    else:
+        mappings = profile.get("runtime_ro_bind_mappings")
+        destinations = sorted(str(m[1]) for m in mappings
+                              if isinstance(m, list) and len(m) == 2) if isinstance(
+                                  mappings, list) else None
+        if credential is not None:
+            out.append(f"a codex workshop launch sandbox profile binds no credential "
+                       f"read-write (got {credential!r})")
+        if destinations != sorted(str(config / n) for n in ("auth.json", "config.toml")):
+            out.append(f"a codex workshop launch sandbox profile must remount exactly "
+                       f"{config / 'auth.json'} and {config / 'config.toml'} read-only (got "
+                       f"{mappings!r})")
     if str(profile.get("workdir") or "") != str(tree):
         out.append(f"workshop launch sandbox profile workdir must be its tree (got "
                    f"{profile.get('workdir')!r})")

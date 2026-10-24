@@ -141,7 +141,7 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset({
 # THE capability authority. A config may restrict a provider's set; it may never exceed it.
 PROVIDER_CAPABILITIES: Mapping[str, frozenset[str]] = {
     "claude_cli": frozenset({CAP_PURE, CAP_WARM_RESUME, CAP_WORKSHOP}),
-    "codex_cli": frozenset({CAP_PURE, CAP_WARM_RESUME}),
+    "codex_cli": frozenset({CAP_PURE, CAP_WARM_RESUME, CAP_WORKSHOP}),
     # HTTP providers: one request, one response. No session to reopen, no tools to grant.
     "openai_compatible": frozenset({CAP_PURE}),
     "anthropic_api": frozenset({CAP_PURE}),
@@ -644,7 +644,8 @@ def _finalize_entry(fields: Mapping[str, Any], where: str,
                 f"`leaf: workshop` needs a provider with the {CAP_WORKSHOP!r} capability; "
                 f"provider {provider!r} has "
                 f"{', '.join(sorted(capabilities)) or '(none)'} (the workshop launch shape is "
-                f"measured on claude_cli only)", where=f"{where}.leaf")
+                f"measured on the CLI providers, claude_cli and codex_cli)",
+                where=f"{where}.leaf")
         missing = [f for f in WORKSHOP_BOUND_FIELDS if fields.get(f) is None]
         if missing:
             raise LlmConfigError(
