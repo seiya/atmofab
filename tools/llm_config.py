@@ -116,10 +116,11 @@ def _is_loopback(host: str) -> bool:
 #   warm_resume  a finished leaf session can be reopened for a repair turn carrying the prior
 #                context (claude `--resume --fork-session`, codex `exec resume`).
 #   workshop     the provider can run a `workshop leaf` (issue #534): a producing leaf that edits a
-#                host-seeded work tree under file tools confined to it and reaches the host's
-#                build operations through the wrapper's MCP endpoint, its tree snapshotted into
-#                the same document a pure producer returns. Declared by `claude_cli` alone: the
-#                launch shape is measured on that CLI only (`pure_leaf.workshop_leaf_flags`).
+#                host-seeded work tree with the CLI's own tools confined to it and reaches the
+#                host's operations through the wrapper's MCP endpoint, its tree snapshotted into
+#                the same document a pure producer returns. Declared by the two CLI providers,
+#                whose launch shapes are measured (`pure_leaf.workshop_leaf_flags`,
+#                `pure_leaf.codex_workshop_overrides`); an HTTP provider has no agent loop yet.
 CAP_PURE = "pure"
 CAP_WARM_RESUME = "warm_resume"
 CAP_WORKSHOP = "workshop"

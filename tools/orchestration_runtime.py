@@ -15051,7 +15051,8 @@ def record_launch(
             f"record-launch: provider {backend_token!r} runs no confined child process and is "
             f"admissible only for a pure leaf; this launch is not pure")
 
-    # A WORKSHOP leaf's lineage (issue #534): a claude launch in the lineage's private home,
+    # A WORKSHOP leaf's lineage (issue #534): a claude or codex launch in the lineage's private
+    # home,
     # whose id the request names (`workshop_lineage_id`). A COLD launch starts the lineage —
     # its id is the child's own, and no `--workshop-lineage-id` is passed; a WARM one resumes it
     # and passes the id.
@@ -15059,7 +15060,7 @@ def record_launch(
     # The HOST prepares a cold lineage's home before this launch is recorded, not this function:
     # the conductor seeds the tree, stages the closure and freezes the wrapper's context — all
     # under the home — and starts the wrapper endpoint whose URL this launch records, before it
-    # records the launch (`_prepare_claude_workshop_home(..., resume=False)`, in its own
+    # records the launch (its backend's `WORKSHOP_HOME_PREPARERS` entry, `resume=False`, in its own
     # process, from `Conductor._open_workshop_lineage`). So here the home must exist on BOTH
     # launches, and the two absences mean
     # different things: a warm launch whose home is gone returns
