@@ -14123,13 +14123,28 @@ def _codex_option_line_re(option: str) -> re.Pattern[str]:
     return re.compile(r"(?m)^[ \t]{0,8}(?:-\w,[ \t]*)?" + re.escape(option) + r"(?![\w-])")
 
 
+def _codex_option_values(help_text: str, option: str) -> tuple[str, ...]:
+    """The `[possible values: a, b, …]` a codex `--help` lists for `option`, read from that
+    option's own block — its option line up to the next option line — so a value another
+    option's description happens to mention does not answer for it (codex-cli 0.164.0's
+    `--approve-for-me` description names "the workspace-write sandbox")."""
+    match = _codex_option_line_re(option).search(help_text)
+    if match is None:
+        return ()
+    rest = help_text[match.end():]
+    following = re.search(r"(?m)^[ \t]{0,8}(?:-\w,[ \t]*)?--[\w-]", rest)
+    block = rest[:following.start()] if following else rest
+    values = re.search(r"\[possible values:([^\]]*)\]", block)
+    return tuple(v.strip() for v in values.group(1).split(",")) if values else ()
+
+
 def _codex_workshop_flag_set_check(
     command: str | Sequence[str],
     runner: Callable[..., subprocess.CompletedProcess[str]],
 ) -> dict[str, Any]:
     """`codex_workshop_flag_set_available`: `exec --help` names every option of
-    `CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS` as an option line and the `workspace-write` sandbox
-    mode, and `mcp add --help` names `--url` — the streamable-HTTP route the wrapper's endpoint
+    `CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS` as an option line and lists `workspace-write` among
+    the possible values of `--sandbox` (`_codex_option_values`), and `mcp add --help` names `--url` — the streamable-HTTP route the wrapper's endpoint
     takes exists on this CLI (`codex mcp add <name> --url <url>` is the persisted spelling of
     the per-launch `mcp_servers.<name>.url` override)."""
     command_argv = list(command) if not isinstance(command, str) else shlex.split(command)
@@ -14143,7 +14158,7 @@ def _codex_workshop_flag_set_check(
             texts[key], rcs[key] = "", f"{type(exc).__name__}: {exc}"
     missing = [f"exec {opt}" for opt in CODEX_WORKSHOP_EXEC_REQUIRED_OPTIONS
                if _codex_option_line_re(opt).search(texts["exec"]) is None]
-    if CODEX_WORKSHOP_SANDBOX_MODE not in texts["exec"]:
+    if CODEX_WORKSHOP_SANDBOX_MODE not in _codex_option_values(texts["exec"], "--sandbox"):
         missing.append(f"exec --sandbox {CODEX_WORKSHOP_SANDBOX_MODE}")
     if _codex_option_line_re("--url").search(texts["mcp add"]) is None:
         missing.append("mcp add --url")

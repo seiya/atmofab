@@ -360,6 +360,11 @@ class CodexPreflightTests(unittest.TestCase):
             self._EXEC_HELP.replace("workspace-write, ", ""), self._MCP_HELP))
         self.assertIs(result["pass"], False)
         self.assertIn("workspace-write", result["detail"])
+        # Another option's description naming the mode does not answer for `--sandbox`'s values
+        # (codex-cli 0.164.0's `--approve-for-me` says "the workspace-write sandbox").
+        mentioned = (self._EXEC_HELP.replace("workspace-write, ", "")
+                     + "      --approve-for-me\n          using the workspace-write sandbox\n")
+        self.assertIs(check("codex", self._runner(mentioned, self._MCP_HELP))["pass"], False)
         result = check("codex", self._runner(self._EXEC_HELP, "Usage: codex mcp add\n"))
         self.assertIs(result["pass"], False)
         self.assertIn("mcp add --url", result["detail"])
