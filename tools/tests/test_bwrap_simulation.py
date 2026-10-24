@@ -1800,8 +1800,16 @@ class CodexWorkshopLeafCliTests(unittest.TestCase):
         self.repo = base / "repo"
         self.repo.mkdir()
         self.origin = seed_codex_auth(base / "operator-codex")
+        # The homes root OUTSIDE /tmp, as production's `~/.atmofab/homes` is: codex's own
+        # `workspace-write` sandbox keeps /tmp writable, so a lineage home under it would make
+        # `config/` and the home's other paths writable to the shell and the MX3 row would be
+        # measuring bwrap alone (round 1 of step 2 PR-2 measured exactly that).
+        homes = tempfile.TemporaryDirectory(dir="/var/tmp")
+        self.addCleanup(homes.cleanup)
+        homes_root = Path(homes.name).resolve() / "homes"
+        self.assertFalse(homes_root.is_relative_to("/tmp"), homes_root)
         patcher = mock.patch.dict(os.environ, {
-            "ATMOFAB_WORKFLOW_HOMES_ROOT": str(base / "homes"),
+            "ATMOFAB_WORKFLOW_HOMES_ROOT": str(homes_root),
             "CODEX_HOME": str(self.origin)})
         patcher.start()
         self.addCleanup(patcher.stop)
@@ -1925,7 +1933,8 @@ class CodexWorkshopLeafCliTests(unittest.TestCase):
 
     def test_mx3_the_shell_writes_the_tree_and_reaches_nothing_else(self) -> None:
         """MX3: codex's `workspace-write` sandbox initializes inside bwrap: a command writes
-        the tree, and the host sees no write beside it; the checkout is the empty tmpfs; a
+        the tree, and a write beside it or into its own `config/` is refused read-only (with the
+        homes root outside /tmp, as production's is); the checkout is the empty tmpfs; a
         command's network is refused (the stand-in itself is unreachable from the shell); an
         escalated command is refused under `approval_policy="never"`. And M2's twin: an
         `AGENTS.md` and a `.codex/AGENTS.md` planted in the tree reach no request."""
@@ -1937,6 +1946,7 @@ class CodexWorkshopLeafCliTests(unittest.TestCase):
         probes = {
             "tree": "echo hi > in_tree.txt && cat in_tree.txt",
             "beside": "echo x > ../beside.txt; echo rc=$?",
+            "config": "echo x > ../config/AGENTS.md; echo rc=$?",
             "checkout": f"ls {self.repo}/tools 2>&1; echo rc=$?",
             "net": ("python3 -c 'import socket; socket.create_connection((\"127.0.0.1\", "
                     f"{api.port}), 3)' 2>&1 | tail -1; echo rc=$?"),
@@ -1958,6 +1968,11 @@ class CodexWorkshopLeafCliTests(unittest.TestCase):
         self.assertEqual(out["tree"].strip(), "hi")
         self.assertEqual((self.tree / "in_tree.txt").read_text(), "hi\n")
         self.assertFalse((Path(self.iso["home"]) / "beside.txt").exists())
+        # Refused by codex's own sandbox (bwrap alone would let the beside write land on its
+        # tmpfs), and its own CLI home is read-only to a command.
+        for key in ("beside", "config"):
+            self.assertIn("read-only file system", out[key].lower(), key)
+        self.assertFalse((self.config / "AGENTS.md").exists())
         self.assertIn("No such file or directory", out["checkout"])
         # Measured: `PermissionError: [Errno 1] Operation not permitted` (codex's seccomp
         # filter refuses the socket), while the same host reaches the stand-in.
@@ -1969,19 +1984,22 @@ class CodexWorkshopLeafCliTests(unittest.TestCase):
 
     def test_mx5_a_warm_resume_continues_the_thread_and_reaches_the_wrapper(self) -> None:
         """MX5: `exec resume <thread>` with `sandbox_mode="workspace-write"` and the same
-        overrides, from the lineage home: the resumed thread's history is in the request, and
-        the wrapper is called."""
+        overrides, from the lineage home: the resumed thread's history is in the request, a
+        command writes the tree, and the wrapper is called."""
         calls: list[str] = []
         server = self._endpoint(calls)
         res = self._launch(self._api([]), server)
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         thread = self._thread_id(res.stdout)
         api = self._api([[_exec_call(
+            "await tools.exec_command({cmd: 'echo warm > warm.txt', login: false});"
             "text(JSON.stringify(await tools.mcp__wrapper__compile({})));")]])
         res = self._launch(api, server, resume=thread)
         self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
         self.assertEqual(self._thread_id(res.stdout), thread)
         self.assertEqual(calls, ["compile"])
+        # The resumed thread runs under `sandbox_mode="workspace-write"`, not read-only.
+        self.assertEqual((self.tree / "warm.txt").read_text(), "warm\n")
         self.assertIn("Do the task.", json.dumps(api.requests()[0]["input"]))
         self.assertGreater(len(api.requests()[0]["input"]), 2)
 
