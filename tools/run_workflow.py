@@ -1210,8 +1210,10 @@ def _find_latest_orchestration(repo_root: Path) -> str | None:
 
     Any subdirectory carrying an orchestration_meta.json is an orchestration —
     the id need not start with `orch_`, since --orchestration-id accepts arbitrary
-    caller-supplied ids and those runs must remain resumable as "the latest".
+    caller-supplied ids and those runs must remain resumable as "the latest" — except a
+    judge replay's (`tools/judge_replay.py`), which is a measurement, not a run.
     """
+    from tools.judge_replay import REPLAY_KIND
     orch_root = repo_root / "workspace" / "orchestrations"
     if not orch_root.is_dir():
         return None
@@ -1221,6 +1223,9 @@ def _find_latest_orchestration(repo_root: Path) -> str | None:
             continue
         meta = _read_json_if_exists(path / "orchestration_meta.json")
         if not isinstance(meta, dict):
+            continue
+        invocation = meta.get("invocation")
+        if isinstance(invocation, dict) and invocation.get("kind") == REPLAY_KIND:
             continue
         started_at = meta.get("started_at")
         started_key = started_at.strip() if isinstance(started_at, str) else ""
