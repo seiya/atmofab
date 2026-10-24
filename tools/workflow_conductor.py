@@ -3019,6 +3019,9 @@ class ProcResult:
     # Codex only: the untouched JSONL event stream (`stdout` keeps just the final
     # agent_message), which is otherwise unrecoverable from any artifact.
     raw_stdout: str | None = None
+    # Codex only: the `item.completed` events the read loop parsed — counted from the stream
+    # itself, not from `raw_stdout`, which is capped (`LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS`).
+    items_completed: int | None = None
     # The CONDUCTOR killed this leaf at the per-leaf cap (`_leaf_timeout_seconds`). Carried on
     # the result object rather than recognised from the captured output: the kill is the
     # conductor's own act, and routing it back through a regex over leaf-written text would let
@@ -4999,7 +5002,26 @@ class Conductor:
     ) -> ProcResult:
         """`cancel_event` (a codex `workshop leaf`'s, issue #534 step 2 PR-2) ends the leaf from
         another thread as `spawn_leaf`'s claude path does: checked at the head of the read loop,
-        it takes the cap's teardown and returns a result carrying `LEAF_CANCELLED_MARKER`."""
+        it takes the cap's teardown and returns a result carrying `LEAF_CANCELLED_MARKER`.
+
+        Every result carries `items_completed`, the `item.completed` events the read parsed (the
+        live loop and the post-break drain both count), whichever way the read ended."""
+        items = [0]
+        result = self._read_codex_json_leaf(
+            argv, child_env, child_arid, prompt_text=prompt_text, entry=entry, resume=resume,
+            timeout_context=timeout_context, timeout_seconds=timeout_seconds,
+            timeout_name=timeout_name, cancel_event=cancel_event, items=items)
+        result.items_completed = items[0]
+        return result
+
+    def _read_codex_json_leaf(
+        self, argv: list[str], child_env: dict[str, str], child_arid: str,
+        *, prompt_text: str, entry: ResolvedLeafEntry | None,
+        resume: bool, timeout_context: dict[str, str] | None,
+        timeout_seconds: int | None, timeout_name: str,
+        cancel_event: threading.Event | None, items: list[int],
+    ) -> ProcResult:
+        """`_spawn_codex_json_leaf`'s body; `items[0]` counts the `item.completed` events."""
         entry = entry if entry is not None else self.entry_for(None, None)
         # Every leaf supplies its child ARID so the emitted thread can be registered before
         # file tools run — the diagnostician included since issue #169 put it on the pure
@@ -5289,6 +5311,8 @@ class Conductor:
                     continue
                 usage, model, final_text, turn_failed = _absorb_codex_event(
                     event, usage, model, final_text, turn_failed, failure_events)
+                if event.get("type") == "item.completed":
+                    items[0] += 1
                 kind = str(event.get("type") or "")
                 candidate = event.get("thread_id")
                 if kind == "thread.started" and isinstance(candidate, str) and candidate.strip():
@@ -5361,6 +5385,8 @@ class Conductor:
                 if leftover_event is not None:
                     usage, model, final_text, turn_failed = _absorb_codex_event(
                         leftover_event, usage, model, final_text, turn_failed, failure_events)
+                    if leftover_event.get("type") == "item.completed":
+                        items[0] += 1
                     # The identity is only REMEMBERED here, never bound: registration is a host
                     # write, and a leaf the conductor has already killed must not have one made
                     # on its behalf. It is bound below, and only if this turn is accepted.
@@ -9524,11 +9550,7 @@ class Conductor:
             model, provenance = self._codex_model_provenance(entry)
             usage = _leaf_usage_row(proc, entry, envelope=None)
             turns = None
-            items_completed = 0
-            for line in (proc.raw_stdout or "").splitlines():
-                event = _parse_codex_line(line)
-                if event is not None and event.get("type") == "item.completed":
-                    items_completed += 1
+            items_completed = getattr(proc, "items_completed", None)
         wrapper_calls = int(record.get("wrapper_calls_used") or 0) - calls_before
         ended_by = record.get("ended_by")
         self.emit("workshop_launch_complete", node_key=refs.node_key, substep=substep or "",

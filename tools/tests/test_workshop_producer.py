@@ -1248,7 +1248,7 @@ def _codex_proc(text: str = "done", items: int = 3) -> wc.ProcResult:
               for _ in range(items)]
     lines.append(json.dumps({"type": "turn.completed", "usage": {"output_tokens": 7}}))
     return wc.ProcResult(0, text, "", usage={"output_tokens": 7, "usage_source": "codex"},
-                         raw_stdout="\n".join(lines) + "\n")
+                         raw_stdout="\n".join(lines) + "\n", items_completed=items)
 
 
 class CodexWorkshopLoopTests(OuterReopenTests):
@@ -1272,7 +1272,10 @@ class CodexWorkshopLoopTests(OuterReopenTests):
     def test_a_codex_attempt_records_the_synthetic_envelope(self) -> None:
         def writes(c, tree, kwargs):
             _write_bundle(tree)
-            return _codex_proc(items=4)
+            proc = _codex_proc(items=4)
+            # The read loop's count, not a re-count of the capped raw capture (4 here).
+            proc.items_completed = 9
+            return proc
 
         self.c.leaf_actions = [writes]
         self.assertEqual(self.run_substep().status, "pass")
@@ -1280,7 +1283,7 @@ class CodexWorkshopLoopTests(OuterReopenTests):
         self.assertFalse((self.c.homes / _ORCH / "claude").exists())
         row = self.bundle_meta()["per_attempt"][0]
         self.assertEqual((row["model"], row["model_turns"], row["items_completed"]),
-                         ("gpt-x", None, 4))
+                         ("gpt-x", None, 9))
         self.assertEqual(row["usage"]["output_tokens"], 7)
         self.assertEqual(self.requests()[0]["workshop_provider"], "codex_cli")
 

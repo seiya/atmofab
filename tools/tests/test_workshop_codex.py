@@ -538,6 +538,30 @@ class CodexWorkshopSpawnTests(unittest.TestCase):
             self.assertEqual((result.returncode, result.stdout), (0, "done"))
             self.assertNotIn(wc.LEAF_CANCELLED_MARKER, result.stderr)
 
+    def test_items_are_counted_from_the_stream_not_the_capped_capture(self) -> None:
+        """`items_completed` is counted by the read loop: a leaf whose JSONL outgrows the raw
+        capture (`LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS`) still reports every completed item."""
+        n, width = 301, 20_000
+        self.assertGreater(n * width, wc.LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS)
+        with tempfile.TemporaryDirectory() as tmp:
+            leaf = ("import json\n"
+                    "print(json.dumps({'type': 'thread.started', 'thread_id': 't1'}))\n"
+                    f"for i in range({n - 1}):\n"
+                    "    print(json.dumps({'type': 'item.completed', 'item': {"
+                    f"'type': 'command_execution', 'aggregated_output': 'x' * {width}}}}}))\n"
+                    "print(json.dumps({'type': 'item.completed', 'item': {"
+                    "'type': 'agent_message', 'text': 'done'}}))\n"
+                    "print(json.dumps({'type': 'turn.completed', 'usage': {"
+                    "'input_tokens': 1, 'output_tokens': 2}}))\n")
+            c = self._conductor(Path(tmp), [sys.executable, "-c", leaf])
+            result = wc.Conductor.spawn_leaf(
+                c, "", {"PATH": os.environ.get("PATH", "/usr/bin:/bin")},
+                c.entry_for("generate", "generate"), child_arid="child",
+                cancel_event=threading.Event(), mcp_config_json=_MCP)
+            self.assertEqual((result.returncode, result.stdout), (0, "done"))
+            self.assertLess(result.raw_stdout.count('"type": "item.completed"'), n)
+            self.assertEqual(result.items_completed, n)
+
     def test_the_bound_still_fires_while_a_cancel_event_is_held(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             c = self._conductor(Path(tmp), ["sleep", "60"])
