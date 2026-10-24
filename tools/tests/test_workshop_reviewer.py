@@ -221,6 +221,36 @@ class CompileVerifyTests(_Base):
         decision = self.c.classify_failure(self.refs, self.PHASE, [None, None, outcome])
         self.assertEqual((decision.action, decision.repair_strategy), ("retry", "reuse"))
 
+    def test_a_pass_left_by_a_lineage_its_bound_ended_is_not_certified(self) -> None:
+        """Round-1 finding F1: a reviewer that writes a provisional `pass` and is killed at its
+        bound has stood behind no finished review. The `pass` is a schema finding, repaired by
+        a cold reuse that carries the document; it is accepted only from a turn that finishes."""
+        self.c.leaf_actions = [_times_out_after(self.OUTPUT, self.passing()), _writes_nothing]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "pass")
+        rows = self.attempt_meta()["per_attempt"]
+        self.assertEqual(len(rows), 2)
+        self.assertEqual((rows[0]["ended_by"], rows[0]["failure_category"]),
+                         ("lineage_timeout",
+                          wc.SEMANTIC_REVIEW_DOCUMENT_VIOLATION if self.PHASE == "validate"
+                          else wc.GENERATE_VERDICT_SCHEMA_VIOLATION))
+        second = self.requests()[1]
+        self.assertEqual(second["workshop_lineage_id"], "child-2")
+        self.assertFalse(second.get("warm_resume"))
+        self.assertIn("ended by its bound before you finished", second["repair_findings"])
+        # The cold reuse carried the provisional document; the finishing turn stood behind it.
+        self.assertEqual(json.loads((self.paths("child-2").tree / self.OUTPUT).read_text()),
+                         self.passing())
+
+    def test_a_pass_never_finished_exhausts_into_the_schema_category(self) -> None:
+        self.c.leaf_actions = [_times_out_after(self.OUTPUT, self.passing())]
+        outcome = self.run_substep()
+        self.assertEqual((outcome.status, outcome.leaf_returncode), ("fail", 0))
+        meta = self.attempt_meta()
+        self.assertEqual(meta["result"], "fail")
+        self.assertIn("ended by its bound", meta["failure_excerpt"])
+        self.assertEqual(len(meta["per_attempt"]), 1 + pure_leaf.MAX_BUNDLE_REPAIR_TURNS)
+
     def test_an_absent_document_is_the_schema_category_and_is_repaired_warm(self) -> None:
         self.c.leaf_actions = [_writes_nothing, _writes(self.OUTPUT, self.passing())]
         outcome = self.run_substep()

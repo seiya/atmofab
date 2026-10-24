@@ -10793,7 +10793,9 @@ class Conductor:
         alone, and its home is under `config/` of that lineage, never the operator's
         `~/.claude` (`_pure_session_resumable` is not consulted). Three rules are the workshop
         branch's own. The result envelope's checks (`response_truncated`, `is_error`) do not
-        apply: a lineage a bound ended is judged by its tree. An ACCEPTED document returns
+        apply: a lineage a bound ended is judged by its tree — except that a `pass` there is a
+        schema finding, repaired by a turn that finishes (a provisional `pass` written before
+        the bound would otherwise certify what was never read). An ACCEPTED document returns
         `leaf_returncode` 0 whatever the leaf's exit — a lineage killed at its bound with a
         valid `fail` verdict in its tree must reach the severity route, not `run_phase`'s
         transport branch — and so does a schema exhaustion (its category is the route); the
@@ -10988,6 +10990,20 @@ class Conductor:
                         violations = [
                             "verdict contains characters that cannot be encoded as UTF-8 "
                             "(e.g. an unpaired surrogate); re-emit the verdict with valid text"]
+                if (not violations and machine is not None and proc.timed_out
+                        and spec.status_of(extracted) == "pass"):
+                    # A `pass` in the tree of a launch a BOUND ended (`lineage_timeout` /
+                    # `leaf_timeout`) is not accepted: no finished turn stood behind it, and a
+                    # provisional `pass` written before the review ends would otherwise certify
+                    # what was never read — the reason a transport death's retry carries no
+                    # snapshot. A `fail` is accepted (it routes to a repair or an escalation,
+                    # never to a certification); a `pass` is a schema finding, repaired by a
+                    # turn that finishes.
+                    output = (spec.workshop_outputs or ("the document",))[0]
+                    violations = [
+                        f"your session was ended by its bound before you finished, and "
+                        f"{output} says pass: the host does not accept a pass that no finished "
+                        f"turn stands behind — finish your review and rewrite {output}"]
                 if violations:
                     category = spec.schema_category
                     findings = "; ".join(violations)[:1000]
