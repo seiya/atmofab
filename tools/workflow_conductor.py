@@ -9382,8 +9382,9 @@ class Conductor:
         dependency facts and the exemplar the pure template
         splices in, when there are any. Every seed but the host sources ends in a newline: a
         non-empty one that lacks it gets one `\n` appended and nothing is stripped (issue #548:
-        the pure slicers strip the trailing newline for the template's splice, and a file tool
-        or `wc -l` that counts newline characters misses an unterminated last line). The host
+        a context value need not end in one — the pure slicers strip it for the template's
+        splice — and a file tool or `wc -l` that counts newline characters misses an
+        unterminated last line). The host
         sources are left byte-exact because the wrapper's stages read them where the host gates
         read `src/`. Raises `RuntimeError` on a context key with no seed
         name, on a seed named after one of the spec's output files, and on two seeds of one

@@ -1048,8 +1048,9 @@ class HarnessSpecTests(unittest.TestCase):
 
 
 class SeedNewlineTests(unittest.TestCase):
-    """Issue #548: every text seed of every workshop substep ends in a newline, because a file
-    tool or `wc -l` that counts newline characters misses an unterminated last line. The host
+    """Issue #548: every non-empty text seed of every workshop substep ends in a newline (an
+    empty one stays empty), because a file tool or `wc -l` that counts newline characters
+    misses an unterminated last line. The host
     sources a generate producer seeds from the node's `src/` (and the node's own interface
     header) are the exception, byte-exact: the wrapper's stages read them where the host gates
     read `src/`."""
