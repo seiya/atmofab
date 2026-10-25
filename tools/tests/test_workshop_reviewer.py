@@ -888,6 +888,30 @@ class _CodexCutReadRows:
         self.assertEqual((meta["result"], meta["failure_category"]),
                          ("fail", wc.WORKSHOP_CUT_READ))
         self.assertEqual(len(meta["per_attempt"]), 1 + pure_leaf.MAX_BUNDLE_REPAIR_TURNS)
+        self.assert_cut_read_exhaustion_route(outcome)
+
+    def assert_cut_read_exhaustion_route(self, outcome) -> None:
+        """The two verify pairs restart their producer through the verdict tables, driven
+        through `classify_failure`; the judge pair overrides this (no review is written, the
+        signal `run_phase` routes to its conformance terminus)."""
+        prior = [wc.SubstepOutcome("x", "pass", [])] * 2
+        decision = self.c.classify_failure(self.refs, self.PHASE, [*prior, outcome])
+        prefix = (wc.COMPILE_VERDICT_REASON_PREFIX if self.PHASE == "compile"
+                  else wc.GENERATE_VERDICT_REASON_PREFIX)
+        self.assertEqual((decision.action, decision.target_phase, decision.repair_strategy,
+                          decision.reason),
+                         ("retry", self.PHASE, "restart", prefix + wc.WORKSHOP_CUT_READ))
+
+    def test_a_byte_rule_hit_wins_over_an_unreadable_rollout(self) -> None:
+        """The refusal is then the leaf's to repair, not the host's to fail closed."""
+        self.c.leaf_actions = [_reads(rows=None, commands=_over(),
+                                      then=_writes(self.OUTPUT, self.passing())),
+                               _writes(self.OUTPUT, self.passing())]
+        outcome = self.run_substep()
+        self.assertEqual((outcome.status, outcome.leaf_returncode), ("pass", 0))
+        first, _ = self.rows()
+        self.assertEqual((first["failure_category"], first["cut_outputs"]),
+                         (wc.WORKSHOP_CUT_READ, 1))
 
     def test_a_schema_repair_after_a_cut_read_repair_is_a_schema_repair(self) -> None:
         """The repair reason is per refusal: the cut-read reason does not stick to the next
@@ -1003,6 +1027,12 @@ class CodexValidateJudgeTests(_CodexCutReadRows, ValidateJudgeTests):
     launch emitted rather than the agent_run_id, and an attempt row records no turn count and
     the completed-item count — the places a claude-only assumption of the reviewer branch
     would show."""
+
+    def assert_cut_read_exhaustion_route(self, outcome) -> None:
+        """No `semantic_review.json` is written, so `run_phase`'s judge conformance branch
+        fires (`validate_judge_conformance_violation`), as on a schema exhaustion."""
+        self.assertEqual((outcome.status, outcome.leaf_returncode), ("fail", 0))
+        self.assertFalse((self.repo / self.refs.run_node_dir() / "semantic_review.json").exists())
 
     def test_a_codex_attempt_records_the_synthetic_envelope(self) -> None:
         self.assertEqual(self.run_substep().status, "pass")
