@@ -909,19 +909,31 @@ class RenderTests(unittest.TestCase):
                     self.assertIn(f"In your tree: `{name}` (document key `{key}`)", text)
 
     def test_every_workshop_launch_prompt_ends_in_a_newline(self) -> None:
-        """`CONTRACT.md` is the rendered launch prompt written as it is, and `_workshop_seeds`
-        does not normalize it (issue #548): this pins the premise that every workshop template,
-        producing and reading, on every provider, renders a text ending in `\n`."""
+        """`CONTRACT.md` is the rendered launch prompt of every launch that is not warm — a
+        cold reuse's repair prompt included — written as it is, and `_workshop_seeds` does not
+        normalize it (issue #548): this pins the premise that every workshop template,
+        producing and reading, the three repair templates included, on every provider, renders
+        a text ending in `\n`."""
         pairs = (("compile", "generate", ""), ("generate", "generate", ""),
                  ("generate", "generate", "harness"), *self.PAIRS)
+        repair = {"repair_strategy": "reuse", "repair_findings": "bad shape",
+                  "repair_target_agent_run_id": "ar_w", "prior_document": '{"x": 1}'}
+        templates = set()
         for provider in pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT:
             for step, substep, shape in pairs:
-                with self.subTest(provider=provider, pair=(step, substep, shape)):
-                    req = ort.prepare_launch_request_payload(
-                        self._request(step, substep, shape, workshop_provider=provider))
-                    text = ort.render_launch_prompt_text(req)
-                    self.assertTrue(text.startswith(pure_leaf.WORKSHOP_PROMPT_SENTINEL))
-                    self.assertTrue(text.endswith("\n"))
+                for extra in ({}, repair):
+                    with self.subTest(provider=provider, pair=(step, substep, shape),
+                                      repair=bool(extra)):
+                        req = ort.prepare_launch_request_payload(
+                            self._request(step, substep, shape, workshop_provider=provider,
+                                          **extra))
+                        if extra:
+                            templates.add(ort._pure_repair_template_name(req))
+                        text = ort.render_launch_prompt_text(req)
+                        self.assertTrue(text.startswith(pure_leaf.WORKSHOP_PROMPT_SENTINEL))
+                        self.assertTrue(text.endswith("\n"))
+        self.assertEqual(templates, {"workshop ir repair", "workshop bundle repair",
+                                     "workshop verdict repair"})
 
     def test_a_reading_request_on_a_provider_with_no_reader_row_is_refused(self) -> None:
         req = self._request("validate", "judge", workshop_provider="codex_cli")
