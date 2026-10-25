@@ -991,6 +991,13 @@ class _CodexCutReadRows:
         self.assertEqual(lines, [])
         self.assertIn("which a codex shell can write", reason)
         self.assertIsNone(wc._codex_shell_writable_root(Path("/var/tmp/x")))
+        # Each root on its own: /tmp whatever the temp dir is, and the temp dir wherever it is.
+        elsewhere = Path(tempfile.mkdtemp(dir="/var/tmp")).resolve()
+        self.addCleanup(shutil.rmtree, elsewhere, True)
+        with mock.patch.object(wc.tempfile, "gettempdir", lambda: str(elsewhere)):
+            self.assertEqual(wc._codex_shell_writable_root(Path("/tmp/a/b")), Path("/tmp"))
+            self.assertEqual(wc._codex_shell_writable_root(elsewhere / "h"), elsewhere)
+            self.assertIsNone(wc._codex_shell_writable_root(Path("/var/tmp/x")))
 
     def test_an_absent_capture_fails_closed(self) -> None:
         self.c.leaf_actions = [_reads(commands=None, then=_writes(self.OUTPUT, self.passing()))]
