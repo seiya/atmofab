@@ -462,7 +462,13 @@ recipes are in `references/input-surfaces.md`:
   is itself a file the program can write — bash executes a rewritten script file's rest — and so
   is any input a later step runs (a control file the next command reads). Enumerate what the
   evaluated program can write before the host reads the record: the record's channel, its emitter,
-  and every artifact the record names (`references/input-surfaces.md` §Surface 5, issue #293)
+  and every artifact the record names (`references/input-surfaces.md` §Surface 5, issue #293).
+  **A fourth, when the record is what the LEAF WAS SHOWN (a transcript, a tool log): it is a
+  channel only while it is COMPLETE and UNEDITABLE** — enumerate every path by which content
+  reaches the model that the record misses (a later cut, another thread) and every
+  configuration in which the leaf can write it, and measure each on the real tool; and repair a
+  reading refusal cold, since a warm turn holds what was read and can answer from memory
+  (issue #547)
 - **Surface 6 — if the check tells the reader "do this to fix it", what else does that remedy
   rewrite?** Wherever a ratchet, baseline or allowlist says "on failure, run this to update",
   check that the command does not also rewrite the pin (PR #66: a pin described in three places as

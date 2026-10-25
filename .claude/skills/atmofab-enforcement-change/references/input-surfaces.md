@@ -72,6 +72,31 @@ pin moved. Two things that cost time:
   quality check ran next (round 5: every shipped file must come back byte-identical). The three
   are one question asked once: **what can the evaluated program write before the host reads the
   record?** — the channel, the emitter of the channel, and every artifact the record names.
+- **A RECORD OF WHAT THE LEAF WAS SHOWN is a channel too, and two things make it one: that it is
+  COMPLETE and that it is UNEDITABLE — and each is a claim about every path and every
+  configuration (issue #547, PR #550).** The codex reader row told a judge that an output over
+  about 10,000 tokens reaches it with its middle cut and how to page instead; nothing on the host
+  read whether it did, and a billed channel judge received five cut outputs and returned `pass`
+  over a 1 MB verdict it was never shown. A sentence told to a leaf with no host reader behind it
+  is the shape that failed. The fix read two records instead of the leaf's word: the host's own
+  `--json` capture of each command's whole output (a command over the budget cannot have reached
+  the model whole), and the thread's rollout (what the model received). The layer the leaf's
+  script DOES control — the `exec_command` result inside its JavaScript, already cut, whose
+  header and marker it can strip before printing — was the one not to read. Then the two claims
+  broke, one per round, each found only by driving the real CLI. Completeness: a budget the leaf
+  RAISES (a first-line `// @exec:` pragma) leaves the text whole in the rollout and cuts it on
+  the way to the model, header-less; and a read delegated to a sub-agent runs in another thread
+  that neither record of the launch contains (round 1, measured; the parent's rows hold only the
+  spawn call, which is what is now counted). Uneditability: codex keeps `/tmp` writable to the
+  leaf's shell, so a homes root relocated there made the rollout the leaf's to rewrite (round 3,
+  from a measurement the docs already carried for a different reason — surface 9's
+  "it moved under something" in reverse). And the repair: a warm turn after a READING refusal
+  holds the cut texts and the conclusion drawn from them, so it could rewrite the same `pass`
+  from memory and read nothing; the repair became a cold launch from the seeds alone, the
+  unfinished-review rule's shape. **Before reading a record as what the leaf saw, enumerate (a)
+  every path by which content reaches the model that the record does not show — a later cut,
+  another thread, another tool namespace — and (b) every configuration in which the leaf can
+  write it; then measure each on the real tool.**
 
 **Surface 6: if the check tells the reader "do this to fix it", what else does that remedy
 rewrite?** If surface 5 is the read-side question, this is its write-side twin. Wherever a
