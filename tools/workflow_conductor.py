@@ -3722,9 +3722,18 @@ def _indented_json_seed(text: str) -> str:
     per line (`indent=2`), so a file tool that pages by line can reach every value. The value
     is the parsed document's (a number keeps its value, not necessarily its spelling: `1.0E-5`
     is written `1e-05`); `evidence_refs` name document keys, which the host resolves against
-    the workspace file, never against the seed. Text that is not JSON is seeded as it is."""
+    the workspace file, never against the seed. Text that is not JSON, and a document with a
+    repeated key in one object (`json.loads` keeps the last value, so a re-serialization would
+    drop the others the raw text shows), is seeded as it is."""
+
+    def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
+        out = dict(items)
+        if len(out) != len(items):
+            raise ValueError("repeated key")
+        return out
+
     try:
-        doc = json.loads(text)
+        doc = json.loads(text, object_pairs_hook=pairs)
     except ValueError:
         return text
     return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
@@ -10688,8 +10697,8 @@ class Conductor:
         # Every JSON seed is laid out one value per line: a reviewer's file tools page by LINE,
         # and a document the host wrote on one line (the channel node's `diagnostics.json`,
         # 116-135 KB) is cut inside that line by both CLIs with no way to page on (step 3
-        # PR-J2: claude's `Read` stops a 180,891-character line at about 48 KB; codex removes
-        # its middle).
+        # PR-J2: on the A/B's channel judge claude's `Read` returned 40,964 characters of the
+        # 116,682-byte line, `truncatedByTokenCap`; codex removes a long output's middle).
         for key, name in self._WORKSHOP_REVIEWER_DOCUMENT_SEEDS[(phase, substep, shape)].items():
             if name.endswith(".json"):
                 expanders[key] = (lambda text, name=name: {name: _indented_json_seed(text)})

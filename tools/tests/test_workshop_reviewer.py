@@ -689,8 +689,17 @@ class JsonSeedLayoutTests(unittest.TestCase):
                     self.assertLess(max(len(ln) for ln in text.splitlines()), 200)
         self.assertGreaterEqual(seen_json, 10)
 
+    def test_a_non_finite_token_survives_the_layout(self) -> None:
+        """`docs/workflow/RUNNER_OUTPUT_CONTRACT.md` admits non-finite metric values, so a
+        diagnostics document may carry `NaN` / `Infinity`: the seed keeps them as tokens."""
+        text = wc._indented_json_seed('{"m": NaN, "p": Infinity, "n": -Infinity, "ok": 1}')
+        self.assertIn('"m": NaN', text)
+        self.assertIn('"p": Infinity', text)
+        self.assertIn('"n": -Infinity', text)
+
     def test_a_seed_that_is_not_json_is_seeded_as_it_is(self) -> None:
-        for text in ("", "not json", "{\"a\": 1", "(absent)\n"):
+        for text in ("", "not json", "{\"a\": 1", "(absent)\n",
+                     '{"checks": {"cfl": {"status": "fail"}, "cfl": {"status": "pass"}}}'):
             with self.subTest(text=text):
                 self.assertEqual(wc._indented_json_seed(text), text)
 
