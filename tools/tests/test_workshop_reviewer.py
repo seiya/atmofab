@@ -1098,7 +1098,12 @@ class SeedNewlineTests(unittest.TestCase):
         refs = _verify_node(self.repo)
         src = self.repo / refs.source_dir() / "src"
         (src / self.DEP_HEADER[0]).write_text(self.DEP_HEADER[1], encoding="utf-8")
+        # The runner `_write_node` staged, unterminated too: a host source is exempt by where
+        # it came from, not by its name's suffix.
+        (runner,) = [p for p in src.iterdir() if p.name != self.DEP_HEADER[0]]
+        runner.write_text(runner.read_text(encoding="utf-8").rstrip("\n"), encoding="utf-8")
         host_sources = {p.name: p.read_text(encoding="utf-8") for p in src.iterdir()}
+        self.assertFalse(any(text.endswith("\n") for text in host_sources.values()))
         host_sources[self.NODE_HEADER[0]] = self.NODE_HEADER[1]
         for phase, substep, shape in self.SPECS:
             spec = self.spec(phase, substep, shape)
