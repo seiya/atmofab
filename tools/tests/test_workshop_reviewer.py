@@ -688,6 +688,11 @@ def _codex_reading(case) -> None:
     """Put `case`'s fake on a `codex_cli` reading entry of its pair: the thread a launch emits
     is the one it resumed, else `thread-<arid>` (what `_ReviewerFake` recorded)."""
     case.c.llm_config = _codex_config(case.repo, case.PHASE, case.SUBSTEP)
+    # The homes OUTSIDE /tmp, as production's `~/.atmofab/homes` is: a codex reading lineage
+    # whose home a codex shell can write is refused (`_codex_shell_writable_root`).
+    homes = tempfile.TemporaryDirectory(dir="/var/tmp")
+    case.addCleanup(homes.cleanup)
+    case.c.homes = Path(homes.name).resolve() / "homes"
     case.c._session_id_for_child = (  # type: ignore[assignment]
         lambda arid, entry=None: case.c.__dict__.get("threads", {}).get(arid, f"thread-{arid}"))
 
@@ -720,7 +725,8 @@ def _over(size: int = 600_000) -> list[tuple[str, int]]:
 class _CodexCutReadRows:
     """The host's refusal of a cut read on a codex reading lineage (issue #547), driven through
     `_run_pure_reviewer_substep` with the fake CLI's rollout and capture. Mixed into one class
-    per judging pair below, so each also runs every row of its pair's class on codex: the lineage
+    per judging pair below (the m3c shape of `generate.verify`; the `harness` shape is
+    rendered by `RenderTests` only), so each also runs every row of its pair's class on codex: the lineage
     under the codex container, a warm turn resuming the THREAD the launch emitted, and an attempt
     row with no turn count and the completed-item count."""
 
@@ -965,6 +971,27 @@ class _CodexCutReadRows:
                 self.assertEqual(row["failure_category"], wc.WORKSHOP_ROLLOUT_UNREADABLE)
                 self.assertIsNone(row["cut_outputs"])
 
+    def test_a_lineage_home_a_codex_shell_can_write_is_refused_before_a_launch(self) -> None:
+        """Codex keeps /tmp writable to the leaf's shell, so a home there would let the leaf
+        edit the rollout the refusal reads: the lineage is refused before any launch."""
+        self.c.homes = Path(tempfile.mkdtemp(dir="/tmp")) / "homes"
+        self.addCleanup(shutil.rmtree, self.c.homes.parent, True)
+        self.assertIsNotNone(wc._codex_shell_writable_root(self.c.homes))
+        outcome = self.run_substep()
+        self.assertEqual((outcome.status, outcome.leaf_returncode, outcome.infra_error[0]),
+                         ("fail", 1, "workshop_lineage_setup_failed"))
+        self.assertIn("a codex leaf's shell can write", outcome.infra_error[1])
+        self.assertEqual(getattr(self.c, "spawns", []), [])
+        # The backstop, where the verdict is read.
+        paths = workshop_tree.LineagePaths(
+            homes_root=self.c.homes, orchestration_id=_ORCH, lineage_id="x",
+            orchestration_dir=self.repo, backend="codex")
+        turn = mock.Mock(command_outputs=[])
+        lines, reason = self.c._codex_cut_reads(turn, "x", None, paths)
+        self.assertEqual(lines, [])
+        self.assertIn("which a codex shell can write", reason)
+        self.assertIsNone(wc._codex_shell_writable_root(Path("/var/tmp/x")))
+
     def test_an_absent_capture_fails_closed(self) -> None:
         self.c.leaf_actions = [_reads(commands=None, then=_writes(self.OUTPUT, self.passing()))]
         outcome = self.run_substep()
@@ -981,17 +1008,24 @@ class _CodexCutReadRows:
                          ("pure_transport", None))
         self.assertEqual(second["cut_outputs"], 0)
 
-    def test_the_cut_read_scan_reads_only_the_launch_s_own_rows(self) -> None:
-        """A warm launch appends to the cold one's rollout: a clean warm turn is accepted
-        although the file still holds the cold turn's cut."""
+    def test_a_warm_schema_repair_is_scanned_on_its_own_rows(self) -> None:
+        """The one warm turn a reading lineage takes is a schema repair after a clean launch,
+        and `exec resume` APPENDS to that launch's rollout: the warm turn's own cut is refused
+        although the file's first launch is clean (a scan of the FIRST `task_started`'s rows
+        would accept it)."""
         self.c.leaf_actions = [
+            _writes(self.OUTPUT, {"x": 1}),
             _reads(rows=_rollout_rows(["Output:\n", _CUT_HEADER]),
                    then=_writes(self.OUTPUT, self.passing())),
             _writes(self.OUTPUT, self.passing())]
         self.assertEqual(self.run_substep().status, "pass")
+        first, second, third = self.rows()
+        self.assertEqual((first["cut_outputs"], second["warm"]), (0, True))
+        self.assertEqual((second["failure_category"], second["cut_outputs"]),
+                         (wc.WORKSHOP_CUT_READ, 1))
         (rollout,) = (self.paths("child-1").config / "sessions").glob("*/*/*/rollout-*.jsonl")
-        self.assertIn("tokens truncated", rollout.read_text())
-        self.assertEqual([r.get("cut_outputs") for r in self.rows()], [1, 0])
+        self.assertEqual(rollout.read_text().count('"task_started"'), 2)
+        self.assertEqual(third["cut_outputs"], 0)
 
     def test_an_unresumable_lineage_changes_nothing_for_a_cut_read_repair(self) -> None:
         self.c.resumable = False
@@ -1022,8 +1056,9 @@ class CodexGenerateVerifyTests(_CodexCutReadRows, GenerateVerifyTests):
 
 
 class CodexValidateJudgeTests(_CodexCutReadRows, ValidateJudgeTests):
-    """Every `validate.judge` row above, on a `codex_cli` reading workshop entry (step 3
-    PR-J2): the lineage lives under the codex container, a warm turn resumes the THREAD the
+    """Every `validate.judge` row above, and the cut-read rows (issue #547; its exhaustion
+    route overridden: the judge's is the conformance terminus), on a `codex_cli` reading
+    workshop entry (step 3 PR-J2): the lineage lives under the codex container, a warm turn resumes the THREAD the
     launch emitted rather than the agent_run_id, and an attempt row records no turn count and
     the completed-item count — the places a claude-only assumption of the reviewer branch
     would show."""
@@ -1371,11 +1406,18 @@ class RenderTests(unittest.TestCase):
                     self.assertIn(ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH, text)
                     self.assertNotIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH, text)
                     self.assertIn("cat host_verdict.json", text)
+                    for slot, value in ort.WORKSHOP_VERDICT_REPAIR_CUT_READ_SLOTS.items():
+                        self.assertIn(value, text, slot)
+                    self.assertNotIn("Correct EXACTLY", text)
                     other = ort.render_launch_prompt_text(ort.prepare_launch_request_payload(
                         self._request(step, substep, shape, workshop_provider="codex_cli",
                                       repair_reason="verify_verdict_schema_repair", **repair)))
                     self.assertIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH, other)
                     self.assertNotIn(ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH, other)
+                    # A schema repair renders the template's wording before issue #547.
+                    for slot, value in ort.WORKSHOP_VERDICT_REPAIR_SHAPE_SLOTS.items():
+                        self.assertIn(value, other, slot)
+                    self.assertNotIn("<repair_", other)
         self.assertEqual(ort.WORKSHOP_CUT_READ_REPAIR_REASON, wc.WORKSHOP_CUT_READ_REPAIR_REASON)
 
     def test_the_codex_reader_row_states_the_budget_numbers_of_the_constants(self) -> None:
@@ -1439,7 +1481,11 @@ class ReaderTemplateTests(unittest.TestCase):
             set(ort._PURE_PLACEHOLDER_RE.findall(text)),
             {"node_key", "step", "substep", "orchestration_id", "agent_run_id",
              "prompt_contract_version", "repair_scope", "findings", "tool_surface",
-             "launch_body"})
+             "launch_body", "repair_instruction"})
+        # The instruction slot is filled for each refusal kind (issue #547).
+        for slots in (ort.WORKSHOP_VERDICT_REPAIR_SHAPE_SLOTS,
+                      ort.WORKSHOP_VERDICT_REPAIR_CUT_READ_SLOTS):
+            self.assertEqual(set(slots), {"repair_instruction"})
 
 
 

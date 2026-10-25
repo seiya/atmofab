@@ -26,7 +26,7 @@ text whole and the cut happens later, on the way to the model, with the marker a
 default budget no text over `CODEX_EXEC_OUTPUT_BUDGET_BYTES` is ever recorded uncut, so a
 text over it is counted as cut too: it is either cut, or the trace of a raised budget, which
 the codex reader row forbids. (A default-budget cut text, its header included, is itself just
-over that size: 40,099 and 40,109 bytes for MR5-e's two default-budget cuts.)
+over that size: 40,103 and 40,113 bytes, UTF-8, for MR5-e's two default-budget cuts.)
 
 A read the leaf DELEGATES is not in this rollout at all: codex offers a reading judge its
 `collaboration` tools (`spawn_agent`, …), and a sub-agent runs in a thread of its own, whose

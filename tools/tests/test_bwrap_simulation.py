@@ -2349,6 +2349,9 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
         self.assertEqual(len(texts[4]), 600000, msg)
         self.assertFalse(codex_rollout.CUT_MARKER_RE.search(texts[4]), msg)
         self.assertEqual(len(texts[6]), rule, msg)
+        # A launch that delegates nothing scans no delegation: a CLI that made an ordinary
+        # call look like one would refuse every codex judge.
+        self.assertEqual(self._rollout_scan(thread).delegations, 0, msg)
         self.assertEqual(self._rollout_counts(thread), (None, len(calls), sum(cut)), msg)
         # (vi): the host's capture, read as the conductor reads it.
         commands: list[tuple[str, int]] = []

@@ -711,7 +711,8 @@ _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
 #: `WORKSHOP_PROMPT_CONTRACT_VERSION` -> sha256 over the workshop templates,
 #: `WORKSHOP_SYSTEM_PROMPT` and `WORKSHOP_TOOL_SURFACE_TEXT` (and, from `workshop-4`, the reading
 #: kind's `WORKSHOP_READER_SYSTEM_PROMPT` and `WORKSHOP_READER_TOOL_SURFACE_TEXT`; from `workshop-6`,
-#: `orchestration_runtime.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH`). A change to any is a change of the
+#: `orchestration_runtime.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH` and the verdict repair's
+#: instruction-slot tables). A change to any is a change of the
 #: workshop leaf's contract and takes a new version, keeping every shipped pin (the no-revert
 #: check reads them). `workshop-1` (shipped in step 1's A/B, main f684c756) was taken over the
 #: first three templates and the system prompt alone.
@@ -729,9 +730,10 @@ _WORKSHOP_CONTRACT_DIGESTS = {
     # 23a0e972).
     "workshop-5": "2b809056237a5565749a6357188c207bdba15c804d8ccf5b426e3039130500ec",
     # Issue #547: the `codex_cli` reader row names every output budget and the host's cut-read
-    # refusal, and the cut-read repair scope paragraph joins the digest (`workshop-5` shipped
+    # refusal; the cut-read scope paragraph and the verdict repair's instruction slot (a schema
+    # repair renders as before) join the digest (`workshop-5` shipped
     # with step 3 PR-J2, main bb119b5a).
-    "workshop-6": "ec6be80b2c06afdc8767fe62db7ea12b0a389d1d781092f53d03bf6338460b36",
+    "workshop-6": "a0290f056603e92866cbc2ac40aef49ab82053ea1dabb66b12be824da2d8c822",
 }
 
 
@@ -748,6 +750,9 @@ def _workshop_digest() -> str:
     # Issue #547 (`workshop-6` onward): the cut-read repair turn's `<repair_scope>` paragraph,
     # a reading leaf's contract text that lives in the runtime rather than in a template.
     h.update(ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH.encode("utf-8"))
+    h.update(json.dumps([ort.WORKSHOP_VERDICT_REPAIR_SHAPE_SLOTS,
+                         ort.WORKSHOP_VERDICT_REPAIR_CUT_READ_SLOTS],
+                        sort_keys=True).encode("utf-8"))
     return h.hexdigest()
 
 

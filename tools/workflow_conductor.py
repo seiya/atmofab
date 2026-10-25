@@ -671,7 +671,8 @@ GENERATE_BUNDLE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 }
 
 # --- a codex reading lineage's cut read (issue #547) ---------------------------
-# A `pass` written by a codex READING workshop lineage in a launch in which a command printed
+# A document other than a schema-valid `fail`, written by a codex READING workshop lineage in a
+# launch in which a command printed
 # more than codex's budget lets reach the model whole (the byte rule, over the host's own
 # capture), a tool output reached the model cut, or a read was delegated to a sub-agent (its
 # rollout), is refused under this category: the judge certified rows it was never shown. A
@@ -679,9 +680,10 @@ GENERATE_BUNDLE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # (`_run_pure_reviewer_substep`); its exhaustion routes as a schema exhaustion does (the two
 # verdict tables below; `validate.judge` by its conformance violation).
 WORKSHOP_CUT_READ = "workshop_cut_read"
-# The rollout that says what the model received could not be read (no file, two, no
-# `task_started`, a row that is not JSON, or no tool output at all while the capture recorded
-# commands). The host's, or the CLI's layout's — not the leaf's: never repaired, and the
+# The rollout that says what the model received could not be read (no thread id, no file, two,
+# an unreadable file, no `task_started`, a row that is not JSON or not an object, no tool output
+# at all while the capture recorded commands, no capture, or a lineage home a codex shell can
+# write). The host's, or the CLI's layout's — not the leaf's: never repaired, and the
 # substep ends `fail_closed` through `run_phase`'s transport branch. After a CLI upgrade,
 # re-run `test_bwrap_simulation.CodexReadingLeafCliTests` (MR5-e).
 WORKSHOP_ROLLOUT_UNREADABLE = "workshop_rollout_unreadable"
@@ -716,7 +718,7 @@ GENERATE_VERDICT_FAILURE_CATEGORIES: tuple[str, ...] = (
     "pure_response_unparseable",
     "pure_response_truncated",
     GENERATE_VERDICT_SCHEMA_VIOLATION,
-    # A codex reading lineage whose every turn read past the budget (issue #547).
+    # A codex reading lineage whose cut-read repairs ran out (issue #547).
     WORKSHOP_CUT_READ,
 )
 GENERATE_VERDICT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
@@ -795,7 +797,7 @@ COMPILE_VERDICT_FAILURE_CATEGORIES: tuple[str, ...] = (
     "pure_response_unparseable",
     "pure_response_truncated",
     GENERATE_VERDICT_SCHEMA_VIOLATION,
-    # A codex reading lineage whose every turn read past the budget (issue #547).
+    # A codex reading lineage whose cut-read repairs ran out (issue #547).
     WORKSHOP_CUT_READ,
 )
 COMPILE_VERDICT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
@@ -2703,6 +2705,20 @@ def _parse_codex_line(line: str) -> dict[str, Any] | None:
     except (json.JSONDecodeError, RecursionError):
         return None
     return event if isinstance(event, dict) else None
+
+
+def _codex_shell_writable_root(path: Path) -> Path | None:
+    """The root a codex leaf's own `workspace-write` sandbox keeps writable that `path` lies
+    under, or None. Codex keeps `/tmp` (and the process's temporary directory) writable to the
+    shell, so a lineage home there is writable to the leaf (measured, `docs/ORCHESTRATION.md`
+    §workshop leaf "On `codex_cli`"), its rollout included — which a codex reading lineage's
+    cut-read check reads as the record of what the model received (issue #547)."""
+    target = Path(os.path.realpath(path))
+    for root in (Path("/tmp"), Path(tempfile.gettempdir())):
+        resolved = Path(os.path.realpath(root))
+        if target == resolved or resolved in target.parents:
+            return resolved
+    return None
 
 
 def _codex_command_output(line: str, event: dict[str, Any] | None,
@@ -9876,11 +9892,23 @@ class Conductor:
                       child_arid: str) -> None:
             """Start the cold launch's lineage, seeded from the current seeds and, for a cold
             REUSE, the `prior` lineage's snapshot. Raises on a host precondition; the loop
-            routes it fail_closed."""
+            routes it fail_closed. A codex READING lineage whose home a codex shell can write
+            is such a precondition (`_codex_shell_writable_root`): the host decides from its
+            rollout, which the leaf must not be able to edit."""
             seeds = self.conductor._workshop_seeds(self.refs, pure_context, request, self.spec)
             self.lineage = self.conductor._open_workshop_lineage(
                 self.refs, self.entry, child_arid, seeds, self.prior, self.spec)
             self.prior = None
+            if self.reading and self.lineage.paths.backend == "codex":
+                writable = _codex_shell_writable_root(Path(self.lineage.paths.home))
+                if writable is not None:
+                    from tools.workshop_tree import end_lineage
+                    end_lineage(self.lineage.paths, "superseded")
+                    raise RuntimeError(
+                        f"the lineage home {self.lineage.paths.home} is under {writable}, which "
+                        "a codex leaf's shell can write: a codex reading lineage's rollout would "
+                        "not be a record the leaf cannot edit (issue #547). Point "
+                        "ATMOFAB_WORKFLOW_HOMES_ROOT outside it, or unset it")
 
         def home_gone(self) -> None:
             """The lineage's home is gone: nothing to resume and no snapshot to seed from. Its
@@ -9906,8 +9934,8 @@ class Conductor:
             Not a warm turn: the session holds the cut texts and the conclusion drawn from them,
             so a turn that rewrites the same document from memory and reads nothing would be
             accepted; and not a cold reuse: the refused document is the refusal's subject, not
-            a shape to correct, so nothing of this lineage's tree is carried. The lineage is
-            ended `superseded` by `next_launch`."""
+            a shape to correct, so nothing of this lineage's tree is carried. This ends the
+            lineage `superseded` itself, so `next_launch` finds nothing to continue."""
             assert self.lineage is not None
             from tools.workshop_tree import end_lineage
             end_lineage(self.lineage.paths, "superseded")
@@ -10912,6 +10940,11 @@ class Conductor:
                  for command, size in (outputs or ()) if size > CODEX_EXEC_OUTPUT_BUDGET_BYTES]
         if outputs is None:
             return lines, "no per-command capture of the launch"
+        writable = _codex_shell_writable_root(Path(paths.config))
+        if writable is not None:
+            # `open_cold` refuses this before a launch; kept as the backstop, since the
+            # verdict below reads a file under it.
+            return lines, f"the lineage home is under {writable}, which a codex shell can write"
         scan = scan_launch(Path(paths.config), self._session_id_for_child(child_arid, entry))
         if scan.reason is not None:
             return lines, scan.reason

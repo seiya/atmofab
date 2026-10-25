@@ -10209,6 +10209,29 @@ PURE_REPAIR_SCOPE_PARAGRAPH = (
 #: issue #547), which selects `WORKSHOP_CUT_READ_SCOPE_PARAGRAPH` in place of the shape paragraph.
 WORKSHOP_CUT_READ_REPAIR_REASON = "workshop_cut_read_repair"
 
+#: The verdict repair template's inline instruction slot, `<repair_instruction>`, by refusal
+#: kind. The SHAPE text is the template's own before issue #547, so a schema repair renders as
+#: it did (the adopted claude A/B ran on it); the cut-read text says what a cold re-review from
+#: the seeds is, where the shape text's "rewriting your document file in place" would point at
+#: a document that is not there. One slot, inside the first line: the template's other lines
+#: stay literal, which the host-line sweep of `test_pure_leaf_wiring` subtracts by.
+WORKSHOP_VERDICT_REPAIR_SHAPE_SLOTS: dict[str, str] = {
+    "repair_instruction": (
+        "Correct EXACTLY the violations described below by rewriting your document file at "
+        "the tree root in place — the WHOLE document, not a diff or a fragment — and end your "
+        "turn. If this is a new session, the whole contract follows the findings, and your "
+        "previous tree's document file is already in place in a fresh tree beside fresh seeds "
+        "when the host still holds it: correct that file, or write the whole document anew "
+        "when there is none."),
+}
+WORKSHOP_VERDICT_REPAIR_CUT_READ_SLOTS: dict[str, str] = {
+    "repair_instruction": (
+        "Review again as the paragraph just before the findings says, write your document "
+        "file at the tree root — the WHOLE document, not a diff or a fragment — and end your "
+        "turn. This is a new session, in a fresh tree beside fresh seeds, and the whole "
+        "contract follows the findings."),
+}
+
 #: The `<repair_scope>` text of a cut-read repair turn: the refusal is about the leaf's READING,
 #: and the shape paragraph above would tell it the opposite. Part of the workshop contract digest
 #: (`tools/tests/test_workshop_producer.py`).
@@ -10317,6 +10340,10 @@ def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
                 str(request_payload.get("substep", "")).strip().lower())
             in PURE_VERDICT_PAIRS else ""),
     }
+    if repair_key == "workshop verdict repair":
+        subs.update(WORKSHOP_VERDICT_REPAIR_CUT_READ_SLOTS
+                    if subs["repair_scope"] == WORKSHOP_CUT_READ_SCOPE_PARAGRAPH
+                    else WORKSHOP_VERDICT_REPAIR_SHAPE_SLOTS)
     if not request_payload.get("warm_resume"):
         prior = str(request_payload.get("prior_document", "")).strip()
         subs["prior_document"] = (

@@ -147,8 +147,10 @@ def is_workshop_reading_pair(step: Any, substep: Any) -> bool:
 #: The prompt-contract version a workshop request carries in `prompt_contract_version` (the
 #: field the pure request uses for its own). Its own counter, so a workshop template change
 #: never moves `PURE_PROMPT_CONTRACT_VERSION` and the reverse. `workshop-6`: the `codex_cli`
-#: reader row names every output budget and the host's refusal of a cut read, and the cut-read
-#: repair scope paragraph (issue #547; `workshop-5` shipped with step 3 PR-J2, main bb119b5a).
+#: reader row names every output budget and the host's refusal of a cut read; the cut-read
+#: repair's scope paragraph; and the verdict repair template's instruction slot, which renders a
+#: schema repair as before on both providers (issue #547; `workshop-5` shipped with step 3 PR-J2,
+#: main bb119b5a).
 WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-6"
 
 #: The first line of every host-rendered workshop launch prompt, anchored as the pure sentinel
