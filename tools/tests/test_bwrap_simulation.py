@@ -2151,21 +2151,14 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
         0.164.0: `apply_patch, create_goal, exec_command, get_goal,
         list_mcp_resource_templates, list_mcp_resources, read_mcp_resource, update_goal,
         view_image, write_stdin` — the built-ins whose names contain `mcp` are why the check is
-        a prefix). CONTROL: a `.codex/config.toml` planted in the tree declaring a server adds
-        none (codex reads project config from trusted directories only, and the tree is
-        `untrusted`). A leaf gains nothing toward a verdict by planting one, so the control is
-        a pin, not a defense."""
+        a prefix). That the tree is `untrusted`, so a project config planted in it is not read,
+        is pinned by MX3 and `test_workshop_codex.CodexLineageHomeTests`, not here."""
         argv = self._argv(None, None)
         self.assertNotIn("mcp_servers", " ".join(argv))
         self.assertNotIn("[mcp_servers", (self.config / "config.toml").read_text())
         names = self._tool_names()
         self.assertIn("exec_command", names)
         self.assertEqual([n for n in names if n.startswith("mcp__")], [], names)
-        (self.tree / ".codex").mkdir()
-        (self.tree / ".codex" / "config.toml").write_text(
-            '[mcp_servers.planted]\ncommand = "true"\n', encoding="utf-8")
-        planted = self._tool_names()
-        self.assertEqual([n for n in planted if n.startswith("mcp__")], [], planted)
 
     def test_mr5b_a_command_written_review_lands_and_assembles(self) -> None:
         """MR5-b: a command writes `review.json` (a schema-valid semantic review) at the tree
@@ -2231,6 +2224,11 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
         self.assertIn("L20000 ", seen, msg)
         self.assertNotIn("L10000 ", seen, msg)
         self.assertLess(len(seen), 100000, msg)
+        # The codex reader row states the cut by the markers measured here.
+        from tools import pure_leaf
+        row = pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]
+        for marker in ("Warning: truncated output", "tokens truncated", "sed -n"):
+            self.assertIn(marker, row, msg)
         ranged = api.tool_output(3)
         for i in range(9000, 9101):
             self.assertIn(f"L{i:05d} ", ranged)

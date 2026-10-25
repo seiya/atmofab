@@ -240,7 +240,9 @@ class CompileVerifyTests(_Base):
         context = self.c._build_pure_compile_verify_context(self.refs)
         for key, name in self.seeds().items():
             with self.subTest(key=key):
-                self.assertEqual((tree / name).read_text(), context[key])
+                self.assertEqual((tree / name).read_text(),
+                                 wc._indented_json_seed(context[key]) if name.endswith(".json")
+                                 else context[key])
         self.assertEqual((tree / "CONTRACT.md").read_text(), "PROMPT")
         # The snapshot holds the reviewer's document and no seed.
         names = sorted(p.name for p in self.paths("child-1").snapshot.iterdir())
@@ -517,7 +519,9 @@ class GenerateVerifyTests(CompileVerifyTests):
         context = self.c._build_pure_verify_context(self.refs)
         for key, name in self.seeds().items():
             with self.subTest(key=key):
-                self.assertEqual((tree / name).read_text(), context[key])
+                self.assertEqual((tree / name).read_text(),
+                                 wc._indented_json_seed(context[key]) if name.endswith(".json")
+                                 else context[key])
         for entry in _valid_bundle()["files"]:
             self.assertEqual((tree / entry["logical_path"]).read_text(), entry["content"])
         scratch = Path(tempfile.mkdtemp())
@@ -562,7 +566,14 @@ class ValidateJudgeTests(CompileVerifyTests):
         context = self.c._build_pure_judge_context(self.refs)
         for key, name in self.seeds().items():
             with self.subTest(key=key):
-                self.assertEqual((tree / name).read_text(), context[key])
+                text = (tree / name).read_text()
+                if name.endswith(".json"):
+                    # The same document, one value per line (`_indented_json_seed`).
+                    self.assertEqual(json.loads(text), json.loads(context[key]))
+                    self.assertEqual(text, json.dumps(json.loads(context[key]), indent=2,
+                                                      ensure_ascii=False) + "\n")
+                else:
+                    self.assertEqual(text, context[key])
         # The host's verdict is a seed under its own name, never the output's.
         self.assertTrue((tree / "host_verdict.json").is_file())
         names = sorted(p.name for p in self.paths("child-1").snapshot.iterdir())
@@ -643,6 +654,45 @@ class CodexValidateJudgeTests(ValidateJudgeTests):
         self.assertEqual(ort._pure_repair_template_name(second), "workshop verdict repair")
         self.assertEqual(self.c.spawns[1]["resume_session_id"], "thread-child-1")
         self.assertTrue(self.c.spawns[1]["reading"])
+
+
+class JsonSeedLayoutTests(unittest.TestCase):
+    """Every JSON seed of every reading pair is laid out one value per line (step 3 PR-J2): the
+    reviewer's file tools page by line, and both CLIs cut a long single line with no way to page
+    on. Driven through the reviewer spec's own expanders, on a one-line document over the cut."""
+
+    def test_each_json_seed_of_each_pair_is_indented(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        repo = Path(tmp.name)
+        c = _PureFakeConductor(repo_root=repo, orchestration_id=_ORCH,
+                               orchestration_agent_run_id="orch",
+                               llm_config=_config(repo, "validate", "judge"), env={})
+        doc = {"per_case": {f"case_{i:03d}": {"metrics": {"x": i * 0.5, "ok": True}}
+                            for i in range(3000)}}
+        one_line = json.dumps(doc, separators=(",", ":"))
+        self.assertGreater(len(one_line), 120000)
+        self.assertNotIn("\n", one_line)
+        seen_json = 0
+        for (phase, substep, shape), seeds in wc.Conductor._WORKSHOP_REVIEWER_DOCUMENT_SEEDS.items():
+            fields = c._workshop_reviewer_fields(phase, substep, shape, "x")
+            for key, name in seeds.items():
+                with self.subTest(pair=(phase, substep, shape), key=key):
+                    expand = fields["workshop_seed_expanders"].get(key)
+                    if not name.endswith(".json"):
+                        self.assertIsNone(expand)
+                        continue
+                    seen_json += 1
+                    (out_name, text), = expand(one_line).items()
+                    self.assertEqual(out_name, name)
+                    self.assertEqual(json.loads(text), doc)
+                    self.assertLess(max(len(ln) for ln in text.splitlines()), 200)
+        self.assertGreaterEqual(seen_json, 10)
+
+    def test_a_seed_that_is_not_json_is_seeded_as_it_is(self) -> None:
+        for text in ("", "not json", "{\"a\": 1", "(absent)\n"):
+            with self.subTest(text=text):
+                self.assertEqual(wc._indented_json_seed(text), text)
 
 
 class LaunchShapeTests(unittest.TestCase):
@@ -785,7 +835,8 @@ class RenderTests(unittest.TestCase):
                     self.assertNotIn("mcp__wrapper", text)
                     self.assertIn(rows[provider], text)
                     self.assertNotIn(rows[other], text)
-                    self.assertEqual(text.count(self.PAGING),
+                    # Case-folded: the templates carried it as "…judge: a read of a file…".
+                    self.assertEqual(text.lower().count(self.PAGING.lower()),
                                      1 if provider == "claude_cli" else 0)
                     self.assertIn(f"prompt_contract_version: "
                                   f"{pure_leaf.WORKSHOP_PROMPT_CONTRACT_VERSION}", text)

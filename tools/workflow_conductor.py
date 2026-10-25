@@ -3717,6 +3717,19 @@ def _pure_assembly_detail(exc: BaseException) -> str:
     return text if text.startswith("pure_") else f"{type(exc).__name__}: {text}"
 
 
+def _indented_json_seed(text: str) -> str:
+    """A JSON document's text as a reading workshop leaf's seed: re-serialized with one value
+    per line (`indent=2`), so a file tool that pages by line can reach every value. The value
+    is the parsed document's (a number keeps its value, not necessarily its spelling: `1.0E-5`
+    is written `1e-05`); `evidence_refs` name document keys, which the host resolves against
+    the workspace file, never against the seed. Text that is not JSON is seeded as it is."""
+    try:
+        doc = json.loads(text)
+    except ValueError:
+        return text
+    return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+
+
 def _leaf_infra_error(proc: ProcResult) -> tuple[str, str] | None:
     """The infra `(tag, evidence)` for a dead leaf — the ONE entry point every caller uses.
 
@@ -10672,6 +10685,14 @@ class Conductor:
         from tools.workshop_tree import assemble_document_file
         output = self._WORKSHOP_REVIEW_OUTPUT_BY_SUBSTEP[substep]
         expanders: dict[str, Callable[[str], dict[str, str]]] = {}
+        # Every JSON seed is laid out one value per line: a reviewer's file tools page by LINE,
+        # and a document the host wrote on one line (the channel node's `diagnostics.json`,
+        # 116-135 KB) is cut inside that line by both CLIs with no way to page on (step 3
+        # PR-J2: claude's `Read` stops a 180,891-character line at about 48 KB; codex removes
+        # its middle).
+        for key, name in self._WORKSHOP_REVIEWER_DOCUMENT_SEEDS[(phase, substep, shape)].items():
+            if name.endswith(".json"):
+                expanders[key] = (lambda text, name=name: {name: _indented_json_seed(text)})
         if (phase, substep) == ("generate", "verify"):
             expanders["bundle_document"] = self._expand_bundle_seed
         return {
