@@ -920,9 +920,11 @@ class _CodexCutReadRows:
         self.assertNotIn("failure_category", row)
 
     def test_an_unreadable_rollout_fails_closed_and_is_never_retried(self) -> None:
-        for name, rows in (("no rollout", None),
-                           ("no task_started", [_rollout_rows(_CLEAN_TEXTS)[1]]),
-                           ("no tool output", [_rollout_rows(_CLEAN_TEXTS)[0]])):
+        for name, rows, head in (("no rollout", None, "0 rollout files"),
+                                 ("no task_started", [_rollout_rows(_CLEAN_TEXTS)[1]],
+                                  "no task_started row"),
+                                 ("no tool output", [_rollout_rows(_CLEAN_TEXTS)[0]],
+                                  "no tool output in the rollout")):
             with self.subTest(name):
                 self.c.calls = []
                 self.c.spawns = []
@@ -932,6 +934,8 @@ class _CodexCutReadRows:
                                   outcome.infra_error[0]),
                                  ("fail", 1, wc.WORKSHOP_ROLLOUT_UNREADABLE))
                 self.assertIn("MR5-e", outcome.infra_error[1])
+                # The kind FIRST: the transport branch keeps only the head of the detail.
+                self.assertTrue(outcome.infra_error[1].startswith(head), outcome.infra_error)
                 self.assertEqual(len(self.c.spawns), 1)
                 (row,) = self.rows()
                 self.assertEqual(row["failure_category"], wc.WORKSHOP_ROLLOUT_UNREADABLE)
