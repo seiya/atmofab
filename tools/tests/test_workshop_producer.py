@@ -710,7 +710,8 @@ _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
 
 #: `WORKSHOP_PROMPT_CONTRACT_VERSION` -> sha256 over the workshop templates,
 #: `WORKSHOP_SYSTEM_PROMPT` and `WORKSHOP_TOOL_SURFACE_TEXT` (and, from `workshop-4`, the reading
-#: kind's `WORKSHOP_READER_SYSTEM_PROMPT` and `WORKSHOP_READER_TOOL_SURFACE_TEXT`). A change to any is a change of the
+#: kind's `WORKSHOP_READER_SYSTEM_PROMPT` and `WORKSHOP_READER_TOOL_SURFACE_TEXT`; from `workshop-6`,
+#: `orchestration_runtime.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH`). A change to any is a change of the
 #: workshop leaf's contract and takes a new version, keeping every shipped pin (the no-revert
 #: check reads them). `workshop-1` (shipped in step 1's A/B, main f684c756) was taken over the
 #: first three templates and the system prompt alone.
@@ -727,6 +728,10 @@ _WORKSHOP_CONTRACT_DIGESTS = {
     # templates into the reader rows (`workshop-4` shipped with step 3 PR-J1/J1-b, main
     # 23a0e972).
     "workshop-5": "2b809056237a5565749a6357188c207bdba15c804d8ccf5b426e3039130500ec",
+    # Issue #547: the `codex_cli` reader row names every output budget and the host's cut-read
+    # refusal, and the cut-read repair scope paragraph joins the digest (`workshop-5` shipped
+    # with step 3 PR-J2, main bb119b5a).
+    "workshop-6": "a726dfc6729815a4238a06095c61a5646e4421e6f91d74409336e146649d0336",
 }
 
 
@@ -740,6 +745,9 @@ def _workshop_digest() -> str:
     h.update(pure_leaf.WORKSHOP_READER_SYSTEM_PROMPT.encode("utf-8"))
     h.update(json.dumps(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT,
                         sort_keys=True).encode("utf-8"))
+    # Issue #547 (`workshop-6` onward): the cut-read repair turn's `<repair_scope>` paragraph,
+    # a reading leaf's contract text that lives in the runtime rather than in a template.
+    h.update(ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH.encode("utf-8"))
     return h.hexdigest()
 
 
@@ -1314,6 +1322,9 @@ class CodexWorkshopLoopTests(OuterReopenTests):
             proc = _codex_proc(items=4)
             # The read loop's count, not a re-count of the capped raw capture (4 here).
             proc.items_completed = 9
+            # A producing lineage is not held to the cut-read rule (issue #547), whatever its
+            # commands printed: its tree is judged by the host's gates.
+            proc.command_outputs = [("cat big", 600_000)]
             return proc
 
         self.c.leaf_actions = [writes]
@@ -1324,6 +1335,7 @@ class CodexWorkshopLoopTests(OuterReopenTests):
         self.assertEqual((row["model"], row["model_turns"], row["items_completed"]),
                          ("gpt-x", None, 9))
         self.assertEqual(row["usage"]["output_tokens"], 7)
+        self.assertNotIn("cut_outputs", row)
         self.assertEqual(self.requests()[0]["workshop_provider"], "codex_cli")
 
     def test_a_warm_repair_resumes_the_emitted_thread(self) -> None:

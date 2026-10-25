@@ -53,7 +53,8 @@ Each `replay_result.json` row: the head (`replay_orchestration_id`, `source_*`, 
 `substep`, `leaf`, `label`, `mutated_keys`, `repetition`); the outcome (`status`,
 `leaf_returncode`, `infra_error`, `document` — the accepted verdict or review, else null —
 and `failure_category`); `attempts` (the reviewer's `per_attempt` rows); `schema_repairs`
-(turns launched because the previous document was refused); the sums over the attempts of
+(turns launched because the previous document was refused) and `cut_read_repairs` (of those,
+the ones a codex cut-read refusal launched, counted apart, issue #547); the sums over the attempts of
 `cost_usd`, `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`,
 `output_tokens`, `leaf_wall_s`, `duration_ms` (claude envelope) and `model_turns`, each over the
 attempts that recorded it, with `usage_unrecorded_attempts` counting the attempts whose usage
@@ -709,6 +710,20 @@ def _sum(values: Iterable[Any]) -> float | None:
     return round(sum(nums), 6) if nums else None
 
 
+def _repair_counts(attempts: list[dict[str, Any]]) -> dict[str, int]:
+    """The turns launched because the previous one's document was refused (a repair, or the
+    re-run of an unfinished review): an exhausted budget's last refusal launched nothing. A
+    cut-read refusal (issue #547, codex) is counted apart, as `cut_read_repairs`: a reading
+    cost on its own repair counter, not a defect of the document's shape."""
+    from tools.workflow_conductor import WORKSHOP_CUT_READ
+    before = [str(a.get("failure_category") or "") for a in attempts[:-1]]
+    return {
+        "schema_repairs": sum(1 for c in before
+                              if c and c not in ("pure_transport", WORKSHOP_CUT_READ)),
+        "cut_read_repairs": sum(1 for c in before if c == WORKSHOP_CUT_READ),
+    }
+
+
 def run_repetition(conductor: Any, repo_root: Path, source: SourceLaunch, refs: Any,
                    context: dict[str, str], repetition: int) -> dict[str, Any]:
     """One reviewer substep over the recorded context, and its row."""
@@ -733,11 +748,7 @@ def run_repetition(conductor: Any, repo_root: Path, source: SourceLaunch, refs: 
         "document": captured.document,
         "failure_category": captured.meta.get("failure_category"),
         "attempts": attempts,
-        # The turns launched because the previous one's document was refused (a repair, or the
-        # re-run of an unfinished review): an exhausted budget's last refusal launched nothing.
-        "schema_repairs": sum(1 for before in attempts[:-1]
-                              if before.get("failure_category")
-                              and before.get("failure_category") != "pure_transport"),
+        **_repair_counts(attempts),
         "cost_usd": _sum((a.get("usage") or {}).get("cost_usd") for a in attempts),
         # An attempt a bound killed has no envelope, so its usage channel failed
         # (`leaf_usage.leaf_usage_unavailable`): the sums below leave it out, and this says how

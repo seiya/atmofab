@@ -350,6 +350,19 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual((row["usage_unrecorded_attempts"], row["cost_usd"]),
                          (MAX_BUNDLE_REPAIR_TURNS + 1, None))
         self.assertEqual(row["schema_repairs"], MAX_BUNDLE_REPAIR_TURNS)
+        self.assertEqual(row["cut_read_repairs"], 0)
+
+    def test_a_cut_read_repair_is_counted_apart_from_the_schema_repairs(self) -> None:
+        """Issue #547: the refusals before the last attempt, by kind; a transport death and the
+        last attempt's own refusal launched no repair."""
+        attempts = [{"failure_category": wc.WORKSHOP_CUT_READ},
+                    {"failure_category": "semantic_review_document_violation"},
+                    {"failure_category": "pure_transport"},
+                    {"failure_category": wc.WORKSHOP_CUT_READ},
+                    {"failure_category": wc.WORKSHOP_CUT_READ}]
+        self.assertEqual(jr._repair_counts(attempts),
+                         {"schema_repairs": 1, "cut_read_repairs": 2})
+        self.assertEqual(jr._repair_counts([]), {"schema_repairs": 0, "cut_read_repairs": 0})
 
     def test_usage_recorded_without_a_cost_is_not_unrecorded(self) -> None:
         """A codex turn reports tokens and no money: its attempt's usage is recorded."""

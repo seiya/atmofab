@@ -10205,6 +10205,23 @@ PURE_REPAIR_SCOPE_PARAGRAPH = (
     "smaller: do not drop a finding you made, and do not record a conclusion you did not reach."
 )
 
+#: The `repair_reason` of a cut-read repair turn (`workflow_conductor.WORKSHOP_CUT_READ_REPAIR_REASON`,
+#: issue #547), which selects `WORKSHOP_CUT_READ_SCOPE_PARAGRAPH` in place of the shape paragraph.
+WORKSHOP_CUT_READ_REPAIR_REASON = "workshop_cut_read_repair"
+
+#: The `<repair_scope>` text of a cut-read repair turn: the refusal is about the leaf's READING,
+#: and the shape paragraph above would tell it the opposite. Part of the workshop contract digest
+#: (`tools/tests/test_workshop_producer.py`).
+WORKSHOP_CUT_READ_SCOPE_PARAGRAPH = (
+    "This refusal is about your READING, not the shape of a document: each command listed "
+    "below printed more than one output can carry, or reached you cut, so the rows between its "
+    "kept head and tail were never shown to you, and the host has removed the document you "
+    "wrote after it. Issue each of those reads again over narrower pieces — a smaller line "
+    "range, a smaller subset of your script's output — until none is cut, then write the whole "
+    "document anew from everything you have now seen; what reached you whole needs no second "
+    "read. A turn in which any command exceeds the budget comes back the same way."
+)
+
 
 def _pure_launch_body(request_payload: dict[str, Any]) -> str:
     """The launch prompt this request would have been sent cold, minus its persona line and its
@@ -10288,8 +10305,12 @@ def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
         # fields: a spelling this membership test does not recognize renders the slot EMPTY while
         # the template still resolves, so the omission would be silent. Only host constants reach
         # these fields today, which is what keeps it a fail-open by omission rather than a hole.
+        # A cut-read repair (issue #547) is about the leaf's reading, whatever its pair.
         "repair_scope": (
-            PURE_REPAIR_SCOPE_PARAGRAPH
+            WORKSHOP_CUT_READ_SCOPE_PARAGRAPH
+            if str(request_payload.get("repair_reason", "")).strip()
+            == WORKSHOP_CUT_READ_REPAIR_REASON
+            else PURE_REPAIR_SCOPE_PARAGRAPH
             if (str(request_payload.get("step", "")).strip().lower(),
                 str(request_payload.get("substep", "")).strip().lower())
             in PURE_VERDICT_PAIRS else ""),
