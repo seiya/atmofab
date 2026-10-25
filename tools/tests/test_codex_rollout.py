@@ -47,6 +47,11 @@ class ScanTests(unittest.TestCase):
     def scan(self, thread: str | None = _THREAD) -> codex_rollout.RolloutScan:
         return codex_rollout.scan_launch(self.config, thread)
 
+    def counts(self, thread: str | None = _THREAD) -> tuple:
+        """`(reason, output_rows, cut_texts)` of the scan."""
+        got = self.scan(thread)
+        return got.reason, got.output_rows, got.cut_texts
+
     def test_every_measured_shape_of_a_cut_is_counted_once_per_text(self) -> None:
         escaped = json.dumps({"output": _HEADER})
         self.assertIn("\\n", escaped)
@@ -69,12 +74,12 @@ class ScanTests(unittest.TestCase):
                 ("the fourth item", _items("a", "b", "c", _HEADER))):
             with self.subTest(name):
                 self.write([_start(), _out(output)])
-                self.assertEqual(self.scan(), codex_rollout.RolloutScan(None, 1, 1))
+                self.assertEqual(self.counts(), (None, 1, 1))
 
     def test_each_cut_text_counts(self) -> None:
         self.write([_start(), _out(_items(_HEADER, "ok", _HEADER)),
                     _out("Script completed\n" + _HEADER, "function_call_output")])
-        self.assertEqual(self.scan(), codex_rollout.RolloutScan(None, 2, 3))
+        self.assertEqual(self.counts(), (None, 2, 3))
 
     def test_a_text_over_the_default_budget_is_cut_by_its_size(self) -> None:
         """A raised `exec` budget leaves its text whole in the rollout (MR5-e): counted by its
@@ -82,19 +87,19 @@ class ScanTests(unittest.TestCase):
         rule = pure_leaf.CODEX_EXEC_OUTPUT_BUDGET_BYTES
         self.write([_start(), _out(_items("y" * rule)), _out(_items("y" * (rule + 1))),
                     _out(_items("\u00e9" * (rule // 2) + "y"))])
-        self.assertEqual(self.scan(), codex_rollout.RolloutScan(None, 3, 2))
+        self.assertEqual(self.counts(), (None, 3, 2))
 
     def test_a_whole_output_and_the_quoted_row_are_not_cut(self) -> None:
         row = pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]
         self.assertIn("tokens truncated", row)
         self.write([_start(), _out(_items("Output:\n", row)), _out(_items("L1\nL2\n"))])
-        self.assertEqual(self.scan(), codex_rollout.RolloutScan(None, 2, 0))
+        self.assertEqual(self.counts(), (None, 2, 0))
 
     def test_only_rows_after_the_last_task_started_are_the_launch_s(self) -> None:
         self.write([_start(), _out(_items(_HEADER)), _start(), _out(_items("whole"))])
-        self.assertEqual(self.scan(), codex_rollout.RolloutScan(None, 1, 0))
+        self.assertEqual(self.counts(), (None, 1, 0))
         self.write([_start(), _out(_items("whole")), _start(), _out(_items(_HEADER))])
-        self.assertEqual(self.scan(), codex_rollout.RolloutScan(None, 1, 1))
+        self.assertEqual(self.counts(), (None, 1, 1))
 
     def test_a_call_input_and_other_rows_are_not_outputs(self) -> None:
         self.write([_start(),
@@ -103,7 +108,7 @@ class ScanTests(unittest.TestCase):
                     {"type": "event_msg", "payload": {"type": "agent_message",
                                                       "message": _HEADER}},
                     _out(_items("ok"))])
-        self.assertEqual(self.scan(), codex_rollout.RolloutScan(None, 1, 0))
+        self.assertEqual(self.counts(), (None, 1, 0))
 
     def test_what_the_reader_cannot_read_is_a_reason_never_a_zero(self) -> None:
         self.assertIsNotNone(self.scan(None).reason)
@@ -121,6 +126,41 @@ class ScanTests(unittest.TestCase):
                 self.config = other
                 self.write(rows)
                 self.assertIsNotNone(self.scan().reason)
+
+    def test_a_cut_text_is_named_by_the_head_of_its_call(self) -> None:
+        """For the findings only: each cut text carries the head of the call that returned it,
+        paired by `call_id`; a call the rollout does not hold names nothing."""
+        call = {"type": "response_item", "payload": {
+            "type": "custom_tool_call", "call_id": "c", "name": "exec",
+            "input": "const r = await tools.exec_command({cmd: 'cat host_verdict.json'});\n"
+                     + "x" * 400}}
+        self.write([_start(), call, _out(_items(_HEADER, _HEADER)),
+                    {"type": "response_item", "payload": {
+                        "type": "function_call_output", "call_id": "gone", "output": _HEADER}}])
+        got = self.scan()
+        self.assertEqual(got.cut_texts, 3)
+        head = got.cut_calls[0]
+        self.assertTrue(head.startswith("const r = await tools.exec_command({cmd: 'cat host_verdict"))
+        self.assertEqual(len(head), codex_rollout.CALL_HEAD_CHARS)
+        self.assertEqual(got.cut_calls, (head, head, ""))
+
+    def test_a_collaboration_call_is_a_delegation(self) -> None:
+        """MR5-f: a read delegated to a sub-agent is in neither record; its call, in the
+        launch's own rows, is counted — by name, and by namespace for a tool not named."""
+        def call(name, **extra):
+            return {"type": "response_item", "payload": {
+                "type": "function_call", "call_id": name, "name": name, "arguments": "{}",
+                **extra}}
+        rows = [_start(), *[call(n) for n in sorted(codex_rollout.COLLABORATION_TOOLS)],
+                call("future_tool", namespace="collaboration"), call("wait"),
+                _out(_items("ok"))]
+        self.write(rows)
+        got = self.scan()
+        self.assertEqual((got.delegations, got.cut_texts),
+                         (len(codex_rollout.COLLABORATION_TOOLS) + 1, 0))
+        # Only the launch's own rows: an earlier launch's spawn is not this one's.
+        self.write([_start(), call("spawn_agent"), _start(), _out(_items("ok"))])
+        self.assertEqual(self.scan().delegations, 0)
 
     def test_the_glob_names_the_whole_thread_id(self) -> None:
         self.write([_start(), _out(_items(_HEADER))], thread="prefix-" + _THREAD)

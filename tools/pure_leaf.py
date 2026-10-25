@@ -237,14 +237,16 @@ WORKSHOP_READER_TOOL_SURFACE_TEXT: dict[str, str] = {
                   "a `cat`, a `sed`, an `rg` and a script of your own alike; the rows between "
                   "the kept head and tail were never shown to you, and a cut output is a read "
                   f"you have not made. A token here is {CODEX_BYTES_PER_TOKEN} bytes, so keep "
-                  f"every command's output under {CODEX_READ_ADVICE_BYTES:,} bytes: `wc -c` a "
-                  "file first, read it in line ranges (`sed -n '<a>,<b>p' <file>`), and print a "
-                  "script's result in pieces of that size. Do not raise a budget instead. The "
-                  "host reads its own record of what each command printed: a `pass` written in "
-                  "a turn in which any command's output exceeded "
-                  f"{CODEX_EXEC_OUTPUT_BUDGET_BYTES:,} bytes, or in which any output reached you "
-                  "cut, is refused and comes back to you as a repair turn naming those "
-                  "commands."),
+                  f"what each call returns — every command's output, and everything one `exec` "
+                  f"prints, all its `text()` together — under {CODEX_READ_ADVICE_BYTES:,} bytes: "
+                  "`wc -c` a file first, read it in line ranges (`sed -n '<a>,<b>p' <file>`), "
+                  "and print a script's result in pieces of that size, one call per piece. Do "
+                  "not raise a budget instead, and read for yourself: what a sub-agent reads is "
+                  "never shown to you. The host reads its own record of what each command "
+                  "printed and of what reached you: a `pass` written in a turn in which any "
+                  f"command's output exceeded {CODEX_EXEC_OUTPUT_BUDGET_BYTES:,} bytes, any "
+                  "output reached you cut, or a read was delegated to a sub-agent is refused, "
+                  "and the review is run again from the seeds with those reads named."),
 }
 
 #: The MCP server name the wrapper is registered under in `--mcp-config`. The CLI names its

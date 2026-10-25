@@ -28,6 +28,13 @@ text over it is counted as cut too: it is either cut, or the trace of a raised b
 the codex reader row forbids. (A default-budget cut text, its header included, is itself just
 over that size.)
 
+A read the leaf DELEGATES is not in this rollout at all: codex offers a reading judge its
+`collaboration` tools (`spawn_agent`, …), and a sub-agent runs in a thread of its own, whose
+commands reach neither the parent's `--json` capture nor the parent's rollout (MR5-f). The
+parent's own rows do hold the call, so each `collaboration` call of the launch is counted as a
+`delegation`: what the sub-agent read was never shown to the judge, and a judge that judges on
+its summary has made no read the host can hold to the rule.
+
 What this does not see, by construction: an output the leaf's script cut itself (a lowered
 `exec_command` budget) and then stripped of both marks before emitting it. The host's own
 capture of each command's bytes (`workflow_conductor`, the byte rule) closes that shape at the
@@ -50,6 +57,15 @@ CUT_HEADER_RE = re.compile(
     r"Warning: truncated output \(original token count: \d+\)(?:\n|\\+n)"
     r"Total output lines: \d+")
 
+#: The tools of codex's `collaboration` namespace (measured on codex-cli 0.164.0, MX2 / MR5-f).
+#: A call of any of them, or of any tool in that namespace, is a delegation.
+COLLABORATION_TOOLS = frozenset({
+    "spawn_agent", "send_message", "followup_task", "wait_agent", "interrupt_agent",
+    "list_agents"})
+
+#: How much of a call's input a finding quotes to name it.
+CALL_HEAD_CHARS = 160
+
 #: The inline marker codex writes where it removed the middle. `…` is U+2026, which a script's
 #: own JSON encoder may have escaped.
 CUT_MARKER_RE = re.compile(r"(?:…|\\+u2026)\d+ tokens truncated(?:…|\\+u2026)")
@@ -65,6 +81,12 @@ class RolloutScan:
     output_rows: int = 0
     #: Of their texts, how many reached the model cut.
     cut_texts: int = 0
+    #: The launch's calls of a `collaboration` tool (a read delegated to another thread).
+    delegations: int = 0
+    #: For each cut text, the head of the input of the call that returned it (the JavaScript
+    #: of an `exec`, the arguments of a `wait`), so a finding can name the read; "" when the
+    #: rollout holds no call of that `call_id`. For the record only: nothing is decided from it.
+    cut_calls: tuple[str, ...] = ()
 
 
 def text_is_cut(text: str) -> bool:
@@ -109,12 +131,12 @@ def scan_launch(config_dir: Path, thread_id: str | None) -> RolloutScan:
         return RolloutScan("the launch reported no thread id")
     found = rollout_paths(config_dir, thread_id.strip())
     if len(found) != 1:
-        return RolloutScan(f"{len(found)} rollout files name thread {thread_id.strip()} "
-                           f"under {Path(config_dir) / 'sessions'} (one is expected)")
+        return RolloutScan(f"{len(found)} rollout files (one is expected) name thread "
+                           f"{thread_id.strip()} under {Path(config_dir) / 'sessions'}")
     try:
         lines = found[0].read_text(encoding="utf-8").splitlines()
     except (OSError, UnicodeDecodeError) as exc:
-        return RolloutScan(f"rollout {found[0].name} could not be read: {exc}")
+        return RolloutScan(f"unreadable rollout file ({exc}): {found[0].name}")
     rows: list[dict[str, Any]] = []
     for number, line in enumerate(lines, 1):
         if not line.strip():
@@ -122,24 +144,38 @@ def scan_launch(config_dir: Path, thread_id: str | None) -> RolloutScan:
         try:
             row = json.loads(line)
         except (json.JSONDecodeError, RecursionError):
-            return RolloutScan(f"rollout {found[0].name} line {number} is not JSON")
+            return RolloutScan(f"line {number} is not JSON in rollout {found[0].name}")
         if not isinstance(row, dict):
-            return RolloutScan(f"rollout {found[0].name} line {number} is not an object")
+            return RolloutScan(f"line {number} is not an object in rollout {found[0].name}")
         rows.append(row)
     starts = [i for i, row in enumerate(rows)
               if row.get("type") == "event_msg"
               and isinstance(row.get("payload"), dict)
               and row["payload"].get("type") == "task_started"]
     if not starts:
-        return RolloutScan(f"rollout {found[0].name} holds no task_started row")
+        return RolloutScan(f"no task_started row in rollout {found[0].name}")
     output_rows = 0
     cut = 0
+    delegations = 0
+    calls: dict[str, str] = {}
+    cut_calls: list[str] = []
     for row in rows[starts[-1] + 1:]:
         payload = row.get("payload")
         if row.get("type") != "response_item" or not isinstance(payload, dict):
             continue
-        if not str(payload.get("type") or "").endswith("_call_output"):
+        kind = str(payload.get("type") or "")
+        if kind.endswith("_call") or kind == "function_call":
+            name = str(payload.get("name") or "")
+            if name in COLLABORATION_TOOLS or payload.get("namespace") == "collaboration":
+                delegations += 1
+            given = payload.get("input", payload.get("arguments"))
+            calls[str(payload.get("call_id") or "")] = " ".join(
+                str(given if given is not None else name).split())[:CALL_HEAD_CHARS]
+            continue
+        if not kind.endswith("_call_output"):
             continue
         output_rows += 1
-        cut += sum(1 for text in _texts(payload.get("output")) if text_is_cut(text))
-    return RolloutScan(None, output_rows, cut)
+        hits = sum(1 for text in _texts(payload.get("output")) if text_is_cut(text))
+        cut += hits
+        cut_calls += [calls.get(str(payload.get("call_id") or ""), "")] * hits
+    return RolloutScan(None, output_rows, cut, delegations, tuple(cut_calls))

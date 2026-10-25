@@ -53,8 +53,9 @@ Each `replay_result.json` row: the head (`replay_orchestration_id`, `source_*`, 
 `substep`, `leaf`, `label`, `mutated_keys`, `repetition`); the outcome (`status`,
 `leaf_returncode`, `infra_error`, `document` — the accepted verdict or review, else null —
 and `failure_category`); `attempts` (the reviewer's `per_attempt` rows); `schema_repairs`
-(turns launched because the previous document was refused) and `cut_read_repairs` (of those,
-the ones a codex cut-read refusal launched, counted apart, issue #547); the sums over the attempts of
+(turns launched because the previous document was refused for anything but a cut read) and
+`cut_read_repairs` (turns launched because it was refused as a codex cut read, issue #547 —
+the two are disjoint); the sums over the attempts of
 `cost_usd`, `input_tokens`, `cache_creation_input_tokens`, `cache_read_input_tokens`,
 `output_tokens`, `leaf_wall_s`, `duration_ms` (claude envelope) and `model_turns`, each over the
 attempts that recorded it, with `usage_unrecorded_attempts` counting the attempts whose usage

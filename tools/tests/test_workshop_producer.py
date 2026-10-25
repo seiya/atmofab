@@ -731,7 +731,7 @@ _WORKSHOP_CONTRACT_DIGESTS = {
     # Issue #547: the `codex_cli` reader row names every output budget and the host's cut-read
     # refusal, and the cut-read repair scope paragraph joins the digest (`workshop-5` shipped
     # with step 3 PR-J2, main bb119b5a).
-    "workshop-6": "a726dfc6729815a4238a06095c61a5646e4421e6f91d74409336e146649d0336",
+    "workshop-6": "ec6be80b2c06afdc8767fe62db7ea12b0a389d1d781092f53d03bf6338460b36",
 }
 
 

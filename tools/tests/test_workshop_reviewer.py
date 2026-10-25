@@ -738,7 +738,11 @@ class _CodexCutReadRows:
     def rows(self) -> list[dict]:
         return self.attempt_meta()["per_attempt"]
 
-    def test_a_pass_after_a_command_over_the_budget_is_refused_and_re_read_warm(self) -> None:
+    def test_a_pass_after_a_command_over_the_budget_is_refused_and_reviewed_again_cold(
+            self) -> None:
+        """The cut-read repair is a COLD launch in a new lineage from the seeds alone, with the
+        findings and the whole launch body: not a warm turn (its session holds the cut texts and
+        the conclusion), and nothing of the refused tree carried."""
         seen: list[bool] = []
 
         def second(c, tree, kwargs):
@@ -750,24 +754,62 @@ class _CodexCutReadRows:
         outcome = self.run_substep()
         self.assertEqual(outcome.status, "pass")
         self.assert_projected_pass()
-        # The refused document was removed before the warm turn ran.
         self.assertEqual(seen, [False])
         first, row2 = self.rows()
         self.assertEqual((first["failure_category"], first["cut_outputs"]),
                          (wc.WORKSHOP_CUT_READ, 1))
         self.assertIn("cat host_verdict.json", first["failure_excerpt"])
         self.assertIn("600,000 bytes", first["failure_excerpt"])
-        self.assertEqual(row2["cut_outputs"], 0)
+        self.assertEqual((row2["cut_outputs"], row2["warm"]), (0, False))
+        self.assertNotEqual(row2["lineage_id"], first["lineage_id"])
         self.assertNotIn("failure_category", row2)
+        self.assertEqual(workshop_tree.read_lineage_record(self.paths("child-1"))["ended_by"],
+                         "superseded")
         _, request = self.requests()
-        self.assertTrue(request["warm_resume"])
+        self.assertFalse(request.get("warm_resume"))
+        self.assertIsNone(self.c.spawns[1]["resume_session_id"])
         self.assertEqual(request["repair_reason"], wc.WORKSHOP_CUT_READ_REPAIR_REASON)
         self.assertIn("cat host_verdict.json", request["repair_findings"])
-        self.assertEqual(self.c.spawns[1]["resume_session_id"], "thread-child-1")
         prompt = ort._render_pure_repair_prompt(request)
         self.assertIn(ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH, prompt)
         self.assertNotIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH, prompt)
         self.assertIn("cat host_verdict.json", prompt)
+        self.assertIn(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"], prompt)
+        self.assertIn("Work tree contract", prompt)
+
+    def test_a_rollout_only_cut_names_its_call_and_a_delegation_is_refused(self) -> None:
+        call = {"type": "response_item", "payload": {
+            "type": "custom_tool_call", "call_id": "call_1", "name": "exec",
+            "input": "text((await tools.exec_command({cmd: 'cat tests.md'})).output);"}}
+        spawn = {"type": "response_item", "payload": {
+            "type": "function_call", "call_id": "s", "name": "spawn_agent", "arguments": "{}"}}
+        for name, rows, expect in (
+                ("cut", [_rollout_rows(())[0], call,
+                         _rollout_rows(["Output:\n", _CUT_HEADER])[1]],
+                 "the output of `text((await tools.exec_command({cmd: 'cat tests.md'}))"),
+                ("delegation", [*_rollout_rows(_CLEAN_TEXTS), spawn], "sub-agent")):
+            with self.subTest(name):
+                self.c.calls = []
+                self.c.spawns = []
+                self.c.leaf_actions = [_reads(rows=rows, then=_writes(self.OUTPUT, self.passing())),
+                                       _writes(self.OUTPUT, self.passing())]
+                self.assertEqual(self.run_substep().status, "pass")
+                first = self.rows()[0]
+                self.assertEqual((first["failure_category"], first["cut_outputs"]),
+                                 (wc.WORKSHOP_CUT_READ, 1))
+                self.assertIn(expect, first["failure_excerpt"])
+
+    def test_the_findings_name_six_and_count_the_rest(self) -> None:
+        commands = [(f"cat part{i}", 50_000) for i in range(9)]
+        self.c.leaf_actions = [_reads(commands=commands, then=_writes(self.OUTPUT, self.passing())),
+                               _writes(self.OUTPUT, self.passing())]
+        self.assertEqual(self.run_substep().status, "pass")
+        # The repair turn's findings (the attempt row clips its excerpt shorter).
+        excerpt = self.requests()[1]["repair_findings"]
+        self.assertEqual(wc.Conductor._CUT_READ_FINDINGS_NAMED, 6)
+        self.assertIn("cat part5", excerpt)
+        self.assertNotIn("cat part6", excerpt)
+        self.assertIn("and 3 more", excerpt)
 
     def test_the_byte_rule_is_strictly_greater_than_the_budget(self) -> None:
         self.c.leaf_actions = [_reads(commands=_over(_BUDGET),
@@ -923,7 +965,7 @@ class _CodexCutReadRows:
         self.assertIn("tokens truncated", rollout.read_text())
         self.assertEqual([r.get("cut_outputs") for r in self.rows()], [1, 0])
 
-    def test_a_cold_fallback_of_a_cut_read_repair_starts_from_the_seeds_alone(self) -> None:
+    def test_an_unresumable_lineage_changes_nothing_for_a_cut_read_repair(self) -> None:
         self.c.resumable = False
         seen: list[bool] = []
 

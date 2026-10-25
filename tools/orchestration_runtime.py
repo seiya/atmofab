@@ -10213,13 +10213,15 @@ WORKSHOP_CUT_READ_REPAIR_REASON = "workshop_cut_read_repair"
 #: and the shape paragraph above would tell it the opposite. Part of the workshop contract digest
 #: (`tools/tests/test_workshop_producer.py`).
 WORKSHOP_CUT_READ_SCOPE_PARAGRAPH = (
-    "This refusal is about your READING, not the shape of a document: each command listed "
-    "below printed more than one output can carry, or reached you cut, so the rows between its "
-    "kept head and tail were never shown to you, and the host has removed the document you "
-    "wrote after it. Issue each of those reads again over narrower pieces — a smaller line "
-    "range, a smaller subset of your script's output — until none is cut, then write the whole "
-    "document anew from everything you have now seen; what reached you whole needs no second "
-    "read. A turn in which any command exceeds the budget comes back the same way."
+    "This refusal is about READING, not the shape of a document. In a previous session of this "
+    "review, each read listed below printed more than one output can carry, reached that "
+    "session cut, or was delegated to a sub-agent, so rows of what you judge were never shown "
+    "to it, and the host set aside the document it wrote. This is a new session in a fresh "
+    "tree, and no document of that session is in it: review again from the seeds, keeping "
+    "every output under the budget — the reads listed below in narrower pieces, a smaller "
+    "line range or a smaller part of a script's result per call — and reading for yourself, "
+    "and write the whole document from what this session sees. A session in which any output "
+    "exceeds the budget, reaches you cut, or is a sub-agent's comes back the same way."
 )
 
 

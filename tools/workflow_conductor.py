@@ -673,9 +673,9 @@ GENERATE_BUNDLE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
 # --- a codex reading lineage's cut read (issue #547) ---------------------------
 # A `pass` written by a codex READING workshop lineage in a launch in which a command printed
 # more than codex's budget lets reach the model whole (the byte rule, over the host's own
-# capture), or in which a tool output reached the model cut (its rollout), is refused under
-# this category: the judge certified rows it was never shown. A leaf CONTENT failure,
-# repaired in the reviewer's own lineage with the document removed, on a counter of its own
+# capture), a tool output reached the model cut, or a read was delegated to a sub-agent (its
+# rollout), is refused under this category: the judge certified rows it was never shown. A
+# leaf CONTENT failure, repaired by a cold launch from the seeds alone, on a counter of its own
 # (`_run_pure_reviewer_substep`); its exhaustion routes as a schema exhaustion does (the two
 # verdict tables below; `validate.judge` by its conformance violation).
 WORKSHOP_CUT_READ = "workshop_cut_read"
@@ -9833,9 +9833,6 @@ class Conductor:
             self.lineage = lineage
             self.prior = prior
             self.resume_session_id = resume_session_id
-            #: Set by `after_cut_read`: the open lineage's snapshot must not seed a cold
-            #: fallback, which then starts from the seeds alone.
-            self.seeds_only = False
 
         def next_launch(self) -> bool:
             """Whether the next launch is WARM — a resume of the open lineage, in its own home,
@@ -9865,9 +9862,7 @@ class Conductor:
                 # Its work goes on in a new lineage: record that nothing will continue it (a
                 # reason a bound already recorded stands).
                 end_lineage(lineage.paths, "superseded")
-                self.prior, self.lineage, self.resume_session_id = (
-                    None if self.seeds_only else lineage.paths, None, None)
-            self.seeds_only = False
+                self.prior, self.lineage, self.resume_session_id = lineage.paths, None, None
             return warm
 
         def lineage_id(self, warm: bool, child_arid: str) -> str:
@@ -9905,26 +9900,18 @@ class Conductor:
             self.prior = None if self.reading else self.lineage.paths
             self.lineage, self.resume_session_id = None, None
 
-        def after_cut_read(self, turn: "Conductor._WorkshopTurn", child_arid: str) -> None:
-            """A cut-read repair follows (issue #547): warm over this lineage while it is open,
-            with the refused document REMOVED from the tree, else a cold launch from the seeds
-            alone. The document is the refusal's subject, not a shape to correct: left in the
-            tree, a repair turn that runs no command would hand it back unread and be accepted,
-            and carried into a cold lineage it would be the same document under a new launch."""
+        def after_cut_read(self) -> None:
+            """A cut-read repair follows (issue #547): a COLD launch in a new lineage seeded
+            from the seeds alone, as the unfinished-review rule's re-run is, with the findings.
+            Not a warm turn: the session holds the cut texts and the conclusion drawn from them,
+            so a turn that rewrites the same document from memory and reads nothing would be
+            accepted; and not a cold reuse: the refused document is the refusal's subject, not
+            a shape to correct, so nothing of this lineage's tree is carried. The lineage is
+            ended `superseded` by `next_launch`."""
             assert self.lineage is not None
-            for name in self.spec.workshop_outputs or ():
-                target = self.lineage.paths.tree / name
-                if target.is_file() or target.is_symlink():
-                    target.unlink()
-            if turn.ended_by is None:
-                self.resume_session_id = self.conductor._session_id_for_child(
-                    child_arid, self.entry)
-                self.seeds_only = True
-            else:
-                # Not reached today, and so not pinned: a cut-read refusal excludes a launch a
-                # bound ended, and a reading lineage is ended by nothing else that leaves a
-                # document to refuse. Kept so that a future end reason starts from the seeds.
-                self.prior, self.lineage, self.resume_session_id = None, None, None
+            from tools.workshop_tree import end_lineage
+            end_lineage(self.lineage.paths, "superseded")
+            self.prior, self.lineage, self.resume_session_id = None, None, None
 
         def after_repair(self, turn: "Conductor._WorkshopTurn", child_arid: str) -> None:
             """A repair turn follows: warm over this lineage while it is open, else (checked by
@@ -10912,8 +10899,11 @@ class Conductor:
         (`_WorkshopTurn.command_outputs`), where a command over `CODEX_EXEC_OUTPUT_BUDGET_BYTES`
         could not have reached the model whole at the default budget; and the rollout of the
         launch's thread (`codex_rollout.scan_launch`), where a text the model received holds
-        codex's cut header or marker — the cut the byte rule cannot see per command (several
-        small outputs printed together, or a raised budget's header-less cut)."""
+        codex's cut header or marker or is over the same size — the cut the byte rule cannot
+        see per command (several small outputs printed together, or a raised budget's cut) —
+        or the launch called a `collaboration` tool (a read delegated to a sub-agent, which
+        neither record shows: MR5-f). A finding on either record wins over an unreadable
+        rollout: the refusal is then the leaf's to repair."""
         from tools.codex_rollout import scan_launch
         from tools.pure_leaf import CODEX_EXEC_OUTPUT_BUDGET_BYTES
         outputs = turn.command_outputs
@@ -10921,15 +10911,20 @@ class Conductor:
                  f"{CODEX_EXEC_OUTPUT_BUDGET_BYTES:,} reach you whole"
                  for command, size in (outputs or ()) if size > CODEX_EXEC_OUTPUT_BUDGET_BYTES]
         if outputs is None:
-            return lines, "the launch's capture holds no per-command record"
+            return lines, "no per-command capture of the launch"
         scan = scan_launch(Path(paths.config), self._session_id_for_child(child_arid, entry))
         if scan.reason is not None:
             return lines, scan.reason
         if outputs and not scan.output_rows:
-            return lines, (f"the capture recorded {len(outputs)} command(s) and the rollout "
-                           "holds no tool output after the launch's task_started")
-        lines += [("a tool output reached you cut (the `…N tokens truncated…` marker): the rows "
-                   "between its head and tail were never shown to you")] * scan.cut_texts
+            return lines, (f"no tool output in the rollout after the launch's task_started, "
+                           f"while the capture recorded {len(outputs)} command(s)")
+        lines += [(f"the output of `{head}` reached you cut" if head
+                   else "a tool output reached you cut")
+                  + " (the `…N tokens truncated…` marker, or longer than the budget lets through"
+                    " whole): the rows between its head and tail were never shown to you"
+                  for head in (scan.cut_calls or ("",) * scan.cut_texts)]
+        lines += ["you delegated a read to a sub-agent (a `collaboration` tool): what it read "
+                  "was never shown to you"] * scan.delegations
         return lines, None
 
     def _cut_read_findings(self, lines: list[str]) -> str:
@@ -10992,7 +10987,8 @@ class Conductor:
         seeded from the seeds alone (`_WorkshopLineageMachine.after_transport`). And on a CODEX
         lineage a launch that read past the budget (`_codex_cut_reads`, issue #547) has no
         document accepted but a schema-valid `fail`: anything else is `WORKSHOP_CUT_READ`,
-        repaired on its own counter with the document removed (`after_cut_read`), and a launch
+        repaired on its own counter by a cold launch from the seeds alone (`after_cut_read`),
+        and a launch
         whose rollout cannot be read is `WORKSHOP_ROLLOUT_UNREADABLE`, fail_closed."""
         from tools.pure_leaf import (
             extract_json_document,
@@ -11232,11 +11228,11 @@ class Conductor:
                     accepted_verdict = None
                 elif unreadable is not None:
                     category = WORKSHOP_ROLLOUT_UNREADABLE
-                    findings = (f"the rollout that records what the model received could not "
-                                f"be read ({unreadable}); the host cannot tell whether this "
-                                f"launch's reads reached it whole. After a codex CLI upgrade, "
-                                f"re-run test_bwrap_simulation.CodexReadingLeafCliTests "
-                                f"(MR5-e)")[:1000]
+                    # The reason FIRST: the transport branch keeps the head of this excerpt.
+                    findings = (f"{unreadable}; the host cannot tell whether this launch's "
+                                f"reads reached the model whole (after a codex CLI upgrade, "
+                                f"re-run test_bwrap_simulation.CodexReadingLeafCliTests, "
+                                f"MR5-e)")[:1000]
                     accepted_verdict = None
             if (machine is not None and proc.timed_out
                     and not (accepted_verdict is not None
@@ -11453,12 +11449,11 @@ class Conductor:
                 attempt += 1
                 continue
             if machine is not None and category == WORKSHOP_CUT_READ:
-                # The cut-read repair turn: the reviewer's own lineage, warm while it is open,
-                # with the refused document removed; else a cold launch from the seeds alone
-                # (`_WorkshopLineageMachine.after_cut_read`).
+                # The cut-read repair turn: a cold launch from the seeds alone carrying the
+                # findings (`_WorkshopLineageMachine.after_cut_read`).
                 workshop_repair_target = child_arid
                 repair_reason = WORKSHOP_CUT_READ_REPAIR_REASON
-                machine.after_cut_read(turn, child_arid)
+                machine.after_cut_read()
                 cut_read_turns += 1
                 continue
             if machine is not None:
