@@ -1108,8 +1108,9 @@ class SeedNewlineTests(unittest.TestCase):
         for phase, substep, shape in self.SPECS:
             spec = self.spec(phase, substep, shape)
             context = self.context(phase, substep, shape)
-            # A reviewer's `.json` seed that takes `_indented_json_seed`'s raw fallback, and a
-            # seed already ending in a blank line, which is kept as it is.
+            # A `.json` seed holding a repeated key — on a reviewer spec it takes
+            # `_indented_json_seed`'s raw fallback, on a producer spec it is a document seed with
+            # no expander — and a seed already ending in a blank line, which is kept as it is.
             json_keys = [k for k in context
                          if spec.workshop_document_seeds.get(k, "").endswith(".json")
                          or (k in spec.workshop_seed_expanders and k != "bundle_document")]
