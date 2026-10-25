@@ -62,6 +62,8 @@ class ScanTests(unittest.TestCase):
                 ("after a prefix", _items("A\n" + _HEADER)),
                 ("marker alone", _items("L1\n…138012 tokens truncated…L2\n")),
                 ("header alone", _items(_HEADER.split("\n\n")[0])),
+                ("header alone after a prefix", _items("A\n" + _HEADER.split("\n\n")[0])),
+                ("header alone, escaped", _items(json.dumps({"o": _HEADER.split("\n\n")[0]}))),
                 ("a plain string", "Script running with cell ID 3\n" + _HEADER),
                 ("two marks in one text", _items(_HEADER + _HEADER)),
                 ("the fourth item", _items("a", "b", "c", _HEADER))):

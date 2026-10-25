@@ -847,6 +847,19 @@ class _CodexCutReadRows:
                          ("fail", wc.WORKSHOP_CUT_READ))
         self.assertEqual(len(meta["per_attempt"]), 1 + pure_leaf.MAX_BUNDLE_REPAIR_TURNS)
 
+    def test_a_schema_repair_after_a_cut_read_repair_is_a_schema_repair(self) -> None:
+        """The repair reason is per refusal: the cut-read reason does not stick to the next
+        refusal's turn."""
+        self.c.leaf_actions = [_reads(commands=_over(), then=_writes(self.OUTPUT, self.passing())),
+                               _writes(self.OUTPUT, {"x": 1}),
+                               _writes(self.OUTPUT, self.passing())]
+        self.assertEqual(self.run_substep().status, "pass")
+        reasons = [r.get("repair_reason") for r in self.requests()]
+        spec = self.c._pure_reviewer_spec(self.PHASE, self.SUBSTEP)
+        self.assertEqual(reasons, ["none", wc.WORKSHOP_CUT_READ_REPAIR_REASON, spec.repair_reason])
+        self.assertIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH,
+                      ort._render_pure_repair_prompt(self.requests()[2]))
+
     def test_the_two_repair_counters_are_independent(self) -> None:
         self.c.leaf_actions = [_writes(self.OUTPUT, {"x": 1}),
                                _reads(commands=_over(), then=_writes(self.OUTPUT, self.passing())),

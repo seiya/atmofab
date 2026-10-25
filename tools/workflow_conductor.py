@@ -9921,6 +9921,9 @@ class Conductor:
                     child_arid, self.entry)
                 self.seeds_only = True
             else:
+                # Not reached today, and so not pinned: a cut-read refusal excludes a launch a
+                # bound ended, and a reading lineage is ended by nothing else that leaves a
+                # document to refuse. Kept so that a future end reason starts from the seeds.
                 self.prior, self.lineage, self.resume_session_id = None, None, None
 
         def after_repair(self, turn: "Conductor._WorkshopTurn", child_arid: str) -> None:
@@ -11216,7 +11219,9 @@ class Conductor:
                 # else was wrong with its document: a schema repair or a missing-document
                 # repair would otherwise be answered by a turn that fixes the shape and reads
                 # nothing, and be accepted on the cut reads of this one. A launch a bound ended
-                # is the unfinished-review rule's (next block).
+                # is the unfinished-review rule's (next block, which would overwrite this
+                # category anyway: the `timed_out` guard states the rule, changes no outcome,
+                # and no row can tell it from its absence).
                 lines, unreadable = cut_read
                 also = (f" (the document also failed the host's checks: "
                         f"{(findings or '').splitlines()[0][:200]})"
