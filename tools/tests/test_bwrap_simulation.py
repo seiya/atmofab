@@ -2151,8 +2151,10 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
         0.164.0: `apply_patch, create_goal, exec_command, get_goal,
         list_mcp_resource_templates, list_mcp_resources, read_mcp_resource, update_goal,
         view_image, write_stdin` — the built-ins whose names contain `mcp` are why the check is
-        a prefix). That the tree is `untrusted`, so a project config planted in it is not read,
-        is pinned by MX3 and `test_workshop_codex.CodexLineageHomeTests`, not here."""
+        a prefix). Whether a `.codex/config.toml` planted in the tree is read is observed by no
+        row: MX3 plants instruction files only, and `test_workshop_codex.CodexLineageHomeTests`
+        checks that the host marks the tree untrusted. A leaf gains nothing toward a verdict by
+        planting one (a reading lineage holds no operation to add)."""
         argv = self._argv(None, None)
         self.assertNotIn("mcp_servers", " ".join(argv))
         self.assertNotIn("[mcp_servers", (self.config / "config.toml").read_text())

@@ -113,7 +113,8 @@
 # judge is shown inline are seed files of its tree, and it writes its one verdict document
 # there. It is served no host operation, so its entry states `lineage_timeout_s` alone —
 # `max_wrapper_calls` is refused on a judging substep — and it runs on claude_cli or codex_cli.
-# The same block under each judging substep, with the substep's own name in place of `judge`:
+# The same block under each judging substep, with the substep's own name in place of `judge`
+# (and the model that substep runs on):
 #
 #       judge:
 #         provider: claude_cli

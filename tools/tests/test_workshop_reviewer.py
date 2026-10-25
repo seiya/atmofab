@@ -697,9 +697,27 @@ class JsonSeedLayoutTests(unittest.TestCase):
         self.assertIn('"p": Infinity', text)
         self.assertIn('"n": -Infinity', text)
 
+    def test_a_real_keeps_its_value_through_the_layout(self) -> None:
+        """Every double of the seed is the raw text's double, at full precision: the corpus's
+        diagnostics carry 17 significant digits, and a judge compares them against bounds."""
+        raw = ('{"a": 0.30000000000000004, "b": 6.776263578034403e-21, '
+               '"c": 1.1899999999999999E-004, "d": 1.0210470693801136E-016, '
+               '"e": -8.8201970000000001E-003, "f": 123456789012345678901234567890}')
+        seed = json.loads(wc._indented_json_seed(raw))
+        for key, value in json.loads(raw).items():
+            with self.subTest(key=key):
+                self.assertEqual(seed[key], value)
+                self.assertEqual(type(seed[key]), type(value))
+                if isinstance(value, float):
+                    self.assertEqual(seed[key].hex(), value.hex())
+
+    def test_non_ascii_text_is_kept_as_characters(self) -> None:
+        self.assertIn('"note": "Δt μ"', wc._indented_json_seed('{"note": "\\u0394t \\u03bc"}'))
+
     def test_a_seed_that_is_not_json_is_seeded_as_it_is(self) -> None:
         for text in ("", "not json", "{\"a\": 1", "(absent)\n",
-                     '{"checks": {"cfl": {"status": "fail"}, "cfl": {"status": "pass"}}}'):
+                     '{"checks": {"cfl": {"status": "fail"}, "cfl": {"status": "pass"}}}',
+                     '{"a": "\\ud800"}', "[" * 100000 + "]" * 100000):
             with self.subTest(text=text):
                 self.assertEqual(wc._indented_json_seed(text), text)
 

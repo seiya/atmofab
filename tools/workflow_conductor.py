@@ -3722,9 +3722,11 @@ def _indented_json_seed(text: str) -> str:
     per line (`indent=2`), so a file tool that pages by line can reach every value. The value
     is the parsed document's (a number keeps its value, not necessarily its spelling: `1.0E-5`
     is written `1e-05`); `evidence_refs` name document keys, which the host resolves against
-    the workspace file, never against the seed. Text that is not JSON, and a document with a
-    repeated key in one object (`json.loads` keeps the last value, so a re-serialization would
-    drop the others the raw text shows), is seeded as it is."""
+    the workspace file, never against the seed. Text that is not JSON (or nests past the
+    parser's depth), a document with a repeated key in one object (`json.loads` keeps the last
+    value, so a re-serialization would drop the others the raw text shows), and one whose
+    strings hold an unpaired surrogate escape (the indented text would not encode as UTF-8)
+    are seeded as they are."""
 
     def pairs(items: list[tuple[str, Any]]) -> dict[str, Any]:
         out = dict(items)
@@ -3734,9 +3736,11 @@ def _indented_json_seed(text: str) -> str:
 
     try:
         doc = json.loads(text, object_pairs_hook=pairs)
-    except ValueError:
+        out = json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+        out.encode("utf-8")
+    except (ValueError, RecursionError):
         return text
-    return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"
+    return out
 
 
 def _leaf_infra_error(proc: ProcResult) -> tuple[str, str] | None:
@@ -8548,7 +8552,8 @@ class Conductor:
         workshop_outputs: tuple[str, ...] = ()
         #: context key -> the tree name its document is seeded under.
         workshop_document_seeds: Mapping[str, str] = MappingProxyType({})
-        #: context key -> (text -> {tree name: text}) for a document seeded as several files.
+        #: context key -> (text -> {tree name: text}) for a document seeded as several files, or
+        #: as one file in another layout (a JSON seed, one value per line).
         workshop_seed_expanders: Mapping[str, Callable[[str], dict[str, str]]] = (
             MappingProxyType({}))
         workshop_seeds_host_sources: bool = False
@@ -9372,7 +9377,8 @@ class Conductor:
         (`Conductor._freeze_wrapper_context`: a wrapper view without one of them disagrees with
         the gate). Then, on every lineage, each document of the pure context under the spec's
         `workshop_document_seeds` — or, for a key the spec EXPANDS (`workshop_seed_expanders`:
-        a reviewer's bundle under review), the several files it expands into — and the
+        a reviewer's bundle under review, or a reviewer's JSON document laid out one value per
+        line), the file(s) it expands into — and the
         dependency facts and the exemplar the pure template
         splices in, when there are any. Raises `RuntimeError` on a context key with no seed
         name, on a seed named after one of the spec's output files, and on two seeds of one
@@ -9400,7 +9406,8 @@ class Conductor:
                 continue
             expand = spec.workshop_seed_expanders.get(key)
             if expand is not None:
-                # One document seeded as several files (the reviewer's bundle under review).
+                # One document seeded as the file(s) its expander writes (the reviewer's bundle
+                # under review; a reviewer's JSON seed, re-laid out).
                 for name, text in expand(value).items():
                     if name in seeds:
                         raise RuntimeError(f"workshop seeds: two seeds named {name!r}")
@@ -10631,7 +10638,8 @@ class Conductor:
         "verify": "verdict.json", "judge": "review.json"}
     #: The tree name each reviewer `pure_context` document is seeded under, by
     #: `(phase, substep, shape)`. `bundle_document` has none: it is EXPANDED into the manifest
-    #: and the bundle's own files (`_WORKSHOP_BUNDLE_REVIEW_MANIFEST`).
+    #: and the bundle's own files (`_WORKSHOP_BUNDLE_REVIEW_MANIFEST`). A `.json` name is
+    #: seeded one value per line (`_indented_json_seed`, `_workshop_reviewer_fields`).
     _WORKSHOP_REVIEWER_DOCUMENT_SEEDS: ClassVar[dict[tuple[str, str, str], Mapping[str, str]]] = {
         ("compile", "verify", ""): MappingProxyType({
             "controlled_spec_document": "controlled_spec.md",
