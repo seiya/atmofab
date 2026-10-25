@@ -12602,7 +12602,9 @@ class LeafSpawnTest(unittest.TestCase):
         backlog = 2500          # more than the queue's maxsize, so the pump parks in `put()`
         lines = (['{"type":"thread.started","thread_id":"t-1"}\n']
                  + ['{"type":"item.started","item":{"type":"tool_call"}}\n'] * backlog
-                 + ['{"type":"turn.started","turn":{"usage":{"input_tokens":7},'
+                 + ['{"type":"item.completed","item":{"type":"command_execution",'
+                    '"command":"cat x","aggregated_output":"abc"}}\n',
+                    '{"type":"turn.started","turn":{"usage":{"input_tokens":7},'
                     '"model":"gpt-5.6-sol"}}\n',
                     '{"type":"turn.failed","error":{"message":"boom"}}\n'])
 
@@ -12650,6 +12652,8 @@ class LeafSpawnTest(unittest.TestCase):
         self.assertEqual(proc.model, "gpt-5.6-sol")
         self.assertIs(proc.timed_out, True)
         self.assertIn("turn.failed", proc.stderr)   # the structured terminal event survives
+        # ...and so is what a command in it printed (issue #547's byte rule reads it).
+        self.assertEqual(proc.command_outputs, [("cat x", 3)])
         # ...but the `thread.started` in that backlog is NOT replayed: registration is a
         # transactional HOST WRITE binding an identity for a leaf the conductor has already
         # killed, and this call site has no rollback-recovery handler behind it.

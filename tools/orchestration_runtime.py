@@ -10205,6 +10205,48 @@ PURE_REPAIR_SCOPE_PARAGRAPH = (
     "smaller: do not drop a finding you made, and do not record a conclusion you did not reach."
 )
 
+#: The `repair_reason` of a cut-read repair turn (`workflow_conductor.WORKSHOP_CUT_READ_REPAIR_REASON`,
+#: issue #547), which selects `WORKSHOP_CUT_READ_SCOPE_PARAGRAPH` in place of the shape paragraph.
+WORKSHOP_CUT_READ_REPAIR_REASON = "workshop_cut_read_repair"
+
+#: The verdict repair template's inline instruction slot, `<repair_instruction>`, by refusal
+#: kind. The SHAPE text is the template's own before issue #547, so a schema repair renders as
+#: it did (the adopted claude A/B ran on it); the cut-read text says what a cold re-review from
+#: the seeds is, where the shape text's "rewriting your document file in place" would point at
+#: a document that is not there. One slot, inside the first line: the template's other lines
+#: stay literal, which the host-line sweep of `test_pure_leaf_wiring` subtracts by.
+WORKSHOP_VERDICT_REPAIR_SHAPE_SLOTS: dict[str, str] = {
+    "repair_instruction": (
+        "Correct EXACTLY the violations described below by rewriting your document file at "
+        "the tree root in place — the WHOLE document, not a diff or a fragment — and end your "
+        "turn. If this is a new session, the whole contract follows the findings, and your "
+        "previous tree's document file is already in place in a fresh tree beside fresh seeds "
+        "when the host still holds it: correct that file, or write the whole document anew "
+        "when there is none."),
+}
+WORKSHOP_VERDICT_REPAIR_CUT_READ_SLOTS: dict[str, str] = {
+    "repair_instruction": (
+        "Review again as the paragraph just before the findings says, write your document "
+        "file at the tree root — the WHOLE document, not a diff or a fragment — and end your "
+        "turn. This is a new session, in a fresh tree beside fresh seeds, and the whole "
+        "contract follows the findings."),
+}
+
+#: The `<repair_scope>` text of a cut-read repair turn: the refusal is about the leaf's READING,
+#: and the shape paragraph above would tell it the opposite. Part of the workshop contract digest
+#: (`tools/tests/test_workshop_producer.py`).
+WORKSHOP_CUT_READ_SCOPE_PARAGRAPH = (
+    "This refusal is about READING, not the shape of a document. In a previous session of this "
+    "review, each read listed below printed more than one output can carry, reached that "
+    "session cut, or was delegated to a sub-agent, so rows of what you judge were never shown "
+    "to it, and the host set aside the document it wrote. This is a new session in a fresh "
+    "tree, and no document of that session is in it: review again from the seeds, keeping "
+    "every output under the budget — the reads listed below in narrower pieces, a smaller "
+    "line range or a smaller part of a script's result per call — and reading for yourself, "
+    "and write the whole document from what this session sees. A session in which any output "
+    "exceeds the budget, reaches you cut, or is a sub-agent's comes back the same way."
+)
+
 
 def _pure_launch_body(request_payload: dict[str, Any]) -> str:
     """The launch prompt this request would have been sent cold, minus its persona line and its
@@ -10288,12 +10330,20 @@ def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
         # fields: a spelling this membership test does not recognize renders the slot EMPTY while
         # the template still resolves, so the omission would be silent. Only host constants reach
         # these fields today, which is what keeps it a fail-open by omission rather than a hole.
+        # A cut-read repair (issue #547) is about the leaf's reading, whatever its pair.
         "repair_scope": (
-            PURE_REPAIR_SCOPE_PARAGRAPH
+            WORKSHOP_CUT_READ_SCOPE_PARAGRAPH
+            if str(request_payload.get("repair_reason", "")).strip()
+            == WORKSHOP_CUT_READ_REPAIR_REASON
+            else PURE_REPAIR_SCOPE_PARAGRAPH
             if (str(request_payload.get("step", "")).strip().lower(),
                 str(request_payload.get("substep", "")).strip().lower())
             in PURE_VERDICT_PAIRS else ""),
     }
+    if repair_key == "workshop verdict repair":
+        subs.update(WORKSHOP_VERDICT_REPAIR_CUT_READ_SLOTS
+                    if subs["repair_scope"] == WORKSHOP_CUT_READ_SCOPE_PARAGRAPH
+                    else WORKSHOP_VERDICT_REPAIR_SHAPE_SLOTS)
     if not request_payload.get("warm_resume"):
         prior = str(request_payload.get("prior_document", "")).strip()
         subs["prior_document"] = (

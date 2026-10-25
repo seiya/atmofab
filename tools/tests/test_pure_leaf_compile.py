@@ -1320,7 +1320,8 @@ class PureCompileTransportCategoryTests(_Fixture):
         from tools.pure_leaf import RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE
         self.assertEqual(
             set(wc.COMPILE_VERDICT_FAILURE_CATEGORIES),
-            {RESPONSE_UNPARSEABLE, RESPONSE_TRUNCATED, wc.GENERATE_VERDICT_SCHEMA_VIOLATION})
+            {RESPONSE_UNPARSEABLE, RESPONSE_TRUNCATED, wc.GENERATE_VERDICT_SCHEMA_VIOLATION,
+             wc.WORKSHOP_CUT_READ})
         for category in wc.COMPILE_VERDICT_FAILURE_CATEGORIES:
             with self.subTest(category=category):
                 self.assertEqual(wc.COMPILE_VERDICT_FAILURE_ROUTING[category],

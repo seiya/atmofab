@@ -1777,10 +1777,15 @@ class _ScriptedResponsesApi:
     and every later one with a one-word message. Request bodies are kept: the next request
     carries the previous call's `custom_tool_call_output`, which is how a row reads what a tool
     returned. Any other path is a 404 (the CLI's model-list refresh). Unbilled: the CLI talks to
-    loopback with a placeholder `auth.json`."""
+    loopback with a placeholder `auth.json`.
 
-    def __init__(self, script: list[list[dict]]) -> None:
+    `child_script`, when given, answers every request that does not carry the parent's task
+    ("Do the task.") — a sub-agent's thread — from its own script and counter."""
+
+    def __init__(self, script: list[list[dict]],
+                 child_script: list[list[dict]] | None = None) -> None:
         bodies: list[bytes] = []
+        child_bodies: list[bytes] = []
 
         def sse(items: list[dict], n: int) -> bytes:
             events = [{"type": "response.created", "response": {"id": f"resp_{n}"}}]
@@ -1800,6 +1805,19 @@ class _ScriptedResponsesApi:
                 if not self.path.endswith("/responses"):
                     self.send_response(404)
                     self.end_headers()
+                    return
+                if child_script is not None and b"Do the task." not in body:
+                    child_bodies.append(body)
+                    n = len(child_bodies)
+                    items = child_script[n - 1] if n <= len(child_script) else [
+                        {"type": "message", "role": "assistant", "id": f"cmsg_{n}",
+                         "content": [{"type": "output_text", "text": "done"}]}]
+                    data = sse(items, 1000 + n)
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/event-stream")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
                     return
                 bodies.append(body)
                 n = len(bodies)
@@ -1821,6 +1839,7 @@ class _ScriptedResponsesApi:
                 pass
 
         self.bodies = bodies
+        self.child_bodies = child_bodies
         self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         threading.Thread(target=self._server.serve_forever, daemon=True).start()
         self.base_url = f"http://127.0.0.1:{self._server.server_address[1]}"
@@ -2237,6 +2256,182 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
         self.assertNotIn("L08999 ", ranged)
         self.assertNotIn("L09101 ", ranged)
         self.assertNotIn("tokens truncated", ranged)
+
+    def _rollout_scan(self, thread: str):
+        from tools.codex_rollout import scan_launch
+        return scan_launch(self.config, thread)
+
+    def _rollout_counts(self, thread: str) -> tuple:
+        """`(reason, output_rows, cut_texts)` of the launch's scan."""
+        got = self._rollout_scan(thread)
+        return got.reason, got.output_rows, got.cut_texts
+
+    def test_mr5e_every_budget_cuts_and_both_host_records_see_it(self) -> None:
+        """MR5-e (issue #547), one launch: (i) `exec_command`'s `max_output_tokens` cuts INSIDE
+        the script — `r.output` already carries the header, `original_token_count` is
+        `ceil(bytes / 4)` — and a stringified result carries it escaped; (ii) a script's own
+        output is cut by the `exec` result's budget like a `cat`; (iii) a raised
+        `exec_command` budget hands the script the whole output, and a raised `exec` budget
+        (the first-line pragma) still cuts what reaches the model — with the marker and NO
+        header — while a LOWERED one cuts in the rollout too, header and all; (iv) a script that lowers the budget and strips both marks leaves the rollout
+        clean (the residual) while the host's capture holds the whole 600,000 bytes; (vi) that
+        capture is uncut for every command; (vii) 40,000 bytes arrive whole and 40,001 cut, so
+        the byte rule is `bytes > CODEX_EXEC_OUTPUT_BUDGET_BYTES`; (v) the rollout reader
+        counts exactly the cut texts — the raised-budget one by its size, since the rollout
+        records it whole (the cut is applied on the way to the model). If a CLI version moves
+        any of this, the codex reader row and the byte rule (`pure_leaf.CODEX_*`) move with
+        it."""
+        from tools import codex_rollout, pure_leaf
+        lines = [f"L{i:05d} " + "x" * 22 for i in range(1, 20001)]
+        (self.tree / "big.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        rule = pure_leaf.CODEX_EXEC_OUTPUT_BUDGET_BYTES
+        (self.tree / "edge.txt").write_text("y" * (rule - 1) + "\n", encoding="utf-8")
+        (self.tree / "over.txt").write_text("y" * rule + "\n", encoding="utf-8")
+        (self.tree / "mid.txt").write_text("m" * 20999 + "\n", encoding="utf-8")
+
+        def ec(cmd: str, extra: str = "", name: str = "r") -> str:
+            return (f"const {name} = await tools.exec_command({{cmd: {json.dumps(cmd)}, "
+                    f"login: false{extra}}});")
+
+        low = ", max_output_tokens: 2000"
+        high = ", max_output_tokens: 200000"
+        script = "python3 -c \"for i in range(1,20001): print(f'P{i:05d} '+'x'*22)\""
+        calls = [
+            ec("cat big.txt", low) + "text(JSON.stringify({sw: r.output.startsWith("
+            "'Warning: truncated output'), otc: r.original_token_count}));",
+            ec("cat big.txt", low) + "text(JSON.stringify(r));",
+            ec(script) + "text(r.output);",
+            ec("cat big.txt", high) + "text(JSON.stringify({len: r.output.length}));",
+            '// @exec: {"max_output_tokens": 200000}\n' + ec("cat big.txt", high)
+            + "text(r.output);",
+            ec("cat big.txt", low) + "text(r.output.replace(/Warning: truncated output[^\\n]*"
+            "\\nTotal output lines: \\d+\\n\\n/, '').replace(/\\u2026\\d+ tokens "
+            "truncated\\u2026/g, ''));",
+            ec("cat edge.txt") + "text(r.output);",
+            ec("cat over.txt") + "text(r.output);",
+            ec("sed -n '9000,9100p' big.txt") + "text(r.output);",
+            '// @exec: {"max_output_tokens": 1000}\n' + ec("cat mid.txt") + "text(r.output);",
+        ]
+        api = self._api([[_exec_call(js, n)] for n, js in enumerate(calls, 1)])
+        res = self._launch(api, None)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        seen = [api.tool_output(n) for n in range(1, len(calls) + 1)]
+        msg = ("the codex output cut moved: re-measure the codex reader row and the byte rule "
+               "(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT['codex_cli'], CODEX_*)")
+        probe = json.loads(seen[0][seen[0].index("{"):seen[0].rindex("}") + 1])
+        self.assertEqual(probe, {"sw": True, "otc": 150000}, msg)
+        self.assertEqual(probe["otc"], -(-600000 // pure_leaf.CODEX_BYTES_PER_TOKEN), msg)
+        self.assertIn("Warning: truncated output (original token count: 150000)\\n", seen[1])
+        self.assertIn("Warning: truncated output", seen[2], msg)
+        self.assertIn('"len":600000', seen[3], msg)
+        self.assertNotIn("Warning: truncated output", seen[4], msg)
+        self.assertRegex(seen[4], codex_rollout.CUT_MARKER_RE, msg)
+        self.assertNotIn("L10000 ", seen[4], msg)
+        self.assertFalse(codex_rollout.text_is_cut(seen[5]), msg)
+        self.assertNotIn("L10000 ", seen[5], msg)
+        self.assertNotIn("truncated", seen[6], msg)
+        self.assertIn("(original token count: 10001)", seen[7], msg)
+        self.assertNotIn("truncated", seen[8], msg)
+        # Judged on the output item alone: `tool_output` joins it to the "Script completed"
+        # item, which the size rule would count.
+        cut = [codex_rollout.text_is_cut(s.split("Output:\n", 1)[1]) for s in seen]
+        self.assertEqual(cut, [False, True, True, False, True, False, False, True, False, True],
+                         msg)
+        # (v): the reader over the real rollout counts the same texts.
+        thread = self._thread_id(res.stdout)
+        # The rollout keeps a raised budget's text WHOLE (its cut is applied on the way to the
+        # model), so the reader counts it by its size; the clean residual stays uncounted.
+        (rollout,) = codex_rollout.rollout_paths(self.config, thread)
+        texts = [t for ln in rollout.read_text(encoding="utf-8").splitlines()
+                 for row in [json.loads(ln)]
+                 if str((row.get("payload") or {}).get("type") or "").endswith("_call_output")
+                 for t in codex_rollout._texts(row["payload"]["output"])[-1:]]
+        self.assertEqual(len(texts[4]), 600000, msg)
+        self.assertFalse(codex_rollout.CUT_MARKER_RE.search(texts[4]), msg)
+        self.assertEqual(len(texts[6]), rule, msg)
+        # A launch that delegates nothing scans no delegation: a CLI that made an ordinary
+        # call look like one would refuse every codex judge.
+        self.assertEqual(self._rollout_scan(thread).delegations, 0, msg)
+        self.assertEqual(self._rollout_counts(thread), (None, len(calls), sum(cut)), msg)
+        # (vi): the host's capture, read as the conductor reads it.
+        commands: list[tuple[str, int]] = []
+        for line in res.stdout.splitlines():
+            wc._codex_command_output(line, wc._parse_codex_line(line), commands)
+        sizes = [size for _command, size in commands]
+        self.assertEqual(sizes, [600000] * 6 + [rule, rule + 1, 101 * 30, 21000], msg)
+        self.assertEqual([size > rule for size in sizes],
+                         [True] * 6 + [False, True, False, False], msg)
+
+    def test_mr5e_v_a_resumed_turn_is_scanned_on_its_own_rows(self) -> None:
+        """MR5-e (v): `exec resume` appends to the thread's one rollout, and the reader scans
+        the rows after its LAST `task_started` — a clean warm turn scans zero cut texts while
+        the file still holds the cold turn's cut."""
+        from tools import codex_rollout
+        lines = [f"L{i:05d} " + "x" * 22 for i in range(1, 20001)]
+        (self.tree / "big.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        first = self._launch(self._api([[_exec_call(
+            "text((await tools.exec_command({cmd: 'cat big.txt', login: false})).output);")]]),
+            None)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        thread = self._thread_id(first.stdout)
+        self.assertEqual(self._rollout_counts(thread), (None, 1, 1))
+        second = self._launch(self._api([[_exec_call(
+            "text((await tools.exec_command({cmd: \"sed -n '1,100p' big.txt\", "
+            "login: false})).output);")]]), None, resume=thread)
+        self.assertEqual(second.returncode, 0, second.stdout + second.stderr)
+        (rollout,) = codex_rollout.rollout_paths(self.config, thread)
+        self.assertIn("tokens truncated", rollout.read_text(encoding="utf-8"))
+        self.assertEqual(self._rollout_counts(thread), (None, 1, 0))
+
+    def test_mr5f_a_sub_agent_s_read_is_in_neither_record_but_its_spawn_is_in_the_rollout(
+            self) -> None:
+        """MR5-f (issue #547, round 1): a reading judge is offered codex's `collaboration`
+        tools, and a read it delegates to a sub-agent runs in ANOTHER thread — the parent's
+        `--json` capture holds no `command_execution` of it and the parent's rollout no output
+        of it, cut or not. What the parent's own rows do hold is the spawn call, which is what
+        `codex_rollout.scan_launch` counts as a delegation (a read the judge has not made)."""
+        lines = [f"L{i:05d} " + "x" * 22 for i in range(1, 20001)]
+        (self.tree / "big.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        spawn = {"type": "function_call", "id": "fc_1", "call_id": "call_s",
+                 "name": "spawn_agent", "namespace": "collaboration",
+                 "arguments": json.dumps({"task_name": "reader", "fork_turns": "none",
+                                          "message": "cat big.txt and report"})}
+        wait = {"type": "function_call", "id": "fc_2", "call_id": "call_w",
+                "name": "wait_agent", "namespace": "collaboration",
+                "arguments": json.dumps({"timeout_ms": 60000})}
+        api = self._api_routed(
+            [[spawn], [wait], [_exec_call(
+                "await tools.exec_command({cmd: 'echo {} > review.json', login: false});"
+                "text('ok');", 3)]],
+            [[_exec_call("text((await tools.exec_command({cmd: 'cat big.txt', "
+                         "login: false})).output);", 1)],
+             [{"type": "message", "role": "assistant", "id": "cm",
+               "content": [{"type": "output_text", "text": "FINAL: read whole"}]}]])
+        res = self._launch(api, None)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        outputs = [item for body in api.requests() for item in body["input"]
+                   if item.get("type") == "function_call_output"]
+        # The wait must have been served, or the parent can end before the child's request
+        # arrives (the row's own flake, measured under load before the arguments were right).
+        self.assertNotIn("failed to parse", json.dumps(outputs))
+        self.assertTrue(api.child_bodies, "the sub-agent never ran: the spawn shape moved "
+                        f"({json.dumps(outputs)[:1500]})")
+        commands: list[tuple[str, int]] = []
+        for line in res.stdout.splitlines():
+            wc._codex_command_output(line, wc._parse_codex_line(line), commands)
+        self.assertNotIn(600000, [size for _c, size in commands])
+        thread = self._thread_id(res.stdout)
+        scan = self._rollout_scan(thread)
+        self.assertEqual((scan.reason, scan.cut_texts), (None, 0))
+        self.assertGreaterEqual(scan.delegations, 1)
+        children = [p for p in sorted(self.config.glob("sessions/*/*/*/rollout-*.jsonl"))
+                    if not p.name.endswith(f"-{thread}.jsonl")]
+        self.assertTrue(children, "the sub-agent wrote no rollout of its own")
+
+    def _api_routed(self, script, child_script) -> _ScriptedResponsesApi:
+        api = _ScriptedResponsesApi(script, child_script)
+        self.addCleanup(api.close)
+        return api
 
     def test_mr5d_a_warm_repair_resumes_the_thread_and_rewrites_the_document(self) -> None:
         """MR5-d: `exec resume <thread>` with the reading argv continues the thread (the prior

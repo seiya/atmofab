@@ -1508,6 +1508,21 @@ class PureVerifyRoutingTests(unittest.TestCase):
             self.assertEqual(dec.repair_strategy, "restart")
             self.assertEqual(dec.reason, "generate_verdict_verdict_schema_violation")
 
+    def test_cut_read_exhaustion_routes_cold_generate_restart(self) -> None:
+        """Issue #547: a codex reading lineage that read past the budget on every turn is
+        routed as a schema exhaustion is, not to the severity gate's unclassified end."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp)
+            refs = _verify_node(repo)
+            c = _conductor(repo)
+            c._write_verdict_meta(refs, result="fail", failure_category=wc.WORKSHOP_CUT_READ,
+                                  failure_excerpt="`cat x` printed 600,000 bytes",
+                                  attempts=3, per_attempt=[])
+            dec = c.classify_failure(refs, "generate", self._outcomes("fail"))
+            self.assertEqual((dec.action, dec.target_phase, dec.repair_strategy, dec.reason),
+                             ("retry", "generate", "restart",
+                              "generate_verdict_workshop_cut_read"))
+
     def test_valid_fail_verdict_falls_through_to_severity_gate(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -1536,6 +1551,11 @@ class PureVerifyRoutingDriftTests(unittest.TestCase):
         self.assertIn(RESPONSE_UNPARSEABLE, wc.GENERATE_VERDICT_FAILURE_ROUTING)
         self.assertIn(RESPONSE_TRUNCATED, wc.GENERATE_VERDICT_FAILURE_ROUTING)
         self.assertIn(wc.GENERATE_VERDICT_SCHEMA_VIOLATION, wc.GENERATE_VERDICT_FAILURE_ROUTING)
+        self.assertEqual(wc.GENERATE_VERDICT_FAILURE_ROUTING[wc.WORKSHOP_CUT_READ],
+                         ("generate", "restart"))
+        # Not repairable and not routed: an unreadable rollout ends fail_closed by its rc.
+        self.assertNotIn(wc.WORKSHOP_ROLLOUT_UNREADABLE, wc.GENERATE_VERDICT_FAILURE_ROUTING)
+        self.assertNotIn(wc.WORKSHOP_ROLLOUT_UNREADABLE, wc.COMPILE_VERDICT_FAILURE_ROUTING)
 
 
 class PureVerifyColdFallbackSurrogateTests(unittest.TestCase):

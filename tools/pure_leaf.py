@@ -146,10 +146,12 @@ def is_workshop_reading_pair(step: Any, substep: Any) -> bool:
 
 #: The prompt-contract version a workshop request carries in `prompt_contract_version` (the
 #: field the pure request uses for its own). Its own counter, so a workshop template change
-#: never moves `PURE_PROMPT_CONTRACT_VERSION` and the reverse. `workshop-5`: the `codex_cli`
-#: reader row, and the paging rule moved from the reading templates into the reader rows
-#: (step 3 PR-J2; `workshop-4` shipped with the reading kind in PR-J1/J1-b, main 23a0e972).
-WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-5"
+#: never moves `PURE_PROMPT_CONTRACT_VERSION` and the reverse. `workshop-6`: the `codex_cli`
+#: reader row names every output budget and the host's refusal of a cut read; the cut-read
+#: repair's scope paragraph; and the verdict repair template's instruction slot, which renders a
+#: schema repair as before on both providers (issue #547; `workshop-5` shipped with step 3 PR-J2,
+#: main bb119b5a).
+WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-6"
 
 #: The first line of every host-rendered workshop launch prompt, anchored as the pure sentinel
 #: is (`startswith`). A distinct literal, so a record's prompt says which of the two leaf
@@ -188,15 +190,38 @@ WORKSHOP_TOOL_SURFACE_TEXT: dict[str, str] = {
                   "server's tools (`mcp__wrapper__<operation>`)."),
 }
 
+#: The token budget codex applies to a direct `exec` result (and, by default, to each
+#: `exec_command` / `write_stdin` / `wait` output): an output over it reaches the model with its
+#: middle removed. Measured on codex-cli 0.164.0 (`test_bwrap_simulation.CodexReadingLeafCliTests`
+#: MR5-e), as is the next constant.
+CODEX_EXEC_OUTPUT_BUDGET_TOKENS = 10_000
+
+#: How codex counts a token of command output: `original_token_count == ceil(bytes / 4)` on
+#: every command measured (MR5-e (vi)), so a command whose captured output exceeds
+#: `CODEX_EXEC_OUTPUT_BUDGET_BYTES` cannot have reached the model whole at the default budget
+#: (MR5-e (vii): 40,000 bytes arrive whole, 40,001 cut).
+CODEX_BYTES_PER_TOKEN = 4
+
+#: The byte rule the host applies to a codex reading lineage's own capture of each command
+#: (`workflow_conductor.Conductor._run_pure_reviewer_substep`, issue #547).
+CODEX_EXEC_OUTPUT_BUDGET_BYTES = CODEX_EXEC_OUTPUT_BUDGET_TOKENS * CODEX_BYTES_PER_TOKEN
+
+#: The size the codex reader row tells a leaf to keep each command's output under: a margin
+#: below the byte rule, so a read sized to it is never refused.
+CODEX_READ_ADVICE_BYTES = CODEX_EXEC_OUTPUT_BUDGET_BYTES * 4 // 5
+
 #: The `<tool_surface>` sentence of a READING workshop launch, keyed by provider as
 #: `WORKSHOP_TOOL_SURFACE_TEXT` is. A provider with no row cannot serve a reading launch, and
 #: `tools/llm_config.py` refuses a judging workshop entry on a provider this table does not name.
 #: Each row carries that transport's PAGING rule, which differs and is measured (step 3 PR-J2,
-#: `test_bwrap_simulation.CodexReadingLeafCliTests` MR5-c): claude's `Read` stops at a token cap
-#: and says so; codex's shell returns an output past about 10k tokens with its MIDDLE removed,
-#: so its last line is the file's last line — the claude rule ("continue from the last line it
-#: returned") would read as done there. The `codex_cli` row rests on MR5-a (no `mcp__` tool on
-#: the reading argv) and MR5-b (a command-written document assembles).
+#: `test_bwrap_simulation.CodexReadingLeafCliTests` MR5-c / MR5-e): claude's `Read` stops at a
+#: token cap and says so; codex cuts the MIDDLE of an output over any of its budgets, so its last
+#: line is the file's last line — the claude rule ("continue from the last line it returned")
+#: would read as done there. A row's sentence about reading is a request only: on codex the host
+#: also refuses a `pass` written in a turn whose commands printed more than the budget or reached
+#: the model cut (issue #547, `tools/codex_rollout.py`), which is what the row's last sentence
+#: states. The `codex_cli` row rests on MR5-a (no `mcp__` tool on the reading argv) and MR5-b (a
+#: command-written document assembles).
 WORKSHOP_READER_TOOL_SURFACE_TEXT: dict[str, str] = {
     "claude_cli": (WORKSHOP_TOOL_SURFACE_TEXT["claude_cli"]
                    + " A read of a file may stop before the end of the file and say so; "
@@ -204,13 +229,26 @@ WORKSHOP_READER_TOOL_SURFACE_TEXT: dict[str, str] = {
     "codex_cli": ("Your shell and patch tools run with your work tree as the working directory, "
                   "and the host reads the one document you write there and nothing else. You "
                   "are served no host operation: no `wrapper` server exists on this lineage, "
-                  "and a command you run is not a check the host counts. A command's output "
-                  "longer than about 10,000 tokens reaches you with its MIDDLE removed: a "
-                  "`Warning: truncated output` header, the first and last lines, and a "
-                  "`…N tokens truncated…` marker where the rest was cut — so seeing a file's "
-                  "last line does not mean you read it. Read a large file in line ranges "
-                  "(`sed -n '<a>,<b>p' <file>`) until you have seen every line of what you "
-                  "judge."),
+                  "and a command you run is not a check the host counts. Everything a command "
+                  "prints reaches you through a token budget — the `exec` result's own "
+                  f"({CODEX_EXEC_OUTPUT_BUDGET_TOKENS:,} tokens), `exec_command`'s and "
+                  "`write_stdin`'s `max_output_tokens`, `wait`'s `max_tokens` — and an output "
+                  "over its budget arrives with its MIDDLE removed: the first and last lines, "
+                  "and a `…N tokens truncated…` marker where the rest was cut, usually under a "
+                  "`Warning: truncated output (original token count: N)` header. That holds for "
+                  "a `cat`, a `sed`, an `rg` and a script of your own alike; the rows between "
+                  "the kept head and tail were never shown to you, and a cut output is a read "
+                  f"you have not made. A token here is {CODEX_BYTES_PER_TOKEN} bytes, so keep "
+                  f"what each call returns — every command's output, and everything one `exec` "
+                  f"prints, all its `text()` together — under {CODEX_READ_ADVICE_BYTES:,} bytes: "
+                  "`wc -c` a file first, read it in line ranges (`sed -n '<a>,<b>p' <file>`), "
+                  "and print a script's result in pieces of that size, one call per piece. Do "
+                  "not raise a budget instead, and read for yourself: what a sub-agent reads is "
+                  "never shown to you. The host reads its own record of what each command "
+                  "printed and of what reached you: a `pass` written in a turn in which any "
+                  f"command's output exceeded {CODEX_EXEC_OUTPUT_BUDGET_BYTES:,} bytes, any "
+                  "output reached you cut, or a read was delegated to a sub-agent is refused, "
+                  "and the review is run again from the seeds with those reads named."),
 }
 
 #: The MCP server name the wrapper is registered under in `--mcp-config`. The CLI names its

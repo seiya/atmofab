@@ -62,15 +62,39 @@ def _envelope() -> str:
                        "usage": {"output_tokens": 10}, "session_id": "s", "num_turns": 4})
 
 
+#: What a clean codex launch of the fake shows its model and the host's capture records: one
+#: command, whole (issue #547).
+_CLEAN_TEXTS = ("Script completed\nWall time 0.1 seconds\nOutput:\n", "# tests\n")
+_CLEAN_COMMANDS = (("/usr/bin/zsh -c 'cat tests.md'", 8),)
+
+
+def _rollout_rows(texts) -> list[dict]:
+    """One codex launch's rollout rows: its `task_started` and one `exec` output whose items
+    are `texts`."""
+    return [{"type": "event_msg", "payload": {"type": "task_started"}},
+            {"type": "response_item", "payload": {
+                "type": "custom_tool_call_output", "call_id": "call_1",
+                "output": [{"type": "input_text", "text": t} for t in texts]}}]
+
+
 class _ReviewerFake(_PureFakeConductor):
     """The pure fake, with the lineage home faked and the leaf scripted:
     `self.leaf_actions[i](conductor, tree, kwargs)` runs as launch i and may return a
     `ProcResult` (default: an envelope, rc 0). No wrapper is faked: a reading lineage is served
-    none, and a call to `_start_wrapper_endpoint` / a freeze is a failure here."""
+    none, and a call to `_start_wrapper_endpoint` / a freeze is a failure here.
+
+    On a `codex_cli` entry each launch also does what the real CLI leaves for the host's
+    cut-read check (issue #547): it APPENDS its rows to its thread's rollout in the lineage's
+    `config/sessions/` (a warm launch resumes the cold one's thread, so its rows land after the
+    first launch's), and its result carries `command_outputs`. Both default to one clean read;
+    an action sets `c.turn_rows` (a list of rollout rows, written as they are) or
+    `c.turn_commands` to change them, or `c.turn_rows = None` / `c.turn_commands = None` to
+    leave the rollout unwritten / the capture absent."""
 
     homes: Path
     leaf_actions: list
     resumable = True
+    _UNSET = object()
 
     def _prepare_workshop_home(self, entry, lineage_id, *, resume):  # type: ignore[override]
         home = self.homes / self.orchestration_id / self._workshop_backend(entry) / lineage_id
@@ -102,11 +126,34 @@ class _ReviewerFake(_PureFakeConductor):
         if index > len(self.leaf_actions) + 6:
             raise AssertionError(f"unbounded re-launch: {index + 1} launches")
         action = self.leaf_actions[min(index, len(self.leaf_actions) - 1)]
+        self.turn_rows = self._UNSET
+        self.turn_commands = self._UNSET
         result = action(self, tree, kwargs)
+        if entry.provider == "codex_cli":
+            result = result if result is not None else _codex_proc()
+            self._codex_record(tree.parent / "config", kwargs, result)
+            return result
         if result is not None:
             return result
-        return _codex_proc() if entry.provider == "codex_cli" else wc.ProcResult(
-            0, _envelope(), "")
+        return wc.ProcResult(0, _envelope(), "")
+
+    def _codex_record(self, config: Path, kwargs: dict, result: wc.ProcResult) -> None:
+        """Append this launch's rollout rows and set its `command_outputs`."""
+        threads = self.__dict__.setdefault("threads", {})
+        thread = kwargs.get("resume_session_id") or f"thread-{kwargs['child_arid']}"
+        threads[kwargs["child_arid"]] = thread
+        rows = (_rollout_rows(_CLEAN_TEXTS) if self.turn_rows is self._UNSET
+                else self.turn_rows)
+        if rows is not None:
+            day = config / "sessions" / "2026" / "10" / "25"
+            day.mkdir(parents=True, exist_ok=True)
+            with (day / f"rollout-2026-10-25T00-00-00-{thread}.jsonl").open(
+                    "a", encoding="utf-8") as fh:
+                fh.writelines(json.dumps(r) + "\n" for r in rows)
+        if result.command_outputs is None:
+            commands = (list(_CLEAN_COMMANDS) if self.turn_commands is self._UNSET
+                        else self.turn_commands)
+            result.command_outputs = list(commands) if commands is not None else None
 
 
 def _writes(name: str, doc):
@@ -637,28 +684,397 @@ class ValidateJudgeTests(CompileVerifyTests):
         self.assertEqual(len(self.attempt_meta()["per_attempt"]), 2)
 
 
-class CodexValidateJudgeTests(ValidateJudgeTests):
-    """Every `validate.judge` row above, on a `codex_cli` reading workshop entry (step 3
-    PR-J2): the lineage lives under the codex container, a warm turn resumes the THREAD the
-    launch emitted rather than the agent_run_id, and an attempt row records no turn count and
-    the completed-item count — the places a claude-only assumption of the reviewer branch
-    would show."""
+def _codex_reading(case) -> None:
+    """Put `case`'s fake on a `codex_cli` reading entry of its pair: the thread a launch emits
+    is the one it resumed, else `thread-<arid>` (what `_ReviewerFake` recorded)."""
+    case.c.llm_config = _codex_config(case.repo, case.PHASE, case.SUBSTEP)
+    # The homes OUTSIDE /tmp, as production's `~/.atmofab/homes` is: a codex reading lineage
+    # whose home a codex shell can write is refused (`_codex_shell_writable_root`).
+    homes = tempfile.TemporaryDirectory(dir="/var/tmp")
+    case.addCleanup(homes.cleanup)
+    case.c.homes = Path(homes.name).resolve() / "homes"
+    case.c._session_id_for_child = (  # type: ignore[assignment]
+        lambda arid, entry=None: case.c.__dict__.get("threads", {}).get(arid, f"thread-{arid}"))
+
+
+def _codex_paths(case, lineage: str) -> workshop_tree.LineagePaths:
+    return workshop_tree.LineagePaths(
+        homes_root=case.c.homes, orchestration_id=_ORCH, lineage_id=lineage,
+        orchestration_dir=case.repo / "workspace" / "orchestrations" / _ORCH, backend="codex")
+
+
+_BUDGET = pure_leaf.CODEX_EXEC_OUTPUT_BUDGET_BYTES
+_CUT_HEADER = ("Warning: truncated output (original token count: 150000)\n"
+               "Total output lines: 20000\n\nL00001 x\n\u20269000 tokens truncated\u2026L20000 x\n")
+
+
+def _reads(*, rows=_ReviewerFake._UNSET, commands=_ReviewerFake._UNSET, then=None):
+    """A launch that records `rows` in its rollout and `commands` in the host's capture, then
+    does `then` (another action) if given."""
+    def action(c, tree, kwargs):
+        result = then(c, tree, kwargs) if then is not None else None
+        c.turn_rows, c.turn_commands = rows, commands
+        return result
+    return action
+
+
+def _over(size: int = 600_000) -> list[tuple[str, int]]:
+    return [("/usr/bin/zsh -c 'cat host_verdict.json'", size)]
+
+
+class _CodexCutReadRows:
+    """The host's refusal of a cut read on a codex reading lineage (issue #547), driven through
+    `_run_pure_reviewer_substep` with the fake CLI's rollout and capture. Mixed into one class
+    per judging pair below (the m3c shape of `generate.verify`; the `harness` shape is
+    rendered by `RenderTests` only), so each also runs every row of its pair's class on codex: the lineage
+    under the codex container, a warm turn resuming the THREAD the launch emitted, and an attempt
+    row with no turn count and the completed-item count."""
 
     PROVIDER = "codex_cli"
     RESUMED = "thread-child-1"
     TURNS = None
 
     def setUp(self) -> None:
-        super().setUp()
-        self.c.llm_config = _codex_config(self.repo, self.PHASE, self.SUBSTEP)
-        self.c._session_id_for_child = (  # type: ignore[assignment]
-            lambda arid, entry=None: f"thread-{arid}")
+        super().setUp()  # type: ignore[misc]
+        _codex_reading(self)
 
     def paths(self, lineage: str) -> workshop_tree.LineagePaths:
-        return workshop_tree.LineagePaths(
-            homes_root=self.c.homes, orchestration_id=_ORCH, lineage_id=lineage,
-            orchestration_dir=self.repo / "workspace" / "orchestrations" / _ORCH,
-            backend="codex")
+        return _codex_paths(self, lineage)
+
+    def rows(self) -> list[dict]:
+        return self.attempt_meta()["per_attempt"]
+
+    def test_a_pass_after_a_command_over_the_budget_is_refused_and_reviewed_again_cold(
+            self) -> None:
+        """The cut-read repair is a COLD launch in a new lineage from the seeds alone, with the
+        findings and the whole launch body: not a warm turn (its session holds the cut texts and
+        the conclusion), and nothing of the refused tree carried."""
+        seen: list[bool] = []
+
+        def second(c, tree, kwargs):
+            seen.append((tree / self.OUTPUT).exists())
+            (tree / self.OUTPUT).write_text(json.dumps(self.passing()), encoding="utf-8")
+
+        self.c.leaf_actions = [_reads(commands=_over(), then=_writes(self.OUTPUT, self.passing())),
+                               second]
+        outcome = self.run_substep()
+        self.assertEqual(outcome.status, "pass")
+        self.assert_projected_pass()
+        self.assertEqual(seen, [False])
+        first, row2 = self.rows()
+        self.assertEqual((first["failure_category"], first["cut_outputs"]),
+                         (wc.WORKSHOP_CUT_READ, 1))
+        self.assertIn("cat host_verdict.json", first["failure_excerpt"])
+        self.assertIn("600,000 bytes", first["failure_excerpt"])
+        self.assertEqual((row2["cut_outputs"], row2["warm"]), (0, False))
+        self.assertNotEqual(row2["lineage_id"], first["lineage_id"])
+        self.assertNotIn("failure_category", row2)
+        self.assertEqual(workshop_tree.read_lineage_record(self.paths("child-1"))["ended_by"],
+                         "superseded")
+        _, request = self.requests()
+        self.assertFalse(request.get("warm_resume"))
+        self.assertIsNone(self.c.spawns[1]["resume_session_id"])
+        self.assertEqual(request["repair_reason"], wc.WORKSHOP_CUT_READ_REPAIR_REASON)
+        self.assertIn("cat host_verdict.json", request["repair_findings"])
+        prompt = ort._render_pure_repair_prompt(request)
+        self.assertIn(ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH, prompt)
+        self.assertNotIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH, prompt)
+        self.assertIn("cat host_verdict.json", prompt)
+        self.assertIn(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"], prompt)
+        self.assertIn("Work tree contract", prompt)
+
+    def test_a_rollout_only_cut_names_its_call_and_a_delegation_is_refused(self) -> None:
+        call = {"type": "response_item", "payload": {
+            "type": "custom_tool_call", "call_id": "call_1", "name": "exec",
+            "input": "text((await tools.exec_command({cmd: 'cat tests.md'})).output);"}}
+        spawn = {"type": "response_item", "payload": {
+            "type": "function_call", "call_id": "s", "name": "spawn_agent", "arguments": "{}"}}
+        for name, rows, expect in (
+                ("cut", [_rollout_rows(())[0], call,
+                         _rollout_rows(["Output:\n", _CUT_HEADER])[1]],
+                 "the output of `text((await tools.exec_command({cmd: 'cat tests.md'}))"),
+                ("delegation", [*_rollout_rows(_CLEAN_TEXTS), spawn], "sub-agent")):
+            with self.subTest(name):
+                self.c.calls = []
+                self.c.spawns = []
+                self.c.leaf_actions = [_reads(rows=rows, then=_writes(self.OUTPUT, self.passing())),
+                                       _writes(self.OUTPUT, self.passing())]
+                self.assertEqual(self.run_substep().status, "pass")
+                first = self.rows()[0]
+                self.assertEqual((first["failure_category"], first["cut_outputs"]),
+                                 (wc.WORKSHOP_CUT_READ, 1))
+                self.assertIn(expect, first["failure_excerpt"])
+
+    def test_the_findings_name_six_and_count_the_rest(self) -> None:
+        commands = [(f"cat part{i}", 50_000) for i in range(9)]
+        self.c.leaf_actions = [_reads(commands=commands, then=_writes(self.OUTPUT, self.passing())),
+                               _writes(self.OUTPUT, self.passing())]
+        self.assertEqual(self.run_substep().status, "pass")
+        # The repair turn's findings (the attempt row clips its excerpt shorter).
+        excerpt = self.requests()[1]["repair_findings"]
+        self.assertEqual(wc.Conductor._CUT_READ_FINDINGS_NAMED, 6)
+        self.assertIn("cat part5", excerpt)
+        self.assertNotIn("cat part6", excerpt)
+        self.assertIn("and 3 more", excerpt)
+
+    def test_the_byte_rule_is_strictly_greater_than_the_budget(self) -> None:
+        self.c.leaf_actions = [_reads(commands=_over(_BUDGET),
+                                      then=_writes(self.OUTPUT, self.passing()))]
+        self.assertEqual(self.run_substep().status, "pass")
+        self.assertEqual(self.rows()[0]["cut_outputs"], 0)
+        self.c.calls = []
+        self.c.spawns = []
+        self.c.leaf_actions = [_reads(commands=_over(_BUDGET + 1),
+                                      then=_writes(self.OUTPUT, self.passing())),
+                               _writes(self.OUTPUT, self.passing())]
+        self.assertEqual(self.run_substep().status, "pass")
+        self.assertEqual(self.rows()[0]["failure_category"], wc.WORKSHOP_CUT_READ)
+
+    def test_a_cut_text_in_the_rollout_is_refused_whatever_the_capture_says(self) -> None:
+        for name, texts in (
+                ("header at the item start", ["Script completed\nOutput:\n", _CUT_HEADER]),
+                ("inside a stringified result", ["Output:\n", json.dumps({"output": _CUT_HEADER})]),
+                ("after a prefix the script printed", ["A\n" + _CUT_HEADER]),
+                ("marker alone (a raised budget)", ["L00001\n\u2026138012 tokens truncated\u2026L19202\n"])):
+            with self.subTest(name):
+                self.c.calls = []
+                self.c.spawns = []
+                self.c.leaf_actions = [
+                    _reads(rows=_rollout_rows(texts), then=_writes(self.OUTPUT, self.passing())),
+                    _writes(self.OUTPUT, self.passing())]
+                self.assertEqual(self.run_substep().status, "pass")
+                first = self.rows()[0]
+                self.assertEqual((first["failure_category"], first["cut_outputs"]),
+                                 (wc.WORKSHOP_CUT_READ, 1))
+
+    def test_a_wait_output_string_is_scanned(self) -> None:
+        rows = [{"type": "event_msg", "payload": {"type": "task_started"}},
+                {"type": "response_item", "payload": {
+                    "type": "function_call_output", "call_id": "w",
+                    "output": "Script running with cell ID 3\n" + _CUT_HEADER}}]
+        self.c.leaf_actions = [_reads(rows=rows, then=_writes(self.OUTPUT, self.passing())),
+                               _writes(self.OUTPUT, self.passing())]
+        self.assertEqual(self.run_substep().status, "pass")
+        self.assertEqual(self.rows()[0]["failure_category"], wc.WORKSHOP_CUT_READ)
+
+    def test_the_row_quoted_back_is_not_a_cut(self) -> None:
+        row = pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]
+        self.c.leaf_actions = [_reads(rows=_rollout_rows(["Output:\n", row]),
+                                      then=_writes(self.OUTPUT, self.passing()))]
+        self.assertEqual(self.run_substep().status, "pass")
+        self.assertEqual(self.rows()[0]["cut_outputs"], 0)
+
+    def test_a_repair_turn_that_writes_nothing_is_not_accepted(self) -> None:
+        self.c.leaf_actions = [_reads(commands=_over(), then=_writes(self.OUTPUT, self.passing())),
+                               _writes_nothing, _writes(self.OUTPUT, self.passing())]
+        self.assertEqual(self.run_substep().status, "pass")
+        first, second, third = self.rows()
+        self.assertEqual(first["failure_category"], wc.WORKSHOP_CUT_READ)
+        self.assertEqual(second["failure_category"], self.c._pure_reviewer_spec(
+            self.PHASE, self.SUBSTEP).schema_category)
+        self.assertNotIn("failure_category", third)
+
+    def test_a_cut_read_beside_a_schema_violation_is_the_cut_read(self) -> None:
+        """A malformed document from a launch that read past the budget is refused as the cut
+        read, so the next turn cannot fix the shape alone and be accepted on this one's reads."""
+        self.c.leaf_actions = [_reads(commands=_over(), then=_writes(self.OUTPUT, {"x": 1})),
+                               _writes(self.OUTPUT, self.passing())]
+        self.assertEqual(self.run_substep().status, "pass")
+        first = self.rows()[0]
+        self.assertEqual(first["failure_category"], wc.WORKSHOP_CUT_READ)
+        self.assertIn("also failed the host's checks", first["failure_excerpt"])
+        self.assertEqual(self.requests()[1]["repair_reason"], wc.WORKSHOP_CUT_READ_REPAIR_REASON)
+
+    def test_cut_reads_on_every_turn_exhaust_their_own_counter(self) -> None:
+        self.c.leaf_actions = [_reads(commands=_over(), then=_writes(self.OUTPUT, self.passing()))]
+        outcome = self.run_substep()
+        self.assertEqual((outcome.status, outcome.leaf_returncode, outcome.infra_error),
+                         ("fail", 0, None))
+        meta = self.attempt_meta()
+        self.assertEqual((meta["result"], meta["failure_category"]),
+                         ("fail", wc.WORKSHOP_CUT_READ))
+        self.assertEqual(len(meta["per_attempt"]), 1 + pure_leaf.MAX_BUNDLE_REPAIR_TURNS)
+        self.assert_cut_read_exhaustion_route(outcome)
+
+    def assert_cut_read_exhaustion_route(self, outcome) -> None:
+        """The two verify pairs restart their producer through the verdict tables, driven
+        through `classify_failure`; the judge pair overrides this (no review is written, the
+        signal `run_phase` routes to its conformance terminus)."""
+        prior = [wc.SubstepOutcome("x", "pass", [])] * 2
+        decision = self.c.classify_failure(self.refs, self.PHASE, [*prior, outcome])
+        prefix = (wc.COMPILE_VERDICT_REASON_PREFIX if self.PHASE == "compile"
+                  else wc.GENERATE_VERDICT_REASON_PREFIX)
+        self.assertEqual((decision.action, decision.target_phase, decision.repair_strategy,
+                          decision.reason),
+                         ("retry", self.PHASE, "restart", prefix + wc.WORKSHOP_CUT_READ))
+
+    def test_a_byte_rule_hit_wins_over_an_unreadable_rollout(self) -> None:
+        """The refusal is then the leaf's to repair, not the host's to fail closed."""
+        self.c.leaf_actions = [_reads(rows=None, commands=_over(),
+                                      then=_writes(self.OUTPUT, self.passing())),
+                               _writes(self.OUTPUT, self.passing())]
+        outcome = self.run_substep()
+        self.assertEqual((outcome.status, outcome.leaf_returncode), ("pass", 0))
+        first, _ = self.rows()
+        self.assertEqual((first["failure_category"], first["cut_outputs"]),
+                         (wc.WORKSHOP_CUT_READ, 1))
+
+    def test_a_schema_repair_after_a_cut_read_repair_is_a_schema_repair(self) -> None:
+        """The repair reason is per refusal: the cut-read reason does not stick to the next
+        refusal's turn."""
+        self.c.leaf_actions = [_reads(commands=_over(), then=_writes(self.OUTPUT, self.passing())),
+                               _writes(self.OUTPUT, {"x": 1}),
+                               _writes(self.OUTPUT, self.passing())]
+        self.assertEqual(self.run_substep().status, "pass")
+        reasons = [r.get("repair_reason") for r in self.requests()]
+        spec = self.c._pure_reviewer_spec(self.PHASE, self.SUBSTEP)
+        self.assertEqual(reasons, ["none", wc.WORKSHOP_CUT_READ_REPAIR_REASON, spec.repair_reason])
+        self.assertIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH,
+                      ort._render_pure_repair_prompt(self.requests()[2]))
+
+    def test_the_two_repair_counters_are_independent(self) -> None:
+        self.c.leaf_actions = [_writes(self.OUTPUT, {"x": 1}),
+                               _reads(commands=_over(), then=_writes(self.OUTPUT, self.passing())),
+                               _writes(self.OUTPUT, {"x": 1}),
+                               _reads(commands=_over(), then=_writes(self.OUTPUT, self.passing())),
+                               _writes(self.OUTPUT, self.passing())]
+        self.assertEqual(self.run_substep().status, "pass")
+        self.assertEqual(len(self.rows()), 5)
+
+    def test_a_valid_fail_after_a_cut_read_is_accepted_with_its_count(self) -> None:
+        self.c.leaf_actions = [_reads(commands=_over(), then=_writes(self.OUTPUT, self.failing()))]
+        outcome = self.run_substep()
+        self.assertEqual((outcome.status, outcome.leaf_returncode), ("fail", 0))
+        (row,) = self.rows()
+        self.assertEqual(row["cut_outputs"], 1)
+        self.assertNotIn("failure_category", row)
+
+    def test_an_unreadable_rollout_fails_closed_and_is_never_retried(self) -> None:
+        for name, rows, head in (("no rollout", None, "0 rollout files"),
+                                 ("no task_started", [_rollout_rows(_CLEAN_TEXTS)[1]],
+                                  "no task_started row"),
+                                 ("no tool output", [_rollout_rows(_CLEAN_TEXTS)[0]],
+                                  "no tool output in the rollout")):
+            with self.subTest(name):
+                self.c.calls = []
+                self.c.spawns = []
+                self.c.leaf_actions = [_reads(rows=rows, then=_writes(self.OUTPUT, self.passing()))]
+                outcome = self.run_substep()
+                self.assertEqual((outcome.status, outcome.leaf_returncode,
+                                  outcome.infra_error[0]),
+                                 ("fail", 1, wc.WORKSHOP_ROLLOUT_UNREADABLE))
+                self.assertIn("MR5-e", outcome.infra_error[1])
+                # The kind FIRST: the transport branch keeps only the head of the detail.
+                self.assertTrue(outcome.infra_error[1].startswith(head), outcome.infra_error)
+                self.assertEqual(len(self.c.spawns), 1)
+                (row,) = self.rows()
+                self.assertEqual(row["failure_category"], wc.WORKSHOP_ROLLOUT_UNREADABLE)
+                self.assertIsNone(row["cut_outputs"])
+
+    def test_a_lineage_home_a_codex_shell_can_write_is_refused_before_a_launch(self) -> None:
+        """Codex keeps /tmp writable to the leaf's shell, so a home there would let the leaf
+        edit the rollout the refusal reads: the lineage is refused before any launch."""
+        self.c.homes = Path(tempfile.mkdtemp(dir="/tmp")) / "homes"
+        self.addCleanup(shutil.rmtree, self.c.homes.parent, True)
+        self.assertIsNotNone(wc._codex_shell_writable_root(self.c.homes))
+        outcome = self.run_substep()
+        self.assertEqual((outcome.status, outcome.leaf_returncode, outcome.infra_error[0]),
+                         ("fail", 1, "workshop_lineage_setup_failed"))
+        self.assertIn("a codex leaf's shell can write", outcome.infra_error[1])
+        self.assertEqual(getattr(self.c, "spawns", []), [])
+        # The backstop, where the verdict is read.
+        paths = workshop_tree.LineagePaths(
+            homes_root=self.c.homes, orchestration_id=_ORCH, lineage_id="x",
+            orchestration_dir=self.repo, backend="codex")
+        turn = mock.Mock(command_outputs=[])
+        lines, reason = self.c._codex_cut_reads(turn, "x", None, paths)
+        self.assertEqual(lines, [])
+        self.assertIn("which a codex shell can write", reason)
+        self.assertIsNone(wc._codex_shell_writable_root(Path("/var/tmp/x")))
+        # Each root on its own: /tmp whatever the temp dir is, and the temp dir wherever it is.
+        elsewhere = Path(tempfile.mkdtemp(dir="/var/tmp")).resolve()
+        self.addCleanup(shutil.rmtree, elsewhere, True)
+        with mock.patch.object(wc.tempfile, "gettempdir", lambda: str(elsewhere)):
+            self.assertEqual(wc._codex_shell_writable_root(Path("/tmp/a/b")), Path("/tmp"))
+            self.assertEqual(wc._codex_shell_writable_root(elsewhere / "h"), elsewhere)
+            self.assertIsNone(wc._codex_shell_writable_root(Path("/var/tmp/x")))
+
+    def test_an_absent_capture_fails_closed(self) -> None:
+        self.c.leaf_actions = [_reads(commands=None, then=_writes(self.OUTPUT, self.passing()))]
+        outcome = self.run_substep()
+        self.assertEqual((outcome.leaf_returncode, outcome.infra_error[0]),
+                         (1, wc.WORKSHOP_ROLLOUT_UNREADABLE))
+
+    def test_a_transport_death_is_not_scanned(self) -> None:
+        self.c.leaf_actions = [_reads(rows=None, commands=None, then=_dies),
+                               _writes(self.OUTPUT, self.passing())]
+        with mock.patch.object(self.c, "_pure_transient_retry", return_value=True):
+            self.assertEqual(self.run_substep().status, "pass")
+        first, second = self.rows()
+        self.assertEqual((first["failure_category"], first["cut_outputs"]),
+                         ("pure_transport", None))
+        self.assertEqual(second["cut_outputs"], 0)
+
+    def test_a_warm_schema_repair_is_scanned_on_its_own_rows(self) -> None:
+        """The one warm turn a reading lineage takes is a schema repair after a clean launch,
+        and `exec resume` APPENDS to that launch's rollout: the warm turn's own cut is refused
+        although the file's first launch is clean (a scan of the FIRST `task_started`'s rows
+        would accept it)."""
+        self.c.leaf_actions = [
+            _writes(self.OUTPUT, {"x": 1}),
+            _reads(rows=_rollout_rows(["Output:\n", _CUT_HEADER]),
+                   then=_writes(self.OUTPUT, self.passing())),
+            _writes(self.OUTPUT, self.passing())]
+        self.assertEqual(self.run_substep().status, "pass")
+        first, second, third = self.rows()
+        self.assertEqual((first["cut_outputs"], second["warm"]), (0, True))
+        self.assertEqual((second["failure_category"], second["cut_outputs"]),
+                         (wc.WORKSHOP_CUT_READ, 1))
+        (rollout,) = (self.paths("child-1").config / "sessions").glob("*/*/*/rollout-*.jsonl")
+        self.assertEqual(rollout.read_text().count('"task_started"'), 2)
+        self.assertEqual(third["cut_outputs"], 0)
+
+    def test_an_unresumable_lineage_changes_nothing_for_a_cut_read_repair(self) -> None:
+        self.c.resumable = False
+        seen: list[bool] = []
+
+        def second(c, tree, kwargs):
+            seen.append((tree / self.OUTPUT).exists())
+            (tree / self.OUTPUT).write_text(json.dumps(self.passing()), encoding="utf-8")
+
+        self.c.leaf_actions = [_reads(commands=_over(), then=_writes(self.OUTPUT, self.passing())),
+                               second]
+        self.assertEqual(self.run_substep().status, "pass")
+        self.assertEqual(seen, [False])
+        _, request = self.requests()
+        self.assertFalse(request.get("warm_resume"))
+        self.assertEqual(request["repair_reason"], wc.WORKSHOP_CUT_READ_REPAIR_REASON)
+        prompt = ort._render_pure_repair_prompt(request)
+        self.assertIn(ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH, prompt)
+        self.assertIn(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"], prompt)
+
+
+class CodexCompileVerifyTests(_CodexCutReadRows, CompileVerifyTests):
+    """Every `compile.verify` row, and the cut-read rows, on a `codex_cli` reading entry."""
+
+
+class CodexGenerateVerifyTests(_CodexCutReadRows, GenerateVerifyTests):
+    """Every `generate.verify` row, and the cut-read rows, on a `codex_cli` reading entry."""
+
+
+class CodexValidateJudgeTests(_CodexCutReadRows, ValidateJudgeTests):
+    """Every `validate.judge` row above, and the cut-read rows (issue #547; its exhaustion
+    route overridden: the judge's is the conformance terminus), on a `codex_cli` reading
+    workshop entry (step 3 PR-J2): the lineage lives under the codex container, a warm turn resumes the THREAD the
+    launch emitted rather than the agent_run_id, and an attempt row records no turn count and
+    the completed-item count — the places a claude-only assumption of the reviewer branch
+    would show."""
+
+    def assert_cut_read_exhaustion_route(self, outcome) -> None:
+        """No `semantic_review.json` is written, so `run_phase`'s judge conformance branch
+        fires (`validate_judge_conformance_violation`), as on a schema exhaustion."""
+        self.assertEqual((outcome.status, outcome.leaf_returncode), ("fail", 0))
+        self.assertFalse((self.repo / self.refs.run_node_dir() / "semantic_review.json").exists())
 
     def test_a_codex_attempt_records_the_synthetic_envelope(self) -> None:
         self.assertEqual(self.run_substep().status, "pass")
@@ -685,6 +1101,12 @@ class CodexValidateJudgeTests(ValidateJudgeTests):
         self.assertEqual(ort._pure_repair_template_name(second), "workshop verdict repair")
         self.assertEqual(self.c.spawns[1]["resume_session_id"], "thread-child-1")
         self.assertTrue(self.c.spawns[1]["reading"])
+
+
+class ClaudeReadingLineageIsNotScannedTests(_Base):
+    def test_a_claude_attempt_row_carries_no_cut_outputs(self) -> None:
+        self.assertEqual(self.run_substep().status, "pass")
+        self.assertNotIn("cut_outputs", self.attempt_meta()["per_attempt"][0])
 
 
 class JsonSeedLayoutTests(unittest.TestCase):
@@ -972,6 +1394,56 @@ class RenderTests(unittest.TestCase):
                 self.assertNotIn("<tool_surface>", warm)
 
 
+    def test_a_cut_read_repair_renders_the_reading_paragraph_through_the_entry_point(
+            self) -> None:
+        """Issue #547: the cut-read repair turn, warm and cold, rendered by the production entry
+        point from a request the launch validator accepts, states the READING paragraph and not
+        the shape one; any other repair reason of a reading pair states the shape one."""
+        for step, substep, shape in self.PAIRS:
+            for warm in (True, False):
+                with self.subTest(pair=(step, substep, shape), warm=warm):
+                    repair = {"repair_strategy": "reuse", "warm_resume": warm,
+                              "repair_target_agent_run_id": "ar_w",
+                              "repair_findings": "`cat host_verdict.json` printed 600,000 bytes"}
+                    req = ort.prepare_launch_request_payload(self._request(
+                        step, substep, shape, workshop_provider="codex_cli",
+                        repair_reason=ort.WORKSHOP_CUT_READ_REPAIR_REASON, **repair))
+                    ort._validate_launch_request_payload(req)
+                    text = ort.render_launch_prompt_text(req)
+                    self.assertIn(ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH, text)
+                    self.assertNotIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH, text)
+                    self.assertIn("cat host_verdict.json", text)
+                    for slot, value in ort.WORKSHOP_VERDICT_REPAIR_CUT_READ_SLOTS.items():
+                        self.assertIn(value, text, slot)
+                    self.assertNotIn("Correct EXACTLY", text)
+                    other = ort.render_launch_prompt_text(ort.prepare_launch_request_payload(
+                        self._request(step, substep, shape, workshop_provider="codex_cli",
+                                      repair_reason="verify_verdict_schema_repair", **repair)))
+                    self.assertIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH, other)
+                    self.assertNotIn(ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH, other)
+                    # A schema repair renders the template's wording before issue #547.
+                    for slot, value in ort.WORKSHOP_VERDICT_REPAIR_SHAPE_SLOTS.items():
+                        self.assertIn(value, other, slot)
+                    self.assertNotIn("<repair_", other)
+        self.assertEqual(ort.WORKSHOP_CUT_READ_REPAIR_REASON, wc.WORKSHOP_CUT_READ_REPAIR_REASON)
+
+    def test_the_codex_reader_row_states_the_budget_numbers_of_the_constants(self) -> None:
+        """The row's numbers are the byte rule's (skill rule 3): derived from the two measured
+        constants, each said once, and the advice under the rule."""
+        row = pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]
+        budget = pure_leaf.CODEX_EXEC_OUTPUT_BUDGET_TOKENS
+        rule = pure_leaf.CODEX_EXEC_OUTPUT_BUDGET_BYTES
+        advice = pure_leaf.CODEX_READ_ADVICE_BYTES
+        self.assertEqual(rule, budget * pure_leaf.CODEX_BYTES_PER_TOKEN)
+        self.assertLess(advice, rule)
+        for phrase in (f"({budget:,} tokens)", f"A token here is {pure_leaf.CODEX_BYTES_PER_TOKEN} "
+                       "bytes", f"under {advice:,} bytes", f"exceeded {rule:,} bytes"):
+            self.assertEqual(row.count(phrase), 1, phrase)
+        for budget_name in ("`exec` result's own", "`exec_command`'s", "`write_stdin`'s",
+                            "`wait`'s `max_tokens`"):
+            self.assertIn(budget_name, row)
+
+
 class ReaderTemplateTests(unittest.TestCase):
     _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
     _PAIRS = (("pure_compile_verify.txt", "workshop_compile_verify.txt"),
@@ -1016,7 +1488,11 @@ class ReaderTemplateTests(unittest.TestCase):
             set(ort._PURE_PLACEHOLDER_RE.findall(text)),
             {"node_key", "step", "substep", "orchestration_id", "agent_run_id",
              "prompt_contract_version", "repair_scope", "findings", "tool_surface",
-             "launch_body"})
+             "launch_body", "repair_instruction"})
+        # The instruction slot is filled for each refusal kind (issue #547).
+        for slots in (ort.WORKSHOP_VERDICT_REPAIR_SHAPE_SLOTS,
+                      ort.WORKSHOP_VERDICT_REPAIR_CUT_READ_SLOTS):
+            self.assertEqual(set(slots), {"repair_instruction"})
 
 
 

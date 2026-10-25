@@ -243,6 +243,7 @@ from tools.orchestration_runtime import AUDIT_LOG_BASENAMES as _OPTIONAL_OUTPUT_
 # launch and step_result of the attempt.
 from tools.orchestration_runtime import (
     FAIL_CLOSED_REASON_CODES,
+    WORKSHOP_CUT_READ_REPAIR_REASON,
     DerivationInputsUnresolvable,
     phase_derivation,
 )
@@ -669,6 +670,27 @@ GENERATE_BUNDLE_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
     category: ("generate", "reuse") for category in GENERATE_BUNDLE_FAILURE_CATEGORIES
 }
 
+# --- a codex reading lineage's cut read (issue #547) ---------------------------
+# A document other than a schema-valid `fail`, written by a codex READING workshop lineage in a
+# launch in which a command printed
+# more than codex's budget lets reach the model whole (the byte rule, over the host's own
+# capture), a tool output reached the model cut, or a read was delegated to a sub-agent (its
+# rollout), is refused under this category: the judge certified rows it was never shown. A
+# leaf CONTENT failure, repaired by a cold launch from the seeds alone, on a counter of its own
+# (`_run_pure_reviewer_substep`); its exhaustion routes as a schema exhaustion does (the two
+# verdict tables below; `validate.judge` by its conformance violation).
+WORKSHOP_CUT_READ = "workshop_cut_read"
+# The rollout that says what the model received could not be read (no thread id, no file, two,
+# an unreadable file, no `task_started`, a row that is not JSON or not an object, no tool output
+# at all while the capture recorded commands, no capture, or a lineage home a codex shell can
+# write). The host's, or the CLI's layout's — not the leaf's: never repaired, and the
+# substep ends `fail_closed` through `run_phase`'s transport branch. After a CLI upgrade,
+# re-run `test_bwrap_simulation.CodexReadingLeafCliTests` (MR5-e).
+WORKSHOP_ROLLOUT_UNREADABLE = "workshop_rollout_unreadable"
+# The `repair_reason` of a cut-read repair turn, which selects its `<repair_scope>` paragraph
+# (`orchestration_runtime.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH`): the runtime's constant, imported
+# above.
+
 # --- Z2 pure-leaf verify-verdict routing (M-D) ---------------------------------
 # The pure `generate.verify` reviewer returns exactly one verify-verdict JSON document; the host
 # validates it (transport parse, `verify_verdict_violations`) and repairs a SCHEMA violation in a
@@ -696,6 +718,8 @@ GENERATE_VERDICT_FAILURE_CATEGORIES: tuple[str, ...] = (
     "pure_response_unparseable",
     "pure_response_truncated",
     GENERATE_VERDICT_SCHEMA_VIOLATION,
+    # A codex reading lineage whose cut-read repairs ran out (issue #547).
+    WORKSHOP_CUT_READ,
 )
 GENERATE_VERDICT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
     category: ("generate", "restart") for category in GENERATE_VERDICT_FAILURE_CATEGORIES
@@ -773,6 +797,8 @@ COMPILE_VERDICT_FAILURE_CATEGORIES: tuple[str, ...] = (
     "pure_response_unparseable",
     "pure_response_truncated",
     GENERATE_VERDICT_SCHEMA_VIOLATION,
+    # A codex reading lineage whose cut-read repairs ran out (issue #547).
+    WORKSHOP_CUT_READ,
 )
 COMPILE_VERDICT_FAILURE_ROUTING: dict[str, tuple[str, str]] = {
     category: ("compile", "restart") for category in COMPILE_VERDICT_FAILURE_CATEGORIES
@@ -2681,6 +2707,44 @@ def _parse_codex_line(line: str) -> dict[str, Any] | None:
     return event if isinstance(event, dict) else None
 
 
+def _codex_shell_writable_root(path: Path) -> Path | None:
+    """The root a codex leaf's own `workspace-write` sandbox keeps writable that `path` lies
+    under, or None. Codex keeps `/tmp` (and the process's temporary directory) writable to the
+    shell, so a lineage home there is writable to the leaf (measured, `docs/ORCHESTRATION.md`
+    §workshop leaf "On `codex_cli`"), its rollout included — which a codex reading lineage's
+    cut-read check reads as the record of what the model received (issue #547)."""
+    target = Path(os.path.realpath(path))
+    for root in (Path("/tmp"), Path(tempfile.gettempdir())):
+        resolved = Path(os.path.realpath(root))
+        if target == resolved or resolved in target.parents:
+            return resolved
+    return None
+
+
+def _codex_command_output(line: str, event: dict[str, Any] | None,
+                          commands: list[tuple[str, int]]) -> None:
+    """Append what one codex JSONL line says a command printed: `(command, bytes)` for an
+    `item.completed` `command_execution` (the UTF-8 length of its `aggregated_output`, the whole
+    output the CLI captured — measured on codex-cli 0.164.0 to be uncut where the model's copy
+    is cut, MR5-e (vi)), and, for a record `_LineReassembler` clipped, a row whose size is the
+    clip limit plus one: what it held is unknown, and a record that size is over every budget
+    the byte rule reads. Nothing for any other line."""
+    if event is None:
+        if line.startswith(f"[conductor] {LEAF_STDOUT_RECORD_TRUNCATED_LABEL}:"):
+            commands.append(("(a record the host clipped unread)",
+                             LEAF_STREAM_QUEUE_MAX_CHARS + 1))
+        return
+    item = event.get("item")
+    if event.get("type") != "item.completed" or not isinstance(item, dict):
+        return
+    if item.get("type") != "command_execution":
+        return
+    output = item.get("aggregated_output")
+    commands.append((str(item.get("command") or ""),
+                     len(output.encode("utf-8", "backslashreplace"))
+                     if isinstance(output, str) else 0))
+
+
 # Worse than any real tag, and independent of where `_LEAF_INFRA_ERROR_PATTERNS` is defined
 # in this module (it is defined below this point).
 _LEAF_INFRA_UNTAGGED_RANK = 1 << 30
@@ -3023,6 +3087,12 @@ class ProcResult:
     # Codex only: the `item.completed` events the read loop parsed — counted from the stream
     # itself, not from `raw_stdout`, which is capped (`LEAF_RAW_STDOUT_CAPTURE_MAX_CHARS`).
     items_completed: int | None = None
+    # Codex only: `(command, bytes)` per `command_execution` item the read loop parsed — the
+    # whole output the CLI captured (`aggregated_output`, UTF-8 bytes), whatever reached the
+    # model — plus one row per record the reader clipped (`_LineReassembler`), whose content
+    # is unknown and over every budget. The host's own record of what each command printed,
+    # which the byte rule of a codex reading lineage reads (issue #547).
+    command_outputs: list[tuple[str, int]] | None = None
     # The CONDUCTOR killed this leaf at the per-leaf cap (`_leaf_timeout_seconds`). Carried on
     # the result object rather than recognised from the captured output: the kill is the
     # conductor's own act, and routing it back through a regex over leaf-written text would let
@@ -5086,13 +5156,17 @@ class Conductor:
         it takes the cap's teardown and returns a result carrying `LEAF_CANCELLED_MARKER`.
 
         Every result carries `items_completed`, the `item.completed` events the read parsed (the
-        live loop and the post-break drain both count), whichever way the read ended."""
+        live loop and the post-break drain both count), and `command_outputs`, what each
+        command printed (`_codex_command_output`), whichever way the read ended."""
         items = [0]
+        commands: list[tuple[str, int]] = []
         result = self._read_codex_json_leaf(
             argv, child_env, child_arid, prompt_text=prompt_text, entry=entry, resume=resume,
             timeout_context=timeout_context, timeout_seconds=timeout_seconds,
-            timeout_name=timeout_name, cancel_event=cancel_event, items=items)
+            timeout_name=timeout_name, cancel_event=cancel_event, items=items,
+            commands=commands)
         result.items_completed = items[0]
+        result.command_outputs = commands
         return result
 
     def _read_codex_json_leaf(
@@ -5101,8 +5175,10 @@ class Conductor:
         resume: bool, timeout_context: dict[str, str] | None,
         timeout_seconds: int | None, timeout_name: str,
         cancel_event: threading.Event | None, items: list[int],
+        commands: list[tuple[str, int]],
     ) -> ProcResult:
-        """`_spawn_codex_json_leaf`'s body; `items[0]` counts the `item.completed` events."""
+        """`_spawn_codex_json_leaf`'s body; `items[0]` counts the `item.completed` events and
+        `commands` collects what each command printed."""
         entry = entry if entry is not None else self.entry_for(None, None)
         # Every leaf supplies its child ARID so the emitted thread can be registered before
         # file tools run — the diagnostician included since issue #169 put it on the pure
@@ -5388,6 +5464,7 @@ class Conductor:
                 # gone at the moment of capture and unrecoverable from any artifact.
                 _keep_raw(line)
                 event = _parse_codex_line(line)
+                _codex_command_output(line, event, commands)
                 if event is None:
                     continue
                 usage, model, final_text, turn_failed = _absorb_codex_event(
@@ -5463,6 +5540,7 @@ class Conductor:
                     break                                  # EOF sentinel: the pump is done
                 _keep_raw(leftover)
                 leftover_event = _parse_codex_line(leftover)
+                _codex_command_output(leftover, leftover_event, commands)
                 if leftover_event is not None:
                     usage, model, final_text, turn_failed = _absorb_codex_event(
                         leftover_event, usage, model, final_text, turn_failed, failure_events)
@@ -9362,6 +9440,9 @@ class Conductor:
         items_completed: int | None = None
         #: As `_PureTurn.leaf_wall_s`: launch to return, the snapshot included.
         leaf_wall_s: float | None = None
+        #: A codex launch's `ProcResult.command_outputs` (what each command printed, from the
+        #: host's own capture). None on claude.
+        command_outputs: list[tuple[str, int]] | None = None
 
     def _workshop_seeds(self, refs: NodeRefs, pure_context: Mapping[str, str],
                         request: Mapping[str, Any],
@@ -9694,6 +9775,7 @@ class Conductor:
         record = read_lineage_record(paths)
         snapshot_tree(paths, lineage.host_placed)
         items_completed: int | None = None
+        command_outputs: list[tuple[str, int]] | None = None
         if entry.provider == "claude_cli":
             envelope = parse_result_envelope(proc.stdout)
             model = None if envelope.model is _MISSING else envelope.model
@@ -9720,6 +9802,7 @@ class Conductor:
                          if warm and resume_session_id else None))
             turns = None
             items_completed = getattr(proc, "items_completed", None)
+            command_outputs = getattr(proc, "command_outputs", None)
         wrapper_calls = int(record.get("wrapper_calls_used") or 0) - calls_before
         ended_by = record.get("ended_by")
         self.emit("workshop_launch_complete", node_key=refs.node_key, substep=substep or "",
@@ -9731,7 +9814,8 @@ class Conductor:
             launched_monotonic, ended_by if isinstance(ended_by, str) else None, cancelled,
             wrapper_calls,
             turns if isinstance(turns, int) and not isinstance(turns, bool) else None,
-            items_completed, round(time.monotonic() - launched_monotonic, 3))
+            items_completed, round(time.monotonic() - launched_monotonic, 3),
+            command_outputs)
 
     class _WorkshopLineageMachine:
         """The lineage state machine both workshop loops share (issue #534 step 3): which
@@ -9808,11 +9892,23 @@ class Conductor:
                       child_arid: str) -> None:
             """Start the cold launch's lineage, seeded from the current seeds and, for a cold
             REUSE, the `prior` lineage's snapshot. Raises on a host precondition; the loop
-            routes it fail_closed."""
+            routes it fail_closed. A codex READING lineage whose home a codex shell can write
+            is such a precondition (`_codex_shell_writable_root`): the host decides from its
+            rollout, which the leaf must not be able to edit."""
             seeds = self.conductor._workshop_seeds(self.refs, pure_context, request, self.spec)
             self.lineage = self.conductor._open_workshop_lineage(
                 self.refs, self.entry, child_arid, seeds, self.prior, self.spec)
             self.prior = None
+            if self.reading and self.lineage.paths.backend == "codex":
+                writable = _codex_shell_writable_root(Path(self.lineage.paths.home))
+                if writable is not None:
+                    from tools.workshop_tree import end_lineage
+                    end_lineage(self.lineage.paths, "superseded")
+                    raise RuntimeError(
+                        f"the lineage home {self.lineage.paths.home} is under {writable}, which "
+                        "a codex leaf's shell can write: a codex reading lineage's rollout would "
+                        "not be a record the leaf cannot edit (issue #547). Point "
+                        "ATMOFAB_WORKFLOW_HOMES_ROOT outside it, or unset it")
 
         def home_gone(self) -> None:
             """The lineage's home is gone: nothing to resume and no snapshot to seed from. Its
@@ -9831,6 +9927,19 @@ class Conductor:
             assert self.lineage is not None
             self.prior = None if self.reading else self.lineage.paths
             self.lineage, self.resume_session_id = None, None
+
+        def after_cut_read(self) -> None:
+            """A cut-read repair follows (issue #547): a COLD launch in a new lineage seeded
+            from the seeds alone, as the unfinished-review rule's re-run is, with the findings.
+            Not a warm turn: the session holds the cut texts and the conclusion drawn from them,
+            so a turn that rewrites the same document from memory and reads nothing would be
+            accepted; and not a cold reuse: the refused document is the refusal's subject, not
+            a shape to correct, so nothing of this lineage's tree is carried. This ends the
+            lineage `superseded` itself, so `next_launch` finds nothing to continue."""
+            assert self.lineage is not None
+            from tools.workshop_tree import end_lineage
+            end_lineage(self.lineage.paths, "superseded")
+            self.prior, self.lineage, self.resume_session_id = None, None, None
 
         def after_repair(self, turn: "Conductor._WorkshopTurn", child_arid: str) -> None:
             """A repair turn follows: warm over this lineage while it is open, else (checked by
@@ -10807,6 +10916,58 @@ class Conductor:
                 "generate", "verify", "", GENERATE_VERDICT_SCHEMA_VIOLATION),
         )
 
+    #: How many over-budget commands a cut-read refusal names before it summarizes the rest.
+    _CUT_READ_FINDINGS_NAMED = 6
+
+    def _codex_cut_reads(self, turn: Conductor._WorkshopTurn, child_arid: str, entry: Any,
+                         paths: Any) -> tuple[list[str], str | None]:
+        """What one codex reading launch read past its budget (issue #547), as finding lines,
+        and why its rollout could not be read (None when it could). Two records the leaf's own
+        script cannot edit: the host's capture of each command's whole output
+        (`_WorkshopTurn.command_outputs`), where a command over `CODEX_EXEC_OUTPUT_BUDGET_BYTES`
+        could not have reached the model whole at the default budget; and the rollout of the
+        launch's thread (`codex_rollout.scan_launch`), where a text the model received holds
+        codex's cut header or marker or is over the same size — the cut the byte rule cannot
+        see per command (several small outputs printed together, or a raised budget's cut) —
+        or the launch called a `collaboration` tool (a read delegated to a sub-agent, which
+        neither record shows: MR5-f). A finding on either record wins over an unreadable
+        rollout: the refusal is then the leaf's to repair."""
+        from tools.codex_rollout import scan_launch
+        from tools.pure_leaf import CODEX_EXEC_OUTPUT_BUDGET_BYTES
+        outputs = turn.command_outputs
+        lines = [f"`{' '.join(command.split())[:160]}` printed {size:,} bytes; at most "
+                 f"{CODEX_EXEC_OUTPUT_BUDGET_BYTES:,} reach you whole"
+                 for command, size in (outputs or ()) if size > CODEX_EXEC_OUTPUT_BUDGET_BYTES]
+        if outputs is None:
+            return lines, "no per-command capture of the launch"
+        writable = _codex_shell_writable_root(Path(paths.config))
+        if writable is not None:
+            # `open_cold` refuses this before a launch; kept as the backstop, since the
+            # verdict below reads a file under it.
+            return lines, f"the lineage home is under {writable}, which a codex shell can write"
+        scan = scan_launch(Path(paths.config), self._session_id_for_child(child_arid, entry))
+        if scan.reason is not None:
+            return lines, scan.reason
+        if outputs and not scan.output_rows:
+            return lines, (f"no tool output in the rollout after the launch's task_started, "
+                           f"while the capture recorded {len(outputs)} command(s)")
+        lines += [(f"the output of `{head}` reached you cut" if head
+                   else "a tool output reached you cut")
+                  + " (the `…N tokens truncated…` marker, or longer than the budget lets through"
+                    " whole): the rows between its head and tail were never shown to you"
+                  for head in (scan.cut_calls or ("",) * scan.cut_texts)]
+        lines += [("you delegated a read to a sub-agent (a `collaboration` tool): what it read "
+                   "was never shown to you")] * scan.delegations
+        return lines, None
+
+    def _cut_read_findings(self, lines: list[str]) -> str:
+        """The excerpt of a cut-read refusal: each over-budget command and each cut output,
+        the first few named and the rest counted, under the excerpt cut."""
+        named = lines[:self._CUT_READ_FINDINGS_NAMED]
+        rest = len(lines) - len(named)
+        text = "; ".join(named) + (f"; and {rest} more" if rest else "")
+        return text[:1000]
+
     def _run_pure_reviewer_substep(self, refs: NodeRefs, phase: str, substep: str | None,
                                    resolved_dependencies: tuple[dict[str, str], ...],
                                    spec: "Conductor._PureReviewerSpec"
@@ -10843,7 +11004,7 @@ class Conductor:
         loop's, unchanged. The lineage state is `_WorkshopLineageMachine`'s, started empty:
         the reviewer's lineage is its own cold launch's, its warm turn resumes that lineage
         alone, and its home is under `config/` of that lineage, never the operator's
-        `~/.claude` (`_pure_session_resumable` is not consulted). Three rules are the workshop
+        `~/.claude` (`_pure_session_resumable` is not consulted). Four rules are the workshop
         branch's own. The result envelope's checks (`response_truncated`, `is_error`) do not
         apply. A launch a bound ended is judged by its tree only when the tree holds a
         schema-valid `fail`; anything else there is an UNFINISHED review, not repaired but run
@@ -10855,8 +11016,13 @@ class Conductor:
         valid `fail` verdict in its tree must reach the severity route, not `run_phase`'s
         transport branch — and so does a schema exhaustion (its category is the route); the
         kill's rc stays on the attempt row (`leaf_rc`), in the reply text and in the lineage
-        record's `last_launch`. And a transport death's retry is
-        seeded from the seeds alone (`_WorkshopLineageMachine.after_transport`)."""
+        record's `last_launch`. A transport death's retry is
+        seeded from the seeds alone (`_WorkshopLineageMachine.after_transport`). And on a CODEX
+        lineage a launch that read past the budget (`_codex_cut_reads`, issue #547) has no
+        document accepted but a schema-valid `fail`: anything else is `WORKSHOP_CUT_READ`,
+        repaired on its own counter by a cold launch from the seeds alone (`after_cut_read`),
+        and a launch
+        whose rollout cannot be read is `WORKSHOP_ROLLOUT_UNREADABLE`, fail_closed."""
         from tools.pure_leaf import (
             extract_json_document,
             MAX_BUNDLE_REPAIR_TURNS, RESPONSE_TRUNCATED, RESPONSE_UNPARSEABLE)
@@ -10888,6 +11054,10 @@ class Conductor:
                    else None)
         #: The workshop branch's repair target: the attempt whose document is under repair.
         workshop_repair_target: str | None = None
+        #: The `repair_reason` of the next repair turn: the spec's, or the cut-read repair's.
+        repair_reason = spec.repair_reason
+        #: Cut-read repair turns taken (issue #547): their own bound, apart from `attempt`.
+        cut_read_turns = 0
         #: The per-attempt record names the leaf model of a workshop attempt.
         leaf_mode_kw: dict[str, str] = {"leaf_mode": "workshop"} if workshop else {}
         per_attempt: list[dict[str, Any]] = []
@@ -10917,7 +11087,7 @@ class Conductor:
                     "issue_severity": "major",
                     "repair_strategy": "reuse",
                     "repair_target_agent_run_id": repair_target,
-                    "repair_reason": spec.repair_reason,
+                    "repair_reason": repair_reason,
                 }
                 if last_excerpt:
                     repair_payload["repair_findings"] = last_excerpt
@@ -10999,9 +11169,21 @@ class Conductor:
             extracted: Any = None
             #: A `pass` left by a launch its bound ended (the workshop branch only).
             unfinished_review = False
+            #: A codex reading launch's cut reads (issue #547): `(lines, unreadable)`, None when
+            #: the launch is not scanned.
+            cut_read: tuple[list[str], str | None] | None = None
             if machine is not None:
                 # The tree is the answer, whatever the leaf said or however a bound ended it.
                 category, findings, extracted, infra_error = machine.assemble(turn)
+                if machine.lineage.paths.backend == "codex":
+                    # Recorded on every codex reading attempt: null on a transport death,
+                    # whose thread may be absent and whose retry is the transport rule's.
+                    attempt_record["cut_outputs"] = None
+                    if category != "pure_transport":
+                        cut_read = self._codex_cut_reads(turn, child_arid, entry,
+                                                         machine.lineage.paths)
+                        attempt_record["cut_outputs"] = (
+                            len(cut_read[0]) if cut_read[1] is None or cut_read[0] else None)
             elif proc.returncode != 0:
                 # A nonzero reviewer exit is a transport/infra failure (not a verdict the repair can
                 # fix): finalize fail and let run_phase route it fail_closed.
@@ -11055,6 +11237,36 @@ class Conductor:
                         findings = machine.ended_note(findings, turn)
                 else:
                     accepted_verdict = extracted
+            if (cut_read is not None and not proc.timed_out
+                    and category != "pure_transport"
+                    and not (accepted_verdict is not None
+                             and spec.status_of(accepted_verdict) == "fail")):
+                # A codex reading lineage's document is accepted only from a launch whose every
+                # read reached the model whole (issue #547) — or when it is a schema-valid
+                # `fail`, which certifies nothing and is accepted with its count recorded. Any
+                # other outcome of a launch that read past the budget is this refusal, whatever
+                # else was wrong with its document: a schema repair or a missing-document
+                # repair would otherwise be answered by a turn that fixes the shape and reads
+                # nothing, and be accepted on the cut reads of this one. A launch a bound ended
+                # is the unfinished-review rule's (next block, which would overwrite this
+                # category anyway: the `timed_out` guard states the rule, changes no outcome,
+                # and no row can tell it from its absence).
+                lines, unreadable = cut_read
+                also = (f" (the document also failed the host's checks: "
+                        f"{(findings or '').splitlines()[0][:200]})"
+                        if category is not None and findings else "")
+                if lines:
+                    category = WORKSHOP_CUT_READ
+                    findings = (self._cut_read_findings(lines) + also)[:1000]
+                    accepted_verdict = None
+                elif unreadable is not None:
+                    category = WORKSHOP_ROLLOUT_UNREADABLE
+                    # The reason FIRST: the transport branch keeps the head of this excerpt.
+                    findings = (f"{unreadable}; the host cannot tell whether this launch's "
+                                f"reads reached the model whole (after a codex CLI upgrade, "
+                                f"re-run test_bwrap_simulation.CodexReadingLeafCliTests, "
+                                f"MR5-e)")[:1000]
+                    accepted_verdict = None
             if (machine is not None and proc.timed_out
                     and not (accepted_verdict is not None
                              and spec.status_of(accepted_verdict) == "fail")):
@@ -11220,8 +11432,13 @@ class Conductor:
             # A schema violation within budget: warm-resume the SAME reviewer session for a bounded
             # repair. A transport failure ("pure_transport") has no fixable verdict, so it is
             # excluded and routed fail_closed by run_phase's transport branch (leaf_returncode != 0).
-            can_repair = (category is not None and category != "pure_transport"
-                          and attempt < MAX_BUNDLE_REPAIR_TURNS)
+            if category == WORKSHOP_CUT_READ:
+                can_repair = cut_read_turns < MAX_BUNDLE_REPAIR_TURNS
+            else:
+                can_repair = (category is not None
+                              and category not in ("pure_transport",
+                                                   WORKSHOP_ROLLOUT_UNREADABLE)
+                              and attempt < MAX_BUNDLE_REPAIR_TURNS)
             if not can_repair:
                 # Terminal: record verdict_meta with THIS (final) attempt's category/excerpt for the
                 # outer route (classify_failure's verdict table). `category`/`this_excerpt` are used
@@ -11245,6 +11462,11 @@ class Conductor:
                         child_arid, "fail", [], 1,
                         (spec.host_write_failed_reason, f"{type(exc).__name__}: {exc}"),
                         len(per_attempt))
+                if category == WORKSHOP_ROLLOUT_UNREADABLE:
+                    # Not the leaf's to repair: `run_phase`'s transport branch, fail_closed.
+                    return SubstepOutcome(
+                        child_arid, "fail", [], 1,
+                        (WORKSHOP_ROLLOUT_UNREADABLE, this_excerpt or ""), len(per_attempt))
                 # A workshop schema exhaustion is routed by its category, like the pure one,
                 # whatever exit the last launch had; a transport death keeps its rc.
                 return SubstepOutcome(
@@ -11259,10 +11481,19 @@ class Conductor:
                 machine.after_transport()
                 attempt += 1
                 continue
+            if machine is not None and category == WORKSHOP_CUT_READ:
+                # The cut-read repair turn: a cold launch from the seeds alone carrying the
+                # findings (`_WorkshopLineageMachine.after_cut_read`).
+                workshop_repair_target = child_arid
+                repair_reason = WORKSHOP_CUT_READ_REPAIR_REASON
+                machine.after_cut_read()
+                cut_read_turns += 1
+                continue
             if machine is not None:
                 # The repair turn: warm over the reviewer's own lineage while it is open, else a
                 # cold reuse from its snapshot (`_WorkshopLineageMachine.next_launch`).
                 workshop_repair_target = child_arid
+                repair_reason = spec.repair_reason
                 machine.after_repair(turn, child_arid)
                 attempt += 1
                 continue
