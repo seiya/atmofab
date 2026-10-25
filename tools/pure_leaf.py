@@ -124,9 +124,9 @@ WORKSHOP_LEAF_MODE = "workshop"
 WORKSHOP_PRODUCING_PAIRS: frozenset[tuple[str, str]] = frozenset({
     ("generate", "generate"), ("compile", "generate")})
 
-#: The JUDGING pairs a workshop leaf may serve (step 3, under A/B): the READING kind — a seeded
-#: tree, file tools, NO wrapper operation and no endpoint, one output document at the tree
-#: root (`docs/ORCHESTRATION.md` §workshop leaf). The judge contract already forbids running a
+#: The JUDGING pairs a workshop leaf may serve (step 3; adopted 2026-10-25): the READING kind —
+#: a seeded tree, file tools, NO wrapper operation and no endpoint, one output document at the
+#: tree root (`docs/ORCHESTRATION.md` §workshop leaf). The judge contract already forbids running a
 #: validator or a gate, so there is nothing for an endpoint to serve.
 WORKSHOP_READING_PAIRS: frozenset[tuple[str, str]] = frozenset({
     ("compile", "verify"), ("generate", "verify"), ("validate", "judge")})
@@ -146,9 +146,10 @@ def is_workshop_reading_pair(step: Any, substep: Any) -> bool:
 
 #: The prompt-contract version a workshop request carries in `prompt_contract_version` (the
 #: field the pure request uses for its own). Its own counter, so a workshop template change
-#: never moves `PURE_PROMPT_CONTRACT_VERSION` and the reverse. `workshop-4`: the reading kind's
-#: templates, system prompt and tool surface (step 3; `workshop-3` shipped in step 2 PR-2).
-WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-4"
+#: never moves `PURE_PROMPT_CONTRACT_VERSION` and the reverse. `workshop-5`: the `codex_cli`
+#: reader row, and the paging rule moved from the reading templates into the reader rows
+#: (step 3 PR-J2; `workshop-4` shipped with the reading kind in PR-J1/J1-b, main 23a0e972).
+WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-5"
 
 #: The first line of every host-rendered workshop launch prompt, anchored as the pure sentinel
 #: is (`startswith`). A distinct literal, so a record's prompt says which of the two leaf
@@ -188,12 +189,28 @@ WORKSHOP_TOOL_SURFACE_TEXT: dict[str, str] = {
 }
 
 #: The `<tool_surface>` sentence of a READING workshop launch, keyed by provider as
-#: `WORKSHOP_TOOL_SURFACE_TEXT` is. A provider with no row cannot serve a reading launch: the
-#: `codex_cli` row (its shell reads the tree; no `wrapper` server exists on such a lineage)
-#: lands with its measured argv (step 3, PR-J2), and `tools/llm_config.py` refuses a judging
-#: workshop entry on a provider this table does not name.
+#: `WORKSHOP_TOOL_SURFACE_TEXT` is. A provider with no row cannot serve a reading launch, and
+#: `tools/llm_config.py` refuses a judging workshop entry on a provider this table does not name.
+#: Each row carries that transport's PAGING rule, which differs and is measured (step 3 PR-J2,
+#: `test_bwrap_simulation.CodexReadingLeafCliTests` MR5-c): claude's `Read` stops at a token cap
+#: and says so; codex's shell returns an output past about 10k tokens with its MIDDLE removed,
+#: so its last line is the file's last line — the claude rule ("continue from the last line it
+#: returned") would read as done there. The `codex_cli` row rests on MR5-a (no `mcp__` tool on
+#: the reading argv) and MR5-b (a command-written document assembles).
 WORKSHOP_READER_TOOL_SURFACE_TEXT: dict[str, str] = {
-    "claude_cli": WORKSHOP_TOOL_SURFACE_TEXT["claude_cli"],
+    "claude_cli": (WORKSHOP_TOOL_SURFACE_TEXT["claude_cli"]
+                   + " A read of a file may stop before the end of the file and say so; "
+                     "continue from the last line it returned until you reach the end."),
+    "codex_cli": ("Your shell and patch tools run with your work tree as the working directory, "
+                  "and the host reads the one document you write there and nothing else. You "
+                  "are served no host operation: no `wrapper` server exists on this lineage, "
+                  "and a command you run is not a check the host counts. A command's output "
+                  "longer than about 10,000 tokens reaches you with its MIDDLE removed: a "
+                  "`Warning: truncated output` header, the first and last lines, and a "
+                  "`…N tokens truncated…` marker where the rest was cut — so seeing a file's "
+                  "last line does not mean you read it. Read a large file in line ranges "
+                  "(`sed -n '<a>,<b>p' <file>`) until you have seen every line of what you "
+                  "judge."),
 }
 
 #: The MCP server name the wrapper is registered under in `--mcp-config`. The CLI names its
@@ -435,9 +452,10 @@ def codex_workshop_overrides(mcp_config_json: str | None, *,
     launch prompt names the wrapper's tools by their name (`WORKSHOP_TOOL_SURFACE_TEXT`).
 
     `reading=True` (a judging substep, step 3) takes no `mcp_config_json` and keeps only the
-    two overrides that do not name the wrapper. Shaped here so the codex reading lineage adds a
-    row; it is not launched before that lineage's argv is measured (PR-J2), and no reading
-    launch reaches it until then (`WORKSHOP_READER_TOOL_SURFACE_TEXT` names no codex row)."""
+    two overrides that do not name the wrapper. Measured on 0.164.0 (step 3 PR-J2,
+    `test_bwrap_simulation.CodexReadingLeafCliTests`): the lineage offers no `mcp__` tool
+    (MR5-a), a document a command writes at the tree root assembles (MR5-b), and `exec
+    resume` continues the thread under the same overrides (MR5-d)."""
     if reading:
         if mcp_config_json is not None:
             raise ValueError("codex_workshop_overrides: a reading lineage is served no "

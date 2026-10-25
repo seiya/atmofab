@@ -972,10 +972,32 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         emitted = {part for part in argv if part.startswith("-") and part != "-"}
         # EQUALITY, not subset, in both directions. Subset alone would let the constant grow
         # a flag the argv never emits, making the preflight stricter than the command and
-        # false-failing the backend on a CLI that dropped an option nothing uses. There is
-        # only ONE resume argv since Z4 (issue #171) — the pure one, which was already the
-        # widest — so the equality that used to hold on one arm of a loop now holds outright.
+        # false-failing the backend on a CLI that dropped an option nothing uses. Three resume
+        # argvs exist: the pure one, and the workshop producing (step 2 PR-2) and reading (step
+        # 3 PR-J2) ones; the equality holds on each.
         self.assertEqual(emitted, required)
+        from tools import pure_leaf
+        from tools.tests.test_pure_leaf_producer import _PureFakeConductor
+        from tools.tests.test_workshop_producer import (
+            _codex_config as _producing_config,
+        )
+        from tools.tests.test_workshop_reviewer import _codex_config as _reading_config
+        with tempfile.TemporaryDirectory() as tmp:
+            for kind, load, pair, kwargs in (
+                    ("producing", lambda r: _producing_config(r), ("generate", "generate"),
+                     {"mcp_config_json": pure_leaf.workshop_mcp_config_json(
+                         "http://127.0.0.1:5/mcp")}),
+                    ("reading", lambda r: _reading_config(r, "validate", "judge"),
+                     ("validate", "judge"), {"reading": True})):
+                with self.subTest(workshop=kind):
+                    c = _PureFakeConductor(repo_root=Path(tmp), orchestration_id="o",
+                                           orchestration_agent_run_id="orch", env={},
+                                           llm_config=load(Path(tmp)))
+                    argv = c.leaf_command(c.entry_for(*pair), session_id="a",
+                                          resume_session_id="thread-1", **kwargs)
+                    self.assertEqual(
+                        {part for part in argv if part.startswith("-") and part != "-"},
+                        required)
 
 
 if __name__ == "__main__":

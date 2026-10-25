@@ -10786,7 +10786,7 @@ class Conductor:
         terminal FS-diff, the pure capability's empty write_roots making any write in the
         window an unauthorized one; that diff is gone and the ordering is not.)
 
-        A `leaf: workshop` entry (issue #534 step 3, under A/B) runs the same loop with the
+        A `leaf: workshop` entry (issue #534 step 3; adopted 2026-10-25) runs the same loop with the
         reviewer as a READING `workshop leaf`: the context is seeded into a lineage's tree
         (`spec.workshop_document_seeds`), the leaf writes its one document at the tree root, and
         the snapshot's assembly (`spec.workshop_assemble`) stands where the reply's parse

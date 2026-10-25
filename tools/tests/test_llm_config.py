@@ -25,6 +25,7 @@ import re
 import shlex
 import tempfile
 import unittest
+from unittest import mock
 
 import yaml
 from pathlib import Path
@@ -1345,12 +1346,23 @@ class WorkshopEntryTests(_Tmp):
                                  self._gen("leaf: workshop, max_wrapper_calls: 3", pair))
 
     def test_a_judging_workshop_entry_runs_on_a_measured_provider_only(self) -> None:
-        """The reading lineage's argv is measured on claude; codex's lands with PR-J2, and
-        until then a judging workshop entry on codex is refused at load, not at launch."""
-        self.assert_rule(
-            "llm_config_workshop_reading_unsupported_on_provider",
-            self._gen(f"provider: codex_cli, model: m, leaf: workshop, {self.READING}",
-                      "validate: {substeps: {judge"))
+        """Both CLIs' reading argv are measured (codex's in step 3 PR-J2), so a codex judging
+        workshop entry loads on each judging substep. The refusal stays for a provider that
+        declares `workshop` with no reader row, at load rather than at launch."""
+        for pair in ("generate: {substeps: {verify", "validate: {substeps: {judge",
+                     "compile: {substeps: {verify"):
+            with self.subTest(pair=pair):
+                phase, substep = pair.split(":")[0], pair.rsplit("{", 1)[1]
+                entry = lc.load_llm_config(self.write(self._gen(
+                    f"provider: codex_cli, model: m, leaf: workshop, {self.READING}",
+                    pair))).entry_for(phase, substep)
+                self.assertEqual((entry.provider, entry.is_workshop), ("codex_cli", True))
+                with mock.patch.object(lc, "WORKSHOP_READING_PROVIDERS",
+                                       frozenset({"claude_cli"})):
+                    self.assert_rule(
+                        "llm_config_workshop_reading_unsupported_on_provider",
+                        self._gen(f"provider: codex_cli, model: m, leaf: workshop, "
+                                  f"{self.READING}", pair))
         # The producing substeps run on codex as before.
         lc.load_llm_config(self.write(self._gen(
             f"provider: codex_cli, model: m, leaf: workshop, {self.BOUNDS}")))
@@ -1419,28 +1431,34 @@ class WorkshopEntryTests(_Tmp):
                 self.assertIsNotNone(entry.max_wrapper_calls)
 
     def test_the_sample_reading_block_loads_on_each_judging_substep(self) -> None:
-        """The commented READING block (issue #534 step 3) is uncommented and loaded under each
-        judging substep, renamed as the sample says: a block that stops loading teaches a
-        refused configuration."""
-        text = (SAMPLE_DIR / "llm_claude.example.yaml").read_text(encoding="utf-8")
-        lines = text.splitlines()
-        start = lines.index("#       judge:")
-        block = []
-        for line in lines[start:]:
-            if not line.startswith("#       "):
-                break
-            block.append(line[len("#       "):].split("#", 1)[0].rstrip())
-        self.assertIn("  leaf: workshop", block)
-        self.assertNotIn("max_wrapper_calls", "\n".join(block))
-        for phase, substep in sorted(lc.WORKSHOP_READING_SUBSTEPS):
-            with self.subTest(pair=f"{phase}.{substep}"):
-                renamed = [f"{substep}:"] + block[1:]
-                body = (self.BASE + f"phases:\n  {phase}:\n    substeps:\n"
-                        + "\n".join("      " + line for line in renamed) + "\n")
-                entry = lc.load_llm_config(self.write(body)).entry_for(phase, substep)
-                self.assertTrue(entry.is_workshop)
-                self.assertIsNone(entry.max_wrapper_calls)
-                self.assertIsNotNone(entry.lineage_timeout_s)
+        """The commented READING block (issue #534 step 3) of each sample is uncommented and
+        loaded under each judging substep, renamed as the sample says: a block that stops
+        loading teaches a refused configuration. Codex's since step 3 PR-J2."""
+        for sample, provider in (("llm_claude.example.yaml", "claude_cli"),
+                                 ("llm_codex.example.yaml", "codex_cli")):
+            text = (SAMPLE_DIR / sample).read_text(encoding="utf-8")
+            lines = text.splitlines()
+            start = lines.index("#       judge:")
+            block = []
+            for line in lines[start:]:
+                if not line.startswith("#       "):
+                    break
+                block.append(line[len("#       "):].split("#", 1)[0].rstrip())
+            self.assertIn("  leaf: workshop", block)
+            self.assertIn(f"  provider: {provider}", block)
+            self.assertNotIn("max_wrapper_calls", "\n".join(block))
+            for phase, substep in sorted(lc.WORKSHOP_READING_SUBSTEPS):
+                with self.subTest(sample=sample, pair=f"{phase}.{substep}"):
+                    renamed = [f"{substep}:"] + block[1:]
+                    body = (self.BASE + f"phases:\n  {phase}:\n    substeps:\n"
+                            + "\n".join("      " + line for line in renamed) + "\n")
+                    cfg = lc.load_llm_config(self.write(body))
+                    cfg.validate_runnable()
+                    entry = cfg.entry_for(phase, substep)
+                    self.assertEqual(entry.provider, provider)
+                    self.assertTrue(entry.is_workshop)
+                    self.assertIsNone(entry.max_wrapper_calls)
+                    self.assertIsNotNone(entry.lineage_timeout_s)
 
     def test_the_workshop_pairs_match_the_launch_validator(self) -> None:
         from tools import pure_leaf

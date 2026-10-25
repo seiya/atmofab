@@ -109,11 +109,11 @@
 # (`docs/ORCHESTRATION.md` §workshop leaf; `docs/RUNBOOK.md` §0-2).
 #
 # The three judging substeps, `compile.verify`, `generate.verify` and `validate.judge`, may run
-# as a READING workshop leaf (issue #534 step 3, under A/B): the documents the pure judge is
-# shown inline are seed files of its tree, and it writes its one verdict document there. It is
-# served no host operation, so its entry states `lineage_timeout_s` alone — `max_wrapper_calls`
-# is refused on a judging substep — and it runs on claude_cli only for now. The same block under
-# each judging substep, with the substep's own name in place of `judge`:
+# as a READING workshop leaf (issue #534 step 3; adopted 2026-10-25): the documents the pure
+# judge is shown inline are seed files of its tree, and it writes its one verdict document
+# there. It is served no host operation, so its entry states `lineage_timeout_s` alone —
+# `max_wrapper_calls` is refused on a judging substep — and it runs on claude_cli or codex_cli.
+# The same block under each judging substep, with the substep's own name in place of `judge`:
 #
 #       judge:
 #         provider: claude_cli

@@ -1849,15 +1849,17 @@ def _exec_call(js: str, n: int = 1) -> dict:
             "name": "exec", "input": js}
 
 
-@skip_probes.skip_unless_installed("codex")
-class CodexWorkshopLeafCliTests(unittest.TestCase):
-    """UNBILLED (issue #534 step 2 PR-2): the real codex CLI under a codex workshop leaf's
-    launch shape — the production argv (`Conductor.leaf_command` with the wrapper's endpoint)
-    under the rendered profile (`_prepare_codex_workflow_home(workshop=True)` +
-    `codex_workshop_profile_kwargs`, a real bwrap) against a scripted Responses-API stand-in and
-    the real wrapper endpoint (its operation stubbed). The measurements MX1-MX5 of the step-2
-    plan, kept as rows so a CLI version that moves one turns a row red. The stand-in's provider
-    is named by `--config model_provider…` overrides spliced before `--json -`."""
+class _CodexLeafCliCase(unittest.TestCase):
+    """The fixture of the two codex workshop CLI classes below: a lineage home under the homes
+    root, the operator's codex auth, the scripted Responses-API stand-in, and the production
+    argv of the entry `CONFIG` names for `PAIR` under the rendered workshop profile. `READING`
+    launches the judging (reading) argv, served no endpoint."""
+
+    CONFIG = ("defaults: {provider: codex_cli, model: gpt-5.6-sol}\nphases: {generate: "
+              "{substeps: {generate: {leaf: workshop, max_wrapper_calls: 5, "
+              "lineage_timeout_s: 600}}}}\n")
+    PAIR = ("generate", "generate")
+    READING = False
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -1890,14 +1892,12 @@ class CodexWorkshopLeafCliTests(unittest.TestCase):
         init_orchestration(repo_root=self.repo, orchestration_id=self.orch)
         _ensure_orchestration_audit_dirs(self.repo, self.orch)
         cfg = base / "llm.yaml"
-        cfg.write_text("defaults: {provider: codex_cli, model: gpt-5.6-sol}\nphases: {generate: "
-                       "{substeps: {generate: {leaf: workshop, max_wrapper_calls: 5, "
-                       "lineage_timeout_s: 600}}}}\n", encoding="utf-8")
+        cfg.write_text(self.CONFIG, encoding="utf-8")
         from tools import llm_config
         self.conductor = wc.Conductor(
             repo_root=self.repo, orchestration_id=self.orch, orchestration_agent_run_id="ORCH",
             llm_config=llm_config.load_llm_config(cfg), env={})
-        self.entry = self.conductor.entry_for("generate", "generate")
+        self.entry = self.conductor.entry_for(*self.PAIR)
         self.lineage = str(uuid.uuid4())
         self.iso = ort._prepare_codex_workflow_home(self.repo, self.orch, self.lineage,
                                                     resume=False, workshop=True)
@@ -1924,12 +1924,19 @@ class CodexWorkshopLeafCliTests(unittest.TestCase):
         self.addCleanup(api.close)
         return api
 
-    def _launch(self, api, server, *, resume: str | None = None,
-                drop: tuple[str, ...] = ()) -> subprocess.CompletedProcess:
+    def _argv(self, server, resume: str | None) -> list[str]:
+        if self.READING:
+            assert server is None, "a reading lineage is served no endpoint"
+            return self.conductor.leaf_command(
+                self.entry, session_id=self.lineage, resume_session_id=resume, reading=True)
         from tools.pure_leaf import workshop_mcp_config_json
-        argv = self.conductor.leaf_command(
+        return self.conductor.leaf_command(
             self.entry, session_id=self.lineage, resume_session_id=resume,
             mcp_config_json=workshop_mcp_config_json(server.url))
+
+    def _launch(self, api, server, *, resume: str | None = None,
+                drop: tuple[str, ...] = ()) -> subprocess.CompletedProcess:
+        argv = self._argv(server, resume)
         for token in drop:
             i = argv.index(token)
             del argv[i - 1:i + 1]
@@ -1954,6 +1961,17 @@ class CodexWorkshopLeafCliTests(unittest.TestCase):
             if event is not None and event.get("type") == "thread.started":
                 return str(event["thread_id"])
         raise AssertionError(f"no thread.started in {stdout[-2000:]}")
+
+
+@skip_probes.skip_unless_installed("codex")
+class CodexWorkshopLeafCliTests(_CodexLeafCliCase):
+    """UNBILLED (issue #534 step 2 PR-2): the real codex CLI under a codex workshop leaf's
+    launch shape — the production argv (`Conductor.leaf_command` with the wrapper's endpoint)
+    under the rendered profile (`_prepare_codex_workflow_home(workshop=True)` +
+    `codex_workshop_profile_kwargs`, a real bwrap) against a scripted Responses-API stand-in and
+    the real wrapper endpoint (its operation stubbed). The measurements MX1-MX5 of the step-2
+    plan, kept as rows so a CLI version that moves one turns a row red. The stand-in's provider
+    is named by `--config model_provider…` overrides spliced before `--json -`."""
 
     def test_mx1_mx4_an_empty_codex_home_runs_and_holds_the_resumable_rollout(self) -> None:
         """MX1: `config/` holds only `config.toml` and the `auth.json` placeholder (bound over
@@ -2102,6 +2120,144 @@ class CodexWorkshopLeafCliTests(unittest.TestCase):
         self.assertEqual((self.tree / "warm.txt").read_text(), "warm\n")
         self.assertIn("Do the task.", json.dumps(api.requests()[0]["input"]))
         self.assertGreater(len(api.requests()[0]["input"]), 2)
+
+
+@skip_probes.skip_unless_installed("codex")
+class CodexReadingLeafCliTests(_CodexLeafCliCase):
+    """UNBILLED (issue #534 step 3 PR-J2, MR5): the real codex CLI under a READING workshop
+    leaf's launch shape — the production reading argv (`Conductor.leaf_command(reading=True)`,
+    no endpoint) of a codex `validate.judge` entry under the same rendered profile — against
+    the scripted Responses-API stand-in. MR5-a: no `mcp__` tool; MR5-b: a document a command
+    writes lands and assembles; MR5-c: what a large read returns (the ground of the codex
+    reader row's paging rule, `pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT`); MR5-d: a warm
+    repair resumes the thread."""
+
+    CONFIG = ("defaults: {provider: codex_cli, model: gpt-5.6-sol}\nphases: {validate: "
+              "{substeps: {judge: {leaf: workshop, lineage_timeout_s: 600}}}}\n")
+    PAIR = ("validate", "judge")
+    READING = True
+
+    def _tool_names(self) -> list[str]:
+        api = self._api([[_exec_call("text(JSON.stringify(ALL_TOOLS.map(t => t.name)));")]])
+        res = self._launch(api, None)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertIn('"type":"turn.completed"', res.stdout)
+        text = api.tool_output(1)
+        return json.loads(text[text.index("["):text.rindex("]") + 1])
+
+    def test_mr5a_a_reading_lineage_offers_no_mcp_tool(self) -> None:
+        """MR5-a: the reading argv names no `mcp_servers` table, the lineage's `config.toml`
+        holds none, and the tool list the model is offered has no `mcp__` name (measured on
+        0.164.0: `apply_patch, create_goal, exec_command, get_goal,
+        list_mcp_resource_templates, list_mcp_resources, read_mcp_resource, update_goal,
+        view_image, write_stdin` — the built-ins whose names contain `mcp` are why the check is
+        a prefix). CONTROL: a `.codex/config.toml` planted in the tree declaring a server adds
+        none (codex reads project config from trusted directories only, and the tree is
+        `untrusted`). A leaf gains nothing toward a verdict by planting one, so the control is
+        a pin, not a defense."""
+        argv = self._argv(None, None)
+        self.assertNotIn("mcp_servers", " ".join(argv))
+        self.assertNotIn("[mcp_servers", (self.config / "config.toml").read_text())
+        names = self._tool_names()
+        self.assertIn("exec_command", names)
+        self.assertEqual([n for n in names if n.startswith("mcp__")], [], names)
+        (self.tree / ".codex").mkdir()
+        (self.tree / ".codex" / "config.toml").write_text(
+            '[mcp_servers.planted]\ncommand = "true"\n', encoding="utf-8")
+        planted = self._tool_names()
+        self.assertEqual([n for n in planted if n.startswith("mcp__")], [], planted)
+
+    def test_mr5b_a_command_written_review_lands_and_assembles(self) -> None:
+        """MR5-b: a command writes `review.json` (a schema-valid semantic review) at the tree
+        root and rewrites the `tests.md` seed; the snapshot holds the review and no seed, and
+        the spec's assembly returns the document, which the review validator accepts."""
+        from tools import pure_leaf, workshop_tree
+        from tools.tests.test_pure_leaf_judge import _review
+        self.paths.make_work_dirs()
+        workshop_tree.seed_tree(self.paths, {"tests.md": "# tests\n",
+                                             "host_verdict.json": "{}\n"})
+        review = _review("pass")
+        cmd = (f"printf '%s' {json.dumps(json.dumps(review))} > review.json && "
+               "echo edited > tests.md")
+        api = self._api([[_exec_call(
+            f"text((await tools.exec_command({{cmd: {json.dumps(cmd)}, login: false}}))"
+            ".output);")]])
+        res = self._launch(api, None)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual(json.loads((self.tree / "review.json").read_text()), review)
+        host_placed = workshop_tree.reserved_tree_names(
+            ("tests.md", "host_verdict.json"), None, ("review.json",)) - {"review.json"}
+        workshop_tree.snapshot_tree(self.paths, host_placed)
+        self.assertEqual(sorted(p.name for p in self.paths.snapshot.iterdir()), ["review.json"])
+        spec = self.conductor._pure_reviewer_spec("validate", "judge")
+        assembled = spec.workshop_assemble(self.paths.snapshot, ())
+        self.assertEqual(assembled, review)
+        self.assertEqual(pure_leaf.semantic_review_document_violations(assembled), [])
+
+    def test_mr5c_a_large_read_reaches_the_model_with_its_middle_removed(self) -> None:
+        """MR5-c: a 600,000-byte, 20,000-line file. Inside the JS `exec` tool a `cat`'s
+        `output` is the whole file; what reaches the model through `text()` is cut — a
+        `Warning: truncated output` header with the total line count, the first and the LAST
+        lines kept, the middle elided at an inline `tokens truncated` marker. A line range read
+        with `sed -n` comes back whole. If a CLI version moves this cut, the codex reader row's
+        paging sentence (`pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]`) must be
+        re-measured with it."""
+        lines = [f"L{i:05d} " + "x" * 22 for i in range(1, 20001)]
+        (self.tree / "big.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        self.assertEqual((self.tree / "big.txt").stat().st_size, 600000)
+        cat = "const r = await tools.exec_command({cmd: 'cat big.txt', login: false});"
+        api = self._api([
+            [_exec_call(cat + "text(JSON.stringify({keys: Object.keys(r).sort(), "
+                        "len: r.output.length, first: r.output.includes('L00001 '), "
+                        "middle: r.output.includes('L10000 '), "
+                        "last: r.output.includes('L20000 ')}));", 1)],
+            [_exec_call(cat + "text(r.output);", 2)],
+            [_exec_call("text((await tools.exec_command({cmd: \"sed -n '9000,9100p' big.txt\", "
+                        "login: false})).output);", 3)]])
+        res = self._launch(api, None)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        whole_text = api.tool_output(1)
+        whole = json.loads(whole_text[whole_text.index("{"):whole_text.rindex("}") + 1])
+        self.assertEqual((whole["len"], whole["first"], whole["middle"], whole["last"]),
+                         (600000, True, True, True), whole)
+        self.assertIn("output", whole["keys"])
+        seen = api.tool_output(2)
+        msg = ("the codex output cut moved: re-measure the codex reader row's paging sentence "
+               "(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT['codex_cli'])")
+        self.assertIn("Warning: truncated output", seen, msg)
+        self.assertIn("Total output lines: 20000", seen, msg)
+        self.assertIn("tokens truncated", seen, msg)
+        self.assertIn("L00001 ", seen, msg)
+        self.assertIn("L20000 ", seen, msg)
+        self.assertNotIn("L10000 ", seen, msg)
+        self.assertLess(len(seen), 100000, msg)
+        ranged = api.tool_output(3)
+        for i in range(9000, 9101):
+            self.assertIn(f"L{i:05d} ", ranged)
+        self.assertNotIn("L08999 ", ranged)
+        self.assertNotIn("L09101 ", ranged)
+        self.assertNotIn("tokens truncated", ranged)
+
+    def test_mr5d_a_warm_repair_resumes_the_thread_and_rewrites_the_document(self) -> None:
+        """MR5-d: `exec resume <thread>` with the reading argv continues the thread (the prior
+        turn is in the request) under `sandbox_mode="workspace-write"`, and a command rewrites
+        `review.json`."""
+        first = self._launch(self._api([[_exec_call(
+            "await tools.exec_command({cmd: 'echo {} > review.json', login: false});"
+            "text('ok');")]]), None)
+        self.assertEqual(first.returncode, 0, first.stdout + first.stderr)
+        thread = self._thread_id(first.stdout)
+        self.assertTrue(self.conductor._workshop_session_resumable(self.paths, thread))
+        api = self._api([[_exec_call(
+            "await tools.exec_command({cmd: 'echo repaired > review.json', login: false});"
+            "text('ok');")]])
+        res = self._launch(api, None, resume=thread)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        self.assertEqual(self._thread_id(res.stdout), thread)
+        self.assertEqual((self.tree / "review.json").read_text(), "repaired\n")
+        self.assertIn("Do the task.", json.dumps(api.requests()[0]["input"]))
+        self.assertGreater(len(api.requests()[0]["input"]), 2)
+
 
 if __name__ == "__main__":
     unittest.main()

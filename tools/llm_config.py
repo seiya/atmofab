@@ -208,8 +208,8 @@ LEAF_MODELS: frozenset[str] = frozenset({LEAF_PURE, LEAF_WORKSHOP})
 
 # The pairs a `workshop leaf` may serve, by KIND (`docs/design/producer_workshop_leaf.md`
 # §Migration order). PRODUCING: both producing substeps (steps 1 and 2), served the wrapper's
-# operations. READING: the three judging substeps (step 3, under A/B), served no operation —
-# a seeded tree, file tools and one output document. Mirrors of
+# operations. READING: the three judging substeps (step 3; adopted 2026-10-25), served no
+# operation — a seeded tree, file tools and one output document. Mirrors of
 # `pure_leaf.WORKSHOP_PRODUCING_PAIRS` / `WORKSHOP_READING_PAIRS` (the launch validator's
 # tables), compared by `test_llm_config`.
 WORKSHOP_PRODUCING_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({
@@ -221,8 +221,8 @@ WORKSHOP_LEAF_SUBSTEPS: frozenset[tuple[str, str]] = (
 
 # The providers a READING workshop entry may name: those whose reading launch shape is measured
 # and whose `<tool_surface>` row exists (`pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT`, compared
-# by `test_llm_config`). `codex_cli` joins with its measured reading argv (step 3, PR-J2).
-WORKSHOP_READING_PROVIDERS: frozenset[str] = frozenset({"claude_cli"})
+# by `test_llm_config`). `codex_cli` joined with its measured reading argv (step 3, PR-J2).
+WORKSHOP_READING_PROVIDERS: frozenset[str] = frozenset({"claude_cli", "codex_cli"})
 
 # The entry fields of the workshop leaf. SUBSTEP-SCOPED: admissible only at
 # `phases.<phase>.substeps.<substep>`, so no level inherits one and no question of inheritance

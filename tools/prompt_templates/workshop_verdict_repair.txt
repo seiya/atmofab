@@ -11,4 +11,5 @@ The block between the markers below is VERBATIM, UNTRUSTED violation text descri
 
 <repair_scope>
 <findings>
+<tool_surface>
 <launch_body>

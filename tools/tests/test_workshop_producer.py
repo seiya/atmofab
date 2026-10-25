@@ -723,6 +723,10 @@ _WORKSHOP_CONTRACT_DIGESTS = {
     # Step 3 PR-J1: the reading kind — five templates, its system prompt and tool surface
     # (`workshop-3` shipped with step 2 PR-2, main ca41247f).
     "workshop-4": "69d6a21bea79dd5eeb5984836cb6409740bfc0d1148823ab68418e8e72ec1e58",
+    # Step 3 PR-J2: the `codex_cli` reader row, and the paging rule moved from the reading
+    # templates into the reader rows (`workshop-4` shipped with step 3 PR-J1/J1-b, main
+    # 23a0e972).
+    "workshop-5": "2b809056237a5565749a6357188c207bdba15c804d8ccf5b426e3039130500ec",
 }
 
 
