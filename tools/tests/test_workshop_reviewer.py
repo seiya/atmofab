@@ -1113,6 +1113,10 @@ class SeedNewlineTests(unittest.TestCase):
             blank = next(k for k in context if k not in json_keys
                          and k not in ("bundle_document", "runner_document"))
             context[blank] = "ends in a blank line\n\n"
+            # An empty document, which stays empty (`wc -l` gives 0, which is right).
+            empty = next(k for k in context if k not in json_keys and k != blank
+                         and k in spec.workshop_document_seeds)
+            context[empty] = ""
             with self.subTest(spec=(phase, substep, shape)), \
                     mock.patch.object(wc.Conductor, "_interface_header_text",
                                       return_value=self.NODE_HEADER):
@@ -1125,6 +1129,7 @@ class SeedNewlineTests(unittest.TestCase):
                         self.assertTrue(text == "" or text.endswith("\n"), name)
                 self.assertEqual(set(exempt) - set(seeds), set())
                 self.assertIn("ends in a blank line\n\n", seeds.values())
+                self.assertEqual(seeds[spec.workshop_document_seeds[empty]], "")
                 if json_keys:
                     self.assertIn('{"a":1,"a":2}\n', seeds.values())
                 if "bundle_document" in context:
