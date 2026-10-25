@@ -10956,8 +10956,8 @@ class Conductor:
                   + " (the `…N tokens truncated…` marker, or longer than the budget lets through"
                     " whole): the rows between its head and tail were never shown to you"
                   for head in (scan.cut_calls or ("",) * scan.cut_texts)]
-        lines += ["you delegated a read to a sub-agent (a `collaboration` tool): what it read "
-                  "was never shown to you"] * scan.delegations
+        lines += [("you delegated a read to a sub-agent (a `collaboration` tool): what it read "
+                   "was never shown to you")] * scan.delegations
         return lines, None
 
     def _cut_read_findings(self, lines: list[str]) -> str:
