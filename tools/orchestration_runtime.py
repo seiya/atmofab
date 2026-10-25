@@ -9362,10 +9362,10 @@ _PROMPT_TEMPLATE_FILES = {
     # (the part split of issue #526 is a pure entry's), and has its own repair turn.
     "workshop compile.generate": "workshop_compile_generate.txt",
     "workshop ir repair": "workshop_ir_repair.txt",
-    # Step 3: the three judging substeps as READING workshop leaves (under A/B). The judge's
-    # rules and output contract verbatim, each document a seed file of its tree, and one output
-    # document at the tree root in place of the one-reply instruction. One repair turn for the
-    # three, as the pure verdict pairs share one.
+    # Step 3: the three judging substeps as READING workshop leaves (adopted 2026-10-25). The
+    # judge's rules and output contract verbatim, each document a seed file of its tree, and one
+    # output document at the tree root in place of the one-reply instruction. One repair turn for
+    # the three, as the pure verdict pairs share one.
     "workshop compile.verify": "workshop_compile_verify.txt",
     "workshop generate.verify": "workshop_generate_verify.txt",
     "workshop generate.verify.harness": "workshop_generate_verify_harness.txt",
@@ -10300,9 +10300,17 @@ def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
             "**Your prior document under repair (correct it — do not restart from scratch):**\n"
             + _fence_pure_doc(prior)) if prior else ""
         subs["launch_body"] = _pure_launch_body(request_payload)
+        # The launch body starts after the persona line, which carries a workshop prompt's
+        # `<tool_surface>`; the verdict repair (the one repair template with the slot) states it
+        # beside the body, since a reader row carries its transport's paging rule (step 3
+        # PR-J2). `_pure_launch_body` has already refused a provider with no row.
+        subs["tool_surface"] = (
+            _workshop_tool_surface_table(request_payload)[request_payload["workshop_provider"]]
+            if _pure_leaf_is_workshop_request(request_payload) else "")
     else:
         subs["prior_document"] = ""
         subs["launch_body"] = ""
+        subs["tool_surface"] = ""
     return _substitute_pure_placeholders(template, subs)
 
 

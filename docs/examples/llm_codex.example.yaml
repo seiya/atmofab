@@ -79,10 +79,20 @@
 # `~/.codex/auth.json` is bound read-only (`docs/ORCHESTRATION.md` §workshop leaf;
 # `docs/RUNBOOK.md` §0-3).
 #
-# The three judging substeps run as a pure leaf on codex_cli. Their READING workshop leaf
-# (issue #534 step 3) runs on claude_cli only until its codex launch shape is measured, and a
-# `leaf: workshop` entry on a judging substep naming codex_cli is refused at load
-# (`llm_config_workshop_reading_unsupported_on_provider`).
+# The three judging substeps, `compile.verify`, `generate.verify` and `validate.judge`, may run
+# as a READING workshop leaf (issue #534 step 3; adopted 2026-10-25): the documents the pure
+# judge is shown inline are seed files of its tree, and it writes its one verdict document
+# there. It is served no host operation, so its entry states `lineage_timeout_s` alone —
+# `max_wrapper_calls` is refused on a judging substep. The same block under each judging
+# substep, with the substep's own name in place of `judge` (and the model that substep runs
+# on):
+#
+#       judge:
+#         provider: codex_cli
+#         model: gpt-5.6-sol
+#         effort: medium
+#         leaf: workshop
+#         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 defaults:
   provider: codex_cli
   model: gpt-5.6-sol

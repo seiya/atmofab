@@ -460,6 +460,34 @@ class CodexLeafCommandTests(unittest.TestCase):
              "--config", 'sandbox_mode="workspace-write"', "--skip-git-repo-check",
              *overrides, "--json", "-"])
 
+    def test_the_reading_cold_and_warm_argv(self) -> None:
+        """A judging substep's READING lineage (step 3 PR-J2): the producing argv without the
+        wrapper's two `mcp_servers.wrapper.*` overrides, cold and on resume."""
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        path = Path(tmp.name) / "llm_codex_reading.yaml"
+        path.write_text(
+            "defaults: {provider: codex_cli, model: gpt-x}\n"
+            "phases: {validate: {substeps: {judge: {provider: codex_cli, model: gpt-x, "
+            "effort: medium, leaf: workshop, lineage_timeout_s: 2700}}}}\n", encoding="utf-8")
+        c = _PureFakeConductor(repo_root=Path(tmp.name), orchestration_id="o",
+                               orchestration_agent_run_id="orch", env={},
+                               llm_config=lc.load_llm_config(path))
+        entry = c.entry_for("validate", "judge")
+        overrides = ["--config", 'approval_policy="never"', "--config", "features.apps=false"]
+        self.assertEqual(
+            wc.Conductor.leaf_command(c, entry, session_id="s", reading=True),
+            ["codex", "exec", "--model", "gpt-x", "--config", 'model_reasoning_effort="medium"',
+             "--ignore-rules", "--sandbox", "workspace-write", "--skip-git-repo-check",
+             *overrides, "--json", "-"])
+        self.assertEqual(
+            wc.Conductor.leaf_command(c, entry, session_id="s", resume_session_id="thread-1",
+                                      reading=True),
+            ["codex", "exec", "resume", "--model", "gpt-x", "thread-1",
+             "--config", 'model_reasoning_effort="medium"', "--ignore-rules",
+             "--config", 'sandbox_mode="workspace-write"', "--skip-git-repo-check",
+             *overrides, "--json", "-"])
+
     def test_the_entry_and_the_endpoint_must_agree(self) -> None:
         with self.assertRaises(ValueError):
             wc.Conductor.leaf_command(self.c, self.entry)
