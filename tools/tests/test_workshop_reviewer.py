@@ -31,6 +31,12 @@ from tools.tests.test_workshop_producer import _codex_proc
 _ORCH = "o"
 
 
+def _terminated(text: str) -> str:
+    """A seed's text as `_workshop_seeds` writes it (issue #548): one `\n` appended to a
+    non-empty text that lacks it."""
+    return text + "\n" if text and not text.endswith("\n") else text
+
+
 def _config(repo: Path, phase: str, substep: str, extra: str = "") -> lc.LlmConfig:
     path = repo / "llm_reading.yaml"
     path.write_text(
@@ -240,9 +246,9 @@ class CompileVerifyTests(_Base):
         context = self.c._build_pure_compile_verify_context(self.refs)
         for key, name in self.seeds().items():
             with self.subTest(key=key):
-                self.assertEqual((tree / name).read_text(),
-                                 wc._indented_json_seed(context[key]) if name.endswith(".json")
-                                 else context[key])
+                self.assertEqual((tree / name).read_text(), _terminated(
+                    wc._indented_json_seed(context[key]) if name.endswith(".json")
+                    else context[key]))
         self.assertEqual((tree / "CONTRACT.md").read_text(), "PROMPT")
         # The snapshot holds the reviewer's document and no seed.
         names = sorted(p.name for p in self.paths("child-1").snapshot.iterdir())
@@ -513,17 +519,21 @@ class GenerateVerifyTests(CompileVerifyTests):
 
     def test_the_tree_holds_every_context_document_under_its_seed_name(self) -> None:
         """The bundle under review is EXPANDED: its manifest under `bundle_manifest.yaml` and
-        each file at its `logical_path`, which assemble back to the certified document."""
+        each file at its `logical_path`, which assemble back to the certified document. Each
+        copy may differ from the certified content by exactly one appended `\n` (issue #548);
+        this fixture's contents are terminated, so here the assembly is the document itself.
+        No production path reassembles a reviewer tree."""
         self.run_substep()
         tree = self.paths("child-1").tree
         context = self.c._build_pure_verify_context(self.refs)
         for key, name in self.seeds().items():
             with self.subTest(key=key):
-                self.assertEqual((tree / name).read_text(),
-                                 wc._indented_json_seed(context[key]) if name.endswith(".json")
-                                 else context[key])
+                self.assertEqual((tree / name).read_text(), _terminated(
+                    wc._indented_json_seed(context[key]) if name.endswith(".json")
+                    else context[key]))
         for entry in _valid_bundle()["files"]:
-            self.assertEqual((tree / entry["logical_path"]).read_text(), entry["content"])
+            self.assertEqual((tree / entry["logical_path"]).read_text(),
+                             _terminated(entry["content"]))
         scratch = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, scratch, True)
         for entry in _valid_bundle()["files"]:
@@ -535,6 +545,27 @@ class GenerateVerifyTests(CompileVerifyTests):
         self.assertFalse((tree / workshop_tree.BUNDLE_MANIFEST_NAME).exists())
         names = sorted(p.name for p in self.paths("child-1").snapshot.iterdir())
         self.assertEqual(names, [self.OUTPUT])
+
+    def test_the_warm_re_place_writes_the_contract_with_its_last_newline(self) -> None:
+        """Issue #548 on the path that rewrites seeds into a tree the leaf may have edited:
+        the re-placed `CHECKS_MODULE_CONTRACT.md` ends in `\n`, so a line count reaches its
+        last line."""
+        name = "CHECKS_MODULE_CONTRACT.md"
+        seen: list[str] = []
+
+        def edits_the_contract(c, tree, kwargs):
+            (tree / name).write_text("EDITED, no final newline", encoding="utf-8")
+
+        def reads_the_contract(c, tree, kwargs):
+            seen.append((tree / name).read_text())
+            (tree / self.OUTPUT).write_text(json.dumps(self.passing()), encoding="utf-8")
+
+        self.c.leaf_actions = [edits_the_contract, reads_the_contract]
+        self.assertEqual(self.run_substep().status, "pass")
+        self.assertTrue(self.c.spawns[1]["resume_session_id"])
+        context = self.c._build_pure_verify_context(self.refs)
+        self.assertFalse(context["checks_module_contract_document"].endswith("\n"))
+        self.assertEqual(seen, [context["checks_module_contract_document"] + "\n"])
 
 
 class ValidateJudgeTests(CompileVerifyTests):
@@ -573,7 +604,7 @@ class ValidateJudgeTests(CompileVerifyTests):
                     self.assertEqual(text, json.dumps(json.loads(context[key]), indent=2,
                                                       ensure_ascii=False) + "\n")
                 else:
-                    self.assertEqual(text, context[key])
+                    self.assertEqual(text, _terminated(context[key]))
         # The host's verdict is a seed under its own name, never the output's.
         self.assertTrue((tree / "host_verdict.json").is_file())
         names = sorted(p.name for p in self.paths("child-1").snapshot.iterdir())
@@ -877,6 +908,33 @@ class RenderTests(unittest.TestCase):
                         (step, substep, shape)].items():
                     self.assertIn(f"In your tree: `{name}` (document key `{key}`)", text)
 
+    def test_every_workshop_launch_prompt_ends_in_a_newline(self) -> None:
+        """`CONTRACT.md` is the rendered launch prompt of every launch that is not warm — a
+        cold reuse's repair prompt included — written as it is, and `_workshop_seeds` does not
+        normalize it (issue #548): this pins the premise that every workshop template,
+        producing and reading, the three repair templates included, on every provider, renders
+        a text ending in `\n`."""
+        pairs = (("compile", "generate", ""), ("generate", "generate", ""),
+                 ("generate", "generate", "harness"), *self.PAIRS)
+        repair = {"repair_strategy": "reuse", "repair_findings": "bad shape",
+                  "repair_target_agent_run_id": "ar_w", "prior_document": '{"x": 1}'}
+        templates = set()
+        for provider in pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT:
+            for step, substep, shape in pairs:
+                for extra in ({}, repair):
+                    with self.subTest(provider=provider, pair=(step, substep, shape),
+                                      repair=bool(extra)):
+                        req = ort.prepare_launch_request_payload(
+                            self._request(step, substep, shape, workshop_provider=provider,
+                                          **extra))
+                        if extra:
+                            templates.add(ort._pure_repair_template_name(req))
+                        text = ort.render_launch_prompt_text(req)
+                        self.assertTrue(text.startswith(pure_leaf.WORKSHOP_PROMPT_SENTINEL))
+                        self.assertTrue(text.endswith("\n"))
+        self.assertEqual(templates, {"workshop ir repair", "workshop bundle repair",
+                                     "workshop verdict repair"})
+
     def test_a_reading_request_on_a_provider_with_no_reader_row_is_refused(self) -> None:
         req = self._request("validate", "judge", workshop_provider="codex_cli")
         ort.prepare_launch_request_payload(dict(req))
@@ -982,11 +1040,149 @@ class HarnessSpecTests(unittest.TestCase):
         context["bundle_document"] = json.dumps(_valid_bundle())
         seeds = c._workshop_seeds(refs, context, {}, spec)
         self.assertEqual(seeds["runner_output_contract.md"],
-                         "TEXT-runner_output_contract_document")
+                         "TEXT-runner_output_contract_document\n")
         self.assertNotIn("CHECKS_MODULE_CONTRACT.md", seeds)
         self.assertIn("bundle_manifest.yaml", seeds)
         for entry in _valid_bundle()["files"]:
-            self.assertEqual(seeds[entry["logical_path"]], entry["content"])
+            self.assertEqual(seeds[entry["logical_path"]], _terminated(entry["content"]))
+
+
+class SeedNewlineTests(unittest.TestCase):
+    """Issue #548: every non-empty text seed of every workshop substep ends in a newline (an
+    empty one stays empty), because a file tool or `wc -l` that counts newline characters
+    misses an unterminated last line. The host
+    sources a generate producer seeds from the node's `src/` (and the node's own interface
+    header) are the exception, byte-exact: the wrapper's stages read them where the host gates
+    read `src/`."""
+
+    #: Every workshop spec `_workshop_seeds` seeds a lineage by: (phase, substep, shape).
+    SPECS = (("compile", "generate", ""), ("generate", "generate", ""),
+             ("generate", "generate", "harness"), ("compile", "verify", ""),
+             ("generate", "verify", ""), ("generate", "verify", "harness"),
+             ("validate", "judge", ""))
+    #: The host sources the fixture places: one unterminated `src/` file and an unterminated
+    #: interface header, beside the runner `_write_node` stages.
+    DEP_HEADER = ("dep_model.h", "// dep, no final newline")
+    NODE_HEADER = ("node_model.h", "// header, no final newline")
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.repo = Path(tmp.name)
+        self.c = _PureFakeConductor(repo_root=self.repo, orchestration_id=_ORCH,
+                                    orchestration_agent_run_id="orch",
+                                    llm_config=_config(self.repo, "generate", "verify"),
+                                    env={})
+
+    def spec(self, phase: str, substep: str, shape: str):
+        if substep == "generate":
+            return self.c._pure_producer_spec(
+                phase, (shape or "m3c") if phase == "generate" else None)
+        return self.c._pure_reviewer_spec(phase, substep, shape or None)
+
+    def bundle(self) -> dict:
+        """`_valid_bundle()` with its first file unterminated: the existing bundle content is
+        terminated, so the normalization of a bundle copy is otherwise untested."""
+        bundle = _valid_bundle()
+        bundle["files"][0]["content"] = bundle["files"][0]["content"].rstrip("\n")
+        return bundle
+
+    def context(self, phase: str, substep: str, shape: str) -> dict[str, str]:
+        keys = (ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[(phase, substep, shape)] if shape
+                else ort.PURE_CONTEXT_REQUIRED_KEYS[(phase, substep)])
+        context = {k: f"TEXT-{k}" for k in keys}
+        if "bundle_document" in context:
+            context["bundle_document"] = json.dumps(self.bundle())
+        return context
+
+    def test_every_seed_but_the_host_sources_ends_in_a_newline(self) -> None:
+        refs = _verify_node(self.repo)
+        src = self.repo / refs.source_dir() / "src"
+        (src / self.DEP_HEADER[0]).write_text(self.DEP_HEADER[1], encoding="utf-8")
+        # The runner `_write_node` staged, unterminated too: a host source is exempt by where
+        # it came from, not by its name's suffix.
+        (runner,) = [p for p in src.iterdir() if p.name != self.DEP_HEADER[0]]
+        runner.write_text(runner.read_text(encoding="utf-8").rstrip("\n"), encoding="utf-8")
+        host_sources = {p.name: p.read_text(encoding="utf-8") for p in src.iterdir()}
+        self.assertFalse(any(text.endswith("\n") for text in host_sources.values()))
+        host_sources[self.NODE_HEADER[0]] = self.NODE_HEADER[1]
+        for phase, substep, shape in self.SPECS:
+            spec = self.spec(phase, substep, shape)
+            context = self.context(phase, substep, shape)
+            # A `.json` seed holding a repeated key — on a reviewer spec it takes
+            # `_indented_json_seed`'s raw fallback, on a producer spec it is a document seed with
+            # no expander — and a seed already ending in a blank line, which is kept as it is.
+            json_keys = [k for k in context
+                         if spec.workshop_document_seeds.get(k, "").endswith(".json")
+                         or (k in spec.workshop_seed_expanders and k != "bundle_document")]
+            if json_keys:
+                context[json_keys[0]] = '{"a":1,"a":2}'
+            blank = next(k for k in context if k not in json_keys
+                         and k not in ("bundle_document", "runner_document"))
+            context[blank] = "ends in a blank line\n\n"
+            # An empty document, which stays empty (`wc -l` gives 0, which is right).
+            empty = next(k for k in context if k not in json_keys and k != blank
+                         and k in spec.workshop_document_seeds)
+            context[empty] = ""
+            with self.subTest(spec=(phase, substep, shape)), \
+                    mock.patch.object(wc.Conductor, "_interface_header_text",
+                                      return_value=self.NODE_HEADER):
+                seeds = self.c._workshop_seeds(refs, context, {}, spec)
+                exempt = host_sources if spec.workshop_seeds_host_sources else {}
+                for name, text in seeds.items():
+                    if name in exempt:
+                        self.assertEqual(text, exempt[name], name)
+                    else:
+                        self.assertTrue(text == "" or text.endswith("\n"), name)
+                self.assertEqual(set(exempt) - set(seeds), set())
+                self.assertIn("ends in a blank line\n\n", seeds.values())
+                self.assertEqual(seeds[spec.workshop_document_seeds[empty]], "")
+                if json_keys:
+                    self.assertIn('{"a":1,"a":2}\n', seeds.values())
+                if "bundle_document" in context:
+                    first = self.bundle()["files"][0]
+                    self.assertEqual(seeds[first["logical_path"]], first["content"] + "\n")
+                if phase == "generate" and substep == "generate":
+                    # A lineage that seeds host sources still normalizes its documents.
+                    for name in ("harness_capabilities.json", "target_profile.json"):
+                        self.assertTrue(seeds[name].endswith("\n"), name)
+
+    def test_the_generate_producer_s_ir_seed_is_the_ir_file(self) -> None:
+        """`spec.ir.yaml` is read by the wrapper's `run` while Validate reads
+        `<ir_ref>/spec.ir.yaml`: the normalization is a no-op on it, asserted rather than
+        relied on."""
+        from tools.tests.test_pure_leaf_producer import _write_node
+        refs = _write_node(self.repo)
+        spec = self.c._pure_producer_spec("generate", "m3c")
+        seeds = self.c._workshop_seeds(refs, self.c._build_pure_context(refs), {}, spec)
+        self.assertEqual(seeds["spec.ir.yaml"],
+                         (self.repo / refs.ir_ref / "spec.ir.yaml").read_text(encoding="utf-8"))
+
+    def test_the_real_contracts_count_every_line(self) -> None:
+        """Through the real slicers on the repository's documents: a seed's newline count is its
+        line count, which is what `wc -l` and `awk 'END{print NR}'` disagreed on in run (2)."""
+        verify = _verify_node(self.repo)
+        judge_repo = self.repo / "judge"
+        judge_repo.mkdir()
+        judge_c = _PureFakeConductor(repo_root=judge_repo, orchestration_id=_ORCH,
+                                     orchestration_agent_run_id="orch",
+                                     llm_config=_config(judge_repo, "validate", "judge"),
+                                     env={})
+        judge = _write_run_node(judge_repo)
+        rows = (
+            (self.c, verify, self.c._build_pure_verify_context(verify),
+             self.c._pure_reviewer_spec("generate", "verify"),
+             ("CHECKS_MODULE_CONTRACT.md", "SEVERITY_RUBRIC.md")),
+            (judge_c, judge, judge_c._build_pure_judge_context(judge),
+             judge_c._pure_reviewer_spec("validate", "judge"),
+             ("runner_output_contract.md",)))
+        for conductor, refs, context, spec, names in rows:
+            seeds = conductor._workshop_seeds(refs, context, {}, spec)
+            for name in names:
+                with self.subTest(seed=name):
+                    text = seeds[name]
+                    self.assertGreater(len(text.splitlines()), 1)
+                    self.assertEqual(text.count("\n"), len(text.splitlines()))
 
 
 class PureRecordTests(unittest.TestCase):

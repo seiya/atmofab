@@ -9380,11 +9380,18 @@ class Conductor:
         a reviewer's bundle under review, or a reviewer's JSON document laid out one value per
         line), the file(s) it expands into — and the
         dependency facts and the exemplar the pure template
-        splices in, when there are any. Raises `RuntimeError` on a context key with no seed
+        splices in, when there are any. Every seed but the host sources ends in a newline: a
+        non-empty one that lacks it gets one `\n` appended and nothing is stripped (issue #548:
+        a context value need not end in one — the pure slicers strip it for the template's
+        splice — and a file tool or `wc -l` that counts newline characters misses an
+        unterminated last line). The host
+        sources are left byte-exact because the wrapper's stages read them where the host gates
+        read `src/`. Raises `RuntimeError` on a context key with no seed
         name, on a seed named after one of the spec's output files, and on two seeds of one
         name: a host defect, routed like an unassemblable context."""
         from tools.orchestration_runtime import _build_dependency_facts, _build_exemplar
         seeds: dict[str, str] = {}
+        host_sources: set[str] = set()
         if spec.workshop_seeds_host_sources:
             control = self._control_file_basename(refs)
             src = self.repo_root / refs.source_dir() / "src"
@@ -9396,6 +9403,7 @@ class Conductor:
             header = self._interface_header_text(refs)
             if header is not None:
                 seeds[header[0]] = header[1]
+            host_sources = set(seeds)
         for key, value in pure_context.items():
             if key == "runner_document":
                 runner = self._runner_basename(refs)
@@ -9428,6 +9436,9 @@ class Conductor:
         if self._WORKSHOP_CONTRACT_SEED in seeds:
             raise RuntimeError(
                 f"workshop seeds: two seeds named {self._WORKSHOP_CONTRACT_SEED!r}")
+        for name, text in seeds.items():
+            if name not in host_sources and text and not text.endswith("\n"):
+                seeds[name] = text + "\n"
         clash = sorted(set(seeds) & set(spec.workshop_outputs))
         if clash:
             raise RuntimeError(f"workshop seeds: a seed is named after an output file {clash}")
