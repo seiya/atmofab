@@ -607,6 +607,10 @@ class ProcedureEnvelope:
     result_name: str | None
     intent_out_vars: frozenset[str]
     out_vars: frozenset[str]
+    #: The view offset `body` starts at (`structure_reading`'s view of the same text), so a
+    #: position in `body` is a position in the source: the dependency gates resolve a rename's
+    #: local name at the call's own scope through it (issue #534 PR-J3-a). -1 when unknown.
+    body_offset: int = -1
 
 
 
@@ -949,6 +953,7 @@ def procedure_envelopes(lowered: str) -> list[ProcedureEnvelope]:
                 result_name=procedure.result_name,
                 intent_out_vars=intent_out_vars,
                 out_vars=frozenset(out_vars),
+                body_offset=body_start,
             )
         )
     return envelopes
@@ -1248,10 +1253,12 @@ def _validate_problem_model_dependency_dataflow(
             continue
 
         dep_output_candidates: set[str] = set()
-        renames = renames_of.names_in(sub_name.strip().lower())
         for callee, args_raw, call_pos in iter_calls(body):
-            if not any(renames.get(callee, callee).startswith(prefix)
-                       for prefix in dep_prefixes):
+            # A rename is resolved at the call's own scope; an envelope with no offset keeps the
+            # literal reading.
+            resolved = (renames_of.target_at(callee, envelope.body_offset + call_pos)
+                        if envelope.body_offset >= 0 else None)
+            if not any((resolved or callee).startswith(prefix) for prefix in dep_prefixes):
                 continue
             call_vars = split_names(args_raw)
             for var in call_vars:
@@ -2359,7 +2366,9 @@ class DependencyRenames:
     ``names`` maps a local name to the `<dep>__<op>` it renames; ``spans`` are the view spans of
     the model module unit(s) whose specification part imported them; ``scopes`` are the unit's
     procedures, each with the names it binds. A `call <local>` is a call of the target only
-    inside a span and in no scope that shadows the local (`target_at`, `names_in`)."""
+    inside a span and in no scope that shadows the local (`target_at`). Both gates ask it at
+    the call's own view offset: a reading keyed by procedure NAME let a contained procedure's
+    dummy hide its host's call from the dataflow gate (Codex, round 2 of PR-J3-a)."""
 
     names: Mapping[str, str]
     spans: tuple[tuple[int, int], ...]
@@ -2373,21 +2382,6 @@ class DependencyRenames:
         if any(s.start <= offset < s.end and local in s.shadows for s in self.scopes):
             return None
         return target
-
-    def names_in(self, procedure: str) -> Mapping[str, str]:
-        """The renames a `call` in the body of every procedure named `procedure` reaches — for a
-        reader that holds a procedure's body without its offsets (the dataflow gate's
-        envelopes). A local any procedure of that name, any procedure it contains, or its host
-        shadows is left out (the conservative reading: a call left unresolved is read as it was
-        before the rename reading); a procedure the unit does not define reaches none."""
-        own = [s for s in self.scopes if s.name == procedure]
-        if not own:
-            return {}
-        related = {s for s in self.scopes for o in own
-                   if (o.start <= s.start and s.end <= o.end) or
-                      (s.start <= o.start and o.end <= s.end)}
-        shadowed = set().union(*(s.shadows for s in related))
-        return {k: v for k, v in self.names.items() if k not in shadowed}
 
 
 _NO_DEPENDENCY_RENAMES = DependencyRenames({}, ())

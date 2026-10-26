@@ -31193,8 +31193,19 @@ end module chan_model
         shadowed_elsewhere = renamed.replace("end module chan_model", self._OTHER.format(
             body="    a = 1.0\n").replace("other(a)", "other(a, adv)").replace(
             "intent(inout) :: a\n", "intent(inout) :: a\n    real :: adv\n"))
+        # Round 2 (Codex): a CONTAINED procedure's dummy of the local's name hid its host's
+        # renamed call when the reading was keyed by procedure name; it is resolved at the
+        # call's own offset now, and the use gate reads the same call.
+        shadowed_inside = renamed.replace(
+            "    y = x\n  end subroutine solve\n",
+            "    y = x\n    call unused(t)\n  contains\n    subroutine unused(adv)\n"
+            "      real :: adv\n      adv = 0.0\n    end subroutine unused\n"
+            "  end subroutine solve\n")
+        self.assertNotEqual(shadowed_inside, renamed)
+        self.assertEqual(self._use(shadowed_inside), [])
         for label, source in (("literal", literal), ("renamed", renamed),
-                              ("shadowed elsewhere", shadowed_elsewhere)):
+                              ("shadowed elsewhere", shadowed_elsewhere),
+                              ("shadowed inside a contained procedure", shadowed_inside)):
             self.assertIn("does not propagate dependency operation outputs",
                           " ".join(self._dataflow(source)), label)
         self.assertEqual(self._dataflow(self._BASE), [])
