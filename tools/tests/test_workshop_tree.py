@@ -21,7 +21,8 @@ from tools import workshop_tree as wt
 from tools import workshop_wrapper as ww
 
 _SEEDS = {
-    "spec.ir.yaml": "meta: {}\n",
+    "spec.ir.yaml": ("meta: {}\ncase:\n  test_case_set:\n  - case_id: c1\n"
+                     "  - case_id: c2\n"),
     "tests.md": "# tests\n",
     "CONTRACT.md": "contract\n",
     "x_runner.f90": "program r\nend program r\n",
@@ -705,6 +706,65 @@ class WrapperCallCompositionTests(_LineageCase):
         with mock.patch("tools.build_runtime.tool_run_syntax_check", record):
             self.assertTrue(ww.run_wrapper_op(ctx, "syntax_check")["ok"])
         self.assertEqual(staged[1], ["x_model.cu", "x_model.cuh"])
+
+    def test_a_run_without_case_ids_runs_every_case_of_the_case_file(self) -> None:
+        """F-J3-3 (issue #534 PR-J3-a): the schema says `case_ids` defaults to every case, and
+        the runner refuses a run naming none; so no ids (absent or `[]`) is every
+        `case.test_case_set[].case_id` of the case file, in declaration order, read by the
+        runner renderer's own reader — a recorded IR included — an explicit list is passed
+        unchanged, and a case file naming no case, an unsafe id or a duplicate is refused before
+        anything runs."""
+        from unittest import mock
+
+        import yaml
+
+        from tools.runner_ir import case_ids
+        from tools.workshop_mcp import TOOL_DEFINITIONS
+
+        self.assertIn("(default: every case)", TOOL_DEFINITIONS["run"]["inputSchema"][
+            "properties"]["case_ids"]["description"])
+        binary = self.make_binary()
+        real = (Path(__file__).parent / "data" / "real_ir"
+                / "shallow_water2d_20260718_003.spec.ir.yaml").read_text(encoding="utf-8")
+        real_ids = case_ids(yaml.safe_load(real))
+        self.assertGreater(len(real_ids), 1)
+        (self.paths.tree / "real.ir.yaml").write_text(real, encoding="utf-8")
+        (self.paths.tree / "sub").mkdir()
+
+        def ir(*ids: str) -> str:
+            return "case:\n  test_case_set:\n" + "".join(f"  - case_id: '{i}'\n" for i in ids)
+
+        (self.paths.tree / "sub" / "few.yaml").write_text(ir("c9"))
+        refused = {"none.yaml": "case:\n  test_case_set: []\n",
+                   "flat.yaml": "- case_id: c1\n",
+                   "top_level.yaml": "cases:\n- case_id: c1\n",
+                   "option.yaml": ir("-o"), "traversal.yaml": ir("../x"),
+                   "twice.yaml": ir("c1", "c1")}
+        for name, text in refused.items():
+            (self.paths.tree / name).write_text(text)
+        ctx = _context(self.paths, self.reserved, max_wrapper_calls=100)
+        rows = [
+            ({"binary": "x_runner"}, ["c1", "c2"]),
+            ({"binary": "x_runner", "case_ids": []}, ["c1", "c2"]),
+            ({"binary": "x_runner", "case_ids": ["c2"]}, ["c2"]),
+            ({"binary": "x_runner", "cases_file": "sub/few.yaml"}, ["c9"]),
+            ({"binary": "x_runner", "cases_file": "real.ir.yaml"}, real_ids),
+        ]
+        with mock.patch("tools.build_runtime.tool_run_program", self.recorder()):
+            for args, ids in rows:
+                with self.subTest(args=args):
+                    self.calls.clear()
+                    self.assertTrue(ww.run_wrapper_op(ctx, "run", args)["ok"])
+                    command = self.calls[0]["command"]
+                    self.assertEqual(command[command.index(str(binary)) + 1:][2:], ids)
+            for cases_file in refused:
+                with self.subTest(cases_file=cases_file):
+                    self.calls.clear()
+                    out = ww.run_wrapper_op(
+                        ctx, "run", {"binary": "x_runner", "cases_file": cases_file})
+                    self.assertEqual(out["category"], ww.CATEGORY_BAD_ARGUMENTS)
+                    self.assertIn(f"the case file {cases_file}", out["findings"])
+                    self.assertEqual(self.calls, [])
 
     def test_a_run_creates_the_capture_directories_validate_execute_creates(self) -> None:
         from unittest import mock

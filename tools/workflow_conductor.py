@@ -403,7 +403,6 @@ _EXECUTE_EXCERPT_TRUNCATION_MARK = "[... excerpt truncated to the last "
 # naming the failure class.
 _PURE_ATTEMPT_EXCERPT_MAX_CHARS = 400
 
-
 #: How much of a failed sweep shape's stderr `quality_check.json#shapes[].run_failure` keeps
 #: (issue #512): its first and its last lines, each bounded in characters — the cause is often
 #: at the top (a runtime's `ERROR STOP`) and a launcher's summary at the bottom.
@@ -9517,6 +9516,16 @@ class Conductor:
         if self._WORKSHOP_CONTRACT_SEED in seeds:
             raise RuntimeError(
                 f"workshop seeds: two seeds named {self._WORKSHOP_CONTRACT_SEED!r}")
+        if (self._workshop_spec_reads(spec)
+                and request.get("workshop_provider") == "codex_cli"):
+            # The host's reading helper (issue #534 PR-J3-a): a codex reading tree pages its
+            # seeds through it, so a read sized to the reader row is the default. A seed like
+            # the others, so it is reserved, host-placed and re-placed on a warm launch.
+            from tools.pure_leaf import CODEX_READ_HELPER_NAME, CODEX_READ_HELPER_TEXT
+            if CODEX_READ_HELPER_NAME in seeds:
+                raise RuntimeError(
+                    f"workshop seeds: two seeds named {CODEX_READ_HELPER_NAME!r}")
+            seeds[CODEX_READ_HELPER_NAME] = CODEX_READ_HELPER_TEXT
         for name, text in seeds.items():
             if name not in host_sources and text and not text.endswith("\n"):
                 seeds[name] = text + "\n"

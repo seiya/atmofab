@@ -3628,8 +3628,8 @@ def _resolve_dependency_facts(
                                 # FALLBACK (empty-list-only, COMPONENT deps only): the IR authored
                                 # no operations for this component dep. Surface every
                                 # `<dep_spec_id>__` subroutine from the certified source so the
-                                # leaf's mandatory `call <dep>__*` has a real interface to build
-                                # against. Scoped to `component/` deps because the empty-ops
+                                # leaf's mandatory call of a `<dep>__*` operation has a real
+                                # interface to build against. Scoped to `component/` deps because the empty-ops
                                 # fail_closed loop this closes is driven by the component-only
                                 # generate gate (the language's `validate_dependency_operations`); a
                                 # problem dep authors `operations: []` legitimately and must
@@ -10241,8 +10241,10 @@ WORKSHOP_CUT_READ_SCOPE_PARAGRAPH = (
     "session cut, or was delegated to a sub-agent, so rows of what you judge were never shown "
     "to it, and the host set aside the document it wrote. This is a new session in a fresh "
     "tree, and no document of that session is in it: review again from the seeds, keeping "
-    "every output under the budget — the reads listed below in narrower pieces, a smaller "
-    "line range or a smaller part of a script's result per call — and reading for yourself, "
+    "every output under the budget — everything one command prints is one output, however "
+    "many files it reads or programs it chains, and so is everything one `exec` prints: read "
+    "one file per command through the host's `python3 read.py <file>`, each in an `exec` of "
+    "its own, and a script's result in pieces, one `exec` each — and reading for yourself, "
     "and write the whole document from what this session sees. A session in which any output "
     "exceeds the budget, reaches you cut, or is a sub-agent's comes back the same way."
 )

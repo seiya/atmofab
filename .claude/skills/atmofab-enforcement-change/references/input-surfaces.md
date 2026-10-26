@@ -96,7 +96,12 @@ pin moved. Two things that cost time:
   unfinished-review rule's shape. **Before reading a record as what the leaf saw, enumerate (a)
   every path by which content reaches the model that the record does not show — a later cut,
   another thread, another tool namespace — and (b) every configuration in which the leaf can
-  write it; then measure each on the real tool.**
+  write it; then measure each on the real tool.** A second episode on the same refusal (issue
+  #534 PR-J3-a) was the leaf's own sizing, not a hole: the refusal held, and the cold repair
+  named the refused command while the leaf repeated its shape (several files chained into one
+  command, a lowered budget) until the turns were spent. The remedy was a host TOOL beside the
+  refusal — a seeded `read.py` that pages under the advice size and prints the next command —
+  not a wider refusal; when a refusal is right and keeps firing, make complying the default.
 
 **Surface 6: if the check tells the reader "do this to fix it", what else does that remedy
 rewrite?** If surface 5 is the read-side question, this is its write-side twin. Wherever a

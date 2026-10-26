@@ -431,6 +431,19 @@ class CompileVerifyTests(_Base):
         self.assertNotIn("repair_findings", third)
         self.assertIn("pure_context", third)
 
+    def test_the_reading_helper_is_a_seed_of_a_codex_tree_only(self) -> None:
+        """Issue #534 PR-J3-a: `read.py` is placed in every codex READING tree, with the host's
+        text, and in no claude one; it is a host-placed name, so the snapshot never carries it
+        (the snapshot row above)."""
+        self.run_substep()
+        helper = self.paths("child-1").tree / pure_leaf.CODEX_READ_HELPER_NAME
+        if self.PROVIDER == "codex_cli":
+            self.assertEqual(helper.read_text(), pure_leaf.CODEX_READ_HELPER_TEXT)
+        else:
+            self.assertFalse(helper.exists())
+        self.assertNotIn(pure_leaf.CODEX_READ_HELPER_NAME,
+                         [p.name for p in self.paths("child-1").snapshot.iterdir()])
+
     def test_a_seed_the_reviewer_edited_is_restored_before_its_warm_turn(self) -> None:
         """The host's documents, as the host placed them: an edit the reviewer made to a seed
         in one turn is gone when its warm repair turn starts."""
@@ -782,6 +795,48 @@ class _CodexCutReadRows:
         self.assertIn("cat host_verdict.json", prompt)
         self.assertIn(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"], prompt)
         self.assertIn("Work tree contract", prompt)
+
+    def test_a_rewritten_helper_is_re_placed_before_the_warm_turn(self) -> None:
+        name = pure_leaf.CODEX_READ_HELPER_NAME
+        seen: list[str] = []
+
+        def rewrites_the_helper(c, tree, kwargs):
+            (tree / name).write_text("print('all clear')\n", encoding="utf-8")
+
+        def reads_the_helper(c, tree, kwargs):
+            seen.append((tree / name).read_text())
+            (tree / self.OUTPUT).write_text(json.dumps(self.passing()), encoding="utf-8")
+
+        self.c.leaf_actions = [rewrites_the_helper, reads_the_helper]
+        self.assertEqual(self.run_substep().status, "pass")
+        self.assertTrue(self.c.spawns[1]["resume_session_id"])
+        self.assertEqual(seen, [pure_leaf.CODEX_READ_HELPER_TEXT])
+
+    def test_a_chained_read_counts_once_and_the_repair_says_one_output_outside_the_findings(
+            self) -> None:
+        """Round 5 of PR-J3-a: the rule that everything one command or one `exec` prints is one
+        output, and the helper, are stated by the cut-read repair's scope paragraph — outside
+        the findings' do-not-obey fence, on every cut-read repair (a rollout-only cut included)
+        — and the findings hold the hits alone, so a chained over-budget command is one
+        `cut_outputs` hit and names itself."""
+        chained = [("/usr/bin/zsh -lc \"sed -n '1,125p' tests.md; sed -n '1,125p' m.f90\"",
+                    40_963)]
+        self.c.leaf_actions = [
+            _reads(commands=chained, then=_writes(self.OUTPUT, self.passing())),
+            _writes(self.OUTPUT, self.passing())]
+        self.assertEqual(self.run_substep().status, "pass")
+        self.assertEqual(self.rows()[0]["cut_outputs"], 1)
+        _, request = self.requests()
+        self.assertTrue(request["repair_findings"].startswith("`/usr/bin/zsh -lc"),
+                        request["repair_findings"][:120])
+        prompt = ort._render_pure_repair_prompt(request)
+        scope = ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH
+        self.assertIn(scope, prompt)
+        self.assertLess(prompt.index(scope), prompt.index(request["repair_findings"]))
+        for phrase in ("everything one command prints is one output",
+                       "so is everything one `exec` prints",
+                       f"python3 {pure_leaf.CODEX_READ_HELPER_NAME} <file>"):
+            self.assertIn(phrase, scope)
 
     def test_a_rollout_only_cut_names_its_call_and_a_delegation_is_refused(self) -> None:
         call = {"type": "response_item", "payload": {
@@ -1570,6 +1625,26 @@ class SeedNewlineTests(unittest.TestCase):
         if "bundle_document" in context:
             context["bundle_document"] = json.dumps(self.bundle())
         return context
+
+    def test_the_reading_helper_is_seeded_on_a_codex_reading_spec_only(self) -> None:
+        """Issue #534 PR-J3-a: `read.py` is a seed exactly when the spec is the READING kind and
+        the request names `codex_cli` — not on a producing spec, not on claude, and not on a
+        request that names no provider."""
+        refs = _verify_node(self.repo)
+        for phase, substep, shape in self.SPECS:
+            spec = self.spec(phase, substep, shape)
+            context = self.context(phase, substep, shape)
+            for provider in ("codex_cli", "claude_cli", None):
+                with self.subTest(spec=(phase, substep, shape), provider=provider), \
+                        mock.patch.object(wc.Conductor, "_interface_header_text",
+                                          return_value=self.NODE_HEADER):
+                    request = {} if provider is None else {"workshop_provider": provider}
+                    seeds = self.c._workshop_seeds(refs, context, request, spec)
+                    expect = provider == "codex_cli" and substep != "generate"
+                    self.assertEqual(pure_leaf.CODEX_READ_HELPER_NAME in seeds, expect)
+                    if expect:
+                        self.assertEqual(seeds[pure_leaf.CODEX_READ_HELPER_NAME],
+                                         pure_leaf.CODEX_READ_HELPER_TEXT)
 
     def test_every_seed_but_the_host_sources_ends_in_a_newline(self) -> None:
         refs = _verify_node(self.repo)

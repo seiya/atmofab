@@ -712,7 +712,7 @@ _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
 #: `WORKSHOP_SYSTEM_PROMPT` and `WORKSHOP_TOOL_SURFACE_TEXT` (and, from `workshop-4`, the reading
 #: kind's `WORKSHOP_READER_SYSTEM_PROMPT` and `WORKSHOP_READER_TOOL_SURFACE_TEXT`; from `workshop-6`,
 #: `orchestration_runtime.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH` and the verdict repair's
-#: instruction-slot tables). A change to any is a change of the
+#: instruction-slot tables; from `workshop-7`, `pure_leaf.CODEX_READ_HELPER_TEXT`). A change to any is a change of the
 #: workshop leaf's contract and takes a new version, keeping every shipped pin (the no-revert
 #: check reads them). `workshop-1` (shipped in step 1's A/B, main f684c756) was taken over the
 #: first three templates and the system prompt alone.
@@ -734,6 +734,10 @@ _WORKSHOP_CONTRACT_DIGESTS = {
     # repair renders as before) join the digest (`workshop-5` shipped
     # with step 3 PR-J2, main bb119b5a).
     "workshop-6": "a0290f056603e92866cbc2ac40aef49ab82053ea1dabb66b12be824da2d8c822",
+    # Issue #534 PR-J3-a: the `codex_cli` reader row leads with the host's reading helper, at
+    # the lowered advice size, and the helper's text joins the digest (`workshop-6` shipped
+    # with issue #547's PR #550, main d5d849be).
+    "workshop-7": "7581618a41ef397919ad96295ba8ec5f7a71797bc5f293ccba310492e467c854",
 }
 
 
@@ -753,6 +757,9 @@ def _workshop_digest() -> str:
     h.update(json.dumps([ort.WORKSHOP_VERDICT_REPAIR_SHAPE_SLOTS,
                          ort.WORKSHOP_VERDICT_REPAIR_CUT_READ_SLOTS],
                         sort_keys=True).encode("utf-8"))
+    # Issue #534 PR-J3-a (`workshop-7` onward): the codex reading helper, a seed the leaf runs.
+    h.update(pure_leaf.CODEX_READ_HELPER_NAME.encode("utf-8") + b"\0"
+             + pure_leaf.CODEX_READ_HELPER_TEXT.encode("utf-8"))
     return h.hexdigest()
 
 

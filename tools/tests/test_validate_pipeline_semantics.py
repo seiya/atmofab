@@ -6942,7 +6942,7 @@ end module m
 
         self.assertEqual(self._dataflow_violations(source), [])
         self.assertEqual([v.split(": ", 1)[1] for v in dependency_use(source)],
-                         ["missing dependency operation call (dep__*)"])
+                         [DependencyRenameTests._MESSAGE])
         # Called, the same procedure is the host's call: present, and consumed.
         live = source.replace("  y = 2.0 * x\n", "  call unused()\n")
         self.assertEqual(dependency_use(live), [])
@@ -30988,6 +30988,304 @@ class CompileIrDirTests(unittest.TestCase):
             refused = vps.validate_compile_stage(repo, "workspace", str(scratch))
             self.assertEqual(len(refused), 1)
             self.assertIn("ir_ref must be under", refused[0])
+
+
+_ALIASED_DEP_DIR = Path(__file__).parent / "data" / "channel_aliased_dependency_calls"
+_CHANNEL_DEPS = [
+    "dynamics_shallow_water_boundary_2d_channel_mirror",
+    "dynamics_shallow_water_flux_2d_rusanov",
+    "dynamics_shallow_water_reconstruction_2d_muscl_mc",
+    "dynamics_shallow_water_source_2d_coriolis",
+    "dynamics_shallow_water_source_2d_tc4_forcing",
+    "dynamics_shallow_water_time_update_2d_rk4",
+]
+
+
+class DependencyRenameTests(unittest.TestCase):
+    """The two Fortran dependency gates read a `use <dep>_model, only: <local> => <dep>__<op>`
+    rename in the model module's specification part (issue #534 PR-J3-a, F-J3-2). The fixtures
+    are the RECORDED channel sources of codex closing run (3): `aliased_…` is the cold bundle
+    `src_20261025_001` (six renames, refused six times at `46616969`), `literal_…` its warm
+    repair `src_20261025_002` (the renames spelled out)."""
+
+    _MESSAGE = ("missing dependency operation call (dep__*): a call of dep__<op>, by that name "
+                "or by the local name of a `use dep_model, only: <local> => dep__<op>` rename "
+                "in the model module's specification part")
+
+    def _use(self, source: str, deps: list[str] | None = None,
+             name: str = "chan_model.f90") -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / name
+            path.write_text(source)
+            violations: list[str] = []
+            fortran_source.validate_dependency_operations([path], deps or ["dep"], violations)
+            return [v.split(": ", 1)[1] for v in violations]
+
+    def _dataflow(self, source: str) -> list[str]:
+        violations: list[str] = []
+        fortran_source._validate_problem_model_dependency_dataflow(
+            node_key="problem/chan@0.1.0", model_file=Path("chan_model.f90"),
+            lowered=source.lower(),
+            envelopes=fortran_source.procedure_envelopes(source.lower()),
+            dep_spec_ids=["dep"], violations=violations)
+        return violations
+
+    _BASE = """module chan_model
+  use dep_model, only: &
+    adv => dep__advance
+  implicit none
+contains
+  subroutine solve(x, y)
+    real, intent(in) :: x
+    real, intent(out) :: y
+    real :: t
+    call adv(x, t)
+    y = t
+  end subroutine solve
+end module chan_model
+"""
+
+    def test_the_recorded_cold_and_warm_channel_models_pass(self) -> None:
+        for fixture in ("aliased", "literal"):
+            text = (_ALIASED_DEP_DIR / f"{fixture}_shallow_water2d_channel_model.f90").read_text()
+            self.assertEqual(
+                self._use(text, _CHANNEL_DEPS, "shallow_water2d_channel_model.f90"), [], fixture)
+        aliased = (_ALIASED_DEP_DIR / "aliased_shallow_water2d_channel_model.f90").read_text()
+        self.assertEqual(
+            sorted(fortran_source.dependency_renames(
+                aliased.lower(), "shallow_water2d_channel_model", _CHANNEL_DEPS).names.values()),
+            sorted(f"{dep}__{op}" for dep, op in zip(_CHANNEL_DEPS, (
+                "apply", "compute_flux", "reconstruct", "apply", "apply", "advance"))))
+
+    def test_each_rename_spelling_the_reader_reads(self) -> None:
+        spellings = {
+            "continued": self._BASE,
+            "non_intrinsic": self._BASE.replace(
+                "use dep_model, only: &\n    adv", "use, non_intrinsic :: dep_model, only: adv"),
+            "semicolon": self._BASE.replace(
+                "  use dep_model, only: &\n    adv => dep__advance\n  implicit none\n",
+                "  use dep_model, only: adv => dep__advance; implicit none\n"),
+            "mixed only list": self._BASE.replace(
+                "adv => dep__advance", "dep__reset, adv => dep__advance"),
+            "call without parens": self._BASE.replace("call adv(x, t)", "t = x\n    call adv"),
+        }
+        for label, source in spellings.items():
+            self.assertTrue(label == "continued" or source != self._BASE, label)
+            self.assertEqual(self._use(source), [], label)
+            self.assertEqual(
+                fortran_source.dependency_renames(source.lower(), "chan_model", ["dep"]).names,
+                {"adv": "dep__advance"}, label)
+
+    def test_each_spelling_the_reader_refuses(self) -> None:
+        refused = {
+            "inside a procedure": self._BASE.replace(
+                "  use dep_model, only: &\n    adv => dep__advance\n", "  use dep_model\n"
+            ).replace("    real :: t\n",
+                      "    use dep_model, only: adv => dep__advance\n    real :: t\n"),
+            "commented": self._BASE.replace(
+                "  use dep_model, only: &\n    adv => dep__advance\n",
+                "  use dep_model\n  ! use dep_model, only: adv => dep__advance\n"),
+            "local also a defined procedure": self._BASE.replace(
+                "end module chan_model",
+                "  subroutine adv(a, b)\n    real :: a, b\n    b = a\n"
+                "  end subroutine adv\nend module chan_model"),
+            "local also a module variable": self._BASE.replace(
+                "  implicit none\n", "  implicit none\n  real :: adv\n"),
+            "local also a dummy": self._BASE.replace(
+                "subroutine solve(x, y)", "subroutine solve(x, y, adv)"),
+            "two renames to one local": self._BASE.replace(
+                "adv => dep__advance", "adv => dep__advance, adv => dep__reset"),
+            "local shared with another module": self._BASE.replace(
+                "  implicit none\n", "  use other_model, only: adv => other__step\n"
+                "  implicit none\n"),
+            "rename from a module that is not dep_model": self._BASE.replace(
+                "use dep_model, only: &\n    adv => dep__advance",
+                "use dep_model\n  use dep_glue, only: adv => dep__advance"),
+            "renamed and never called": self._BASE.replace("call adv(x, t)", "t = x"),
+            "call of the local only in another module unit": self._BASE.replace(
+                "call adv(x, t)", "t = x") + (
+                "module glue\n  implicit none\ncontains\n  subroutine g(a, b)\n"
+                "    real :: a, b\n    call adv(a, b)\n  end subroutine g\nend module glue\n"),
+            "rename in another module unit": self._BASE.replace(
+                "  use dep_model, only: &\n    adv => dep__advance\n", "  use dep_model\n"
+            ).replace("module chan_model\n",
+                      "module glue\n  use dep_model, only: adv => dep__advance\n"
+                      "end module glue\nmodule chan_model\n", 1),
+        }
+        for label, source in refused.items():
+            self.assertIn(self._MESSAGE, self._use(source), label)
+        # A rename's target must carry the prefix of the dependency whose module it is imported
+        # from: `other__step` imported from `dep_model` is a call of neither.
+        crossed = self._BASE.replace("adv => dep__advance", "adv => other__step").replace(
+            "  implicit none\n", "  use other_model\n  implicit none\n")
+        other = re.sub(r"\bdep(?=__|_model)", "other", self._MESSAGE)
+        self.assertNotEqual(other, self._MESSAGE)
+        self.assertIn("missing dependency operation call (other__*)", other)
+        self.assertIn(other, self._use(crossed, ["dep", "other"]))
+        # A different program unit name is not the model module: nothing is read as a rename.
+        self.assertEqual(
+            fortran_source.dependency_renames(self._BASE.lower(), "other_model", ["dep"]).names,
+            {})
+
+    _OTHER = ("  subroutine other(a)\n    real, intent(inout) :: a\n{body}"
+              "  end subroutine other\nend module chan_model")
+
+    def test_a_name_another_scope_binds_does_not_hide_the_import(self) -> None:
+        """Round 1 of PR-J3-a: shadowing is per scope. A dummy, a local or a contained
+        procedure of the local's name in ANOTHER procedure, or a derived type's component of
+        that name, leaves `solve`'s `call adv` a dependency call (each compiles: the inner name
+        hides the import in that scope only); the recorded aliased channel model with a
+        `coriolis` component added still passes."""
+        legitimate = {
+            "a dummy of another procedure": self._BASE.replace("end module chan_model",
+                self._OTHER.format(body="    a = 1.0\n").replace("other(a)", "other(a, adv)")
+                .replace("intent(inout) :: a\n", "intent(inout) :: a\n    real :: adv\n")),
+            "a local of another procedure": self._BASE.replace("end module chan_model",
+                self._OTHER.format(body="    real :: adv\n    adv = a\n    a = adv\n")),
+            "a procedure another one contains": self._BASE.replace("end module chan_model",
+                self._OTHER.format(body="    call adv(a)\n  contains\n    subroutine adv(b)\n"
+                                       "      real :: b\n      b = 0.0\n"
+                                       "    end subroutine adv\n")),
+            "a derived type's component": self._BASE.replace(
+                "  implicit none\n",
+                "  implicit none\n  type :: cfg\n    logical :: adv = .true.\n"
+                "  end type cfg\n"),
+        }
+        for label, source in legitimate.items():
+            with self.subTest(label):
+                self.assertEqual(self._use(source), [], label)
+        aliased = (_ALIASED_DEP_DIR / "aliased_shallow_water2d_channel_model.f90").read_text()
+        component = aliased.replace("    integer :: nx, ny, ng, axis, profile, sign, planned\n",
+                                    "    integer :: nx, ny, ng, axis, profile, sign, planned\n"
+                                    "    logical :: coriolis = .true.\n", 1)
+        self.assertNotEqual(component, aliased)
+        self.assertEqual(self._use(component, _CHANNEL_DEPS,
+                                   "shallow_water2d_channel_model.f90"), [])
+
+    def test_a_name_the_calling_scope_binds_hides_the_import(self) -> None:
+        refused = {
+            "a local of the caller": self._BASE.replace("    real :: t\n", "    real :: t, adv\n"),
+            "a procedure the caller contains": self._BASE.replace(
+                "  end subroutine solve\n",
+                "  contains\n    subroutine adv(a, b)\n      real :: a, b\n      b = a\n"
+                "    end subroutine adv\n  end subroutine solve\n"),
+            "a bare use in the caller (round 5)": self._BASE.replace(
+                "  subroutine solve(x, y)\n", "  subroutine solve(x, y)\n    use other\n"),
+            "a use of the caller's own": self._BASE.replace(
+                "  subroutine solve(x, y)\n", "  subroutine solve(x, y)\n"
+                "    use other_model, only: adv => other__step\n"),
+            "a module variable after a type definition": self._BASE.replace(
+                "  implicit none\n", "  implicit none\n  type :: cfg\n    real :: w\n"
+                "  end type cfg\n  real :: adv\n"),
+            "an interface body in the specification part": self._BASE.replace(
+                "  implicit none\n", "  implicit none\n  interface\n    subroutine adv(a, b)\n"
+                "      real :: a, b\n    end subroutine adv\n  end interface\n"),
+        }
+        for label, source in refused.items():
+            with self.subTest(label):
+                self.assertIn(self._MESSAGE, self._use(source), label)
+
+    def test_the_dataflow_gate_reads_a_rename_as_a_dependency_call(self) -> None:
+        # The issue #181 shape: the dependency result is discarded. Written with the literal
+        # callee and with the rename, the gate must say the same thing; before PR-J3-a the
+        # renamed one saw no dependency call and checked nothing.
+        literal = self._BASE.replace(
+            "use dep_model, only: &\n    adv => dep__advance", "use dep_model"
+        ).replace("call adv(x, t)\n    y = t", "call dep__advance(x, t)\n    y = x")
+        renamed = self._BASE.replace("call adv(x, t)\n    y = t", "call adv(x, t)\n    y = x")
+        # Round 1: a dummy of the local's name in ANOTHER procedure left the gate silent on the
+        # renamed call (the file-wide exclusion); per-scope, the discarded result is seen.
+        shadowed_elsewhere = renamed.replace("end module chan_model", self._OTHER.format(
+            body="    a = 1.0\n").replace("other(a)", "other(a, adv)").replace(
+            "intent(inout) :: a\n", "intent(inout) :: a\n    real :: adv\n"))
+        # Round 2 (Codex): a CONTAINED procedure's dummy of the local's name hid its host's
+        # renamed call when the reading was keyed by procedure name; it is resolved at the
+        # call's own offset now, and the use gate reads the same call.
+        shadowed_inside = renamed.replace(
+            "    y = x\n  end subroutine solve\n",
+            "    y = x\n    call unused(t)\n  contains\n    subroutine unused(adv)\n"
+            "      real :: adv\n      adv = 0.0\n    end subroutine unused\n"
+            "  end subroutine solve\n")
+        self.assertNotEqual(shadowed_inside, renamed)
+        self.assertEqual(self._use(shadowed_inside), [])
+        # Round 2 (fixes reviewer): a `block` local, an `associate` name or an interface body's
+        # dummy of the local's name inside the CALLING procedure hid the call from this gate
+        # while another procedure's call satisfied the use gate. This gate reads no scope.
+        def beside(construct: str) -> str:
+            return renamed.replace("    y = x\n", f"    y = x\n{construct}").replace(
+                "end module chan_model",
+                "  subroutine good(a, b)\n    real, intent(in) :: a\n"
+                "    real, intent(out) :: b\n    call adv(a, b)\n  end subroutine good\n"
+                "end module chan_model")
+        constructs = {
+            "a block local": "    block\n      integer :: adv\n      adv = 1\n    end block\n",
+            "an associate name": "    associate (adv => t)\n      adv = 1.0\n    end associate\n",
+            "an interface body's dummy": "",
+        }
+        shadowed_construct = {label: beside(text) for label, text in constructs.items()}
+        shadowed_construct["an interface body's dummy"] = beside("").replace(
+            "    real :: t\n", "    real :: t\n    interface\n      subroutine unused(adv)\n"
+            "        real, intent(inout) :: adv\n      end subroutine unused\n"
+            "    end interface\n")
+        for label, source in shadowed_construct.items():
+            self.assertNotEqual(source, renamed, label)
+            self.assertEqual(self._use(source), [], label)
+        for label, source in (("literal", literal), ("renamed", renamed),
+                              ("shadowed elsewhere", shadowed_elsewhere),
+                              ("shadowed inside a contained procedure", shadowed_inside),
+                              *shadowed_construct.items()):
+            self.assertIn("does not propagate dependency operation outputs",
+                          " ".join(self._dataflow(source)), label)
+        self.assertEqual(self._dataflow(self._BASE), [])
+
+    def test_the_dataflow_gate_checks_a_rename_the_use_gate_drops(self) -> None:
+        """Round 3 of PR-J3-a (correctness reviewer): the dataflow gate read the use gate's
+        filtered renames, so a rename that reader drops was NOT CHECKED there while a second,
+        kept rename satisfied the use gate — a discarded result passed both (origin/main
+        refused the source at the use gate). Each source compiles; on each, the use gate passes
+        on `ini` and the dataflow gate now raises the discarded `adv` result."""
+        def model(uses: str, decls: str = "", body_use: str = "") -> str:
+            return ("module chan_model\n" + uses + "  implicit none\n" + decls + "contains\n"
+                    "  subroutine solve(x, y)\n" + body_use + "    real, intent(in) :: x\n"
+                    "    real, intent(out) :: y\n    real :: t\n    call ini()\n"
+                    "    call adv(x, t)\n    y = x\n  end subroutine solve\nend module chan_model\n")
+        both = "  use dep_model, only: adv => dep__step, ini => dep__init\n"
+        dropped = {
+            "an interface body's dummy names the local": model(
+                both, "  abstract interface\n    subroutine cb(adv)\n"
+                "      real, intent(in) :: adv\n    end subroutine cb\n  end interface\n"),
+            "a parameterized type's component names the local": model(
+                both, "  type :: pt(k)\n    integer, kind :: k = 4\n"
+                "    real(k) :: adv\n  end type pt\n"),
+            "the rename is imported inside the procedure": model(
+                "  use dep_model, only: ini => dep__init\n", "",
+                "    use dep_model, only: adv => dep__step\n"),
+            "a rename of a rename in the file (round 5)": (
+                "module glue\n  use dep_model, only: a1 => dep__step\nend module glue\n"
+                + model("  use dep_model, only: ini => dep__init\n"
+                        "  use glue, only: adv => a1\n")),
+            "the rename comes through another module": model(
+                "  use dep_model, only: ini => dep__init\n  use glue, only: adv => dep__step\n"),
+        }
+        for label, source in dropped.items():
+            with self.subTest(label):
+                self.assertEqual(self._use(source), [], label)
+                self.assertIn("does not propagate dependency operation outputs",
+                              " ".join(self._dataflow(source)), label)
+                consumed = source.replace("    y = x\n", "    y = t\n")
+                self.assertEqual(self._dataflow(consumed), [], label)
+
+    def test_a_source_whose_structure_does_not_read_keeps_the_literal_reading(self) -> None:
+        broken = self._BASE.replace("  end subroutine solve\n", "")
+        with self.assertRaises(fortran_source.SourceStructureError):
+            fortran_source.structure_reading(broken.lower())
+        self.assertEqual(
+            fortran_source.dependency_renames(broken.lower(), "chan_model", ["dep"]).names, {})
+        self.assertIn(self._MESSAGE, self._use(broken))
+
+    def test_the_message_names_the_rename_spelling(self) -> None:
+        self.assertEqual(self._use(self._BASE.replace("call adv(x, t)", "t = x")),
+                         [self._MESSAGE])
 
 
 if __name__ == "__main__":

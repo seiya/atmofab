@@ -1589,13 +1589,37 @@ class PhysicsGateTests(unittest.TestCase):
             cpp_source.validate_dependency_operations([model], ["dep", "other"], out)
             self.assertEqual([f"{model}: missing dependency header include "
                               f'(#include "other_model.cuh")',
-                              f"{model}: missing dependency operation call (other__*)"], out)
+                              f"{model}: {cpp_source.missing_dependency_call_message('other')}"], out)
             model = self._model(tmp, "// dep__norm(u) in a comment\n"
                                      "void dep__norm(double& x) { x = 0.0; }")
             out = []
             cpp_source.validate_dependency_operations([model], ["dep"], out)
             self.assertIn(f"{model}: dependency operation redefinition detected (dep__*)", out)
-            self.assertIn(f"{model}: missing dependency operation call (dep__*)", out)
+            self.assertIn(f"{model}: {cpp_source.missing_dependency_call_message('dep')}", out)
+
+    def test_an_aliased_dependency_call_is_read_as_measured(self) -> None:
+        """MG2 (issue #534 PR-J3-a): the C++ binding follows no alias. A pointer alias and a
+        reference alias are refused, with a message saying an alias is not read; a lambda whose
+        body calls the operation passes (the call is in a live body). Pinned as measured at
+        `46616969`, so a change to any of the three answers is a decision, not drift."""
+        answers = {
+            "pointer alias": (("void p__run(double& x) { auto f = &dep_model::dep__norm; "
+                               "x = f({}); }"), False),
+            "reference alias": (("void p__run(double& x) { auto& f = dep_model::dep__norm; "
+                                 "x = f({}); }"), False),
+            "lambda wrapper": (("void p__run(double& x) { auto f = [&]() "
+                                "{ return dep_model::dep__norm({}); }; x = f(); }"), True),
+        }
+        for label, (body, passes) in answers.items():
+            with self.subTest(label), tempfile.TemporaryDirectory() as tmp:
+                model = self._model(tmp, body)
+                out: list[str] = []
+                cpp_source.validate_dependency_operations([model], ["dep"], out)
+                self.assertEqual(
+                    [] if passes
+                    else [f"{model}: {cpp_source.missing_dependency_call_message('dep')}"], out)
+        self.assertIn("an alias through a pointer or reference is not read",
+                      cpp_source.missing_dependency_call_message("dep"))
 
     def test_literal_outputs_are_refused_on_a_problem_node_only(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1775,7 +1799,7 @@ class PhysicsGateTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmp:
             model = self._model(tmp, body.replace("{live}", "").replace("{consume}", ""))
-            self.assertEqual(["missing dependency operation call (dep__*)"],
+            self.assertEqual([cpp_source.missing_dependency_call_message("dep")],
                              dependency_use(model))
             self.assertEqual([], self._gates(model, ["dep"]))
             # Beside a live, consumed call the dead one is simply not there (round 2: the split
@@ -1793,7 +1817,7 @@ class PhysicsGateTests(unittest.TestCase):
             # A dead chain is dead to this check too: `f` names `unused`, and nothing names `f`.
             chain = self._model(tmp, body.replace(
                 "{live}", "  auto f = [&]() { unused(); };\n").replace("{consume}", ""))
-            self.assertEqual(["missing dependency operation call (dep__*)"],
+            self.assertEqual([cpp_source.missing_dependency_call_message("dep")],
                              dependency_use(chain))
 
     def test_an_array_declarator_and_a_subscript_are_not_lambda_introducers(self) -> None:

@@ -609,7 +609,6 @@ class ProcedureEnvelope:
     out_vars: frozenset[str]
 
 
-
 def _fortran_view_pair(lowered: str) -> tuple[str, str, list[int], list[int]]:
     """The gate view and a LABEL-PRESERVING twin of it, line for line.
 
@@ -1184,6 +1183,16 @@ def _validate_problem_model_dependency_dataflow(
         return
 
     dep_prefixes = tuple(f"{spec_id.lower()}__" for spec_id in dep_spec_ids)
+    # A `call <local>` of a dependency-operation rename is a dependency call (issue #534
+    # PR-J3-a: without it the gate saw no dependency call on an aliased model and checked
+    # nothing). NOT the use gate's reader, on purpose — the opposite polarity: there a call
+    # left unresolved is REFUSED, here it is NOT CHECKED, so every exclusion that reader makes is
+    # a fail-open in this gate. Rounds 1-3 of PR-J3-a found four (an unrelated procedure's
+    # dummy, a contained procedure's dummy, a `block` / `associate` / interface-body name, and a
+    # rename that reader drops altogether). `dependency_call_locals` reads every `only:` item of
+    # the file whose target is a dependency operation, with no exclusion; a call of a procedure
+    # that shadows such a local is then checked as one, which can only add a candidate.
+    call_locals = dependency_call_locals(lowered, dep_spec_ids)
 
     # This gate keeps its own view, and it is the ONLY one of the three that still needs one:
     # `declared_names` below reads `lowered` directly. The envelopes it is handed were
@@ -1245,7 +1254,8 @@ def _validate_problem_model_dependency_dataflow(
 
         dep_output_candidates: set[str] = set()
         for callee, args_raw, call_pos in iter_calls(body):
-            if not any(callee.startswith(prefix) for prefix in dep_prefixes):
+            if not any(call_locals.get(callee, callee).startswith(prefix)
+                       for prefix in dep_prefixes):
                 continue
             call_vars = split_names(args_raw)
             for var in call_vars:
@@ -2335,6 +2345,218 @@ def mask_string_contents(line: str) -> str:
 
 
 
+@dataclass(frozen=True)
+class _RenameScope:
+    """One procedure of the model module, as a scope a rename's local name can be shadowed in:
+    its view span (header through `end` statement) and the names it binds itself."""
+
+    name: str
+    start: int
+    end: int
+    shadows: frozenset[str]
+
+
+@dataclass(frozen=True)
+class DependencyRenames:
+    """The dependency-operation renames of one model source (`dependency_renames`).
+
+    ``names`` maps a local name to the `<dep>__<op>` it renames; ``spans`` are the view spans of
+    the module unit(s) named like the model file; ``scopes`` are the unit's
+    procedures, each with the names it binds. A `call <local>` is a call of the target only
+    inside a span and in no scope that shadows the local (`target_at`) — the use gate's
+    question. The dataflow gate does not read this at all (`dependency_call_locals`)."""
+
+    names: Mapping[str, str]
+    spans: tuple[tuple[int, int], ...]
+    scopes: tuple[_RenameScope, ...] = ()
+
+    def target_at(self, local: str, offset: int) -> str | None:
+        """The target a `call <local>` at view offset `offset` reaches, or None."""
+        target = self.names.get(local)
+        if target is None or not any(a <= offset < b for a, b in self.spans):
+            return None
+        if any(s.start <= offset < s.end and local in s.shadows for s in self.scopes):
+            return None
+        return target
+
+
+_NO_DEPENDENCY_RENAMES = DependencyRenames({}, ())
+
+# A derived-type definition's opening and closing statements, over the joined view: its
+# components are reached through `%` only, so they bind no name in the scope around it.
+_TYPE_DEFINITION_OPEN_RE = re.compile(r"^\s*type\b(?!\s*\()(?:\s*,[^:]*)?\s*(?:::)?\s*\w+\s*$")
+_TYPE_DEFINITION_END_RE = re.compile(r"^\s*end\s*type\b")
+
+
+def _bound_names(text: str, *, drop_use: bool) -> set[str]:
+    """Every name `declared_names` reads as declared in `text` (one statement per line),
+    derived-type definition bodies left out — a component is not a name of the scope — and,
+    when `drop_use`, `use` statements left out."""
+    kept: list[str] = []
+    in_type = False
+    for line in text.split("\n"):
+        if in_type:
+            in_type = not _TYPE_DEFINITION_END_RE.match(line)
+            continue
+        if _TYPE_DEFINITION_OPEN_RE.match(line):
+            in_type = True
+            continue
+        if drop_use and _USE_STATEMENT_LINE_RE.match(line):
+            continue
+        kept.append(line)
+    constants, others = declared_names("\n".join(kept))
+    return constants | others
+
+
+def dependency_call_locals(lowered: str, dep_spec_ids: list[str]) -> dict[str, str]:
+    """Every local name ANY `use ..., only: <local> => <target>` of the file binds to a
+    `<dep>__<op>` target, for the dataflow gate (`_validate_problem_model_dependency_dataflow`):
+    a `call <local>` is then checked as the dependency call it may be. No exclusion of any kind
+    — no scope, no module check, no clash rule, no structure parse — because in that gate an
+    unresolved call is NOT CHECKED, so every exclusion `dependency_renames` makes for the use
+    gate (where an unresolved call is refused) is a fail-open here: round 3 of PR-J3-a drove a
+    discarded result past it through a rename the use gate drops (a local an interface body's
+    dummy or a parameterized type's component names, a rename imported inside a procedure)
+    beside a second rename that satisfied the use gate. A rename of a rename in the file is
+    followed to its dependency target. A local bound to two dependency targets keeps one of
+    them; over-reading a call can only add a candidate (a false violation, the direction that
+    gate accepts). Not read: a procedure pointer or a type-bound binding of a dependency
+    operation — a call through one is control flow this gate does not follow (its docstring's
+    residue (d))."""
+    prefixes = tuple(f"{spec_id.lower()}__" for spec_id in dep_spec_ids)
+    renamed: dict[str, set[str]] = {}
+    for stmt in joined_masked_view(lowered).split("\n"):
+        read = _use_only_items(stmt.strip())
+        if read is None or read[1] is None:
+            continue
+        for item, target in read[1]:
+            if "=>" in item:
+                renamed.setdefault(item.split("=>", 1)[0].strip().lower(), set()).add(target)
+    # A rename of a rename (`use glue, only: adv => a1` where glue has `a1 => dep__op`; round 5)
+    # is followed to the dependency target, through as many renames as the file holds.
+    out: dict[str, str] = {}
+    for local in renamed:
+        frontier, seen = {local}, set()
+        while frontier and local not in out:
+            name = frontier.pop()
+            seen.add(name)
+            for target in sorted(renamed.get(name, ())):
+                if target.startswith(prefixes):
+                    out[local] = target
+                    break
+                if target not in seen:
+                    frontier.add(target)
+    return out
+
+
+def dependency_renames(lowered: str, unit_name: str,
+                       dep_spec_ids: list[str]) -> DependencyRenames:
+    """Every `use <dep>_model, only: <local> => <dep>__<op>` rename in the SPECIFICATION PART of
+    module ``unit_name`` (the model source's own module), for the dependency-use gate
+    (`validate_dependency_operations`), which reads a `call <local>` as a call of `<dep>__<op>`
+    (issue #534 PR-J3-a: two of three cold channel launches on codex imported every operation
+    under a rename and were refused six times each for calling none). The dataflow gate reads
+    the file's renames through `dependency_call_locals` instead, for the polarity reason stated
+    there. The `use` statement is read by `_use_only_items`, the reader the checks-reach gate
+    uses for the same question about the checks module.
+
+    NOT resolved anywhere, so the name stays itself and a `call` of it is no dependency call
+    to the use gate (refused there): a rename imported inside a procedure (not the module's specification
+    part); a rename from a module that is not that dependency's `<dep>_model`, or whose target
+    is not one of its `<dep>__*` names; a local name two `only:` items of the specification part
+    share; a local name that names a procedure the module defines or ANY interface body of the
+    file declares (one inside another procedure included), or that `declared_names` reads as declared in the module's specification part
+    (`use` statements and plain derived-type definition bodies left out — a component is
+    reached through `%`). That reading over-binds, on the use gate's refused side: an interface body's
+    dummy and a parameterized type's component count as module names.
+
+    SHADOWED PER SCOPE, for the use gate only (`DependencyRenames.target_at`; round 1 of
+    PR-J3-a: a file-wide exclusion refused a correct model whose unrelated procedure had a
+    dummy of the local's name): inside one procedure the import is hidden by what that
+    procedure binds anywhere in its own text — a dummy, a declared local, a `block` local, an
+    `associate` name, an interface body's dummy, a `use` of its own, a procedure it contains —
+    and a `call <local>` there is no dependency call; every other procedure still reaches the
+    import. The over-binding is the use gate's safe direction (a refusal). The dataflow gate
+    reads none of this: it reads every rename of the file (`dependency_call_locals`), because
+    for it every exclusion here is the unchecked side, not the refused one.
+
+    A `use` without `only:` is not read: what it imports is the other module's to say. A source
+    whose structure does not read yields no rename — the literal reading — and raises nothing:
+    `validate_dependency_operations` must not start failing on a source it read before.
+
+    A bare `use other_module` inside a procedure shadows every rename there, since what it
+    exports cannot be read from one file (round 5 of PR-J3-a)."""
+    try:
+        view, tree, to_view = structure_reading(lowered)
+    except SourceStructureError:
+        return _NO_DEPENDENCY_RENAMES
+    unit_l = unit_name.lower()
+    dep_prefix = {f"{spec_id.lower()}_model": f"{spec_id.lower()}__" for spec_id in dep_spec_ids}
+    imports: dict[str, set[tuple[str, str]]] = {}
+    spans: list[tuple[int, int]] = []
+    module_bound: set[str] = {p.procedure.name.strip().lower() for p in tree.prototypes}
+    unit_procedures: list[Any] = []
+    for unit in tree.units:
+        if unit.kind != "module" or unit.name != unit_l:
+            continue
+        spans.append((to_view(unit.start), to_view(unit.end)))
+        inside = [p for p in tree.procedures if unit.start <= p.header_start < unit.end]
+        unit_procedures += inside
+        spec_end = min((p.header_start for p in inside), default=unit.end)
+        spec_part = view[to_view(unit.start):to_view(spec_end)]
+        module_bound |= _bound_names(spec_part, drop_use=True)
+        for stmt in spec_part.split("\n"):
+            read = _use_only_items(stmt.strip())
+            if read is None or read[1] is None:
+                continue
+            for item, target in read[1]:
+                local = item.split("=>", 1)[0].strip().lower() if "=>" in item else target
+                imports.setdefault(local, set()).add((read[0], target))
+    if not imports:
+        return _NO_DEPENDENCY_RENAMES
+    # A procedure no other procedure of the unit contains is a module procedure: its name is
+    # the module's. A contained one's name is its host's to bind.
+    def contains(outer: Any, inner: Any) -> bool:
+        return (outer is not inner and outer.header_start < inner.header_start
+                and inner.body_end <= outer.body_end)
+
+    names: dict[str, str] = {}
+    for procedure in unit_procedures:
+        if not any(contains(outer, procedure) for outer in unit_procedures):
+            module_bound.add(procedure.name.strip().lower())
+    for local, reached in imports.items():
+        if len(reached) != 1 or local in module_bound:
+            continue
+        module, target = next(iter(reached))
+        prefix = dep_prefix.get(module)
+        if prefix is not None and target != local and target.startswith(prefix):
+            names[local] = target
+    if not names:
+        return _NO_DEPENDENCY_RENAMES
+    scopes: list[_RenameScope] = []
+    for procedure in unit_procedures:
+        start = to_view(procedure.header_start)
+        end_line = view.find("\n", to_view(procedure.body_end))
+        end = len(view) if end_line < 0 else end_line + 1
+        own_end = to_view(procedure.body_end if procedure.contains_at is None
+                          else min(procedure.contains_at, procedure.body_end))
+        own_text = view[to_view(procedure.body_start):own_end]
+        shadows = _bound_names(own_text, drop_use=False)
+        shadows.update(split_names(procedure.dummy_args_text.lower()))
+        # A `use` without `only:` in the procedure imports whatever the other module exports,
+        # which may be the local's name: every rename is shadowed there (round 5 of PR-J3-a; a
+        # `use other` exporting `adv` made `call adv` the other module's while this gate read
+        # the dependency).
+        if any((read := _use_only_items(stmt.strip())) is not None and read[1] is None
+               for stmt in own_text.split("\n")):
+            shadows.update(names)
+        shadows.update(inner.name.strip().lower() for inner in unit_procedures
+                       if contains(procedure, inner))
+        scopes.append(_RenameScope(procedure.name.strip().lower(), start, end,
+                                   frozenset(shadows & set(names))))
+    return DependencyRenames(names, tuple(spans), tuple(scopes))
+
+
 def validate_dependency_operations(
     model_files: list[Path],
     dep_spec_ids: list[str],
@@ -2358,13 +2580,25 @@ def validate_dependency_operations(
         # refuse that source on their own, on a component the §5.1 signature pin does when the
         # node has a pinned surface, and otherwise it is read as it was before issue #506.
         live = _without_dead_contained_procedures(text.lower()) or lowered
+        # A `use` statement's module, read by the shared `use` reader over the joined view, so
+        # `use, non_intrinsic :: <dep>_model` and a continued statement are a use too.
+        used_modules = {read[0] for read in map(_use_only_items, joined_masked_view(
+            text.lower()).split("\n")) if read is not None}
+        # A rename's local name is a call of its target only inside the model module's own unit
+        # (the scope its specification part imports into): `live` has the view's offsets.
+        renames = dependency_renames(text.lower(), model_file.stem, dep_spec_ids)
+        callees = [match.group(1) for match in _DEPENDENCY_CALL_RE.finditer(live)]
+        renamed_callees = [
+            target for match in _DEPENDENCY_CALL_RE.finditer(live)
+            if (target := renames.target_at(match.group(1), match.start())) is not None]
 
         for spec_id in dep_spec_ids:
             spec_id_l = spec_id.lower()
             op_prefix = re.escape(spec_id_l + "__")
             module_name = re.escape(spec_id_l + "_model")
 
-            if not re.search(rf"\buse\s+{module_name}\b", lowered):
+            if (not re.search(rf"\buse\s+{module_name}\b", lowered)
+                    and f"{spec_id_l}_model" not in used_modules):
                 violations.append(
                     f"{model_file}: missing dependency module use ({spec_id}_model)"
                 )
@@ -2374,9 +2608,13 @@ def validate_dependency_operations(
                     f"{model_file}: dependency operation redefinition detected ({spec_id}__*)"
                 )
 
-            if not re.search(rf"\bcall\s+{op_prefix}[a-z0-9_]*\b", live):
+            if not any(callee.startswith(spec_id_l + "__")
+                       for callee in callees + renamed_callees):
                 violations.append(
-                    f"{model_file}: missing dependency operation call ({spec_id}__*)"
+                    f"{model_file}: missing dependency operation call ({spec_id}__*): a call "
+                    f"of {spec_id}__<op>, by that name or by the local name of a "
+                    f"`use {spec_id}_model, only: <local> => {spec_id}__<op>` rename in the "
+                    "model module's specification part"
                 )
 
 
@@ -2620,6 +2858,10 @@ def checks_harness_isolation_violations(
 
 
 
+
+# The callee of a `call` statement, as the dependency-use check reads it (no argument list
+# required: `call op` is a call).
+_DEPENDENCY_CALL_RE = re.compile(r"\bcall\s+([a-z_][a-z0-9_]*)\b")
 
 _HARNESS_USE_RE = re.compile(
     r"(?i)^\s*use\b\s*(?:,\s*\w+\s*)?(?:::\s*)?(\w+)\s*(.*)$", re.DOTALL)
