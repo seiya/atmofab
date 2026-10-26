@@ -31169,9 +31169,11 @@ end module chan_model
                 "  end subroutine solve\n",
                 "  contains\n    subroutine adv(a, b)\n      real :: a, b\n      b = a\n"
                 "    end subroutine adv\n  end subroutine solve\n"),
+            "a bare use in the caller (round 5)": self._BASE.replace(
+                "  subroutine solve(x, y)\n", "  subroutine solve(x, y)\n    use other\n"),
             "a use of the caller's own": self._BASE.replace(
-                "    real :: t\n", "    use other_model, only: adv => other__step\n"
-                "    real :: t\n"),
+                "  subroutine solve(x, y)\n", "  subroutine solve(x, y)\n"
+                "    use other_model, only: adv => other__step\n"),
             "a module variable after a type definition": self._BASE.replace(
                 "  implicit none\n", "  implicit none\n  type :: cfg\n    real :: w\n"
                 "  end type cfg\n  real :: adv\n"),
@@ -31258,6 +31260,10 @@ end module chan_model
             "the rename is imported inside the procedure": model(
                 "  use dep_model, only: ini => dep__init\n", "",
                 "    use dep_model, only: adv => dep__step\n"),
+            "a rename of a rename in the file (round 5)": (
+                "module glue\n  use dep_model, only: a1 => dep__step\nend module glue\n"
+                + model("  use dep_model, only: ini => dep__init\n"
+                        "  use glue, only: adv => a1\n")),
             "the rename comes through another module": model(
                 "  use dep_model, only: ini => dep__init\n  use glue, only: adv => dep__step\n"),
         }

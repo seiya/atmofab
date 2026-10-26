@@ -2417,18 +2417,35 @@ def dependency_call_locals(lowered: str, dep_spec_ids: list[str]) -> dict[str, s
     gate (where an unresolved call is refused) is a fail-open here: round 3 of PR-J3-a drove a
     discarded result past it through a rename the use gate drops (a local an interface body's
     dummy or a parameterized type's component names, a rename imported inside a procedure)
-    beside a second rename that satisfied the use gate. A local bound to two dependency targets
-    keeps one of them; over-reading a call can only add a candidate (a false violation, the
-    direction that gate accepts)."""
+    beside a second rename that satisfied the use gate. A rename of a rename in the file is
+    followed to its dependency target. A local bound to two dependency targets keeps one of
+    them; over-reading a call can only add a candidate (a false violation, the direction that
+    gate accepts). Not read: a procedure pointer or a type-bound binding of a dependency
+    operation — a call through one is control flow this gate does not follow (its docstring's
+    residue (d))."""
     prefixes = tuple(f"{spec_id.lower()}__" for spec_id in dep_spec_ids)
-    out: dict[str, str] = {}
+    renamed: dict[str, set[str]] = {}
     for stmt in joined_masked_view(lowered).split("\n"):
         read = _use_only_items(stmt.strip())
         if read is None or read[1] is None:
             continue
         for item, target in read[1]:
-            if "=>" in item and target.startswith(prefixes):
-                out.setdefault(item.split("=>", 1)[0].strip().lower(), target)
+            if "=>" in item:
+                renamed.setdefault(item.split("=>", 1)[0].strip().lower(), set()).add(target)
+    # A rename of a rename (`use glue, only: adv => a1` where glue has `a1 => dep__op`; round 5)
+    # is followed to the dependency target, through as many renames as the file holds.
+    out: dict[str, str] = {}
+    for local in renamed:
+        frontier, seen = {local}, set()
+        while frontier and local not in out:
+            name = frontier.pop()
+            seen.add(name)
+            for target in sorted(renamed.get(name, ())):
+                if target.startswith(prefixes):
+                    out[local] = target
+                    break
+                if target not in seen:
+                    frontier.add(target)
     return out
 
 
@@ -2467,8 +2484,8 @@ def dependency_renames(lowered: str, unit_name: str,
     whose structure does not read yields no rename — the literal reading — and raises nothing:
     `validate_dependency_operations` must not start failing on a source it read before.
 
-    Not closed: a bare `use other_module` inside a procedure that happens to export the local
-    name (nothing in one file can see that) is read as the import there."""
+    A bare `use other_module` inside a procedure shadows every rename there, since what it
+    exports cannot be read from one file (round 5 of PR-J3-a)."""
     try:
         view, tree, to_view = structure_reading(lowered)
     except SourceStructureError:
@@ -2523,8 +2540,16 @@ def dependency_renames(lowered: str, unit_name: str,
         end = len(view) if end_line < 0 else end_line + 1
         own_end = to_view(procedure.body_end if procedure.contains_at is None
                           else min(procedure.contains_at, procedure.body_end))
-        shadows = _bound_names(view[to_view(procedure.body_start):own_end], drop_use=False)
+        own_text = view[to_view(procedure.body_start):own_end]
+        shadows = _bound_names(own_text, drop_use=False)
         shadows.update(split_names(procedure.dummy_args_text.lower()))
+        # A `use` without `only:` in the procedure imports whatever the other module exports,
+        # which may be the local's name: every rename is shadowed there (round 5 of PR-J3-a; a
+        # `use other` exporting `adv` made `call adv` the other module's while this gate read
+        # the dependency).
+        if any((read := _use_only_items(stmt.strip())) is not None and read[1] is None
+               for stmt in own_text.split("\n")):
+            shadows.update(names)
         shadows.update(inner.name.strip().lower() for inner in unit_procedures
                        if contains(procedure, inner))
         scopes.append(_RenameScope(procedure.name.strip().lower(), start, end,
