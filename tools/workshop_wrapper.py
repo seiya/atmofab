@@ -552,22 +552,22 @@ def _tree_file(ctx: WrapperContext, name: Any) -> tuple[Path | None, str | None]
 
 
 def _every_case_id(ctx: WrapperContext, name: str) -> tuple[list[str], str | None]:
-    """Every `cases[].case_id` of the tree-relative case file `name`, in order, or `([], why)`."""
-    from tools.spec_input_gates import CASE_ID_TOKEN_RE
+    """Every case id of the tree-relative case file `name`, or `([], why)`. Read by the
+    runner renderer's own reader (`runner_ir.case_ids`: `case.test_case_set[].case_id`, in
+    declaration order, refused when empty, unsafe or duplicated), so the default is the set
+    the host-rendered runner selects from."""
+    from tools.runner_ir import RenderError, case_ids
 
     _present, document, why = workshop_tree._read_tree_document(
         ctx.paths.tree, name, yaml.safe_load)
     if why is not None:
         return [], f"cases_file {why}"
-    cases = document.get("cases") if isinstance(document, dict) else None
-    ids = [case.get("case_id") for case in cases if isinstance(case, dict)] \
-        if isinstance(cases, list) else []
-    if not ids:
-        return [], (f"the case file {name} names no case (no `cases[].case_id`): pass "
-                    "case_ids, or name a case file that lists its cases")
-    if not all(isinstance(c, str) and CASE_ID_TOKEN_RE.fullmatch(c) for c in ids):
-        return [], f"the case file {name} holds a case_id that is not a case id"
-    return ids, None
+    if not isinstance(document, dict):
+        return [], f"the case file {name} is not a mapping holding `case.test_case_set`"
+    try:
+        return case_ids(document), None
+    except RenderError as exc:
+        return [], f"the case file {name}: {exc}"
 
 
 def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict[str, Any]:
