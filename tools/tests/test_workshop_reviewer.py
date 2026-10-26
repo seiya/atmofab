@@ -812,57 +812,31 @@ class _CodexCutReadRows:
         self.assertTrue(self.c.spawns[1]["resume_session_id"])
         self.assertEqual(seen, [pure_leaf.CODEX_READ_HELPER_TEXT])
 
-    def test_a_chained_read_s_finding_says_one_file_per_command(self) -> None:
+    def test_a_chained_read_counts_once_and_the_repair_says_one_output_outside_the_findings(
+            self) -> None:
+        """Round 5 of PR-J3-a: the rule that everything one command or one `exec` prints is one
+        output, and the helper, are stated by the cut-read repair's scope paragraph — outside
+        the findings' do-not-obey fence, on every cut-read repair (a rollout-only cut included)
+        — and the findings hold the hits alone, so a chained over-budget command is one
+        `cut_outputs` hit and names itself."""
         chained = [("/usr/bin/zsh -lc \"sed -n '1,125p' tests.md; sed -n '1,125p' m.f90\"",
                     40_963)]
-        for commands, clause in ((chained, True), (_over(), False)):
-            with self.subTest(clause=clause):
-                self.c.calls = []
-                self.c.spawns = []
-                self.c.leaf_actions = [
-                    _reads(commands=commands, then=_writes(self.OUTPUT, self.passing())),
-                    _writes(self.OUTPUT, self.passing())]
-                self.assertEqual(self.run_substep().status, "pass")
-                self.assertIn("printed", self.rows()[0]["failure_excerpt"])
-                findings = self.requests()[1]["repair_findings"]
-                self.assertEqual(wc._CHAINED_READ_CLAUSE in findings, clause, findings)
-
-    def test_the_chained_read_clause_is_said_once_and_leaves_the_reads_named(self) -> None:
-        """Round 4 of PR-J3-a: the clause is the findings' FIRST line, once, so six chained
-        over-budget commands of the run (3) shape still have four named in the 1,000-character
-        findings text the cold repair carries (a per-line clause left two, the third cut)."""
-        command = "/usr/bin/zsh -lc \"sed -n '1,125p' tests.md; sed -n '1,125p' {}.f90\""
-        commands = [(command.format(f"m{i}"), 40_963) for i in range(6)]
         self.c.leaf_actions = [
-            _reads(commands=commands, then=_writes(self.OUTPUT, self.passing())),
+            _reads(commands=chained, then=_writes(self.OUTPUT, self.passing())),
             _writes(self.OUTPUT, self.passing())]
         self.assertEqual(self.run_substep().status, "pass")
-        findings = self.requests()[1]["repair_findings"]
-        self.assertTrue(findings.startswith(wc._CHAINED_READ_CLAUSE), findings[:200])
-        self.assertEqual(findings.count(wc._CHAINED_READ_CLAUSE), 1)
-        self.assertGreaterEqual(findings.count("printed 40,963 bytes"), 4, findings)
-
-    def test_which_commands_count_as_chained_reads(self) -> None:
-        """`_reads_chained` over the capture's spelling (`<shell> -lc <script>`): a list
-        operator outside quotes, or two read programs on separate lines, is chained; one read,
-        a quoted `;`, or an unsplittable text is not."""
-        rows = {
-            "/usr/bin/zsh -lc \"sed -n '1,9p' a; sed -n '1,9p' b\"": True,
-            "/usr/bin/zsh -lc \"sed -n '1,9p' a && cat b\"": True,
-            "/usr/bin/zsh -lc \"cat a | head -n 5\"": True,
-            # A list operator beside ONE read program: the operator clause alone.
-            "/usr/bin/zsh -lc \"cat a | wc -c\"": True,
-            "/usr/bin/zsh -lc \"cat a && echo done\"": True,
-            "/usr/bin/zsh -lc \"cat a || echo none\"": True,
-            "/usr/bin/zsh -lc \"cat a & wait\"": True,
-            "/usr/bin/zsh -lc \"sed -n 1,9p a\nsed -n 1,9p b\"": True,
-            "/usr/bin/zsh -lc \"python3 read.py tests.md 41\"": False,
-            "/bin/bash -lc \"grep -n ';' x\"": False,
-            "/usr/bin/zsh -lc \"cat 'unterminated\"": False,
-        }
-        for command, chained in rows.items():
-            with self.subTest(command):
-                self.assertEqual(wc._reads_chained(command), chained)
+        self.assertEqual(self.rows()[0]["cut_outputs"], 1)
+        _, request = self.requests()
+        self.assertTrue(request["repair_findings"].startswith("`/usr/bin/zsh -lc"),
+                        request["repair_findings"][:120])
+        prompt = ort._render_pure_repair_prompt(request)
+        scope = ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH
+        self.assertIn(scope, prompt)
+        self.assertLess(prompt.index(scope), prompt.index(request["repair_findings"]))
+        for phrase in ("everything one command prints is one output",
+                       "so is everything one `exec` prints",
+                       f"python3 {pure_leaf.CODEX_READ_HELPER_NAME} <file>"):
+            self.assertIn(phrase, scope)
 
     def test_a_rollout_only_cut_names_its_call_and_a_delegation_is_refused(self) -> None:
         call = {"type": "response_item", "payload": {

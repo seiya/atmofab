@@ -403,40 +403,6 @@ _EXECUTE_EXCERPT_TRUNCATION_MARK = "[... excerpt truncated to the last "
 # naming the failure class.
 _PURE_ATTEMPT_EXCERPT_MAX_CHARS = 400
 
-#: The finding a cut-read refusal LEADS with when an over-budget command chained reads (issue
-#: #534 PR-J3-a: three of codex closing run (3)'s five refused reads printed several files in
-#: one command, and the cold repair named the command and the leaf repeated its shape). Said
-#: once, first, not per line: the findings text is cut at 1,000 characters after six named
-#: lines (`_cut_read_findings`), and a per-line clause left room for two (round 4).
-_CHAINED_READ_CLAUSE = ("everything one command prints is one output, however many programs or "
-                        "files it chains: read one file per command through "
-                        "`python3 read.py <file>`")
-
-#: The programs `_reads_chained` counts as a read when a command runs more than one of them.
-_READ_PROGRAMS = frozenset({"cat", "sed", "head", "tail", "awk", "nl", "python", "python3"})
-
-
-def _reads_chained(command: str) -> bool:
-    """Whether a captured codex command (`<shell> -lc <script>` as the capture records it, or
-    a bare script) runs a command list — a `;`, `&&`, `||`, `|` or `&` outside quotes — or more
-    than one of `_READ_PROGRAMS`. A text `shlex` cannot split is not judged (False): the clause
-    is advice on a refusal that stands either way."""
-    try:
-        argv = shlex.split(command)
-    except ValueError:
-        return False
-    script = argv[-1] if len(argv) >= 3 and argv[-2] in ("-c", "-lc") else command
-    try:
-        # Not posix: a quoted `;` keeps its quotes, so it is no list operator.
-        lexer = shlex.shlex(script, posix=False, punctuation_chars=True)
-        lexer.whitespace_split = True
-        tokens = list(lexer)
-    except ValueError:
-        return False
-    return (any(token in {";", "&&", "||", "|", "&"} for token in tokens)
-            or sum(os.path.basename(token) in _READ_PROGRAMS for token in tokens) > 1)
-
-
 #: How much of a failed sweep shape's stderr `quality_check.json#shapes[].run_failure` keeps
 #: (issue #512): its first and its last lines, each bounded in characters — the cause is often
 #: at the top (a runtime's `ERROR STOP`) and a launcher's summary at the bottom.
@@ -10978,11 +10944,9 @@ class Conductor:
         from tools.codex_rollout import scan_launch
         from tools.pure_leaf import CODEX_EXEC_OUTPUT_BUDGET_BYTES
         outputs = turn.command_outputs
-        over = [(command, size) for command, size in (outputs or ())
-                if size > CODEX_EXEC_OUTPUT_BUDGET_BYTES]
-        lines = ([_CHAINED_READ_CLAUSE] if any(_reads_chained(c) for c, _ in over) else []) + [
-            f"`{' '.join(command.split())[:160]}` printed {size:,} bytes; at most "
-            f"{CODEX_EXEC_OUTPUT_BUDGET_BYTES:,} reach you whole" for command, size in over]
+        lines = [f"`{' '.join(command.split())[:160]}` printed {size:,} bytes; at most "
+                 f"{CODEX_EXEC_OUTPUT_BUDGET_BYTES:,} reach you whole"
+                 for command, size in (outputs or ()) if size > CODEX_EXEC_OUTPUT_BUDGET_BYTES]
         if outputs is None:
             return lines, "no per-command capture of the launch"
         writable = _codex_shell_writable_root(Path(paths.config))

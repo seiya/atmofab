@@ -165,8 +165,10 @@ class CodexReadHelperTests(unittest.TestCase):
         leaf must not edit, and says that what one `exec` prints is one output, so pages are
         read one `exec` each."""
         row = pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]
-        for phrase in (f"python3 {NAME} <file>", f"`{NAME}` is a host seed like `CONTRACT.md`: "
-                       "do not edit it", "Run each command in an `exec` of its own",
+        for phrase in (f"python3 {NAME} <file>",
+                       (f"`{NAME}` is a host seed like `CONTRACT.md` — the host placed it, "
+                        "though the list of seeds in your work-tree contract does not name it: "
+                        "do not edit it"), "Run each command in an `exec` of its own",
                        "what one `exec` prints, all its `text()` together, is one output too"):
             self.assertEqual(row.count(phrase), 1, phrase)
 
