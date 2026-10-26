@@ -31114,6 +31114,14 @@ end module chan_model
         }
         for label, source in refused.items():
             self.assertIn(self._MESSAGE, self._use(source), label)
+        # A rename's target must carry the prefix of the dependency whose module it is imported
+        # from: `other__step` imported from `dep_model` is a call of neither.
+        crossed = self._BASE.replace("adv => dep__advance", "adv => other__step").replace(
+            "  implicit none\n", "  use other_model\n  implicit none\n")
+        other = re.sub(r"\bdep(?=__|_model)", "other", self._MESSAGE)
+        self.assertNotEqual(other, self._MESSAGE)
+        self.assertIn("missing dependency operation call (other__*)", other)
+        self.assertIn(other, self._use(crossed, ["dep", "other"]))
         # A different program unit name is not the model module: nothing is read as a rename.
         self.assertEqual(
             fortran_source.dependency_renames(self._BASE.lower(), "other_model", ["dep"]).names,

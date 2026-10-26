@@ -827,6 +827,23 @@ class _CodexCutReadRows:
                 findings = self.requests()[1]["repair_findings"]
                 self.assertEqual(wc._CHAINED_READ_CLAUSE in findings, clause, findings)
 
+    def test_which_commands_count_as_chained_reads(self) -> None:
+        """`_reads_chained` over the capture's spelling (`<shell> -lc <script>`): a list
+        operator outside quotes, or two read programs on separate lines, is chained; one read,
+        a quoted `;`, or an unsplittable text is not."""
+        rows = {
+            "/usr/bin/zsh -lc \"sed -n '1,9p' a; sed -n '1,9p' b\"": True,
+            "/usr/bin/zsh -lc \"sed -n '1,9p' a && cat b\"": True,
+            "/usr/bin/zsh -lc \"cat a | head -n 5\"": True,
+            "/usr/bin/zsh -lc \"sed -n 1,9p a\nsed -n 1,9p b\"": True,
+            "/usr/bin/zsh -lc \"python3 read.py tests.md 41\"": False,
+            "/bin/bash -lc \"grep -n ';' x\"": False,
+            "/usr/bin/zsh -lc \"cat 'unterminated\"": False,
+        }
+        for command, chained in rows.items():
+            with self.subTest(command):
+                self.assertEqual(wc._reads_chained(command), chained)
+
     def test_a_rollout_only_cut_names_its_call_and_a_delegation_is_refused(self) -> None:
         call = {"type": "response_item", "payload": {
             "type": "custom_tool_call", "call_id": "call_1", "name": "exec",
@@ -1614,6 +1631,26 @@ class SeedNewlineTests(unittest.TestCase):
         if "bundle_document" in context:
             context["bundle_document"] = json.dumps(self.bundle())
         return context
+
+    def test_the_reading_helper_is_seeded_on_a_codex_reading_spec_only(self) -> None:
+        """Issue #534 PR-J3-a: `read.py` is a seed exactly when the spec is the READING kind and
+        the request names `codex_cli` — not on a producing spec, not on claude, and not on a
+        request that names no provider."""
+        refs = _verify_node(self.repo)
+        for phase, substep, shape in self.SPECS:
+            spec = self.spec(phase, substep, shape)
+            context = self.context(phase, substep, shape)
+            for provider in ("codex_cli", "claude_cli", None):
+                with self.subTest(spec=(phase, substep, shape), provider=provider), \
+                        mock.patch.object(wc.Conductor, "_interface_header_text",
+                                          return_value=self.NODE_HEADER):
+                    request = {} if provider is None else {"workshop_provider": provider}
+                    seeds = self.c._workshop_seeds(refs, context, request, spec)
+                    expect = provider == "codex_cli" and substep != "generate"
+                    self.assertEqual(pure_leaf.CODEX_READ_HELPER_NAME in seeds, expect)
+                    if expect:
+                        self.assertEqual(seeds[pure_leaf.CODEX_READ_HELPER_NAME],
+                                         pure_leaf.CODEX_READ_HELPER_TEXT)
 
     def test_every_seed_but_the_host_sources_ends_in_a_newline(self) -> None:
         refs = _verify_node(self.repo)
