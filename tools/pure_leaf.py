@@ -146,12 +146,14 @@ def is_workshop_reading_pair(step: Any, substep: Any) -> bool:
 
 #: The prompt-contract version a workshop request carries in `prompt_contract_version` (the
 #: field the pure request uses for its own). Its own counter, so a workshop template change
-#: never moves `PURE_PROMPT_CONTRACT_VERSION` and the reverse. `workshop-6`: the `codex_cli`
+#: never moves `PURE_PROMPT_CONTRACT_VERSION` and the reverse. `workshop-7`: the `codex_cli`
+#: reader row leads with the host's reading helper (`CODEX_READ_HELPER_TEXT`, a seed of every
+#: codex reading tree) at the lowered `CODEX_READ_ADVICE_BYTES` (issue #534 PR-J3-a). `workshop-6`: the `codex_cli`
 #: reader row names every output budget and the host's refusal of a cut read; the cut-read
 #: repair's scope paragraph; and the verdict repair template's instruction slot, which renders a
 #: schema repair as before on both providers (issue #547; `workshop-5` shipped with step 3 PR-J2,
 #: main bb119b5a).
-WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-6"
+WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-7"
 
 #: The first line of every host-rendered workshop launch prompt, anchored as the pure sentinel
 #: is (`startswith`). A distinct literal, so a record's prompt says which of the two leaf
@@ -206,9 +208,108 @@ CODEX_BYTES_PER_TOKEN = 4
 #: (`workflow_conductor.Conductor._run_pure_reviewer_substep`, issue #547).
 CODEX_EXEC_OUTPUT_BUDGET_BYTES = CODEX_EXEC_OUTPUT_BUDGET_TOKENS * CODEX_BYTES_PER_TOKEN
 
-#: The size the codex reader row tells a leaf to keep each command's output under: a margin
-#: below the byte rule, so a read sized to it is never refused.
-CODEX_READ_ADVICE_BYTES = CODEX_EXEC_OUTPUT_BUDGET_BYTES * 4 // 5
+#: The size the codex reader row tells a leaf to keep each command's output under, and the page
+#: of the host's reading helper (`CODEX_READ_HELPER_TEXT`): HALF the byte rule (5,000 tokens at
+#: `CODEX_BYTES_PER_TOKEN`), not a margin under it, because a page must survive a budget the
+#: leaf lowers on its own — codex closing run (3)'s judge passed `max_output_tokens` 7,500 and
+#: 8,500 to `exec_command` (`src_20261025_003/verdict_meta.json`, issue #534 PR-J3-a), which
+#: the row tells it not to do. It was 32,000 (four fifths of the rule) until `workshop-7`.
+CODEX_READ_ADVICE_BYTES = CODEX_EXEC_OUTPUT_BUDGET_BYTES // 2
+
+#: The tree name of the host's reading helper, a seed of every codex READING tree (issue #534
+#: PR-J3-a): a host-placed name like `CONTRACT.md`, so it is reserved, re-placed on a warm
+#: launch, and carried by no snapshot.
+CODEX_READ_HELPER_NAME = "read.py"
+
+#: The helper itself: a stdlib-only script that pages a file of the tree by whole lines, so
+#: that everything ONE call prints — the lines and its one trailer line — is under
+#: `CODEX_READ_ADVICE_BYTES` UTF-8 bytes, and says the command for the next page. It makes
+#: compliance with the reader row the default; it replaces nothing the host checks: its output
+#: is a command's output like any other, and the host's byte rule and rollout scan read it so.
+#: The cap is the only number of more than one digit in the text (pinned in
+#: `test_codex_read_helper`).
+CODEX_READ_HELPER_TEXT = f'''"""Page a file of this work tree: python3 read.py <file> [<first-line>]
+
+Prints whole lines from <first-line> (default 1) while everything one call prints stays under
+{CODEX_READ_ADVICE_BYTES} bytes, then one line starting `== read.py` that says where the page
+ended and the command for the next one. Written by the host; reads, never writes."""
+import os
+import sys
+
+CAP = {CODEX_READ_ADVICE_BYTES}
+
+
+def say(text):
+    return ("== read.py " + text + "\\n").encode("utf-8", "replace")
+
+
+def fail(text):
+    sys.stdout.buffer.write(say(text))
+    return 2
+
+
+def main(argv):
+    if len(argv) not in (2, 3):
+        return fail("usage: python3 read.py <file> [<first-line>]")
+    name = argv[1]
+    try:
+        first = int(argv[2]) if len(argv) == 3 else 1
+    except ValueError:
+        first = 0
+    if first < 1:
+        return fail(name + ": <first-line> must be a whole number, 1 or more")
+    try:
+        fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW)
+        with os.fdopen(fd, "rb") as handle:
+            data = handle.read()
+    except OSError as exc:
+        return fail(name + ": cannot be read (" + (exc.strerror or "error") + ")")
+    parts = data.split(b"\\n")
+    lines = [part + b"\\n" for part in parts[:-1]] + ([parts[-1]] if parts[-1] else [])
+    total = len(lines)
+    if total == 0:
+        sys.stdout.buffer.write(say(name + ": empty file; end of file"))
+        return 0
+    if first > total:
+        return fail(name + ": line " + str(first) + " is past the end (" + str(total)
+                    + " lines)")
+    page = []
+    size = 0
+    k = first - 1
+    while k < total:
+        line = lines[k]
+        sep = b"" if line.endswith(b"\\n") else b"\\n"
+        if k + 1 == total:
+            end = say(name + ": lines " + str(first) + "-" + str(total) + " of " + str(total)
+                      + "; end of file")
+        else:
+            end = say(name + ": lines " + str(first) + "-" + str(k + 1) + " of " + str(total)
+                      + "; next: python3 read.py " + name + " " + str(k + 2))
+        if size + len(line) + len(sep) + len(end) >= CAP:
+            break
+        page.append(line + sep)
+        size += len(line) + len(sep)
+        k += 1
+    if not page:
+        sys.stdout.buffer.write(say(
+            name + ": line " + str(first) + " is " + str(len(lines[k])) + " bytes, over the "
+            + str(CAP) + "-byte page; read it in byte ranges with `cut -b`"
+            + ("; next: python3 read.py " + name + " " + str(first + 1)
+               if first < total else "; end of file")))
+        return 0
+    if k == total:
+        end = say(name + ": lines " + str(first) + "-" + str(total) + " of " + str(total)
+                  + "; end of file")
+    else:
+        end = say(name + ": lines " + str(first) + "-" + str(k) + " of " + str(total)
+                  + "; next: python3 read.py " + name + " " + str(k + 1))
+    sys.stdout.buffer.write(b"".join(page) + end)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))
+'''
 
 #: The `<tool_surface>` sentence of a READING workshop launch, keyed by provider as
 #: `WORKSHOP_TOOL_SURFACE_TEXT` is. A provider with no row cannot serve a reading launch, and
@@ -229,7 +330,15 @@ WORKSHOP_READER_TOOL_SURFACE_TEXT: dict[str, str] = {
     "codex_cli": ("Your shell and patch tools run with your work tree as the working directory, "
                   "and the host reads the one document you write there and nothing else. You "
                   "are served no host operation: no `wrapper` server exists on this lineage, "
-                  "and a command you run is not a check the host counts. Everything a command "
+                  "and a command you run is not a check the host counts. Read every file "
+                  f"through the host's helper, one file per command: `python3 "
+                  f"{CODEX_READ_HELPER_NAME} <file>` prints the first page and the command for "
+                  "the next; run that command until it says `end of file`. Everything one call "
+                  f"of it prints is under {CODEX_READ_ADVICE_BYTES:,} bytes, so it reaches you "
+                  "whole at the default budget. Do not chain two reads in one command, do not "
+                  "`cat` or `sed` a file whole, and do not pass `max_output_tokens` or "
+                  "`max_tokens` (a lower budget cuts a page; a higher one does not help). Why: "
+                  "everything a command "
                   "prints reaches you through a token budget — the `exec` result's own "
                   f"({CODEX_EXEC_OUTPUT_BUDGET_TOKENS:,} tokens), `exec_command`'s and "
                   "`write_stdin`'s `max_output_tokens`, `wait`'s `max_tokens` — and an output "
@@ -238,17 +347,14 @@ WORKSHOP_READER_TOOL_SURFACE_TEXT: dict[str, str] = {
                   "`Warning: truncated output (original token count: N)` header. That holds for "
                   "a `cat`, a `sed`, an `rg` and a script of your own alike; the rows between "
                   "the kept head and tail were never shown to you, and a cut output is a read "
-                  f"you have not made. A token here is {CODEX_BYTES_PER_TOKEN} bytes, so keep "
-                  f"what each call returns — every command's output, and everything one `exec` "
-                  f"prints, all its `text()` together — under {CODEX_READ_ADVICE_BYTES:,} bytes: "
-                  "`wc -c` a file first, read it in line ranges (`sed -n '<a>,<b>p' <file>`), "
-                  "and print a script's result in pieces of that size, one call per piece. Do "
-                  "not raise a budget instead, and read for yourself: what a sub-agent reads is "
-                  "never shown to you. The host reads its own record of what each command "
-                  "printed and of what reached you: a `pass` written in a turn in which any "
-                  f"command's output exceeded {CODEX_EXEC_OUTPUT_BUDGET_BYTES:,} bytes, any "
-                  "output reached you cut, or a read was delegated to a sub-agent is refused, "
-                  "and the review is run again from the seeds with those reads named."),
+                  f"you have not made. A token here is {CODEX_BYTES_PER_TOKEN} bytes, and two "
+                  "reads in one command are one output. Print a script's own result in pieces "
+                  "the helper's size, one call per piece, and read for yourself: what a "
+                  "sub-agent reads is never shown to you. The host reads its own record of what "
+                  "each command printed and of what reached you: a `pass` written in a turn in "
+                  f"which any command's output exceeded {CODEX_EXEC_OUTPUT_BUDGET_BYTES:,} "
+                  "bytes, any output reached you cut, or a read was delegated to a sub-agent is "
+                  "refused, and the review is run again from the seeds with those reads named."),
 }
 
 #: The MCP server name the wrapper is registered under in `--mcp-config`. The CLI names its

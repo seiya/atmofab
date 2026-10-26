@@ -445,6 +445,24 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual(row["coverage"]["host_verdict.json"]["covered"], 0)
         self.assertNotIn("prompt_matches_record", row)
 
+    def test_the_replay_s_own_seed_build_names_the_provider(self) -> None:
+        """Issue #534 PR-J3-a: `_workshop_seeds` places the codex reading helper by the
+        request's `workshop_provider`, so the replay's own call (the coverage seeds) carries
+        the entry's provider as a launch request does; the replayed launch itself seeds its
+        tree through the conductor's lineage, which `test_workshop_reviewer` drives on codex."""
+        calls: list[dict] = []
+        real = wc.Conductor._workshop_seeds
+
+        def spy(self, refs, context, request, spec):
+            calls.append(dict(request))
+            return real(self, refs, context, request, spec)
+
+        with mock.patch.object(wc.Conductor, "_workshop_seeds", spy):
+            rc, out = self._main(leaf="workshop")
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(calls)
+        self.assertEqual({c.get("workshop_provider") for c in calls}, {"claude_cli"})
+
     def test_coverage_is_the_union_over_the_repetitions_lineages(self) -> None:
         self.leaf.unfinished = 1
         rc, out = self._main(leaf="workshop")

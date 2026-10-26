@@ -1,0 +1,115 @@
+"""The codex reading helper `read.py` (issue #534 PR-J3-a, F-J3-1), executed as the leaf runs
+it: a subprocess over fixture files in a directory standing for the work tree."""
+
+from __future__ import annotations
+
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+
+from tools import pure_leaf
+
+CAP = pure_leaf.CODEX_READ_ADVICE_BYTES
+NAME = pure_leaf.CODEX_READ_HELPER_NAME
+
+
+class CodexReadHelperTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tree = Path(self._tmp.name)
+        (self.tree / NAME).write_text(pure_leaf.CODEX_READ_HELPER_TEXT, encoding="utf-8")
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def run_helper(self, *args: str) -> subprocess.CompletedProcess[bytes]:
+        return subprocess.run([sys.executable, NAME, *args], cwd=self.tree,
+                              capture_output=True, check=False, timeout=60)
+
+    def read_all(self, name: str) -> tuple[bytes, list[bytes]]:
+        """Follow the helper's own `next:` commands to the end; the concatenated pages and
+        each page's whole output."""
+        pages: list[bytes] = []
+        args = [name]
+        body = b""
+        for _ in range(10_000):
+            out = self.run_helper(*args)
+            self.assertEqual(out.returncode, 0, out.stdout)
+            pages.append(out.stdout)
+            _head, _, trailer = out.stdout.rstrip(b"\n").rpartition(b"\n")
+            if not trailer.startswith(b"== read.py "):
+                trailer = out.stdout.rstrip(b"\n")
+            self.assertTrue(trailer.startswith(b"== read.py "), out.stdout[-200:])
+            body += out.stdout[:len(out.stdout) - len(trailer) - 1]
+            text = trailer.decode()
+            if text.endswith("end of file"):
+                return body, pages
+            match = re.search(r"next: python3 read\.py (\S+) (\d+)$", text)
+            self.assertIsNotNone(match, text)
+            args = [match.group(1), match.group(2)]
+        self.fail("no end of file")
+
+    def test_pages_reassemble_the_file_exactly_and_stay_under_the_cap(self) -> None:
+        files = {
+            "ascii.txt": "".join(f"line {i} " + "x" * (i % 300) + "\n" for i in range(1000)),
+            "two_byte.txt": "".join("é" * (i % 900) + "\n" for i in range(300)),
+            "four_byte.txt": "".join("𝄞" * (i % 400) + "\n" for i in range(300)),
+            "no_newline.txt": "".join(f"row {i}\n" for i in range(5000)) + "tail",
+        }
+        for name, text in files.items():
+            with self.subTest(name):
+                (self.tree / name).write_text(text, encoding="utf-8")
+                body, pages = self.read_all(name)
+                expected = text.encode() + (b"" if text.endswith("\n") else b"\n")
+                self.assertEqual(body, expected)
+                self.assertGreater(len(pages), 1)
+                for page in pages:
+                    self.assertLess(len(page), CAP)
+
+    def test_a_hundred_line_file_and_its_trailers(self) -> None:
+        (self.tree / "f.txt").write_text("".join(f"{i:03d} " + "y" * 396 + "\n"
+                                                 for i in range(1, 101)))
+        out = self.run_helper("f.txt").stdout.decode()
+        per_page = out.count("\n") - 1
+        self.assertTrue(out.endswith(f"== read.py f.txt: lines 1-{per_page} of 100; "
+                                     f"next: python3 read.py f.txt {per_page + 1}\n"), out[-120:])
+        last = self.run_helper("f.txt", "91").stdout.decode()
+        self.assertTrue(last.endswith("== read.py f.txt: lines 91-100 of 100; end of file\n"))
+        self.assertTrue(last.startswith("091 "))
+
+    def test_a_line_over_the_page_is_not_printed(self) -> None:
+        (self.tree / "long.txt").write_text("short\n" + "z" * (CAP + 5) + "\nafter\n")
+        first = self.run_helper("long.txt").stdout.decode()
+        self.assertEqual(first, "short\n== read.py long.txt: lines 1-1 of 3; "
+                                "next: python3 read.py long.txt 2\n")
+        over = self.run_helper("long.txt", "2")
+        self.assertEqual(over.returncode, 0)
+        self.assertNotIn(b"zz", over.stdout)
+        self.assertEqual(over.stdout.decode(), (
+            f"== read.py long.txt: line 2 is {CAP + 6} bytes, over the {CAP}-byte page; read "
+            "it in byte ranges with `cut -b`; next: python3 read.py long.txt 3\n"))
+
+    def test_refusals_are_one_trailer_line_and_exit_two(self) -> None:
+        (self.tree / "f.txt").write_text("a\nb\n")
+        os.symlink(self.tree / "f.txt", self.tree / "link.txt")
+        for args in (("absent.txt",), ("link.txt",), ("f.txt", "x"), ("f.txt", "0"),
+                     ("f.txt", "3"), ()):
+            with self.subTest(args):
+                out = self.run_helper(*args)
+                self.assertEqual(out.returncode, 2)
+                self.assertEqual(out.stdout.count(b"\n"), 1)
+                self.assertTrue(out.stdout.startswith(b"== read.py "), out.stdout)
+        self.assertEqual(self.run_helper("link.txt").stdout.count(b"cannot be read"), 1)
+
+    def test_the_only_number_in_the_script_is_the_cap(self) -> None:
+        numbers = re.findall(r"\d{2,}", pure_leaf.CODEX_READ_HELPER_TEXT)
+        self.assertEqual(set(numbers), {str(CAP)})
+        self.assertEqual(CAP, pure_leaf.CODEX_EXEC_OUTPUT_BUDGET_BYTES // 2)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -783,7 +783,8 @@ def run_repetition(conductor: Any, repo_root: Path, source: SourceLaunch, refs: 
                 == source.prompt_text)
     if entry.is_workshop:
         seeds = conductor._workshop_seeds(
-            refs, context, {"resolved_dependencies": list(resolved)}, spec)
+            refs, context, {"resolved_dependencies": list(resolved),
+                            "workshop_provider": entry.provider}, spec)
         homes = workflow_homes_root()
         backend = conductor._workshop_backend(entry)
         trees: list[str] = []

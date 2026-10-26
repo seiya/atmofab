@@ -403,6 +403,36 @@ _EXECUTE_EXCERPT_TRUNCATION_MARK = "[... excerpt truncated to the last "
 # naming the failure class.
 _PURE_ATTEMPT_EXCERPT_MAX_CHARS = 400
 
+#: The clause a cut-read finding line gains when its command chained reads (issue #534
+#: PR-J3-a: four of codex closing run (3)'s five refused reads printed several files in one
+#: command, and the cold repair named the command and the leaf repeated its shape).
+_CHAINED_READ_CLAUSE = (" — two reads in one command count as one output; read one file per "
+                        "command through `python3 read.py <file>`")
+
+#: The programs `_reads_chained` counts as a read when a command runs more than one of them.
+_READ_PROGRAMS = frozenset({"cat", "sed", "head", "tail", "awk", "nl", "python", "python3"})
+
+
+def _reads_chained(command: str) -> bool:
+    """Whether a captured codex command (`<shell> -lc <script>` as the capture records it, or
+    a bare script) runs a command list — a `;`, `&&`, `||`, `|` or `&` outside quotes — or more
+    than one of `_READ_PROGRAMS`. A text `shlex` cannot split is not judged (False): the clause
+    is advice on a refusal that stands either way."""
+    try:
+        argv = shlex.split(command)
+    except ValueError:
+        return False
+    script = argv[-1] if len(argv) >= 3 and argv[-2] in ("-c", "-lc") else command
+    try:
+        # Not posix: a quoted `;` keeps its quotes, so it is no list operator.
+        lexer = shlex.shlex(script, posix=False, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        return False
+    return (any(token in {";", "&&", "||", "|", "&"} for token in tokens)
+            or sum(os.path.basename(token) in _READ_PROGRAMS for token in tokens) > 1)
+
 
 #: How much of a failed sweep shape's stderr `quality_check.json#shapes[].run_failure` keeps
 #: (issue #512): its first and its last lines, each bounded in characters — the cause is often
@@ -9517,6 +9547,16 @@ class Conductor:
         if self._WORKSHOP_CONTRACT_SEED in seeds:
             raise RuntimeError(
                 f"workshop seeds: two seeds named {self._WORKSHOP_CONTRACT_SEED!r}")
+        if (self._workshop_spec_reads(spec)
+                and request.get("workshop_provider") == "codex_cli"):
+            # The host's reading helper (issue #534 PR-J3-a): a codex reading tree pages its
+            # seeds through it, so a read sized to the reader row is the default. A seed like
+            # the others, so it is reserved, host-placed and re-placed on a warm launch.
+            from tools.pure_leaf import CODEX_READ_HELPER_NAME, CODEX_READ_HELPER_TEXT
+            if CODEX_READ_HELPER_NAME in seeds:
+                raise RuntimeError(
+                    f"workshop seeds: two seeds named {CODEX_READ_HELPER_NAME!r}")
+            seeds[CODEX_READ_HELPER_NAME] = CODEX_READ_HELPER_TEXT
         for name, text in seeds.items():
             if name not in host_sources and text and not text.endswith("\n"):
                 seeds[name] = text + "\n"
@@ -10937,6 +10977,7 @@ class Conductor:
         outputs = turn.command_outputs
         lines = [f"`{' '.join(command.split())[:160]}` printed {size:,} bytes; at most "
                  f"{CODEX_EXEC_OUTPUT_BUDGET_BYTES:,} reach you whole"
+                 + (_CHAINED_READ_CLAUSE if _reads_chained(command) else "")
                  for command, size in (outputs or ()) if size > CODEX_EXEC_OUTPUT_BUDGET_BYTES]
         if outputs is None:
             return lines, "no per-command capture of the launch"

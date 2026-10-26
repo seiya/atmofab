@@ -2245,10 +2245,12 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
         self.assertIn("L20000 ", seen, msg)
         self.assertNotIn("L10000 ", seen, msg)
         self.assertLess(len(seen), 100000, msg)
-        # The codex reader row states the cut by the markers measured here.
+        # The codex reader row states the cut by the markers measured here, and pages through
+        # the host's helper (MR6), not a line range (PR-J3-a).
         from tools import pure_leaf
         row = pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]
-        for marker in ("Warning: truncated output", "tokens truncated", "sed -n"):
+        for marker in ("Warning: truncated output", "tokens truncated",
+                       f"python3 {pure_leaf.CODEX_READ_HELPER_NAME} <file>"):
             self.assertIn(marker, row, msg)
         ranged = api.tool_output(3)
         for i in range(9000, 9101):
@@ -2361,6 +2363,88 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
         self.assertEqual(sizes, [600000] * 6 + [rule, rule + 1, 101 * 30, 21000], msg)
         self.assertEqual([size > rule for size in sizes],
                          [True] * 6 + [False, True, False, False], msg)
+
+    def test_mr6_a_read_helper_page_reaches_the_model_whole(self) -> None:
+        """MR6 (issue #534 PR-J3-a): the host's reading helper, run as the codex reader row
+        tells a judge to run it. (a) At the default budget a page of a 600,000-byte seed
+        reaches the model whole — no header, no marker, and the rollout scan counts no cut —
+        and the `next:` command it prints returns the following page; a `cat` of the same seed
+        is still cut (the control that must be refused). (b) At the leaf-chosen
+        `max_output_tokens: 7500` of codex closing run (3), a page of a Fortran seed and of a
+        one-value-per-line JSON seed arrives whole, and codex reports `original_token_count`
+        on the uncut result too: `ceil(bytes / CODEX_BYTES_PER_TOKEN)` for both (measured on
+        codex-cli 0.164.0: 4,982 tokens for the 19,926-byte Fortran page), so the 4-byte token
+        MR5-e (vii) measured at the default budget holds at the lowered one. If a page is cut
+        here the page is too large at that budget (lower `CODEX_READ_ADVICE_BYTES`, not the
+        rule)."""
+        import re
+        import subprocess as sp
+        import sys as _sys
+
+        from tools import codex_rollout, pure_leaf
+        helper = pure_leaf.CODEX_READ_HELPER_NAME
+        (self.tree / helper).write_text(pure_leaf.CODEX_READ_HELPER_TEXT, encoding="utf-8")
+        lines = [f"L{i:05d} " + "x" * 22 for i in range(1, 20001)]
+        (self.tree / "big.txt").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        model = (Path(__file__).parent / "data" / "channel_aliased_dependency_calls"
+                 / "aliased_shallow_water2d_channel_model.f90").read_text(encoding="utf-8")
+        (self.tree / "model.f90").write_text(model * 4, encoding="utf-8")
+        (self.tree / "seed.json").write_text(wc._indented_json_seed(json.dumps(
+            {"cases": [{"case_id": f"c{i:04d}", "residual": i * 1.0e-9, "status": "pass",
+                        "metrics": {"l2": i / 7.0, "linf": i / 3.0}}
+                       for i in range(2000)]})), encoding="utf-8")
+
+        def page(*args: str) -> str:
+            return sp.run([_sys.executable, helper, *args], cwd=self.tree, check=True,
+                          capture_output=True, text=True).stdout
+
+        first = page("big.txt")
+        nxt = re.search(r"next: (python3 read\.py big\.txt \d+)$", first.rstrip("\n"))
+        self.assertIsNotNone(nxt, first[-200:])
+        second = page(*nxt.group(1).split()[2:])
+
+        def ec(cmd: str, extra: str = "") -> str:
+            return (f"const r = await tools.exec_command({{cmd: {json.dumps(cmd)}, "
+                    f"login: false{extra}}});")
+
+        low = ", max_output_tokens: 7500"
+        probe = "text(JSON.stringify({otc: r.original_token_count ?? null, len: r.output.length}));"
+        calls = [
+            ec(f"python3 {helper} big.txt") + "text(r.output);",
+            ec(nxt.group(1)) + "text(r.output);",
+            ec("cat big.txt") + "text(r.output);",
+            ec(f"python3 {helper} model.f90", low) + "text(r.output);",
+            ec(f"python3 {helper} model.f90", low) + probe,
+            ec(f"python3 {helper} seed.json", low) + "text(r.output);",
+            ec(f"python3 {helper} seed.json", low) + probe,
+        ]
+        api = self._api([[_exec_call(js, n)] for n, js in enumerate(calls, 1)])
+        res = self._launch(api, None)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        seen = [api.tool_output(n).split("Output:\n", 1)[1] for n in range(1, len(calls) + 1)]
+        msg = ("a read.py page did not reach the model whole: lower "
+               "pure_leaf.CODEX_READ_ADVICE_BYTES (the page), not the byte rule")
+        self.assertEqual([codex_rollout.text_is_cut(s) for s in seen],
+                         [False, False, True, False, False, False, False], msg)
+        self.assertEqual(seen[0].rstrip("\n"), first.rstrip("\n"), msg)
+        self.assertEqual(seen[1].rstrip("\n"), second.rstrip("\n"), msg)
+        self.assertEqual(seen[3].rstrip("\n"), page("model.f90").rstrip("\n"), msg)
+        self.assertEqual(seen[5].rstrip("\n"), page("seed.json").rstrip("\n"), msg)
+        for n in (4, 6):
+            got = json.loads(seen[n][seen[n].index("{"):seen[n].rindex("}") + 1])
+            # Both seeds are ASCII, so `len` is the page's bytes; the count is `ceil(bytes /
+            # CODEX_BYTES_PER_TOKEN)` at the lowered budget too, and under it.
+            self.assertEqual(got["otc"], -(-got["len"] // pure_leaf.CODEX_BYTES_PER_TOKEN),
+                             (n, got, msg))
+            self.assertLess(got["otc"], 7500, (n, got, msg))
+        thread = self._thread_id(res.stdout)
+        self.assertEqual(self._rollout_counts(thread), (None, len(calls), 1), msg)
+        commands: list[tuple[str, int]] = []
+        for line in res.stdout.splitlines():
+            wc._codex_command_output(line, wc._parse_codex_line(line), commands)
+        rule = pure_leaf.CODEX_EXEC_OUTPUT_BUDGET_BYTES
+        self.assertEqual([size > rule for _c, size in commands],
+                         [False, False, True, False, False, False, False], msg)
 
     def test_mr5e_v_a_resumed_turn_is_scanned_on_its_own_rows(self) -> None:
         """MR5-e (v): `exec resume` appends to the thread's one rollout, and the reader scans

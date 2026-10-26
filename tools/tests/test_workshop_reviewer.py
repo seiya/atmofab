@@ -431,6 +431,19 @@ class CompileVerifyTests(_Base):
         self.assertNotIn("repair_findings", third)
         self.assertIn("pure_context", third)
 
+    def test_the_reading_helper_is_a_seed_of_a_codex_tree_only(self) -> None:
+        """Issue #534 PR-J3-a: `read.py` is placed in every codex READING tree, with the host's
+        text, and in no claude one; it is a host-placed name, so the snapshot never carries it
+        (the snapshot row above)."""
+        self.run_substep()
+        helper = self.paths("child-1").tree / pure_leaf.CODEX_READ_HELPER_NAME
+        if self.PROVIDER == "codex_cli":
+            self.assertEqual(helper.read_text(), pure_leaf.CODEX_READ_HELPER_TEXT)
+        else:
+            self.assertFalse(helper.exists())
+        self.assertNotIn(pure_leaf.CODEX_READ_HELPER_NAME,
+                         [p.name for p in self.paths("child-1").snapshot.iterdir()])
+
     def test_a_seed_the_reviewer_edited_is_restored_before_its_warm_turn(self) -> None:
         """The host's documents, as the host placed them: an edit the reviewer made to a seed
         in one turn is gone when its warm repair turn starts."""
@@ -782,6 +795,37 @@ class _CodexCutReadRows:
         self.assertIn("cat host_verdict.json", prompt)
         self.assertIn(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"], prompt)
         self.assertIn("Work tree contract", prompt)
+
+    def test_a_rewritten_helper_is_re_placed_before_the_warm_turn(self) -> None:
+        name = pure_leaf.CODEX_READ_HELPER_NAME
+        seen: list[str] = []
+
+        def rewrites_the_helper(c, tree, kwargs):
+            (tree / name).write_text("print('all clear')\n", encoding="utf-8")
+
+        def reads_the_helper(c, tree, kwargs):
+            seen.append((tree / name).read_text())
+            (tree / self.OUTPUT).write_text(json.dumps(self.passing()), encoding="utf-8")
+
+        self.c.leaf_actions = [rewrites_the_helper, reads_the_helper]
+        self.assertEqual(self.run_substep().status, "pass")
+        self.assertTrue(self.c.spawns[1]["resume_session_id"])
+        self.assertEqual(seen, [pure_leaf.CODEX_READ_HELPER_TEXT])
+
+    def test_a_chained_read_s_finding_says_one_file_per_command(self) -> None:
+        chained = [("/usr/bin/zsh -lc \"sed -n '1,125p' tests.md; sed -n '1,125p' m.f90\"",
+                    40_963)]
+        for commands, clause in ((chained, True), (_over(), False)):
+            with self.subTest(clause=clause):
+                self.c.calls = []
+                self.c.spawns = []
+                self.c.leaf_actions = [
+                    _reads(commands=commands, then=_writes(self.OUTPUT, self.passing())),
+                    _writes(self.OUTPUT, self.passing())]
+                self.assertEqual(self.run_substep().status, "pass")
+                self.assertIn("printed", self.rows()[0]["failure_excerpt"])
+                findings = self.requests()[1]["repair_findings"]
+                self.assertEqual(wc._CHAINED_READ_CLAUSE in findings, clause, findings)
 
     def test_a_rollout_only_cut_names_its_call_and_a_delegation_is_refused(self) -> None:
         call = {"type": "response_item", "payload": {
