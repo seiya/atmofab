@@ -41,6 +41,8 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any
 
+import yaml
+
 from tools import workshop_tree
 from tools.workshop_tree import AssemblyFailure, LineagePaths
 
@@ -549,6 +551,25 @@ def _tree_file(ctx: WrapperContext, name: Any) -> tuple[Path | None, str | None]
     return ctx.paths.tree / rel, None
 
 
+def _every_case_id(ctx: WrapperContext, name: str) -> tuple[list[str], str | None]:
+    """Every `cases[].case_id` of the tree-relative case file `name`, in order, or `([], why)`."""
+    from tools.spec_input_gates import CASE_ID_TOKEN_RE
+
+    _present, document, why = workshop_tree._read_tree_document(
+        ctx.paths.tree, name, yaml.safe_load)
+    if why is not None:
+        return [], f"cases_file {why}"
+    cases = document.get("cases") if isinstance(document, dict) else None
+    ids = [case.get("case_id") for case in cases if isinstance(case, dict)] \
+        if isinstance(cases, list) else []
+    if not ids:
+        return [], (f"the case file {name} names no case (no `cases[].case_id`): pass "
+                    "case_ids, or name a case file that lists its cases")
+    if not all(isinstance(c, str) and CASE_ID_TOKEN_RE.fullmatch(c) for c in ids):
+        return [], f"the case file {name} holds a case_id that is not a case id"
+    return ids, None
+
+
 def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict[str, Any]:
     """Run a binary the leaf's `compile` built, on a case file of its tree."""
     from tools.build_runtime import tool_run_program
@@ -570,7 +591,8 @@ def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict
         built = sorted(p.name for p in ctx.paths.staged_bin.iterdir() if p.is_file())
         return _result(False, category=CATEGORY_BAD_ARGUMENTS,
                        findings=f"no built binary {binary!r}; compile built {built}")
-    cases_path, why = _tree_file(ctx, args.get("cases_file", "spec.ir.yaml"))
+    cases_name = args.get("cases_file", "spec.ir.yaml")
+    cases_path, why = _tree_file(ctx, cases_name)
     if cases_path is None:
         return _result(False, category=CATEGORY_BAD_ARGUMENTS, findings=why)
     case_ids = args.get("case_ids", [])
@@ -578,6 +600,13 @@ def _op_run(ctx: WrapperContext, args: Mapping[str, Any], on_spawn: Any) -> dict
             and all(isinstance(c, str) and CASE_ID_TOKEN_RE.fullmatch(c) for c in case_ids)):
         return _result(False, category=CATEGORY_BAD_ARGUMENTS,
                        findings="case_ids must be a list of case ids")
+    if not case_ids:
+        # No ids is every case of the case file, as the schema says (issue #534 PR-J3-a: the
+        # runner refuses a run naming no case, and a leaf-chosen subset is refused too when it
+        # leaves out a case a metrics basis targets — so "every case" is the useful default).
+        case_ids, why = _every_case_id(ctx, cases_name)
+        if not case_ids:
+            return _result(False, category=CATEGORY_BAD_ARGUMENTS, findings=why)
     if ctx.run_raw_dirs:
         current = ctx.paths.tree
         for part in ctx.run_raw_dirs:

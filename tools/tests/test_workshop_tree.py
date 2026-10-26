@@ -21,7 +21,7 @@ from tools import workshop_tree as wt
 from tools import workshop_wrapper as ww
 
 _SEEDS = {
-    "spec.ir.yaml": "meta: {}\n",
+    "spec.ir.yaml": "meta: {}\ncases:\n- case_id: c1\n- case_id: c2\n",
     "tests.md": "# tests\n",
     "CONTRACT.md": "contract\n",
     "x_runner.f90": "program r\nend program r\n",
@@ -705,6 +705,45 @@ class WrapperCallCompositionTests(_LineageCase):
         with mock.patch("tools.build_runtime.tool_run_syntax_check", record):
             self.assertTrue(ww.run_wrapper_op(ctx, "syntax_check")["ok"])
         self.assertEqual(staged[1], ["x_model.cu", "x_model.cuh"])
+
+    def test_a_run_without_case_ids_runs_every_case_of_the_case_file(self) -> None:
+        """F-J3-3 (issue #534 PR-J3-a): the schema says `case_ids` defaults to every case, and
+        the runner refuses a run naming none; so no ids (absent or `[]`) is every
+        `cases[].case_id` of the case file, in order, an explicit list is passed unchanged, and
+        a case file naming no case is refused before anything runs."""
+        from unittest import mock
+
+        from tools.workshop_mcp import TOOL_DEFINITIONS
+
+        self.assertIn("(default: every case)", TOOL_DEFINITIONS["run"]["inputSchema"][
+            "properties"]["case_ids"]["description"])
+        binary = self.make_binary()
+        (self.paths.tree / "sub").mkdir()
+        (self.paths.tree / "sub" / "few.yaml").write_text("cases:\n- case_id: c9\n")
+        (self.paths.tree / "none.yaml").write_text("cases: []\n")
+        (self.paths.tree / "flat.yaml").write_text("- case_id: c1\n")
+        ctx = _context(self.paths, self.reserved, max_wrapper_calls=100)
+        rows = [
+            ({"binary": "x_runner"}, ["c1", "c2"]),
+            ({"binary": "x_runner", "case_ids": []}, ["c1", "c2"]),
+            ({"binary": "x_runner", "case_ids": ["c2"]}, ["c2"]),
+            ({"binary": "x_runner", "cases_file": "sub/few.yaml"}, ["c9"]),
+        ]
+        with mock.patch("tools.build_runtime.tool_run_program", self.recorder()):
+            for args, ids in rows:
+                with self.subTest(args=args):
+                    self.calls.clear()
+                    self.assertTrue(ww.run_wrapper_op(ctx, "run", args)["ok"])
+                    command = self.calls[0]["command"]
+                    self.assertEqual(command[command.index(str(binary)) + 1:][2:], ids)
+            for cases_file in ("none.yaml", "flat.yaml"):
+                with self.subTest(cases_file=cases_file):
+                    self.calls.clear()
+                    out = ww.run_wrapper_op(
+                        ctx, "run", {"binary": "x_runner", "cases_file": cases_file})
+                    self.assertEqual(out["category"], ww.CATEGORY_BAD_ARGUMENTS)
+                    self.assertIn("names no case", out["findings"])
+                    self.assertEqual(self.calls, [])
 
     def test_a_run_creates_the_capture_directories_validate_execute_creates(self) -> None:
         from unittest import mock

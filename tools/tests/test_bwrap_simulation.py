@@ -1096,7 +1096,7 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
         self.paths.config.mkdir()
         (self.paths.config / ".credentials.json").write_text("{}")
         self.paths.make_work_dirs()
-        seeds = wt.seed_tree(self.paths, {"spec.ir.yaml": "cases: []\n"})
+        seeds = wt.seed_tree(self.paths, {"spec.ir.yaml": "cases:\n- case_id: c1\n"})
         reserved = wt.reserved_tree_names(seeds, "Makefile")
         wt.write_lineage_record(self.paths, node_key="component/x@0.1.0",
                               started_at_utc="2026-10-23T00:00:00Z")
