@@ -211,9 +211,11 @@ CODEX_EXEC_OUTPUT_BUDGET_BYTES = CODEX_EXEC_OUTPUT_BUDGET_TOKENS * CODEX_BYTES_P
 #: The size the codex reader row tells a leaf to keep each command's output under, and the page
 #: of the host's reading helper (`CODEX_READ_HELPER_TEXT`): HALF the byte rule (5,000 tokens at
 #: `CODEX_BYTES_PER_TOKEN`), not a margin under it, because a page must survive a budget the
-#: leaf lowers on its own — codex closing run (3)'s judge passed `max_output_tokens` 7,500 and
-#: 8,500 to `exec_command` (`src_20261025_003/verdict_meta.json`, issue #534 PR-J3-a), which
-#: the row tells it not to do. It was 32,000 (four fifths of the rule) until `workshop-7`.
+#: leaf lowers on its own — codex closing run (3)'s judges passed `max_output_tokens` 7,800
+#: (with 6,000 and 7,000 in the same launch), 7,500 and 8,500 to `exec_command`
+#: (`compile_verify_meta.json` of the channel IR `..._20261025_008`, `src_20261025_003/
+#: verdict_meta.json`; issue #534 PR-J3-a), which the row tells it not to do; a page fits the
+#: smallest of them (6,000 tokens is 24,000 bytes). It was 32,000 (four fifths of the rule) until `workshop-7`.
 CODEX_READ_ADVICE_BYTES = CODEX_EXEC_OUTPUT_BUDGET_BYTES // 2
 
 #: The tree name of the host's reading helper, a seed of every codex READING tree (issue #534
@@ -342,7 +344,11 @@ WORKSHOP_READER_TOOL_SURFACE_TEXT: dict[str, str] = {
                   f"of it prints is under {CODEX_READ_ADVICE_BYTES:,} bytes, so it reaches you "
                   "whole at the default budget. Do not read two files in one command, do not "
                   "`cat` or `sed` a file whole, and do not pass `max_output_tokens` or "
-                  "`max_tokens` (a lower budget cuts a page; a higher one does not help). Why: "
+                  "`max_tokens` (a lower budget cuts a page; a higher one does not help). Run each "
+                  "command in an `exec` of its own and print only its output: what one `exec` "
+                  "prints, all its `text()` together, is one output too, so two pages printed "
+                  f"by one `exec` arrive cut. `{CODEX_READ_HELPER_NAME}` is a host seed like "
+                  "`CONTRACT.md`: do not edit it. Why: "
                   "everything a command "
                   "prints reaches you through a token budget — the `exec` result's own "
                   f"({CODEX_EXEC_OUTPUT_BUDGET_TOKENS:,} tokens), `exec_command`'s and "
@@ -354,7 +360,7 @@ WORKSHOP_READER_TOOL_SURFACE_TEXT: dict[str, str] = {
                   "the kept head and tail were never shown to you, and a cut output is a read "
                   f"you have not made. A token here is {CODEX_BYTES_PER_TOKEN} bytes, and two "
                   "files read in one command are one output. Print a script's own result in pieces "
-                  "the helper's size, one call per piece, and read for yourself: what a "
+                  "the helper's size, one `exec` per piece, and read for yourself: what a "
                   "sub-agent reads is never shown to you. The host reads its own record of what "
                   "each command printed and of what reached you: a `pass` written in a turn in "
                   f"which any command's output exceeded {CODEX_EXEC_OUTPUT_BUDGET_BYTES:,} "

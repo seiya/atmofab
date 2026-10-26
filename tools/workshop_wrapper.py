@@ -554,7 +554,8 @@ def _tree_file(ctx: WrapperContext, name: Any) -> tuple[Path | None, str | None]
 def _every_case_id(ctx: WrapperContext, name: str) -> tuple[list[str], str | None]:
     """Every case id of the tree-relative case file `name`, or `([], why)`. Read by the
     runner renderer's own reader (`runner_ir.case_ids`: `case.test_case_set[].case_id`, in
-    declaration order, refused when empty, unsafe or duplicated), so the default is the set
+    declaration order, refused when empty, unsafe, duplicated or longer than the harness's
+    `case_id_len`), so the default is the set
     the host-rendered runner selects from."""
     from tools.runner_ir import RenderError, case_ids
 

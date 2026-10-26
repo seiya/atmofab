@@ -2361,7 +2361,7 @@ class DependencyRenames:
     """The dependency-operation renames of one model source (`dependency_renames`).
 
     ``names`` maps a local name to the `<dep>__<op>` it renames; ``spans`` are the view spans of
-    the model module unit(s) whose specification part imported them; ``scopes`` are the unit's
+    the module unit(s) named like the model file; ``scopes`` are the unit's
     procedures, each with the names it binds. A `call <local>` is a call of the target only
     inside a span and in no scope that shadows the local (`target_at`) — the use gate's
     question. The dataflow gate does not read this at all (`dependency_call_locals`)."""
@@ -2435,20 +2435,20 @@ def dependency_call_locals(lowered: str, dep_spec_ids: list[str]) -> dict[str, s
 def dependency_renames(lowered: str, unit_name: str,
                        dep_spec_ids: list[str]) -> DependencyRenames:
     """Every `use <dep>_model, only: <local> => <dep>__<op>` rename in the SPECIFICATION PART of
-    module ``unit_name`` (the model source's own module), for the two dependency gates
-    (`validate_dependency_operations` and `_validate_problem_model_dependency_dataflow`), which
-    read a `call <local>` as a call of `<dep>__<op>` (issue #534 PR-J3-a: two of three cold
-    channel launches on codex imported every operation under a rename and were refused six
-    times each for calling none). ONE reader, two callers, so the two gates cannot read one
-    rename two ways. The `use` statement is read by `_use_only_items`, the reader the
-    checks-reach gate uses for the same question about the checks module.
+    module ``unit_name`` (the model source's own module), for the dependency-use gate
+    (`validate_dependency_operations`), which reads a `call <local>` as a call of `<dep>__<op>`
+    (issue #534 PR-J3-a: two of three cold channel launches on codex imported every operation
+    under a rename and were refused six times each for calling none). The dataflow gate reads
+    the file's renames through `dependency_call_locals` instead, for the polarity reason stated
+    there. The `use` statement is read by `_use_only_items`, the reader the checks-reach gate
+    uses for the same question about the checks module.
 
     NOT resolved anywhere, so the name stays itself and a `call` of it is no dependency call
     to the use gate (refused there): a rename imported inside a procedure (not the module's specification
     part); a rename from a module that is not that dependency's `<dep>_model`, or whose target
     is not one of its `<dep>__*` names; a local name two `only:` items of the specification part
-    share; a local name that names a procedure the module defines or an interface block
-    declares, or that `declared_names` reads as declared in the module's specification part
+    share; a local name that names a procedure the module defines or ANY interface body of the
+    file declares (one inside another procedure included), or that `declared_names` reads as declared in the module's specification part
     (`use` statements and plain derived-type definition bodies left out — a component is
     reached through `%`). That reading over-binds, on the use gate's refused side: an interface body's
     dummy and a parameterized type's component count as module names.

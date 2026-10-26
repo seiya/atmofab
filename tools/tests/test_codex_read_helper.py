@@ -160,6 +160,16 @@ class CodexReadHelperTests(unittest.TestCase):
                 self.assertTrue(out.stdout.startswith(b"== read.py "), out.stdout)
         self.assertEqual(self.run_helper("link.txt").stdout.count(b"cannot be read"), 1)
 
+    def test_the_codex_reader_row_says_how_to_run_the_helper(self) -> None:
+        """Round 4 of PR-J3-a (leaf-read text): the row names the helper as a host seed the
+        leaf must not edit, and says that what one `exec` prints is one output, so pages are
+        read one `exec` each."""
+        row = pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT["codex_cli"]
+        for phrase in (f"python3 {NAME} <file>", f"`{NAME}` is a host seed like `CONTRACT.md`: "
+                       "do not edit it", "Run each command in an `exec` of its own",
+                       "what one `exec` prints, all its `text()` together, is one output too"):
+            self.assertEqual(row.count(phrase), 1, phrase)
+
     def test_the_only_number_in_the_script_is_the_cap(self) -> None:
         numbers = re.findall(r"\d{2,}", pure_leaf.CODEX_READ_HELPER_TEXT)
         self.assertEqual(set(numbers), {str(CAP)})

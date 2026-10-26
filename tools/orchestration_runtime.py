@@ -10241,8 +10241,9 @@ WORKSHOP_CUT_READ_SCOPE_PARAGRAPH = (
     "session cut, or was delegated to a sub-agent, so rows of what you judge were never shown "
     "to it, and the host set aside the document it wrote. This is a new session in a fresh "
     "tree, and no document of that session is in it: review again from the seeds, keeping "
-    "every output under the budget — the reads listed below in narrower pieces, a smaller "
-    "line range or a smaller part of a script's result per call — and reading for yourself, "
+    "every output under the budget — the reads listed below in narrower pieces: a file through "
+    "`python3 read.py <file>` when your tree has the host's `read.py`, a smaller part of a "
+    "script's result per call — and reading for yourself, "
     "and write the whole document from what this session sees. A session in which any output "
     "exceeds the budget, reaches you cut, or is a sub-agent's comes back the same way."
 )

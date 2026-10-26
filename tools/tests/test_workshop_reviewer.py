@@ -827,6 +827,21 @@ class _CodexCutReadRows:
                 findings = self.requests()[1]["repair_findings"]
                 self.assertEqual(wc._CHAINED_READ_CLAUSE in findings, clause, findings)
 
+    def test_the_chained_read_clause_is_said_once_and_leaves_the_reads_named(self) -> None:
+        """Round 4 of PR-J3-a: the clause is the findings' FIRST line, once, so six chained
+        over-budget commands of the run (3) shape still have four named in the 1,000-character
+        findings text the cold repair carries (a per-line clause left two, the third cut)."""
+        command = "/usr/bin/zsh -lc \"sed -n '1,125p' tests.md; sed -n '1,125p' {}.f90\""
+        commands = [(command.format(f"m{i}"), 40_963) for i in range(6)]
+        self.c.leaf_actions = [
+            _reads(commands=commands, then=_writes(self.OUTPUT, self.passing())),
+            _writes(self.OUTPUT, self.passing())]
+        self.assertEqual(self.run_substep().status, "pass")
+        findings = self.requests()[1]["repair_findings"]
+        self.assertTrue(findings.startswith(wc._CHAINED_READ_CLAUSE), findings[:200])
+        self.assertEqual(findings.count(wc._CHAINED_READ_CLAUSE), 1)
+        self.assertGreaterEqual(findings.count("printed 40,963 bytes"), 4, findings)
+
     def test_which_commands_count_as_chained_reads(self) -> None:
         """`_reads_chained` over the capture's spelling (`<shell> -lc <script>`): a list
         operator outside quotes, or two read programs on separate lines, is chained; one read,
