@@ -835,6 +835,11 @@ class _CodexCutReadRows:
             "/usr/bin/zsh -lc \"sed -n '1,9p' a; sed -n '1,9p' b\"": True,
             "/usr/bin/zsh -lc \"sed -n '1,9p' a && cat b\"": True,
             "/usr/bin/zsh -lc \"cat a | head -n 5\"": True,
+            # A list operator beside ONE read program: the operator clause alone.
+            "/usr/bin/zsh -lc \"cat a | wc -c\"": True,
+            "/usr/bin/zsh -lc \"cat a && echo done\"": True,
+            "/usr/bin/zsh -lc \"cat a || echo none\"": True,
+            "/usr/bin/zsh -lc \"cat a & wait\"": True,
             "/usr/bin/zsh -lc \"sed -n 1,9p a\nsed -n 1,9p b\"": True,
             "/usr/bin/zsh -lc \"python3 read.py tests.md 41\"": False,
             "/bin/bash -lc \"grep -n ';' x\"": False,

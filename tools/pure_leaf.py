@@ -291,10 +291,13 @@ def main(argv):
         size += len(line) + len(sep)
         k += 1
     if not page:
+        piece = CAP // 2
         sys.stdout.buffer.write(say(
-            name + ": line " + str(first) + " is " + str(len(lines[k])) + " bytes, over the "
-            + str(CAP) + "-byte page; read it in byte ranges with `cut -b`"
-            + ("; next: python3 read.py " + name + " " + str(first + 1)
+            name + ": line " + str(first) + " is " + str(len(lines[k].rstrip(b"\\n")))
+            + " bytes, more than one page holds; read it in pieces, one command each: `sed -n '"
+            + str(first) + "p' " + name + " | cut -b 1-" + str(piece) + "`, then `cut -b "
+            + str(piece + 1) + "-" + str(2 * piece) + "`, and so on"
+            + ("; after it: python3 read.py " + name + " " + str(first + 1)
                if first < total else "; end of file")))
         return 0
     if k == total:

@@ -89,9 +89,20 @@ class CodexReadHelperTests(unittest.TestCase):
         over = self.run_helper("long.txt", "2")
         self.assertEqual(over.returncode, 0)
         self.assertNotIn(b"zz", over.stdout)
+        piece = CAP // 2
         self.assertEqual(over.stdout.decode(), (
-            f"== read.py long.txt: line 2 is {CAP + 6} bytes, over the {CAP}-byte page; read "
-            "it in byte ranges with `cut -b`; next: python3 read.py long.txt 3\n"))
+            f"== read.py long.txt: line 2 is {CAP + 5} bytes, more than one page holds; read it "
+            f"in pieces, one command each: `sed -n '2p' long.txt | cut -b 1-{piece}`, then "
+            f"`cut -b {piece + 1}-{2 * piece}`, and so on; after it: python3 read.py long.txt 3\n"))
+        # The pieces command, run as printed, returns the line's first piece and nothing else.
+        first_piece = subprocess.run(
+            ["/bin/sh", "-c", f"sed -n '2p' long.txt | cut -b 1-{piece}"], cwd=self.tree,
+            capture_output=True, check=True).stdout
+        self.assertEqual(first_piece, b"z" * piece + b"\n")
+        # A line UNDER the cap that does not fit beside the trailer is named by its own size.
+        edge = CAP - 10
+        (self.tree / "edge.txt").write_text("y" * edge + "\n")
+        self.assertIn(f"line 1 is {edge} bytes", self.run_helper("edge.txt").stdout.decode())
 
     def test_refusals_are_one_trailer_line_and_exit_two(self) -> None:
         (self.tree / "f.txt").write_text("a\nb\n")
