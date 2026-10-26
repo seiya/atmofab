@@ -31,6 +31,8 @@ A disagreement that falls to the safe side (the stricter reading) may stay, but 
 
 | a phase's derivation key | `Conductor.run_phase` at phase START (`_phase_derivation` over the attempt's reserved / adopted refs; stamped into the meta on pass via `write-step-result`) | `DerivationResolver.select` at every later evaluation (`phase_derivation_inputs` over the SELECTED upstream outputs; compared with the stamp) | **Deliberate, and the pair is the contract (issue #250 PR-2)**: both call `phase_derivation_inputs`, so what differs is only WHICH refs are passed — the conductor's refs must equal the selection, which `prepare_node` (cold adoption) and `_adopt_certified_refs` (skip adoption, re-reserving the roots) keep true; a conductor ref that drifted from the selection would stamp a key the next evaluation cannot reproduce, which reads as `derivation_key_mismatch:<input>` on the next run rather than as a false certification. `ConductorProducedChainCertifiesTest` drives the conductor's own derivation through the stamp and back through the predicate |
 
+| whether a `call <local>` in a Fortran model is a call of a dependency operation (a `use <dep>_model, only: <local> => <dep>__<op>` rename) | the dependency-use gate: `dependency_renames` / `DependencyRenames.target_at` (`tools/backends/language/fortran/source.py`) — the model module's specification part, shadowed per scope | the rule-4 dataflow gate: `dependency_call_locals` — every rename of the file whose target is a dependency operation, any scope, any module, chains followed, no exclusion | **Deliberately TWO readers, and the disagreement is the design** (issue #534 PR-J3-a, PR #552): an unresolved call is REFUSED by the first and NOT CHECKED by the second, so each reads in its own safe direction — the use gate over-shadows (a false refusal), the dataflow gate over-reads (a false violation). The plan had one shared reader; §"opposite polarity" below is what that cost. Do not "unify" them |
+
 ## Facts with three or more readers (they do not fit the pair table)
 
 **Stop at "find one counterpart" and you will miss.** In PR #55, opening the readers in two
@@ -83,6 +85,38 @@ failed in a way I could not explain.
   something like `_FORTRAN_HOST_UNIT_OPEN` — a name that does not exist today)
 - Symptoms: "I fixed the pattern and nothing changed", "I reverted the mutation and no test
   failed" → **print the compiled value and look** (`print(<module>._FOO.pattern)`)
+
+## A neighbouring shape: two gates of opposite polarity sharing one reader
+
+Every row above asks whether two readers AGREE. This shape is the reverse: two gates that must
+NOT agree, because they fail in opposite directions. **The question to ask of a reader two gates
+share: what does each gate do with an input the reader leaves unresolved?** If one REFUSES it and
+the other DOES NOT CHECK it, an exclusion is the safe side for the first and a fail-open for the
+second, and no exclusion list makes both right.
+
+- **The episode (issue #534 PR-J3-a, PR #552).** Fortran models started calling dependency
+  operations through `use <dep>_model, only: <local> => <dep>__<op>` renames. The plan gave the
+  dependency-use gate and the rule-4 dataflow gate ONE reader of renames, "so the two gates
+  cannot read one rename two ways". The use gate must not count a call that is really something
+  else, so the reader excluded every local another binding could shadow. In the use gate that
+  is a refusal; in the dataflow gate a call the reader leaves unresolved is simply not checked
+  — so each exclusion let a discarded dependency result past Generate.gate. Four rounds, four
+  spellings, one per round: a file-wide exclusion (round 1); a per-procedure-name reading that a
+  contained procedure's dummy defeated (Codex, round 2); a per-scope reading defeated by a
+  `block` / `associate` / interface-body name (round 2); and, after the dataflow gate stopped
+  reading scope, the shared reader's filtered set itself — a rename it dropped altogether was
+  unchecked, a regression against `origin/main`, which had refused the source (round 3). What
+  closed it: the dataflow gate got its own reader, `dependency_call_locals`, with no exclusion
+  at all; the use gate kept the per-scope one. Each round's fix was correct for the spelling it
+  was handed, which is why the family kept coming back — the defect was the sharing.
+- **The tell**: a fix that narrows what a shared reader resolves in order to stop one gate
+  over-refusing, in a change where the same reader feeds a gate that treats "unresolved" as
+  "nothing to check". The same family appearing a second round running is the moment to ask the
+  polarity question (`atmofab-review-loop` §"The same family appeared two rounds running").
+- **The cost of splitting, stated**: the over-reading gate gains false violations (here: a
+  non-dependency procedure a rename's local name also names), and the two readers can now
+  disagree by design — record the pair in the table above so the next maintainer does not
+  "unify" them.
 
 ## How to look
 

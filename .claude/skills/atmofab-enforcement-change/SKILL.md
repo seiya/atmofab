@@ -683,6 +683,13 @@ auto-discovery side went straight through).
 - Confirm the **position** of the check too. Placed after a skip or an early return, it is inert
   under that condition
 - Check whether two places read the same fact, via `references/dual-read-pairs.md`
+- **Before two gates SHARE one reader, ask what each does with an input the reader leaves
+  unresolved — refuse it, or not check it.** Where the answers differ, the polarities are
+  opposite and every exclusion the reader makes is safe in one gate and a fail-open in the
+  other; give each gate its own reader. Issue #534 PR-J3-a planned "one reader, two callers"
+  for a rename reading the dependency-use gate (unresolved = refused) and the dataflow gate
+  (unresolved = unchecked) both used, and four rounds found one fail-open each in the dataflow
+  gate before the split (`references/dual-read-pairs.md` §"opposite polarity")
 - **If what you are adding is a conductor in-process (deterministic) substep, work
   `references/deterministic-substep-wiring.md` before writing anything** — it lists the sites that
   special-case one, across `tools/workflow_conductor.py` and `tools/orchestration_runtime.py`, and
