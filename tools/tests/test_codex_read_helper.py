@@ -132,6 +132,22 @@ class CodexReadHelperTests(unittest.TestCase):
         self.assertTrue(page.startswith(shorter), page[-120:])
         self.assertLess(len(page.encode()), CAP)
 
+    def test_the_size_check_counts_the_trailer_it_will_print(self) -> None:
+        """The trailer is sized with the next page's line number it will carry: where that
+        number gains a digit (9 -> 10), a page sized one byte short of the cap with a one-digit
+        guess would reach the cap exactly (round 3 of PR-J3-a: a mutant writing the current
+        line's number in the sized trailer survived)."""
+        trailer = "== read.py f.txt: lines 1-9 of 20; next: python3 read.py f.txt 10\n"
+        lines = ["a" * 99 + "\n"] * 8
+        lines.append("b" * (CAP - 800 - len(trailer) - 1) + "\n")
+        self.assertEqual(sum(map(len, lines)) + len(trailer), CAP)
+        lines += ["c\n"] * 11
+        (self.tree / "f.txt").write_text("".join(lines))
+        body, pages = self.read_all("f.txt")
+        self.assertEqual(body, "".join(lines).encode())
+        for page in pages:
+            self.assertLess(len(page), CAP)
+
     def test_refusals_are_one_trailer_line_and_exit_two(self) -> None:
         (self.tree / "f.txt").write_text("a\nb\n")
         os.symlink(self.tree / "f.txt", self.tree / "link.txt")

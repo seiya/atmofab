@@ -406,7 +406,8 @@ _PURE_ATTEMPT_EXCERPT_MAX_CHARS = 400
 #: The clause a cut-read finding line gains when its command chained reads (issue #534
 #: PR-J3-a: four of codex closing run (3)'s five refused reads printed several files in one
 #: command, and the cold repair named the command and the leaf repeated its shape).
-_CHAINED_READ_CLAUSE = (" — two files read in one command count as one output; read one file per "
+_CHAINED_READ_CLAUSE = (" — everything one command prints is one output, however many programs or "
+                        "files it chains; read one file per "
                         "command through `python3 read.py <file>`")
 
 #: The programs `_reads_chained` counts as a read when a command runs more than one of them.
