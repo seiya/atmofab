@@ -31172,6 +31172,9 @@ end module chan_model
             "a use of the caller's own": self._BASE.replace(
                 "    real :: t\n", "    use other_model, only: adv => other__step\n"
                 "    real :: t\n"),
+            "a module variable after a type definition": self._BASE.replace(
+                "  implicit none\n", "  implicit none\n  type :: cfg\n    real :: w\n"
+                "  end type cfg\n  real :: adv\n"),
             "an interface body in the specification part": self._BASE.replace(
                 "  implicit none\n", "  implicit none\n  interface\n    subroutine adv(a, b)\n"
                 "      real :: a, b\n    end subroutine adv\n  end interface\n"),
@@ -31203,9 +31206,32 @@ end module chan_model
             "  end subroutine solve\n")
         self.assertNotEqual(shadowed_inside, renamed)
         self.assertEqual(self._use(shadowed_inside), [])
+        # Round 2 (fixes reviewer): a `block` local, an `associate` name or an interface body's
+        # dummy of the local's name inside the CALLING procedure hid the call from this gate
+        # while another procedure's call satisfied the use gate. This gate reads no scope.
+        def beside(construct: str) -> str:
+            return renamed.replace("    y = x\n", f"    y = x\n{construct}").replace(
+                "end module chan_model",
+                "  subroutine good(a, b)\n    real, intent(in) :: a\n"
+                "    real, intent(out) :: b\n    call adv(a, b)\n  end subroutine good\n"
+                "end module chan_model")
+        constructs = {
+            "a block local": "    block\n      integer :: adv\n      adv = 1\n    end block\n",
+            "an associate name": "    associate (adv => t)\n      adv = 1.0\n    end associate\n",
+            "an interface body's dummy": "",
+        }
+        shadowed_construct = {label: beside(text) for label, text in constructs.items()}
+        shadowed_construct["an interface body's dummy"] = beside("").replace(
+            "    real :: t\n", "    real :: t\n    interface\n      subroutine unused(adv)\n"
+            "        real, intent(inout) :: adv\n      end subroutine unused\n"
+            "    end interface\n")
+        for label, source in shadowed_construct.items():
+            self.assertNotEqual(source, renamed, label)
+            self.assertEqual(self._use(source), [], label)
         for label, source in (("literal", literal), ("renamed", renamed),
                               ("shadowed elsewhere", shadowed_elsewhere),
-                              ("shadowed inside a contained procedure", shadowed_inside)):
+                              ("shadowed inside a contained procedure", shadowed_inside),
+                              *shadowed_construct.items()):
             self.assertIn("does not propagate dependency operation outputs",
                           " ".join(self._dataflow(source)), label)
         self.assertEqual(self._dataflow(self._BASE), [])
