@@ -737,7 +737,7 @@ _WORKSHOP_CONTRACT_DIGESTS = {
     # Issue #534 PR-J3-a: the `codex_cli` reader row leads with the host's reading helper, at
     # the lowered advice size, and the helper's text joins the digest (`workshop-6` shipped
     # with issue #547's PR #550, main d5d849be).
-    "workshop-7": "b3317aedd710df648abfe59813ed05a172933f39e41ee05018332518e3985cb0",
+    "workshop-7": "8c9f32dffbbf23f6c99643905a036e903ecc0755a3fa86433a415367fc0769e8",
 }
 
 

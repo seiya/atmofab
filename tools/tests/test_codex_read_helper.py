@@ -90,19 +90,47 @@ class CodexReadHelperTests(unittest.TestCase):
         self.assertEqual(over.returncode, 0)
         self.assertNotIn(b"zz", over.stdout)
         piece = CAP // 2
+        size = CAP + 5
+        command = "sed -n '2p' long.txt | cut -b "
         self.assertEqual(over.stdout.decode(), (
-            f"== read.py long.txt: line 2 is {CAP + 5} bytes, more than one page holds; read it "
-            f"in pieces, one command each: `sed -n '2p' long.txt | cut -b 1-{piece}`, then "
-            f"`cut -b {piece + 1}-{2 * piece}`, and so on; after it: python3 read.py long.txt 3\n"))
-        # The pieces command, run as printed, returns the line's first piece and nothing else.
-        first_piece = subprocess.run(
-            ["/bin/sh", "-c", f"sed -n '2p' long.txt | cut -b 1-{piece}"], cwd=self.tree,
-            capture_output=True, check=True).stdout
-        self.assertEqual(first_piece, b"z" * piece + b"\n")
+            f"== read.py long.txt: line 2 is {size} bytes, too long for one page with this "
+            f"line; read it in pieces, one command each: `{command}1-{piece}`, then "
+            f"`{command}{piece + 1}-{2 * piece}`, and so on to byte {size}; after it: "
+            "python3 read.py long.txt 3\n"))
+        # Each printed command, run as printed, returns its piece of the line and nothing else,
+        # and the pieces to the stated last byte are the whole line.
+        pieces = b""
+        for a in range(1, size + 1, piece):
+            got = subprocess.run(["/bin/sh", "-c", f"{command}{a}-{a + piece - 1}"],
+                                 cwd=self.tree, capture_output=True, check=True).stdout
+            self.assertLessEqual(len(got), piece + 1)
+            pieces += got.rstrip(b"\n")
+        self.assertEqual(pieces, b"z" * size)
+        # On the last line the trailer does not say the file is read before its pieces are.
+        (self.tree / "last.txt").write_text("a\n" + "q" * (CAP + 1) + "\n")
+        self.assertTrue(self.run_helper("last.txt", "2").stdout.decode().endswith(
+            "; after its pieces, end of file\n"))
         # A line UNDER the cap that does not fit beside the trailer is named by its own size.
         edge = CAP - 10
         (self.tree / "edge.txt").write_text("y" * edge + "\n")
         self.assertIn(f"line 1 is {edge} bytes", self.run_helper("edge.txt").stdout.decode())
+
+    def test_a_page_never_reaches_the_cap_itself(self) -> None:
+        """The cap is exclusive: a line whose page would be EXACTLY the cap, trailer included,
+        is not printed (the boundary `>=` decides, which only the digest pinned before)."""
+        trailer = "== read.py f.txt: lines 1-1 of 2; next: python3 read.py f.txt 2\n"
+        line = "w" * (CAP - len(trailer) - 1) + "\n"
+        self.assertEqual(len(line) + len(trailer), CAP)
+        (self.tree / "f.txt").write_text(line + "tail\n")
+        out = self.run_helper("f.txt").stdout
+        self.assertLess(len(out), CAP)
+        self.assertNotIn(b"ww", out)
+        self.assertIn(b"too long for one page", out)
+        shorter = "w" * (CAP - len(trailer) - 2) + "\n"
+        (self.tree / "f.txt").write_text(shorter + "tail\n")
+        page = self.run_helper("f.txt").stdout.decode()
+        self.assertTrue(page.startswith(shorter), page[-120:])
+        self.assertLess(len(page.encode()), CAP)
 
     def test_refusals_are_one_trailer_line_and_exit_two(self) -> None:
         (self.tree / "f.txt").write_text("a\nb\n")

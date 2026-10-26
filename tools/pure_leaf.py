@@ -292,13 +292,15 @@ def main(argv):
         k += 1
     if not page:
         piece = CAP // 2
+        size = len(lines[k].rstrip(b"\\n"))
+        line = "sed -n '" + str(first) + "p' " + name + " | cut -b "
         sys.stdout.buffer.write(say(
-            name + ": line " + str(first) + " is " + str(len(lines[k].rstrip(b"\\n")))
-            + " bytes, more than one page holds; read it in pieces, one command each: `sed -n '"
-            + str(first) + "p' " + name + " | cut -b 1-" + str(piece) + "`, then `cut -b "
-            + str(piece + 1) + "-" + str(2 * piece) + "`, and so on"
+            name + ": line " + str(first) + " is " + str(size) + " bytes, too long for one "
+            + "page with this line; read it in pieces, one command each: `" + line + "1-"
+            + str(piece) + "`, then `" + line + str(piece + 1) + "-" + str(2 * piece)
+            + "`, and so on to byte " + str(size)
             + ("; after it: python3 read.py " + name + " " + str(first + 1)
-               if first < total else "; end of file")))
+               if first < total else "; after its pieces, end of file")))
         return 0
     if k == total:
         end = say(name + ": lines " + str(first) + "-" + str(total) + " of " + str(total)
@@ -338,7 +340,7 @@ WORKSHOP_READER_TOOL_SURFACE_TEXT: dict[str, str] = {
                   f"{CODEX_READ_HELPER_NAME} <file>` prints the first page and the command for "
                   "the next; run that command until it says `end of file`. Everything one call "
                   f"of it prints is under {CODEX_READ_ADVICE_BYTES:,} bytes, so it reaches you "
-                  "whole at the default budget. Do not chain two reads in one command, do not "
+                  "whole at the default budget. Do not read two files in one command, do not "
                   "`cat` or `sed` a file whole, and do not pass `max_output_tokens` or "
                   "`max_tokens` (a lower budget cuts a page; a higher one does not help). Why: "
                   "everything a command "
@@ -351,7 +353,7 @@ WORKSHOP_READER_TOOL_SURFACE_TEXT: dict[str, str] = {
                   "a `cat`, a `sed`, an `rg` and a script of your own alike; the rows between "
                   "the kept head and tail were never shown to you, and a cut output is a read "
                   f"you have not made. A token here is {CODEX_BYTES_PER_TOKEN} bytes, and two "
-                  "reads in one command are one output. Print a script's own result in pieces "
+                  "files read in one command are one output. Print a script's own result in pieces "
                   "the helper's size, one call per piece, and read for yourself: what a "
                   "sub-agent reads is never shown to you. The host reads its own record of what "
                   "each command printed and of what reached you: a `pass` written in a turn in "
