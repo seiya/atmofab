@@ -31127,6 +31127,59 @@ end module chan_model
             fortran_source.dependency_renames(self._BASE.lower(), "other_model", ["dep"]).names,
             {})
 
+    _OTHER = ("  subroutine other(a)\n    real, intent(inout) :: a\n{body}"
+              "  end subroutine other\nend module chan_model")
+
+    def test_a_name_another_scope_binds_does_not_hide_the_import(self) -> None:
+        """Round 1 of PR-J3-a: shadowing is per scope. A dummy, a local or a contained
+        procedure of the local's name in ANOTHER procedure, or a derived type's component of
+        that name, leaves `solve`'s `call adv` a dependency call (each compiles: the inner name
+        hides the import in that scope only); the recorded aliased channel model with a
+        `coriolis` component added still passes."""
+        legitimate = {
+            "a dummy of another procedure": self._BASE.replace("end module chan_model",
+                self._OTHER.format(body="    a = 1.0\n").replace("other(a)", "other(a, adv)")
+                .replace("intent(inout) :: a\n", "intent(inout) :: a\n    real :: adv\n")),
+            "a local of another procedure": self._BASE.replace("end module chan_model",
+                self._OTHER.format(body="    real :: adv\n    adv = a\n    a = adv\n")),
+            "a procedure another one contains": self._BASE.replace("end module chan_model",
+                self._OTHER.format(body="    call adv(a)\n  contains\n    subroutine adv(b)\n"
+                                       "      real :: b\n      b = 0.0\n"
+                                       "    end subroutine adv\n")),
+            "a derived type's component": self._BASE.replace(
+                "  implicit none\n",
+                "  implicit none\n  type :: cfg\n    logical :: adv = .true.\n"
+                "  end type cfg\n"),
+        }
+        for label, source in legitimate.items():
+            with self.subTest(label):
+                self.assertEqual(self._use(source), [], label)
+        aliased = (_ALIASED_DEP_DIR / "aliased_shallow_water2d_channel_model.f90").read_text()
+        component = aliased.replace("    integer :: nx, ny, ng, axis, profile, sign, planned\n",
+                                    "    integer :: nx, ny, ng, axis, profile, sign, planned\n"
+                                    "    logical :: coriolis = .true.\n", 1)
+        self.assertNotEqual(component, aliased)
+        self.assertEqual(self._use(component, _CHANNEL_DEPS,
+                                   "shallow_water2d_channel_model.f90"), [])
+
+    def test_a_name_the_calling_scope_binds_hides_the_import(self) -> None:
+        refused = {
+            "a local of the caller": self._BASE.replace("    real :: t\n", "    real :: t, adv\n"),
+            "a procedure the caller contains": self._BASE.replace(
+                "  end subroutine solve\n",
+                "  contains\n    subroutine adv(a, b)\n      real :: a, b\n      b = a\n"
+                "    end subroutine adv\n  end subroutine solve\n"),
+            "a use of the caller's own": self._BASE.replace(
+                "    real :: t\n", "    use other_model, only: adv => other__step\n"
+                "    real :: t\n"),
+            "an interface body in the specification part": self._BASE.replace(
+                "  implicit none\n", "  implicit none\n  interface\n    subroutine adv(a, b)\n"
+                "      real :: a, b\n    end subroutine adv\n  end interface\n"),
+        }
+        for label, source in refused.items():
+            with self.subTest(label):
+                self.assertIn(self._MESSAGE, self._use(source), label)
+
     def test_the_dataflow_gate_reads_a_rename_as_a_dependency_call(self) -> None:
         # The issue #181 shape: the dependency result is discarded. Written with the literal
         # callee and with the rename, the gate must say the same thing; before PR-J3-a the
@@ -31135,7 +31188,13 @@ end module chan_model
             "use dep_model, only: &\n    adv => dep__advance", "use dep_model"
         ).replace("call adv(x, t)\n    y = t", "call dep__advance(x, t)\n    y = x")
         renamed = self._BASE.replace("call adv(x, t)\n    y = t", "call adv(x, t)\n    y = x")
-        for label, source in (("literal", literal), ("renamed", renamed)):
+        # Round 1: a dummy of the local's name in ANOTHER procedure left the gate silent on the
+        # renamed call (the file-wide exclusion); per-scope, the discarded result is seen.
+        shadowed_elsewhere = renamed.replace("end module chan_model", self._OTHER.format(
+            body="    a = 1.0\n").replace("other(a)", "other(a, adv)").replace(
+            "intent(inout) :: a\n", "intent(inout) :: a\n    real :: adv\n"))
+        for label, source in (("literal", literal), ("renamed", renamed),
+                              ("shadowed elsewhere", shadowed_elsewhere)):
             self.assertIn("does not propagate dependency operation outputs",
                           " ".join(self._dataflow(source)), label)
         self.assertEqual(self._dataflow(self._BASE), [])

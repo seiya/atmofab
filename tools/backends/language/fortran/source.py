@@ -1187,7 +1187,7 @@ def _validate_problem_model_dependency_dataflow(
     # A `call <local>` of a dependency-operation rename is a dependency call: the same reader as
     # the dependency-use check (`dependency_renames`), over the same text. Without it the gate
     # saw no dependency call on an aliased model and checked nothing (issue #534 PR-J3-a).
-    renames = dependency_renames(lowered, model_file.stem, dep_spec_ids).names
+    renames_of = dependency_renames(lowered, model_file.stem, dep_spec_ids)
 
     # This gate keeps its own view, and it is the ONLY one of the three that still needs one:
     # `declared_names` below reads `lowered` directly. The envelopes it is handed were
@@ -1248,6 +1248,7 @@ def _validate_problem_model_dependency_dataflow(
             continue
 
         dep_output_candidates: set[str] = set()
+        renames = renames_of.names_in(sub_name.strip().lower())
         for callee, args_raw, call_pos in iter_calls(body):
             if not any(renames.get(callee, callee).startswith(prefix)
                        for prefix in dep_prefixes):
@@ -2341,18 +2342,80 @@ def mask_string_contents(line: str) -> str:
 
 
 @dataclass(frozen=True)
+class _RenameScope:
+    """One procedure of the model module, as a scope a rename's local name can be shadowed in:
+    its view span (header through `end` statement) and the names it binds itself."""
+
+    name: str
+    start: int
+    end: int
+    shadows: frozenset[str]
+
+
+@dataclass(frozen=True)
 class DependencyRenames:
     """The dependency-operation renames of one model source (`dependency_renames`).
 
     ``names`` maps a local name to the `<dep>__<op>` it renames; ``spans`` are the view spans of
-    the model module unit(s) whose specification part imported them — the scope in which a
-    `call <local>` is a call of that operation."""
+    the model module unit(s) whose specification part imported them; ``scopes`` are the unit's
+    procedures, each with the names it binds. A `call <local>` is a call of the target only
+    inside a span and in no scope that shadows the local (`target_at`, `names_in`)."""
 
     names: Mapping[str, str]
     spans: tuple[tuple[int, int], ...]
+    scopes: tuple[_RenameScope, ...] = ()
+
+    def target_at(self, local: str, offset: int) -> str | None:
+        """The target a `call <local>` at view offset `offset` reaches, or None."""
+        target = self.names.get(local)
+        if target is None or not any(a <= offset < b for a, b in self.spans):
+            return None
+        if any(s.start <= offset < s.end and local in s.shadows for s in self.scopes):
+            return None
+        return target
+
+    def names_in(self, procedure: str) -> Mapping[str, str]:
+        """The renames a `call` in the body of every procedure named `procedure` reaches — for a
+        reader that holds a procedure's body without its offsets (the dataflow gate's
+        envelopes). A local any procedure of that name, any procedure it contains, or its host
+        shadows is left out (the conservative reading: a call left unresolved is read as it was
+        before the rename reading); a procedure the unit does not define reaches none."""
+        own = [s for s in self.scopes if s.name == procedure]
+        if not own:
+            return {}
+        related = {s for s in self.scopes for o in own
+                   if (o.start <= s.start and s.end <= o.end) or
+                      (s.start <= o.start and o.end <= s.end)}
+        shadowed = set().union(*(s.shadows for s in related))
+        return {k: v for k, v in self.names.items() if k not in shadowed}
 
 
 _NO_DEPENDENCY_RENAMES = DependencyRenames({}, ())
+
+# A derived-type definition's opening and closing statements, over the joined view: its
+# components are reached through `%` only, so they bind no name in the scope around it.
+_TYPE_DEFINITION_OPEN_RE = re.compile(r"^\s*type\b(?!\s*\()(?:\s*,[^:]*)?\s*(?:::)?\s*\w+\s*$")
+_TYPE_DEFINITION_END_RE = re.compile(r"^\s*end\s*type\b")
+
+
+def _bound_names(text: str, *, drop_use: bool) -> set[str]:
+    """Every name `declared_names` reads as declared in `text` (one statement per line),
+    derived-type definition bodies left out — a component is not a name of the scope — and,
+    when `drop_use`, `use` statements left out."""
+    kept: list[str] = []
+    in_type = False
+    for line in text.split("\n"):
+        if in_type:
+            in_type = not _TYPE_DEFINITION_END_RE.match(line)
+            continue
+        if _TYPE_DEFINITION_OPEN_RE.match(line):
+            in_type = True
+            continue
+        if drop_use and _USE_STATEMENT_LINE_RE.match(line):
+            continue
+        kept.append(line)
+    constants, others = declared_names("\n".join(kept))
+    return constants | others
 
 
 def dependency_renames(lowered: str, unit_name: str,
@@ -2366,21 +2429,26 @@ def dependency_renames(lowered: str, unit_name: str,
     rename two ways. The `use` statement is read by `_use_only_items`, the reader the
     checks-reach gate uses for the same question about the checks module.
 
-    NOT resolved, so the name stays itself and a `call` of it is no dependency call (the refused
-    side): a rename imported inside a procedure (not the module's specification part); a rename
-    from a module that is not that dependency's `<dep>_model`, or whose target is not one of its
-    `<dep>__*` names; a local name two `only:` items of the specification part share; a local
-    name the file defines as a procedure, declares (a module variable, a local, an
-    `associate` binding — `declared_names` over the view with its `use` statements dropped), or
-    takes as a dummy of any procedure, since any of those makes a `call` of it something other
-    than the import in some scope. A `use` without `only:` is not read: what it imports is the
-    other module's to say. A source whose structure does not read yields no rename — the literal
-    reading — and raises nothing: `validate_dependency_operations` must not start failing on a
-    source it read before.
+    NOT resolved anywhere, so the name stays itself and a `call` of it is no dependency call
+    (the refused side): a rename imported inside a procedure (not the module's specification
+    part); a rename from a module that is not that dependency's `<dep>_model`, or whose target
+    is not one of its `<dep>__*` names; a local name two `only:` items of the specification part
+    share; a local name the module's specification part also declares (a module variable, a
+    constant; a derived type's COMPONENT is not one, it is reached through `%`), that names a
+    procedure the module defines, or that an interface block declares.
 
-    Not closed: a rename's local name redeclared through a `use` inside one procedure while the
-    module-level import stays visible elsewhere is read as the import everywhere in the unit
-    (the same reach claim the checks-reach gate makes; `Generate.verify` owns the semantics)."""
+    SHADOWED PER SCOPE (round 1 of PR-J3-a: a file-wide exclusion refused a correct model whose
+    unrelated procedure had a dummy of the local's name): inside one procedure the import is
+    hidden by what that procedure binds itself — a dummy, a declared local or `associate` name,
+    a `use` of its own, a procedure it contains — and a `call <local>` there is no dependency
+    call (`DependencyRenames.target_at`); every other procedure still reaches the import.
+
+    A `use` without `only:` is not read: what it imports is the other module's to say. A source
+    whose structure does not read yields no rename — the literal reading — and raises nothing:
+    `validate_dependency_operations` must not start failing on a source it read before.
+
+    Not closed: a bare `use other_module` inside a procedure that happens to export the local
+    name (nothing in one file can see that) is read as the import there."""
     try:
         view, tree, to_view = structure_reading(lowered)
     except SourceStructureError:
@@ -2389,13 +2457,18 @@ def dependency_renames(lowered: str, unit_name: str,
     dep_prefix = {f"{spec_id.lower()}_model": f"{spec_id.lower()}__" for spec_id in dep_spec_ids}
     imports: dict[str, set[tuple[str, str]]] = {}
     spans: list[tuple[int, int]] = []
+    module_bound: set[str] = {p.procedure.name.strip().lower() for p in tree.prototypes}
+    unit_procedures: list[Any] = []
     for unit in tree.units:
         if unit.kind != "module" or unit.name != unit_l:
             continue
         spans.append((to_view(unit.start), to_view(unit.end)))
-        spec_end = min((p.header_start for p in tree.procedures
-                        if unit.start <= p.header_start < unit.end), default=unit.end)
-        for stmt in view[to_view(unit.start):to_view(spec_end)].split("\n"):
+        inside = [p for p in tree.procedures if unit.start <= p.header_start < unit.end]
+        unit_procedures += inside
+        spec_end = min((p.header_start for p in inside), default=unit.end)
+        spec_part = view[to_view(unit.start):to_view(spec_end)]
+        module_bound |= _bound_names(spec_part, drop_use=True)
+        for stmt in spec_part.split("\n"):
             read = _use_only_items(stmt.strip())
             if read is None or read[1] is None:
                 continue
@@ -2404,21 +2477,39 @@ def dependency_renames(lowered: str, unit_name: str,
                 imports.setdefault(local, set()).add((read[0], target))
     if not imports:
         return _NO_DEPENDENCY_RENAMES
-    constants, others = declared_names("\n".join(
-        line for line in view.split("\n") if not _USE_STATEMENT_LINE_RE.match(line)))
-    taken = constants | others
-    for procedure in tree.procedures:
-        taken.add(procedure.name.strip().lower())
-        taken.update(split_names(procedure.dummy_args_text.lower()))
+    # A procedure no other procedure of the unit contains is a module procedure: its name is
+    # the module's. A contained one's name is its host's to bind.
+    def contains(outer: Any, inner: Any) -> bool:
+        return (outer is not inner and outer.header_start < inner.header_start
+                and inner.body_end <= outer.body_end)
+
     names: dict[str, str] = {}
+    for procedure in unit_procedures:
+        if not any(contains(outer, procedure) for outer in unit_procedures):
+            module_bound.add(procedure.name.strip().lower())
     for local, reached in imports.items():
-        if len(reached) != 1 or local in taken:
+        if len(reached) != 1 or local in module_bound:
             continue
         module, target = next(iter(reached))
         prefix = dep_prefix.get(module)
         if prefix is not None and target != local and target.startswith(prefix):
             names[local] = target
-    return DependencyRenames(names, tuple(spans)) if names else _NO_DEPENDENCY_RENAMES
+    if not names:
+        return _NO_DEPENDENCY_RENAMES
+    scopes: list[_RenameScope] = []
+    for procedure in unit_procedures:
+        start = to_view(procedure.header_start)
+        end_line = view.find("\n", to_view(procedure.body_end))
+        end = len(view) if end_line < 0 else end_line + 1
+        own_end = to_view(procedure.body_end if procedure.contains_at is None
+                          else min(procedure.contains_at, procedure.body_end))
+        shadows = _bound_names(view[to_view(procedure.body_start):own_end], drop_use=False)
+        shadows.update(split_names(procedure.dummy_args_text.lower()))
+        shadows.update(inner.name.strip().lower() for inner in unit_procedures
+                       if contains(procedure, inner))
+        scopes.append(_RenameScope(procedure.name.strip().lower(), start, end,
+                                   frozenset(shadows & set(names))))
+    return DependencyRenames(names, tuple(spans), tuple(scopes))
 
 
 def validate_dependency_operations(
@@ -2453,9 +2544,8 @@ def validate_dependency_operations(
         renames = dependency_renames(text.lower(), model_file.stem, dep_spec_ids)
         callees = [match.group(1) for match in _DEPENDENCY_CALL_RE.finditer(live)]
         renamed_callees = [
-            renames.names[match.group(1)] for match in _DEPENDENCY_CALL_RE.finditer(live)
-            if match.group(1) in renames.names
-            and any(start <= match.start() < end for start, end in renames.spans)]
+            target for match in _DEPENDENCY_CALL_RE.finditer(live)
+            if (target := renames.target_at(match.group(1), match.start())) is not None]
 
         for spec_id in dep_spec_ids:
             spec_id_l = spec_id.lower()
