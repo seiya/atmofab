@@ -1184,6 +1184,10 @@ def _validate_problem_model_dependency_dataflow(
         return
 
     dep_prefixes = tuple(f"{spec_id.lower()}__" for spec_id in dep_spec_ids)
+    # A `call <local>` of a dependency-operation rename is a dependency call: the same reader as
+    # the dependency-use check (`dependency_renames`), over the same text. Without it the gate
+    # saw no dependency call on an aliased model and checked nothing (issue #534 PR-J3-a).
+    renames = dependency_renames(lowered, model_file.stem, dep_spec_ids).names
 
     # This gate keeps its own view, and it is the ONLY one of the three that still needs one:
     # `declared_names` below reads `lowered` directly. The envelopes it is handed were
@@ -1245,7 +1249,8 @@ def _validate_problem_model_dependency_dataflow(
 
         dep_output_candidates: set[str] = set()
         for callee, args_raw, call_pos in iter_calls(body):
-            if not any(callee.startswith(prefix) for prefix in dep_prefixes):
+            if not any(renames.get(callee, callee).startswith(prefix)
+                       for prefix in dep_prefixes):
                 continue
             call_vars = split_names(args_raw)
             for var in call_vars:
@@ -2335,6 +2340,87 @@ def mask_string_contents(line: str) -> str:
 
 
 
+@dataclass(frozen=True)
+class DependencyRenames:
+    """The dependency-operation renames of one model source (`dependency_renames`).
+
+    ``names`` maps a local name to the `<dep>__<op>` it renames; ``spans`` are the view spans of
+    the model module unit(s) whose specification part imported them — the scope in which a
+    `call <local>` is a call of that operation."""
+
+    names: Mapping[str, str]
+    spans: tuple[tuple[int, int], ...]
+
+
+_NO_DEPENDENCY_RENAMES = DependencyRenames({}, ())
+
+
+def dependency_renames(lowered: str, unit_name: str,
+                       dep_spec_ids: list[str]) -> DependencyRenames:
+    """Every `use <dep>_model, only: <local> => <dep>__<op>` rename in the SPECIFICATION PART of
+    module ``unit_name`` (the model source's own module), for the two dependency gates
+    (`validate_dependency_operations` and `_validate_problem_model_dependency_dataflow`), which
+    read a `call <local>` as a call of `<dep>__<op>` (issue #534 PR-J3-a: two of three cold
+    channel launches on codex imported every operation under a rename and were refused six
+    times each for calling none). ONE reader, two callers, so the two gates cannot read one
+    rename two ways. The `use` statement is read by `_use_only_items`, the reader the
+    checks-reach gate uses for the same question about the checks module.
+
+    NOT resolved, so the name stays itself and a `call` of it is no dependency call (the refused
+    side): a rename imported inside a procedure (not the module's specification part); a rename
+    from a module that is not that dependency's `<dep>_model`, or whose target is not one of its
+    `<dep>__*` names; a local name two `only:` items of the specification part share; a local
+    name the file defines as a procedure, declares (a module variable, a local, an
+    `associate` binding — `declared_names` over the view with its `use` statements dropped), or
+    takes as a dummy of any procedure, since any of those makes a `call` of it something other
+    than the import in some scope. A `use` without `only:` is not read: what it imports is the
+    other module's to say. A source whose structure does not read yields no rename — the literal
+    reading — and raises nothing: `validate_dependency_operations` must not start failing on a
+    source it read before.
+
+    Not closed: a rename's local name redeclared through a `use` inside one procedure while the
+    module-level import stays visible elsewhere is read as the import everywhere in the unit
+    (the same reach claim the checks-reach gate makes; `Generate.verify` owns the semantics)."""
+    try:
+        view, tree, to_view = structure_reading(lowered)
+    except SourceStructureError:
+        return _NO_DEPENDENCY_RENAMES
+    unit_l = unit_name.lower()
+    dep_prefix = {f"{spec_id.lower()}_model": f"{spec_id.lower()}__" for spec_id in dep_spec_ids}
+    imports: dict[str, set[tuple[str, str]]] = {}
+    spans: list[tuple[int, int]] = []
+    for unit in tree.units:
+        if unit.kind != "module" or unit.name != unit_l:
+            continue
+        spans.append((to_view(unit.start), to_view(unit.end)))
+        spec_end = min((p.header_start for p in tree.procedures
+                        if unit.start <= p.header_start < unit.end), default=unit.end)
+        for stmt in view[to_view(unit.start):to_view(spec_end)].split("\n"):
+            read = _use_only_items(stmt.strip())
+            if read is None or read[1] is None:
+                continue
+            for item, target in read[1]:
+                local = item.split("=>", 1)[0].strip().lower() if "=>" in item else target
+                imports.setdefault(local, set()).add((read[0], target))
+    if not imports:
+        return _NO_DEPENDENCY_RENAMES
+    constants, others = declared_names("\n".join(
+        line for line in view.split("\n") if not _USE_STATEMENT_LINE_RE.match(line)))
+    taken = constants | others
+    for procedure in tree.procedures:
+        taken.add(procedure.name.strip().lower())
+        taken.update(split_names(procedure.dummy_args_text.lower()))
+    names: dict[str, str] = {}
+    for local, reached in imports.items():
+        if len(reached) != 1 or local in taken:
+            continue
+        module, target = next(iter(reached))
+        prefix = dep_prefix.get(module)
+        if prefix is not None and target != local and target.startswith(prefix):
+            names[local] = target
+    return DependencyRenames(names, tuple(spans)) if names else _NO_DEPENDENCY_RENAMES
+
+
 def validate_dependency_operations(
     model_files: list[Path],
     dep_spec_ids: list[str],
@@ -2358,13 +2444,26 @@ def validate_dependency_operations(
         # refuse that source on their own, on a component the §5.1 signature pin does when the
         # node has a pinned surface, and otherwise it is read as it was before issue #506.
         live = _without_dead_contained_procedures(text.lower()) or lowered
+        # A `use` statement's module, read by the shared `use` reader over the joined view, so
+        # `use, non_intrinsic :: <dep>_model` and a continued statement are a use too.
+        used_modules = {read[0] for read in map(_use_only_items, joined_masked_view(
+            text.lower()).split("\n")) if read is not None}
+        # A rename's local name is a call of its target only inside the model module's own unit
+        # (the scope its specification part imports into): `live` has the view's offsets.
+        renames = dependency_renames(text.lower(), model_file.stem, dep_spec_ids)
+        callees = [match.group(1) for match in _DEPENDENCY_CALL_RE.finditer(live)]
+        renamed_callees = [
+            renames.names[match.group(1)] for match in _DEPENDENCY_CALL_RE.finditer(live)
+            if match.group(1) in renames.names
+            and any(start <= match.start() < end for start, end in renames.spans)]
 
         for spec_id in dep_spec_ids:
             spec_id_l = spec_id.lower()
             op_prefix = re.escape(spec_id_l + "__")
             module_name = re.escape(spec_id_l + "_model")
 
-            if not re.search(rf"\buse\s+{module_name}\b", lowered):
+            if (not re.search(rf"\buse\s+{module_name}\b", lowered)
+                    and f"{spec_id_l}_model" not in used_modules):
                 violations.append(
                     f"{model_file}: missing dependency module use ({spec_id}_model)"
                 )
@@ -2374,9 +2473,13 @@ def validate_dependency_operations(
                     f"{model_file}: dependency operation redefinition detected ({spec_id}__*)"
                 )
 
-            if not re.search(rf"\bcall\s+{op_prefix}[a-z0-9_]*\b", live):
+            if not any(callee.startswith(spec_id_l + "__")
+                       for callee in callees + renamed_callees):
                 violations.append(
-                    f"{model_file}: missing dependency operation call ({spec_id}__*)"
+                    f"{model_file}: missing dependency operation call ({spec_id}__*): a call "
+                    f"of {spec_id}__<op>, by that name or by the local name of a "
+                    f"`use {spec_id}_model, only: <local> => {spec_id}__<op>` rename in the "
+                    "model module's specification part"
                 )
 
 
@@ -2620,6 +2723,10 @@ def checks_harness_isolation_violations(
 
 
 
+
+# The callee of a `call` statement, as the dependency-use check reads it (no argument list
+# required: `call op` is a call).
+_DEPENDENCY_CALL_RE = re.compile(r"\bcall\s+([a-z_][a-z0-9_]*)\b")
 
 _HARNESS_USE_RE = re.compile(
     r"(?i)^\s*use\b\s*(?:,\s*\w+\s*)?(?:::\s*)?(\w+)\s*(.*)$", re.DOTALL)

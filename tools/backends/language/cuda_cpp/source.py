@@ -1026,7 +1026,19 @@ def validate_dependency_operations(
             call_re = _dependency_op_call_re(spec_id)
             if not any(call_re.search(body) for body in bodies):
                 violations.append(
-                    f"{model_file}: missing dependency operation call ({spec_id}__*)")
+                    f"{model_file}: {missing_dependency_call_message(spec_id)}")
+
+
+def missing_dependency_call_message(spec_id: str) -> str:
+    """The dependency-use gate's refusal for a source that calls no `<spec_id>__*` operation.
+    It names what IS read, because the C++ binding has no import rename to follow (issue #534
+    PR-J3-a): a call by the operation's name from a function body. A pointer alias
+    (`auto f = &dep__op; f(x)`) and a reference alias (`auto& f = dep__op;`) are refused; a
+    lambda whose body calls `dep__op(...)` passes, because the call is in a live body — the three
+    answers `test_language_cuda_cpp` pins as measured."""
+    return (f"missing dependency operation call ({spec_id}__*): a call of "
+            f"`{spec_id}__<op>(...)` by that name, from a function body; an alias through a "
+            "pointer or reference is not read")
 
 
 # --- the three `problem` model gates -----------------------------------------------------------

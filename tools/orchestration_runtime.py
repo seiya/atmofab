@@ -3628,8 +3628,8 @@ def _resolve_dependency_facts(
                                 # FALLBACK (empty-list-only, COMPONENT deps only): the IR authored
                                 # no operations for this component dep. Surface every
                                 # `<dep_spec_id>__` subroutine from the certified source so the
-                                # leaf's mandatory `call <dep>__*` has a real interface to build
-                                # against. Scoped to `component/` deps because the empty-ops
+                                # leaf's mandatory call of a `<dep>__*` operation has a real
+                                # interface to build against. Scoped to `component/` deps because the empty-ops
                                 # fail_closed loop this closes is driven by the component-only
                                 # generate gate (the language's `validate_dependency_operations`); a
                                 # problem dep authors `operations: []` legitimately and must

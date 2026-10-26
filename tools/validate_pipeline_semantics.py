@@ -9045,7 +9045,8 @@ def _validate_component_dep_operations(
 
     The failure this pins is a closure fail_closed with no repairable signal. The
     generate-side gate (the language's ``validate_dependency_operations``) requires a
-    component dep's model to ``use <dep>_model`` + ``call <dep>__*`` UNCONDITIONALLY, while
+    component dep's model to import ``<dep>_model`` and call a ``<dep>__*`` operation
+    (by its name, or through an import rename the language binding reads) UNCONDITIONALLY, while
     the host injects that dependency's published call-site interfaces
     (``_resolve_dependency_facts``) keyed off the IR's ``operations`` list. When Compile
     authors ``operations: []`` (an authoring wobble — the 7/19 run authored the real op
