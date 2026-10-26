@@ -1183,17 +1183,16 @@ def _validate_problem_model_dependency_dataflow(
         return
 
     dep_prefixes = tuple(f"{spec_id.lower()}__" for spec_id in dep_spec_ids)
-    # A `call <local>` of a dependency-operation rename is a dependency call: the same reader as
-    # the dependency-use check (`dependency_renames`), over the same text. Without it the gate
-    # saw no dependency call on an aliased model and checked nothing (issue #534 PR-J3-a).
-    # SCOPE IS NOT READ HERE, on purpose, and that is the opposite polarity to the use gate's:
-    # there a call left unresolved is REFUSED, here it is NOT CHECKED, so every scope reading
-    # that hides a call is a fail-open in this gate — rounds 1 and 2 of PR-J3-a found three
-    # (an unrelated procedure's dummy, a contained procedure's dummy, a `block` / `associate` /
-    # interface-body name). Every `call <local>` of a rename is read as the dependency call;
-    # a call of a procedure that shadows the local is then checked as one, which can only add
-    # a candidate (a false violation, the direction this gate accepts).
-    renames_of = dependency_renames(lowered, model_file.stem, dep_spec_ids)
+    # A `call <local>` of a dependency-operation rename is a dependency call (issue #534
+    # PR-J3-a: without it the gate saw no dependency call on an aliased model and checked
+    # nothing). NOT the use gate's reader, on purpose — the opposite polarity: there a call
+    # left unresolved is REFUSED, here it is NOT CHECKED, so every exclusion that reader makes is
+    # a fail-open in this gate. Rounds 1-3 of PR-J3-a found four (an unrelated procedure's
+    # dummy, a contained procedure's dummy, a `block` / `associate` / interface-body name, and a
+    # rename that reader drops altogether). `dependency_call_locals` reads every `only:` item of
+    # the file whose target is a dependency operation, with no exclusion; a call of a procedure
+    # that shadows such a local is then checked as one, which can only add a candidate.
+    call_locals = dependency_call_locals(lowered, dep_spec_ids)
 
     # This gate keeps its own view, and it is the ONLY one of the three that still needs one:
     # `declared_names` below reads `lowered` directly. The envelopes it is handed were
@@ -1255,7 +1254,7 @@ def _validate_problem_model_dependency_dataflow(
 
         dep_output_candidates: set[str] = set()
         for callee, args_raw, call_pos in iter_calls(body):
-            if not any(renames_of.names.get(callee, callee).startswith(prefix)
+            if not any(call_locals.get(callee, callee).startswith(prefix)
                        for prefix in dep_prefixes):
                 continue
             call_vars = split_names(args_raw)
@@ -2365,7 +2364,7 @@ class DependencyRenames:
     the model module unit(s) whose specification part imported them; ``scopes`` are the unit's
     procedures, each with the names it binds. A `call <local>` is a call of the target only
     inside a span and in no scope that shadows the local (`target_at`) — the use gate's
-    question. The dataflow gate reads ``names`` alone (its comment says why)."""
+    question. The dataflow gate does not read this at all (`dependency_call_locals`)."""
 
     names: Mapping[str, str]
     spans: tuple[tuple[int, int], ...]
@@ -2409,6 +2408,30 @@ def _bound_names(text: str, *, drop_use: bool) -> set[str]:
     return constants | others
 
 
+def dependency_call_locals(lowered: str, dep_spec_ids: list[str]) -> dict[str, str]:
+    """Every local name ANY `use ..., only: <local> => <target>` of the file binds to a
+    `<dep>__<op>` target, for the dataflow gate (`_validate_problem_model_dependency_dataflow`):
+    a `call <local>` is then checked as the dependency call it may be. No exclusion of any kind
+    — no scope, no module check, no clash rule, no structure parse — because in that gate an
+    unresolved call is NOT CHECKED, so every exclusion `dependency_renames` makes for the use
+    gate (where an unresolved call is refused) is a fail-open here: round 3 of PR-J3-a drove a
+    discarded result past it through a rename the use gate drops (a local an interface body's
+    dummy or a parameterized type's component names, a rename imported inside a procedure)
+    beside a second rename that satisfied the use gate. A local bound to two dependency targets
+    keeps one of them; over-reading a call can only add a candidate (a false violation, the
+    direction that gate accepts)."""
+    prefixes = tuple(f"{spec_id.lower()}__" for spec_id in dep_spec_ids)
+    out: dict[str, str] = {}
+    for stmt in joined_masked_view(lowered).split("\n"):
+        read = _use_only_items(stmt.strip())
+        if read is None or read[1] is None:
+            continue
+        for item, target in read[1]:
+            if "=>" in item and target.startswith(prefixes):
+                out.setdefault(item.split("=>", 1)[0].strip().lower(), target)
+    return out
+
+
 def dependency_renames(lowered: str, unit_name: str,
                        dep_spec_ids: list[str]) -> DependencyRenames:
     """Every `use <dep>_model, only: <local> => <dep>__<op>` rename in the SPECIFICATION PART of
@@ -2421,13 +2444,13 @@ def dependency_renames(lowered: str, unit_name: str,
     checks-reach gate uses for the same question about the checks module.
 
     NOT resolved anywhere, so the name stays itself and a `call` of it is no dependency call
-    (the refused side): a rename imported inside a procedure (not the module's specification
+    to the use gate (refused there): a rename imported inside a procedure (not the module's specification
     part); a rename from a module that is not that dependency's `<dep>_model`, or whose target
     is not one of its `<dep>__*` names; a local name two `only:` items of the specification part
     share; a local name that names a procedure the module defines or an interface block
     declares, or that `declared_names` reads as declared in the module's specification part
     (`use` statements and plain derived-type definition bodies left out — a component is
-    reached through `%`). That reading over-binds, on the refused side: an interface body's
+    reached through `%`). That reading over-binds, on the use gate's refused side: an interface body's
     dummy and a parameterized type's component count as module names.
 
     SHADOWED PER SCOPE, for the use gate only (`DependencyRenames.target_at`; round 1 of
@@ -2437,7 +2460,8 @@ def dependency_renames(lowered: str, unit_name: str,
     `associate` name, an interface body's dummy, a `use` of its own, a procedure it contains —
     and a `call <local>` there is no dependency call; every other procedure still reaches the
     import. The over-binding is the use gate's safe direction (a refusal). The dataflow gate
-    reads no scope (`_validate_problem_model_dependency_dataflow` says why).
+    reads none of this: it reads every rename of the file (`dependency_call_locals`), because
+    for it every exclusion here is the unchecked side, not the refused one.
 
     A `use` without `only:` is not read: what it imports is the other module's to say. A source
     whose structure does not read yields no rename — the literal reading — and raises nothing:

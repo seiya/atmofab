@@ -31236,6 +31236,39 @@ end module chan_model
                           " ".join(self._dataflow(source)), label)
         self.assertEqual(self._dataflow(self._BASE), [])
 
+    def test_the_dataflow_gate_checks_a_rename_the_use_gate_drops(self) -> None:
+        """Round 3 of PR-J3-a (correctness reviewer): the dataflow gate read the use gate's
+        filtered renames, so a rename that reader drops was NOT CHECKED there while a second,
+        kept rename satisfied the use gate — a discarded result passed both (origin/main
+        refused the source at the use gate). Each source compiles; on each, the use gate passes
+        on `ini` and the dataflow gate now raises the discarded `adv` result."""
+        def model(uses: str, decls: str = "", body_use: str = "") -> str:
+            return ("module chan_model\n" + uses + "  implicit none\n" + decls + "contains\n"
+                    "  subroutine solve(x, y)\n" + body_use + "    real, intent(in) :: x\n"
+                    "    real, intent(out) :: y\n    real :: t\n    call ini()\n"
+                    "    call adv(x, t)\n    y = x\n  end subroutine solve\nend module chan_model\n")
+        both = "  use dep_model, only: adv => dep__step, ini => dep__init\n"
+        dropped = {
+            "an interface body's dummy names the local": model(
+                both, "  abstract interface\n    subroutine cb(adv)\n"
+                "      real, intent(in) :: adv\n    end subroutine cb\n  end interface\n"),
+            "a parameterized type's component names the local": model(
+                both, "  type :: pt(k)\n    integer, kind :: k = 4\n"
+                "    real(k) :: adv\n  end type pt\n"),
+            "the rename is imported inside the procedure": model(
+                "  use dep_model, only: ini => dep__init\n", "",
+                "    use dep_model, only: adv => dep__step\n"),
+            "the rename comes through another module": model(
+                "  use dep_model, only: ini => dep__init\n  use glue, only: adv => dep__step\n"),
+        }
+        for label, source in dropped.items():
+            with self.subTest(label):
+                self.assertEqual(self._use(source), [], label)
+                self.assertIn("does not propagate dependency operation outputs",
+                              " ".join(self._dataflow(source)), label)
+                consumed = source.replace("    y = x\n", "    y = t\n")
+                self.assertEqual(self._dataflow(consumed), [], label)
+
     def test_a_source_whose_structure_does_not_read_keeps_the_literal_reading(self) -> None:
         broken = self._BASE.replace("  end subroutine solve\n", "")
         with self.assertRaises(fortran_source.SourceStructureError):
