@@ -319,6 +319,39 @@ class _GenerateProducer(_Dialect):
         self.assertIn(pure_leaf.HTTP_PRODUCER_TOOL_SURFACE_TEXT, prompt)
         self.assertNotIn("MCP", prompt)
 
+    def test_an_outer_reopen_in_the_same_process_is_warm(self) -> None:
+        """`repair_strategy: reuse` on an open HTTP lineage this process holds is a WARM turn:
+        the reopen's request carries the first launch's conversation (`warm_capable` holds
+        for an HTTP entry, which declares no `warm_resume`)."""
+        self.conductor([self.calls(*_bundle_writes()), self.done(),
+                        self.calls(*_bundle_writes()), self.done()])
+        self.assertEqual(self.run_substep().status, "pass")
+        evidence = self.c.__dict__.setdefault("evidence", {})
+        runner = self.c._runner_basename(self.refs)
+        text = (self.repo / self.refs.source_dir() / "src" / runner).read_text()
+        self.refs = wc.NodeRefs(target_id=self.refs.target_id, node_key=self.refs.node_key,
+                                spec_path=self.refs.spec_path, ir_id=self.refs.ir_id,
+                                pipeline_id=self.refs.pipeline_id,
+                                source_id="src_20260715_002")
+        src = self.repo / self.refs.source_dir() / "src"
+        src.mkdir(parents=True)
+        (src / runner).write_text(text, encoding="utf-8")
+
+        def read(repo_root, oid, *, agent_run_id):
+            return evidence.get(f"{agent_run_id}.request.input.json")
+
+        with mock.patch.object(ort, "_read_launch_request_payload", read):
+            outcome = self.c.run_substep(self.refs, "generate", "generate", repair={
+                "repair_strategy": "reuse", "repair_target_agent_run_id": "child-1",
+                "repair_findings": "lint: unused variable x", "issue_severity": "major",
+                "repair_reason": "generate_gate_lint"})
+        self.assertEqual(outcome.status, "pass", outcome)
+        request = self.requests()[-1]
+        self.assertEqual((request["workshop_lineage_id"], request.get("warm_resume")),
+                         ("child-1", True))
+        bodies = [_unmarked(b) for b in self.api.main_requests()]
+        self.assertGreater(len(bodies[2]["messages"]), len(bodies[0]["messages"]))
+
     def test_the_setting_surface_names_the_declared_tools(self) -> None:
         self.conductor([self.done()])
         entry = self.c.entry_for("generate", "generate")
@@ -504,6 +537,19 @@ class _Reading(_Dialect):
             orchestration_dir=self.repo / "workspace" / "orchestrations" / _ORCH,
             backend="http"))
         self.assertEqual(record["ended_by"], "lineage_timeout")
+
+
+    def test_a_lineage_ended_by_its_bound_leaves_no_history(self) -> None:
+        """Every launch's lineage times out: the review is run again until the budget is spent
+        and the substep fails; no conversation of an ended lineage stays in memory — the last
+        one is dropped by the turn's own tail, which no machine transition follows."""
+        late = {"sleep": 3, "then": self.calls(self.write_output(self.passing()))}
+        self.conductor([late, late, late, late])
+        with mock.patch.object(wc.Conductor, "_workshop_timeout",
+                               return_value=(1, "lineage_timeout_s")):
+            outcome = self.c.run_substep(self.refs, self.PHASE, self.SUBSTEP)
+        self.assertEqual(outcome.status, "fail")
+        self.assertEqual(self.c._workshop_http_histories(), {})
 
 
 class _GenerateReading(_Reading):

@@ -352,6 +352,42 @@ class _EndsMixin:
         self.assertEqual(server.main_requests(), [])
 
 
+class StreamReaderTests(unittest.TestCase):
+    def test_a_block_left_unstopped_is_a_transport_error(self) -> None:
+        """A `message_stop` with a `tool_use` block that never got its `content_block_stop`:
+        the partial arguments are never a call."""
+        frames = [
+            ("message_start", json.dumps({"message": {"model": "m", "usage": {}}})),
+            ("content_block_start", json.dumps({"index": 0, "content_block": {
+                "type": "tool_use", "id": "t", "name": "write_file", "input": {}}})),
+            ("content_block_delta", json.dumps({"index": 0, "delta": {
+                "type": "input_json_delta", "partial_json": '{"path": "a", "content": "b"}'}})),
+            ("message_delta", json.dumps({"delta": {"stop_reason": "tool_use"}})),
+            ("message_stop", "{}")]
+        reply, error = loop._anthropic_stream_reply(frames)
+        self.assertIsNone(reply)
+        self.assertIn("never stopped", error)
+        stopped = [*frames[:3], ("content_block_stop", json.dumps({"index": 0})), *frames[3:]]
+        reply, error = loop._anthropic_stream_reply(stopped)
+        self.assertIsNone(error)
+        self.assertEqual(reply.calls[0].arguments, {"path": "a", "content": "b"})
+
+
+class UsageSumTests(_Base):
+    def test_usage_is_summed_over_the_launch_s_requests_up_to_a_transport_error(self) -> None:
+        server = self.api([_reply_anthropic([tool_use("a", "list_files", {})]),
+                           _reply_anthropic([tool_use("b", "list_files", {})]),
+                           {"status": 500, "body": "boom"}])
+        server.usage = {"input_tokens": 7, "output_tokens": 3,
+                        "cache_read_input_tokens": 5, "cache_creation_input_tokens": 2}
+        result = self.run_loop(server)
+        self.assertIsNotNone(result.transport_error)
+        self.assertEqual((result.usage["input_tokens"], result.usage["output_tokens"],
+                          result.usage["cache_read_input_tokens"],
+                          result.usage["cache_creation_input_tokens"]), (14, 6, 10, 4))
+        self.assertEqual(result.usage["provider_details"]["requests"], 2)
+
+
 class AnthropicEndsTests(_EndsMixin, _Base):
     end_stop = "end_turn"
     tool_stop = "tool_use"
