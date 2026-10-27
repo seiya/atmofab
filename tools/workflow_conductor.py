@@ -10135,7 +10135,6 @@ class Conductor:
             nothing gates it, so carrying a dead lineage's `verdict.json` forward would certify
             a document no finished launch stood behind."""
             assert self.lineage is not None
-            self.conductor._drop_workshop_http_history(self.lineage.paths.lineage_id)
             self.prior = None if self.reading else self.lineage.paths
             self.lineage, self.resume_session_id = None, None
 
@@ -10150,7 +10149,6 @@ class Conductor:
             assert self.lineage is not None
             from tools.workshop_tree import end_lineage
             end_lineage(self.lineage.paths, "superseded")
-            self.conductor._drop_workshop_http_history(self.lineage.paths.lineage_id)
             self.prior, self.lineage, self.resume_session_id = None, None, None
 
         def after_repair(self, turn: "Conductor._WorkshopTurn", child_arid: str) -> None:

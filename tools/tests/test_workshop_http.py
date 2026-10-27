@@ -366,6 +366,55 @@ class _GenerateProducer(_Dialect):
             *FILES, "derive", "compile", "lint", "syntax_check", "run"]})
 
 
+class MachineHistoryTests(unittest.TestCase):
+    """The lineage machine forgets an HTTP lineage's conversation when it sets the lineage
+    aside without the turn's tail having ended it: a supersede in `next_launch` (here a warm
+    lineage with no time left) and a pruned home (`home_gone`)."""
+
+    def _machine(self, deadline: float):
+        from types import SimpleNamespace
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        paths = workshop_tree.LineagePaths(homes_root=root / "h", orchestration_id="o",
+                                           lineage_id="lin", orchestration_dir=root / "o",
+                                           backend="http")
+        paths.home.mkdir(parents=True)
+        paths.make_work_dirs()
+        workshop_tree.write_lineage_record(paths, node_key="n", started_at_utc="t")
+        conductor = SimpleNamespace(
+            _workshop_http_histories=lambda: histories,
+            _drop_workshop_http_history=lambda lid: histories.pop(lid, None),
+            _workshop_session_resumable=lambda p, s: True)
+        histories = {"lin": object()}
+        lineage = SimpleNamespace(paths=paths, deadline=deadline)
+        entry = SimpleNamespace(is_http=True, supports=lambda cap: False, max_wrapper_calls=5)
+        spec = SimpleNamespace(workshop_freeze_context=object())
+        machine = wc.Conductor._WorkshopLineageMachine(
+            conductor, None, entry, spec, lineage=lineage, resume_session_id="lin")
+        return machine, histories, paths
+
+    def test_a_superseded_lineage_s_history_is_dropped(self) -> None:
+        import time as _time
+        machine, histories, paths = self._machine(_time.time() - 5)
+        self.assertFalse(machine.next_launch())
+        self.assertEqual(histories, {})
+        self.assertEqual(workshop_tree.read_lineage_record(paths)["ended_by"],
+                         "lineage_timeout")
+
+    def test_an_open_lineage_with_time_left_goes_warm_and_keeps_it(self) -> None:
+        import time as _time
+        machine, histories, _paths = self._machine(_time.time() + 600)
+        self.assertTrue(machine.next_launch())
+        self.assertIn("lin", histories)
+
+    def test_a_pruned_home_drops_the_history(self) -> None:
+        import time as _time
+        machine, histories, _paths = self._machine(_time.time() + 600)
+        machine.home_gone()
+        self.assertEqual(histories, {})
+
+
 class AnthropicGenerateProducerTests(_GenerateProducer, unittest.TestCase):
     pass
 
