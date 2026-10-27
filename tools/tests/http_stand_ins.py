@@ -45,9 +45,11 @@ class _ScriptedServer:
     #: Write the response body in pieces of this many bytes (flushing each), so a client read
     #: can end mid-frame and mid-character.
     write_bytes = 0
-    #: Declare a `Content-Length` this many bytes LONGER than the body and close: the body
-    #: arrives whole and the read then fails (a severed teardown).
+    #: Declare a `Content-Length` this many bytes LONGER than the body and hold the connection
+    #: open `hold_s` seconds before closing: the body arrives whole and the read then outlives
+    #: the client's deadline (a trailer that never comes).
     short_by = 0
+    hold_s = 0.0
 
     def __init__(self, script: list[Any]) -> None:
         self.script = list(script)
@@ -86,8 +88,6 @@ class _ScriptedServer:
                 self.send_response(status)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(data) + outer.short_by))
-                if outer.short_by:
-                    self.send_header("Connection", "close")
                 self.end_headers()
                 if outer.write_bytes:
                     for i in range(0, len(data), outer.write_bytes):
@@ -95,6 +95,9 @@ class _ScriptedServer:
                         self.wfile.flush()
                 else:
                     self.wfile.write(data)
+                if outer.hold_s:
+                    self.wfile.flush()
+                    time.sleep(outer.hold_s)
 
             do_GET = do_POST
 

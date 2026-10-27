@@ -386,16 +386,17 @@ class StreamEndTests(unittest.TestCase):
 
 class SeveredTeardownTests(_Base):
     def test_a_complete_stream_whose_teardown_is_severed_is_not_a_transport_death(self) -> None:
-        """The provider's terminator is on the wire, then the connection dies before the
-        declared length: the reply is complete and is used (the pure path's rule)."""
+        """The provider's terminator is on the wire, then the rest of the declared length never
+        comes and the request's own `timeout_s` runs out: the reply is complete and is used
+        (the pure path's rule), not a transport death."""
         for dialect in ("anthropic_api", "openai_compatible"):
             with self.subTest(dialect=dialect):
                 self.dialect = dialect
                 self.calls = []
                 done = (_reply_anthropic([], "end_turn", "all done") if dialect == "anthropic_api"
                         else ({"content": "all done"}, "stop"))
-                server = self.api([done], short_by=64)
-                result = self.run_loop(server)
+                server = self.api([done], short_by=64, hold_s=4)
+                result = self.run_loop(server, timeout_s=2)
                 self.assertIsNone(result.transport_error, result)
                 self.assertEqual(result.text, "all done")
 
