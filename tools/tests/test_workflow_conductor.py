@@ -8401,6 +8401,20 @@ class _DiagnoseFake(_FakeConductor):
         directive = wc._last_json_object(text)
         if isinstance(directive, dict):
             (tree / "directive.json").write_text(json.dumps(directive), encoding="utf-8")
+        if entry.provider == "codex_cli":
+            # What the real CLI leaves for the host's cut-read check (issue #547): the thread's
+            # rollout and the per-command capture — one clean read unless the row set
+            # `codex_reads` (rollout texts) / `codex_commands`.
+            from tools.tests.test_workshop_reviewer import _rollout_rows
+            day = tree.parent / "config" / "sessions" / "2026" / "10" / "27"
+            day.mkdir(parents=True, exist_ok=True)
+            thread = self._session_id_for_child(kwargs["child_arid"], entry)
+            (day / f"rollout-2026-10-27T00-00-00-{thread}.jsonl").write_text(
+                "".join(json.dumps(r) + "\n" for r in _rollout_rows(
+                    getattr(self, "codex_reads", ("ok\n",)))), encoding="utf-8")
+            if proc.command_outputs is None:
+                proc.command_outputs = list(getattr(
+                    self, "codex_commands", [("/usr/bin/zsh -c 'cat diagnosis.json'", 120)]))
         return proc
 
 
@@ -8780,6 +8794,8 @@ class DiagnosticianTest(unittest.TestCase):
         `turn.completed` object on `proc.usage` — no `total_tokens`, no `cost_usd`. The row is
         written through `_leaf_usage_row`, which totals them, rather than off `proc.usage`."""
         c = self._make(_cfg("codex", agent_model="gpt-5.6-sol"), "o_codex")
+        c._session_id_for_child = (  # type: ignore[assignment]
+            lambda arid, entry=None: f"thread-{arid}")
         c.leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
             0, '{"action":"reopen","target_phase":"compile","reason":"x"}', "",
             usage={"input_tokens": 10, "output_tokens": 20})
@@ -8794,6 +8810,42 @@ class DiagnosticianTest(unittest.TestCase):
         tree = c.homes / c.orchestration_id / "codex" / "child-1" / "tree"
         self.assertTrue((tree / CODEX_READ_HELPER_NAME).is_file())
         self.assertTrue((tree / "diagnosis.json").is_file())
+        self.assertEqual(self._finalized_row(c)["status"], "pass")
+
+    def test_a_codex_diagnosis_over_a_cut_read_is_discarded(self) -> None:
+        """A codex launch exits 0 whether or not what it read reached the model whole (issue
+        #547): the judges' cut-read check runs on the diagnostician too, and a cut read — an
+        output over the budget, a cut marker in the rollout — or a rollout the host cannot read
+        discards the directive, since a diagnosis is never run again."""
+        from tools.pure_leaf import CODEX_EXEC_OUTPUT_BUDGET_BYTES
+        directive = '{"action":"retry","target_phase":"generate","reason":"x"}'
+        cases = {
+            "an output over the budget": {"codex_commands": [
+                ("/usr/bin/zsh -c 'cat diagnosis.json'", CODEX_EXEC_OUTPUT_BUDGET_BYTES + 1)]},
+            "a cut marker": {"codex_reads": ("head\n…1200 tokens truncated…\ntail\n",)},
+            "no capture": {},
+            "clean": {},
+        }
+        for label, setup in cases.items():
+            with self.subTest(case=label):
+                c = self._make(_cfg("codex", agent_model="gpt-5.6-sol"), f"o_cut_{len(label)}")
+                c._session_id_for_child = (  # type: ignore[assignment]
+                    lambda arid, entry=None: f"thread-{arid}")
+                for name, value in setup.items():
+                    setattr(c, name, value)
+                c.leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+                    0, directive, "")
+                if label == "no capture":
+                    # The turn reaches the check without the host's per-command capture.
+                    real = c._codex_cut_reads
+
+                    def no_capture(turn, arid, entry, paths, _real=real):  # type: ignore[no-untyped-def]
+                        return _real(turn._replace(command_outputs=None), arid, entry, paths)
+
+                    c._codex_cut_reads = no_capture  # type: ignore[assignment]
+                d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
+                expected = "retry" if label == "clean" else "fail_closed"
+                self.assertEqual(d.action, expected, label)
 
     def test_a_diagnostician_with_no_usage_says_so_on_its_row(self) -> None:
         """`usage_status` is the field that says WHY the numbers are empty — without it a

@@ -17169,8 +17169,9 @@ class Conductor:
         entry the host loop with the reader tools), then the directive read from the snapshot's
         `directive.json`. A launch that did not FINISH — killed at a bound (`timed_out`; the
         lineage's `ended_by`), a leaf that died (a nonzero exit), a CLI envelope marked
-        `is_error`, an HTTP reply cut at the output limit (`truncated`) — does NOT route the
-        phase, and its tree is not read: the judges' "tree wins" rule is theirs because their
+        `is_error`, an HTTP reply cut at the output limit (`truncated`), a codex launch that
+        read past its budget or whose rollout cannot be read (`_codex_cut_reads`) — does NOT
+        route the phase, and its tree is not read: the judges' "tree wins" rule is theirs because their
         document is gated downstream, and a directive selects reopen / revoke targets that
         nothing gates. Decided on the turn, BEFORE `assemble`, which reads the tree of a
         timed-out leaf. The lineage is left as an accepted judge's is — its record names the
@@ -17222,6 +17223,13 @@ class Conductor:
         finished = not (proc.timed_out or proc.returncode != 0 or wturn.ended_by is not None
                         or wturn.truncated
                         or getattr(wturn.envelope, "is_error", None) is True)
+        if finished and lineage.paths.backend == "codex":
+            # A codex launch that exited cleanly may still have reasoned over a read that
+            # reached it cut, or one delegated to a sub-agent (issue #547): the judges' check,
+            # on the two records the leaf cannot edit. A diagnosis is never run again, so a
+            # cut read — or a rollout the host cannot read — discards it.
+            lines, unreadable = self._codex_cut_reads(wturn, child_arid, entry, lineage.paths)
+            finished = not lines and unreadable is None
         decision: RouteDecision | None = None
         if finished:
             _category, _findings, document, _infra = machine.assemble(wturn)
