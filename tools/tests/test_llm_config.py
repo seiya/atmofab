@@ -20,7 +20,6 @@ wrong:
 
 from __future__ import annotations
 
-import dataclasses
 import re
 import shlex
 import tempfile
@@ -55,6 +54,54 @@ class _Tmp(unittest.TestCase):
             lc.load_llm_config(self.write(text))
         self.assertEqual(ctx.exception.rule, rule, msg=str(ctx.exception))
         return ctx.exception
+
+
+#: The `defaults` most rows start from: a CLI provider and the diagnostician's own bound
+#: (`defaults.lineage_timeout_s` is required since issue #534 PR-J4-a and bounds that launch
+#: alone).
+_DEFAULTS = "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+
+#: The entry this file writes for an LLM substep whose row is ABOUT something else: the bounds
+#: its kind is served and nothing more (issue #534 PR-J4-b — every substep entry is written,
+#: states `lineage_timeout_s`, and a producing one `max_wrapper_calls`; no level inherits
+#: either). Spelled out here rather than filled in by `llm_samples.workshop_yaml`, because the
+#: bound rules are this file's subject: a row about them writes its entry itself.
+_BOUNDED_ENTRY: dict[tuple[str, str], str] = {
+    ("compile", "generate"): "{max_wrapper_calls: 30, lineage_timeout_s: 2700}",
+    ("compile", "verify"): "{lineage_timeout_s: 2700}",
+    ("generate", "generate"): "{max_wrapper_calls: 30, lineage_timeout_s: 2700}",
+    ("generate", "verify"): "{lineage_timeout_s: 2700}",
+    ("validate", "judge"): "{lineage_timeout_s: 2700}",
+}
+
+
+def _doc(defaults: str = _DEFAULTS, entries: dict[tuple[str, str], str] | None = None,
+         phase_fields: dict[str, str] | None = None) -> str:
+    """A whole configuration document: `defaults`, then all five LLM substeps.
+
+    A pair in `entries` is written EXACTLY as given — a flow mapping (`"{...}"`) or a block
+    body (one `key: value` per line) — and nothing is added to it, so a row about an entry's
+    own fields states its bounds itself. A pair not in `entries` is written as
+    `_BOUNDED_ENTRY`. `phase_fields` are block lines written at the phase level."""
+    entries = dict(entries or {})
+    phase_fields = dict(phase_fields or {})
+    assert set(entries) <= set(_BOUNDED_ENTRY), set(entries) - set(_BOUNDED_ENTRY)
+    assert set(phase_fields) <= lc.LLM_LEAF_PHASES, set(phase_fields)
+    lines = [defaults.rstrip("\n"), "phases:"]
+    for phase in ("compile", "generate", "validate"):
+        lines.append(f"  {phase}:")
+        lines.extend("    " + line for line in phase_fields.get(phase, "").splitlines())
+        lines.append("    substeps:")
+        for (p, substep), default_body in _BOUNDED_ENTRY.items():
+            if p != phase:
+                continue
+            body = entries.get((p, substep), default_body)
+            if body.startswith("{"):
+                lines.append(f"      {substep}: {body}")
+            else:
+                lines.append(f"      {substep}:")
+                lines.extend("        " + line for line in body.splitlines())
+    return "\n".join(lines) + "\n"
 
 
 SAMPLE_DIR = REPO_ROOT / "docs" / "examples"
@@ -228,11 +275,34 @@ class SampleConfigTests(unittest.TestCase):
             "list would think naming a missing one is the superset the refusal above rejects; "
             "one reading a long list would think a name the code no longer has is admissible.")
 
-    def test_the_http_samples_put_the_http_provider_on_exactly_the_pure_leaves(self) -> None:
-        """The scope rule the HTTP samples exist to demonstrate. An HTTP provider anywhere else
-        does not load at all (`llm_config_capability_insufficient_for_substep`, covered by
-        `CapabilityTests`); what is checked here is that the samples USE the whole admissible
-        surface rather than demonstrating one leaf and leaving the others on a CLI."""
+    def test_every_sample_entry_states_the_bounds_of_its_kind_and_no_leaf(self) -> None:
+        """Issue #534 PR-J4-b: every LLM leaf is a workshop leaf, so the samples' entries are
+        read off the DOCUMENT (not the resolved entry, which could not tell a written bound from
+        an inherited one): each substep entry states `lineage_timeout_s`, a producing one also
+        `max_wrapper_calls`, a judging one never `max_wrapper_calls`; `defaults` states the
+        diagnostician's `lineage_timeout_s` and no `max_wrapper_calls`; no level writes `leaf`,
+        which is refused `llm_config_unknown_key` since that PR."""
+        for name, path in _discovered_samples().items():
+            document = _sample_body(path)
+            self.assertIn("lineage_timeout_s", document["defaults"], msg=name)
+            self.assertNotIn("max_wrapper_calls", document["defaults"], msg=name)
+            self.assertNotIn("leaf", document["defaults"], msg=name)
+            for phase, phase_doc in document["phases"].items():
+                self.assertFalse({"leaf", "lineage_timeout_s", "max_wrapper_calls"}
+                                 & set(phase_doc), msg=f"{name} {phase}")
+                for substep, entry in phase_doc["substeps"].items():
+                    where = f"{name} {phase}.{substep}"
+                    kind = ("reading" if (phase, substep) in lc.WORKSHOP_READING_SUBSTEPS
+                            else "producing")
+                    self.assertEqual(
+                        {f for f in ("max_wrapper_calls", "lineage_timeout_s") if f in entry},
+                        set(lc.WORKSHOP_BOUND_FIELDS_BY_KIND[kind]), msg=where)
+                    self.assertNotIn("leaf", entry, msg=where)
+
+    def test_the_http_samples_put_the_http_provider_on_every_llm_leaf(self) -> None:
+        """Every LLM leaf admits an HTTP provider (each is a workshop leaf, and both HTTP
+        providers declare `workshop`); what is checked here is that the HTTP samples USE that
+        whole surface rather than demonstrating one leaf and leaving the others on a CLI."""
         for name in ("llm_openai_compatible.example.yaml", "llm_anthropic_api.example.yaml"):
             cfg = lc.load_llm_config(SAMPLE_DIR / name)
             provider = name[len("llm_"):-len(".example.yaml")]
@@ -248,7 +318,8 @@ class SampleConfigTests(unittest.TestCase):
     def test_a_codex_config_without_a_model_still_stops_before_launching(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "c.yaml"
-            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n", encoding="utf-8")
+            path.write_text(_doc("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n"),
+                            encoding="utf-8")
             with self.assertRaises(lc.LlmConfigError) as ctx:
                 lc.load_llm_config(path).validate_runnable()
         self.assertEqual(ctx.exception.rule, "llm_config_codex_cli_requires_model")
@@ -316,37 +387,34 @@ class DefaultConfigPathTests(unittest.TestCase):
 
 class ResolutionTests(_Tmp):
     def test_every_llm_leaf_gets_an_entry_from_bare_defaults(self) -> None:
-        cfg = lc.load_llm_config(self.write("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"))
+        """Every substep entry is written since issue #534 PR-J4-b (each states its own bound),
+        but one that states ONLY its bounds still takes every other field from `defaults`."""
+        cfg = lc.load_llm_config(self.write(_doc(
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: d\n")))
         self.assertEqual(set(cfg.entries), set(lc.LLM_LEAF_SUBSTEPS))
+        for key, entry in cfg.entries.items():
+            self.assertEqual((entry.provider, entry.model), ("claude_cli", "d"), msg=key)
 
     def test_phase_layer_overrides_defaults_and_substep_overrides_phase(self) -> None:
-        cfg = lc.load_llm_config(self.write(
+        cfg = lc.load_llm_config(self.write(_doc(
             "defaults:\n  lineage_timeout_s: 2700\n"
             "  provider: claude_cli\n"
-            "  model: default-model\n"
-            "phases:\n"
-            "  generate:\n"
-            "    model: phase-model\n"
-            "    substeps:\n"
-            "      verify:\n"
-            "        model: substep-model\n"
-        ))
+            "  model: default-model\n",
+            entries={("generate", "verify"):
+                     "model: substep-model\nlineage_timeout_s: 2700"},
+            phase_fields={"generate": "model: phase-model"})))
         self.assertEqual(cfg.entry_for("compile", "verify").model, "default-model")
         self.assertEqual(cfg.entry_for("generate", "generate").model, "phase-model")
         self.assertEqual(cfg.entry_for("generate", "verify").model, "substep-model")
 
     def test_unmentioned_fields_inherit_per_field(self) -> None:
-        cfg = lc.load_llm_config(self.write(
+        cfg = lc.load_llm_config(self.write(_doc(
             "defaults:\n  lineage_timeout_s: 2700\n"
             "  provider: claude_cli\n"
             "  model: default-model\n"
-            "  max_output_tokens: 4096\n"
-            "phases:\n"
-            "  generate:\n"
-            "    substeps:\n"
-            "      verify:\n"
-            "        model: substep-model\n"
-        ))
+            "  max_output_tokens: 4096\n",
+            entries={("generate", "verify"):
+                     "model: substep-model\nlineage_timeout_s: 2700"})))
         entry = cfg.entry_for("generate", "verify")
         self.assertEqual(entry.model, "substep-model")
         self.assertEqual(entry.max_output_tokens, 4096)
@@ -354,21 +422,19 @@ class ResolutionTests(_Tmp):
     def test_provider_switch_drops_inherited_provider_scoped_fields(self) -> None:
         """A deeper level that switches provider must not inherit the outer provider's
         model / command: they name things that only exist on the outer transport."""
-        cfg = lc.load_llm_config(self.write(
+        cfg = lc.load_llm_config(self.write(_doc(
             "defaults:\n  lineage_timeout_s: 2700\n"
             "  provider: claude_cli\n"
             "  model: claude-model\n"
             "  command: claude --flag\n"
-            "  max_output_tokens: 4096\n"
-            "phases:\n"
-            "  generate:\n"
-            "    substeps:\n"
-            "      generate:\n"
-            "        provider: openai_compatible\n"
-            "        base_url: http://localhost:8000/v1\n"
-            "        api_key_env: LOCAL_KEY\n"
-            "        model: local-model\n"
-        ))
+            "  max_output_tokens: 4096\n",
+            entries={("generate", "generate"):
+                     "provider: openai_compatible\n"
+                     "base_url: http://localhost:8000/v1\n"
+                     "api_key_env: LOCAL_KEY\n"
+                     "model: local-model\n"
+                     "max_wrapper_calls: 30\n"
+                     "lineage_timeout_s: 2700"})))
         entry = cfg.entry_for("generate", "generate")
         self.assertEqual(entry.provider, "openai_compatible")
         self.assertEqual(entry.model, "local-model")
@@ -382,21 +448,17 @@ class ResolutionTests(_Tmp):
         phase switches provider, a substep switching BACK must re-inherit from the levels that
         share its provider — not start from an empty provider surface. Folding pairwise loses
         the operator's `defaults.command` wrapper on exactly that one leaf, silently."""
-        cfg = lc.load_llm_config(self.write(
+        cfg = lc.load_llm_config(self.write(_doc(
             "defaults:\n  lineage_timeout_s: 2700\n"
             "  provider: claude_cli\n"
             "  model: claude-model\n"
-            "  command: wrapper-claude --sandbox\n"
-            "phases:\n"
-            "  generate:\n"
-            "    provider: openai_compatible\n"
-            "    base_url: http://localhost:8000/v1\n"
-            "    api_key_env: LOCAL_KEY\n"
-            "    model: local-model\n"
-            "    substeps:\n"
-            "      verify:\n"
-            "        provider: claude_cli\n"
-        ))
+            "  command: wrapper-claude --sandbox\n",
+            entries={("generate", "verify"):
+                     "provider: claude_cli\nlineage_timeout_s: 2700"},
+            phase_fields={"generate": "provider: openai_compatible\n"
+                                      "base_url: http://localhost:8000/v1\n"
+                                      "api_key_env: LOCAL_KEY\n"
+                                      "model: local-model"})))
         back = cfg.entry_for("generate", "verify")
         self.assertEqual(back.provider, "claude_cli")
         self.assertEqual(back.model, "claude-model")
@@ -411,10 +473,11 @@ class ResolutionTests(_Tmp):
         one, but both inherit across a provider switch by design. Rejecting an INHERITED one
         made "claude everywhere with a raised ceiling, except one leaf on codex" — a core use
         case — unloadable, and pointed the operator at a key their document does not contain."""
-        cfg = lc.load_llm_config(self.write(
-            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  max_output_tokens: 32000\n"
-            "phases:\n  validate:\n    substeps:\n      judge:\n"
-            "        provider: codex_cli\n        model: gpt-5.6-sol\n"))
+        cfg = lc.load_llm_config(self.write(_doc(
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+            "  max_output_tokens: 32000\n",
+            entries={("validate", "judge"):
+                     "{provider: codex_cli, model: gpt-5.6-sol, lineage_timeout_s: 2700}"})))
         self.assertEqual(cfg.entry_for("compile", "verify").max_output_tokens, 32000)
         # Dropped where it cannot apply, so nothing downstream reads a budget that is ignored.
         self.assertIsNone(cfg.entry_for("validate", "judge").max_output_tokens)
@@ -423,79 +486,89 @@ class ResolutionTests(_Tmp):
         """The other side: a field the operator wrote FOR this provider is an error, because
         there is a key in the document to point at."""
         self.assert_rule("llm_config_field_not_applicable",
-                         "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: m\n"
-                         "  max_output_tokens: 32000\n")
+                         _doc("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n"
+                              "  model: m\n  max_output_tokens: 32000\n"))
         self.assert_rule("llm_config_field_not_applicable",
-                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  timeout_s: 300\n")
+                         _doc("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+                              "  timeout_s: 300\n"))
 
     def test_provider_switch_without_a_replacement_model_is_rejected_not_inherited(self) -> None:
         """The drop is real: the outer `model` cannot satisfy the HTTP model requirement."""
-        self.assert_rule("llm_config_http_requires_model",
-                         "defaults:\n  lineage_timeout_s: 2700\n"
-                         "  provider: claude_cli\n"
-                         "  model: claude-model\n"
-                         "phases:\n"
-                         "  generate:\n"
-                         "    substeps:\n"
-                         "      generate:\n"
-                         "        provider: openai_compatible\n"
-                         "        base_url: http://localhost:8000/v1\n"
-                         "        api_key_env: LOCAL_KEY\n")
+        self.assert_rule("llm_config_http_requires_model", _doc(
+            "defaults:\n  lineage_timeout_s: 2700\n"
+            "  provider: claude_cli\n"
+            "  model: claude-model\n",
+            entries={("generate", "generate"):
+                     "provider: openai_compatible\n"
+                     "base_url: http://localhost:8000/v1\n"
+                     "api_key_env: LOCAL_KEY\n"
+                     "max_wrapper_calls: 30\n"
+                     "lineage_timeout_s: 2700"}))
 
     def test_entry_for_none_none_is_defaults(self) -> None:
-        cfg = lc.load_llm_config(self.write(
-            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: d\n"
-            "phases:\n  generate:\n    model: p\n"))
+        cfg = lc.load_llm_config(self.write(_doc(
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: d\n",
+            phase_fields={"generate": "model: p"})))
         self.assertIs(cfg.entry_for(None, None), cfg.defaults)
         self.assertEqual(cfg.entry_for(None, None).model, "d")
 
     def test_deterministic_substep_falls_back_to_defaults(self) -> None:
-        cfg = lc.load_llm_config(self.write("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"))
+        cfg = lc.load_llm_config(self.write(_doc()))
         self.assertIs(cfg.entry_for("generate", "gate"), cfg.defaults)
 
+    _OPENAI_GENERATE = ("provider: openai_compatible\n"
+                        "base_url: http://localhost:8000/v1\n"
+                        "api_key_env: LOCAL_KEY\n"
+                        "model: local-model\n"
+                        "max_wrapper_calls: 30\n"
+                        "lineage_timeout_s: 2700")
+
     def test_anthropic_api_base_url_defaults_to_the_canonical_endpoint(self) -> None:
-        cfg = lc.load_llm_config(self.write(
-            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-            "phases:\n  generate:\n    substeps:\n      generate:\n"
-            "        provider: anthropic_api\n"
-            "        api_key_env: ANTHROPIC_API_KEY\n"
-            "        model: claude-opus-5\n"))
+        cfg = lc.load_llm_config(self.write(_doc(entries={
+            ("generate", "generate"):
+                "provider: anthropic_api\n"
+                "api_key_env: ANTHROPIC_API_KEY\n"
+                "model: claude-opus-5\n"
+                "max_wrapper_calls: 30\n"
+                "lineage_timeout_s: 2700"})))
         self.assertEqual(cfg.entry_for("generate", "generate").base_url,
                          lc.ANTHROPIC_DEFAULT_BASE_URL)
 
     def test_mixed_config_reports_both_providers(self) -> None:
-        cfg = lc.load_llm_config(self.write(
-            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-            "phases:\n  generate:\n    substeps:\n      generate:\n"
-            "        provider: openai_compatible\n"
-            "        base_url: http://localhost:8000/v1\n"
-            "        api_key_env: LOCAL_KEY\n"
-            "        model: local-model\n"))
+        cfg = lc.load_llm_config(self.write(_doc(entries={
+            ("generate", "generate"): self._OPENAI_GENERATE})))
         self.assertFalse(cfg.is_uniform)
         self.assertEqual(cfg.providers, frozenset({"claude_cli", "openai_compatible"}))
         cfg.validate_runnable()
 
     def test_provenance_map_is_per_leaf_and_includes_defaults(self) -> None:
-        cfg = lc.load_llm_config(self.write(
-            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-            "phases:\n  generate:\n    substeps:\n      generate:\n"
-            "        provider: openai_compatible\n"
-            "        base_url: http://localhost:8000/v1\n"
-            "        api_key_env: LOCAL_KEY\n"
-            "        model: local-model\n"))
+        """Each row carries the bounds its entry has (issue #534 PR-J4-b: every entry has
+        `lineage_timeout_s`, a producing one `max_wrapper_calls`), never a `"None"`, and no
+        `leaf` key — the field that named the leaf model is retired, so a row written now
+        never carries it (a row recorded before that PR may)."""
+        cfg = lc.load_llm_config(self.write(_doc(entries={
+            ("generate", "generate"): self._OPENAI_GENERATE.replace(
+                "max_wrapper_calls: 30", "max_wrapper_calls: 12"),
+            ("validate", "judge"): "{lineage_timeout_s: 600}"})))
         pm = cfg.provenance_map()
         self.assertEqual(set(pm), {"defaults"} | {f"{p}.{s}" for p, s in lc.LLM_LEAF_SUBSTEPS})
         self.assertEqual(pm["generate.generate"],
                          {"provider": "openai_compatible", "backend": "openai_compatible",
-                          "model": "local-model", "command": "", "effort": ""})
-        self.assertEqual(pm["validate.judge"]["backend"], "claude")
+                          "model": "local-model", "command": "", "effort": "",
+                          "max_wrapper_calls": "12", "lineage_timeout_s": "2700.0"})
+        self.assertEqual(pm["validate.judge"],
+                         {"provider": "claude_cli", "backend": "claude", "model": "",
+                          "command": "", "effort": "", "lineage_timeout_s": "600.0"})
+        self.assertEqual(pm["defaults"],
+                         {"provider": "claude_cli", "backend": "claude", "model": "",
+                          "command": "", "effort": "", "lineage_timeout_s": "2700.0"})
+        for key, row in pm.items():
+            self.assertNotIn("leaf", row, msg=key)
 
     def test_describe_providers_dedups_on_the_probed_surface(self) -> None:
-        cfg = lc.load_llm_config(self.write(
-            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-            "phases:\n  generate:\n    model: another-model\n"))
+        cfg = lc.load_llm_config(self.write(_doc(
+            phase_fields={"generate": "model: another-model"})))
         self.assertEqual([r["backend"] for r in lc.describe_providers(cfg)], ["claude"])
-
 
 
 class ProviderCapabilityTableTests(unittest.TestCase):
@@ -589,12 +662,15 @@ class CapabilityTests(_Tmp):
         self.assertEqual(set(lc.PROVIDER_CAPABILITIES), set(lc.SUPPORTED_PROVIDERS))
         for provider, caps in lc.PROVIDER_CAPABILITIES.items():
             self.assertLessEqual(caps, lc.KNOWN_CAPABILITIES, msg=provider)
+            # Every LLM leaf is a workshop leaf (issue #534 PR-J4-b), so a provider without it
+            # could run nothing; every declared provider has it.
+            self.assertIn(lc.CAP_WORKSHOP, caps, msg=provider)
         # The user-approved scope rule, as a property of the table rather than a branch: an
         # HTTP provider has no session to reopen, and since issue #534 PR-J3-b runs a workshop
         # leaf through the host loop.
         for provider in lc.HTTP_PROVIDERS:
             self.assertEqual(lc.PROVIDER_CAPABILITIES[provider],
-                             frozenset({lc.CAP_PURE, lc.CAP_WORKSHOP}))
+                             frozenset({lc.CAP_WORKSHOP}))
 
     def test_supports_is_fail_closed_on_an_unknown_capability_name(self) -> None:
         entry = lc.ResolvedLeafEntry(provider="claude_cli",
@@ -604,75 +680,90 @@ class CapabilityTests(_Tmp):
         self.assertFalse(entry.supports(""))
 
     def test_capabilities_may_restrict_a_provider(self) -> None:
-        cfg = lc.load_llm_config(self.write(
+        cfg = lc.load_llm_config(self.write(_doc(
             "defaults:\n  lineage_timeout_s: 2700\n"
             "  provider: claude_cli\n"
-            "  capabilities: [pure, workshop]\n"))
+            "  capabilities: [workshop]\n")))
         entry = cfg.entry_for("validate", "judge")
-        self.assertTrue(entry.supports(lc.CAP_PURE))
+        self.assertTrue(entry.supports(lc.CAP_WORKSHOP))
         self.assertFalse(entry.supports(lc.CAP_WARM_RESUME))
         self.assertFalse(cfg.defaults.supports(lc.CAP_WARM_RESUME))
 
-    def test_http_provider_on_a_pure_leaf_is_accepted(self) -> None:
-        for substep in ("generate", "verify"):
-            cfg = lc.load_llm_config(self.write(
-                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-                "phases:\n  generate:\n    substeps:\n"
-                f"      {substep}:\n"
-                "        provider: openai_compatible\n"
-                "        base_url: http://localhost:8000/v1\n"
-                "        api_key_env: LOCAL_KEY\n"
-                "        model: local-model\n"))
+    def test_http_provider_on_a_generate_leaf_is_accepted(self) -> None:
+        for substep, bounds in (("generate", "max_wrapper_calls: 30\nlineage_timeout_s: 2700"),
+                                ("verify", "lineage_timeout_s: 2700")):
+            cfg = lc.load_llm_config(self.write(_doc(entries={
+                ("generate", substep):
+                    "provider: openai_compatible\n"
+                    "base_url: http://localhost:8000/v1\n"
+                    "api_key_env: LOCAL_KEY\n"
+                    "model: local-model\n" + bounds})))
             self.assertEqual(cfg.entry_for("generate", substep).provider, "openai_compatible")
 
     def test_a_pair_outside_the_llm_leaf_table_requires_nothing(self) -> None:
-        """`_validate_assignment` requires `pure` of the pairs `LLM_LEAF_SUBSTEPS` names, and
-        of nothing else. Until Z4 (issue #171) a pair outside the table fell into an
-        agentic-only arm that refused an HTTP provider; there is no second transport for such
-        an arm to name, so the requirement is now derived from the table alone.
+        """`_validate_assignment` requires `workshop` of the pairs `LLM_LEAF_SUBSTEPS` names,
+        and of nothing else: the requirement is derived from the table alone.
 
         Driven with a synthetic pair, since every real pair is in the table — which is what
-        this row is FOR, and also its limit: it pins the derivation, not the wiring."""
+        this row is FOR, and also its limit: it pins the derivation, not the wiring. The entry
+        states both bounds, because the bound rule (which treats a pair outside the reading set
+        as producing) is a different rule; with them, an entry with NO capability passes the
+        synthetic pair and is refused on every real one."""
         self.assertNotIn(("future", "leaf"), lc.LLM_LEAF_SUBSTEPS)
         self.assertEqual(lc.required_capabilities("future", "leaf"), frozenset())
         entry = lc.ResolvedLeafEntry(
-            provider="anthropic_api",
-            capabilities=lc.PROVIDER_CAPABILITIES["anthropic_api"])
+            provider="anthropic_api", capabilities=frozenset(),
+            max_wrapper_calls=3, lineage_timeout_s=10.0)
         # No raise: nothing is required of a pair no LLM leaf runs.
         lc._validate_assignment("future", "leaf", entry, "phases.future.substeps.leaf")
-        # ...and every REAL pair does require `pure`.
+        # ...and every REAL pair does require `workshop`.
         for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
             self.assertEqual(lc.required_capabilities(phase, substep),
-                             frozenset({lc.CAP_PURE}), msg=f"{phase}.{substep}")
+                             frozenset({lc.CAP_WORKSHOP}), msg=f"{phase}.{substep}")
+            with self.assertRaises(lc.LlmConfigError) as ctx:
+                lc._validate_assignment(phase, substep, entry, "x")
+            self.assertEqual(ctx.exception.rule,
+                             "llm_config_capability_insufficient_for_substep",
+                             msg=f"{phase}.{substep}")
 
-    def test_llm_config_refuses_an_entry_without_pure(self) -> None:
-        """Z4 (issue #171): `pure` is the ONLY leaf transport, so every LLM leaf hard-requires
-        it and an entry narrowed away from it is refused by name — on every pair, not on the
-        one this test happened to pick.
+    def test_llm_config_refuses_an_entry_without_workshop(self) -> None:
+        """Issue #534 PR-J4-b: `workshop` is the ONLY leaf model, so every LLM leaf
+        hard-requires it and an entry narrowed away from it is refused by name — on every pair,
+        not on the one this test happened to pick. (This is also the whole of what
+        `llm_config_workshop_unsupported_on_provider` used to refuse, whose predicate became
+        this rule's and which went with that PR.)
 
         The second half is what makes the first enforceable rather than advisory: neither
-        `agentic` nor `mcp_tools` is a capability the vocabulary knows any more, so a
-        configuration still spelling one is refused at `capabilities:` parse time rather than
-        resolving to a transport or a grant that no longer exists. Both are asserted, because
-        PR-2 retired `mcp_tools` while pinning only `agentic`, and re-adding `mcp_tools` to
+        `pure` (retired by that PR) nor `agentic` nor `mcp_tools` is a capability the
+        vocabulary knows any more, so a configuration still spelling one is refused at
+        `capabilities:` parse time rather than resolving to a transport or a grant that no
+        longer exists. Each is asserted, at `defaults` and on a substep entry, because PR-2
+        retired `mcp_tools` while pinning only `agentic`, and re-adding `mcp_tools` to
         `KNOWN_CAPABILITIES` was silent."""
         for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
+            bounds = _BOUNDED_ENTRY[(phase, substep)][1:-1]
             err = self.assert_rule(
                 "llm_config_capability_insufficient_for_substep",
-                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-                f"phases:\n  {phase}:\n    substeps:\n      {substep}:\n"
-                "        capabilities: [warm_resume]\n")
-            self.assertIn("'pure'", str(err), msg=f"{phase}.{substep}")
-            # Not "agentic OR pure": there is no second transport to fall back to, and a
+                _doc(entries={(phase, substep): f"{{capabilities: [warm_resume], {bounds}}}"}))
+            self.assertIn("'workshop'", str(err), msg=f"{phase}.{substep}")
+            self.assertEqual(err.where, f"phases.{phase}.substeps.{substep}")
+            # Not "pure OR workshop": there is no second leaf model to fall back to, and a
             # message offering one is the shape this row exists to keep out.
-            self.assertNotIn("agentic", str(err), msg=f"{phase}.{substep}")
-        for retired in ("agentic", "mcp_tools"):
+            for retired in ("pure", "agentic"):
+                self.assertNotIn(f"'{retired}'", str(err), msg=f"{phase}.{substep}")
+        for retired in ("pure", "agentic", "mcp_tools"):
             with self.subTest(capability=retired):
                 err = self.assert_rule(
                     "llm_config_invalid_field",
-                    "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-                    f"  capabilities: [{retired}, pure]\n")
+                    _doc("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+                         f"  capabilities: [{retired}, workshop]\n"))
                 self.assertIn(retired, str(err))
+                self.assertEqual(err.where, "defaults.capabilities")
+                err = self.assert_rule(
+                    "llm_config_invalid_field",
+                    _doc(entries={("validate", "judge"):
+                                  f"{{capabilities: [{retired}], lineage_timeout_s: 2700}}"}))
+                self.assertEqual(err.where, "phases.validate.substeps.judge.capabilities")
                 self.assertNotIn(retired, lc.KNOWN_CAPABILITIES)
                 for provider, caps in lc.PROVIDER_CAPABILITIES.items():
                     self.assertNotIn(retired, caps, msg=provider)
@@ -683,27 +774,33 @@ class CapabilityTests(_Tmp):
         premise (`AGENTS.md` §Development premises), so the subject is every member of
         `PROVIDER_CAPABILITIES`, not the two the operator's machine happens to run."""
         blocks = {
-            "claude_cli": "        provider: claude_cli\n        model: opus\n",
-            "codex_cli": "        provider: codex_cli\n        model: gpt-5.6-sol\n",
+            "claude_cli": "provider: claude_cli\nmodel: opus\n",
+            "codex_cli": "provider: codex_cli\nmodel: gpt-5.6-sol\n",
             "openai_compatible": (
-                "        provider: openai_compatible\n"
-                "        base_url: http://localhost:8000/v1\n"
-                "        api_key_env: LOCAL_KEY\n        model: local-model\n"),
+                "provider: openai_compatible\n"
+                "base_url: http://localhost:8000/v1\n"
+                "api_key_env: LOCAL_KEY\nmodel: local-model\n"),
             "anthropic_api": (
-                "        provider: anthropic_api\n"
-                "        api_key_env: ANTHROPIC_API_KEY\n        model: claude-opus-5\n"),
+                "provider: anthropic_api\n"
+                "api_key_env: ANTHROPIC_API_KEY\nmodel: claude-opus-5\n"),
         }
         self.assertEqual(set(blocks), set(lc.PROVIDER_CAPABILITIES))
         for provider, block in sorted(blocks.items()):
-            for substep in ("generate", "verify"):
-                cfg = lc.load_llm_config(self.write(
-                    "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
-                    f"phases:\n  compile:\n    substeps:\n      {substep}:\n" + block))
+            for substep, bounds in (("generate", "max_wrapper_calls: 30\nlineage_timeout_s: 2700"),
+                                    ("verify", "lineage_timeout_s: 2700")):
+                cfg = lc.load_llm_config(self.write(_doc(
+                    "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n",
+                    entries={("compile", substep): block + bounds})))
                 cfg.validate_runnable()
                 self.assertEqual(cfg.entry_for("compile", substep).provider, provider)
 
 
 class RuleTests(_Tmp):
+    #: An HTTP `generate.generate` entry, written whole (its bounds included).
+    _HTTP_ENTRY = ("provider: openai_compatible\n"
+                   "base_url: https://x/v1\napi_key_env: K\nmodel: m\n"
+                   "max_wrapper_calls: 30\nlineage_timeout_s: 2700")
+
     def test_unreadable_missing_file(self) -> None:
         with self.assertRaises(lc.LlmConfigError) as ctx:
             lc.load_llm_config(self.root / "nope.yaml")
@@ -727,12 +824,36 @@ class RuleTests(_Tmp):
 
     def test_an_absent_layer_is_still_legitimately_empty(self) -> None:
         """`generate:` with no value is the spelling that MEANS nothing, and must keep working
-        — only `None` reads as empty."""
+        — only `None` reads as empty, never as `llm_config_not_a_mapping`.
+
+        Since issue #534 PR-J4-b no document with an empty layer LOADS: every substep entry is
+        written with its bounds, so an empty layer leaves the substeps under it unwritten. So
+        "read as empty" is observed as the refusal an empty layer DOES get — the bound rule,
+        naming a pair under that layer — which is reached only after the layer was read as an
+        empty mapping. An empty `substeps:` layer under `generate` with every other pair
+        written is refused for `generate.generate`, the first pair it leaves unwritten."""
         base = "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: base\n"
         for body in (base, base + "phases:\n", base + "phases:\n  generate:\n",
                      base + "phases:\n  generate:\n    substeps:\n"):
-            cfg = lc.load_llm_config(self.write(body, "absent.yaml"))
-            self.assertEqual(cfg.entry_for("generate", "verify").model, "base")
+            with self.subTest(body=body):
+                self.assert_rule("llm_config_workshop_bound_missing", body)
+        written_elsewhere = (
+            base + "phases:\n"
+            "  compile:\n    substeps:\n"
+            "      generate: {max_wrapper_calls: 30, lineage_timeout_s: 2700}\n"
+            "      verify: {lineage_timeout_s: 2700}\n"
+            "  generate:\n    substeps:\n"
+            "  validate:\n    substeps:\n"
+            "      judge: {lineage_timeout_s: 2700}\n")
+        err = self.assert_rule("llm_config_workshop_bound_missing", written_elsewhere)
+        self.assertIn("generate.generate", str(err))
+        # ...and the same document with the empty layer filled in loads, inheriting `base`.
+        cfg = lc.load_llm_config(self.write(written_elsewhere.replace(
+            "  generate:\n    substeps:\n",
+            "  generate:\n    substeps:\n"
+            "      generate: {max_wrapper_calls: 30, lineage_timeout_s: 2700}\n"
+            "      verify: {lineage_timeout_s: 2700}\n"), "absent.yaml"))
+        self.assertEqual(cfg.entry_for("generate", "verify").model, "base")
 
     def test_not_a_mapping_defaults(self) -> None:
         self.assert_rule("llm_config_not_a_mapping", "defaults: claude_cli\n")
@@ -807,7 +928,7 @@ class RuleTests(_Tmp):
             ("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  effort: max\n", "max"),
             ("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: m\n  effort: ultra\n", "ultra"),
         ):
-            cfg = lc.load_llm_config(self.write(body, "levels.yaml"))
+            cfg = lc.load_llm_config(self.write(_doc(body), "levels.yaml"))
             self.assertEqual(cfg.entry_for("validate", "judge").effort, expected)
 
     def test_effort_does_not_apply_to_the_anthropic_api(self) -> None:
@@ -822,11 +943,9 @@ class RuleTests(_Tmp):
     def test_an_effort_does_not_inherit_across_a_provider_switch(self) -> None:
         """A level is a word in the outer provider's vocabulary; carrying it into another
         provider would inherit a level it may not have."""
-        cfg = lc.load_llm_config(self.write(
-            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  effort: max\n"
-            "phases:\n  generate:\n    substeps:\n      generate:\n"
-            "        provider: openai_compatible\n"
-            "        base_url: https://x/v1\n        api_key_env: K\n        model: m\n"))
+        cfg = lc.load_llm_config(self.write(_doc(
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  effort: max\n",
+            entries={("generate", "generate"): self._HTTP_ENTRY})))
         self.assertEqual(cfg.entry_for("generate", "generate").effort, "")
         self.assertEqual(cfg.entry_for("validate", "judge").effort, "max")
 
@@ -836,21 +955,14 @@ class RuleTests(_Tmp):
         it long before then — measured, three attempts dead after 613.6 s / 612.3 s / 611.8 s
         with `HTTP 504` while the entry's own 2400 s `timeout_s` never fired. An operator who says
         nothing gets SSE."""
-        cfg = lc.load_llm_config(self.write(
-            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-            "phases:\n  generate:\n    substeps:\n      generate:\n"
-            "        provider: openai_compatible\n"
-            "        base_url: https://x/v1\n        api_key_env: K\n        model: m\n"))
+        cfg = lc.load_llm_config(self.write(_doc(
+            entries={("generate", "generate"): self._HTTP_ENTRY})))
         self.assertIs(cfg.entry_for("generate", "generate").stream, True)
 
     def test_an_explicit_stream_false_reaches_the_entry(self) -> None:
         """The escape hatch for an endpoint that cannot speak SSE at all."""
-        cfg = lc.load_llm_config(self.write(
-            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-            "phases:\n  generate:\n    substeps:\n      generate:\n"
-            "        provider: openai_compatible\n"
-            "        base_url: https://x/v1\n        api_key_env: K\n        model: m\n"
-            "        stream: false\n"))
+        cfg = lc.load_llm_config(self.write(_doc(
+            entries={("generate", "generate"): self._HTTP_ENTRY + "\nstream: false"})))
         self.assertIs(cfg.entry_for("generate", "generate").stream, False)
 
     def test_a_non_boolean_stream_is_rejected(self) -> None:
@@ -904,27 +1016,26 @@ class RuleTests(_Tmp):
     def test_stream_survives_a_switch_between_two_http_providers(self) -> None:
         """Deliberately NOT provider-scoped: it describes the endpoint's transport behaviour, not
         a provider's vocabulary, and two leaves on the same gateway must both keep the opt-out."""
-        cfg = lc.load_llm_config(self.write(
-            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-            "phases:\n  generate:\n"
-            "    provider: openai_compatible\n"
-            "    base_url: https://x/v1\n    api_key_env: K\n    model: m\n"
-            "    stream: false\n"
-            "    substeps:\n      verify:\n        provider: anthropic_api\n"
-            "        api_key_env: ANTHROPIC_API_KEY\n        model: claude-opus-5\n"))
+        cfg = lc.load_llm_config(self.write(_doc(
+            entries={("generate", "verify"):
+                     "provider: anthropic_api\n"
+                     "api_key_env: ANTHROPIC_API_KEY\nmodel: claude-opus-5\n"
+                     "lineage_timeout_s: 2700"},
+            phase_fields={"generate": "provider: openai_compatible\n"
+                                      "base_url: https://x/v1\napi_key_env: K\nmodel: m\n"
+                                      "stream: false"})))
         self.assertIs(cfg.entry_for("generate", "generate").stream, False)
         self.assertIs(cfg.entry_for("generate", "verify").stream, False)
 
     def test_stream_inherited_onto_a_cli_substep_is_dropped_not_rejected(self) -> None:
         """Nothing in the document points at that leaf, so there is nothing to correct — the
         same rule `timeout_s` already follows when it inherits onto a CLI leaf."""
-        cfg = lc.load_llm_config(self.write(
-            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-            "phases:\n  generate:\n"
-            "    provider: openai_compatible\n"
-            "    base_url: https://x/v1\n    api_key_env: K\n    model: m\n"
-            "    stream: false\n"
-            "    substeps:\n      verify:\n        provider: claude_cli\n        model: opus\n"))
+        cfg = lc.load_llm_config(self.write(_doc(
+            entries={("generate", "verify"):
+                     "{provider: claude_cli, model: opus, lineage_timeout_s: 2700}"},
+            phase_fields={"generate": "provider: openai_compatible\n"
+                                      "base_url: https://x/v1\napi_key_env: K\nmodel: m\n"
+                                      "stream: false"})))
         self.assertIs(cfg.entry_for("generate", "generate").stream, False)
         self.assertIs(cfg.entry_for("generate", "verify").stream, True)
 
@@ -944,15 +1055,17 @@ class RuleTests(_Tmp):
                          "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  capabilities: [teleport]\n")
 
     def test_a_retired_capability_is_refused_not_ignored(self) -> None:
-        """`usage_probe` (retired by issue #170, with `agentic` / `mcp_tools` before it) is not
-        in `KNOWN_CAPABILITIES`, so a configuration still spelling it fails at parse time
-        naming the accepted set — never accepted and silently dropped."""
-        for retired in ("usage_probe", "agentic", "mcp_tools"):
+        """`usage_probe` (retired by issue #170, with `agentic` / `mcp_tools` before it, and
+        `pure` after it in issue #534 PR-J4-b) is not in `KNOWN_CAPABILITIES`, so a
+        configuration still spelling it fails at parse time naming the accepted set — never
+        accepted and silently dropped."""
+        for retired in ("usage_probe", "agentic", "mcp_tools", "pure"):
             with self.subTest(retired=retired):
                 self.assertNotIn(retired, lc.KNOWN_CAPABILITIES)
                 self.assert_rule(
                     "llm_config_invalid_field",
-                    f"defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  capabilities: [pure, {retired}]\n")
+                    _doc("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+                         f"  capabilities: [workshop, {retired}]\n"))
 
     def test_field_not_applicable_http_field_on_a_cli_provider(self) -> None:
         self.assert_rule("llm_config_field_not_applicable",
@@ -992,16 +1105,17 @@ class RuleTests(_Tmp):
                          "        base_url: http://localhost:8000/v1\n"
                          "        api_key_env: LOCAL_KEY\n")
 
-    _HTTP = ("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-             "phases:\n  generate:\n    substeps:\n      generate:\n"
-             "        provider: openai_compatible\n        api_key_env: LOCAL_KEY\n"
-             "        model: m\n        base_url: {url}\n")
+    def _http(self, url: str) -> str:
+        return _doc(entries={("generate", "generate"):
+                             "provider: openai_compatible\napi_key_env: LOCAL_KEY\n"
+                             f"model: m\nbase_url: {url}\n"
+                             "max_wrapper_calls: 30\nlineage_timeout_s: 2700"})
 
     def test_insecure_base_url(self) -> None:
         """Plain http to a non-loopback host sends the API key in cleartext. The realistic case
         is a typo or a LAN address, not a deliberate choice."""
         err = self.assert_rule("llm_config_insecure_base_url",
-                               self._HTTP.format(url="http://192.168.1.9:8000/v1"))
+                               self._http("http://192.168.1.9:8000/v1"))
         self.assertIn("cleartext", str(err))
 
     def test_loopback_http_is_allowed(self) -> None:
@@ -1009,12 +1123,12 @@ class RuleTests(_Tmp):
         host, and requiring https there would make the headline use case impossible."""
         for url in ("http://localhost:8000/v1", "http://127.0.0.1:8000/v1",
                     "http://[::1]:8000/v1", "http://myhost.localhost:8000/v1"):
-            cfg = lc.load_llm_config(self.write(self._HTTP.format(url=url), "lb.yaml"))
+            cfg = lc.load_llm_config(self.write(self._http(url), "lb.yaml"))
             self.assertEqual(cfg.entry_for("generate", "generate").base_url, url)
 
     def test_https_is_allowed_anywhere(self) -> None:
         cfg = lc.load_llm_config(
-            self.write(self._HTTP.format(url="https://api.example.com/v1")))
+            self.write(self._http("https://api.example.com/v1")))
         self.assertEqual(cfg.entry_for("generate", "generate").base_url,
                          "https://api.example.com/v1")
 
@@ -1023,7 +1137,7 @@ class RuleTests(_Tmp):
         from unittest.mock import patch
         with patch.dict(os.environ, {lc._INSECURE_BASE_URL_OPT_IN_ENV: "1"}, clear=False):
             cfg = lc.load_llm_config(
-                self.write(self._HTTP.format(url="http://192.168.1.9:8000/v1")))
+                self.write(self._http("http://192.168.1.9:8000/v1")))
         self.assertEqual(cfg.entry_for("generate", "generate").base_url,
                          "http://192.168.1.9:8000/v1")
 
@@ -1039,9 +1153,10 @@ class RuleTests(_Tmp):
         the file twice, or the two answers can describe different versions."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "c.yaml"
-            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: on-disk\n",
-                            encoding="utf-8")
-            snapshot = b"defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: in-hand\n"
+            path.write_text(_doc("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+                                 "  model: on-disk\n"), encoding="utf-8")
+            snapshot = _doc("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+                            "  model: in-hand\n").encode("utf-8")
             cfg = lc.load_llm_config(path, content=snapshot)
             self.assertEqual(cfg.defaults.model, "in-hand")
             self.assertEqual(cfg.sha256, lc._sha256_bytes(snapshot))
@@ -1074,116 +1189,128 @@ class RuleTests(_Tmp):
         self.assert_rule("llm_config_duplicate_key",
                          'defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n'
                          'phases:\n  generate:\n    substeps:\n      verify:\n'
-                         '        model: a\n      " verify ":\n        model: b\n')
+                         '        model: a\n        lineage_timeout_s: 2700\n'
+                         '      " verify ":\n        model: b\n        lineage_timeout_s: 2700\n')
 
     def test_duplicate_field_key(self) -> None:
         self.assert_rule("llm_config_duplicate_key",
                          "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: a\n  model: b\n")
 
     def test_capability_exceeds_provider(self) -> None:
-        """An HTTP provider declares `pure` and nothing else, so naming any second capability
-        is the superset this rule refuses. `warm_resume` is the probe because it is a real
-        capability the CLI providers have and the HTTP ones do not — `agentic`, which stood
-        here until Z4 (issue #171), is no longer a capability name at all and is refused one
-        rule earlier, by `llm_config_invalid_field`."""
+        """An HTTP provider declares `workshop` and nothing else, so naming any second
+        capability is the superset this rule refuses. `warm_resume` is the probe because it is
+        a real capability the CLI providers have and the HTTP ones do not — `agentic`, which
+        stood here until Z4 (issue #171), and `pure`, which stood beside `workshop` until issue
+        #534 PR-J4-b, are no longer capability names at all and are refused one rule earlier,
+        by `llm_config_invalid_field`."""
         err = self.assert_rule(
             "llm_config_capability_exceeds_provider",
-            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-            "phases:\n  generate:\n    substeps:\n      generate:\n"
-            "        provider: openai_compatible\n"
-            "        base_url: http://localhost:8000/v1\n"
-            "        api_key_env: LOCAL_KEY\n"
-            "        model: m\n"
-            "        capabilities: [pure, warm_resume]\n")
+            _doc(entries={("generate", "generate"):
+                          "provider: openai_compatible\n"
+                          "base_url: http://localhost:8000/v1\n"
+                          "api_key_env: LOCAL_KEY\n"
+                          "model: m\n"
+                          "capabilities: [workshop, warm_resume]\n"
+                          "max_wrapper_calls: 30\nlineage_timeout_s: 2700"}))
         self.assertIn("warm_resume", str(err))
 
     def test_capability_insufficient_after_a_restriction(self) -> None:
         """The rule is about the RESOLVED capability set, not the provider name: a claude entry
-        restricted until it no longer holds `pure` is inadmissible on every LLM leaf, exactly
-        as a provider declaring no `pure` would be.
+        restricted until it no longer holds `workshop` is inadmissible on every LLM leaf,
+        exactly as a provider declaring no `workshop` would be.
 
-        The restriction has had to change twice. It was `[pure]` on `validate.judge` while that
-        was the last agentic-only leaf; Z3 (issue #169) made the judge pure-capable, so the
-        restriction that reached the rule became one leaving NO transport at all; and Z4 (issue
-        #171) left one transport, so `[warm_resume]` is now simply an entry without `pure`."""
-        err = self.assert_rule("llm_config_capability_insufficient_for_substep",
-                               "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-                               "phases:\n  validate:\n    substeps:\n      judge:\n"
-                               "        capabilities: [warm_resume]\n")
-        self.assertIn("requires capability 'pure'", str(err))
+        The restriction has had to change several times. It was `[pure]` on `validate.judge`
+        while that was the last agentic-only leaf; Z3 (issue #169) made the judge pure-capable;
+        Z4 (issue #171) left one transport, `pure`; and issue #534 PR-J4-b replaced it with
+        `workshop`, so `[warm_resume]` is now simply an entry without `workshop`."""
+        err = self.assert_rule("llm_config_capability_insufficient_for_substep", _doc(
+            entries={("validate", "judge"):
+                     "capabilities: [warm_resume]\nlineage_timeout_s: 2700"}))
+        self.assertIn("requires capability 'workshop'", str(err))
+        self.assertEqual(err.where, "phases.validate.substeps.judge")
 
     def test_defaults_not_workshop(self) -> None:
         """`defaults` serves the escalate diagnostician, a READING workshop launch (issue #534
-        PR-J4-a; a pure one since issue #169), so an entry restricted away from `workshop` is
-        inadmissible there. The restriction is the only way to reach this — every declared
-        provider supports `workshop` and is a reading provider — which is why the subject is
-        `capabilities:` rather than a provider name. It is also the rule that fires FIRST for
-        such a document, ahead of the per-substep one, which is why `defaults` is where the
-        restriction is written."""
+        PR-J4-a; a pure one from issue #169 until then), so an entry restricted away from
+        `workshop` is inadmissible there. The restriction is the only way to reach this — every
+        declared provider supports `workshop` and is a reading provider — which is why the
+        subject is `capabilities:` rather than a provider name. It is also the rule that fires
+        FIRST for such a document, ahead of the per-substep one, which is why `defaults` is
+        where the restriction is written."""
         err = self.assert_rule("llm_config_defaults_not_workshop",
-                               "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-                               "  capabilities: [pure, warm_resume]\n")
+                               _doc("defaults:\n  lineage_timeout_s: 2700\n"
+                                    "  provider: claude_cli\n"
+                                    "  capabilities: [warm_resume]\n"))
         self.assertIn("escalate", str(err))
 
     def test_defaults_states_the_diagnosticians_bound(self) -> None:
         """`defaults` is resolved as a reading workshop entry by the loader: `lineage_timeout_s`
-        is required there, and an operator-written `leaf:` or `max_wrapper_calls` stays
-        refused."""
+        is required there, `max_wrapper_calls` stays refused as substep-scoped, and a written
+        `leaf:` is refused as an unknown key (issue #534 PR-J4-b retired the field)."""
         err = self.assert_rule("llm_config_workshop_bound_missing",
-                               "defaults:\n  provider: claude_cli\n")
+                               _doc("defaults:\n  provider: claude_cli\n"))
         self.assertIn("`defaults` must state lineage_timeout_s", str(err))
         self.assertEqual(err.where, "defaults")
-        for extra in ("  leaf: workshop\n", "  max_wrapper_calls: 3\n"):
-            with self.subTest(extra=extra):
-                self.assert_rule("llm_config_workshop_field_not_substep_scoped",
-                                 "defaults:\n  lineage_timeout_s: 2700\n"
-                                 "  provider: claude_cli\n" + extra)
-        cfg = lc.load_llm_config(self.write(
-            "defaults:\n  provider: claude_cli\n  lineage_timeout_s: 1234\n"))
-        self.assertEqual((cfg.defaults.leaf, cfg.defaults.lineage_timeout_s,
-                          cfg.defaults.max_wrapper_calls), ("workshop", 1234.0, None))
+        err = self.assert_rule("llm_config_workshop_field_not_substep_scoped",
+                               _doc(_DEFAULTS + "  max_wrapper_calls: 3\n"))
+        self.assertEqual(err.where, "defaults.max_wrapper_calls")
+        for value in ("workshop", "pure"):
+            with self.subTest(leaf=value):
+                err = self.assert_rule("llm_config_unknown_key",
+                                       _doc(_DEFAULTS + f"  leaf: {value}\n"))
+                self.assertIn("'leaf'", str(err))
+        cfg = lc.load_llm_config(self.write(_doc(
+            "defaults:\n  provider: claude_cli\n  lineage_timeout_s: 1234\n")))
+        self.assertEqual((cfg.defaults.lineage_timeout_s, cfg.defaults.max_wrapper_calls),
+                         (1234.0, None))
         self.assertEqual(cfg.defaults.provenance()["lineage_timeout_s"], "1234.0")
-        self.assertEqual(cfg.defaults.provenance()["leaf"], "workshop")
+        self.assertNotIn("max_wrapper_calls", cfg.defaults.provenance())
+        self.assertNotIn("leaf", cfg.defaults.provenance())
+        self.assertFalse(hasattr(cfg.defaults, "leaf"))
 
     def test_the_defaults_bound_is_not_inherited(self) -> None:
-        """`defaults.lineage_timeout_s` bounds the diagnostician alone: a pure substep entry does
-        not receive it (it would be refused `bound_on_pure_entry` if it did), and a workshop
-        substep entry without its own bound is refused `bound_missing` rather than inheriting
-        it."""
-        cfg = lc.load_llm_config(self.write(
-            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"))
+        """`defaults.lineage_timeout_s` bounds the diagnostician alone: a substep entry does
+        not receive it. Each entry carries the bound IT states (60 here against `defaults`'
+        2700), and an entry that states none is refused `bound_missing` rather than inheriting
+        it — written with other fields, or not written at all. A phase-level bound is refused
+        as not substep-scoped, so no level between them can carry one down either."""
+        cfg = lc.load_llm_config(self.write(_doc(entries={
+            ("compile", "generate"): "{max_wrapper_calls: 30, lineage_timeout_s: 60}",
+            ("compile", "verify"): "{lineage_timeout_s: 60}",
+            ("generate", "generate"): "{max_wrapper_calls: 30, lineage_timeout_s: 60}",
+            ("generate", "verify"): "{lineage_timeout_s: 60}",
+            ("validate", "judge"): "{lineage_timeout_s: 60}"})))
+        self.assertEqual(cfg.defaults.lineage_timeout_s, 2700.0)
         for key, entry in cfg.entries.items():
             with self.subTest(pair=key):
-                self.assertIsNone(entry.lineage_timeout_s)
-                self.assertEqual(entry.leaf, "pure")
-        self.assert_rule("llm_config_workshop_bound_missing",
-                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-                         "phases: {validate: {substeps: {judge: {leaf: workshop}}}}\n")
+                self.assertEqual(entry.lineage_timeout_s, 60.0)
+        err = self.assert_rule("llm_config_workshop_bound_missing",
+                               _doc(entries={("validate", "judge"): "{model: opus}"}))
+        self.assertIn("missing: lineage_timeout_s", str(err))
+        self.assertEqual(err.where, "phases.validate.substeps.judge")
         self.assert_rule("llm_config_workshop_field_not_substep_scoped",
-                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-                         "phases: {validate: {lineage_timeout_s: 30}}\n")
+                         _doc(phase_fields={"validate": "lineage_timeout_s: 30"}))
 
     def test_an_http_defaults_loads_and_runs_beside_a_cli_leaf(self) -> None:
-        """`defaults` no longer has to be agentic — the launch it serves (the `escalate`
-        diagnostician) is a pure leaf — so an HTTP provider gets past `load_llm_config`, which
-        it could not before, AND reaches a run.
+        """`defaults` serves the `escalate` diagnostician, a reading workshop leaf that both
+        HTTP providers can run, so an HTTP provider gets past `load_llm_config` AND reaches a
+        run.
 
         The second half is not automatic. `init` and the preflight still take one backend
         token whose parser is `choices={claude, codex}`; measured before `cli_launch_identity`
         existed, this file reached `init` and died on `argument --agent-backend: invalid
-        choice: 'anthropic_api'`. Refusing the file instead — which is what round 1 of this
-        branch did — would have left the diagnostician's migration undelivered on two DECLARED
-        providers, and `AGENTS.md` §Development premises does not allow that. So the token is
-        resolved from what the configuration can LAUNCH, and this row is the shape the shipped
-        examples describe: an HTTP `defaults` beside the CLI `validate.judge` that is still
-        agentic until Z3."""
-        cfg = lc.load_llm_config(self.write(
+        choice: 'anthropic_api'`. Refusing the file instead would have left the
+        diagnostician's migration undelivered on two DECLARED providers, and `AGENTS.md`
+        §Development premises does not allow that. So the token is resolved from what the
+        configuration can LAUNCH, and this row is that shape: an HTTP `defaults` beside a CLI
+        `validate.judge`."""
+        cfg = lc.load_llm_config(self.write(_doc(
             "defaults:\n  lineage_timeout_s: 2700\n"
             "  provider: anthropic_api\n"
             "  api_key_env: ANTHROPIC_API_KEY\n"
-            "  model: claude-opus-5\n"
-            "phases:\n  validate:\n    substeps:\n      judge:\n"
-            "        provider: claude_cli\n", "http_defaults.yaml"))
+            "  model: claude-opus-5\n",
+            entries={("validate", "judge"):
+                     "{provider: claude_cli, lineage_timeout_s: 2700}"}), "http_defaults.yaml"))
         self.assertEqual(cfg.defaults.provider, "anthropic_api")
         self.assertTrue(cfg.defaults.is_http)
         cfg.validate_runnable()
@@ -1193,49 +1320,42 @@ class RuleTests(_Tmp):
         # `AGENTS.md` §Development premises does not allow.
         self.assertEqual(cfg.cli_launch_identity(), ("claude", "claude"))
         # A CLI `defaults` still answers for itself, command included.
-        cli = lc.load_llm_config(self.write(
-            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  command: /opt/claude --flag\n",
-            "cli_defaults.yaml"))
+        cli = lc.load_llm_config(self.write(_doc(
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+            "  command: /opt/claude --flag\n"), "cli_defaults.yaml"))
         cli.validate_runnable()
         self.assertEqual(cli.cli_launch_identity(), ("claude", "/opt/claude --flag"))
 
     def test_a_configuration_that_launches_nothing_is_refused_by_name(self) -> None:
-        """The floor under `cli_launch_identity`. Unreachable today — `validate.judge` is still
-        agentic, so every valid file names a CLI provider — so it is built as a synthetic
-        config rather than left as an unwitnessed branch, and it is the thing to LIFT rather
-        than work around when Z3 makes an all-HTTP file valid."""
-        # Built by hand, because the file cannot LOAD: `validate.judge` requires `agentic`,
-        # which no HTTP provider has, so an all-HTTP document is refused two rules earlier by
-        # `llm_config_capability_insufficient_for_substep`. That is the state Z3 removes, and
-        # this row is what the floor under it looks like when it does.
-        cfg = lc.load_llm_config(self.write(
+        """The floor under `cli_launch_identity`. Z3 (issue #169) made an all-HTTP file LOAD,
+        so this is reached from a loaded document: an HTTP `defaults` that every substep entry
+        inherits its provider from (each writes only its bounds)."""
+        cfg = lc.load_llm_config(self.write(_doc(
             "defaults:\n  lineage_timeout_s: 2700\n"
             "  provider: anthropic_api\n  api_key_env: ANTHROPIC_API_KEY\n"
-            "  model: claude-opus-5\n"
-            "phases:\n  validate:\n    substeps:\n      judge:\n"
-            "        provider: claude_cli\n", "all_http_seed.yaml"))
-        stripped = dataclasses.replace(
-            cfg, entries={k: cfg.defaults for k in cfg.entries})
+            "  model: claude-opus-5\n"), "all_http.yaml"))
+        self.assertEqual(cfg.providers, frozenset({"anthropic_api"}))
         with self.assertRaises(lc.LlmConfigError) as ctx:
-            stripped.cli_launch_identity()
+            cfg.cli_launch_identity()
         self.assertEqual(ctx.exception.rule, "llm_config_no_cli_backend")
         # ...and RUN START is where it arrives. Calling the resolver directly leaves the hook
-        # in `validate_runnable` unpinned: deleting that one line left this file green, so the
-        # rule would have been correct and unreachable at the moment Z3 makes it reachable.
+        # in `validate_runnable` unpinned: deleting that one line left this file green.
         with self.assertRaises(lc.LlmConfigError) as run_start:
-            stripped.validate_runnable()
+            cfg.validate_runnable()
         self.assertEqual(run_start.exception.rule, "llm_config_no_cli_backend")
         # The remedy names both halves, so it cannot be followed by half.
         self.assertIn("validate.judge", str(ctx.exception).replace("`", ""))
         self.assertIn("defaults", str(ctx.exception))
 
     def test_codex_requires_model_only_at_run_start(self) -> None:
-        cfg = lc.load_llm_config(self.write("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n"))
+        cfg = lc.load_llm_config(self.write(_doc(
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n")))
         with self.assertRaises(lc.LlmConfigError) as ctx:
             cfg.validate_runnable()
         self.assertEqual(ctx.exception.rule, "llm_config_codex_cli_requires_model")
-        lc.load_llm_config(self.write(
-            "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: some-slug\n")).validate_runnable()
+        lc.load_llm_config(self.write(_doc(
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: some-slug\n"
+        ))).validate_runnable()
 
     def test_codex_requires_model_rejects_the_generic_alias_too(self) -> None:
         """`codex` is an alias the CLI resolves to whatever it currently prefers, so a leaf
@@ -1243,23 +1363,22 @@ class RuleTests(_Tmp):
         model at all. Caught HERE, at run start, because the run-wide flag guard that used to
         catch it is gone and everything later has already created an orchestration."""
         for slug in ("codex", "CODEX", "  codex  "):
-            cfg = lc.load_llm_config(self.write(
-                f"defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: {slug!r}\n", "alias.yaml"))
+            cfg = lc.load_llm_config(self.write(_doc(
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n"
+                f"  model: {slug!r}\n"), "alias.yaml"))
             with self.assertRaises(lc.LlmConfigError) as ctx:
                 cfg.validate_runnable()
             self.assertEqual(ctx.exception.rule, "llm_config_codex_cli_requires_model",
                              msg=slug)
             self.assertIn("explicit slug", str(ctx.exception), msg=slug)
         # ...and a real slug that merely CONTAINS it is fine.
-        lc.load_llm_config(self.write(
-            "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: gpt-5.6-codex\n",
+        lc.load_llm_config(self.write(_doc(
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: gpt-5.6-codex\n"),
             "real.yaml")).validate_runnable()
 
     def test_codex_requires_model_catches_a_per_substep_omission(self) -> None:
-        cfg = lc.load_llm_config(self.write(
-            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-            "phases:\n  validate:\n    substeps:\n      judge:\n"
-            "        provider: codex_cli\n"))
+        cfg = lc.load_llm_config(self.write(_doc(entries={
+            ("validate", "judge"): "{provider: codex_cli, lineage_timeout_s: 2700}"})))
         with self.assertRaises(lc.LlmConfigError) as ctx:
             cfg.validate_runnable()
         self.assertEqual(ctx.exception.rule, "llm_config_codex_cli_requires_model")
@@ -1278,36 +1397,71 @@ class RuleTests(_Tmp):
         self.assertEqual(declared - tested, set())
 
 
+def _without_entry(text: str, phase: str, substep: str) -> str:
+    """`text` (a `_doc` document) with the one line writing `phases.<phase>.substeps.<substep>`
+    removed, so that substep is UNWRITTEN. Asserted to remove exactly one line."""
+    lines = text.splitlines()
+    head = lines.index(f"  {phase}:")
+    tail = next((i for i in range(head + 1, len(lines))
+                 if lines[i].startswith("  ") and not lines[i].startswith("   ")), len(lines))
+    hits = [i for i in range(head, tail) if lines[i].startswith(f"      {substep}: {{")]
+    assert len(hits) == 1, (phase, substep, hits)
+    del lines[hits[0]]
+    return "\n".join(lines) + "\n"
+
+
 class WorkshopEntryTests(_Tmp):
-    """The `leaf:` field and the two bounds of a `workshop leaf` (issue #534)."""
+    """The two bounds every LLM substep entry states, now that every LLM leaf is a `workshop
+    leaf` (issue #534 PR-J4-b), and the `leaf:` field that PR retired."""
 
-    BASE = "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
     BOUNDS = "max_wrapper_calls: 30, lineage_timeout_s: 2700"
+    READING = "lineage_timeout_s: 2700"
 
-    def _gen(self, body: str, pair: str = "generate: {substeps: {generate") -> str:
-        return self.BASE + "phases: {" + pair + ": {" + body + "}}}}\n"
+    def test_every_entry_resolves_with_the_bounds_it_states(self) -> None:
+        """Each kind with the bounds it is served: a producing entry both, a judging entry
+        `lineage_timeout_s` alone. The provenance row names the bounds the entry has — never a
+        `"None"` — and no `leaf`, and the resolved entry has no `leaf` / `is_workshop`: there
+        is one leaf model, so nothing selects or reports one."""
+        self.assertEqual(lc.WORKSHOP_LEAF_SUBSTEPS, lc.LLM_LEAF_SUBSTEPS)
+        cfg = lc.load_llm_config(self.write(_doc(entries={
+            ("compile", "generate"): "{max_wrapper_calls: 11, lineage_timeout_s: 101}",
+            ("compile", "verify"): "{lineage_timeout_s: 102}",
+            ("generate", "generate"): "{max_wrapper_calls: 13, lineage_timeout_s: 103}",
+            ("generate", "verify"): "{lineage_timeout_s: 104}",
+            ("validate", "judge"): "{lineage_timeout_s: 105}"})))
+        expected = {("compile", "generate"): (11, 101.0), ("compile", "verify"): (None, 102.0),
+                    ("generate", "generate"): (13, 103.0), ("generate", "verify"): (None, 104.0),
+                    ("validate", "judge"): (None, 105.0)}
+        self.assertEqual(set(expected), set(lc.LLM_LEAF_SUBSTEPS))
+        for key, (calls, timeout) in expected.items():
+            with self.subTest(pair=key):
+                entry = cfg.entry_for(*key)
+                self.assertEqual((entry.max_wrapper_calls, entry.lineage_timeout_s),
+                                 (calls, timeout))
+                bounds = {k: v for k, v in entry.provenance().items()
+                          if k in ("leaf", "max_wrapper_calls", "lineage_timeout_s")}
+                self.assertEqual(bounds, {"lineage_timeout_s": str(timeout)}
+                                 | ({} if calls is None else {"max_wrapper_calls": str(calls)}))
+                self.assertFalse(hasattr(entry, "leaf"))
+                self.assertFalse(hasattr(entry, "is_workshop"))
 
-    def test_a_workshop_entry_on_generate_generate_resolves_with_its_bounds(self) -> None:
-        cfg = lc.load_llm_config(self.write(self._gen(f"leaf: workshop, {self.BOUNDS}")))
-        entry = cfg.entry_for("generate", "generate")
-        self.assertEqual((entry.leaf, entry.max_wrapper_calls, entry.lineage_timeout_s),
-                         ("workshop", 30, 2700.0))
-        self.assertTrue(entry.is_workshop)
-        self.assertEqual(entry.provenance()["leaf"], "workshop")
-        self.assertEqual(entry.provenance()["max_wrapper_calls"], "30")
-        # Every other leaf stays pure, with no bound, and its provenance row unchanged.
-        for key, other in cfg.entries.items():
-            if key != ("generate", "generate"):
-                self.assertEqual((other.leaf, other.max_wrapper_calls,
-                                  other.lineage_timeout_s), ("pure", None, None), msg=key)
-                self.assertNotIn("leaf", other.provenance(), msg=key)
-
-    def test_an_explicit_pure_entry_is_the_default(self) -> None:
-        cfg = lc.load_llm_config(self.write(self._gen("leaf: pure")))
-        self.assertEqual(cfg.entry_for("generate", "generate").leaf, "pure")
-
-    def test_an_unknown_leaf_model_is_refused(self) -> None:
-        self.assert_rule("llm_config_invalid_field", self._gen(f"leaf: agentic, {self.BOUNDS}"))
+    def test_a_written_leaf_is_refused_as_an_unknown_key(self) -> None:
+        """Issue #534 PR-J4-b retired `leaf:` with the pure leaf: whatever it names — the one
+        model there is, the deleted one, or a model that never existed — it is refused
+        `llm_config_unknown_key` at every level, never accepted and ignored."""
+        for value in ("workshop", "pure", "agentic"):
+            for where, text in (
+                ("phases.generate.substeps.generate.leaf", _doc(entries={
+                    ("generate", "generate"): f"{{leaf: {value}, {self.BOUNDS}}}"})),
+                ("phases.validate.substeps.judge.leaf", _doc(entries={
+                    ("validate", "judge"): f"{{leaf: {value}, {self.READING}}}"})),
+                ("phases.generate.leaf", _doc(phase_fields={"generate": f"leaf: {value}"})),
+                ("defaults.leaf", _doc(_DEFAULTS + f"  leaf: {value}\n")),
+            ):
+                with self.subTest(leaf=value, where=where):
+                    err = self.assert_rule("llm_config_unknown_key", text)
+                    self.assertEqual(err.where, where)
+                    self.assertNotIn("leaf", lc._ENTRY_FIELDS)
 
     def test_the_bounds_are_typed(self) -> None:
         for bounds in ("max_wrapper_calls: 0, lineage_timeout_s: 10",
@@ -1317,254 +1471,219 @@ class WorkshopEntryTests(_Tmp):
                        "max_wrapper_calls: 3, lineage_timeout_s: .inf",
                        "max_wrapper_calls: 3, lineage_timeout_s: x"):
             with self.subTest(bounds=bounds):
-                self.assert_rule("llm_config_invalid_field",
-                                 self._gen(f"leaf: workshop, {bounds}"))
+                self.assert_rule("llm_config_invalid_field", _doc(entries={
+                    ("generate", "generate"): f"{{{bounds}}}"}))
 
     def test_workshop_fields_are_substep_scoped(self) -> None:
-        for body in ("defaults: {lineage_timeout_s: 2700, provider: claude_cli, leaf: workshop}\n",
-                     "defaults: {lineage_timeout_s: 2700, provider: claude_cli, max_wrapper_calls: 3}\n",
-                     self.BASE + "phases: {generate: {lineage_timeout_s: 30}}\n",
-                     self.BASE + "phases: {generate: {leaf: workshop}}\n"):
-            with self.subTest(body=body):
-                self.assert_rule("llm_config_workshop_field_not_substep_scoped", body)
+        """Both bounds are refused at a phase, and `max_wrapper_calls` at `defaults` (which
+        states `lineage_timeout_s` for the diagnostician it serves, and nothing else)."""
+        for where, body in (
+            ("defaults.max_wrapper_calls", _doc(_DEFAULTS + "  max_wrapper_calls: 3\n")),
+            ("phases.generate.lineage_timeout_s",
+             _doc(phase_fields={"generate": "lineage_timeout_s: 30"})),
+            ("phases.compile.max_wrapper_calls",
+             _doc(phase_fields={"compile": "max_wrapper_calls: 3"})),
+            ("phases.validate.lineage_timeout_s",
+             _doc(phase_fields={"validate": "lineage_timeout_s: 30"})),
+        ):
+            with self.subTest(where=where):
+                err = self.assert_rule("llm_config_workshop_field_not_substep_scoped", body)
+                self.assertEqual(err.where, where)
 
     def test_a_codex_workshop_entry_loads(self) -> None:
         """Issue #534 step 2 PR-2: `codex_cli` declares `workshop`, on both producing substeps."""
-        for pair in ("generate: {substeps: {generate", "compile: {substeps: {generate"):
-            with self.subTest(pair=pair):
-                cfg = lc.load_llm_config(self.write(self._gen(
-                    f"provider: codex_cli, model: gpt-x, leaf: workshop, {self.BOUNDS}", pair)))
-                entry = cfg.entry_for(pair.split(":")[0], "generate")
-                self.assertEqual((entry.provider, entry.is_workshop), ("codex_cli", True))
+        for phase in ("generate", "compile"):
+            with self.subTest(phase=phase):
+                cfg = lc.load_llm_config(self.write(_doc(entries={
+                    (phase, "generate"): f"{{provider: codex_cli, model: gpt-x, {self.BOUNDS}}}"})))
+                entry = cfg.entry_for(phase, "generate")
+                self.assertEqual((entry.provider, entry.max_wrapper_calls,
+                                  entry.lineage_timeout_s), ("codex_cli", 30, 2700.0))
 
-    READING = "lineage_timeout_s: 2700"
+    def test_every_substep_entry_states_the_bounds_of_its_kind(self) -> None:
+        """Every written substep entry states `lineage_timeout_s`, and a producing one
+        `max_wrapper_calls` too; there is no default bound. Driven on every pair."""
+        for (phase, substep) in sorted(lc.LLM_LEAF_SUBSTEPS):
+            producing = (phase, substep) in lc.WORKSHOP_PRODUCING_SUBSTEPS
+            bodies = ["{model: opus}"]
+            if producing:
+                bodies += ["{max_wrapper_calls: 3}", "{lineage_timeout_s: 30}"]
+            for body in bodies:
+                with self.subTest(pair=f"{phase}.{substep}", body=body):
+                    err = self.assert_rule("llm_config_workshop_bound_missing",
+                                           _doc(entries={(phase, substep): body}))
+                    self.assertEqual(err.where, f"phases.{phase}.substeps.{substep}")
+                    self.assertIn(f"{phase}.{substep}", str(err))
 
-    def test_a_workshop_entry_is_admissible_on_every_llm_substep(self) -> None:
-        """Issue #534 step 3: the three judging substeps join the two producing ones, so every
-        LLM substep admits a workshop entry; each kind with the bounds it is served."""
-        self.assertEqual(lc.WORKSHOP_LEAF_SUBSTEPS, lc.LLM_LEAF_SUBSTEPS)
-        for pair in ("generate: {substeps: {generate", "compile: {substeps: {generate"):
-            with self.subTest(admitted=pair):
-                cfg = lc.load_llm_config(self.write(
-                    self._gen(f"leaf: workshop, {self.BOUNDS}", pair)))
-                phase = pair.split(":")[0]
-                self.assertTrue(cfg.entry_for(phase, "generate").is_workshop)
-        for pair in ("generate: {substeps: {verify", "validate: {substeps: {judge",
-                     "compile: {substeps: {verify"):
-            with self.subTest(admitted=pair):
-                phase, substep = pair.split(":")[0], pair.rsplit("{", 1)[1]
-                entry = lc.load_llm_config(self.write(
-                    self._gen(f"leaf: workshop, {self.READING}", pair))).entry_for(
-                        phase, substep)
-                self.assertTrue(entry.is_workshop)
-                self.assertEqual((entry.max_wrapper_calls, entry.lineage_timeout_s),
-                                 (None, 2700.0))
-                # The provenance row names the bounds the entry has, not a `"None"`.
-                self.assertEqual(
-                    {k: v for k, v in entry.provenance().items()
-                     if k in ("leaf", "max_wrapper_calls", "lineage_timeout_s")},
-                    {"leaf": "workshop", "lineage_timeout_s": "2700.0"})
-
-    def test_the_substep_rule_still_refuses_a_pair_no_workshop_leaf_serves(self) -> None:
-        """Every LLM substep admits a workshop entry now and a deterministic one cannot be
-        configured at all (`llm_config_unknown_substep`), so no file reaches this rule; it
-        stays as the backstop of `_validate_assignment`, driven directly."""
-        entry = lc.load_llm_config(self.write(self._gen(
-            f"leaf: workshop, {self.BOUNDS}"))).entry_for("generate", "generate")
-        with self.assertRaises(lc.LlmConfigError) as ctx:
-            lc._validate_assignment("generate", "gate", entry, "phases.generate.substeps.gate")
-        self.assertEqual(ctx.exception.rule, "llm_config_workshop_substep_inadmissible")
+    def test_an_unwritten_substep_is_refused_bound_missing(self) -> None:
+        """A substep entry inherited whole — from `defaults` alone, or from a phase that writes
+        fields of its own — states no bound, and none is inherited, so it is refused rather
+        than run unbounded. Driven by removing each pair in turn from a complete document."""
+        for (phase, substep) in sorted(lc.LLM_LEAF_SUBSTEPS):
+            with self.subTest(pair=f"{phase}.{substep}", inherits="defaults"):
+                err = self.assert_rule("llm_config_workshop_bound_missing",
+                                       _without_entry(_doc(), phase, substep))
+                self.assertIn(f"{phase}.{substep}", str(err))
+            with self.subTest(pair=f"{phase}.{substep}", inherits="phase"):
+                err = self.assert_rule("llm_config_workshop_bound_missing", _without_entry(
+                    _doc(phase_fields={phase: "model: phase-model"}), phase, substep))
+                self.assertIn(f"{phase}.{substep}", str(err))
+                self.assertEqual(err.where, f"phases.{phase}")
+        # ...and the complete document the rows above remove from loads.
+        lc.load_llm_config(self.write(_doc(phase_fields={"compile": "model: phase-model"})))
 
     def test_a_judging_workshop_entry_is_served_no_wrapper_call_budget(self) -> None:
         """A reading lineage is served no operation, so `max_wrapper_calls` there bounds
         nothing and is refused; `lineage_timeout_s` is still required."""
-        for pair in ("generate: {substeps: {verify", "validate: {substeps: {judge",
-                     "compile: {substeps: {verify"):
-            with self.subTest(pair=pair):
-                self.assert_rule("llm_config_workshop_bound_not_served",
-                                 self._gen(f"leaf: workshop, {self.BOUNDS}", pair))
+        for (phase, substep) in sorted(lc.WORKSHOP_READING_SUBSTEPS):
+            with self.subTest(pair=f"{phase}.{substep}"):
+                err = self.assert_rule("llm_config_workshop_bound_not_served",
+                                       _doc(entries={(phase, substep): f"{{{self.BOUNDS}}}"}))
+                self.assertEqual(err.where, f"phases.{phase}.substeps.{substep}.max_wrapper_calls")
                 self.assert_rule("llm_config_workshop_bound_missing",
-                                 self._gen("leaf: workshop", pair))
-                self.assert_rule("llm_config_workshop_bound_missing",
-                                 self._gen("leaf: workshop, max_wrapper_calls: 3", pair))
+                                 _doc(entries={(phase, substep): "{max_wrapper_calls: 3}"}))
 
     def test_a_judging_workshop_entry_runs_on_a_measured_provider_only(self) -> None:
         """Both CLIs' reading argv are measured (codex's in step 3 PR-J2), so a codex judging
-        workshop entry loads on each judging substep. The refusal stays for a provider that
-        declares `workshop` with no reader row, at load rather than at launch."""
-        for pair in ("generate: {substeps: {verify", "validate: {substeps: {judge",
-                     "compile: {substeps: {verify"):
-            with self.subTest(pair=pair):
-                phase, substep = pair.split(":")[0], pair.rsplit("{", 1)[1]
-                entry = lc.load_llm_config(self.write(self._gen(
-                    f"provider: codex_cli, model: m, leaf: workshop, {self.READING}",
-                    pair))).entry_for(phase, substep)
-                self.assertEqual((entry.provider, entry.is_workshop), ("codex_cli", True))
+        entry loads on each judging substep. The refusal stays for a provider that declares
+        `workshop` with no reader row, at load rather than at launch."""
+        for (phase, substep) in sorted(lc.WORKSHOP_READING_SUBSTEPS):
+            with self.subTest(pair=f"{phase}.{substep}"):
+                text = _doc(entries={(phase, substep):
+                                     f"{{provider: codex_cli, model: m, {self.READING}}}"})
+                entry = lc.load_llm_config(self.write(text)).entry_for(phase, substep)
+                self.assertEqual(entry.provider, "codex_cli")
                 with mock.patch.object(lc, "WORKSHOP_READING_PROVIDERS",
                                        frozenset({"claude_cli"})):
-                    self.assert_rule(
-                        "llm_config_workshop_reading_unsupported_on_provider",
-                        self._gen(f"provider: codex_cli, model: m, leaf: workshop, "
-                                  f"{self.READING}", pair))
+                    err = self.assert_rule(
+                        "llm_config_workshop_reading_unsupported_on_provider", text)
+                    self.assertEqual(err.where, f"phases.{phase}.substeps.{substep}.provider")
         # The producing substeps run on codex as before.
-        lc.load_llm_config(self.write(self._gen(
-            f"provider: codex_cli, model: m, leaf: workshop, {self.BOUNDS}")))
+        lc.load_llm_config(self.write(_doc(entries={
+            ("generate", "generate"): f"{{provider: codex_cli, model: m, {self.BOUNDS}}}"})))
 
-    def test_a_workshop_entry_needs_a_provider_declaring_it(self) -> None:
-        # A provider whose table row lacks it is refused (no provider lacks it today since
-        # issue #534 PR-J3-b, so the table is narrowed for the row).
-        with mock.patch.dict(lc.PROVIDER_CAPABILITIES,
-                             {"anthropic_api": frozenset({lc.CAP_PURE})}):
-            self.assert_rule(
-                "llm_config_workshop_unsupported_on_provider",
-                self._gen("provider: anthropic_api, model: m, api_key_env: K, "
-                          f"leaf: workshop, {self.BOUNDS}"))
-        # `capabilities:` may narrow it away, and then the entry has no workshop transport.
-        self.assert_rule(
-            "llm_config_workshop_unsupported_on_provider",
-            self._gen("provider: anthropic_api, model: m, api_key_env: K, "
-                      f"capabilities: [pure], leaf: workshop, {self.BOUNDS}"))
-        self.assert_rule(
-            "llm_config_workshop_unsupported_on_provider",
-            self._gen(f"capabilities: [pure, warm_resume], leaf: workshop, {self.BOUNDS}"))
+    def test_an_entry_narrowed_away_from_workshop_is_refused(self) -> None:
+        """An entry without `workshop` can run no LLM leaf, and is refused
+        `llm_config_capability_insufficient_for_substep` — the rule that, since issue #534
+        PR-J4-b, covers what `llm_config_workshop_unsupported_on_provider` refused (its
+        predicate became this one's). Reached two ways: a provider whose table row lacks it (no
+        provider lacks it today, so the table is narrowed for the row), and `capabilities:`
+        narrowing it away."""
+        http = "provider: anthropic_api, model: m, api_key_env: K"
+        with mock.patch.dict(lc.PROVIDER_CAPABILITIES, {"anthropic_api": frozenset()}):
+            err = self.assert_rule(
+                "llm_config_capability_insufficient_for_substep",
+                _doc(entries={("generate", "generate"): f"{{{http}, {self.BOUNDS}}}"}))
+            self.assertIn("'workshop'", str(err))
+        for (phase, substep), body in (
+            (("generate", "generate"), f"{{capabilities: [warm_resume], {self.BOUNDS}}}"),
+            (("compile", "verify"), f"{{capabilities: [warm_resume], {self.READING}}}"),
+        ):
+            with self.subTest(pair=f"{phase}.{substep}"):
+                err = self.assert_rule("llm_config_capability_insufficient_for_substep",
+                                       _doc(entries={(phase, substep): body}))
+                self.assertEqual(err.where, f"phases.{phase}.substeps.{substep}")
 
-    def test_a_workshop_entry_states_both_bounds(self) -> None:
-        for body in ("leaf: workshop", "leaf: workshop, max_wrapper_calls: 3",
-                     "leaf: workshop, lineage_timeout_s: 30"):
-            with self.subTest(body=body):
-                self.assert_rule("llm_config_workshop_bound_missing", self._gen(body))
-
-    def test_a_pure_entry_states_no_bound(self) -> None:
-        for body in ("max_wrapper_calls: 3", "lineage_timeout_s: 30",
-                     "leaf: pure, max_wrapper_calls: 3"):
-            with self.subTest(body=body):
-                self.assert_rule("llm_config_workshop_bound_on_pure_entry", self._gen(body))
-        self.assert_rule("llm_config_workshop_bound_on_pure_entry",
-                         self._gen("max_wrapper_calls: 3", "generate: {substeps: {verify"))
-
-    def test_a_workshop_entry_requires_the_workshop_capability_not_pure(self) -> None:
-        self.assertEqual(lc.required_capabilities("generate", "generate", "workshop"),
-                         frozenset({lc.CAP_WORKSHOP}))
-        self.assertEqual(lc.required_capabilities("generate", "generate"),
-                         frozenset({lc.CAP_PURE}))
-        # Narrowed to workshop alone, the entry still runs its substep as a workshop leaf.
-        cfg = lc.load_llm_config(self.write(self._gen(
-            f"capabilities: [workshop], leaf: workshop, {self.BOUNDS}")))
+    def test_workshop_is_the_capability_every_llm_entry_requires(self) -> None:
+        """`required_capabilities` takes no leaf model any more (there is one) and answers
+        `{workshop}` for every LLM pair; an entry narrowed to `workshop` alone runs."""
+        import inspect
+        self.assertEqual(list(inspect.signature(lc.required_capabilities).parameters),
+                         ["phase", "substep"])
+        for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
+            self.assertEqual(lc.required_capabilities(phase, substep),
+                             frozenset({lc.CAP_WORKSHOP}), msg=f"{phase}.{substep}")
+        cfg = lc.load_llm_config(self.write(_doc(entries={
+            ("generate", "generate"): f"{{capabilities: [workshop], {self.BOUNDS}}}"})))
         self.assertEqual(cfg.entry_for("generate", "generate").capabilities,
                          frozenset({lc.CAP_WORKSHOP}))
 
-    def test_a_run_naming_a_workshop_entry_passes_its_start(self) -> None:
-        """The workshop loop is wired (issue #534 PR-3): the run-start check no longer refuses a
-        workshop entry, and still refuses what it always did beside one."""
-        lc.load_llm_config(self.write(self._gen(f"leaf: workshop, {self.BOUNDS}"))
-                           ).validate_runnable()
+    def test_a_complete_configuration_passes_its_run_start(self) -> None:
+        """The run-start check refuses nothing a complete, bounded configuration states."""
+        lc.load_llm_config(self.write(_doc())).validate_runnable()
 
-    def test_the_sample_comment_block_loads_as_written(self) -> None:
-        """The commented workshop block of `llm_claude.example.yaml` is the operator's copy-paste
-        source, so it is uncommented and loaded here: a block that stops loading is a sample
-        that teaches a refused configuration."""
-        text = (SAMPLE_DIR / "llm_claude.example.yaml").read_text(encoding="utf-8")
-        lines = text.splitlines()
-        start = lines.index("#       generate:")
+    @staticmethod
+    def _commented_block(sample: str, head: str) -> list[str]:
+        lines = (SAMPLE_DIR / sample).read_text(encoding="utf-8").splitlines()
+        start = lines.index(f"#       {head}:")
         block = []
         for line in lines[start:]:
             if not line.startswith("#       "):
                 break
             block.append(line[len("#       "):].split("#", 1)[0].rstrip())
-        self.assertIn("  leaf: workshop", block)
-        # The sample says the block goes under both producing substeps (issue #534 step 2).
-        for phase in ("compile", "generate"):
-            with self.subTest(phase=phase):
-                body = (self.BASE + f"phases:\n  {phase}:\n    substeps:\n"
-                        + "\n".join("      " + line for line in block) + "\n")
-                entry = lc.load_llm_config(self.write(body)).entry_for(phase, "generate")
-                self.assertTrue(entry.is_workshop)
-                self.assertIsNotNone(entry.max_wrapper_calls)
+        return block
 
     def test_the_http_samples_producing_block_loads_on_each_producing_substep(self) -> None:
         """Issue #534 PR-J3-b: each HTTP sample's commented PRODUCING block, uncommented and
-        loaded under both producing substeps, is an HTTP workshop entry with both bounds."""
+        loaded under both producing substeps, is an HTTP entry with both bounds — and writes no
+        `leaf:`, which would be refused."""
         for sample, provider in (("llm_anthropic_api.example.yaml", "anthropic_api"),
                                  ("llm_openai_compatible.example.yaml", "openai_compatible")):
-            lines = (SAMPLE_DIR / sample).read_text(encoding="utf-8").splitlines()
-            start = lines.index("#       generate:")
-            block = []
-            for line in lines[start:]:
-                if not line.startswith("#       "):
-                    break
-                block.append(line[len("#       "):].split("#", 1)[0].rstrip())
+            block = self._commented_block(sample, "generate")
+            self.assertFalse([line for line in block if line.strip().startswith("leaf:")])
             for phase in ("compile", "generate"):
                 with self.subTest(sample=sample, phase=phase):
-                    body = (self.BASE + f"phases:\n  {phase}:\n    substeps:\n"
-                            + "\n".join("      " + line for line in block) + "\n")
-                    cfg = lc.load_llm_config(self.write(body))
+                    cfg = lc.load_llm_config(self.write(_doc(entries={
+                        (phase, "generate"): "\n".join(line.strip() for line in block[1:])})))
                     cfg.validate_runnable()
                     entry = cfg.entry_for(phase, "generate")
-                    self.assertEqual((entry.provider, entry.is_workshop, entry.is_http),
-                                     (provider, True, True))
+                    self.assertEqual((entry.provider, entry.is_http), (provider, True))
                     self.assertIsNotNone(entry.max_wrapper_calls)
                     self.assertIsNotNone(entry.lineage_timeout_s)
 
-    def test_an_http_workshop_entry_loads_on_every_substep(self) -> None:
-        """The inversion of the pre-PR-J3-b refusal: both HTTP providers run a workshop leaf on
-        every workshop pair, a producer with both bounds and a reader with
-        `lineage_timeout_s` alone; a `defaults`-level or phase-level workshop field is still
-        refused (substep-scoped)."""
-        for provider, extra in (("anthropic_api", "api_key_env: K"),
-                                ("openai_compatible",
-                                 "base_url: 'http://127.0.0.1:8000/v1', api_key_env: K")):
-            for phase, substep in sorted(lc.WORKSHOP_LEAF_SUBSTEPS):
-                reading = (phase, substep) in lc.WORKSHOP_READING_SUBSTEPS
-                bounds = "lineage_timeout_s: 60" if reading else self.BOUNDS
-                with self.subTest(provider=provider, pair=f"{phase}.{substep}"):
-                    cfg = lc.load_llm_config(self.write(self._gen(
-                        f"provider: {provider}, model: m, {extra}, leaf: workshop, {bounds}",
-                        f"{phase}: {{substeps: {{{substep}")))
-                    entry = cfg.entry_for(phase, substep)
-                    self.assertTrue(entry.is_workshop and entry.is_http)
-        for level in ("defaults", "phase"):
-            body = (self.BASE.replace("provider: claude_cli",
-                                      "provider: claude_cli\n  leaf: workshop")
-                    if level == "defaults" else
-                    self.BASE + "phases:\n  generate:\n    provider: anthropic_api\n"
-                    "    api_key_env: K\n    model: m\n    leaf: workshop\n")
-            with self.subTest(level=level), self.assertRaises(lc.LlmConfigError):
-                lc.load_llm_config(self.write(body))
-
-    def test_the_sample_reading_block_loads_on_each_judging_substep(self) -> None:
-        """The commented READING block (issue #534 step 3) of each sample is uncommented and
-        loaded under each judging substep, renamed as the sample says: a block that stops
-        loading teaches a refused configuration. Codex's since step 3 PR-J2."""
-        for sample, provider in (("llm_claude.example.yaml", "claude_cli"),
-                                 ("llm_codex.example.yaml", "codex_cli"),
-                                 ("llm_anthropic_api.example.yaml", "anthropic_api"),
+    def test_the_http_samples_reading_block_loads_on_each_judging_substep(self) -> None:
+        """Each HTTP sample's commented READING block (issue #534 step 3) is uncommented and
+        loaded under each judging substep: a block that stops loading teaches a refused
+        configuration. (The CLI samples carry no such block since issue #534 PR-J4-b: their
+        live entries ARE the workshop entries, loaded by
+        `test_every_sample_loads_resolves_every_leaf_and_is_runnable` and read by
+        `test_every_sample_entry_states_the_bounds_of_its_kind_and_no_leaf`.)"""
+        for sample, provider in (("llm_anthropic_api.example.yaml", "anthropic_api"),
                                  ("llm_openai_compatible.example.yaml", "openai_compatible")):
-            text = (SAMPLE_DIR / sample).read_text(encoding="utf-8")
-            lines = text.splitlines()
-            start = lines.index("#       judge:")
-            block = []
-            for line in lines[start:]:
-                if not line.startswith("#       "):
-                    break
-                block.append(line[len("#       "):].split("#", 1)[0].rstrip())
-            self.assertIn("  leaf: workshop", block)
+            block = self._commented_block(sample, "judge")
             self.assertIn(f"  provider: {provider}", block)
             self.assertNotIn("max_wrapper_calls", "\n".join(block))
+            self.assertFalse([line for line in block if line.strip().startswith("leaf:")])
             for phase, substep in sorted(lc.WORKSHOP_READING_SUBSTEPS):
                 with self.subTest(sample=sample, pair=f"{phase}.{substep}"):
-                    renamed = [f"{substep}:"] + block[1:]
-                    body = (self.BASE + f"phases:\n  {phase}:\n    substeps:\n"
-                            + "\n".join("      " + line for line in renamed) + "\n")
-                    cfg = lc.load_llm_config(self.write(body))
+                    cfg = lc.load_llm_config(self.write(_doc(entries={
+                        (phase, substep): "\n".join(line.strip() for line in block[1:])})))
                     cfg.validate_runnable()
                     entry = cfg.entry_for(phase, substep)
                     self.assertEqual(entry.provider, provider)
-                    self.assertTrue(entry.is_workshop)
                     self.assertIsNone(entry.max_wrapper_calls)
                     self.assertIsNotNone(entry.lineage_timeout_s)
 
+    def test_an_http_workshop_entry_loads_on_every_substep(self) -> None:
+        """Both HTTP providers run a workshop leaf on every LLM pair, a producer with both
+        bounds and a reader with `lineage_timeout_s` alone; a bound at `defaults` or at a
+        phase is still refused (substep-scoped)."""
+        for provider, extra in (("anthropic_api", "api_key_env: K"),
+                                ("openai_compatible",
+                                 "base_url: 'http://127.0.0.1:8000/v1', api_key_env: K")):
+            for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
+                reading = (phase, substep) in lc.WORKSHOP_READING_SUBSTEPS
+                bounds = "lineage_timeout_s: 60" if reading else self.BOUNDS
+                with self.subTest(provider=provider, pair=f"{phase}.{substep}"):
+                    cfg = lc.load_llm_config(self.write(_doc(entries={
+                        (phase, substep): f"{{provider: {provider}, model: m, {extra}, {bounds}}}"})))
+                    self.assertTrue(cfg.entry_for(phase, substep).is_http)
+        for level, body in (
+            ("defaults", _doc("defaults:\n  lineage_timeout_s: 2700\n  provider: anthropic_api\n"
+                              "  api_key_env: K\n  model: m\n  max_wrapper_calls: 3\n")),
+            ("phase", _doc(phase_fields={"generate": "provider: anthropic_api\n"
+                                                     "api_key_env: K\nmodel: m\n"
+                                                     "lineage_timeout_s: 60"})),
+        ):
+            with self.subTest(level=level):
+                self.assert_rule("llm_config_workshop_field_not_substep_scoped", body)
+
     def test_the_workshop_pairs_match_the_launch_validator(self) -> None:
         from tools import pure_leaf
+        # Every LLM pair is a workshop pair (issue #534 PR-J4-b): the union of the two kinds
+        # is `LLM_LEAF_SUBSTEPS`, with no pair left over for a second leaf model.
+        self.assertEqual(lc.WORKSHOP_LEAF_SUBSTEPS, lc.LLM_LEAF_SUBSTEPS)
+        self.assertFalse(lc.WORKSHOP_PRODUCING_SUBSTEPS & lc.WORKSHOP_READING_SUBSTEPS)
         # The validator's set holds the `escalate` diagnostician's pairs too (issue #534
         # PR-J4-a), a reading launch no operator assigns: `defaults` serves it.
         self.assertEqual(lc.WORKSHOP_LEAF_SUBSTEPS,
@@ -1576,8 +1695,10 @@ class WorkshopEntryTests(_Tmp):
         self.assertEqual(lc.WORKSHOP_READING_SUBSTEPS, pure_leaf.WORKSHOP_READING_PAIRS)
         self.assertEqual(lc.WORKSHOP_READING_PROVIDERS,
                          frozenset(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT))
-        self.assertEqual(lc.LEAF_WORKSHOP, pure_leaf.WORKSHOP_LEAF_MODE)
-        self.assertEqual(lc.LEAF_PURE, pure_leaf.PURE_LEAF_MODE)
+        # The retired leaf-model vocabulary is gone from the configuration module.
+        for retired in ("LEAF_PURE", "LEAF_WORKSHOP", "LEAF_MODELS", "CAP_PURE",
+                        "WORKSHOP_BOUND_FIELDS"):
+            self.assertFalse(hasattr(lc, retired), msg=retired)
 
 
 class DefaultsOverrideTests(unittest.TestCase):
@@ -1603,7 +1724,8 @@ class DefaultsOverrideTests(unittest.TestCase):
     def test_an_override_still_reaches_a_file_that_declares_none(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "bare.yaml"
-            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n", encoding="utf-8")
+            path.write_text(_doc("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n"),
+                            encoding="utf-8")
             cfg = lc.apply_defaults_overrides(lc.load_llm_config(path), model="gpt-5-codex")
         for entry in cfg.entries.values():
             self.assertEqual(entry.model, "gpt-5-codex")
@@ -1623,13 +1745,13 @@ class DefaultsOverrideTests(unittest.TestCase):
         provider keeps its own model."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "mixed.yaml"
-            path.write_text(
-                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-                "phases:\n  generate:\n    substeps:\n      generate:\n"
-                "        provider: openai_compatible\n"
-                "        base_url: http://localhost:8000/v1\n"
-                "        api_key_env: LOCAL_KEY\n"
-                "        model: local-model\n", encoding="utf-8")
+            path.write_text(_doc(entries={
+                ("generate", "generate"): "provider: openai_compatible\n"
+                                          "base_url: http://localhost:8000/v1\n"
+                                          "api_key_env: LOCAL_KEY\n"
+                                          "model: local-model\n"
+                                          "max_wrapper_calls: 30\nlineage_timeout_s: 2700"}),
+                encoding="utf-8")
             cfg = lc.apply_defaults_overrides(lc.load_llm_config(path), model="claude-pinned")
             self.assertEqual(cfg.entry_for("generate", "generate").model, "local-model")
             self.assertEqual(cfg.entry_for("generate", "verify").model, "claude-pinned")
@@ -1641,9 +1763,9 @@ class DefaultsOverrideTests(unittest.TestCase):
         override must move the default and everything that inherited it — not that."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "same.yaml"
-            path.write_text(
-                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
-                "phases:\n  validate:\n    substeps:\n      judge:\n        model: opus\n",
+            path.write_text(_doc(
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n",
+                entries={("validate", "judge"): "{model: opus, lineage_timeout_s: 2700}"}),
                 encoding="utf-8")
             cfg = lc.apply_defaults_overrides(lc.load_llm_config(path), model="sonnet")
             self.assertEqual(cfg.entry_for("validate", "judge").model, "opus")
@@ -1654,31 +1776,34 @@ class DefaultsOverrideTests(unittest.TestCase):
     def test_a_phase_level_pin_equal_to_the_default_survives_too(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "phase.yaml"
-            path.write_text(
-                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  command: wrap\n"
-                "phases:\n  generate:\n    command: wrap\n", encoding="utf-8")
+            path.write_text(_doc(
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  command: wrap\n",
+                phase_fields={"generate": "command: wrap"}), encoding="utf-8")
             cfg = lc.apply_defaults_overrides(lc.load_llm_config(path), command="other")
             self.assertEqual(cfg.entry_for("generate", "generate").command, "wrap")
             self.assertEqual(cfg.entry_for("compile", "verify").command, "other")
 
     def test_declared_names_only_what_a_level_below_defaults_wrote(self) -> None:
+        """Since issue #534 PR-J4-b every substep entry writes its own bounds, so those are
+        in `declared` too; what `defaults` wrote (its `model`) is not."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "d.yaml"
-            path.write_text(
-                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
-                "phases:\n  validate:\n    substeps:\n      judge:\n        model: haiku\n",
+            path.write_text(_doc(
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n",
+                entries={("validate", "judge"): "{model: haiku, lineage_timeout_s: 2700}"}),
                 encoding="utf-8")
             cfg = lc.load_llm_config(path)
-            self.assertEqual(cfg.entry_for("validate", "judge").declared, frozenset({"model"}))
-            self.assertEqual(cfg.entry_for("compile", "verify").declared, frozenset())
+            self.assertEqual(cfg.entry_for("validate", "judge").declared,
+                             frozenset({"model", "lineage_timeout_s"}))
+            self.assertEqual(cfg.entry_for("compile", "verify").declared,
+                             frozenset({"lineage_timeout_s"}))
 
     def test_overrides_leave_a_per_substep_model_alone(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "pinned.yaml"
-            path.write_text(
-                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-                "phases:\n  validate:\n    substeps:\n      judge:\n"
-                "        model: judge-model\n", encoding="utf-8")
+            path.write_text(_doc(entries={
+                ("validate", "judge"): "{model: judge-model, lineage_timeout_s: 2700}"}),
+                encoding="utf-8")
             cfg = lc.apply_defaults_overrides(lc.load_llm_config(path), model="run-wide")
             self.assertEqual(cfg.entry_for("validate", "judge").model, "judge-model")
             self.assertEqual(cfg.entry_for("compile", "verify").model, "run-wide")
@@ -1690,10 +1815,10 @@ class DefaultsOverrideTests(unittest.TestCase):
         own."""
         with tempfile.TemporaryDirectory() as tmp:
             declared = Path(tmp) / "declared.yaml"
-            declared.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n",
-                                encoding="utf-8")
+            declared.write_text(_doc("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+                                     "  model: opus\n"), encoding="utf-8")
             bare = Path(tmp) / "bare.yaml"
-            bare.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n", encoding="utf-8")
+            bare.write_text(_doc(), encoding="utf-8")
             for path in (declared, bare):
                 cfg = lc.apply_defaults_overrides(lc.load_llm_config(path), model="sonnet")
                 entry = cfg.entry_for("validate", "judge")
@@ -1706,9 +1831,9 @@ class DefaultsOverrideTests(unittest.TestCase):
     def test_a_substep_pin_survives_the_override_and_stays_pinned(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "pin.yaml"
-            path.write_text(
-                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: base\n"
-                "phases:\n  validate:\n    substeps:\n      judge:\n        model: haiku\n",
+            path.write_text(_doc(
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: base\n",
+                entries={("validate", "judge"): "{model: haiku, lineage_timeout_s: 2700}"}),
                 encoding="utf-8")
             cfg = lc.apply_defaults_overrides(lc.load_llm_config(path), model="sonnet")
             judge = cfg.entry_for("validate", "judge")
@@ -1751,9 +1876,9 @@ class MirrorTableDriftTests(unittest.TestCase):
         admitted because the node's shape happened to allow it."""
 
         class _Stub:
-            # Both spellings of "this launch's model is pure-capable" are supplied, so the
-            # guard keeps working across the Phase-2 conversion of the backend identity into a
-            # per-launch entry.
+            # Both spellings of "this launch's model can run the leaf" are supplied (a backend
+            # token and a per-launch entry), so the guard does not depend on which one the
+            # predicate reads — since Z4 it reads neither (the capability is a load-time rule).
             backend = "claude"
             _pure_leaf_substep = wc.Conductor._pure_leaf_substep
 
@@ -1854,14 +1979,15 @@ class MirrorTableDriftTests(unittest.TestCase):
         import unittest.mock
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "c.yaml"
-            original = "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: original\n"
+            original = _doc("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+                            "  model: original\n")
             path.write_text(original, encoding="utf-8")
             real_read_bytes = Path.read_bytes
 
             def _swap_after_read(self_path):
                 data = real_read_bytes(self_path)
                 if self_path == path:            # the file changes underneath us
-                    path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: swapped\n",
+                    path.write_text(original.replace("model: original", "model: swapped"),
                                     encoding="utf-8")
                 return data
 

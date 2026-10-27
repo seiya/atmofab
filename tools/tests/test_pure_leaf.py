@@ -1,13 +1,13 @@
-"""Unit tests for the Z2 pure-leaf transport (`tools/pure_leaf.py`) and the
-`Conductor.leaf_command` pure branch (M-A).
+"""Unit tests for the leaf-side helpers of `tools/pure_leaf.py` that outlived the pure leaf.
 
-The transport is inert at this milestone (no caller passes `pure=True`), so these tests
-are the whole of its verification. They follow the Z0 mutation-flow discipline: the parser
-is fed a null `result`, an absent `usage`, `is_error`, non-JSON, and empty stdout to prove a
-present `null` is never read as an absent key (`_MISSING`); the extractor is fed fenced /
-unfenced / truncated bodies; the verdict validator is fed each joint-invariant violation and
-an uppercase `"PASS"` to prove the status enum is exact, not case-folded; and the flag set is
-pinned by a golden.
+Every LLM leaf is a `workshop leaf` since issue #534 PR-J4-b, and the pure leaf's own transport
+(`pure_leaf_flags`, the reply-text extractor, the pure argv branches of
+`Conductor.leaf_command`) went with it. What stays here: the workshop flag set and its preflight
+option census, the result-envelope parser (fed a null `result`, an absent `usage`, `is_error`,
+non-JSON and empty stdout, so a present `null` is never read as an absent key — `_MISSING`), the
+verdict and semantic-review validators (each joint-invariant violation, and an uppercase `"PASS"`
+to prove an enum is exact, not case-folded), the repair texts, the record predicates old pure
+records are still read through, and the codex resume argv's preflight certification.
 """
 
 from __future__ import annotations
@@ -19,7 +19,6 @@ from pathlib import Path
 
 from tools import pure_leaf as pl
 from tools import workflow_conductor as wc
-from tools.tests.llm_samples import sample_config_with as _cfg
 
 
 def _envelope(**overrides) -> str:
@@ -40,32 +39,6 @@ def _envelope(**overrides) -> str:
 
 
 DROP = object()
-
-
-class PureLeafFlagsTest(unittest.TestCase):
-    def test_flag_set_golden(self):
-        self.assertEqual(
-            pl.pure_leaf_flags(),
-            ["--restricted", "--safe-mode", "--system-prompt", pl.PURE_SYSTEM_PROMPT,
-             "--tools", "",
-             "--strict-mcp-config", "--disable-slash-commands", "--output-format", "json"])
-
-    def test_context_closing_flags_present(self):
-        # --safe-mode disables CLAUDE.md + the repo's UserPromptSubmit hook; --system-prompt
-        # replaces the default system prompt (taking its per-machine dynamic sections out of
-        # the system prompt; the CLI still adds an environment block of its own, issue #454).
-        # A regression that drops either re-opens ambient input.
-        # --restricted keeps the operator's settings files out (issue #453): dropping it
-        # hands an unpinned leaf's model and endpoint back to `~/.claude/settings.json`.
-        flags = pl.pure_leaf_flags()
-        self.assertIn("--safe-mode", flags)
-        self.assertIn("--restricted", flags)
-        self.assertEqual(flags[flags.index("--system-prompt") + 1], pl.PURE_SYSTEM_PROMPT)
-
-    def test_flags_are_a_fresh_list(self):
-        a = pl.pure_leaf_flags()
-        a.append("--mutated")
-        self.assertNotIn("--mutated", pl.pure_leaf_flags())
 
 
 class WorkshopLeafFlagsTest(unittest.TestCase):
@@ -116,11 +89,27 @@ class WorkshopLeafFlagsTest(unittest.TestCase):
                 self.assertEqual(pl.is_workshop_request(payload), workshop)
                 self.assertEqual(pl.is_host_rendered_request(payload), pure or workshop)
 
-    def test_the_sentinels_and_versions_are_distinct(self):
+    def test_the_sentinels_are_distinct(self):
         self.assertNotEqual(pl.WORKSHOP_PROMPT_SENTINEL, pl.PURE_PROMPT_SENTINEL)
         self.assertFalse(pl.WORKSHOP_PROMPT_SENTINEL.startswith(pl.PURE_PROMPT_SENTINEL))
         self.assertFalse(pl.PURE_PROMPT_SENTINEL.startswith(pl.WORKSHOP_PROMPT_SENTINEL))
-        self.assertNotEqual(pl.WORKSHOP_PROMPT_CONTRACT_VERSION, pl.PURE_PROMPT_CONTRACT_VERSION)
+
+    def test_the_preflight_option_census_is_the_union_of_both_argvs(self):
+        """`CLAUDE_WORKSHOP_REQUIRED_OPTIONS` is the option set of the two claude workshop
+        argvs (issue #534 PR-J4-b, MJ2).
+
+        It was derived as the workshop flags minus `pure_leaf_flags()`; with the pure flag set
+        gone it is an explicit tuple, so this row is the derivation. EQUALITY in both
+        directions: an option the launch emits that the preflight does not probe lets a CLI
+        that refuses it pass preflight and kill every launch as a transport death, and an
+        option the preflight probes that no launch emits false-fails a CLI that dropped
+        something nothing uses.
+        """
+        from tools import orchestration_runtime as ort
+        emitted = {flag for argv in (pl.workshop_leaf_flags("{}"),
+                                     pl.workshop_leaf_flags(None, reading=True))
+                   for flag in argv if flag.startswith("--")}
+        self.assertEqual(emitted, set(ort.CLAUDE_WORKSHOP_REQUIRED_OPTIONS))
 
 
 class ParseResultEnvelopeTest(unittest.TestCase):
@@ -139,10 +128,6 @@ class ParseResultEnvelopeTest(unittest.TestCase):
         self.assertTrue(env.parsed)
         self.assertIsNone(env.result)
         self.assertIsNot(env.result, pl._MISSING)
-        # And the extractor treats that null as no document.
-        doc, category = pl.extract_json_document(env.result)
-        self.assertIsNone(doc)
-        self.assertEqual(category, pl.RESPONSE_UNPARSEABLE)
 
     def test_absent_usage_is_missing(self):
         env = pl.parse_result_envelope(_envelope(usage=DROP))
@@ -250,144 +235,6 @@ class ParseResultEnvelopeTest(unittest.TestCase):
         for bad in (None, 42, {"a": 1}, b"bytes"):
             env = pl.parse_result_envelope(bad)  # type: ignore[arg-type]
             self.assertFalse(env.parsed)
-
-
-class ExtractJsonDocumentTest(unittest.TestCase):
-    def test_bare_json_object(self):
-        doc, category = pl.extract_json_document('{"a": 1}')
-        self.assertIsNone(category)
-        self.assertEqual(doc, {"a": 1})
-
-    def test_single_json_fence(self):
-        # A reply that is a single fenced block with only whitespace outside is accepted.
-        text = "```json\n{\"a\": 1}\n```\n"
-        doc, category = pl.extract_json_document(text)
-        self.assertIsNone(category)
-        self.assertEqual(doc, {"a": 1})
-
-    def test_prose_outside_fence_rejected(self):
-        # Any non-whitespace outside the sole fence (a prose preamble here) is ambiguous.
-        text = "Here is the bundle:\n```json\n{\"a\": 1}\n```\n"
-        doc, category = pl.extract_json_document(text)
-        self.assertIsNone(doc)
-        self.assertEqual(category, pl.RESPONSE_UNPARSEABLE)
-
-    def test_plain_fence_without_language_tag(self):
-        doc, category = pl.extract_json_document("```\n{\"a\": 1}\n```")
-        self.assertIsNone(category)
-        self.assertEqual(doc, {"a": 1})
-
-    def test_fenced_document_with_backticks_in_string(self):
-        # A ``` sequence inside a JSON string value (a bundle source file, a verdict message)
-        # must not be counted as a fence marker — the outer fence is parsed structurally.
-        text = '```json\n{"content": "x ``` y"}\n```'
-        doc, category = pl.extract_json_document(text)
-        self.assertIsNone(category)
-        self.assertEqual(doc, {"content": "x ``` y"})
-
-    def test_fence_opened_never_closed_is_truncated(self):
-        doc, category = pl.extract_json_document("```json\n{\"a\": 1")
-        self.assertIsNone(doc)
-        self.assertEqual(category, pl.RESPONSE_TRUNCATED)
-
-    def test_fence_tag_only_no_newline_is_truncated(self):
-        doc, category = pl.extract_json_document("```json")
-        self.assertIsNone(doc)
-        self.assertEqual(category, pl.RESPONSE_TRUNCATED)
-
-    def test_unclosed_fence_is_truncated(self):
-        doc, category = pl.extract_json_document("```json\n{\"a\": 1, \"b\": ")
-        self.assertIsNone(doc)
-        self.assertEqual(category, pl.RESPONSE_TRUNCATED)
-
-    def test_unbalanced_braces_is_truncated(self):
-        doc, category = pl.extract_json_document('{"a": 1, "b": {"c": 2')
-        self.assertIsNone(doc)
-        self.assertEqual(category, pl.RESPONSE_TRUNCATED)
-
-    def test_garbage_is_unparseable(self):
-        doc, category = pl.extract_json_document("this is not json }{")
-        self.assertIsNone(doc)
-        self.assertEqual(category, pl.RESPONSE_UNPARSEABLE)
-
-    def test_two_fences_is_unparseable(self):
-        text = "```json\n{\"a\":1}\n```\nand\n```json\n{\"b\":2}\n```"
-        doc, category = pl.extract_json_document(text)
-        self.assertIsNone(doc)
-        self.assertEqual(category, pl.RESPONSE_UNPARSEABLE)
-
-    def test_valid_document_with_backticks_in_string_is_parsed(self):
-        # Parse-first: a clean JSON doc whose string value merely mentions a ``` fence must
-        # not be rejected by fence bookkeeping. An odd fence count inside a string and an even
-        # (spurious-block) one both used to be miscategorized.
-        for value in ("```", "the model emitted ```json``` instead of bare JSON"):
-            doc, category = pl.extract_json_document(json.dumps({"last_fail_reason": value}))
-            self.assertIsNone(category)
-            self.assertEqual(doc, {"last_fail_reason": value})
-
-    def test_deeply_nested_result_does_not_raise(self):
-        doc, category = pl.extract_json_document("[" * 200000)
-        self.assertIsNone(doc)
-        self.assertEqual(category, pl.RESPONSE_TRUNCATED)
-
-    def test_duplicate_top_level_key_rejected(self):
-        # A duplicate key must not silently collapse (last-wins) — a fail->pass duplicate
-        # could suppress a failure at the model-document trust boundary.
-        doc, category = pl.extract_json_document(
-            '{"verification_status": "fail", "verification_status": "pass"}')
-        self.assertIsNone(doc)
-        self.assertEqual(category, pl.RESPONSE_UNPARSEABLE)
-
-    def test_duplicate_nested_key_rejected(self):
-        doc, category = pl.extract_json_document('{"a": {"x": 1, "x": 2}}')
-        self.assertIsNone(doc)
-        self.assertEqual(category, pl.RESPONSE_UNPARSEABLE)
-
-    def test_bare_document_before_fence_rejected(self):
-        # A bare document + a fenced document is TWO documents; selecting the fenced one would
-        # silently drop the bare fail (multi-document trust hole).
-        text = ('{"verification_status": "fail"}\n'
-                '```json\n{"verification_status": "pass"}\n```')
-        doc, category = pl.extract_json_document(text)
-        self.assertIsNone(doc)
-        self.assertEqual(category, pl.RESPONSE_UNPARSEABLE)
-
-    def test_document_after_fence_rejected(self):
-        text = ('```json\n{"verification_status": "pass"}\n```\n'
-                '{"verification_status": "fail"}')
-        doc, category = pl.extract_json_document(text)
-        self.assertIsNone(doc)
-        self.assertEqual(category, pl.RESPONSE_UNPARSEABLE)
-
-    def test_scalar_document_outside_fence_rejected(self):
-        # A bare scalar (not just object/array) outside the fence is still a competing
-        # document and must not be silently dropped.
-        text = '"fail"\n```json\n{"verification_status": "pass"}\n```'
-        doc, category = pl.extract_json_document(text)
-        self.assertIsNone(doc)
-        self.assertEqual(category, pl.RESPONSE_UNPARSEABLE)
-
-    def test_non_finite_constants_rejected(self):
-        for body in ('{"x": NaN}', '{"x": Infinity}', '{"x": -Infinity}'):
-            doc, category = pl.extract_json_document(body)
-            self.assertIsNone(doc, body)
-            self.assertEqual(category, pl.RESPONSE_UNPARSEABLE, body)
-
-    def test_non_finite_overflow_float_rejected(self):
-        doc, category = pl.extract_json_document('{"x": 1e999}')
-        self.assertIsNone(doc)
-        self.assertEqual(category, pl.RESPONSE_UNPARSEABLE)
-
-    def test_finite_floats_accepted(self):
-        doc, category = pl.extract_json_document('{"x": 1.5, "y": -2.0e3}')
-        self.assertIsNone(category)
-        self.assertEqual(doc, {"x": 1.5, "y": -2000.0})
-
-    def test_missing_and_null_and_empty(self):
-        for value in (pl._MISSING, None, "", "   ", 123):
-            doc, category = pl.extract_json_document(value)
-            self.assertIsNone(doc)
-            self.assertEqual(category, pl.RESPONSE_UNPARSEABLE)
 
 
 def _verdict(**overrides) -> dict:
@@ -853,135 +700,63 @@ class PurePromptConstantsTest(unittest.TestCase):
         self.assertNotEqual(pl.PURE_DOC_FENCE_BEGIN, pl.PURE_DOC_FENCE_END)
 
 
-class LeafCommandPureBranchTest(unittest.TestCase):
-    def setUp(self) -> None:
-        # A disposable repo_root, so the absence assertions below (`leaf_command` writes
-        # nothing under `workspace/tmp` since issue #230) observe THIS run's tree and not a
-        # shared literal path some other run littered.
-        self._tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(self._tmp.cleanup)
+class ClaudeArgvCarriesTheWholeFlagSetTest(unittest.TestCase):
+    def test_every_claude_launch_carries_its_kinds_whole_flag_set(self):
+        """Every claude `leaf_command` argv carries its kind's whole `workshop_leaf_flags`
+        list, contiguous, with `-p` last and nothing after it — cold and warm, producing and
+        reading — so no argument of `leaf_command` can turn part of it off.
 
-    def _conductor(self, backend: str) -> wc.Conductor:
-        return wc.Conductor(
-            repo_root=Path(self._tmp.name), orchestration_id="o",
-            orchestration_agent_run_id="ORCH", llm_config=_cfg(backend), env={})
-
-    def test_pure_claude_command_includes_flags(self):
-        argv = self._conductor("claude").leaf_command(self._conductor("claude").entry_for("generate", "generate"), session_id="arid-1")
-        self.assertEqual(argv[0], "claude")
-        self.assertIn("--session-id", argv)
-        for flag in pl.pure_leaf_flags():
-            if flag:  # the empty "" value of --tools is order-checked below
-                self.assertIn(flag, argv)
-        # `-p` is last and NOTHING follows it: the prompt goes on stdin, because a single
-        # argv element is capped at 128 KiB and a node's prompt exceeds it.
-        self.assertEqual(argv[-1], "-p")
-        # --tools "" is a value pair
-        self.assertEqual(argv[argv.index("--tools") + 1], "")
-
-    def test_pure_warm_resume_prefixes_resume_flags(self):
-        argv = self._conductor("claude").leaf_command(self._conductor("claude").entry_for("generate", "generate"), 
-            session_id="arid-2", resume_session_id="arid-1")
-        self.assertEqual(argv[argv.index("--resume") + 1], "arid-1")
-        self.assertIn("--fork-session", argv)
-        self.assertIn("--output-format", argv)
-
-    def test_every_claude_launch_carries_the_pure_flag_set(self):
-        """There is no second claude argv since Z4 (issue #171).
-
-        This row used to be `test_non_pure_claude_has_no_pure_only_flags`, pinning what
-        distinguished a pure launch from an agentic one — a distinction that narrowed twice
-        (issue #63 gave the agentic branch `--strict-mcp-config` / `--disable-slash-commands`,
-        issue #71 gave it `--tools` as an allowlist) until only `--safe-mode`, the replaced
-        system prompt, and the empty `--tools` value were left. Z4 removed the other side of
-        the comparison, so what it pins now is that the whole set is unconditional: every
-        `leaf_command` for a claude entry carries it, with no argument that can turn it off.
+        The pure leaf's row pinned the same property of `pure_leaf_flags` (Z4, issue #171:
+        "the whole set is unconditional"); that flag set went in issue #534 PR-J4-b, and the
+        workshop one is what every claude launch now carries. `-p` last: the prompt goes on
+        stdin, because a single argv element is capped at 128 KiB and a node's prompt
+        exceeds it.
         """
-        import inspect
-        self.assertNotIn("pure", inspect.signature(wc.Conductor.leaf_command).parameters)
-        for kwargs in ({"session_id": "a"},
-                       {"session_id": "a", "resume_session_id": "b"}):
-            argv = self._conductor("claude").leaf_command(self._conductor("claude").entry_for("generate", "generate"), **kwargs)
-            self.assertIn("--safe-mode", argv, msg=str(kwargs))
-            self.assertIn("--system-prompt", argv, msg=str(kwargs))
-            self.assertEqual(argv[argv.index("--tools") + 1], "", msg=str(kwargs))
+        from tools.tests.llm_samples import sample_config
+        mcp = pl.workshop_mcp_config_json("http://127.0.0.1:5/mcp")
+        with tempfile.TemporaryDirectory() as tmp:
+            c = wc.Conductor(repo_root=Path(tmp), orchestration_id="o",
+                             orchestration_agent_run_id="orch", env={},
+                             llm_config=sample_config("claude"))
+            for pair, kwargs, flags in (
+                    (("generate", "generate"), {"mcp_config_json": mcp},
+                     pl.workshop_leaf_flags(mcp)),
+                    (("validate", "judge"), {"reading": True},
+                     pl.workshop_leaf_flags(None, reading=True))):
+                entry = c.entry_for(*pair)
+                self.assertEqual(entry.provider, "claude_cli")
+                for resume in (None, "arid-0"):
+                    with self.subTest(pair=pair, resume=resume):
+                        argv = c.leaf_command(entry, session_id="arid-1",
+                                              resume_session_id=resume, **kwargs)
+                        self.assertEqual(argv[-1], "-p")
+                        self.assertEqual(argv[-1 - len(flags):-1], flags)
+                        if resume:
+                            i = argv.index("--resume")
+                            self.assertEqual(argv[i:i + 3], ["--resume", resume,
+                                                             "--fork-session"])
 
-    def test_codex_pure_uses_the_readonly_sandbox_and_no_output_schema(self):
-        """The codex pure argv is the read-only sandbox alone; `--output-schema` is gone.
 
-        codex-cli sends the schema to the Responses API with `strict: true` hardcoded, and
-        strict mode refuses the only schema the host could author for a free-form document
-        (`{"type": "object"}`: `additionalProperties` must be supplied and false), so every
-        pure codex turn died at its first request (issue #230). The host's own parse of the
-        one reply is the shape check; the argv carries no schema and the call writes no
-        schema file.
-        """
-        argv = self._conductor("codex").leaf_command(self._conductor("codex").entry_for("generate", "generate"), session_id="arid-1")
-        self.assertEqual(argv[:2], ["codex", "exec"])
-        self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
-        self.assertNotIn("--output-schema", argv)
-        self.assertFalse((Path(self._tmp.name) / "workspace" / "tmp").exists())
-        self.assertNotIn("--ignore-user-config", argv)
-        self.assertIn("--ignore-rules", argv)
-        # The sandbox holds no checkout (issue #227), and codex refuses an untrusted non-git
-        # cwd before any API call without this flag.
-        self.assertIn("--skip-git-repo-check", argv)
-        # `-` is codex's stdin sentinel for the positional prompt, not the prompt itself.
-        self.assertEqual(argv[-2:], ["--json", "-"])
-
-    def test_codex_pure_warm_resume_omits_the_exec_only_sandbox_flag(self):
-        """`codex exec resume` takes NO `--sandbox`; passing it aborts at argv parsing.
-
-        Warm resume is how BOTH pure loops run every repair attempt, so this argv being
-        unparseable turns the first schema violation into a transport death with the
-        whole repair budget unused. The read-only policy is re-pinned through the `-c`
-        override that `exec` and `exec resume` share instead of being dropped.
-        """
-        argv = self._conductor("codex").leaf_command(self._conductor("codex").entry_for("generate", "generate"), 
-            session_id="arid-2", resume_session_id="thread-1")
-        self.assertEqual(argv[:3], ["codex", "exec", "resume"])
-        self.assertNotIn("--sandbox", argv)
-        # The PAIR, not `argv.index("--config") + 1`: a second `--config` (the reasoning
-        # effort) now precedes this one, and a positional lookup silently reads whichever
-        # comes first.
-        self.assertIn('sandbox_mode="read-only"',
-                      [argv[i + 1] for i, tok in enumerate(argv) if tok == "--config"])
-        self.assertIn("--ignore-rules", argv)
-        self.assertNotIn("--output-schema", argv)  # issue #230
-        self.assertIn("--skip-git-repo-check", argv)  # issue #227; the resume cwd is empty too
-        self.assertIn("thread-1", argv)
-        self.assertEqual(argv[-2:], ["--json", "-"])
-
+class CodexResumeArgvCertificationTest(unittest.TestCase):
     def test_codex_resume_argv_options_are_all_preflight_certified(self):
-        """Every option the resume argv emits must be one the resume probe checks.
+        """Every option a codex resume argv emits must be one the resume probe checks.
 
         The `exec` and `exec resume` subcommands do not accept the same options, so a
         flag added to the resume branch without extending
         CODEX_EXEC_RESUME_REQUIRED_FLAGS would leave the preflight green on a CLI that
         rejects the command — exactly how the `--sandbox` regression passed review.
+
+        Two resume argvs exist since issue #534 PR-J4-b deleted the pure one: the workshop
+        producing argv (step 2 PR-2) and the reading one (step 3 PR-J2). The equality holds on
+        each.
         """
-        from tools.orchestration_runtime import CODEX_EXEC_RESUME_REQUIRED_FLAGS
-        required = set(CODEX_EXEC_RESUME_REQUIRED_FLAGS)
-        argv = self._conductor("codex").leaf_command(self._conductor("codex").entry_for("generate", "generate"), 
-            session_id="a", resume_session_id="thread-1")
-        # No short-form aliasing: the argv must emit exactly the spellings the
-        # probe asserts, so a CLI that drops an alias cannot pass the preflight.
-        # The bare `-` is excluded: it is the value of the positional prompt (codex's
-        # stdin sentinel), not an option, and it is certified by its own preflight
-        # check `codex_prompt_stdin` rather than by a flag-name substring.
-        emitted = {part for part in argv if part.startswith("-") and part != "-"}
-        # EQUALITY, not subset, in both directions. Subset alone would let the constant grow
-        # a flag the argv never emits, making the preflight stricter than the command and
-        # false-failing the backend on a CLI that dropped an option nothing uses. Three resume
-        # argvs exist: the pure one, and the workshop producing (step 2 PR-2) and reading (step
-        # 3 PR-J2) ones; the equality holds on each.
-        self.assertEqual(emitted, required)
         from tools import pure_leaf
-        from tools.tests.test_pure_leaf_producer import _PureFakeConductor
+        from tools.orchestration_runtime import CODEX_EXEC_RESUME_REQUIRED_FLAGS
         from tools.tests.test_workshop_producer import (
             _codex_config as _producing_config,
         )
         from tools.tests.test_workshop_reviewer import _codex_config as _reading_config
+        required = set(CODEX_EXEC_RESUME_REQUIRED_FLAGS)
         with tempfile.TemporaryDirectory() as tmp:
             for kind, load, pair, kwargs in (
                     ("producing", lambda r: _producing_config(r), ("generate", "generate"),
@@ -990,11 +765,25 @@ class LeafCommandPureBranchTest(unittest.TestCase):
                     ("reading", lambda r: _reading_config(r, "validate", "judge"),
                      ("validate", "judge"), {"reading": True})):
                 with self.subTest(workshop=kind):
-                    c = _PureFakeConductor(repo_root=Path(tmp), orchestration_id="o",
-                                           orchestration_agent_run_id="orch", env={},
-                                           llm_config=load(Path(tmp)))
+                    c = wc.Conductor(repo_root=Path(tmp), orchestration_id="o",
+                                     orchestration_agent_run_id="orch", env={},
+                                     llm_config=load(Path(tmp)))
                     argv = c.leaf_command(c.entry_for(*pair), session_id="a",
                                           resume_session_id="thread-1", **kwargs)
+                    self.assertEqual(argv[:3], ["codex", "exec", "resume"])
+                    # `leaf_command` writes nothing under `workspace/tmp` (issue #230: the
+                    # schema file it once wrote there is gone), cold or warm.
+                    c.leaf_command(c.entry_for(*pair), session_id="a", **kwargs)
+                    self.assertFalse((Path(tmp) / "workspace" / "tmp").exists())
+                    # No short-form aliasing: the argv must emit exactly the spellings the
+                    # probe asserts, so a CLI that drops an alias cannot pass the preflight.
+                    # The bare `-` is excluded: it is the value of the positional prompt
+                    # (codex's stdin sentinel), not an option, and it is certified by its own
+                    # preflight check `codex_prompt_stdin` rather than by a flag-name
+                    # substring. EQUALITY, not subset, in both directions: subset alone would
+                    # let the constant grow a flag the argv never emits, making the preflight
+                    # stricter than the command and false-failing the backend on a CLI that
+                    # dropped an option nothing uses.
                     self.assertEqual(
                         {part for part in argv if part.startswith("-") and part != "-"},
                         required)

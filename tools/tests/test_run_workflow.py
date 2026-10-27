@@ -23,6 +23,7 @@ from tools import llm_config as lc
 from tools import run_workflow
 from tools import target_profile as tp
 from tools.validate_pipeline_semantics import _BUNDLED_SHAPE_EXPR_SCHEMA_PATH
+from tools.tests.llm_samples import workshop_yaml
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.target_fixtures import FORTRAN_CPU as _TP_RW
 
@@ -616,8 +617,7 @@ class RunWorkflowTests(unittest.TestCase):
                 config.parent.mkdir(parents=True, exist_ok=True)
                 provider = "codex_cli" if backend == "codex" else "claude_cli"
                 model = "  model: gpt-5.6-sol\n" if backend == "codex" else ""
-                config.write_text(
-                    f"defaults:\n  lineage_timeout_s: 2700\n  provider: {provider}\n{model}", encoding="utf-8")
+                config.write_text(workshop_yaml(f"defaults:\n  lineage_timeout_s: 2700\n  provider: {provider}\n{model}"), encoding="utf-8")
             invocation = dict(invocation or {})
             invocation.setdefault("llm_config_path", rel)
             invocation.setdefault("llm_config_sha256", run_workflow.config_sha256(config))
@@ -1261,7 +1261,20 @@ class RunWorkflowTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
             config = repo_root / "bare_codex.yaml"
-            config.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n", encoding="utf-8")
+            # Written whole (not through `workshop_yaml`): the subject is a configuration rule,
+            # so every bound the loader requires is stated here and only the slug is absent.
+            config.write_text(
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n"
+                "phases:\n"
+                "  compile:\n    substeps:\n"
+                "      generate:\n        max_wrapper_calls: 30\n        lineage_timeout_s: 2700\n"
+                "      verify:\n        lineage_timeout_s: 2700\n"
+                "  generate:\n    substeps:\n"
+                "      generate:\n        max_wrapper_calls: 30\n        lineage_timeout_s: 2700\n"
+                "      verify:\n        lineage_timeout_s: 2700\n"
+                "  validate:\n    substeps:\n"
+                "      judge:\n        lineage_timeout_s: 2700\n",
+                encoding="utf-8")
             code, out, calls = self._run_main_with_fake_runtime(
                 ["spec/problem/test.md", "compile", "--llm-config", str(config),
                  "--repo-root", str(repo_root), "--no-run-conductor"]
@@ -1276,8 +1289,7 @@ class RunWorkflowTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
             config = repo_root / "codex.yaml"
-            config.write_text(
-                "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: gpt-5.3-codex\n",
+            config.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: gpt-5.3-codex\n"),
                 encoding="utf-8")
             code, out, calls = self._run_main_with_fake_runtime(
                 ["spec/problem/test.md", "compile", "--llm-config", str(config),
@@ -1326,9 +1338,8 @@ class RunWorkflowTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
             config = repo_root / "wrapped.yaml"
-            config.write_text(
-                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-                "  command: claude --model claude-sonnet-4-6\n", encoding="utf-8")
+            config.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+                "  command: claude --model claude-sonnet-4-6\n"), encoding="utf-8")
             code, out, calls = self._run_main_with_fake_runtime(
                 ["spec/problem/test.md", "compile", "--llm-config", str(config),
                  "--repo-root", str(repo_root), "--no-run-conductor"]
@@ -1451,9 +1462,8 @@ class RunWorkflowTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed_spec_tree(repo_root)
             config = repo_root / "wrapped.yaml"
-            config.write_text(
-                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
-                "  command: /opt/wrappers/claude-wrapper\n", encoding="utf-8")
+            config.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+                "  command: /opt/wrappers/claude-wrapper\n"), encoding="utf-8")
             self._seed_resumable_orchestration(
                 repo_root, "orch_20260101T000000Z_aaaaaaaa", spec_ref="spec/problem/test.md",
                 until_phase="Build", mode="dev", backend="claude",
@@ -1510,8 +1520,7 @@ class RunWorkflowTests(unittest.TestCase):
                 until_phase="Build", mode="dev", backend="claude",
             )
             other = repo_root / "other.yaml"
-            other.write_text(
-                "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: gpt-5.3-codex\n",
+            other.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: gpt-5.3-codex\n"),
                 encoding="utf-8")
             err = io.StringIO()
             with mock.patch.object(sys, "stderr", err):
@@ -3409,6 +3418,47 @@ class RunWorkflowTests(unittest.TestCase):
             self.assertEqual(code, 2, out)
             self.assertEqual(out["reason"], "generate_executor_legacy_removed")
 
+    def test_a_resume_of_an_orchestration_launched_before_pr_j4b_is_refused_by_name(
+        self,
+    ) -> None:
+        """Issue #534 PR-J4-b (MJ2): an orchestration launched before PR-J4-b cannot be
+        `--resume`d, and the refusal comes at START, by name, before anything is re-initialised
+        or relaunched — not as a traceback, and not only at the launch-record audit, which runs
+        later (Validate `pre_judge`) and is the backstop. What refuses it is the RECORDED
+        configuration (a resume launches with the bytes it recorded): every pre-J4-b
+        configuration either writes `leaf:` (`llm_config_unknown_key`) or leaves an LLM
+        substep without its own bounds (`llm_config_workshop_bound_missing`), the two shapes
+        an operator's `llm.yaml` had before the migration (`docs/RUNBOOK.md`, "PR-J4-b's
+        `llm.yaml` migration")."""
+        pre_j4b = {
+            # J4-a's samples: `defaults` bounded, every substep a pure entry (no bounds).
+            "llm_config_workshop_bound_missing": (
+                "defaults:\n  provider: claude_cli\n  model: opus\n"
+                "  lineage_timeout_s: 2700\n"),
+            # A J4-a configuration running a substep as a workshop leaf by `leaf:`.
+            "llm_config_unknown_key": (
+                "defaults:\n  provider: claude_cli\n  model: opus\n"
+                "  lineage_timeout_s: 2700\n"
+                "phases:\n  generate:\n    substeps:\n      generate:\n"
+                "        leaf: workshop\n        max_wrapper_calls: 30\n"
+                "        lineage_timeout_s: 2700\n"),
+        }
+        for rule, text in pre_j4b.items():
+            with self.subTest(rule=rule), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._seed_spec_tree(repo_root)
+                (repo_root / "llm_claude.yaml").write_text(text, encoding="utf-8")
+                oid = "orch_20261027T000000Z_retired1"
+                self._seed_resumable_orchestration(
+                    repo_root, oid, spec_ref="spec/problem/test.md", until_phase="Validate",
+                    mode="dev", backend="claude")
+                code, out, calls = self._run_main_with_fake_runtime(
+                    ["--resume", "--repo-root", str(repo_root), "--no-run-conductor"])
+                self.assertEqual(code, 2, out)
+                self.assertIn(rule, json.dumps(out))
+                # Refused before the runtime is asked to re-init the orchestration.
+                self.assertEqual([c for c in calls if c and c[0] == "init"], [])
+
     def test_resume_prefield_orchestration_fails_closed(self) -> None:
         # An orchestration predating the field recovers None -> a pre-adoption legacy run -> the
         # same fail-close (inversion of the old "stays legacy" behavior).
@@ -4979,7 +5029,7 @@ class DependencyClosureTests(unittest.TestCase):
         body = "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
         if model:
             body += f"  model: {model}\n"
-        path.write_text(body, encoding="utf-8")
+        path.write_text(workshop_yaml(body), encoding="utf-8")
         return path, _lc.load_llm_config(path)
 
     def test_closure_member_resume_is_refused_when_its_config_changed(self) -> None:
@@ -4994,7 +5044,7 @@ class DependencyClosureTests(unittest.TestCase):
             self._pin_member(repo_root, "orch_c_prev", "spec/component/c",
                              "closure.yaml", cfg.sha256)
             # The file moves on after the member launched.
-            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: changed\n",
+            path.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: changed\n"),
                             encoding="utf-8")
             import tools.llm_config as _lc
             rc, captured, stdout = self._drive_closure_raw(
@@ -5016,7 +5066,7 @@ class DependencyClosureTests(unittest.TestCase):
             path, cfg = self._closure_config(repo_root)
             self._pin_member(repo_root, "orch_target", "spec/problem/a",
                              "closure.yaml", cfg.sha256)
-            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: changed\n",
+            path.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: changed\n"),
                             encoding="utf-8")
             import tools.llm_config as _lc
             rc, captured, stdout = self._drive_closure_raw(
@@ -7326,7 +7376,7 @@ class ParallelClosureTests(unittest.TestCase):
             path, cfg = DependencyClosureTests._closure_config(self, repo_root)
             DependencyClosureTests._pin_member(self, repo_root, "orch_c_prev", "spec/component/c",
                                                "closure.yaml", cfg.sha256)
-            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: changed\n",
+            path.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: changed\n"),
                             encoding="utf-8")
             with mock.patch.object(run_workflow, "_launch_closure_member") as launch, \
                     mock.patch.object(run_workflow, "_dependency_node_readiness",
@@ -8985,7 +9035,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed(repo_root)
             cfg = repo_root / "mycodex.yaml"
-            cfg.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: gpt-5.6-sol\n",
+            cfg.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: gpt-5.6-sol\n"),
                            encoding="utf-8")
             captured: dict = {}
             orig = run_workflow._run_with_dependency_closure
@@ -9088,8 +9138,8 @@ class LlmConfigStartupTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed(repo_root)
             cfg = repo_root / "wrapped-codex.yaml"
-            cfg.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: gpt-5.6-sol\n"
-                           "  command: mywrap --x\n", encoding="utf-8")
+            cfg.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: gpt-5.6-sol\n"
+                           "  command: mywrap --x\n"), encoding="utf-8")
             code, kw, _, lines = self._run(
                 repo_root, ["--llm-config", "wrapped-codex.yaml"], oid="orch_only")
             self.assertEqual(code, 0, msg=json.dumps(lines[-1] if lines else {}))
@@ -9153,8 +9203,8 @@ class LlmConfigStartupTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed(repo_root)
             cfg = repo_root / "wrapped.yaml"
-            cfg.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
-                           "  command: mywrap --x\n", encoding="utf-8")
+            cfg.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
+                           "  command: mywrap --x\n"), encoding="utf-8")
             self._run(repo_root, ["--llm-config", "wrapped.yaml"], oid="orch_ovp")
             args = next(a for a in self._runtime_calls if a and a[0] == "preflight")
             self.assertEqual(args[args.index("--llm-config-defaults-command") + 1],
@@ -9182,8 +9232,8 @@ class LlmConfigStartupTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed(repo_root)
             cfg = repo_root / "declared.yaml"
-            cfg.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: from-file\n"
-                           "  command: from-file-cmd\n", encoding="utf-8")
+            cfg.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: from-file\n"
+                           "  command: from-file-cmd\n"), encoding="utf-8")
             self._run(repo_root, ["--llm-config", "declared.yaml"], oid="orch_novp")
             args = next(a for a in self._runtime_calls if a and a[0] == "preflight")
             self.assertEqual(args[args.index("--llm-config-defaults-command") + 1],
@@ -9197,12 +9247,11 @@ class LlmConfigStartupTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed(repo_root)
             mixed = repo_root / "mixed.yaml"
-            mixed.write_text(
-                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+            mixed.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                 "phases:\n  generate:\n    substeps:\n      generate:\n"
                 "        provider: openai_compatible\n"
                 "        base_url: http://localhost:8000/v1\n"
-                "        api_key_env: LOCAL_KEY\n        model: m\n", encoding="utf-8")
+                "        api_key_env: LOCAL_KEY\n        model: m\n"), encoding="utf-8")
             code, kw, _, lines = self._run(repo_root, ["--llm-config", str(mixed)])
             self.assertEqual(code, 0, msg=json.dumps(lines[-1] if lines else {}))
             self.assertFalse(kw["llm_config"].is_uniform)
@@ -9286,12 +9335,12 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             path = repo_root / "llm.yaml"
-            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n", encoding="utf-8")
+            path.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"), encoding="utf-8")
             recorded = {"path": "llm.yaml",
                         "sha256": lc.config_sha256(path), "overrides": {}}
             self.assertIsNone(self._rejection(
                 recorded, repo_root=repo_root, effective_sha256=recorded["sha256"]))
-            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: pinned\n",
+            path.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: pinned\n"),
                             encoding="utf-8")
             out = self._rejection(recorded, repo_root=repo_root,
                                   effective_sha256=lc.config_sha256(path))
@@ -9306,7 +9355,7 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             path = repo_root / "llm.yaml"
-            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n", encoding="utf-8")
+            path.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"), encoding="utf-8")
             recorded = {"path": "llm.yaml",
                         "sha256": lc.config_sha256(path), "overrides": {}}
             # The file on disk still matches; the SNAPSHOT the run loaded does not.
@@ -9324,7 +9373,7 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             path = repo_root / "llm.yaml"
-            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n", encoding="utf-8")
+            path.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"), encoding="utf-8")
             recorded = {"path": "llm.yaml",
                         "sha256": lc.config_sha256(path), "overrides": {}}
             os.chmod(path, 0o000)
@@ -9364,7 +9413,7 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             path = repo_root / "llm.yaml"
-            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n", encoding="utf-8")
+            path.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"), encoding="utf-8")
             recorded = {"path": "llm.yaml",
                         "sha256": lc.config_sha256(path), "overrides": {"model": "opus"}}
             out = self._rejection(recorded, repo_root=repo_root,
@@ -9412,7 +9461,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             code, kw, _, lines = self._run(repo_root, ["--resume"], oid="orch_res")
             self.assertEqual(code, 0, msg=json.dumps(lines[-1] if lines else {}))
             self.assertIn("llm_config", kw)
-            shipped.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: pinned\n",
+            shipped.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: pinned\n"),
                                encoding="utf-8")
             code, kw, _, lines = self._run(repo_root, ["--resume"], oid="orch_res")
             self.assertEqual(code, 2)
@@ -9480,7 +9529,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed(repo_root)
             cfg = repo_root / "mycodex.yaml"
-            cfg.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: gpt-5.6-sol\n",
+            cfg.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: gpt-5.6-sol\n"),
                            encoding="utf-8")
             self._seed_resumable(repo_root, "orch_cx", {
                 "llm_config_path": "mycodex.yaml",
@@ -9498,9 +9547,9 @@ class LlmConfigStartupTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed(repo_root)
             cfg = repo_root / "custom.yaml"
-            cfg.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: pinned-by-file\n"
+            cfg.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: pinned-by-file\n"
                            "phases:\n  validate:\n    substeps:\n      judge:\n"
-                           "        model: judge-only\n", encoding="utf-8")
+                           "        model: judge-only\n"), encoding="utf-8")
             self._seed_resumable(repo_root, "orch_pin", {
                 "llm_config_path": "custom.yaml",
                 "llm_config_sha256": lc.config_sha256(cfg),
@@ -9538,7 +9587,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed(repo_root)
             cfg = repo_root / "custom.yaml"
-            cfg.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n", encoding="utf-8")
+            cfg.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"), encoding="utf-8")
             self._seed_resumable(repo_root, "orch_gone", {
                 "llm_config_path": "custom.yaml",
                 "llm_config_sha256": lc.config_sha256(cfg),
@@ -9599,7 +9648,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed(repo_root)
             cfg = repo_root / "snap.yaml"
-            cfg.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: launched\n",
+            cfg.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: launched\n"),
                            encoding="utf-8")
             code, _, _, lines = self._run(
                 repo_root, ["--llm-config", "snap.yaml"], oid="orch_snapw")
@@ -9624,7 +9673,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             for name, model in (("first.yaml", "was-launched-first"),
                                 ("second.yaml", "launched-on-the-re-run")):
                 cfg = repo_root / name
-                cfg.write_text(f"defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: {model}\n",
+                cfg.write_text(workshop_yaml(f"defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: {model}\n"),
                                encoding="utf-8")
                 code, _, _, lines = self._run(
                     repo_root, ["--llm-config", name], oid="orch_reinit")
@@ -10112,11 +10161,11 @@ class LlmConfigStartupTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             path = repo_root / "llm.yaml"
-            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n", encoding="utf-8")
+            path.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"), encoding="utf-8")
             recorded = {"path": "llm.yaml",
                         "sha256": lc.config_sha256(path), "overrides": {}}
             run_workflow._write_llm_config_snapshot(repo_root, "orch_x", _sample_config())
-            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: edited\n",
+            path.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: edited\n"),
                             encoding="utf-8")
             out = self._rejection(recorded, repo_root=repo_root,
                                   effective_sha256=lc.config_sha256(path))
@@ -10136,8 +10185,7 @@ class LlmConfigStartupTests(unittest.TestCase):
                 self._seed(repo_root)
                 for root, which in ((repo_root, "repo-root"), (Path(cwd), "cwd")):
                     for name in ("llm.yaml", "mine.yaml"):
-                        (root / name).write_text(
-                            f"defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: from-{which}\n",
+                        (root / name).write_text(workshop_yaml(f"defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: from-{which}\n"),
                             encoding="utf-8")
                 original = os.getcwd()
                 os.chdir(cwd)
@@ -10156,7 +10204,7 @@ class LlmConfigStartupTests(unittest.TestCase):
             repo_root = Path(tmp)
             self._seed(repo_root)
             cfg = Path(elsewhere) / "mine.yaml"
-            cfg.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: outside\n",
+            cfg.write_text(workshop_yaml("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: outside\n"),
                            encoding="utf-8")
             _, kw, _, _ = self._run(repo_root, ["--llm-config", str(cfg)], oid="orch_out")
             self.assertEqual(kw["llm_config"].defaults.model, "outside")

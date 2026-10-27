@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
-"""M-C: Z2 pure-function CodegenBundle producer.
+"""M-C: the CodegenBundle producer (`generate.generate`).
 
-Covers the host side of the pure `generate.generate` channel added across
-`tools/workflow_conductor.py` (the producer loop, bundle validation + assembly preflight, the
-bundle-derived Makefile, bundle_meta), `tools/orchestration_runtime.py` (the terminal-payload
-carve-out + the cold-repair prompt contract), `tools/validate_pipeline_semantics.py` (the
-post_generate bundle re-validation + the sweep output_refs mirror), and `tools/run_workflow.py`
-(the generate-executor surface — since M-F the executor is hardcoded pure).
+Covers the host side of the `generate.generate` channel across `tools/workflow_conductor.py`
+(the context builders, bundle validation + assembly preflight, the bundle-derived Makefile,
+bundle_meta, and the producer loop — the WORKSHOP producer loop since issue #534 PR-J4-b
+deleted the pure leaf's; these rows drive it with a fake leaf that writes its tree,
+`_WorkshopLeafFake`), `tools/orchestration_runtime.py` (the terminal-payload carve-out + the
+repair-turn render), `tools/validate_pipeline_semantics.py` (the post_generate bundle
+re-validation + the sweep output_refs mirror), and `tools/run_workflow.py` (the
+generate-executor surface).
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 from unittest import mock
 
 os.environ.setdefault("ATMOFAB_DEP_READINESS_ALLOW_PERSISTED_FALLBACK", "1")
@@ -304,9 +307,6 @@ class _PureFakeConductor(wc.Conductor):
         self._spawn += 1
         return wc.ProcResult(0, env, "")
 
-    def _claude_session_resumable(self, arid, **kw):  # type: ignore[override]
-        return True
-
 
 def _envelope(bundle_or_text, *, model="claude-opus-4-8", is_error=False) -> str:
     result = bundle_or_text if isinstance(bundle_or_text, str) else json.dumps(bundle_or_text)
@@ -319,6 +319,145 @@ def _conductor(repo: Path) -> _PureFakeConductor:
     return _PureFakeConductor(
         repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
         llm_config=_cfg("claude"), env={})
+
+
+def _write_document_tree(tree: Path, document: Any) -> None:
+    """Write `document` into a workshop lineage's tree the way the leaf's file tools would:
+    a CodegenBundle as its files plus `bundle.yaml` (the manifest without the contents), a
+    `{ir, compile_fail}` document as `spec.ir.yaml` and/or `compile_fail.json`. Anything else
+    (a reply text, a non-object) writes NOTHING: on the workshop path the tree is the answer, so
+    a leaf whose only output was a reply leaves an empty tree."""
+    import yaml
+
+    from tools import workshop_tree
+    if isinstance(document, dict) and isinstance(document.get("files"), list):
+        doc = json.loads(json.dumps(document))
+        for entry in doc["files"]:
+            (tree / entry["logical_path"]).write_text(entry.pop("content"), encoding="utf-8")
+        (tree / workshop_tree.BUNDLE_MANIFEST_NAME).write_text(yaml.safe_dump(doc),
+                                                                encoding="utf-8")
+    elif isinstance(document, dict) and ("ir" in document or "compile_fail" in document):
+        # The leaf's answer REPLACES what its tree held (a warm turn works in the same tree):
+        # the file of a null half is removed, as a leaf giving the other answer would.
+        for key, name, text in (
+                ("ir", workshop_tree.IR_DOCUMENT_NAME,
+                 lambda v: yaml.safe_dump(v, sort_keys=False)),
+                ("compile_fail", workshop_tree.COMPILE_FAIL_NAME, json.dumps)):
+            if document.get(key) is not None:
+                (tree / name).write_text(text(document[key]), encoding="utf-8")
+            elif (tree / name).is_file():
+                (tree / name).unlink()
+
+
+class _WorkshopLeafFake(_PureFakeConductor):
+    """`_PureFakeConductor` driven through the WORKSHOP producer loop
+    (`Conductor._run_workshop_producer_substep`; every LLM leaf is a workshop leaf since issue
+    #534 PR-J4-b). The lineage home lives under the fixture repo (`<repo>/.homes`), the wrapper
+    context and endpoint are faked (the closure staging and the wrapper are `test_workshop_*`'s
+    subject, not these rows'), and the leaf is scripted.
+
+    The script is `procs` (a list of `ProcResult`) when set, else `envelopes` (CLI stdout texts,
+    each a rc-0 launch). A launch that exits 0 WRITES the document its envelope's `result`
+    carries into the lineage's tree (`_write_document_tree`) — the envelope is then what the
+    real CLI prints after such a session, read by the host for the model, the usage and the
+    session id only. On a READING lineage (a `verify` / `judge` substep, served no wrapper) the
+    envelope's `result` text is written as the reviewer's one output file. The last scripted
+    launch repeats; past `MAX_SPAWNS_PAST_SCRIPT` repeats the fake raises, so a loop that lost a
+    budget is a red row rather than a hang."""
+
+    procs: "list | None" = None
+    resumable = True
+    MAX_SPAWNS_PAST_SCRIPT = 8
+
+    @property
+    def homes(self) -> Path:
+        return self.repo_root / ".homes"
+
+    def _prepare_workshop_home(self, entry, lineage_id, *, resume):  # type: ignore[override]
+        home = self.homes / self.orchestration_id / self._workshop_backend(entry) / lineage_id
+        if resume:
+            if not home.is_dir():
+                return None
+        else:
+            home.mkdir(parents=True)
+            (home / "config").mkdir()
+        return {"homes_root": str(self.homes), "home": str(home),
+                "config": str(home / "config"), "tree": str(home / "tree"),
+                "lineage_id": lineage_id}
+
+    def _stage_workshop_closure(self, refs, paths):  # type: ignore[override]
+        return ()
+
+    def _freeze_wrapper_context(self, refs, paths, *, agent_run_id, **kw):  # type: ignore
+        return SimpleNamespace(paths=paths, agent_run_id=agent_run_id)
+
+    def _freeze_ir_check_context(self, refs, paths, *, agent_run_id, **kw):  # type: ignore
+        return SimpleNamespace(paths=paths, agent_run_id=agent_run_id)
+
+    def _start_wrapper_endpoint(self, ctx, on_end):  # type: ignore[override]
+        return SimpleNamespace(url="http://127.0.0.1:4242/mcp", stop=lambda: None,
+                               in_flight=lambda: 0)
+
+    def _workshop_session_resumable(self, paths, session_id):  # type: ignore[override]
+        return self.resumable
+
+    def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
+        script = (list(self.procs) if self.procs is not None
+                  else [wc.ProcResult(0, e, "") for e in self.envelopes])
+        index = getattr(self, "_spawn", 0)
+        if index >= len(script) + self.MAX_SPAWNS_PAST_SCRIPT:
+            raise AssertionError(f"launch {index + 1} past a {len(script)}-entry script: the "
+                                 "loop is re-launching without bound")
+        self._spawn = index + 1
+        self.__dict__.setdefault("spawn_kwargs", []).append(dict(kwargs))
+        self.__dict__.setdefault("prompts", []).append(prompt_text)
+        proc = script[min(index, len(script) - 1)]
+        request = [cap for sub, cap in self.calls if sub == "record-launch"][-1]["--request-json"]
+        tree = (self.homes / self.orchestration_id / self._workshop_backend(entry)
+                / request["workshop_lineage_id"] / "tree")
+        if proc.returncode == 0 and not proc.timed_out:
+            try:
+                envelope = json.loads(proc.stdout)
+            except ValueError:
+                envelope = None
+            result = envelope.get("result") if isinstance(envelope, dict) else None
+            if request.get("substep") in ("verify", "judge"):
+                # A READING lineage: the reviewer writes its one document file, whatever text
+                # it holds; the host's assembly and validators judge it.
+                if isinstance(result, str):
+                    output = self._pure_reviewer_spec(
+                        request["step"], request["substep"]).workshop_outputs[0]
+                    (tree / output).write_text(result, encoding="utf-8")
+            else:
+                try:
+                    document = json.loads(result) if isinstance(result, str) else None
+                except ValueError:
+                    document = None
+                _write_document_tree(tree, document)
+        return proc
+
+
+def _workshop_conductor(repo: Path, cls: type = _WorkshopLeafFake, *, backend: str = "claude",
+                        agent_model: str = "", **kw) -> _WorkshopLeafFake:
+    """A `_WorkshopLeafFake` (or subclass) over the sample `backend` configuration, whose every
+    LLM entry is a workshop entry. One conductor per fixture repository: a second one numbers
+    its launches from `child-1` again, and its first cold lineage collides with the first
+    conductor's home and record (`workshop_lineage_setup_failed`)."""
+    (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
+    c = cls(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
+            llm_config=_cfg(backend, agent_model=agent_model), env={}, **kw)
+    c.calls = []
+    return c
+
+
+def _run_producer(c: _PureFakeConductor, refs: wc.NodeRefs, repair=None, spec=None,
+                  phase: str = "generate", dependency_surface=()) -> wc.SubstepOutcome:
+    """Drive the workshop producer loop directly with the phase's spec (the seam
+    `run_substep` dispatches a producing substep to)."""
+    if spec is None:
+        spec = c._pure_producer_spec(phase, c._shape_for_spec(refs, phase))
+    return c._run_workshop_producer_substep(refs, phase, "generate", repair, (), spec,
+                                            dependency_surface=dependency_surface)
 
 
 # ======================================================================================
@@ -1147,16 +1286,18 @@ class WorkshopWrapperContextTests(unittest.TestCase):
 
 
 # ======================================================================================
-# _run_pure_generate_substep: happy path + bounded repair + exhaustion
+# The `generate.generate` producer loop: happy path + bounded repair + exhaustion. Driven
+# through the WORKSHOP producer loop (`_run_workshop_producer_substep`), the one producer loop
+# since issue #534 PR-J4-b deleted the pure leaf's; the leaf writes its document into its tree.
 # ======================================================================================
 class PureProducerSubstepTests(unittest.TestCase):
     def _run(self, envelopes):
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
         refs = _write_node(repo)
-        c = _conductor(repo)
+        c = _workshop_conductor(repo)
         c.envelopes = envelopes
-        oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+        oc = _run_producer(c, refs)
         return c, refs, oc
 
     def tearDown(self) -> None:
@@ -1174,7 +1315,7 @@ class PureProducerSubstepTests(unittest.TestCase):
         rather than a fact, so it is now the spec's `runner_host_authored`, and the generate /
         compile specs bind `_runner_host_authored_m3c`, which returns that same constant WITH its
         reason attached. This row drives the seam: a spec whose flags answer False produces a
-        request that does not stamp, which is what a pure path serving another shape depends
+        request that does not stamp, which is what a producer serving another shape depends
         on. Since issue #169's PR-3 an in-tree node DOES produce it — the `harness` shape binds
         `_node_runner_host_authored`, and `PureHarnessShapeTests` drives that end — so this row
         is now the m3c side of a live pair rather than the only witness of the seam.
@@ -1184,9 +1325,9 @@ class PureProducerSubstepTests(unittest.TestCase):
         refs = _write_node(repo)
 
         # As shipped: the M3c stamp, and the module helper really does answer for this node.
-        c = _conductor(repo)
+        c = _workshop_conductor(repo)
         c.envelopes = [_envelope(_valid_bundle())]
-        c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+        _run_producer(c, refs)
         request = [cap["--request-json"] for sub, cap in c.calls if sub == "record-launch"][-1]
         self.assertIs(wc._runner_host_authored_m3c(refs), True)
         self.assertTrue(request.get("runner_host_authored"))
@@ -1194,11 +1335,16 @@ class PureProducerSubstepTests(unittest.TestCase):
         # Through the seam: a spec that answers False stamps nothing. `build_launch_request`
         # omits the key when the value is False (it is a marker, not a boolean field), so
         # `assertNotIn` is what "the stamp says False" looks like on the wire.
-        c2 = _conductor(repo)
+        # A fresh repository: the second conductor numbers its lineages from child-1 again.
+        tmp2 = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp2.cleanup)
+        repo2 = Path(tmp2.name)
+        refs2 = _write_node(repo2)
+        c2 = _workshop_conductor(repo2)
         c2.envelopes = [_envelope(_valid_bundle())]
         spec = c2._pure_producer_spec("generate")._replace(
             runner_host_authored=lambda _refs: False)
-        c2._run_pure_producer_substep(refs, "generate", "generate", None, (), spec)
+        _run_producer(c2, refs2, spec=spec)
         request2 = [cap["--request-json"] for sub, cap in c2.calls if sub == "record-launch"][-1]
         self.assertNotIn("runner_host_authored", request2)
 
@@ -1241,16 +1387,11 @@ class PureProducerSubstepTests(unittest.TestCase):
             with self.subTest(stream=label), tempfile.TemporaryDirectory() as tmp:
                 repo = Path(tmp)
                 refs = _write_node(repo)
-                (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
-
-                class _C(_PureFakeConductor):
-                    def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
-                        return wc.ProcResult(0, json.dumps(_valid_bundle()), "",
-                                             usage={"output_tokens": 10}, model=streamed)
-
-                c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                       llm_config=_cfg("codex", agent_model="gpt-5.6-sol"), env={})
-                oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+                c = _workshop_conductor(repo, backend="codex", agent_model="gpt-5.6-sol")
+                # The leaf writes the bundle into its tree; its JSONL stream names `streamed`.
+                c.procs = [wc.ProcResult(0, _envelope(_valid_bundle()), "",
+                                         usage={"output_tokens": 10}, model=streamed)]
+                oc = _run_producer(c, refs)
                 self.assertEqual(oc.status, "pass", label)
                 meta = json.loads(
                     (repo / refs.source_dir() / "bundle_meta.json").read_text())
@@ -1269,13 +1410,12 @@ class PureProducerSubstepTests(unittest.TestCase):
         PROVENANCE, not a decision. `SubstepOutcome.launched_at` was deleted by issue #176 with
         the mini-loop that was its only production consumer, so what the resolver leaves on this
         path is the PROBE ITSELF — an operator's record, under the arid of the row it belongs
-        to, of the instant the attempt started. This is that probe's only witness on the pure
-        producer loop: without it, a mutation dropping the `_launch_instant` call from
-        `_spawn_pure_turn` is silent.
+        to, of the instant the attempt started. This is that probe's witness on the producer
+        loop: without it, a mutation dropping the `_launch_instant` call from
+        `_spawn_workshop_turn` is silent.
 
-        Round 0's hunk mutation found this loop unwitnessed while its sibling
-        `_run_pure_verify_substep` was covered — the two took the instant on lines that read
-        identically.
+        Round 0's hunk mutation found the producer loop unwitnessed while its reviewer sibling
+        was covered — the two took the instant on lines that read identically.
         """
         c, _refs, oc = self._run([_envelope(_valid_bundle())])
         self.assertEqual(oc.status, "pass")
@@ -1316,7 +1456,7 @@ class PureProducerSubstepTests(unittest.TestCase):
             _validate_agent_summary_text(payload, _extract_agent_summary_text(payload))
 
     def test_a_pure_claude_leafs_envelope_usage_reaches_its_agent_run_row(self) -> None:
-        """Issue #47: the pure loops are where the expensive claude leaves run, and their
+        """Issue #47: the producer loop is where the expensive claude leaves run, and their
         `usage` had never been asserted anywhere — the envelope's numbers could be dropped with
         the whole suite green. What the row must carry is the DERIVED `total_tokens` (no
         provider sends one, and `audit_orchestration` accepts a durable row only when it is an
@@ -1384,13 +1524,14 @@ class PureProducerSubstepTests(unittest.TestCase):
         self.assertNotIn("provider_details", rows[0]["usage"])
 
     def test_a_cold_fallback_repair_turn_is_not_decumulated(self) -> None:
-        """Issue #281's baseline is for a WARM turn only. A repair whose transcript was GC'd
-        runs cold with `resume_session_id` still set; its envelope is its own, and on CLI <=
-        2.1.275 every recorded cold pure turn lists a helper model beside the primary. It must
-        be recorded as the sum of both models, as a cold turn is, and the resumed turn's
-        envelope must not be read: the envelope's primary row equals `usage`, so the usage
-        row alone would come out the same even if the turn were treated as warm, and only the
-        read observes the `warm` guard in `_spawn_pure_turn`."""
+        """Issue #281's baseline is for a WARM turn only. A repair whose transcript is gone
+        from its lineage home runs as a cold reuse in a new lineage; its envelope is its own,
+        and on CLI <= 2.1.275 every recorded cold turn lists a helper model beside the
+        primary. It must be recorded as the sum of both models, as a cold turn is, and the
+        prior turn's envelope must not be read: the envelope's primary row equals `usage`, so
+        the usage row alone would come out the same even if the turn were treated as warm, and
+        only the read observes the `warm and resume_session_id` guard in
+        `_spawn_workshop_turn`."""
         bad = _valid_bundle()
         del bad["capability_requirements"]  # schema violation -> repair
         cold = json.dumps({
@@ -1408,14 +1549,13 @@ class PureProducerSubstepTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
         refs = _write_node(repo)
-        c = _conductor(repo)
+        c = _workshop_conductor(repo)
         c.envelopes = [_envelope(bad), cold]
-        with mock.patch.object(_PureFakeConductor, "_claude_session_resumable",
-                               return_value=False), \
-                mock.patch.object(_PureFakeConductor, "_persisted_result_envelope",
+        c.resumable = False   # the transcript is gone: the repair is a cold reuse
+        with mock.patch.object(_PureFakeConductor, "_persisted_result_envelope",
                                   autospec=True,
                                   side_effect=wc.Conductor._persisted_result_envelope) as read:
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = _run_producer(c, refs)
         read.assert_not_called()
         self.assertEqual(oc.status, "pass")
         self.assertEqual(oc.attempts, 2)
@@ -1469,7 +1609,7 @@ class PureProducerSubstepTests(unittest.TestCase):
         refs = _write_node(repo)
         observed: dict[str, bool] = {}
 
-        class _C(_PureFakeConductor):
+        class _C(_WorkshopLeafFake):
             def finalize_child(self, child_arid, reply_text, agent_run_json):  # type: ignore[override]
                 base = self.repo_root / refs.source_dir()
                 observed["bundle_exists_at_finalize"] = (base / "codegen_bundle.json").exists()
@@ -1481,7 +1621,7 @@ class PureProducerSubstepTests(unittest.TestCase):
         c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
                llm_config=_cfg("claude"), env={})
         c.envelopes = [_envelope(_valid_bundle())]
-        oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+        oc = _run_producer(c, refs)
         self.assertEqual(oc.status, "pass")
         self.assertFalse(observed["bundle_exists_at_finalize"])
         self.assertFalse(observed["model_exists_at_finalize"])
@@ -1547,7 +1687,7 @@ class PureProducerSubstepTests(unittest.TestCase):
             events.append({"event": event, **fields})
             _real_emit(event, **fields)
         c.emit = _emit  # type: ignore[assignment,method-assign]
-        oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+        oc = _run_producer(c, refs)
         self.assertEqual(oc.status, "fail")
         self.assertEqual(oc.leaf_returncode, 1)
         self.assertEqual(oc.infra_error[0], "pure_context_assembly_failed")
@@ -1588,7 +1728,7 @@ class PureProducerSubstepTests(unittest.TestCase):
                     _sink.append({"event": event, **fields})
                     _real(event, **fields)
                 c.emit = _emit  # type: ignore[assignment,method-assign]
-                oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+                oc = _run_producer(c, refs)
                 self.assertEqual(oc.status, "fail")
                 self.assertEqual(oc.leaf_returncode, 1)
                 self.assertEqual(oc.infra_error[0], "pure_context_assembly_failed")
@@ -1643,12 +1783,6 @@ class PureProducerSubstepTests(unittest.TestCase):
         self.assertEqual(meta["attempts"], MAX_BUNDLE_REPAIR_TURNS + 1)
         self.assertEqual(len(meta["per_attempt"]), MAX_BUNDLE_REPAIR_TURNS + 1)
 
-    def test_unparseable_reply_categorized(self) -> None:
-        c, refs, oc = self._run([_envelope("not json at all", )])
-        self.assertEqual(oc.status, "fail")
-        meta = json.loads((c.repo_root / refs.source_dir() / "bundle_meta.json").read_text())
-        self.assertEqual(meta["failure_category"], "pure_response_unparseable")
-
     def test_host_write_failure_after_finalize_recovers(self) -> None:
         # Codex P2 (finding 2): a host-side write that fails AFTER finalize_child recorded the
         # attempt as a passing terminal row must NOT leave an un-vouched orphan. The substep must
@@ -1659,7 +1793,7 @@ class PureProducerSubstepTests(unittest.TestCase):
         refs = _write_node(repo)
         finalized: dict[str, bool] = {}
 
-        class _C(_PureFakeConductor):
+        class _C(_WorkshopLeafFake):
             def finalize_child(self, child_arid, reply_text, agent_run_json):  # type: ignore[override]
                 finalized["did"] = True
                 return super().finalize_child(child_arid, reply_text, agent_run_json)
@@ -1671,7 +1805,7 @@ class PureProducerSubstepTests(unittest.TestCase):
         c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
                llm_config=_cfg("claude"), env={})
         c.envelopes = [_envelope(_valid_bundle())]
-        oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+        oc = _run_producer(c, refs)
         self.assertTrue(finalized.get("did"))            # the window WAS closed (finalize ran)
         self.assertEqual(oc.status, "fail")
         self.assertNotEqual(oc.leaf_returncode, 0)       # forces run_phase's fail_closed branch
@@ -1687,9 +1821,25 @@ class PureProducerSubstepTests(unittest.TestCase):
         # carries a lone surrogate in a files[].content is not UTF-8 persistable. It must be caught
         # BEFORE accept as a schema violation (repairable, routable via the bundle table) — NOT
         # accepted and then mis-routed through the pass branch's host-write/transport recovery.
-        bad = _valid_bundle()
-        bad["files"][0]["content"] += "\ud800"
-        c, refs, oc = self._run([_envelope(bad)])  # persistently unencodable -> exhaustion
+        # A tree's files are UTF-8 text, so a leaf cannot put a lone surrogate in one; the
+        # assembled document is where the loop's encodability check reads it. The real
+        # assembly runs and the surrogate is added to what it returned.
+        from tools import workshop_tree
+
+        def assemble_with_a_surrogate(root, reserved):
+            doc = workshop_tree.assemble_bundle_document(root, reserved)
+            if isinstance(doc, dict):
+                doc["files"][0]["content"] += "\ud800"
+            return doc
+
+        self._tmp = tempfile.TemporaryDirectory()
+        repo = Path(self._tmp.name)
+        refs = _write_node(repo)
+        c = _workshop_conductor(repo)
+        c.envelopes = [_envelope(_valid_bundle())]
+        spec = c._pure_producer_spec("generate")._replace(
+            workshop_assemble=assemble_with_a_surrogate)
+        oc = _run_producer(c, refs, spec=spec)  # persistently unencodable -> exhaustion
         self.assertEqual(oc.status, "fail")
         self.assertEqual(oc.leaf_returncode, 0)          # routable, NOT a transport fail_closed
         base = c.repo_root / refs.source_dir()
@@ -1697,13 +1847,14 @@ class PureProducerSubstepTests(unittest.TestCase):
         self.assertFalse((base / "codegen_bundle.json").exists())
         meta = json.loads((base / "bundle_meta.json").read_text())
         self.assertEqual(meta["failure_category"], "bundle_schema_violation")
+        self.assertIn("cannot be encoded as UTF-8", meta["failure_excerpt"])
 
     def test_bundle_meta_write_failure_on_exhaustion_recovers(self) -> None:
         # M-D2 (D2 mirror of the verify reviewer): the exhaustion-path bundle_meta write must be
         # guarded like the pass path — a host-write failure (ENOSPC, or a non-encodable excerpt)
         # recovers as a fail_closed transport outcome, never an uncaught exception escaping
         # run_substep and crashing the conductor.
-        class _C(_PureFakeConductor):
+        class _C(_WorkshopLeafFake):
             def _write_bundle_meta(self, *a, **k):  # type: ignore[override]
                 raise OSError(28, "No space left on device")
         self._tmp = tempfile.TemporaryDirectory()
@@ -1715,38 +1866,29 @@ class PureProducerSubstepTests(unittest.TestCase):
         bad = _valid_bundle()
         del bad["capability_requirements"]  # persistently schema-invalid -> exhaustion
         c.envelopes = [_envelope(bad)]
-        oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+        oc = _run_producer(c, refs)
         self.assertEqual(oc.status, "fail")
         self.assertNotEqual(oc.leaf_returncode, 0)
         self.assertEqual(oc.infra_error[0], "pure_host_write_failed")
 
 
 # ======================================================================================
-# --wait-usage-reset in the pure producer loop
+# --wait-usage-reset in the producer loop
 # ======================================================================================
 class PureUsageLimitWaitTest(unittest.TestCase):
-    """--wait-usage-reset (opt-in) in the pure producer: a transport death (rc!=0) the classifier
-    tags `llm_usage_limit` is waited out IN PLACE on the fixed `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS`
-    and the SAME turn re-launched, instead of falling to the terminal fail branch for a next-day
-    --resume. The wait is NOT a repair turn — it must not consume the bundle-repair budget and must
-    not pollute the repair carriers (last_excerpt / resume_session_id). Default OFF preserves the
-    terminal behavior."""
+    """--wait-usage-reset (opt-in) in the (workshop) producer loop: a transport death (rc!=0)
+    the classifier tags `llm_usage_limit` is waited out on the fixed
+    `USAGE_LIMIT_WAIT_SCHEDULE_SECONDS` and the SAME turn re-launched — as a cold reuse in a new
+    lineage seeded from the dead one's snapshot — instead of falling to the terminal fail branch
+    for a next-day --resume. The wait is NOT a repair turn — it must not consume the
+    bundle-repair budget and must not pollute the repair carriers (`repair_target` /
+    `last_excerpt`). Default OFF preserves the terminal behavior."""
 
-    class _C(_PureFakeConductor):
+    class _C(_WorkshopLeafFake):
         # The last scripted result repeats, so a wait that never counted its budget would loop
         # until the harness `timeout` killed the run — which no assertion reports (the verify
         # driver's `MAX_SPAWNS_PAST_SCRIPT` closed this there first). Refusing makes it a red row.
         MAX_SPAWNS_PAST_SCRIPT = 2
-
-        def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
-            self._spawn = getattr(self, "_spawn", 0)
-            if self._spawn >= len(self.procs) + self.MAX_SPAWNS_PAST_SCRIPT:
-                raise AssertionError(
-                    f"launch {self._spawn + 1} past a {len(self.procs)}-entry script: the loop "
-                    f"is re-launching without bound")
-            proc = self.procs[min(self._spawn, len(self.procs) - 1)]
-            self._spawn += 1
-            return proc
 
         def _sleep_backoff(self, seconds):  # type: ignore[override]
             self.slept.append(seconds)
@@ -1783,10 +1925,11 @@ class PureUsageLimitWaitTest(unittest.TestCase):
         the cold attempt followed by exactly `MAX_BUNDLE_REPAIR_TURNS` schema violations still
         passes — a wait that spent an `attempt` refuses the last repair and fails closed; the
         fixture straddles the budget on purpose (one violation is green under that regression).
-        (2) a wait that interrupts a REPAIR turn re-runs it against the same session with the
-        same findings: `resume_session_id` unchanged across the wait, `repair_findings` the
-        SCHEMA finding and never the transport evidence (a transport death must not overwrite
-        the carriers — the guard above the wait — nor may the wait clear them)."""
+        (2) a wait that interrupts a REPAIR turn re-runs it with the same findings:
+        `repair_findings` the SCHEMA finding and never the transport evidence (a transport
+        death must not overwrite the carriers — the guard above the wait — nor may the wait
+        clear them). The re-run is a cold reuse in a NEW lineage seeded from the dead one's
+        snapshot, never a resume of the dead session (`_WorkshopLineageMachine.after_transport`)."""
         from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
         bad = _valid_bundle()
         del bad["capability_requirements"]
@@ -1798,7 +1941,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
                 repo, [quota] + [wc.ProcResult(0, _envelope(bad), "")] * MAX_BUNDLE_REPAIR_TURNS
                 + [wc.ProcResult(0, _envelope(_valid_bundle()), "")], wait_usage_reset=True)
             requests, spawn_kwargs = self._recording(c)
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = _run_producer(c, refs)
             self.assertEqual(oc.status, "pass")
             self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 2)
             self.assertEqual(oc.attempts, MAX_BUNDLE_REPAIR_TURNS + 2)
@@ -1814,12 +1957,16 @@ class PureUsageLimitWaitTest(unittest.TestCase):
                 repo, [wc.ProcResult(0, _envelope(bad), ""), quota,
                        wc.ProcResult(0, _envelope(_valid_bundle()), "")], wait_usage_reset=True)
             requests, spawn_kwargs = self._recording(c)
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = _run_producer(c, refs)
             self.assertEqual(oc.status, "pass")
             self.assertEqual(c._spawn, 3)
             self.assertEqual([r["repair_strategy"] for r in requests], ["none", "reuse", "reuse"])
+            # the interrupted repair resumed child-1; the re-run after the wait is a cold reuse
+            # in a new lineage (`after_transport`), resuming nothing
             self.assertEqual([k.get("resume_session_id") for k in spawn_kwargs],
-                             [None, "child-1", "child-1"])     # same target before and after
+                             [None, "child-1", None])
+            self.assertEqual([r["repair_target_agent_run_id"] for r in requests[1:]],
+                             ["child-1", "child-1"])   # same target before and after
             findings = [str(r.get("repair_findings", "")) for r in requests[1:]]
             self.assertEqual(findings[0], findings[1])          # the wait changed nothing
             self.assertIn("capability_requirements", findings[1])
@@ -1839,10 +1986,12 @@ class PureUsageLimitWaitTest(unittest.TestCase):
         and only a re-launch in the history separates `len(per_attempt)` from `attempt + 1`.
 
         (2) The connection drops on the first REPAIR turn instead. The retry re-runs that
-        repair against the same session with the same findings, and still spends no budget: a
-        retry that cleared `resume_session_id` or `last_excerpt` would re-launch a fresh turn
-        that forgets what it was repairing, and one that spent an `attempt` there would fail
-        one repair early."""
+        repair with the same findings, and still spends no budget: a retry that cleared the
+        repair carriers (`repair_target`, `last_excerpt`) would re-launch a fresh turn that
+        forgets what it was repairing, and one that spent an `attempt` there would fail one
+        repair early. On the workshop loop the retry is a cold reuse in a NEW lineage seeded
+        from the dead one's snapshot, never a resume of the dead session
+        (`_WorkshopLineageMachine.after_transport`: a leaf that died is not resumed)."""
         from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
         bad = _valid_bundle()
         del bad["capability_requirements"]
@@ -1853,7 +2002,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
             c = self._conductor(
                 repo, [flake] + [wc.ProcResult(0, _envelope(bad), "")] * (MAX_BUNDLE_REPAIR_TURNS + 1))
             requests, _ = self._recording(c)
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = _run_producer(c, refs)
             self.assertEqual(oc.status, "fail")
             self.assertEqual(c.slept, [2.0])                    # the transient backoff, once
             self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 2)
@@ -1871,21 +2020,25 @@ class PureUsageLimitWaitTest(unittest.TestCase):
                 repo, [wc.ProcResult(0, _envelope(bad), ""), flake]
                 + [wc.ProcResult(0, _envelope(bad), "")] * MAX_BUNDLE_REPAIR_TURNS)
             requests, spawn_kwargs = self._recording(c)
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = _run_producer(c, refs)
             self.assertEqual(oc.status, "fail")
             self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 2)
             self.assertEqual([r["repair_strategy"] for r in requests],
                              ["none"] + ["reuse"] * (MAX_BUNDLE_REPAIR_TURNS + 1))
-            # the flaked repair (child-2) and its retry (child-3) resume the same session
+            # the flaked repair (child-2) resumed child-1's session; its retry (child-3) is a
+            # cold reuse in a new lineage, resuming nothing (`after_transport`)
             self.assertEqual([k.get("resume_session_id") for k in spawn_kwargs][:3],
-                             [None, "child-1", "child-1"])
+                             [None, "child-1", None])
+            self.assertEqual([r["workshop_lineage_id"] for r in requests[:3]],
+                             ["child-1", "child-1", "child-3"])
             findings = [str(r.get("repair_findings", "")) for r in requests[1:3]]
             self.assertEqual(findings[0], findings[1])
             self.assertIn("capability_requirements", findings[1])
 
     def test_a_warm_repair_that_never_ran_is_not_a_repair_turn(self) -> None:
-        """A warm repair whose codex lineage home is gone returns None from `_spawn_pure_turn`
-        before any leaf runs (issue #245); the loop retries it cold and must not charge the
+        """A warm repair whose lineage home is gone returns None from `_spawn_workshop_turn`
+        before any leaf runs (`record_launch` answers `workshop_lineage_home_missing`); the
+        loop retries it cold (`_WorkshopLineageMachine.home_gone`) and must not charge the
         repair budget for it (issue #508, round 1). Fixture: a schema violation on every turn,
         the home vanishing on the first warm repair. Every repair the budget allows still
         reaches a leaf — `MAX_BUNDLE_REPAIR_TURNS + 1` spawns — and the dead turn is in the
@@ -1907,11 +2060,11 @@ class PureUsageLimitWaitTest(unittest.TestCase):
                 rec = recorded(child_arid, request, entry, **kw)
                 if request.get("warm_resume") and not vanished:
                     vanished.append(True)
-                    return {**(rec or {}), "codex_lineage_home_missing": True}
+                    return {**(rec or {}), "workshop_lineage_home_missing": True}
                 return rec
 
             c.record_launch = _vanish_once  # type: ignore[assignment]
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = _run_producer(c, refs)
             self.assertEqual(oc.status, "fail")
             self.assertEqual(vanished, [True])
             self.assertEqual(c._spawn, MAX_BUNDLE_REPAIR_TURNS + 1)
@@ -1930,7 +2083,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
         repo = Path(self._tmp.name)
         refs = _write_node(repo)
         c = self._conductor(repo, [wc.ProcResult(-9, "", "boom", timed_out=True)])
-        oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+        oc = _run_producer(c, refs)
         self.assertEqual(oc.status, "fail")
         row = [cap["--agent-run-json"] for sub, cap in c.calls
                if sub == "finalize-child" and "--agent-run-json" in cap][-1]
@@ -1940,9 +2093,10 @@ class PureUsageLimitWaitTest(unittest.TestCase):
 
     def test_a_timed_out_producer_is_a_leaf_timeout_and_never_waits_out_a_quota(self) -> None:
         """`generate.generate` is the substep of the 99-minute field hang, so this loop's own
-        classification of the dead leaf is load-bearing. A leaf the conductor KILLED is tagged
-        from `ProcResult.timed_out`; classifying its captured TEXT instead would read the
-        throttle notice a wedged leaf had printed as `llm_usage_limit`, and — with the opt-in
+        classification of the dead leaf is load-bearing. A leaf the conductor KILLED is read
+        from `ProcResult.timed_out` — on the workshop loop its lineage is ended by the bound and
+        its tree judged as it stands — and never from its captured TEXT, which would read the
+        throttle notice a wedged leaf had printed as `llm_usage_limit` and — with the opt-in
         wait ON, as here — park the run for hours before re-launching a leaf the conductor had
         killed itself."""
         marker = wc._leaf_timeout_marker(7200, 7203.0)
@@ -1960,25 +2114,33 @@ class PureUsageLimitWaitTest(unittest.TestCase):
 
             def _spawn(prompt_text, child_env, entry=None, **kwargs):  # type: ignore[no-untyped-def]
                 spawn_kwargs.append(kwargs)
-                return inner(prompt_text, child_env, **kwargs)
+                return inner(prompt_text, child_env, entry, **kwargs)
 
             c.spawn_leaf = _spawn  # type: ignore[assignment]
+            events: list = []
+            c.emit = lambda event, **f: events.append(event)  # type: ignore[assignment]
             with mock.patch.object(wc.time, "time", return_value=now):
-                oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+                oc = _run_producer(c, refs)
             self.assertEqual(oc.status, "fail")
-            self.assertEqual(oc.leaf_returncode, -9)
-            self.assertEqual(oc.infra_error[0], "leaf_timeout")
-            self.assertEqual(c._spawn, 1)          # no re-launch...
-            self.assertEqual(c.slept, [])          # ...and no multi-hour park
+            self.assertEqual(c.slept, [])          # no multi-hour park...
+            self.assertNotIn("leaf_usage_limit_wait", events)
+            self.assertNotIn("leaf_usage_limit_wait_declined", events)
             meta = json.loads(
                 (c.repo_root / refs.source_dir() / "bundle_meta.json").read_text())
-            self.assertEqual(meta["per_attempt"][0]["failure_category"], "pure_transport")
+            # ...because a leaf the conductor killed is judged by its TREE, never routed as a
+            # transport death (`_WorkshopLineageMachine.assemble`): its empty tree is a
+            # repairable defect, re-launched as a cold reuse, and its lineage ended by the bound.
+            self.assertEqual({a["failure_category"] for a in meta["per_attempt"]},
+                             {"workshop_tree_empty"})
+            self.assertEqual({a["ended_by"] for a in meta["per_attempt"]}, {"leaf_timeout"})
+            self.assertIsNone(oc.infra_error)
             # The event has to NAME the wedged leaf: `generate.generate` is the substep of the
             # incident this cap exists for, and only the caller knows the node/step/substep.
             self.assertEqual(spawn_kwargs[0]["timeout_context"],
                              {"node_key": refs.node_key, "step": "generate",
                               "substep": "generate",
-                              "agent_run_id": spawn_kwargs[0]["child_arid"]})
+                              "agent_run_id": spawn_kwargs[0]["child_arid"],
+                              "leaf_mode": "workshop"})
 
     def test_transport_usage_limit_waits_then_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -1989,7 +2151,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
                 [wc.ProcResult(1, "", "Claude AI usage limit reached"),
                  wc.ProcResult(0, _envelope(_valid_bundle()), "")],
                 wait_usage_reset=True)
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = _run_producer(c, refs)
             self.assertEqual(oc.status, "pass")
             self.assertEqual(c._spawn, 2)          # dead attempt + the recovered launch
             # `attempts` is the LAUNCH count (== len(per_attempt)); the repair BUDGET is untouched
@@ -2019,7 +2181,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
             repo = Path(tmp)
             refs = _write_node(repo)
             c = self._conductor(repo, [flake, wc.ProcResult(0, _envelope(_valid_bundle()), "")])
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = _run_producer(c, refs)
             self.assertEqual(oc.status, "pass")
             self.assertEqual(c._spawn, 2)
             self.assertEqual(oc.attempts, 2)
@@ -2055,7 +2217,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
             c._read_usage_reset = (  # type: ignore[assignment]
                 lambda entry, arid: asked.append(entry) or usage_reset.ResetReading(
                     None, None, usage_reset.FAILURE_PROBE_FAILED, "stub"))
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = _run_producer(c, refs)
             self.assertEqual(oc.status, "pass")
             self.assertEqual([e.model for e in asked], ["per-substep-sentinel"])
 
@@ -2094,7 +2256,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
                 [wc.ProcResult(1, recorded_stdout, ""),
                  wc.ProcResult(0, _envelope(_valid_bundle()), "")],
                 wait_usage_reset=True)
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = _run_producer(c, refs)
             self.assertEqual(oc.status, "pass")
             self.assertEqual(c._spawn, 2)          # waited, then relaunched
             self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
@@ -2112,7 +2274,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
                                 wait_usage_reset=True)
             events: list = []
             c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = _run_producer(c, refs)
             self.assertEqual(oc.status, "fail")
             self.assertEqual(c._spawn, wc.MAX_USAGE_LIMIT_WAITS + 1)
             self.assertEqual(c.slept, list(wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS))
@@ -2124,7 +2286,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
 
     def test_transport_wait_does_not_pollute_the_repair_turn(self) -> None:
         """A transport wait must leave the repair carriers clean: the launch AFTER the wait is a
-        fresh COLD attempt (no prior_document, no repair_findings carrying the transport summary),
+        fresh COLD attempt (no repair target, no repair_findings carrying the transport summary),
         and the following content violation repairs normally. Sequence: transport(usage) -> wait ->
         cold launch that content-fails -> warm repair -> pass."""
         bad = _valid_bundle()
@@ -2152,7 +2314,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
 
             c.record_launch = _rec  # type: ignore[assignment]
             c.spawn_leaf = _spawn   # type: ignore[assignment]
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = _run_producer(c, refs)
             self.assertEqual(oc.status, "pass")
             self.assertEqual(c._spawn, 3)
             # 3 launches: transport(waited) + cold content-fail + warm repair pass. `attempts` is the
@@ -2160,10 +2322,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
             self.assertEqual(oc.attempts, 3)
             self.assertEqual(c.slept, [wc.USAGE_LIMIT_WAIT_SCHEDULE_SECONDS[0]])
             # the post-wait launch (index 1) is a COLD retry: `repair_strategy: none` on its
-            # request and no session to resume on its spawn. (Asserting only that no
-            # `prior_document` is carried was vacuous — a transport death never sets one — so a
-            # wait that set `resume_session_id` to the dead arid passed it.)
-            self.assertNotIn("prior_document", captured[1])
+            # request and no session to resume on its spawn.
             self.assertEqual([r["repair_strategy"] for r in captured], ["none", "none", "reuse"])
             self.assertEqual([k.get("resume_session_id") for k in spawn_kwargs],
                              [None, None, "child-2"])
@@ -2183,7 +2342,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
                  wc.ProcResult(0, _envelope(_valid_bundle()), "")])
             events: list = []
             c.emit = lambda event, **f: events.append((event, f))  # type: ignore[assignment]
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = _run_producer(c, refs)
             self.assertEqual(oc.status, "fail")
             self.assertEqual(oc.leaf_returncode, 1)   # run_phase's transport fail_closed branch
             self.assertEqual(c._spawn, 1)             # no second launch
@@ -2214,7 +2373,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
                 repo,
                 [wc.ProcResult(0, _envelope(bad), ""),
                  wc.ProcResult(1, "", "Claude AI usage limit reached")])
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = _run_producer(c, refs)
             self.assertEqual(oc.status, "fail")
             self.assertEqual(oc.leaf_returncode, 1)
             meta = json.loads(
@@ -2228,7 +2387,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
 
 class PureTransientWallClockBudgetScopeTest(unittest.TestCase):
     """WHICH attempts the transient wall-clock budget is charged for, driven through the real
-    pure producer loop — because the whole rule is where the accumulator sits in that loop.
+    (workshop) producer loop — because the whole rule is where the accumulator sits in that loop.
 
     The budget exists to stop three doomed re-launches of a request that dies at a fixed
     wall-clock. It must therefore be spent by TRANSIENT deaths and by nothing else: a content
@@ -2262,7 +2421,7 @@ class PureTransientWallClockBudgetScopeTest(unittest.TestCase):
         base = c.clock[0]
         with mock.patch.object(wc.time, "time", lambda: base), \
                 mock.patch.object(wc.time, "monotonic", lambda: c.clock[0]):
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = _run_producer(c, refs)
         return c, oc, events
 
     _FLAKE = wc.ProcResult(1, "", "API Error: Connection closed mid-response.")
@@ -2360,50 +2519,23 @@ class PureTransientWallClockBudgetScopeTest(unittest.TestCase):
 # M-D2: producer cold-fallback / capture-time surrogate safety (verify-side mirror)
 # ======================================================================================
 class PureProducerColdFallbackSurrogateTests(unittest.TestCase):
-    def test_cold_fallback_repair_with_surrogate_does_not_crash(self) -> None:
-        # M-D2 (G1 mirror): a bundle carrying an unpaired surrogate goes to the
-        # bundle_schema_violation repair path; on a COLD fallback (session not resumable) its
-        # prior_document is echoed into the repair prompt that record_launch writes as UTF-8. It
-        # must be normalized so the write does not raise UnicodeEncodeError mid-repair.
-        class _C(_PureFakeConductor):
-            def _claude_session_resumable(self, arid, **kw):  # type: ignore[override]
-                return False  # force the cold-fallback repair branch on every turn
-            def record_launch(self, child_arid, request, entry=None, **kwargs):  # type: ignore[override]
-                # Emulate the real record_launch's UTF-8 prompt persistence to surface any
-                # non-encodable prior_document as the real path would.
-                json.dumps(request, ensure_ascii=False).encode("utf-8")
-                return {"launch_prompt_text": "PROMPT"}
-        bad = _valid_bundle()
-        bad["files"][0]["content"] += "\ud800"
-        with tempfile.TemporaryDirectory() as tmp:
-            repo = Path(tmp)
-            refs = _write_node(repo)
-            (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
-            c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                   llm_config=_cfg("claude"), env={})
-            c.envelopes = [_envelope(bad)]
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())  # must not raise
-            self.assertEqual(oc.status, "fail")
-
     def test_surrogate_in_findings_does_not_crash_repair_or_meta(self) -> None:
         # M-D2 (G3 mirror): `last_excerpt` (findings) flows into both the repair turn's
         # repair_findings AND bundle_meta's failure_excerpt, both persisted as UTF-8. Capture-time
         # normalization must keep every downstream write from raising even if a violation message
         # ever carried a lone surrogate. Force it by making the validator emit one.
-        class _C(_PureFakeConductor):
+        class _C(_WorkshopLeafFake):
             def _pure_bundle_violations(self, refs, doc):  # type: ignore[override]
                 return ("bundle_schema_violation", "bad field value \ud800 here")
             def record_launch(self, child_arid, request, entry=None, **kwargs):  # type: ignore[override]
                 json.dumps(request, ensure_ascii=False).encode("utf-8")  # emulate prompt persist
-                return {"launch_prompt_text": "PROMPT"}
+                return super().record_launch(child_arid, request, entry, **kwargs)
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _write_node(repo)
-            (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
-            c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                   llm_config=_cfg("claude"), env={})
+            c = _workshop_conductor(repo, _C)
             c.envelopes = [_envelope(_valid_bundle())]  # valid doc; validator forces the violation
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())  # must not raise
+            oc = _run_producer(c, refs)  # must not raise
             self.assertEqual(oc.status, "fail")
             # bundle_meta persisted cleanly (excerpt normalized), and its write did not fail_close.
             meta = json.loads((c.repo_root / refs.source_dir() / "bundle_meta.json").read_text())
@@ -2411,57 +2543,43 @@ class PureProducerColdFallbackSurrogateTests(unittest.TestCase):
             self.assertEqual(oc.leaf_returncode, 0)   # NOT a host-write fail_close
 
     def test_a_turn_that_is_not_warm_never_resumes_the_session_it_still_names(self) -> None:
-        """`_spawn_pure_turn` hands `spawn_leaf` a `resume_session_id` only when the turn is
-        warm (issue #508). Across a cold-fallback repair the loop KEEPS `resume_session_id` —
-        it is the repair target (`repair_target_agent_run_id`) — while the request is built as
-        a cold launch: full context plus the prior document. Passing the id through regardless
-        of `warm` sends that cold request as a resume of the session the host has just judged
-        not resumable: a request built for one transport delivered on the other. The gate is
-        shared by both loops; driven here through the producer, on the claude fake (where a
-        session id is the child's arid), and pinned on the kwargs the transport receives."""
-        class _C(_PureFakeConductor):
-            def _claude_session_resumable(self, arid, **kw):  # type: ignore[override]
-                return False  # every repair turn is a cold fallback
+        """A repair turn that is not warm hands `spawn_leaf` no `resume_session_id` (issue #508):
+        `_spawn_workshop_turn` passes the id only when the turn is warm. Across a repair whose
+        transcript is gone the loop KEEPS the repair target (`repair_target_agent_run_id`)
+        while the request is built as a cold reuse: the full context, a new lineage. Passing
+        the target's session through regardless of `warm` would send that cold request as a
+        resume of the session the host has just judged not resumable: a request built for one
+        transport delivered on the other. Driven on the claude fake (where a session id is the
+        child's arid) and pinned on the kwargs the transport receives."""
         bad = _valid_bundle()
         del bad["capability_requirements"]
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _write_node(repo)
-            (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
-            c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-                   llm_config=_cfg("claude"), env={})
+            c = _workshop_conductor(repo)
+            c.resumable = False   # every repair turn finds its transcript gone
             c.envelopes = [_envelope(bad), _envelope(_valid_bundle())]
-            requests: list[dict] = []
-            spawn_kwargs: list[dict] = []
-            orig_rec, orig_spawn = c.record_launch, c.spawn_leaf
-
-            def _rec(child_arid, request, entry=None, **kw):
-                requests.append(request)
-                return orig_rec(child_arid, request, entry, **kw)
-
-            def _spawn(prompt_text, child_env, entry=None, **kwargs):
-                spawn_kwargs.append(dict(kwargs))
-                return orig_spawn(prompt_text, child_env, entry, **kwargs)
-
-            c.record_launch = _rec      # type: ignore[assignment]
-            c.spawn_leaf = _spawn       # type: ignore[assignment]
-            oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
+            oc = _run_producer(c, refs)
             self.assertEqual(oc.status, "pass")
             self.assertEqual(oc.attempts, 2)
-            # The repair turn still names the dead session as its target, and is built cold...
+            requests = [cap["--request-json"] for sub, cap in c.calls if sub == "record-launch"]
+            # The repair turn still names the earlier attempt as its target, and is built cold...
             self.assertEqual(requests[1]["repair_strategy"], "reuse")
             self.assertEqual(requests[1]["repair_target_agent_run_id"], "child-1")
             self.assertFalse(requests[1].get("warm_resume"))
-            self.assertIn("prior_document", requests[1])
+            self.assertEqual(requests[1]["workshop_lineage_id"], "child-2")
             self.assertTrue(requests[1].get("pure_context"))
             # ...and is spawned cold: no resume target reaches the transport.
-            self.assertEqual([k.get("resume_session_id") for k in spawn_kwargs], [None, None])
+            self.assertEqual([k.get("resume_session_id") for k in c.spawn_kwargs], [None, None])
 
 
 # ======================================================================================
 # build_launch_request pure variant
 # ======================================================================================
 class PureLaunchRequestTests(unittest.TestCase):
+    """The host-rendered LLM request `build_launch_request(..., pure_leaf=True)` builds: a
+    WORKSHOP request since issue #534 PR-J4-b (it names its lineage and its provider)."""
+
     def _refs(self, repo):
         return _write_node(repo)
 
@@ -2475,8 +2593,11 @@ class PureLaunchRequestTests(unittest.TestCase):
                 runner_host_authored=True,
                 pure_leaf=True, pure_context={"harness_capabilities": "x", "target_profile": "y",
                                               "ir_document": "z", "tests_document": "t",
-                                              "runner_document": "program r\nend program\n"})
-            self.assertEqual(req["leaf_mode"], "pure")
+                                              "runner_document": "program r\nend program\n"},
+                workshop_lineage_id="c", workshop_provider="claude_cli")
+            self.assertEqual(req["leaf_mode"], "workshop")
+            self.assertEqual((req["workshop_lineage_id"], req["workshop_provider"]),
+                             ("c", "claude_cli"))
             self.assertEqual(req["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
             self.assertEqual(req["allowed_output_paths"], [])
             self.assertEqual(req["skill_name"], "")
@@ -2559,15 +2680,19 @@ class _RenderingFakeConductor(_PureFakeConductor):
         return super().spawn_leaf(prompt_text, child_env, entry, **kwargs)
 
 
-class PureProducerExemplarTests(unittest.TestCase):
-    """R5 exemplar injection on the pure `generate.generate` launch.
+class _RenderingWorkshopFake(_WorkshopLeafFake, _RenderingFakeConductor):
+    """`_WorkshopLeafFake` whose record-launch runs the REAL prompt pipeline
+    (`_RenderingFakeConductor.runtime`): the workshop loop's actual request is prepared, rendered
+    and validated, and the prompt the leaf would be handed is the rendered one."""
 
-    REGRESSION (billed E2E, 2026-07-16 — defect B): every other strand of the pure exemplar
-    wiring was in place (the template's `<exemplar>` slot, `_build_exemplar`, the
-    `build_launch_request` attach condition, the scan carve-out) but `_run_pure_generate_substep`
-    never passed `exemplar=`, so the pure producer authored with strictly less information than
-    the legacy leaf it was being A/B'd against.
-    """
+
+class PureProducerExemplarTests(unittest.TestCase):
+    """The outer-repair seed of the `generate.generate` producer loop, through the real render.
+
+    (The rows that pinned the exemplar's render into the PURE launch prompt went with that
+    template in issue #534 PR-J4-b: on the workshop loop the exemplar is the tree's
+    `EXEMPLAR.md` seed and every request records it — `test_workshop_producer.py`
+    `ExemplarRecordTests`.)"""
 
     _EXEMPLAR = {
         "node_key": "component/sibling@1.0.0",
@@ -2580,13 +2705,10 @@ class PureProducerExemplarTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
         refs = _write_node(repo)
-        (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
-        c = _RenderingFakeConductor(
-            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-            llm_config=_cfg("claude"), env={})
+        c = _workshop_conductor(repo, _RenderingWorkshopFake)
         c.exemplar_value = self._EXEMPLAR
         c.envelopes = envelopes
-        oc = c._run_pure_generate_substep(refs, "generate", "generate", repair, ())
+        oc = _run_producer(c, refs, repair=repair)
         return c, oc
 
     def tearDown(self) -> None:
@@ -2614,201 +2736,17 @@ class PureProducerExemplarTests(unittest.TestCase):
                 self.assertEqual("repair_findings" in c.requests[0], carried)
                 self.tearDown()
 
-    def test_cold_pure_launch_renders_exemplar_in_prompt(self) -> None:
-        c, oc = self._run([_envelope(_valid_bundle())])
-        self.assertEqual(oc.status, "pass")
-        self.assertEqual(c.requests[0]["exemplar"], self._EXEMPLAR)
-        # ...and it survives the real render + the real launch validator (no fail-close).
-        self.assertIn("Certified exemplar (conductor-injected PRIOR ART", c.prompts[0])
-        self.assertIn("! prior art body", c.prompts[0])
-
-    def test_warm_repair_attempt_does_not_attach_exemplar(self) -> None:
-        # A repair turn renders no exemplar (no `<exemplar>` slot in the repair template, and the
-        # cold repair's launch body is rendered without one), so attaching it to a repair turn
-        # would ship payload bytes nothing renders.
-        bad = _valid_bundle()
-        del bad["capability_requirements"]
-        c, oc = self._run([_envelope(bad), _envelope(_valid_bundle())])
-        self.assertEqual(oc.status, "pass")
-        self.assertEqual(oc.attempts, 2)
-        self.assertNotIn("exemplar", c.requests[1])
-        self.assertNotIn("Certified exemplar", c.prompts[1])
-        # The attempt record names the exemplar each attempt was SHOWN (issue #250): an
-        # advisory input, recorded per attempt and never keyed — the cold launch saw it, the
-        # repair turn did not. Until #250 nothing pinned which exemplar an attempt saw.
-        meta = json.loads((Path(self._tmp.name) / _write_node(Path(self._tmp.name)).source_dir()
-                           / "bundle_meta.json").read_text(encoding="utf-8"))
-        self.assertEqual([a["exemplar_ref"] for a in meta["per_attempt"]],
-                         [self._EXEMPLAR["source_ref"], None])
-
-    def test_an_attempt_with_no_exemplar_records_none(self) -> None:
-        self._tmp = tempfile.TemporaryDirectory()
-        repo = Path(self._tmp.name)
-        refs = _write_node(repo)
-        (repo / "workspace" / "orchestrations" / "o").mkdir(parents=True, exist_ok=True)
-        c = _RenderingFakeConductor(
-            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-            llm_config=_cfg("claude"), env={})
-        c.exemplar_value = None
-        c.envelopes = [_envelope(_valid_bundle())]
-        oc = c._run_pure_generate_substep(refs, "generate", "generate", None, ())
-        self.assertEqual(oc.status, "pass")
-        meta = json.loads((repo / refs.source_dir() / "bundle_meta.json").read_text(encoding="utf-8"))
-        self.assertEqual([a["exemplar_ref"] for a in meta["per_attempt"]], [None])
-
-    def test_outer_reopen_with_a_lost_claude_session_carries_findings_cold(self) -> None:
-        """The CLI half of issue #209: the provider HAS `warm_resume`, but this transcript is
-        gone (a `~/.claude` GC). The reopen must still be a repair turn — the findings and the
-        prior document, on a cold prompt — rather than a launch that re-derives the substep.
-        """
-        excerpt = "gate_lint: E501 line too long at model.f90:12"
-        prior = _valid_bundle()
-        prior["files"][0]["content"] = prior["files"][0]["content"] + "\n! prior_bundle_209\n"
-        self._tmp = tempfile.TemporaryDirectory()
-        repo = Path(self._tmp.name)
-        refs = _write_node(repo)
-        launches = repo / "workspace" / "orchestrations" / "o" / "launches"
-        launches.mkdir(parents=True, exist_ok=True)
-        prior_dir = repo / refs.source_dir("s_20260101_000")
-        prior_dir.mkdir(parents=True, exist_ok=True)
-        (prior_dir / "codegen_bundle.json").write_text(
-            json.dumps(prior, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        (launches / "prior-arid.request.json").write_text(json.dumps(
-            {"ir_ref": refs.ir_ref, "pipeline_ref": refs.pipeline_ref,
-             "source_id": "s_20260101_000", "agent_run_id": "prior-arid"}), encoding="utf-8")
-        c = _RenderingFakeConductor(
-            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-            llm_config=_cfg("claude"), env={})
-        c.exemplar_value = self._EXEMPLAR
-        c.envelopes = [_envelope(_valid_bundle())]
-        # The transcript this reopen names is gone. Overridden on the CONDUCTOR (the fake's
-        # default answers True for every id) so the seed takes the branch a real GC produces.
-        c._claude_session_resumable = lambda arid, **kw: False  # type: ignore[assignment]
-        oc = c._run_pure_generate_substep(
-            refs, "generate", "generate",
-            {"issue_severity": "major", "repair_strategy": "reuse",
-             "repair_target_agent_run_id": "prior-arid",
-             "repair_reason": "gate_lint", "repair_findings": excerpt}, ())
-        self.assertEqual(oc.status, "pass")
-        self.assertIn(excerpt, c.prompts[0])
-        self.assertIn("Your prior document under repair", c.prompts[0])
-        self.assertIn("prior_bundle_209", c.prompts[0])
-        # The new line 0: true on a cold turn, where the old one claimed a resumed session.
-        self.assertIn("The document you returned for this substep did not pass",
-                      c.prompts[0].splitlines()[0])
-        self.assertFalse(c.requests[0].get("warm_resume"))
-        self.assertEqual(c.requests[0]["repair_strategy"], "reuse")
-        self.assertNotIn("exemplar", c.requests[0])
-
-    def test_a_missing_lineage_home_on_a_warm_seed_falls_back_carrying_the_prior_document(self) -> None:
-        """The consumer of the seed's WARM-branch prior document, which had no test anywhere.
-
-        `_spawn_pure_turn` returns None when a warm resume's codex lineage home is missing
-        (issue #245; a "home generation rotation" until then): the launch was recorded against
-        a session the transport can no longer resume, so the loop drops the session, keeps the
-        semantic carriers, and retries the turn COLD. That is why the seed resolves
-        `prior_document` on the warm branch too — a warm seed can become a cold repair before
-        its first leaf ever runs. A round-1 reviewer measured that suppressing the
-        warm-branch resolution left the pure test files green, because nothing in the repository
-        drove the `turn is None` path at all (re-measured at 648ba90e^ by raising from inside that
-        branch: eight pure/conductor files stayed green).
-
-        The missing home is faked rather than produced by pruning a real codex home: what is
-        under test is the LOOP's fallback, and the detection itself is
-        `_prepare_codex_workflow_home`'s, pinned separately. For the same reason this row runs on
-        the CLAUDE fake, where a session id IS the child's arid — so what it does NOT observe is
-        the fallback's `cold_repair_target = resume_session_id`, which on codex records a THREAD
-        id in a field named `repair_target_agent_run_id`. That conflation is `origin/main`'s and
-        is not this row's subject.
-        """
-        excerpt = "gate_static: the bundle declares no capability_requirements"
-        prior = _valid_bundle()
-        prior["files"][0]["content"] += "\n! rotated_prior_209\n"
-        self._tmp = tempfile.TemporaryDirectory()
-        repo = Path(self._tmp.name)
-        refs = _write_node(repo)
-        launches = repo / "workspace" / "orchestrations" / "o" / "launches"
-        launches.mkdir(parents=True, exist_ok=True)
-        prior_dir = repo / refs.source_dir("s_20260101_000")
-        prior_dir.mkdir(parents=True, exist_ok=True)
-        (prior_dir / "codegen_bundle.json").write_text(
-            json.dumps(prior, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        (launches / "prior-arid.request.json").write_text(json.dumps(
-            {"ir_ref": refs.ir_ref, "pipeline_ref": refs.pipeline_ref,
-             "source_id": "s_20260101_000", "agent_run_id": "prior-arid"}), encoding="utf-8")
-        c = _RenderingFakeConductor(
-            repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
-            llm_config=_cfg("claude"), env={})
-        c.exemplar_value = self._EXEMPLAR
-        c.envelopes = [_envelope(_valid_bundle())]
-        # The session IS resumable, so the seed takes the WARM branch — and then the launch finds
-        # the lineage home gone underneath it. Faked where PRODUCTION detects it: `record_launch`'s
-        # `codex_lineage_home_missing`, which the runtime's record-launch returns before it
-        # writes any launch state (the conductor's `record_launch` has already written the
-        # request's input evidence), and so before any leaf is spawned. The fake runs the real
-        # record first and then adds the flag, which is what leaves the warm turn's shape to
-        # assert on; stubbing `_spawn_pure_turn` itself would leave nothing.
-        real_record = c.record_launch
-        vanished: list[bool] = []
-
-        def _vanish_once(*args, **kwargs):
-            rec = real_record(*args, **kwargs)
-            if not vanished:
-                vanished.append(True)
-                return {**rec, "codex_lineage_home_missing": True}
-            return rec
-
-        c.record_launch = _vanish_once  # type: ignore[assignment]
-        events: list[tuple[str, dict]] = []
-        c.emit = lambda ev, **f: events.append((ev, f))  # type: ignore[assignment]
-        oc = c._run_pure_generate_substep(
-            refs, "generate", "generate",
-            {"issue_severity": "major", "repair_strategy": "reuse",
-             "repair_target_agent_run_id": "prior-arid",
-             "repair_reason": "gate_static", "repair_findings": excerpt}, ())
-        self.assertEqual(oc.status, "pass")
-        self.assertEqual(vanished, [True])
-        # Two requests: the warm one that died to the missing home, then the cold repair.
-        self.assertTrue(c.requests[0].get("warm_resume"))
-        self.assertNotIn("prior_document", c.requests[0])   # warm turns do not send it
-        self.assertFalse(c.requests[1].get("warm_resume"))
-        self.assertEqual(c.requests[1]["repair_strategy"], "reuse")
-        self.assertEqual(c.requests[1]["repair_findings"], excerpt)
-        self.assertIn("rotated_prior_209", c.requests[1]["prior_document"])
-        self.assertTrue(c.requests[1].get("pure_context"))
-        # ... and the leaf that actually ran was handed it.
-        self.assertIn("rotated_prior_209", c.prompts[-1])
-        self.assertIn(excerpt, c.prompts[-1])
-        # The loop named the missing home rather than degrading silently.
-        self.assertTrue(any(
-            ev == "resume_session_unavailable"
-            and f.get("reason") == "codex_lineage_home_missing"
-            for ev, f in events), events)
-
-    def test_outer_reopen_without_findings_renders_launch_prompt_with_exemplar(self) -> None:
-        """The ONE case where the attach predicate differs from the legacy `not warm_resume`.
-
-        An outer reopen seeded with NO findings excerpt is warm (a session to resume) yet still
-        renders the full LAUNCH template — so it wants the exemplar, and the legacy condition
-        would have wrongly withheld it. This drives the conductor's predicate and the renderer's
-        dispatch against each other through the real renderer on the exact case where they could
-        disagree; every other test covers a case where the two happen to agree.
-        """
-        c, oc = self._run(
-            [_envelope(_valid_bundle())],
-            repair={"repair_strategy": "reuse", "repair_target_agent_run_id": "prior-arid"})
-        self.assertEqual(oc.status, "pass")
-        # The launch template rendered (not the repair template) ...
-        self.assertIn("Authoring rules", c.prompts[0])
-        # ... and the exemplar rode along with it.
-        self.assertEqual(c.requests[0]["exemplar"], self._EXEMPLAR)
-        self.assertIn("Certified exemplar (conductor-injected PRIOR ART", c.prompts[0])
-
 
 # ======================================================================================
 # Cold-repair prompt contract (M-C 修正4)
 # ======================================================================================
 class PureColdRepairPromptTests(unittest.TestCase):
+    """The producer's repair-turn render (`_render_pure_repair_prompt`), on a WORKSHOP request —
+    the only host-rendered LLM request since issue #534 PR-J4-b. A cold repair re-states the
+    launch body; a warm one is the findings alone. (The pure cold repair's `<prior_document>`
+    and its inlined documents went with the pure leaf: the workshop leaf's documents, the one
+    under repair included, are files of its tree.)"""
+
     def _req(self, *, shape: str = "", **overrides):
         substep = overrides.get("substep", "generate")
         if shape:
@@ -2820,14 +2758,14 @@ class PureColdRepairPromptTests(unittest.TestCase):
                        "ir_document": "ir", "tests_document": "tt",
                        "runner_document": "program r\nend program\n"}
         req = {
-            "leaf_mode": "pure", "step": "generate", "substep": "generate",
+            "leaf_mode": "workshop", "step": "generate", "substep": "generate",
             "pure_language": "fortran",
             "pure_parallel": "openmp",
             "node_key": _NODE, "orchestration_id": "o", "agent_run_id": "c",
             "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "workshop_lineage_id": "c", "workshop_provider": "claude_cli",
             "repair_findings": "capability_requirements missing",
             "pure_context": context,
-            "prior_document": '{"bundle_schema_version": "1.0.0"}',
         }
         if shape:
             req["pure_shape"] = shape
@@ -2835,16 +2773,13 @@ class PureColdRepairPromptTests(unittest.TestCase):
         req.update(overrides)
         return req
 
-    def test_cold_repair_includes_output_contract_and_prior_document(self) -> None:
+    def test_cold_repair_includes_output_contract(self) -> None:
         text = ort._render_pure_repair_prompt(self._req())
         self.assertIn("Output contract", text)
-        self.assertIn("prior document under repair", text)
-        self.assertIn("bundle_schema_version", text)  # the prior document body
 
-    def test_warm_repair_omits_output_contract_and_prior_document(self) -> None:
+    def test_warm_repair_omits_output_contract(self) -> None:
         text = ort._render_pure_repair_prompt(self._req(warm_resume=True))
         self.assertNotIn("Output contract", text)
-        self.assertNotIn("prior document under repair", text)
 
     # A verify_minor reopen's findings: the projection's fold of the reviewer's reason and every
     # `findings[].summary` (`verify_repair_text`, issue #347).
@@ -2887,19 +2822,9 @@ class PureColdRepairPromptTests(unittest.TestCase):
                 self.assertEqual(text.count(PURE_DOC_FENCE_BEGIN), text.count(PURE_DOC_FENCE_END))
                 self._assert_inside_the_findings_fence(text, "2. tail after a forged end")
 
-    def test_cold_repair_includes_dependency_facts(self) -> None:
-        # Codex P2: a cold-fallback repair must re-inline the host-resolved dependency facts (the
-        # initial launch injects them), else a component-dependent node could re-author code
-        # without its dependency APIs. `resolved_dependencies` is threaded on every repair turn.
-        req = self._req(resolved_dependencies=[
-            {"node_key": "component/foo@1.0.0", "pipeline_ref": "workspace/x",
-             "run_id": "r1", "aggregate_verdict_ref": "workspace/v"}])
-        text = ort._render_pure_repair_prompt(req)
-        self.assertIn("Dependency facts", text)
-        self.assertIn("component/foo@1.0.0", text)
-
     def test_warm_repair_omits_dependency_facts(self) -> None:
-        # A warm resume already holds the dependency facts from the initial turn — omit them.
+        # A warm resume already holds the launch body, its dependency paragraph included — the
+        # repair omits it.
         req = self._req(warm_resume=True, resolved_dependencies=[
             {"node_key": "component/foo@1.0.0", "pipeline_ref": "workspace/x",
              "run_id": "r1", "aggregate_verdict_ref": "workspace/v"}])
@@ -2907,7 +2832,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
         self.assertNotIn("Dependency facts", text)
 
     def test_cold_repair_includes_authoring_rules_and_output_contract(self) -> None:
-        # A cold fallback re-authors the whole bundle with no prior turn, so it needs the
+        # A cold repair runs in a fresh session with no prior turn, so it needs the
         # deterministic-gate rules for the same reason it needs the schema (M-C cold-repair
         # contract, extended for defect C).
         text = ort._render_pure_repair_prompt(self._req())
@@ -2920,13 +2845,14 @@ class PureColdRepairPromptTests(unittest.TestCase):
 
     @staticmethod
     def _repair_loop_pairs() -> list[tuple[str, str, str]]:
-        """Every `(step, substep, pure_shape)` whose leaf runs under a repair loop: each pure
-        template except the escalate diagnostician's (no repair loop, issue #169 PR-1)."""
+        """Every `(step, substep, pure_shape)` whose leaf runs under a repair loop: each workshop
+        launch template except the escalate diagnostician's (no repair loop, issue #169 PR-1)
+        and the repair templates themselves."""
         out = []
         for key in sorted(ort._PROMPT_TEMPLATE_FILES):
-            if not key.startswith("pure ") or key == "pure bundle repair":
+            if not key.startswith("workshop ") or key.endswith(" repair"):
                 continue
-            parts = key[len("pure "):].split(".")
+            parts = key[len("workshop "):].split(".")
             step, substep, shape = parts[0], parts[1], (parts[2] if len(parts) > 2 else "")
             if (step, substep) in ort.DIAGNOSE_LAUNCH_PAIRS:
                 continue
@@ -2940,23 +2866,25 @@ class PureColdRepairPromptTests(unittest.TestCase):
     def test_a_cold_repair_restates_the_whole_launch_body_under_its_own_labels(self) -> None:
         """A cold repair re-states the launch prompt WHOLE (issue #510): every line of the
         composed launch template after its persona line, except the identity block, in template
-        order, with each context document fenced under the label paragraph the launch gives it,
-        exactly once. This replaces the by-prefix lift: a paragraph added to a launch template
-        reaches the cold repair by existing, and a document body never arrives under a bare
-        key with its label stranded elsewhere. The expected lines are read off the template
-        independently of how the renderer trims it."""
-        from tools.pure_leaf import PURE_DOC_FENCE_BEGIN
-        # Issue #526 added the eighth: `compile.generate`'s per-test `verification` part.
-        self.assertEqual(len(self._repair_loop_pairs()), 8)
+        order, exactly once. This replaces the by-prefix lift: a paragraph added to a launch
+        template reaches the cold repair by existing. The expected lines are read off the
+        template independently of how the renderer trims it. (The pure launch inlined each
+        context document under a label paragraph, which this row also pinned; a workshop
+        template has no document slot — `test_workshop_producer.py` `TemplateTests` — so that
+        half went with the pure templates in issue #534 PR-J4-b.)"""
+        # The seven workshop pairs with a repair loop: the two producers (with the harness
+        # shape) and the three judges (with the harness shape).
+        self.assertEqual(len(self._repair_loop_pairs()), 7)
         for step, substep, shape in self._repair_loop_pairs():
             with self.subTest(pair=f"{step}.{substep}{('.' + shape) if shape else ''}"):
                 keys = (ort.PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE[(step, substep, shape)]
                         if shape else ort.PURE_CONTEXT_REQUIRED_KEYS[(step, substep)])
-                req = {"leaf_mode": "pure", "step": step, "substep": substep,
+                req = {"leaf_mode": "workshop", "step": step, "substep": substep,
                        "node_key": _HARNESS if shape == "harness" else _NODE,
                        "orchestration_id": "o", "agent_run_id": "c",
                        "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
-                       "repair_findings": "x is missing", "prior_document": '{"k": 1}',
+                       "workshop_lineage_id": "c", "workshop_provider": "claude_cli",
+                       "repair_findings": "x is missing",
                        "pure_context": {k: f"<{k} body>" for k in keys}}
                 if step == "generate":
                     req["pure_language"] = "fortran"
@@ -2970,80 +2898,34 @@ class PureColdRepairPromptTests(unittest.TestCase):
                 for line in (ln.strip() for ln in body.splitlines()):
                     if not line or self._IDENTITY_LINE_RE.match(line):
                         continue
-                    slot = ort._PURE_PLACEHOLDER_RE.fullmatch(line)
-                    if slot and slot.group(1) in keys:
-                        line = f"<{slot.group(1)} body>"       # the document, where its slot is
-                    elif slot:
-                        continue                               # `<exemplar>` / `<dependency_facts>`
+                    self.assertIsNone(ort._PURE_PLACEHOLDER_RE.fullmatch(line), line)
                     self.assertEqual(cold.count(line), 1, f"{line[:70]!r} not exactly once")
                     at = cold.index(line)
                     self.assertGreater(at, last, f"out of template order: {line[:70]!r}")
                     last = at
-                # ... and each document sits directly under its label: only the fence opener
-                # between them.
-                for key in keys:
-                    at = cold.index(f"<{key} body>")
-                    before = cold[:at].rstrip().splitlines()
-                    self.assertEqual(before[-1], PURE_DOC_FENCE_BEGIN, key)
-                    self.assertTrue(before[-2].startswith("**"), (key, before[-2][:60]))
-                self.assertIn("You have no gate or repository write authority", cold)
                 # Named independently of the persona cut: a template edit that glued the output
                 # contract onto the persona paragraph would drop it from both sides of the
                 # line-by-line comparison above.
                 self.assertEqual(cold.count("\nOutput contract ("), 1)
-                self.assertIn("The document you returned for this substep did not pass",
-                              cold.splitlines()[0])
                 self.assertNotIn("<launch_body>", cold)
-                # ... and the re-stated body is a byte slice of the cold launch prompt itself,
-                # so no document body is reflowed on its way into the repair.
+                # Line 0 is the repair template's own, which opens with the workshop sentinel.
+                from tools.pure_leaf import WORKSHOP_PROMPT_SENTINEL
+                self.assertTrue(cold.startswith(WORKSHOP_PROMPT_SENTINEL), cold[:80])
+                self.assertIn("repair turn for", cold.splitlines()[0])
+                # ... and the re-stated body is a byte slice of the cold launch prompt itself.
                 launch = ort._render_pure_launch_prompt(req)
                 self.assertIn(ort._pure_launch_body(req), launch)
                 self.assertIn(ort._pure_launch_body(req), cold)
                 # ... and what the slice drops is the launch's persona paragraph and its identity
                 # block, exactly: the repair carries its own of each, once.
                 persona = launch.split("\n\n", 1)[0]
-                self.assertTrue(persona.startswith("Pure-function leaf turn"), persona[:60])
+                self.assertTrue(persona.startswith("Workshop leaf turn"), persona[:60])
                 self.assertNotIn(persona, cold)
                 for marker in ("Target node_key: ", "agent_run_id: ", "prompt_contract_version: "):
                     self.assertEqual(cold.count(marker), 1, marker)
 
-    def test_a_document_quoting_the_identity_marker_reaches_the_cold_repair_whole(self) -> None:
-        """The body ends at the LAST identity block, so a context document that quotes the
-        identity marker — a producer's source under review can carry any text — is not cut
-        at the quote."""
-        quoted = "line one\n\nTarget node_key: quoted\n\nline after the quote"
-        req = {"leaf_mode": "pure", "step": "generate", "substep": "verify", "node_key": _NODE,
-               "orchestration_id": "o", "agent_run_id": "c",
-               "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
-               "pure_language": "fortran", "pure_parallel": "openmp",
-               "repair_findings": "x is missing", "prior_document": '{"k": 1}',
-               "pure_context": {k: (quoted if k == "bundle_document" else f"<{k} body>")
-                                for k in ort.PURE_CONTEXT_REQUIRED_KEYS[("generate", "verify")]}}
-        self.assertIn("bundle_document", req["pure_context"])
-        cold = ort._render_pure_repair_prompt(req)
-        self.assertIn("line after the quote", cold)
-        for key in req["pure_context"]:
-            if key != "bundle_document":
-                self.assertIn(f"<{key} body>", cold)
-
-    def test_a_cold_repair_renders_no_exemplar_even_when_one_is_attached(self) -> None:
-        """A repair turn corrects the leaf's own document and carries no prior art. The
-        conductor attaches the exemplar only to a turn that renders the launch template; the
-        cold repair's re-stated launch body drops a stray one itself (issue #510), so the
-        decision does not rest on the caller alone. Positive control: the same request as a
-        cold LAUNCH renders it."""
-        exemplar = {"node_key": "component/sibling@1.0.0",
-                    "sources": [{"filename": "sibling_model.f90",
-                                 "text": "module sibling_model\n  ! prior art body\n"
-                                         "end module sibling_model\n"}]}
-        req = self._req(exemplar=exemplar)
-        self.assertIn("! prior art body", ort._render_pure_launch_prompt(req))
-        cold = ort._render_pure_repair_prompt(req)
-        self.assertNotIn("! prior art body", cold)
-        self.assertNotIn("Certified exemplar", cold)
-
     def test_cold_repair_keeps_rule_text_that_mentions_placeholders(self) -> None:
-        # Only a line that is nothing but a document slot is a slot (`_PURE_PLACEHOLDER_RE` is a
+        # Only a line that is nothing but a slot is a slot (`_PURE_PLACEHOLDER_RE` is a
         # `fullmatch`). Rule text quoting a `<...>` metavariable — `use <module>, only:
         # <names>`, the `associate (unused_<name> => <name>)` binding — must reach the cold
         # repair; losing it would silently delete a rule from every cold repair.
@@ -3052,10 +2934,10 @@ class PureColdRepairPromptTests(unittest.TestCase):
         self.assertIn("associate (unused_<name> => <name>); end associate", text)
 
     def test_cold_repair_leaks_no_document_placeholder(self) -> None:
-        # Every document slot of the launch body the cold repair re-states is filled (or emptied)
-        # by the launch renderer; none may ship as a literal token.
+        # No slot of the launch body the cold repair re-states may ship as a literal token.
         text = ort._render_pure_repair_prompt(self._req())
-        for slot in ("<runner_document>", "<ir_document>", "<tests_document>", "<exemplar>"):
+        for slot in ("<runner_document>", "<ir_document>", "<tests_document>", "<exemplar>",
+                     "<tool_surface>", "<launch_body>", "<findings>"):
             self.assertNotIn(slot, text)
 
     def test_warm_repair_omits_authoring_rules(self) -> None:
@@ -3065,13 +2947,13 @@ class PureColdRepairPromptTests(unittest.TestCase):
         self.assertNotIn("--ignore-allow-comments", text)
 
     def test_style_lint_distills_c072_character_dummy_widths(self) -> None:
-        # Fail #1 (orch_9a5fe93e): the pure leaf authored `character(len=*), intent(out)` and
+        # Fail #1 (orch_9a5fe93e): the leaf authored `character(len=*), intent(out)` and
         # burned a retry on fortitude C072. The doc-blind producer learns the rule only if the
         # launch template states it. Under the per-id ABI (pure-8) the sole `intent(out)` character
         # dummy is `status`, whose width MUST match the one authority the runner renders against
         # (the fortran backend runner's CHECK_STATUS_WIDTH), not a hand-copied number that could drift.
         from tools.backends.language.fortran.runner import CHECK_STATUS_WIDTH
-        template = composed_pure_template("pure generate.generate")
+        template = composed_pure_template("workshop generate.generate")
         start = template.index("(1) Style lint")
         end = template.index("\n(2)", start)
         style = template[start:end]
@@ -3397,8 +3279,8 @@ def _harness_bundle() -> dict:
 
 class PureHarnessProducerEndToEndTests(unittest.TestCase):
     """The whole host side of one harness-shape `generate.generate` turn, driven through the
-    production loop: launch request -> envelope -> acceptance -> host writes. What the m3c
-    producer tests do for their shape, for this one."""
+    production (workshop) loop: launch request -> the leaf's tree -> acceptance -> host writes.
+    What the m3c producer tests do for their shape, for this one."""
 
     _REPO_DOCS = ("docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
                   "docs/workflow/CHECKS_MODULE_CONTRACT.md",
@@ -3414,7 +3296,7 @@ class PureHarnessProducerEndToEndTests(unittest.TestCase):
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(real_root / rel, dest)
         self.refs = _write_harness_node(self.repo)
-        self.c = _conductor(self.repo)
+        self.c = _workshop_conductor(self.repo)
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
@@ -3424,7 +3306,7 @@ class PureHarnessProducerEndToEndTests(unittest.TestCase):
         `pure_context_assembly_failed` outcome, no `record-launch`, no exception out."""
         (self.repo / self.refs.ir_ref / "spec.ir.yaml").unlink()
         self.c.envelopes = [_envelope(_harness_bundle())]
-        oc = self.c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        oc = _run_producer(self.c, self.refs)
         self.assertEqual(oc.status, "fail")
         self.assertEqual(oc.infra_error[0], "pure_context_assembly_failed")
         self.assertIn("pure_ir_document_missing", oc.infra_error[1])
@@ -3434,7 +3316,7 @@ class PureHarnessProducerEndToEndTests(unittest.TestCase):
 
     def test_one_accepted_turn_writes_the_declared_sources_and_the_control_file(self) -> None:
         self.c.envelopes = [_envelope(_harness_bundle())]
-        oc = self.c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        oc = _run_producer(self.c, self.refs)
         self.assertEqual(oc.status, "pass", getattr(oc, "failure_excerpt", None))
         src = self.repo / self.refs.source_dir() / "src"
         for entry in _harness_bundle()["files"]:
@@ -3451,11 +3333,11 @@ class PureHarnessProducerEndToEndTests(unittest.TestCase):
 
     def test_the_launch_carried_the_shape_the_template_and_the_harness_context(self) -> None:
         self.c.envelopes = [_envelope(_harness_bundle())]
-        self.c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        _run_producer(self.c, self.refs)
         request = [cap["--request-json"]
                    for sub, cap in self.c.calls if sub == "record-launch"][-1]
         self.assertEqual(request["pure_shape"], "harness")
-        self.assertEqual(request["leaf_mode"], "pure")
+        self.assertEqual(request["leaf_mode"], "workshop")
         self.assertNotIn("runner_host_authored", request)
         self.assertEqual(
             sorted(request["pure_context"]),
@@ -3476,7 +3358,7 @@ class PureHarnessProducerEndToEndTests(unittest.TestCase):
             "content": "module c\nend module c\n",
             "modules": [f"{_HARNESS_SPEC_ID}_checks"]}]
         self.c.envelopes = [_envelope(wrong), _envelope(_harness_bundle())]
-        oc = self.c._run_pure_generate_substep(self.refs, "generate", "generate", None, ())
+        oc = _run_producer(self.c, self.refs)
         self.assertEqual(oc.status, "pass", getattr(oc, "failure_excerpt", None))
         src = self.repo / self.refs.source_dir() / "src"
         self.assertTrue((src / f"{_HARNESS_SPEC_ID}_runner.f90").exists())
@@ -3800,7 +3682,8 @@ class PureHarnessShapeTests(unittest.TestCase):
             # since the R4-b PR-4 preconditions (issue #289)
             pure_language=self.c._pure_language("generate"),
             pure_parallel=self.c._pure_parallel("generate"),
-            pure_context=self.c._build_pure_harness_context(self.refs))
+            pure_context=self.c._build_pure_harness_context(self.refs),
+            workshop_lineage_id="c", workshop_provider="claude_cli")
         self.assertEqual(req["pure_shape"], "harness")
         self.assertNotIn("runner_host_authored", req)
         ort._validate_launch_request_payload(ort.prepare_launch_request_payload(req))

@@ -4,12 +4,15 @@ MR3: a replay of a recorded `validate.judge` launch, run end to end through the 
 `main` over a certified node — the REAL orchestration creation (`init`, the configuration
 snapshot, `preflight`, each runtime command run in-process), the REAL `record_launch` and
 `finalize-child`, the REAL reviewer loop — with only the leaf process scripted. It pins that
-the pure arm's rendered prompt equals the recorded one but for the two identity tokens, that
-the workshop arm's tree holds the recorded (or mutated) context under the seed names, that a
-mutation applies exactly once or nothing runs, that `--check` answers the dependency gate's
-`derivation_key_mismatch`, and that a replay leaves `workspace/ir`, `pipelines` and `runs`
-byte-identical, writes no step result and no reservation, and is invisible to the source's
-A/B rollup, to `--resume`'s latest-orchestration choice and to the audit.
+the replayed request carries the recorded dependency facts verbatim, that the lineage's tree
+holds the recorded (or mutated) context under the seed names, that a mutation applies exactly
+once or nothing runs, that `--check` answers the dependency gate's `derivation_key_mismatch`,
+that a record the retired pure leaf wrote is refused (`judge_replay_source_pure_retired`, issue
+#534 PR-J4-b), and that a replay leaves `workspace/ir`, `pipelines` and `runs` byte-identical,
+writes no step result and no reservation, and is invisible to the source's A/B rollup, to
+`--resume`'s latest-orchestration choice and to the audit. (Through PR-J4-a the tool had a
+second arm, the pure leaf, whose rendered prompt was compared with the record's; that arm and
+the comparison went in PR-J4-b.)
 
 MR4: the read-coverage reader over a two-file claude lineage.
 """
@@ -34,6 +37,7 @@ import tools.run_workflow as rw
 import tools.workflow_conductor as wc
 from tools import operator_private_root
 from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+from tools.tests.llm_samples import workshop_yaml
 from tools.tests.orchestration_fixtures import (
     certify_node,
     claude_launch_checks,
@@ -60,10 +64,10 @@ _CONTEXT = {
 _REVIEW = {"decision": "pass", "findings": [], "notes": "replayed"}
 _FACTS = ({"node_key": _DEP, "pipeline_ref": "workspace/pipelines/x", "run_id": "run_x"},)
 
-_PURE_YAML = "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
-_WORKSHOP_YAML = (_PURE_YAML + "phases:\n  validate:\n    substeps:\n      judge:\n"
-                  "        provider: claude_cli\n        model: opus\n"
-                  "        leaf: workshop\n        lineage_timeout_s: 600\n")
+_DEFAULTS_YAML = "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
+_WORKSHOP_YAML = workshop_yaml(
+    _DEFAULTS_YAML + "phases:\n  validate:\n    substeps:\n      judge:\n"
+    "        provider: claude_cli\n        model: opus\n        lineage_timeout_s: 600\n")
 
 
 def _deps_yaml(*component_ids: str) -> str:
@@ -104,8 +108,8 @@ def _tree_digest(root: Path) -> str:
 
 
 class _Leaf:
-    """The scripted leaf: a pure turn returns the review in its envelope; a workshop turn
-    writes `review.json` into its tree and one transcript that reads `tests.md` whole."""
+    """The scripted leaf: a (reading workshop) turn writes `review.json` into its tree and one
+    transcript that reads `tests.md` whole."""
 
     def __init__(self, homes: Path) -> None:
         self.homes = homes
@@ -126,7 +130,7 @@ class _Leaf:
                     "modelUsage": {"claude-opus-5-5": {
                         "inputTokens": 1, "outputTokens": 2, "cacheReadInputTokens": 3,
                         "cacheCreationInputTokens": 0}}}
-        if entry is not None and entry.is_workshop:
+        if entry is not None:
             home = self.homes / conductor.orchestration_id / "claude" / sid
             tree = home / "tree"
             unfinished = self.unfinished > 0
@@ -163,8 +167,6 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         credentials.parent.mkdir()
         credentials.write_text('{"claudeAiOauth": {"accessToken": "x"}}', encoding="utf-8")
         os.chmod(credentials, 0o600)
-        self.pure_cfg = base / "pure.yaml"
-        self.pure_cfg.write_text(_PURE_YAML, encoding="utf-8")
         self.workshop_cfg = base / "workshop.yaml"
         self.workshop_cfg.write_text(_WORKSHOP_YAML, encoding="utf-8")
         self.leaf = _Leaf(self.homes)
@@ -230,7 +232,7 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
             "status": "pass", "sandbox_runtime": "bwrap", "sandbox_enforced": True,
             "can_launch_step_agents": True, "can_launch_substep_agents": True,
             "backend": "claude", "checks": claude_launch_checks()})
-        conductor = self._conductor(_SRC, self.pure_cfg)
+        conductor = self._conductor(_SRC, self.workshop_cfg)
         self.node_refs = wc.NodeRefs(
             node_key=_USER, spec_path=spec_ref, ir_id="user_20260101_001",
             pipeline_id="user_20260101_001", target_id=conductor.target.target_id,
@@ -248,39 +250,18 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
             agent_model="opus", workflow_mode="dev", runner_host_authored=True,
             resolved_dependencies=_FACTS, pure_leaf=True, pure_context=dict(_CONTEXT),
             pure_language=conductor._pure_language(_STEP),
-            pure_parallel=conductor._pure_parallel(_STEP))
-        conductor.record_launch(_SRC_ARID, request, conductor.entry_for(_STEP, _SUBSTEP))
-        self.source_prompt = (self.repo / "workspace/orchestrations" / _SRC / "launches"
-                              / f"{_SRC_ARID}.prompt.txt").read_text(encoding="utf-8")
-
-    def _record_another(self, arid: str, overrides: dict) -> str:
-        """Record a second judge launch of the source orchestration, with some context
-        documents replaced; returns the recorded prompt."""
-        conductor = self._conductor(_SRC, self.pure_cfg)
-        request = wc.build_launch_request(
-            self.node_refs, step=_STEP, substep=_SUBSTEP, orchestration_id=_SRC,
-            orchestration_agent_run_id="orch-arid", child_agent_run_id=arid,
-            agent_model="opus", workflow_mode="dev", runner_host_authored=True,
-            resolved_dependencies=_FACTS, pure_leaf=True,
-            pure_context={**_CONTEXT, **overrides},
-            pure_language=conductor._pure_language(_STEP),
-            pure_parallel=conductor._pure_parallel(_STEP))
-        # The first recorded launch was never finalized (nothing replays a finalize); close its
-        # window the way a finished launch leaves it, so the sequential-child gate admits this.
-        for marker in (self.repo / "workspace/orchestrations" / _SRC).rglob(
-                "active_child_agent_run_id.txt"):
-            marker.unlink()
-        conductor.record_launch(arid, request, conductor.entry_for(_STEP, _SUBSTEP))
-        return (self.repo / "workspace/orchestrations" / _SRC / "launches"
-                / f"{arid}.prompt.txt").read_text(encoding="utf-8")
+            pure_parallel=conductor._pure_parallel(_STEP),
+            workshop_lineage_id=_SRC_ARID, workshop_provider="claude_cli")
+        entry = conductor.entry_for(_STEP, _SUBSTEP)
+        # A workshop launch is recorded into a lineage home the conductor opened first.
+        conductor._prepare_workshop_home(entry, _SRC_ARID, resume=False)
+        conductor.record_launch(_SRC_ARID, request, entry)
 
     # --- helpers ----------------------------------------------------------------------------
 
-    def _main(self, *extra: str, cfg: Path | None = None, leaf: str = "pure") -> tuple[int, str]:
+    def _main(self, *extra: str, cfg: Path | None = None) -> tuple[int, str]:
         out = io.StringIO()
-        argv = [_SRC, _SRC_ARID, "--leaf", leaf,
-                "--llm-config", str(cfg or (self.workshop_cfg if leaf == "workshop"
-                                            else self.pure_cfg)),
+        argv = [_SRC, _SRC_ARID, "--llm-config", str(cfg or self.workshop_cfg),
                 "--repo-root", str(self.repo), *extra]
         with contextlib.redirect_stdout(out):
             rc = jr.main(argv)
@@ -295,7 +276,12 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
 
     # --- MR3 --------------------------------------------------------------------------------
 
-    def test_the_pure_arm_renders_the_recorded_prompt_but_for_its_identity(self) -> None:
+    def test_a_replay_row_carries_the_outcome_and_the_recorded_facts(self) -> None:
+        """Each repetition's row: the accepted review, the source's version and leaf mode, the
+        label, the usage sums; the replayed request carries the recorded dependency facts and
+        context verbatim. (Until issue #534 PR-J4-b this row drove the pure arm and also pinned
+        that its rendered prompt equalled the recorded one but for the identity tokens; that
+        comparison went with the pure leaf.)"""
         rc, out = self._main("--repeat", "2", "--label", "agreement")
         self.assertEqual(rc, 0, out)
         [replay] = self._replays()
@@ -304,7 +290,8 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         for row in rows:
             self.assertEqual(row["status"], "pass")
             self.assertEqual(row["document"], _REVIEW)
-            self.assertIs(row["prompt_matches_record"], True)
+            self.assertNotIn("prompt_matches_record", row)
+            self.assertEqual(row["source_leaf_mode"], "workshop")
             self.assertEqual(row["source_prompt_contract_version"],
                              PURE_PROMPT_CONTRACT_VERSION)
             self.assertEqual(row["label"], "agreement")
@@ -316,11 +303,6 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
                              (10.0, 1.0, 1.0, 2.0, 3.0, 0, 0.25, 0))
             self.assertIsInstance(row["leaf_wall_s"], float)
         first = rows[0]["attempts"][0]["agent_run_id"]
-        replayed = (replay / "launches" / f"{first}.prompt.txt").read_text(encoding="utf-8")
-        self.assertNotEqual(replayed, self.source_prompt)       # the identity differs ...
-        source = jr.load_source(self.repo, _SRC, _SRC_ARID)
-        self.assertEqual(jr._as_source(replayed, replay.name, first, source),
-                         self.source_prompt)                    # ... only
         # The recorded dependency facts reached the replayed request verbatim.
         request = json.loads((replay / "launches" / f"{first}.request.json")
                              .read_text(encoding="utf-8"))
@@ -365,13 +347,20 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual(jr._repair_counts([]), {"schema_repairs": 0, "cut_read_repairs": 0})
 
     def test_usage_recorded_without_a_cost_is_not_unrecorded(self) -> None:
-        """A codex turn reports tokens and no money: its attempt's usage is recorded."""
-        tokens_only = wc.ProcResult(0, json.dumps({
-            "type": "result", "is_error": False, "result": json.dumps(_REVIEW),
-            "num_turns": 1, "duration_ms": 1,
-            "usage": {"input_tokens": 5, "output_tokens": 6, "cache_creation_input_tokens": 0,
-                      "cache_read_input_tokens": 0}}), "")
-        with mock.patch.object(wc.Conductor, "spawn_leaf", lambda self, *a, **k: tokens_only):
+        """A codex turn reports tokens and no money: its attempt's usage is recorded. (The
+        scripted leaf still writes its tree; only the envelope it answers is replaced.)"""
+        leaf = self.leaf
+
+        def tokens_only(conductor, *a, **k):
+            leaf(conductor, *a, **k)
+            return wc.ProcResult(0, json.dumps({
+                "type": "result", "is_error": False, "result": "wrote review.json",
+                "session_id": k.get("session_id") or k["child_arid"],
+                "num_turns": 1, "duration_ms": 1,
+                "usage": {"input_tokens": 5, "output_tokens": 6,
+                          "cache_creation_input_tokens": 0, "cache_read_input_tokens": 0}}), "")
+
+        with mock.patch.object(wc.Conductor, "spawn_leaf", tokens_only):
             rc, out = self._main()
         self.assertEqual(rc, 0, out)
         [row] = self._rows(self._replays()[0])
@@ -379,54 +368,11 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual((row["usage_unrecorded_attempts"], row["cost_usd"],
                           row["output_tokens"]), (0, None, 6.0))
 
-    def test_a_workshop_record_is_not_compared_with_a_pure_prompt(self) -> None:
-        path = (self.repo / "workspace/orchestrations" / _SRC / "launches"
-                / f"{_SRC_ARID}.request.json")
-        request = json.loads(path.read_text(encoding="utf-8"))
-        path.write_text(json.dumps({**request, "leaf_mode": "workshop"}), encoding="utf-8")
-        rc, out = self._main()
-        self.assertEqual(rc, 0, out)
-        [row] = self._rows(self._replays()[0])
-        self.assertEqual(row["source_leaf_mode"], "workshop")
-        self.assertNotIn("prompt_matches_record", row)
-
-    def test_a_recorded_document_naming_the_source_orchestration_still_matches(self) -> None:
-        """A remote site's `remote_dir` puts the SOURCE orchestration id inside a recorded
-        document (149 judge records: 146 cpp_gpu, 3 fortran_cpu); masking every occurrence of
-        it on the source
-        side only would make an unchanged template read as moved."""
-        arid = "22222222-2222-4333-8444-555555555555"
-        recorded = self._record_another(arid, {"trial_meta_document":
-                                               f"remote_dir: /site/jobs/{_SRC}/run\n"})
-        self.assertIn(f"/site/jobs/{_SRC}/run", recorded)
-        out = io.StringIO()
-        with contextlib.redirect_stdout(out):
-            rc = jr.main([_SRC, arid, "--leaf", "pure", "--llm-config", str(self.pure_cfg),
-                          "--repo-root", str(self.repo)])
-        self.assertEqual(rc, 0, out.getvalue())
-        [row] = self._rows(self._replays()[0])
-        self.assertIs(row["prompt_matches_record"], True)
-
-    def test_a_mutated_pure_replay_makes_no_prompt_comparison(self) -> None:
-        rc, out = self._main("--mutate", json.dumps({"tests_document": [
-            {"old": "tests_document line 2\n", "new": "DEFECT\n"}]}))
-        self.assertEqual(rc, 0, out)
-        [row] = self._rows(self._replays()[0])
-        self.assertIsNone(row["prompt_matches_record"])
-
-    def test_a_template_change_is_reported_as_a_prompt_mismatch(self) -> None:
-        real = ort._load_launch_prompt_templates()
-        moved = {**real, "pure validate.judge": real["pure validate.judge"] + "\nMOVED\n"}
-        with mock.patch.object(ort, "_load_launch_prompt_templates", lambda: moved):
-            rc, out = self._main()
-        self.assertEqual(rc, 0, out)
-        [row] = self._rows(self._replays()[0])
-        self.assertIs(row["prompt_matches_record"], False)
-
-    def test_the_workshop_arm_seeds_the_mutated_context_and_measures_its_reads(self) -> None:
+    def test_the_lineage_is_seeded_with_the_mutated_context_and_its_reads_measured(
+            self) -> None:
         old = "tests_document line 3\n"
         mutation = json.dumps({"tests_document": [{"old": old, "new": "SEEDED DEFECT\n"}]})
-        rc, out = self._main("--mutate", mutation, leaf="workshop")
+        rc, out = self._main("--mutate", mutation)
         self.assertEqual(rc, 0, out)
         [replay] = self._replays()
         [row] = self._rows(replay)
@@ -458,14 +404,14 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
             return real(self, refs, context, request, spec)
 
         with mock.patch.object(wc.Conductor, "_workshop_seeds", spy):
-            rc, out = self._main(leaf="workshop")
+            rc, out = self._main()
         self.assertEqual(rc, 0, out)
         self.assertTrue(calls)
         self.assertEqual({c.get("workshop_provider") for c in calls}, {"claude_cli"})
 
     def test_coverage_is_the_union_over_the_repetitions_lineages(self) -> None:
         self.leaf.unfinished = 1
-        rc, out = self._main(leaf="workshop")
+        rc, out = self._main()
         self.assertEqual(rc, 0, out)
         [row] = self._rows(self._replays()[0])
         lineages = [a["lineage_id"] for a in row["attempts"]]
@@ -513,7 +459,6 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         before = (_tree_digest(self.repo),
                   collect_pure_leaf_ab_summary(self.repo, _SRC, src_meta))
         self.assertEqual(self._main()[0], 0)
-        self.assertEqual(self._main(leaf="workshop")[0], 0)
         after = (_tree_digest(self.repo),
                  collect_pure_leaf_ab_summary(self.repo, _SRC, src_meta))
         self.assertEqual(before, after)
@@ -590,8 +535,8 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         (launches / "11111111-ffff.request.json").write_text("{}", encoding="utf-8")
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
-            rc = jr.main([_SRC, "11111111", "--leaf", "pure", "--llm-config",
-                          str(self.pure_cfg), "--repo-root", str(self.repo)])
+            rc = jr.main([_SRC, "11111111", "--llm-config",
+                          str(self.workshop_cfg), "--repo-root", str(self.repo)])
         self.assertEqual((rc, json.loads(out.getvalue())["reason"]),
                          (2, "judge_replay_source_ambiguous"))
         # A repeat count below one.
@@ -628,24 +573,35 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         """Issue #534 PR-J3-b (operator decision O3): an HTTP lineage's transcript is
         `loop_turns.jsonl`, which the coverage reader does not read; refused before any
         replay orchestration exists, `--check` included."""
-        cfg = self.pure_cfg.parent / "http_workshop.yaml"
-        cfg.write_text(_PURE_YAML + "phases:\n  validate:\n    substeps:\n      judge:\n"
-                       "        provider: anthropic_api\n        api_key_env: K\n"
-                       "        model: m\n        leaf: workshop\n"
-                       "        lineage_timeout_s: 600\n", encoding="utf-8")
+        cfg = self.workshop_cfg.parent / "http_workshop.yaml"
+        cfg.write_text(workshop_yaml(
+            _DEFAULTS_YAML + "phases:\n  validate:\n    substeps:\n      judge:\n"
+            "        provider: anthropic_api\n        api_key_env: K\n"
+            "        model: m\n        lineage_timeout_s: 600\n"), encoding="utf-8")
         for extra in ((), ("--check",)):
             with self.subTest(extra=extra):
-                rc, out = self._main(*extra, cfg=cfg, leaf="workshop")
+                rc, out = self._main(*extra, cfg=cfg)
                 doc = json.loads(out)
                 self.assertEqual((rc, doc["reason"]),
                                  (2, "judge_replay_http_lineage_unsupported"))
                 self.assertIn("loop_turns.jsonl", doc["detail"])
                 self.assertEqual(self._replays(), [])
 
-    def test_the_leaf_must_be_the_configurations(self) -> None:
-        rc, out = self._main(cfg=self.pure_cfg, leaf="workshop")
-        self.assertEqual((rc, json.loads(out)["reason"]), (2, "judge_replay_leaf_mismatch"))
-        self.assertEqual(self._replays(), [])
+    def test_a_record_of_the_pure_leaf_is_refused_before_any_orchestration(self) -> None:
+        """MJ2 (issue #534 PR-J4-b): a source record the retired pure leaf wrote
+        (`leaf_mode: pure`) is refused by name, before any replay orchestration exists,
+        `--check` included — its context was assembled for templates that no longer exist."""
+        path = (self.repo / "workspace/orchestrations" / _SRC / "launches"
+                / f"{_SRC_ARID}.request.json")
+        request = json.loads(path.read_text(encoding="utf-8"))
+        path.write_text(json.dumps({**request, "leaf_mode": "pure"}), encoding="utf-8")
+        for extra in ((), ("--check",)):
+            with self.subTest(extra=extra):
+                rc, out = self._main(*extra)
+                self.assertEqual((rc, json.loads(out)["reason"]),
+                                 (2, "judge_replay_source_pure_retired"))
+                self.assertEqual(self._replays(), [])
+                self.assertEqual(self.leaf.calls, [])
 
 
 _DIAGNOSE_ARID = "99999999-2222-4333-8444-555555555555"
@@ -659,9 +615,8 @@ _DIAGNOSIS = json.dumps({"node_key": _USER, "failed_phase": "validate",
 
 
 class _DiagnoseLeaf(_Leaf):
-    """The scripted diagnostician: a pure turn replies the directive in its envelope; a
-    workshop turn writes `directive.json` into its tree and one transcript that reads
-    `diagnosis.json` whole."""
+    """The scripted diagnostician: a (reading workshop) turn writes `directive.json` into its
+    tree and one transcript that reads `diagnosis.json` whole."""
 
     def __call__(self, conductor, prompt_text, child_env, entry=None, **kw):
         self.calls.append({"prompt": prompt_text, **kw})
@@ -674,7 +629,7 @@ class _DiagnoseLeaf(_Leaf):
                     "modelUsage": {"claude-opus-5-5": {
                         "inputTokens": 1, "outputTokens": 2, "cacheReadInputTokens": 3,
                         "cacheCreationInputTokens": 0}}}
-        if entry is not None and entry.is_workshop:
+        if entry is not None:
             home = self.homes / conductor.orchestration_id / "claude" / kw["child_arid"]
             tree = home / "tree"
             (tree / "directive.json").write_text(json.dumps(_DIRECTIVE), encoding="utf-8")
@@ -698,11 +653,14 @@ class _DiagnoseLeaf(_Leaf):
 
 
 class DiagnoseReplayTests(unittest.TestCase):
-    """MJ1 (issue #534 PR-J4-a): a recorded `validate.diagnose` launch replayed on both arms
-    through `escalate`'s own launch (`Conductor._diagnose_turn`): the row carries the
-    DIRECTIVE, the workshop arm's tree holds `diagnosis.json` and its read is measured, and
-    nothing under `workspace/ir`, `pipelines` or `runs` is written. The source is recorded as
-    the three real ones are, a PURE launch."""
+    """MJ1 (issue #534 PR-J4-a): a recorded `validate.diagnose` launch replayed through
+    `escalate`'s own launch (`Conductor._diagnose_turn`): the row carries the DIRECTIVE, the
+    lineage's tree holds `diagnosis.json` and its read is measured, and nothing under
+    `workspace/ir`, `pipelines` or `runs` is written. Through PR-J4-a the replay had two arms
+    and the source was recorded as the three real ones were, a PURE launch; since PR-J4-b the
+    one arm is the reading workshop leaf, a pure source is refused
+    (`JudgeReplayEndToEndTests.test_a_record_of_the_pure_leaf_is_refused_before_any_orchestration`),
+    and the source is a workshop launch."""
 
     setUp = JudgeReplayEndToEndTests.setUp
     _seed = JudgeReplayEndToEndTests._seed
@@ -711,9 +669,6 @@ class DiagnoseReplayTests(unittest.TestCase):
     _rows = JudgeReplayEndToEndTests._rows
 
     def _record_source(self) -> None:
-        import dataclasses
-
-        from tools.llm_config import LEAF_PURE
         spec_ref = spec_ref_of(_USER)
         ort.init_orchestration(repo_root=self.repo, orchestration_id=_SRC, spec_ref=spec_ref,
                                source_dependency_ref=f"{spec_ref}/deps.yaml")
@@ -722,7 +677,7 @@ class DiagnoseReplayTests(unittest.TestCase):
             "status": "pass", "sandbox_runtime": "bwrap", "sandbox_enforced": True,
             "can_launch_step_agents": True, "can_launch_substep_agents": True,
             "backend": "claude", "checks": claude_launch_checks()})
-        conductor = self._conductor(_SRC, self.pure_cfg)
+        conductor = self._conductor(_SRC, self.workshop_cfg)
         conductor.workflow_mode = "dev"
         self.node_refs = wc.NodeRefs(
             node_key=_USER, spec_path=spec_ref, ir_id="user_20260101_001",
@@ -734,53 +689,44 @@ class DiagnoseReplayTests(unittest.TestCase):
         for name in ("diagnostics.json", "perf.json", "command_log.jsonl"):
             if not (run_node / name).exists():
                 (run_node / name).write_text("{}\n", encoding="utf-8")
-        entry = dataclasses.replace(conductor.entry_for(None, None), leaf=LEAF_PURE,
-                                    lineage_timeout_s=None)
+        entry = conductor.entry_for(None, None)
         request = conductor._diagnose_request(self.node_refs, "validate", entry,
-                                              _DIAGNOSE_ARID, _DIAGNOSIS, pure=True)
+                                              _DIAGNOSE_ARID, _DIAGNOSIS)
+        conductor._prepare_workshop_home(entry, _DIAGNOSE_ARID, resume=False)
         conductor.record_launch(_DIAGNOSE_ARID, request, entry)
 
-    def _main(self, *extra: str, leaf: str) -> tuple[int, str]:
+    def _main(self, *extra: str, cfg: Path | None = None) -> tuple[int, str]:
         out = io.StringIO()
-        argv = [_SRC, _DIAGNOSE_ARID, "--leaf", leaf, "--llm-config", str(self.pure_cfg),
+        argv = [_SRC, _DIAGNOSE_ARID, "--llm-config", str(cfg or self.workshop_cfg),
                 "--repo-root", str(self.repo), *extra]
         with contextlib.redirect_stdout(out):
             rc = jr.main(argv)
         return rc, out.getvalue()
 
-    def test_both_arms_return_the_directive_and_write_nothing_a_run_reads(self) -> None:
+    def test_the_replay_returns_the_directive_and_writes_nothing_a_run_reads(self) -> None:
         self.leaf = _DiagnoseLeaf(self.homes)
         leaf = self.leaf
         with mock.patch.object(wc.Conductor, "spawn_leaf",
                                lambda self, *a, **k: leaf(self, *a, **k)):
             before = _tree_digest(self.repo)
-            for arm in ("pure", "workshop"):
-                with self.subTest(arm=arm):
-                    rc, out = self._main(leaf=arm)
-                    self.assertEqual(rc, 0, out)
+            rc, out = self._main()
+            self.assertEqual(rc, 0, out)
         self.assertEqual(_tree_digest(self.repo), before)
-        rows = {}
-        for replay in self._replays():
-            [row] = self._rows(replay)
-            rows[row["leaf"]] = (replay, row)
-            self.assertEqual(list(replay.rglob("step_result.json")), [])
-        for arm, (replay, row) in rows.items():
-            with self.subTest(arm=arm):
-                self.assertEqual((row["step"], row["substep"], row["status"]),
-                                 ("validate", "diagnose", "pass"))
-                self.assertEqual(row["directive"], _DIRECTIVE)
-                self.assertNotIn("document", row)
-                self.assertEqual(row["cost_usd"], 0.05)
-                [attempt] = row["attempts"]
-                request = json.loads((replay / "launches" / f"{attempt['agent_run_id']}"
-                                      ".request.json").read_text(encoding="utf-8"))
-                self.assertEqual(request["pure_context"], {"diagnosis_document": _DIAGNOSIS})
-                self.assertEqual(request["leaf_mode"], arm)
-        pure_row = rows["pure"][1]
-        self.assertIs(pure_row["prompt_matches_record"], True)
-        self.assertIsNone(pure_row["attempts"][0]["lineage_id"])
-        replay, row = rows["workshop"]
-        tree = self.homes / replay.name / "claude" / row["attempts"][0]["lineage_id"] / "tree"
+        [replay] = self._replays()
+        [row] = self._rows(replay)
+        self.assertEqual(list(replay.rglob("step_result.json")), [])
+        self.assertNotIn("leaf", row)
+        self.assertEqual((row["step"], row["substep"], row["status"]),
+                         ("validate", "diagnose", "pass"))
+        self.assertEqual(row["directive"], _DIRECTIVE)
+        self.assertNotIn("document", row)
+        self.assertEqual(row["cost_usd"], 0.05)
+        [attempt] = row["attempts"]
+        request = json.loads((replay / "launches" / f"{attempt['agent_run_id']}"
+                              ".request.json").read_text(encoding="utf-8"))
+        self.assertEqual(request["pure_context"], {"diagnosis_document": _DIAGNOSIS})
+        self.assertEqual(request["leaf_mode"], "workshop")
+        tree = self.homes / replay.name / "claude" / attempt["lineage_id"] / "tree"
         self.assertEqual((tree / "diagnosis.json").read_text(encoding="utf-8"),
                          _DIAGNOSIS + "\n")
         total = len((_DIAGNOSIS + "\n").splitlines())
@@ -789,27 +735,28 @@ class DiagnoseReplayTests(unittest.TestCase):
                           "ranges": [[1, total]]})
         self.assertNotIn("prompt_matches_record", row)
 
-    def test_an_http_defaults_refuses_the_workshop_arm_alone(self) -> None:
-        """O3 refuses an HTTP LINEAGE (its transcript is `loop_turns.jsonl`); a diagnose row's
-        pure arm opens none, so on an HTTP `defaults` it is answered and the workshop arm is
-        refused. (The pure arm then meets this fixture's preflight, which no HTTP endpoint
-        answers; what is pinned is that O3's refusal is the workshop arm's alone.)"""
+    def test_an_http_defaults_is_refused(self) -> None:
+        """O3 refuses an HTTP LINEAGE (its transcript is `loop_turns.jsonl`, which the coverage
+        reader does not read). The diagnostician runs on `defaults`, so an HTTP `defaults`
+        refuses the replay before any orchestration exists, `--check` included. (Through
+        PR-J4-a the pure arm opened no lineage and was answered here; since PR-J4-b the one arm
+        is the workshop leaf, and it is refused.)"""
         cfg = self.repo.parent / "http.yaml"
-        cfg.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: anthropic_api\n"
-                       "  api_key_env: K\n  model: m\n"
-                       "phases:\n  validate:\n    substeps:\n      judge:\n"
-                       "        provider: claude_cli\n", encoding="utf-8")
-        for arm, refused in (("pure", False), ("workshop", True)):
-            with self.subTest(arm=arm):
-                out = io.StringIO()
-                with contextlib.redirect_stdout(out):
-                    jr.main([_SRC, _DIAGNOSE_ARID, "--leaf", arm, "--llm-config",
-                             str(cfg), "--repo-root", str(self.repo), "--check"])
-                self.assertEqual("judge_replay_http_lineage_unsupported" in out.getvalue(),
-                                 refused, out.getvalue())
+        cfg.write_text(workshop_yaml(
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: anthropic_api\n"
+            "  api_key_env: K\n  model: m\n"
+            "phases:\n  validate:\n    substeps:\n      judge:\n"
+            "        provider: claude_cli\n"), encoding="utf-8")
+        for extra in ((), ("--check",)):
+            with self.subTest(extra=extra):
+                rc, out = self._main(*extra, cfg=cfg)
+                doc = json.loads(out)
+                self.assertEqual((rc, doc["reason"]),
+                                 (2, "judge_replay_http_lineage_unsupported"))
+                self.assertEqual(self._replays(), [])
 
     def test_check_answers_the_step_gates(self) -> None:
-        rc, out = self._main("--check", leaf="workshop")
+        rc, out = self._main("--check")
         self.assertEqual(rc, 0, out)
         self.assertTrue(json.loads(out.strip().splitlines()[-1])["check"]["ready"])
         self.assertEqual(self.leaf.calls, [])
@@ -822,7 +769,10 @@ class SourceRefusalTests(unittest.TestCase):
 
     def test_only_a_judging_pair_with_its_current_context_is_replayed(self) -> None:
         jr.check_source(self._source())
+        jr.check_source(self._source(leaf_mode="workshop"))
         for request, code in (
+                # MJ2 (issue #534 PR-J4-b): a record of the retired pure leaf, refused first.
+                ({"leaf_mode": "pure"}, "judge_replay_source_pure_retired"),
                 ({"step": "generate", "substep": "generate"}, "judge_replay_pair_not_admitted"),
                 ({"step": "build", "substep": "deterministic_gate"},
                  "judge_replay_pair_not_admitted"),
@@ -855,7 +805,8 @@ class SourceRefusalTests(unittest.TestCase):
         self.assertTrue(out["tests_document"].startswith("tests_document line ONE\n"))
         self.assertEqual(out["verdict_document"], _CONTEXT["verdict_document"])
         # A recorded JSON document stays JSON: a raw line break inside one of its strings
-        # would seed nothing on the workshop arm while the pure arm ran.
+        # would break the document, and the lineage's seed expanded from it would carry
+        # nothing (until PR-J4-b the pure arm, which inlined the text, still ran).
         bundle = {"bundle_document": json.dumps({"files": [{"content": "a\nb\n"}]})}
         self.assertIn("a\\nb", bundle["bundle_document"])
         ok = jr.apply_mutations(bundle, jr.parse_mutations(json.dumps(

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Z3 (issue #169): the pure `validate.judge` reviewer.
+"""Z3 (issue #169): the `validate.judge` reviewer (a READING workshop leaf since issue #534
+PR-J4-b).
 
-Covers the host side of the pure judge channel: the context builder and its document-ref map,
+Covers the host side of the judge channel: the context builder and its document-ref map,
 the semantic-review host writer (including the `evidence_refs` resolution that turns the slot
 name the leaf cites back into a workspace path), the per-attempt record, the post_judge
 reclassification that follows from `semantic_review.json` becoming host-authored, and the
@@ -10,7 +11,9 @@ defensive freshness branch.
 The loop ITSELF is shared with the two older reviewers — `_run_pure_reviewer_substep`,
 parametrised by a `_PureReviewerSpec` — so the transport-shaped behaviour (usage waits,
 transient retries, tombstones, warm/cold repair turns) is pinned once by
-`test_pure_leaf_verify.py` and is not re-pinned here. What IS re-pinned here is everything the
+`test_pure_leaf_verify.py` and is not re-pinned here. The loop rows below drive it through
+the same workshop seam (`test_pure_leaf_verify._reviewer_conductor`): the leaf writes its
+review into the lineage's tree as `review.json`. What IS re-pinned here is everything the
 judge's spec record decides, because that is where a judge-side defect would live. The
 document's own schema belongs to `test_pure_leaf.py`, and the raw-evidence excerpt to
 `test_raw_evidence_excerpt.py`.
@@ -42,6 +45,7 @@ from tools.tests.test_pure_leaf_producer import (
     _envelope,
     _PureFakeConductor,
 )
+from tools.tests.test_pure_leaf_verify import _reviewer_conductor
 
 _NODE = "component/dynamics_advdiff_flux_1d_upwind_center2@0.2.0"
 _SPEC_ID = "dynamics_advdiff_flux_1d_upwind_center2"
@@ -174,11 +178,10 @@ class _Fixture(unittest.TestCase):
         self.repo = Path(self._tmp.name)
         self.refs = _write_run_node(self.repo, bundle=self.BUNDLE)
 
-    def conductor(self, *envelopes: str) -> _PureFakeConductor:
-        c = _conductor(self.repo)
-        c.envelopes = list(envelopes) or ["{}"]
-        c.calls = []
-        return c
+    def conductor(self, *envelopes) -> _PureFakeConductor:
+        """The reviewer loop's workshop fake over this node, scripted by `envelopes` (CLI
+        stdout texts, or `ProcResult`s; `test_pure_leaf_verify._leaf_action`)."""
+        return _reviewer_conductor(self.repo, list(envelopes) or ["{}"])
 
     def run_node(self, name: str) -> Path:
         return self.repo / self.refs.run_node_dir() / name
@@ -436,11 +439,11 @@ class PureJudgeLoopTests(_Fixture):
         self.assertIn("pure_judge_pass", row["result_summary"])
         self.assertEqual(row["substep"], "judge")
 
-    def test_the_launch_is_a_pure_one_with_no_write_authority(self) -> None:
+    def test_the_launch_is_a_workshop_one_with_no_write_authority(self) -> None:
         c = self.conductor(_envelope(json.dumps(_review("pass"))))
         c.run_substep(self.refs, "validate", "judge")
         request = [cap["--request-json"] for s, cap in c.calls if s == "record-launch"][-1]
-        self.assertEqual(request["leaf_mode"], "pure")
+        self.assertEqual(request["leaf_mode"], "workshop")
         self.assertEqual(request["allowed_output_paths"], [])
         self.assertEqual(request["skill_must_read_refs"], "")
         self.assertEqual(set(request["pure_context"]),
@@ -470,6 +473,8 @@ class PureJudgeLoopTests(_Fixture):
                 side_effect=lambda axis, value, cap: cap != "runner_render" and real(
                     axis, value, cap)):
             c = self.conductor(_envelope(json.dumps(_review("pass"))))
+            # A second run on this node: its lineages apart from the first run's.
+            c._n = 100
             c.run_substep(self.refs, "validate", "judge")
             request = [cap["--request-json"] for s, cap in c.calls
                        if s == "record-launch"][-1]
@@ -506,8 +511,7 @@ class PureJudgeLoopTests(_Fixture):
     def test_a_failed_attempt_says_which_document_was_missing(self) -> None:
         """`document_name` is the judge's own too: a judge that returned nothing did not fail
         to return a verify verdict, and that reply is what the agent-run record carries."""
-        c = self.conductor(_envelope("not a json document at all"))
-        c.spawn_leaf = lambda *a, **k: wc.ProcResult(1, "", "boom")  # type: ignore[assignment]
+        c = self.conductor(wc.ProcResult(1, "", "boom"))
         c.run_substep(self.refs, "validate", "judge")
         replies = [cap.get("--reply-text", "") for s, cap in c.calls if s == "finalize-child"]
         self.assertTrue(any("semantic review: none" in (r or "") for r in replies),
@@ -554,8 +558,7 @@ class PureJudgeLoopTests(_Fixture):
         self.assertEqual(meta["failure_category"], wc.SEMANTIC_REVIEW_DOCUMENT_VIOLATION)
 
     def test_a_transport_death_is_not_a_document_violation(self) -> None:
-        c = self.conductor(_envelope(json.dumps(_review("pass"))))
-        c.spawn_leaf = lambda *a, **k: wc.ProcResult(1, "", "boom")  # type: ignore[assignment]
+        c = self.conductor(wc.ProcResult(1, "", "boom"))
         outcome = c.run_substep(self.refs, "validate", "judge")
         self.assertEqual(outcome.status, "fail")
         self.assertFalse(self.run_node("semantic_review.json").exists())
@@ -669,9 +672,10 @@ class ConductorConstantIsNotAFieldTests(unittest.TestCase):
 
 
 class PureJudgeTableTests(unittest.TestCase):
-    """The tables that decide the judge is pure, each read where it is defined."""
+    """The tables that decide the judge is an LLM leaf with its own template, each read where
+    it is defined."""
 
-    def test_the_judge_is_pure_capable(self) -> None:
+    def test_the_judge_is_an_llm_leaf(self) -> None:
         self.assertIn(("validate", "judge"), lc.LLM_LEAF_SUBSTEPS)
 
     def test_the_template_states_the_cap_the_validator_enforces(self) -> None:
@@ -682,15 +686,15 @@ class PureJudgeTableTests(unittest.TestCase):
         transcribed here; the template is required to state whatever the constant says."""
         from tools.pure_leaf import SEMANTIC_REVIEW_NOTES_MAX_CHARS
         template = (Path(wc.__file__).resolve().parents[1] / "tools" / "prompt_templates"
-                    / "pure_validate_judge.txt").read_text(encoding="utf-8")
+                    / "workshop_validate_judge.txt").read_text(encoding="utf-8")
         self.assertIn(f"at most {SEMANTIC_REVIEW_NOTES_MAX_CHARS} characters", template)
         # Self-test the search: the assertion above must be able to fail.
         self.assertNotIn(f"at most {SEMANTIC_REVIEW_NOTES_MAX_CHARS + 1} characters", template)
 
     def test_the_judge_has_a_template_and_required_keys(self) -> None:
         self.assertIn(("validate", "judge"), ort.PURE_CONTEXT_REQUIRED_KEYS)
-        self.assertEqual(ort._PROMPT_TEMPLATE_FILES["pure validate.judge"],
-                         "pure_validate_judge.txt")
+        self.assertEqual(ort._PROMPT_TEMPLATE_FILES["workshop validate.judge"],
+                         "workshop_validate_judge.txt")
 
 if __name__ == "__main__":
     unittest.main()

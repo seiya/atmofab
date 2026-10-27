@@ -24,6 +24,7 @@ import yaml
 import tools.llm_config as lc
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
+from tools.tests import llm_samples
 from tools import pure_leaf, workshop_tree
 from tools.tests.test_pure_leaf_producer import (
     _PureFakeConductor,
@@ -38,9 +39,10 @@ _ORCH = "o"
 def _config(repo: Path, extra: str = "") -> lc.LlmConfig:
     path = repo / "llm_workshop.yaml"
     path.write_text(
-        "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
-        "phases: {generate: {substeps: {generate: {provider: claude_cli, model: opus, "
-        f"leaf: workshop, max_wrapper_calls: 30, lineage_timeout_s: 2700{extra}" + "}}}}\n",
+        llm_samples.workshop_yaml(
+            "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
+            "phases: {generate: {substeps: {generate: {provider: claude_cli, model: opus, "
+            f"max_wrapper_calls: 30, lineage_timeout_s: 2700{extra}" + "}}}}\n"),
         encoding="utf-8")
     return lc.load_llm_config(path)
 
@@ -66,7 +68,7 @@ class _FakeEndpoint:
 
 
 class _WorkshopFakeConductor(_PureFakeConductor):
-    """The pure fake, with the lineage home, the wrapper context and the endpoint faked and the
+    """`_PureFakeConductor`, with the lineage home, the wrapper context and the endpoint faked and the
     leaf scripted: `self.leaf_actions[i](conductor, tree, kwargs)` runs as launch i and returns
     a `ProcResult` (default: an empty envelope, rc 0)."""
 
@@ -207,7 +209,7 @@ class _Base(unittest.TestCase):
 
 
 class HappyPathTests(_Base):
-    def test_a_tree_holding_a_clean_bundle_passes_and_is_written_as_the_pure_path_writes(
+    def test_a_tree_holding_a_clean_bundle_passes_and_is_written(
             self) -> None:
         outcome = self.run_substep()
         self.assertEqual(outcome.status, "pass", outcome)
@@ -221,11 +223,12 @@ class HappyPathTests(_Base):
         self.assertEqual(meta["result"], "pass")
         self.assertEqual(meta["leaf_mode"], "workshop")
         self.assertEqual(meta["prompt_contract_version"], pure_leaf.PURE_PROMPT_CONTRACT_VERSION)
-        self.assertEqual(meta["workshop_prompt_contract_version"],
-                         pure_leaf.WORKSHOP_PROMPT_CONTRACT_VERSION)
+        # One version since issue #534 PR-J4-b: the retired workshop counter is not written.
+        self.assertNotIn("workshop_prompt_contract_version", meta)
         row = meta["per_attempt"][0]
         self.assertEqual((row["lineage_id"], row["model_turns"], row["wrapper_calls"],
                           row["ended_by"], row["warm"]), ("child-1", 3, 0, None, False))
+        self.assertIsInstance(row["leaf_wall_s"], float)
 
     def test_the_launch_is_a_workshop_launch_of_its_own_lineage(self) -> None:
         self.run_substep()
@@ -233,7 +236,8 @@ class HappyPathTests(_Base):
         self.assertEqual(request["leaf_mode"], "workshop")
         self.assertEqual(request["workshop_lineage_id"], "child-1")
         self.assertEqual(request["prompt_contract_version"],
-                         pure_leaf.WORKSHOP_PROMPT_CONTRACT_VERSION)
+                         pure_leaf.PURE_PROMPT_CONTRACT_VERSION)
+        self.assertNotIn("workshop_prompt_contract_version", request)
         self.assertIn("pure_context", request)
         (spawn,) = self.c.spawns
         self.assertEqual(spawn["mcp_config_json"],
@@ -1224,9 +1228,10 @@ class Round3Tests(_Base):
 def _codex_config(repo: Path) -> lc.LlmConfig:
     path = repo / "llm_codex_workshop.yaml"
     path.write_text(
-        "defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
-        "phases: {generate: {substeps: {generate: {provider: codex_cli, model: gpt-x, "
-        "leaf: workshop, max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n",
+        llm_samples.workshop_yaml(
+            "defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
+            "phases: {generate: {substeps: {generate: {provider: codex_cli, model: gpt-x, "
+            "max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n"),
         encoding="utf-8")
     return lc.load_llm_config(path)
 
@@ -1344,9 +1349,10 @@ if __name__ == "__main__":
 def _compile_config(repo: Path) -> lc.LlmConfig:
     path = repo / "llm_workshop_compile.yaml"
     path.write_text(
-        "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
-        "phases: {compile: {substeps: {generate: {provider: claude_cli, model: opus, "
-        "leaf: workshop, max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n",
+        llm_samples.workshop_yaml(
+            "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
+            "phases: {compile: {substeps: {generate: {provider: claude_cli, model: opus, "
+            "max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n"),
         encoding="utf-8")
     return lc.load_llm_config(path)
 
@@ -1384,7 +1390,7 @@ _SURFACE = ({"node_key": "component/dep@0.1.0",
 class WorkshopCompileProducerTests(unittest.TestCase):
     """The loop on a `compile.generate` workshop entry: the leaf authors the WHOLE IR in its
     tree (`spec.ir.yaml`, or `compile_fail.json` instead), and the host takes it through the
-    pure IR producer's own checks, writers, routing and declared-fail exit. The wrapper's
+    IR document checks, writers, routing and declared-fail exit. The wrapper's
     context is the REAL `_freeze_ir_check_context` (no subprocess), the endpoint the fake."""
 
     def setUp(self) -> None:
@@ -1418,7 +1424,7 @@ class WorkshopCompileProducerTests(unittest.TestCase):
         return json.loads((self.repo / self.refs.ir_ref
                            / "compile_generate_meta.json").read_text())
 
-    def test_a_tree_holding_the_whole_ir_passes_and_is_written_as_the_pure_path_writes(
+    def test_a_tree_holding_the_whole_ir_passes_and_is_written(
             self) -> None:
         from tools.tests.test_pure_leaf_compile import _assembled_ir
         outcome = self.run_substep()
@@ -1429,15 +1435,15 @@ class WorkshopCompileProducerTests(unittest.TestCase):
         self.assertEqual(json.loads((ir_dir / "ir_meta.json").read_text())
                          ["verification_status"], "pending")
         meta = self.meta()
-        self.assertEqual((meta["result"], meta["leaf_mode"],
-                          meta["workshop_prompt_contract_version"],
-                          meta["prompt_contract_version"]),
-                         ("pass", "workshop", pure_leaf.WORKSHOP_PROMPT_CONTRACT_VERSION,
-                          pure_leaf.PURE_PROMPT_CONTRACT_VERSION))
+        self.assertEqual((meta["result"], meta["leaf_mode"], meta["prompt_contract_version"]),
+                         ("pass", "workshop", pure_leaf.PURE_PROMPT_CONTRACT_VERSION))
+        # One version since issue #534 PR-J4-b: the retired workshop counter is not written.
+        self.assertNotIn("workshop_prompt_contract_version", meta)
         self.assertNotIn("parts", meta)
         row = meta["per_attempt"][0]
         self.assertEqual((row["lineage_id"], row["warm"], row["ended_by"]),
                          ("child-1", False, None))
+        self.assertIsInstance(row["leaf_wall_s"], float)
         # The part split did not run: one launch, one lineage.
         self.assertEqual(len(self.requests()), 1)
         self.assertEqual(json.loads(
@@ -1643,20 +1649,15 @@ class WorkshopCompileProducerTests(unittest.TestCase):
                                    {}, bad)
         self.assertIn("named after an output file", str(ctx.exception))
 
-    def test_the_pure_entry_still_runs_the_part_split(self) -> None:
-        """Dispatch: the workshop branch precedes the compile one only for a workshop entry."""
-        with mock.patch.object(wc.Conductor, "_run_pure_compile_producer",
-                               return_value="PURE") as pure, \
-                mock.patch.object(wc.Conductor, "_run_workshop_producer_substep",
-                                  return_value="WORKSHOP") as workshop:
+    def test_compile_generate_dispatches_to_the_workshop_producer(self) -> None:
+        """Dispatch: `compile.generate` runs the workshop producer loop with its tool surface.
+        (Its pure half — a pure entry running the part split — went with the part split in
+        issue #534 PR-J4-b.)"""
+        with mock.patch.object(wc.Conductor, "_run_workshop_producer_substep",
+                               return_value="WORKSHOP") as workshop:
             self.assertEqual(self.run_substep(), "WORKSHOP")
             self.assertEqual(workshop.call_args.args[-1], _SURFACE)
-            pure_c = _WorkshopFakeConductor(
-                repo_root=self.repo, orchestration_id=_ORCH,
-                orchestration_agent_run_id="orch",
-                llm_config=lc.load_llm_config(_write_pure_config(self.repo)), env={})
-            self.assertEqual(pure_c.run_substep(self.refs, "compile", "generate"), "PURE")
-        self.assertEqual((pure.call_count, workshop.call_count), (1, 1))
+        self.assertEqual(workshop.call_count, 1)
 
 
 class WorkshopSpecTests(_Base):
@@ -1684,10 +1685,8 @@ class WorkshopSpecTests(_Base):
         req = wc.build_launch_request(self.refs, **base, workshop_lineage_id="c",
                                       workshop_provider="claude_cli")
         self.assertEqual(req["workshop_provider"], "claude_cli")
-        self.assertNotIn("workshop_provider", wc.build_launch_request(self.refs, **base))
-
-
-def _write_pure_config(repo: Path) -> Path:
-    path = repo / "llm_pure.yaml"
-    path.write_text("defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n", encoding="utf-8")
-    return path
+        # Neither named: since issue #534 PR-J4-b no launch shape serves a host-rendered
+        # request without a lineage (the pure leaf's), so the builder refuses it.
+        with self.assertRaises(ValueError) as ctx:
+            wc.build_launch_request(self.refs, **base)
+        self.assertIn("names its lineage (workshop_lineage_id)", str(ctx.exception))

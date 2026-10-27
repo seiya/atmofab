@@ -1,5 +1,5 @@
 """The READING kind of `workshop leaf` (issue #534 step 3): the three judging substeps run by
-`Conductor._run_pure_reviewer_substep`'s workshop branch.
+`Conductor._run_pure_reviewer_substep` (a workshop loop alone since issue #534 PR-J4-b).
 
 The leaf is a fake `spawn_leaf` that writes the reviewer's one document into the lineage's
 tree, the way the real CLI's file tools would; the lineage home is a temporary directory.
@@ -21,6 +21,7 @@ from unittest import mock
 import tools.llm_config as lc
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
+from tools.tests import llm_samples
 from tools import pure_leaf, workshop_tree
 from tools.tests.test_pure_leaf_compile import _write_compile_node
 from tools.tests.test_pure_leaf_judge import _review, _write_run_node
@@ -40,9 +41,10 @@ def _terminated(text: str) -> str:
 def _config(repo: Path, phase: str, substep: str, extra: str = "") -> lc.LlmConfig:
     path = repo / "llm_reading.yaml"
     path.write_text(
-        "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
-        f"phases: {{{phase}: {{substeps: {{{substep}: {{provider: claude_cli, model: opus, "
-        f"leaf: workshop, lineage_timeout_s: 2700{extra}" + "}}}}\n",
+        llm_samples.workshop_yaml(
+            "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
+            f"phases: {{{phase}: {{substeps: {{{substep}: {{provider: claude_cli, model: opus, "
+            f"lineage_timeout_s: 2700{extra}" + "}}}}\n"),
         encoding="utf-8")
     return lc.load_llm_config(path)
 
@@ -50,9 +52,10 @@ def _config(repo: Path, phase: str, substep: str, extra: str = "") -> lc.LlmConf
 def _codex_config(repo: Path, phase: str, substep: str) -> lc.LlmConfig:
     path = repo / "llm_reading_codex.yaml"
     path.write_text(
-        "defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
-        f"phases: {{{phase}: {{substeps: {{{substep}: {{provider: codex_cli, model: gpt-x, "
-        "leaf: workshop, lineage_timeout_s: 2700}}}}\n",
+        llm_samples.workshop_yaml(
+            "defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
+            f"phases: {{{phase}: {{substeps: {{{substep}: {{provider: codex_cli, model: gpt-x, "
+            "lineage_timeout_s: 2700}}}}\n"),
         encoding="utf-8")
     return lc.load_llm_config(path)
 
@@ -78,7 +81,7 @@ def _rollout_rows(texts) -> list[dict]:
 
 
 class _ReviewerFake(_PureFakeConductor):
-    """The pure fake, with the lineage home faked and the leaf scripted:
+    """`_PureFakeConductor`, with the lineage home faked and the leaf scripted:
     `self.leaf_actions[i](conductor, tree, kwargs)` runs as launch i and may return a
     `ProcResult` (default: an envelope, rc 0). No wrapper is faked: a reading lineage is served
     none, and a call to `_start_wrapper_endpoint` / a freeze is a failure here.
@@ -113,9 +116,6 @@ class _ReviewerFake(_PureFakeConductor):
 
     def _workshop_session_resumable(self, paths, session_id):  # type: ignore[override]
         return self.resumable
-
-    def _pure_session_resumable(self, *args, **kwargs):  # type: ignore[override]
-        raise AssertionError("the workshop branch never consults the operator's sessions")
 
     def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore
         self.__dict__.setdefault("spawns", []).append(kwargs)
@@ -238,16 +238,15 @@ class _Base(unittest.TestCase):
 
 
 class CompileVerifyTests(_Base):
-    def test_a_pass_verdict_in_the_tree_is_projected_as_a_pure_reply_is(self) -> None:
+    def test_a_pass_verdict_in_the_tree_is_projected_onto_the_node(self) -> None:
         outcome = self.run_substep()
         self.assertEqual((outcome.status, outcome.leaf_returncode), ("pass", 0))
         self.assert_projected_pass()
         vmeta = self.attempt_meta()
-        self.assertEqual((vmeta["result"], vmeta["leaf_mode"],
-                          vmeta["workshop_prompt_contract_version"],
-                          vmeta["prompt_contract_version"]),
-                         ("pass", "workshop", pure_leaf.WORKSHOP_PROMPT_CONTRACT_VERSION,
-                          pure_leaf.PURE_PROMPT_CONTRACT_VERSION))
+        self.assertEqual((vmeta["result"], vmeta["leaf_mode"], vmeta["prompt_contract_version"]),
+                         ("pass", "workshop", pure_leaf.PURE_PROMPT_CONTRACT_VERSION))
+        # One version since issue #534 PR-J4-b: the retired workshop counter is not written.
+        self.assertNotIn("workshop_prompt_contract_version", vmeta)
         row = vmeta["per_attempt"][0]
         self.assertEqual((row["lineage_id"], row["warm"], row["model_turns"],
                           row["wrapper_calls"], row["ended_by"]),
@@ -279,7 +278,8 @@ class CompileVerifyTests(_Base):
         self.assertEqual((request["leaf_mode"], request["workshop_lineage_id"],
                           request["workshop_provider"], request["prompt_contract_version"]),
                          ("workshop", "child-1", self.PROVIDER,
-                          pure_leaf.WORKSHOP_PROMPT_CONTRACT_VERSION))
+                          pure_leaf.PURE_PROMPT_CONTRACT_VERSION))
+        self.assertNotIn("workshop_prompt_contract_version", request)
         (spawn,) = self.c.spawns
         self.assertIsNone(spawn["mcp_config_json"])
         self.assertIsNone(spawn["cancel_event"])
@@ -1136,8 +1136,9 @@ class CodexValidateJudgeTests(_CodexCutReadRows, ValidateJudgeTests):
         self.assertTrue(self.paths("child-1").tree.is_dir())
         self.assertFalse((self.c.homes / _ORCH / "claude").exists())
         vmeta = self.attempt_meta()
-        self.assertEqual((vmeta["leaf_mode"], vmeta["workshop_prompt_contract_version"]),
-                         ("workshop", pure_leaf.WORKSHOP_PROMPT_CONTRACT_VERSION))
+        self.assertEqual((vmeta["leaf_mode"], vmeta["prompt_contract_version"]),
+                         ("workshop", pure_leaf.PURE_PROMPT_CONTRACT_VERSION))
+        self.assertNotIn("workshop_prompt_contract_version", vmeta)
         row = vmeta["per_attempt"][0]
         self.assertEqual((row["model"], row["model_turns"], row["items_completed"],
                           row["wrapper_calls"]), ("gpt-x", None, 3, 0))
@@ -1260,8 +1261,6 @@ class LaunchShapeTests(unittest.TestCase):
             c.leaf_command(entry, session_id="a", reading=True, mcp_config_json=mcp)
         with self.assertRaises(ValueError):
             c.leaf_command(entry, session_id="a")
-        with self.assertRaises(ValueError):
-            c.leaf_command(c.entry_for("compile", "generate"), session_id="a", reading=True)
 
     def test_the_recorded_surface_of_a_reading_launch_names_no_endpoint(self) -> None:
         c = self._conductor()
@@ -1290,7 +1289,6 @@ class LaunchShapeTests(unittest.TestCase):
         wrapper server and no approval for its tools, cold and on resume."""
         c = self._codex_conductor()
         entry = c.entry_for("validate", "judge")
-        self.assertEqual(entry.leaf, "workshop")
         for resume in (None, "thread-1"):
             with self.subTest(resume=resume):
                 argv = c.leaf_command(entry, resume_session_id=resume, reading=True)
@@ -1374,7 +1372,7 @@ class RenderTests(unittest.TestCase):
                     self.assertEqual(text.lower().count(self.PAGING.lower()),
                                      1 if provider == "claude_cli" else 0)
                     self.assertIn(f"prompt_contract_version: "
-                                  f"{pure_leaf.WORKSHOP_PROMPT_CONTRACT_VERSION}", text)
+                                  f"{pure_leaf.PURE_PROMPT_CONTRACT_VERSION}", text)
         for step, substep, shape in self.PAIRS:
             with self.subTest(pair=(step, substep, shape)):
                 req = ort.prepare_launch_request_payload(self._request(step, substep, shape))
@@ -1394,7 +1392,7 @@ class RenderTests(unittest.TestCase):
         pairs = (("compile", "generate", ""), ("generate", "generate", ""),
                  ("generate", "generate", "harness"), *self.PAIRS)
         repair = {"repair_strategy": "reuse", "repair_findings": "bad shape",
-                  "repair_target_agent_run_id": "ar_w", "prior_document": '{"x": 1}'}
+                  "repair_target_agent_run_id": "ar_w"}
         templates = set()
         for provider in pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT:
             for step, substep, shape in pairs:
@@ -1717,30 +1715,6 @@ class SeedNewlineTests(unittest.TestCase):
                     text = seeds[name]
                     self.assertGreater(len(text.splitlines()), 1)
                     self.assertEqual(text.count("\n"), len(text.splitlines()))
-
-
-class PureRecordTests(unittest.TestCase):
-    """`leaf_wall_s` is a field of EVERY attempt row, the pure loops' included."""
-
-    def test_pure_rows_carry_the_launch_wall_clock(self) -> None:
-        from tools.tests.test_pure_leaf_producer import _conductor, _envelope
-        tmp = tempfile.TemporaryDirectory()
-        self.addCleanup(tmp.cleanup)
-        repo = Path(tmp.name)
-        refs = _verify_node(repo)
-        c = _conductor(repo)
-        c.envelopes = [_envelope(_verdict("pass"))]
-        self.assertEqual(c.run_substep(refs, "generate", "verify").status, "pass")
-        row = json.loads((repo / refs.source_dir() / "verdict_meta.json").read_text())[
-            "per_attempt"][0]
-        self.assertIsInstance(row["leaf_wall_s"], float)
-        self.assertNotIn("leaf_mode", json.loads(
-            (repo / refs.source_dir() / "verdict_meta.json").read_text()))
-        c.envelopes = [_envelope(_valid_bundle())]
-        c.run_substep(refs, "generate", "generate")
-        row = json.loads((repo / refs.source_dir() / "bundle_meta.json").read_text())[
-            "per_attempt"][0]
-        self.assertIsInstance(row["leaf_wall_s"], float)
 
 
 class LaunchSiteTests(unittest.TestCase):

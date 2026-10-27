@@ -1727,7 +1727,7 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
     def test_the_generate_prompt_quotes_a_refusal_the_code_actually_emits(self) -> None:
         """The leaf-read template QUOTES this refusal, and nothing compared the two.
 
-        `tools/prompt_templates/pure_generate_generate.txt` tells the generate leaf which
+        `tools/prompt_templates/workshop_generate_generate.txt` tells the generate leaf which
         string a profile member is REJECTED with. That is a second statement site for a rule
         defined here, and it is the site read by a leaf that has no other document — which is
         exactly how the PREVIOUS quote (`is a profile and publishes no operation`) survived on
@@ -1753,12 +1753,12 @@ class MultiNodeOptimizationUnitTest(unittest.TestCase):
         emitted = violations[0]
 
         template = Path(__file__).resolve().parents[2] / (
-            "tools/prompt_templates/pure_generate_generate.txt")
+            "tools/prompt_templates/workshop_generate_generate.txt")
         quoted = [q for q in re.findall(r"`([^`]+)`", template.read_text(encoding="utf-8"))
                   if len(q) >= 30 and q in emitted]
         self.assertTrue(
             quoted,
-            "pure_generate_generate.txt no longer quotes any 30+ character span of the refusal "
+            "workshop_generate_generate.txt no longer quotes any 30+ character span of the refusal "
             f"codegen_bundle emits for a profile member. Emitted: {emitted!r}. Re-quote it from "
             "the message, or drop the quote from the template — a leaf told a rejection string "
             "that no code produces cannot recognise the refusal it receives.")

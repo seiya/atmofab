@@ -1,14 +1,20 @@
-"""Layer-1 bwrap simulation: the READ-ONLY leaf profile, under a real bwrap.
+"""Layer-1 bwrap simulation: the leaf profile, under a real bwrap.
 
-Fast (seconds, no LLM, no API) reproduction of what a leaf can and cannot reach under the
-rendered profile `record_launch` writes. A synthetic "leaf" script runs inside the sandbox and
-reports one line per operation, so each reachability claim is measured rather than argued.
+Fast (seconds, no LLM, no billed API) reproduction of what a leaf can and cannot reach under
+the rendered profile `record_launch` writes — since issue #534 PR-J4-b the one profile is a
+`workshop leaf` lineage's (`build_readonly_bwrap_profile` with `leaf_mode: workshop`, its
+cwd the lineage's tree, its two rw binds the lineage's `config/` and `tree/`; the read-only
+profile the pure leaf ran under is refused, and the builder keeps its old name until J4-d).
+A synthetic "leaf" script runs inside the sandbox and reports one line per operation, so each
+reachability claim is measured rather than argued; the classes further down exec the real
+claude / codex CLI under the same profile against loopback API stand-ins, and the workshop
+wrapper's operations under its own sandbox.
 
 Four larger simulations stood here until issue #171 PR-2: they drove the READ-WRITE profile
-(`build_bwrap_profile`), which carried a capability's `write_roots` as `--bind` mounts, and
-asserted that the terminal FS-diff attributed exactly the in-scope writes. Both halves are
-gone — every CLI leaf is pure, launches read-only, and holds no write authority for a diff to
-audit — so what is left is the one profile production builds.
+(`build_bwrap_profile`), which carried a capability's `write_roots` as `--bind` mounts into the
+checkout, and asserted that the terminal FS-diff attributed exactly the in-scope writes. Both
+halves are gone — no leaf holds write authority under the checkout (a workshop leaf writes its
+own tree, outside it, and the host writes every artifact) — so there is no diff to audit.
 """
 
 from __future__ import annotations
@@ -35,12 +41,11 @@ from tools import workflow_conductor as wc
 from tools.orchestration_runtime import (
     _ensure_orchestration_audit_dirs,
     build_readonly_bwrap_profile,
-    codex_isolation_profile_kwargs,
     render_bwrap_command,
 )
 from tools.tests import skip_probes
 from tools.tests.http_stand_ins import ScriptedMessagesApi
-from tools.tests.llm_samples import sample_config_with
+from tools.tests.llm_samples import sample_config_with, workshop_yaml
 
 
 class _Loopback400:
@@ -125,13 +130,63 @@ def _bwrap_usable() -> bool:
         return False
 
 
+def _prepared_lineage(test: unittest.TestCase, repo: Path, orch: str, backend: str,
+                      lineage: str | None = None) -> tuple[dict, dict]:
+    """A `workshop leaf` lineage of `orch`, prepared by the REAL preparer for `backend`
+    (`_prepare_claude_workshop_home` / `_prepare_codex_workflow_home`, cold), and the profile
+    kwargs production derives from it (`claude_workshop_profile_kwargs` /
+    `codex_workshop_profile_kwargs`, the spellings `record_launch` uses). Returns
+    `(isolation, profile_kwargs)`.
+
+    Hermetic: the homes root is a tempdir of the row's own, OUTSIDE the checkout (a backend rw
+    bind inside it is refused), and so is the operator credential the lineage binds — a
+    placeholder claude credentials file, or a seeded codex `auth.json` under `CODEX_HOME`. A
+    repository that has only its audit dirs gets an empty `orchestration_meta.json`, which is
+    all the preparers read and write."""
+    from tools import operator_private_root
+    from tools.tests.private_root_fixture import seed_codex_auth
+    tmp = tempfile.TemporaryDirectory()
+    test.addCleanup(tmp.cleanup)
+    base = Path(tmp.name).resolve()
+    meta = repo / "workspace" / "orchestrations" / orch / "orchestration_meta.json"
+    if not meta.exists():
+        meta.parent.mkdir(parents=True, exist_ok=True)
+        meta.write_text("{}", encoding="utf-8")
+    env = {"ATMOFAB_WORKFLOW_HOMES_ROOT": str(base / "homes")}
+    patches = []
+    if backend == "codex":
+        env["CODEX_HOME"] = str(seed_codex_auth(base / "operator-codex"))
+    else:
+        credentials = base / "operator-claude" / ".credentials.json"
+        credentials.parent.mkdir(mode=0o700)
+        credentials.write_text('{"claudeAiOauth": {"accessToken": "placeholder"}}',
+                               encoding="utf-8")
+        os.chmod(credentials, 0o600)
+        patches.append(mock.patch.object(operator_private_root, "claude_credentials_file",
+                                         lambda: credentials))
+    patches.append(mock.patch.dict(os.environ, env))
+    for patcher in patches:
+        patcher.start()
+        test.addCleanup(patcher.stop)
+    lineage = lineage or str(uuid.uuid4())
+    if backend == "codex":
+        iso = ort._prepare_codex_workflow_home(repo, orch, lineage, resume=False)
+        return iso, ort.codex_workshop_profile_kwargs(iso)
+    iso = ort._prepare_claude_workshop_home(repo, orch, lineage, resume=False)
+    return iso, ort.claude_workshop_profile_kwargs(iso)
+
+
 class BwrapReadonlyProfileTests(unittest.TestCase):
-    """Every leaf runs under the one read-only bwrap profile (`build_readonly_bwrap_profile`)
-    — no capability, no write_roots, and since issue #227 NO CHECKOUT: an empty tmpfs sits
-    at `repo_root`. Confirm the rendered sandbox hides the repository from the leaf, keeps
-    the leaf's own `workspace/tmp/<arid>` writable, keeps the network, and leaves the host's
-    copy untouched, so a pure leaf is confined with nothing to read but its launch prompt
-    and nothing to attribute (FS-diff trivially empty)."""
+    """Every leaf runs under the one bwrap profile `build_readonly_bwrap_profile` builds —
+    since issue #534 PR-J4-b the `workshop leaf` lineage's (`leaf_mode: workshop`, writable,
+    its cwd the lineage's tree; the read-only profile the pure leaf ran under is refused, and
+    the function and this class keep their names until J4-d because `docs/BWRAP_ENABLEMENT.md`
+    and the runtime cite them). No capability, no write_roots, and since issue #227 NO
+    CHECKOUT: an empty tmpfs sits at `repo_root`. Confirm the rendered sandbox hides the
+    repository from the leaf, keeps the leaf's own `workspace/tmp/<arid>` writable, keeps the
+    network, leaves the host's copy untouched, does not mount a sibling lineage, and refuses an
+    install root that aliases the checkout. Every profile here is built over a lineage home
+    the REAL preparer made (`_prepared_lineage`, or the codex fixture below)."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -140,10 +195,13 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                 "bwrap is absent or unprivileged user namespaces are disabled; see "
                 "docs/BWRAP_ENABLEMENT.md (CI lifts kernel.apparmor_restrict_unprivileged_userns)")
 
-    def _leaf_script(self, arid: str, tmp_dir: str) -> str:
+    def _leaf_script(self, arid: str, tmp_dir: str, repo: Path) -> str:
+        # The leaf starts in its lineage's tree; the probe moves to the CHECKOUT'S path, which
+        # is what it reports on, so its relative paths and `os.getcwd()` name the checkout.
         return textwrap.dedent(f"""
-            import socket
+            import os, socket
             from pathlib import Path
+            os.chdir({str(repo)!r})
             def report(tag, ok, e=""):
                 print(f"{{tag}}:{{'OK' if ok else 'FAIL'}}", e, flush=True)
             # the checkout is NOT bound -> a repo file is absent, and so is the tree
@@ -159,7 +217,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             # octal-escapes a space / tab / newline / backslash in the path fields, so
             # decode before comparing (the checkout under `tools/` is hidden here, so this
             # cannot reuse `_mount_table`'s decoder; it is the same one).
-            import os, re
+            import re
             fstype = "none"
             for line in open("/proc/self/mountinfo"):
                 fields = line.split()
@@ -190,7 +248,9 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
     def test_readonly_profile_hides_the_checkout_and_keeps_own_tmp_writable(self) -> None:
         """The repository is absent from the sandbox; only the leaf's own tmp root remains.
 
-        `CWD_ENTRIES` is the whole listing of the cwd from inside: exactly `workspace`, the
+        Under a claude lineage's workshop profile (the leaf's cwd is its tree; the probe
+        moves to the checkout's path, which is what it reports on). `CWD_ENTRIES` is the
+        whole listing of the checkout's path from inside: exactly `workspace`, the
         mountpoint bwrap creates for the rw binds of the leaf's two scratch roots
         (`workspace/tmp/<arid>` and the profile's `tmp_dir` under `sandboxes/`). `CWD_MOUNT`
         is the filesystem type mounted at the cwd per `/proc/self/mountinfo` — `tmpfs` — and
@@ -205,14 +265,15 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             orch, arid = "orch_ro", "arid_ro"
             _ensure_orchestration_audit_dirs(repo, orch)
             (repo / "AGENTS_SIM.md").write_text("orig\n", encoding="utf-8")
+            _iso, kwargs = _prepared_lineage(self, repo, orch, "claude")
             profile = build_readonly_bwrap_profile(
                 repo_root=repo, orchestration_id=orch, agent_run_id=arid,
-                backend_command="python3", backend_type="claude")
-            self.assertTrue(profile.get("readonly"))
+                backend_command="python3", backend_type="claude", **kwargs)
             self.assertEqual(profile.get("write_roots"), [])
             cmd = render_bwrap_command(
                 profile=profile,
-                command_argv=["python3", "-c", self._leaf_script(arid, profile["tmp_dir"])])
+                command_argv=["python3", "-c",
+                              self._leaf_script(arid, profile["tmp_dir"], repo)])
             out = _bwrap_stdout(cmd)
             self.assertIn("READ_REPO:HIDDEN", out, out)
             self.assertIn("CWD_ENTRIES:workspace\n", out, out)
@@ -228,8 +289,10 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             self.assertTrue((Path(profile["tmp_dir"]) / "scratch.txt").is_file())
 
     def test_readonly_profile_hides_workspace_from_the_leaf(self) -> None:
-        """A read-only leaf cannot READ another run's records, the producer's own reasoning,
-        or the source trees — the checkout is not in the sandbox (issue #227).
+        """A leaf cannot READ another run's records, the producer's own reasoning, or the
+        source trees — the checkout is not in the sandbox (issue #227). Driven under a codex
+        lineage's workshop profile since issue #534 PR-J4-b; the history below is the read-only
+        profile's, under which the same mount set was first measured.
 
         FOUND BY THE ROUND-2 CODEX REVIEW (P1) and by the round-1 security axis before it. A
         CLAUDE pure leaf is tool-free and could read nothing anyway; a CODEX pure leaf is
@@ -238,7 +301,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         still records. Deleting that layer left the read boundary to nothing, and the sharpest
         gain is here: a VERIFY leaf reading the producer's `dialogs/leaf.stdout.jsonl` for the
         run it is reviewing can reuse the producer's conclusions instead of reviewing the
-        supplied context, which defeats the persona separation `_run_pure_verify_substep` calls
+        supplied context, which defeats the persona separation the verify substep calls
         structural. Past artifacts and sibling certified sources are under here too, and
         `docs/workflow/WORKFLOW_CORE.md` invariants 6-8 forbid referencing them.
 
@@ -288,11 +351,15 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                               (".git/HEAD", "ref: refs/heads/main\n")):
                 (repo / rel).parent.mkdir(parents=True, exist_ok=True)
                 (repo / rel).write_text(body, encoding="utf-8")
+            _iso, kwargs = _prepared_lineage(self, repo, orch, "codex")
             profile = build_readonly_bwrap_profile(
                 repo_root=repo, orchestration_id=orch, agent_run_id=arid,
-                backend_command="python3", backend_type="codex")
+                backend_command="python3", backend_type="codex", **kwargs)
+            # The leaf starts in its tree; the probe reads at the checkout's path.
             script = textwrap.dedent(f"""
+                import os
                 from pathlib import Path
+                os.chdir({str(repo)!r})
                 for tag, rel in (
                         ("DIALOG", "workspace/orchestrations/{orch}/agents/producer/dialogs/leaf.stdout.jsonl"),
                         ("SIBLING", "workspace/pipelines/sib/source/s1/src/sib_model.f90"),
@@ -328,9 +395,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
 
     # ---- issue #226: the backend CLI itself starts inside the profile rendered for it ----
 
-    def _assert_backend_cli_starts_inside_its_profile(
-        self, backend_type: str, cli: str, *, private_home: bool,
-    ) -> None:
+    def _assert_backend_cli_starts_inside_its_profile(self, backend_type: str, cli: str) -> None:
         """Exec the operator's REAL backend CLI, by name, under the profile production renders.
 
         The ro bind of the CLI's install root is what `_backend_runtime_bind_paths` exists
@@ -341,34 +406,23 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         synthetic tree cannot say whether the REAL install is covered — only the real CLI
         under real bwrap can, which is why this row does not fake the shim.
 
-        The rw half follows production's shape per backend, because the rw half is where a
-        row can leave something behind in the operator's home. A codex launch passes
-        `codex_isolation_profile_kwargs`: a private `CODEX_HOME` bound rw INSTEAD of
-        `~/.codex` (the operator's `~/.codex` is never bound rw in production); the row
-        passes the same two kwargs with a home under its own tempdir — measured, `codex
-        --version` creates `tmp/arg0/codex-arg0*/` under whichever `CODEX_HOME` it runs
-        with, which the first version of this row left in the operator's real `~/.codex`.
-        (The auth / config ro mappings production adds are not needed by `--version`.) A
-        claude launch takes the default rw set, `~/.claude` + `~/.claude.json`, and the row
-        does the same; measured over repeated runs with a `find -newer` marker, `claude
-        --version` under the profile leaves nothing new there (an operator's own
-        interactive session writes `~/.claude.json` concurrently, so one probe is not a
-        measurement). The CLI is launched by NAME through the host PATH the profile env carries. `_bwrap_stdout`
-        raises with bwrap's stderr and exit code, so a regression reads as the CLI's own
-        start-up error. On a host carrying neither CLI both rows skip, and the criterion is
-        unmeasured there.
+        The rw half is production's: the profile is a workshop lineage's (`_prepared_lineage`
+        — the real preparer and `claude_workshop_profile_kwargs` /
+        `codex_workshop_profile_kwargs`), so the CLI home is the lineage's private `config/`
+        under the row's own homes root and the operator's `~/.claude` / `~/.codex` is never
+        bound — measured, `codex --version` creates `tmp/arg0/codex-arg0*/` under whichever
+        `CODEX_HOME` it runs with, which the first version of this row left in the operator's
+        real `~/.codex`. The CLI is launched by NAME through the host PATH the profile env
+        carries. `_bwrap_stdout` raises with bwrap's stderr and exit code, so a regression
+        reads as the CLI's own start-up error. On a host carrying neither CLI both rows skip,
+        and the criterion is unmeasured there.
         """
         skip_probes.require_installed(self, cli)
-        with tempfile.TemporaryDirectory() as t, tempfile.TemporaryDirectory() as h:
+        with tempfile.TemporaryDirectory() as t:
             repo = Path(t).resolve()
             orch, arid = f"orch_{cli}", f"arid_{cli}"
             _ensure_orchestration_audit_dirs(repo, orch)
-            kwargs: dict = {}
-            if private_home:
-                home = Path(h).resolve() / "home"
-                home.mkdir(mode=0o700)
-                kwargs = {"backend_rw_override": [str(home)],
-                          "env_overrides": {"CODEX_HOME": str(home)}}
+            _iso, kwargs = _prepared_lineage(self, repo, orch, backend_type)
             profile = build_readonly_bwrap_profile(
                 repo_root=repo, orchestration_id=orch, agent_run_id=arid,
                 backend_command=cli, backend_type=backend_type, **kwargs)
@@ -387,11 +441,25 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         os.environ["HOME"] = str(home)
         os.environ["PATH"] = f"{path_dir}:" + os.environ["PATH"]
         ort._ensure_orchestration_audit_dirs(repo, "o")
+        # A codex workshop lineage, prepared by the real preparer under a homes root of the
+        # row's own (outside every layout's checkout), with a seeded operator auth.json.
+        meta = repo / "workspace" / "orchestrations" / "o" / "orchestration_meta.json"
+        if not meta.exists():
+            meta.write_text("{}", encoding="utf-8")
+        origin = d / "codex-origin"
+        origin.mkdir(mode=0o700, exist_ok=True)
+        (origin / "auth.json").write_text("{}", encoding="utf-8")
+        os.environ["CODEX_HOME"] = str(origin)
+        import uuid
+        # One homes root per invocation: the cases of one row share `d`, and a container's
+        # owner marker names the checkout that claimed it.
+        os.environ["ATMOFAB_WORKFLOW_HOMES_ROOT"] = str(d / f"homes_{uuid.uuid4().hex}")
+        iso = ort._prepare_codex_workflow_home(repo, "o", uuid.uuid4().hex, resume=False)
         try:
             profile = ort.build_readonly_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
                 backend_command="cli-sim", backend_type="codex",
-                backend_rw_override=[str(d / "ch")], env_overrides={"CODEX_HOME": str(d / "ch")})
+                **ort.codex_workshop_profile_kwargs(iso))
         except ValueError as exc:
             print("REFUSED", exc)
         else:
@@ -399,8 +467,11 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             # An ACCEPTED root is exempt because its spelling contains the checkout and the
             # tmpfs stacks on top: observe that under the rendered profile (a nested bwrap)
             # rather than take the docstring's word for it. Both the run artifact and the
-            # gate's implementation are read at the ALIAS the root exposes.
+            # gate's implementation are read at the ALIAS the root exposes. The leaf starts in
+            # its tree; the probe reads relative to the checkout's path.
             probe = (
+                "import os\\n"
+                f"os.chdir({str(repo)!r})\\n"
                 "from pathlib import Path\\n"
                 "for tag, rel in (('DIALOG', 'workspace/orchestrations/o/agents/p/dialogs/leaf.stdout.jsonl'),"
                 " ('TOOLS', 'tools/validate_pipeline_semantics.py'),"
@@ -631,17 +702,22 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                         self.assertIn("UNDER_REPO:HIDDEN", res.stdout, res.stdout)
 
     def test_codex_cli_starts_inside_its_own_profile(self) -> None:
-        self._assert_backend_cli_starts_inside_its_profile("codex", "codex", private_home=True)
+        self._assert_backend_cli_starts_inside_its_profile("codex", "codex")
 
     def test_claude_cli_starts_inside_its_own_profile(self) -> None:
-        self._assert_backend_cli_starts_inside_its_profile("claude", "claude",
-                                                          private_home=False)
+        self._assert_backend_cli_starts_inside_its_profile("claude", "claude")
 
-    # ---- issue #227: the pure launch reaches its first API request from the EMPTY cwd ----
+    # ---- issue #227: the leaf reaches its first API request with no checkout in reach ----
 
-    def _pure_launch_under_profile(self, backend: str, *, model: str = "",
-                                   private_home: bool) -> tuple[list[str], dict, Path]:
-        """The production argv (`Conductor.leaf_command`) and profile for one pure launch.
+    def _pure_launch_under_profile(self, backend: str, *,
+                                   model: str = "") -> tuple[list[str], dict, Path]:
+        """The production argv (`Conductor.leaf_command`) and profile of one leaf launch.
+
+        Since issue #534 PR-J4-b the launch is a `workshop leaf`'s — the READING argv of
+        `validate.judge` (served no endpoint, so the row needs no wrapper) under the profile a
+        lineage the real preparer made implies (`_prepared_lineage`); the leaf's cwd is that
+        lineage's tree, a non-git directory like the empty checkout path the pure leaf started
+        in. The name is kept because `docs/BWRAP_ENABLEMENT.md` cites the codex row.
 
         Returns `(argv, profile, repo)`; the caller owns the tempdirs through `addCleanup`.
         """
@@ -654,20 +730,12 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         # which the CLI validates before anything else.
         orch, arid = f"orch_{backend}_lb", str(uuid.uuid4())
         _ensure_orchestration_audit_dirs(repo, orch)
+        _iso, kwargs = _prepared_lineage(self, repo, orch, backend, lineage=arid)
         conductor = wc.Conductor(
             repo_root=repo, orchestration_id=orch, orchestration_agent_run_id="ORCH",
             llm_config=sample_config_with(backend, agent_model=model), env={})
-        argv = conductor.leaf_command(conductor.entry_for("generate", "generate"), session_id=arid)
-        kwargs: dict = {}
-        if private_home:
-            home = Path(tmp.name).resolve() / "home"
-            home.mkdir(mode=0o700)
-            # What production's private `CODEX_HOME` carries for this checkout: the
-            # untrusted marker, keyed on the same `repo_root` spelling the sandbox chdirs to.
-            (home / "config.toml").write_text(
-                f'[projects."{repo}"]\ntrust_level = "untrusted"\n', encoding="utf-8")
-            kwargs = {"backend_rw_override": [str(home)],
-                      "env_overrides": {"CODEX_HOME": str(home)}}
+        argv = conductor.leaf_command(conductor.entry_for("validate", "judge"),
+                                      session_id=arid, reading=True)
         profile = build_readonly_bwrap_profile(
             repo_root=repo, orchestration_id=orch, agent_run_id=arid,
             backend_command=backend, backend_type=backend, **kwargs)
@@ -676,18 +744,20 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
     def test_codex_pure_launch_reaches_the_api_from_the_empty_cwd(self) -> None:
         """UNBILLED measurement of what issue #227 costs the codex launch, under real bwrap.
 
-        The sandbox holds no checkout, so `codex exec` starts in an EMPTY, non-git cwd — which
-        codex refuses before any API call unless `--skip-git-repo-check` is passed (measured
-        on codex-cli 0.154.0: `Not inside a trusted directory and --skip-git-repo-check was
-        not specified.`, rc 1). The production argv carries the flag; this row execs the real
-        CLI with that argv under the rendered profile and observes the request arriving at a
-        loopback stand-in: the CLI got past the git check and reached the network.
+        The sandbox holds no checkout, and the leaf's cwd is its lineage's tree (a workshop
+        lineage since issue #534 PR-J4-b; the pure leaf started at the empty checkout path):
+        `codex exec` starts in a non-git cwd — which codex refuses before any API call unless
+        `--skip-git-repo-check` is passed (measured on codex-cli 0.154.0: `Not inside a trusted
+        directory and --skip-git-repo-check was not specified.`, rc 1). The production argv
+        carries the flag; this row execs the real CLI with that argv under the rendered
+        profile and observes the request arriving at a loopback stand-in: the CLI got past the
+        git check and reached the network.
 
         The redirect is a `--config model_provider` override, NOT `OPENAI_BASE_URL`: measured,
         the env variable is not honoured by codex-cli 0.154.0 with a private `CODEX_HOME`
         (the request went to `wss://api.openai.com`), and the profile's env allowlist would
         refuse the name anyway. A custom provider with no `env_key` sends no credential, so
-        the row needs no `auth.json`.
+        the row needs no real `auth.json` (the lineage's is a seeded placeholder).
 
         CONTROL: the same launch with the flag removed must NOT reach the stand-in and must
         name the refusal — that is what makes the flag load-bearing rather than decorative,
@@ -695,12 +765,10 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
 
         The request BODY is read too: with `--output-schema` gone (issue #230) it carries no
         `text.format` — the strict `json_schema` format codex-cli built from the host's
-        `{"type": "object"}` is what the Responses API refused on every pure codex turn. The
-        body is the wire-level observation; the argv assertion in `test_pure_leaf.py` is the
-        source-level one, and a revert of `leaf_command`'s schema hunk fails both.
+        `{"type": "object"}` is what the Responses API refused on every pure codex turn; the
+        workshop argv carries none either. The body is the wire-level observation.
         """
-        argv, profile, _repo = self._pure_launch_under_profile(
-            "codex", model="gpt-5.6-sol", private_home=True)
+        argv, profile, _repo = self._pure_launch_under_profile("codex", model="gpt-5.6-sol")
         server = _Loopback400()
         self.addCleanup(server.close)
         overrides = ["--config", 'model_provider="loopback"',
@@ -714,11 +782,18 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                              input="Reply with one word.", capture_output=True, text=True,
                              timeout=180, check=False)  # rc 1 is the 400 turning into turn.failed
         self.assertIn('"type":"thread.started"', res.stdout, res.stdout + res.stderr)
-        self.assertEqual(server.hits, ["POST /v1/responses"], res.stdout + res.stderr)
+        # One turn request. Two `GET /v1/models` precede it on codex-cli 0.164.0 under the
+        # lineage home (observed; not isolated between the CLI version and the lineage's
+        # placeholder `auth.json`). A model listing is not the turn, so only the POSTs are
+        # compared here, and the control below compares every hit.
+        self.assertEqual([hit for hit in server.hits if hit.startswith("POST ")],
+                         ["POST /v1/responses"], res.stdout + res.stderr)
+        hits_before_control = list(server.hits)
         self.assertNotIn("skip-git-repo-check", res.stderr)
-        request = json.loads(server.bodies[0])
+        body = server.bodies[server.hits.index("POST /v1/responses")]
+        request = json.loads(body)
         self.assertNotIn("format", request.get("text") or {}, request.get("text"))
-        self.assertNotIn("json_schema", server.bodies[0].decode("utf-8", "replace"))
+        self.assertNotIn("json_schema", body.decode("utf-8", "replace"))
         self.assertNotIn("--output-schema", with_flag)
         without_flag = [tok for tok in with_flag if tok != "--skip-git-repo-check"]
         res = subprocess.run(render_bwrap_command(profile=profile, command_argv=without_flag),
@@ -727,7 +802,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         self.assertNotEqual(res.returncode, 0)
         self.assertIn("--skip-git-repo-check was not specified", res.stderr, res.stdout)
         self.assertNotIn("thread.started", res.stdout)
-        self.assertEqual(server.hits, ["POST /v1/responses"], "the control must add no hit")
+        self.assertEqual(server.hits, hits_before_control, "the control must add no hit")
 
     # ---- issue #245: one codex lineage's rollout is unreachable from another lineage ----
 
@@ -738,11 +813,14 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
     def _codex_lineage_fixture(self) -> tuple[Path, str, wc.Conductor, _Loopback400]:
         """A repo whose codex launches go through the REAL preparer, plus a loopback server.
 
-        The homes root is the suite's redirected `ATMOFAB_WORKFLOW_HOMES_ROOT` and the
-        operator credential is this test's own (`seed_codex_auth`), so the container this
-        row walks is the one production would build — not a hand-made home, which is what
-        `_pure_launch_under_profile` uses and which cannot tell a shared home from a
-        per-lineage one.
+        Each lineage is a `workshop leaf` lineage (issue #534 PR-J4-b retired the pure codex
+        thread lineage this fixture first served): its `CODEX_HOME` is the lineage home's
+        `config/`, beside its `tree/`. The homes root is the suite's redirected
+        `ATMOFAB_WORKFLOW_HOMES_ROOT` and the
+        operator credential is this test's own (`seed_codex_auth`), so the container these
+        rows walk — holding SEVERAL lineages of one orchestration — is the one production
+        would build; a row that prepares one lineage (`_prepared_lineage`) cannot tell a
+        shared home from a per-lineage one.
         """
         skip_probes.require_installed(self, "codex")
         from tools.tests.private_root_fixture import seed_codex_auth
@@ -769,16 +847,18 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                               server: _Loopback400, *, arid: str, isolation: dict,
                               prompt: str, resume_session_id: str | None = None,
                               ) -> subprocess.CompletedProcess:
-        """Exec the real CLI with the production argv under the profile a prepared home
-        implies (`codex_isolation_profile_kwargs`, the same spelling `record_launch` uses)."""
-        argv = conductor.leaf_command(conductor.entry_for("generate", "generate"), session_id=arid, resume_session_id=resume_session_id)
+        """Exec the real CLI with the production argv — the READING argv of `validate.judge`,
+        served no endpoint — under the profile a prepared lineage home implies
+        (`codex_workshop_profile_kwargs`, the same spelling `record_launch` uses)."""
+        argv = conductor.leaf_command(conductor.entry_for("validate", "judge"), session_id=arid,
+                                      resume_session_id=resume_session_id, reading=True)
         self.assertEqual(argv[-2:], ["--json", "-"])
         overrides = [*self._LOOPBACK_OVERRIDES,
                      "--config", f'model_providers.loopback.base_url="{server.base_url}/v1"']
         profile = build_readonly_bwrap_profile(
             repo_root=repo, orchestration_id=orch, agent_run_id=arid,
             backend_command="codex", backend_type="codex",
-            **codex_isolation_profile_kwargs(isolation))
+            **ort.codex_workshop_profile_kwargs(isolation))
         command = render_bwrap_command(
             profile=profile, command_argv=[*argv[:-2], *overrides, *argv[-2:]])
         # The API answers 400, so the turn fails and the CLI exits 1 — the rollout is
@@ -799,14 +879,12 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         which is why a fix that moved `sessions/` alone would stay red here.
 
         Then leaf B, a different lineage of the SAME orchestration, runs a probe under the
-        profile production renders for it: a recursive search of its own `$CODEX_HOME` for
+        profile production renders for it: a recursive search of its own `$CODEX_HOME` (its
+        lineage home's `config/`) for
         the marker finds nothing, the container is not listable, and A's rollout file — at
         its exact host path — is ENOENT. The sibling is not hidden; it is not mounted.
         """
-        from tools.orchestration_runtime import (
-            _prepare_codex_workflow_home,
-            codex_isolation_profile_kwargs,
-        )
+        from tools.orchestration_runtime import _prepare_codex_workflow_home
         repo, orch, conductor, server = self._codex_lineage_fixture()
         arid_a, arid_b = str(uuid.uuid4()), str(uuid.uuid4())
         marker = "ATMOFAB_LINEAGE_MARKER_" + uuid.uuid4().hex
@@ -837,7 +915,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
             import os
             from pathlib import Path
             home = Path(os.environ["CODEX_HOME"])
-            print("HOME_IS_OWN:" + str(home == Path({str(home_b)!r})), flush=True)
+            print("HOME_IS_OWN:" + str(home == Path({iso_b["config"]!r})), flush=True)
             hits = [str(p) for p in home.rglob("*")
                     if p.is_file() and {marker!r}.encode() in p.read_bytes()]
             print("MARKER_HITS:" + str(len(hits)), flush=True)
@@ -862,7 +940,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         profile_b = build_readonly_bwrap_profile(
             repo_root=repo, orchestration_id=orch, agent_run_id=arid_b,
             backend_command="codex", backend_type="codex",
-            **codex_isolation_profile_kwargs(iso_b))
+            **ort.codex_workshop_profile_kwargs(iso_b))
         out = _bwrap_stdout(render_bwrap_command(profile=profile_b,
                                                  command_argv=["python3", "-c", probe]))
         self.assertIn("HOME_IS_OWN:True", out, out)
@@ -877,7 +955,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         profile_a = build_readonly_bwrap_profile(
             repo_root=repo, orchestration_id=orch, agent_run_id=arid_a,
             backend_command="codex", backend_type="codex",
-            **codex_isolation_profile_kwargs(iso_a))
+            **ort.codex_workshop_profile_kwargs(iso_a))
         out = _bwrap_stdout(render_bwrap_command(
             profile=profile_a, command_argv=["python3", "-c", probe.replace(
                 "MARKER_HITS:", "OWN_MARKER_HITS:")]))
@@ -890,7 +968,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         holding the thread reaches `POST /v1/responses`; from a home that does not, the CLI
         fails BEFORE any request with `no rollout found for thread id` (rc 1). That second
         half is why a missing lineage home must turn the turn cold at `record_launch`
-        (`codex_lineage_home_missing`) rather than be created: a created-empty home would
+        (`workshop_lineage_home_missing`) rather than be created: a created-empty home would
         move the same failure past the point where the conductor can still rebuild the
         turn — and it is why the second attempt of one thread is prepared `resume=True`
         against the FIRST attempt's lineage, which is what this row drives.
@@ -928,15 +1006,15 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                                                        resume=True))
 
     def test_claude_pure_launch_reaches_the_api_from_the_empty_cwd(self) -> None:
-        """UNBILLED: the claude pure leaf takes the same profile (one profile for both
-        backends — the decision recorded on issue #227), so it too starts from an empty cwd.
-        A tool-free `claude -p --safe-mode --tools ""` needs nothing from the checkout; this
-        row execs the real CLI with the production argv under the rendered profile and
-        observes its first request at a loopback stand-in. `ANTHROPIC_BASE_URL` is set by an
-        `env` prefix INSIDE the sandbox because the profile's env allowlist refuses the name
-        (it is the redirect the allowlist exists to close); set there, it is honoured.
+        """UNBILLED: the claude leaf takes the same profile shape as codex (one profile for
+        both backends — the decision recorded on issue #227; a workshop lineage's since issue
+        #534 PR-J4-b), so it too starts with no checkout in reach. This row execs the real CLI
+        with the production reading argv under the rendered profile and observes its first
+        request at a loopback stand-in. `ANTHROPIC_BASE_URL` is set by an `env` prefix INSIDE
+        the sandbox because the profile's env allowlist refuses the name (it is the redirect
+        the allowlist exists to close); set there, it is honoured.
         """
-        argv, profile, _repo = self._pure_launch_under_profile("claude", private_home=False)
+        argv, profile, _repo = self._pure_launch_under_profile("claude")
         server = _Loopback400()
         self.addCleanup(server.close)
         command = ["env", f"ANTHROPIC_BASE_URL={server.base_url}",
@@ -953,13 +1031,16 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
 
 @skip_probes.skip_unless_installed("claude")
 class ClaudeSettingsIsolationTests(unittest.TestCase):
-    """UNBILLED (issue #453): the operator's settings FILE does not reach a pure claude leaf.
+    """UNBILLED (issue #453): the operator's settings FILE does not reach a claude leaf.
 
     The leaf's `HOME` is the operator's, so `$HOME/.claude/settings.json` is in reach of the
-    CLI; `--restricted` (first in `pure_leaf_flags()`) is what makes the CLI ignore it. Each
-    row writes one settings channel into a fresh `HOME`, execs the real CLI with the
-    production flag set against a loopback stand-in, and reads the model (or the endpoint)
-    off the request it stored. No bwrap: the question is about a settings file, not a mount.
+    CLI; `--restricted` (first in `workshop_leaf_flags()`, the flag set of every claude leaf
+    since issue #534 PR-J4-b — the pure leaf's `pure_leaf_flags()` carried it first) is what
+    makes the CLI ignore it. Each row writes one settings channel into a fresh `HOME`, execs
+    the real CLI with the production flag set — the READING kind's, which needs no wrapper
+    endpoint; the producing kind's differs only by the endpoint and its grant — against a
+    loopback stand-in, and reads the model (or the endpoint) off the request it stored. No
+    bwrap: the question is about a settings file, not a mount.
 
     The CONTROL row removes `--restricted` and requires the marker to be PRESENT, so a dead
     capture — or a CLI that stopped reading settings for some other reason — cannot pass the
@@ -967,8 +1048,9 @@ class ClaudeSettingsIsolationTests(unittest.TestCase):
     """
 
     def _request(self, settings: dict, extra: list[str], *, restricted: bool = True) -> list:
-        from tools.pure_leaf import pure_leaf_flags
-        flags = pure_leaf_flags()
+        from tools.pure_leaf import workshop_leaf_flags
+        flags = workshop_leaf_flags(None, reading=True)
+        self.assertEqual(flags[0], "--restricted")
         if not restricted:
             flags.remove("--restricted")
         server = _Loopback400()
@@ -1429,9 +1511,10 @@ class WorkshopLeafCliTests(unittest.TestCase):
         init_orchestration(repo_root=self.repo, orchestration_id=self.orch)
         _ensure_orchestration_audit_dirs(self.repo, self.orch)
         cfg = base / "llm.yaml"
-        cfg.write_text("defaults: {lineage_timeout_s: 2700, provider: claude_cli}\nphases: {generate: {substeps: "
-                       "{generate: {leaf: workshop, max_wrapper_calls: 5, "
-                       "lineage_timeout_s: 600}}}}\n", encoding="utf-8")
+        cfg.write_text(workshop_yaml(
+            "defaults: {lineage_timeout_s: 2700, provider: claude_cli}\nphases: {generate: "
+            "{substeps: {generate: {max_wrapper_calls: 5, lineage_timeout_s: 600}}}}\n"),
+            encoding="utf-8")
         from tools import llm_config
         self.conductor = wc.Conductor(
             repo_root=self.repo, orchestration_id=self.orch, orchestration_agent_run_id="ORCH",
@@ -1684,9 +1767,9 @@ class ReadingWorkshopLeafCliTests(WorkshopLeafCliTests):
         super().setUp()
         from tools import llm_config
         cfg = self.repo.parent / "llm_reading.yaml"
-        cfg.write_text("defaults: {lineage_timeout_s: 2700, provider: claude_cli}\nphases: {validate: {substeps: "
-                       "{judge: {leaf: workshop, lineage_timeout_s: 600}}}}\n",
-                       encoding="utf-8")
+        cfg.write_text(workshop_yaml(
+            "defaults: {lineage_timeout_s: 2700, provider: claude_cli}\nphases: {validate: "
+            "{substeps: {judge: {lineage_timeout_s: 600}}}}\n"), encoding="utf-8")
         self.reader = wc.Conductor(
             repo_root=self.repo, orchestration_id=self.orch, orchestration_agent_run_id="ORCH",
             llm_config=llm_config.load_llm_config(cfg), env={})
@@ -1748,10 +1831,10 @@ class ReadingWorkshopLeafCliTests(WorkshopLeafCliTests):
         """Issue #534 PR-J4-a: the `defaults` entry is the diagnostician's reading workshop
         entry, so its argv is the reading one (no `--mcp-config`); its tree holds
         `diagnosis.json`, its `Write` of `directive.json` lands, and the snapshot carries that
-        file alone, which `_parse_directive` reads as the directive it wrote."""
+        file alone, which `_directive_from_object` reads (parsed whole) as the directive it
+        wrote."""
         from tools import workshop_tree
         entry = self.reader.entry_for(None, None)
-        self.assertTrue(entry.is_workshop)
         paths = workshop_tree.LineagePaths(
             homes_root=Path(self.iso["homes_root"]), orchestration_id=self.orch,
             lineage_id=self.lineage,
@@ -1788,8 +1871,8 @@ class ReadingWorkshopLeafCliTests(WorkshopLeafCliTests):
             ("diagnosis.json",), None, ("directive.json",)) - {"directive.json"}
         workshop_tree.snapshot_tree(paths, host_placed)
         self.assertEqual(sorted(p.name for p in paths.snapshot.iterdir()), ["directive.json"])
-        decision = wc._parse_directive(
-            (paths.snapshot / "directive.json").read_text(encoding="utf-8"))
+        decision = wc._directive_from_object(json.loads(
+            (paths.snapshot / "directive.json").read_text(encoding="utf-8")))
         self.assertEqual((decision.action, decision.reason), ("fail_closed", "spec defect"))
 
 class _ScriptedResponsesApi:
@@ -1898,7 +1981,7 @@ class _CodexLeafCliCase(unittest.TestCase):
     launches the judging (reading) argv, served no endpoint."""
 
     CONFIG = ("defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-5.6-sol}\nphases: {generate: "
-              "{substeps: {generate: {leaf: workshop, max_wrapper_calls: 5, "
+              "{substeps: {generate: {max_wrapper_calls: 5, "
               "lineage_timeout_s: 600}}}}\n")
     PAIR = ("generate", "generate")
     READING = False
@@ -1934,7 +2017,7 @@ class _CodexLeafCliCase(unittest.TestCase):
         init_orchestration(repo_root=self.repo, orchestration_id=self.orch)
         _ensure_orchestration_audit_dirs(self.repo, self.orch)
         cfg = base / "llm.yaml"
-        cfg.write_text(self.CONFIG, encoding="utf-8")
+        cfg.write_text(workshop_yaml(self.CONFIG), encoding="utf-8")
         from tools import llm_config
         self.conductor = wc.Conductor(
             repo_root=self.repo, orchestration_id=self.orch, orchestration_agent_run_id="ORCH",
@@ -2175,7 +2258,7 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
     repair resumes the thread."""
 
     CONFIG = ("defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-5.6-sol}\nphases: {validate: "
-              "{substeps: {judge: {leaf: workshop, lineage_timeout_s: 600}}}}\n")
+              "{substeps: {judge: {lineage_timeout_s: 600}}}}\n")
     PAIR = ("validate", "judge")
     READING = True
 

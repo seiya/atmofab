@@ -76,7 +76,7 @@ from tools.orchestration_runtime import (
     default_agent_model_for_backend,
 )
 
-from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, PURE_PROMPT_SENTINEL
+from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, WORKSHOP_PROMPT_SENTINEL
 
 # The derivation record a PASS step_result must carry (issue #250): what the conductor computes
 # at phase start (`phase_derivation`) and `write_step_result` stamps into the certifying meta.
@@ -126,15 +126,19 @@ def _fixture_derivation(repo_root: Path, step: str) -> dict:
         source_ref=f"{_FIX_PIPE_REF}/source/src_20260101_001",
         binary_ref=f"{_FIX_PIPE_REF}/binary/bin_20260101_001", target=_TP)
 
-# The host-inlined context a PURE `generate.generate` launch carries. The key SET is what the
-# launch validator requires for that pair; the bodies are only documents, so they are the
-# smallest well-formed ones. Shared by every fixture here that needs a launch record as SETUP
-# for something else — since Z4 (issue #171) an LLM launch has to be pure to render at all.
-# The pure override `build_launch_request` applies last for an LLM leaf, as a mapping a test
-# can splat onto a captured request fixture. The fixtures are captures of the BUILDER's output,
-# which stops short of it.
+# The `pure_context` a `generate.generate` launch carries (the key SET is what the launch
+# validator still requires of a cold WORKSHOP request, though the workshop render inlines none
+# of it — the seeds carry the documents; issue #534 PR-J4-b). The bodies are only documents, so
+# they are the smallest well-formed ones. Shared by every fixture here that needs a launch
+# record as SETUP for something else: since issue #534 PR-J4-b an LLM launch has to be a
+# WORKSHOP one to render at all.
+# The leaf override `build_launch_request(..., pure_leaf=True)` applies last for an LLM leaf —
+# a claude WORKSHOP request — as a mapping a test can splat onto a captured request fixture.
+# It carries no `workshop_lineage_id`: that is per launch (the child's own on a cold one), so a
+# caller adds it. The fixtures are captures of the BUILDER's output, which stops short of it.
 _PURE_GENERATE_OVERRIDE = {
-    "leaf_mode": "pure",
+    "leaf_mode": "workshop",
+    "workshop_provider": "claude_cli",
     "pure_language": "fortran",
     "pure_parallel": "openmp",
     "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
@@ -156,8 +160,9 @@ _PURE_GENERATE_OVERRIDE["pure_context"] = _PURE_GENERATE_CONTEXT
 
 
 def _pure_override_for(step, substep) -> dict:
-    """The pure override for ANY LLM pair, with a `pure_context` carrying exactly the keys the
-    launch validator requires for it.
+    """The leaf (WORKSHOP, claude) override for ANY LLM pair, with a `pure_context` carrying
+    exactly the keys the launch validator requires for it; the caller adds the launch's
+    `workshop_lineage_id`.
 
     The key SET comes from `orchestration_runtime.PURE_CONTEXT_REQUIRED_KEYS` rather than being
     listed here, so a pair that gains a required document does not leave a fixture quietly
@@ -177,6 +182,7 @@ from tools.tests.private_root_fixture import (
     _private_root_redirects,
 )
 from tools.tests.llm_samples import sample_config_with as _cfg
+from tools.tests.llm_samples import workshop_yaml as _workshop_yaml
 from tools.tests.target_fixtures import FORTRAN_CPU as _TP
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 
@@ -187,15 +193,47 @@ from tools.tests.test_bwrap_simulation import _bwrap_usable
 
 
 
+_MODULE_CREDENTIALS: list = []
+
+
 def setUpModule() -> None:
     # See `redirect_isolated_homes_root_for_module`: this module prepares isolated
     # backend homes, and without this it writes them into the operator's real
     # `~/.atmofab/homes` whenever it is run outside pytest.
     redirect_isolated_homes_root_for_module(__name__)
+    # A claude `workshop leaf` lineage home binds the operator's credentials file
+    # (`_prepare_claude_workshop_home`, issue #534), which `record_launch` re-checks on every
+    # workshop launch. The fixtures here launch claude workshop leaves as SETUP for something
+    # else, so the file the preparer reads is a temporary one, never the operator's (and CI
+    # has none).
+    tmp = tempfile.TemporaryDirectory(prefix="atmofab-test-claude-cred-")
+    cred = Path(tmp.name) / ".credentials.json"
+    cred.write_text('{"claudeAiOauth": {"accessToken": "x"}}', encoding="utf-8")
+    os.chmod(cred, 0o600)
+    from tools import operator_private_root as _opr
+    patcher = mock.patch.object(_opr, "claude_credentials_file", lambda: cred)
+    patcher.start()
+    _MODULE_CREDENTIALS.append((tmp, patcher))
 
 
 def tearDownModule() -> None:
+    while _MODULE_CREDENTIALS:
+        tmp, patcher = _MODULE_CREDENTIALS.pop()
+        patcher.stop()
+        tmp.cleanup()
     restore_isolated_homes_root_for_module(__name__)
+
+
+def _prepare_workshop_lineage(repo_root: Path, orchestration_id: str, arid: str,
+                              backend: str = "claude") -> dict:
+    """Prepare the lineage home of the COLD workshop launch `arid` the way the conductor
+    does before it records the launch (`Conductor._open_workshop_lineage` → the backend's
+    `WORKSHOP_HOME_PREPARERS` entry, `resume=False`): `record_launch` refuses a cold workshop
+    launch whose home was never prepared. A fixture that reuses an orchestration id across
+    fresh repo roots calls `_discard_isolated_homes` first, because the lineage home is
+    created exclusively."""
+    return ort.WORKSHOP_HOME_PREPARERS[backend](
+        repo_root, orchestration_id, arid, resume=False)
 
 
 def load_tests(loader, tests, pattern):  # noqa: D103 - unittest protocol
@@ -393,7 +431,12 @@ _PURE_COMPILE_CONTEXT = {
 }
 
 
-def _pure_compile_generate_prompt(arid: str) -> str:
+def _pure_compile_generate_prompt(arid: str, *, provider: str = "claude_cli",
+                                  lineage: str | None = None) -> str:
+    """The rendered prompt of a WORKSHOP `compile.generate` launch (issue #534 PR-J4-b; the
+    pure one it used to render went with the pure leaf). `provider` is the request's
+    `workshop_provider` — the prompt's `<tool_surface>` row is that provider's — and `lineage`
+    its `workshop_lineage_id` (the child's own on a cold launch)."""
     return render_launch_prompt_text({
         "node_key": "problem/shallow_water2d@0.3.0",
         "step": "compile",
@@ -410,6 +453,8 @@ def _pure_compile_generate_prompt(arid: str) -> str:
         "repair_target_agent_run_id": "none",
         "repair_reason": "none",
         **_PURE_GENERATE_OVERRIDE,
+        "workshop_provider": provider,
+        "workshop_lineage_id": lineage or arid,
         "pure_context": _PURE_COMPILE_CONTEXT,
     })
 
@@ -417,10 +462,12 @@ def _pure_compile_generate_prompt(arid: str) -> str:
 def _launch_request_body(arid: str, *, deterministic: bool = False) -> dict:
     """The launch request the fixtures here use as SETUP for something else.
 
-    TWO shapes, because since Z4 (issue #171) those are the two a launch can have:
-    the PURE `generate.generate` leaf (default), and the DETERMINISTIC in-process
-    `generate.gate` substep. The agentic shape these fixtures used to build — a skill, a
-    must-read list and a leaf-authored output set — is refused by the renderer now."""
+    TWO shapes, because those are the two a launch can have: the claude WORKSHOP
+    `generate.generate` leaf (default; every LLM leaf is a workshop leaf since issue #534
+    PR-J4-b, and a cold one starts its own lineage, so `workshop_lineage_id` is the child's
+    id — the caller prepares that lineage's home with `_prepare_workshop_lineage` before
+    `record_launch`), and the DETERMINISTIC in-process `generate.gate` substep. The agentic
+    shape (Z4, issue #171) and the pure shape (PR-J4-b) are refused by the renderer now."""
     shape: dict = {
         "node_key": "problem/shallow_water2d@0.3.0",
         "step": "generate",
@@ -434,7 +481,9 @@ def _launch_request_body(arid: str, *, deterministic: bool = False) -> dict:
     if deterministic:
         shape["deterministic"] = True
     else:
-        shape["leaf_mode"] = "pure"
+        shape["leaf_mode"] = "workshop"
+        shape["workshop_lineage_id"] = arid
+        shape["workshop_provider"] = "claude_cli"
         shape["pure_language"] = "fortran"
         shape["pure_parallel"] = "openmp"
         shape["prompt_contract_version"] = PURE_PROMPT_CONTRACT_VERSION
@@ -592,7 +641,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         checks: list[dict[str, object]] = [
             {"name": "codex_version_available", "pass": True},
             {"name": "codex_exec_json_streaming", "pass": True},
-            {"name": "codex_exec_pure_isolation_flags", "pass": True},
+            {"name": "codex_workshop_flag_set_available", "pass": True},
             {"name": "codex_exec_resume", "pass": True},
             {"name": "codex_prompt_stdin", "pass": True},
             {"name": "codex_project_hook_trust_bypass", "pass": True},
@@ -713,22 +762,35 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 second = _prepare_codex_workflow_home(repo_root, orch, "arid-b", resume=False)
                 # A warm preparation of an existing lineage answers the same home.
                 warm = _prepare_codex_workflow_home(repo_root, orch, "arid-a", resume=True)
+                # The pure codex THREAD lineage (a bare `CODEX_HOME` bound rw whole) went
+                # with the pure leaf (issue #534 PR-J4-b): asking for it is refused, cold or
+                # warm, and creates nothing — never answered with the workshop layout.
+                for resume in (False, True):
+                    with self.subTest(pure_layout_resume=resume), self.assertRaisesRegex(
+                            ValueError, "pure codex thread lineage went with the pure leaf"):
+                        _prepare_codex_workflow_home(repo_root, orch, "arid-p", resume=resume,
+                                                     workshop=False)
             homes_root = Path(os.environ[WORKFLOW_HOMES_ROOT_ENV])
             container = homes_root / orch / "codex"
             home_a, home_b = Path(first["home"]), Path(second["home"])
             self.assertEqual(home_a, container / "arid-a")
             self.assertEqual(home_b, container / "arid-b")
+            self.assertFalse((container / "arid-p").exists())
             self.assertEqual(first["lineage_id"], "arid-a")
             self.assertEqual(warm["home"], first["home"])
             self.assertFalse(home_a.is_relative_to(repo_root), "CODEX_HOME must ignore in-repo TMPDIR")
             # Every level this code created is private, not only the leaf.
             for level in (homes_root / orch, container, home_a, home_b):
                 self.assertEqual(level.stat().st_mode & 0o777, 0o700, level)
-            # Each lineage carries its own marker and credential placeholder; the
+            # Each lineage carries its own marker and credential placeholder in its
+            # `config/` (the leaf's `CODEX_HOME` since the workshop layout, issue #534); the
             # container carries neither (it is not a `CODEX_HOME`).
             for home in (home_a, home_b):
-                self.assertTrue((home / "config.toml").is_file())
-                self.assertTrue((home / "auth.json").is_file())
+                self.assertEqual(Path(first["config"] if home == home_a else second["config"]),
+                                 (home / "config").resolve())
+                self.assertEqual((home / "config").stat().st_mode & 0o777, 0o700, home)
+                self.assertTrue((home / "config" / "config.toml").is_file())
+                self.assertTrue((home / "config" / "auth.json").is_file())
             self.assertFalse((container / "config.toml").exists())
             self.assertFalse((container / "auth.json").exists())
             recorded = json.loads(meta_path.read_text(encoding="utf-8"))
@@ -903,7 +965,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "lineage home already exists") as caught:
                     _prepare_codex_workflow_home(repo_root, orch, "arid-x", resume=False)
                 # The refused call neither removed nor rewrote the existing lineage.
-                self.assertTrue((Path(first["home"]) / "config.toml").is_file())
+                self.assertTrue((Path(first["home"]) / "config" / "config.toml").is_file())
                 self.assertIn("arid-x", str(caught.exception))
                 # A lineage id that is not a plain path token is refused before any
                 # path is joined — the second wall behind `record_launch`'s regex.
@@ -946,83 +1008,122 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             self.assertFalse((container / "arid-never").exists())
             self.assertTrue(marker.is_file(), "the container re-securing ran on the warm path")
 
+    @staticmethod
+    def _codex_workshop_request(child: str, lineage: str) -> dict:
+        """A codex `workshop leaf` request (issue #534) carrying only what `record_launch`'s
+        lineage gate reads, which runs before the request is validated or rendered."""
+        return {"leaf_mode": "workshop", "workshop_provider": "codex_cli",
+                "workshop_lineage_id": lineage, "agent_run_id": child}
+
     def test_record_launch_answers_a_missing_lineage_home_before_launch_state(self) -> None:
         """A lineage home gone after resume selection returns a cold-fallback sentinel.
 
         This must happen before capability/launch artifacts are written, otherwise
-        the conductor cannot safely discard the warm request and rebuild it cold. The
-        preparer is driven with `resume=True` and the lineage it was handed — pinned on
-        the mock's call, because a preparer called with `resume=False` here would CREATE
-        the lineage instead of answering whether it exists.
+        the conductor cannot safely discard the warm request and rebuild it cold. Since
+        issue #534 PR-J4-b the codex lineage is a WORKSHOP one (`--workshop-lineage-id`;
+        the pure codex thread lineage and `--codex-lineage-id` are gone), so the sentinel is
+        `workshop_lineage_home_missing`, and the warm preparation creates no lineage home —
+        a preparer called with `resume=False` here would CREATE the lineage instead of
+        answering whether it exists, so the absent directory is the witness.
         """
         from tools.orchestration_runtime import record_launch
+        from tools.operator_private_root import workflow_homes_root
 
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
+            # Only the metadata the lineage-home preparer reads: `init_orchestration` would
+            # create `launches/`, whose absence is part of what this row observes.
+            meta = repo_root / "workspace" / "orchestrations" / "orch_lineage_race" / "orchestration_meta.json"
+            meta.parent.mkdir(parents=True)
+            meta.write_text(json.dumps({"orchestration_id": "orch_lineage_race"}), encoding="utf-8")
             with patch(
                 "tools.orchestration_runtime._require_preflight_launchable",
                 return_value={"backend": "codex"},
-            ), patch(
-                "tools.orchestration_runtime._prepare_codex_workflow_home",
-                return_value=None,
-            ) as prepare:
+            ):
                 result = record_launch(
                     repo_root, "orch_lineage_race",
                     parent_agent_run_id="parent", child_agent_run_id="child",
-                    request_payload={}, response_payload={},
-                    codex_lineage_id="lineage-1",
+                    request_payload=self._codex_workshop_request("child", "lineage-1"),
+                    response_payload={"backend": "codex"},
+                    workshop_lineage_id="lineage-1",
                 )
-            self.assertTrue(result["codex_lineage_home_missing"])
-            self.assertEqual(result["codex_lineage_id"], "lineage-1")
-            prepare.assert_called_once_with(
-                repo_root, "orch_lineage_race", "lineage-1", resume=True)
+            self.assertEqual(result, {"workshop_lineage_home_missing": True,
+                                      "workshop_lineage_id": "lineage-1"})
+            self.assertFalse(
+                (workflow_homes_root() / "orch_lineage_race" / "codex" / "lineage-1").exists())
             self.assertFalse((repo_root / "workspace" / "orchestrations" /
                               "orch_lineage_race" / "launches").exists())
             self.assertFalse((repo_root / "workspace" / "orchestrations" /
                               "orch_lineage_race" / "session_run_index.json").exists())
 
-    def test_record_launch_refuses_a_lineage_id_off_codex_or_malformed(self) -> None:
-        """`--codex-lineage-id` becomes a path segment outside the repository.
+    def test_record_launch_refuses_a_lineage_id_off_workshop_or_malformed(self) -> None:
+        """`--workshop-lineage-id` becomes a path segment outside the repository.
 
-        Refused for a non-codex backend (it names a home that backend has none of) and
-        for anything but a plain token, BEFORE the preparer is reached — the preparer's
-        own check is the second wall, and a call here would be a path join on the value.
+        Refused for a launch that is not a workshop one (it names a lineage home that launch
+        has none of) and for anything but a plain token, BEFORE any lineage home is reached —
+        the preparer's own check is the second wall, and a call here would be a path join on
+        the value. (The `--codex-lineage-id` this row first pinned went with the pure codex
+        lineage, issue #534 PR-J4-b; the walls stand on the workshop id.)
         """
         from tools.orchestration_runtime import record_launch
 
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            with patch(
-                "tools.orchestration_runtime._prepare_codex_workflow_home",
-            ) as prepare:
+            # Only the metadata the lineage-home preparer reads: `init_orchestration` would
+            # create `launches/`, whose absence is part of what this row observes.
+            meta = repo_root / "workspace" / "orchestrations" / "orch_lineage_refuse" / "orchestration_meta.json"
+            meta.parent.mkdir(parents=True)
+            meta.write_text(json.dumps({"orchestration_id": "orch_lineage_refuse"}), encoding="utf-8")
+            prepare = mock.Mock(side_effect=AssertionError("preparer reached"))
+            with patch.dict(ort.WORKSHOP_HOME_PREPARERS, {"codex": prepare}):
                 with patch("tools.orchestration_runtime._require_preflight_launchable",
-                           return_value={"backend": "claude"}), \
-                        self.assertRaisesRegex(ValueError, "only for the Codex backend"):
+                           return_value={"backend": "codex"}), \
+                        self.assertRaisesRegex(ValueError,
+                                               "valid only for a workshop launch request"):
                     record_launch(
                         repo_root, "orch_lineage_refuse",
                         parent_agent_run_id="parent", child_agent_run_id="child",
-                        request_payload={}, response_payload={},
-                        codex_lineage_id="lineage-1")
+                        request_payload={}, response_payload={"backend": "codex"},
+                        workshop_lineage_id="lineage-1")
                 for bad in ("../x", "a/b", "", "x y"):
                     with self.subTest(lineage=bad), \
                             patch("tools.orchestration_runtime._require_preflight_launchable",
                                   return_value={"backend": "codex"}), \
-                            self.assertRaisesRegex(ValueError, "codex_lineage_id contains"):
+                            self.assertRaisesRegex(ValueError,
+                                                   "workshop_lineage_id contains"):
                         record_launch(
                             repo_root, "orch_lineage_refuse",
                             parent_agent_run_id="parent", child_agent_run_id="child",
-                            request_payload={}, response_payload={},
-                            codex_lineage_id=bad)
+                            request_payload=self._codex_workshop_request("child", "lineage-1"),
+                            response_payload={"backend": "codex"},
+                            workshop_lineage_id=bad)
             prepare.assert_not_called()
 
-    def test_terse_record_launch_preserves_codex_lineage_home_missing(self) -> None:
-        """The conductor must see the sentinel rather than an empty terse response."""
-        result = _project_terse_result("record-launch", {
-            "codex_lineage_home_missing": True,
-            "codex_lineage_id": "lineage-1",
-        })
-        self.assertTrue(result["codex_lineage_home_missing"])
-        self.assertEqual(result["codex_lineage_id"], "lineage-1")
+    def test_record_launch_takes_no_codex_lineage_id(self) -> None:
+        """The pure codex lineage's `codex_lineage_id` parameter and `--codex-lineage-id`
+        flag went with it (issue #534 PR-J4-b): a caller still passing one is refused by the
+        signature and the parser, not silently given the workshop lineage."""
+        import inspect
+        self.assertNotIn("codex_lineage_id", inspect.signature(ort.record_launch).parameters)
+        with self.assertRaises(SystemExit), redirect_stdout(io.StringIO()), \
+                redirect_stderr(io.StringIO()):
+            ort.main(["record-launch", "--repo-root", ".", "--orchestration-id", "o",
+                      "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
+                      "--request-json", "{}", "--response-json", "{}",
+                      "--codex-lineage-id", "lineage-1"])
+
+    def test_terse_record_launch_preserves_the_lineage_home_missing_sentinel(self) -> None:
+        """The conductor must see the sentinel rather than an empty terse response. The
+        sentinel is the workshop lineage's since issue #534 PR-J4-b (the pure codex lineage's
+        `codex_lineage_home_missing`, which this row first pinned, has no producer now)."""
+        sentinel = {"workshop_lineage_home_missing": True, "workshop_lineage_id": "lineage-1"}
+        self.assertEqual(_project_terse_result("record-launch", dict(sentinel)), sentinel)
+        # Control: a completed launch IS projected, so the whole-result return above is the
+        # sentinel's arm and not the projection's default.
+        completed = {"launch_request_ref": "r", "workshop_lineage_id": "lineage-1",
+                     "not_a_terse_field": "x"}
+        self.assertNotEqual(_project_terse_result("record-launch", dict(completed)),
+                            completed)
 
     def test_probe_codex_cli_passes_without_running_features_list(self) -> None:
         """Issue #447 (D4): the codex probe no longer runs `codex features list` — its only
@@ -1067,8 +1168,10 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             set(CLAUDE_REQUIRED_LAUNCH_CHECKS))
 
     def test_a_claude_help_without_restricted_fails_preflight(self) -> None:
-        """Issue #453: `pure_leaf_flags()` opens with `--restricted`, and a CLI that does not
-        know it refuses the whole argv, so every leaf would die at launch. Preflight refuses
+        """Issue #453: the workshop leaf's argv (`workshop_leaf_flags`; `pure_leaf_flags`, which
+        this row first named, went with the pure leaf in issue #534 PR-J4-b) carries
+        `--restricted`, and a CLI that does not know it refuses the whole argv, so every leaf
+        would die at launch. Preflight refuses
         it first — as an OPTION LINE: a help naming only `--restricted-mode` (a longer
         option sharing the prefix), `--restrictedness`, or `--restricted` inside another
         option's description does not answer for it; a short alias before it does."""
@@ -1271,15 +1374,26 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         checks, _ = _probe_codex_backend("codex", "codex", runner)
         by_name = {check["name"]: check for check in checks}
         self.assertFalse(by_name["codex_exec_json_streaming"]["pass"])
-        self.assertFalse(by_name["codex_exec_pure_isolation_flags"]["pass"])
         self.assertFalse(by_name["codex_exec_resume"]["pass"])
+        # The pure leaf's isolation-flag row went with it (issue #534 PR-J4-b); the exec
+        # options a leaf needs are the workshop row's (`_codex_workshop_flag_set_check`, run by
+        # `probe_all_providers` on every codex surface).
+        self.assertNotIn("codex_exec_pure_isolation_flags", by_name)
 
     def test_probe_codex_backend_rejects_an_exec_help_without_skip_git_repo_check(self) -> None:
-        """The pure launch runs from an EMPTY cwd (issue #227: the sandbox holds no checkout),
-        which codex refuses before any API call unless `--skip-git-repo-check` is passed —
-        so a CLI whose `exec --help` does not document the flag fails the isolation-flags
-        check, and the resume check fails on the same flag through
-        `CODEX_EXEC_RESUME_REQUIRED_FLAGS`. Control: the full fixtures pass both."""
+        """A leaf runs from a cwd that is not a trusted git checkout (issue #227: the sandbox
+        holds no checkout; a workshop leaf's cwd is its lineage tree), which codex refuses
+        before any API call unless `--skip-git-repo-check` is passed — so a CLI whose
+        `exec resume --help` does not document the flag fails the resume check through
+        `CODEX_EXEC_RESUME_REQUIRED_FLAGS`. Control: the full fixtures pass it.
+
+        The COLD half — `exec --help` without the flag — was the pure isolation-flags row,
+        which went with the pure leaf (issue #534 PR-J4-b); the cold argv's options are the
+        workshop row's, and its dropped-option refusal is pinned in
+        `test_workshop_codex.py::CodexPreflightTests::
+        test_the_row_requires_each_option_the_mode_and_the_url_route`. What this probe still
+        owns on the cold help is that an exec help without the flag does not fail the
+        RESUME row (the two helps are read apart)."""
         from tools.orchestration_runtime import _probe_codex_backend
 
         def _runner(exec_help: str, resume_help: str):  # type: ignore[no-untyped-def]
@@ -1302,17 +1416,15 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         checks, _ = _probe_codex_backend(
             "codex", "codex", _runner(without["exec"], _CODEX_EXEC_RESUME_HELP))
         by_name = {check["name"]: check for check in checks}
-        self.assertFalse(by_name["codex_exec_pure_isolation_flags"]["pass"])
+        self.assertNotIn("codex_exec_pure_isolation_flags", by_name)
         self.assertTrue(by_name["codex_exec_resume"]["pass"])
         checks, _ = _probe_codex_backend(
             "codex", "codex", _runner(_CODEX_EXEC_HELP, without["resume"]))
         by_name = {check["name"]: check for check in checks}
-        self.assertTrue(by_name["codex_exec_pure_isolation_flags"]["pass"])
         self.assertFalse(by_name["codex_exec_resume"]["pass"])
         checks, _ = _probe_codex_backend(
             "codex", "codex", _runner(_CODEX_EXEC_HELP, _CODEX_EXEC_RESUME_HELP))
         by_name = {check["name"]: check for check in checks}
-        self.assertTrue(by_name["codex_exec_pure_isolation_flags"]["pass"])
         self.assertTrue(by_name["codex_exec_resume"]["pass"])
 
     def test_probe_codex_backend_rejects_resume_missing_required_flags(self) -> None:
@@ -1642,10 +1754,11 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         """What the payload preparer fills in for a verify launch.
 
         The SKILL half is gone with the agentic leaf (Z4, issue #171): the three skill fields
-        are declared EMPTY for a pure launch rather than filled from the step, and there is no
+        are declared EMPTY for a leaf launch rather than filled from the step, and there is no
         must-read list to check a document into. What it still fills is the repair triple and
-        the severity default, and what it still renders is the pure prompt — asserted on its
-        sentinel, because that is the marker the launch validator requires."""
+        the severity default, and what it still renders is the workshop prompt (the pure leaf
+        went in issue #534 PR-J4-b) — asserted on its sentinel, the marker every workshop
+        prompt opens with."""
         payload = prepare_launch_request_payload(
             {
                 "node_key": "problem/shallow_water2d@0.3.0",
@@ -1657,7 +1770,9 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                 "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                 "dependency_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001/spec.ir.yaml",
-                "leaf_mode": "pure",
+                "leaf_mode": "workshop",
+                "workshop_lineage_id": "substep_run_plan_verify_001",
+                "workshop_provider": "claude_cli",
                 "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
                 "pure_context": {
                     "ir_document": "algorithm:\n  state_variables: [h]\n",
@@ -1673,7 +1788,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         self.assertEqual(payload["skill_must_read_refs"], "")
         self.assertEqual(payload["issue_severity"], "none")
         self.assertEqual(payload["repair_strategy"], "none")
-        self.assertIn(PURE_PROMPT_SENTINEL, payload["launch_prompt_full"])
+        self.assertIn(WORKSHOP_PROMPT_SENTINEL, payload["launch_prompt_full"])
 
     @staticmethod
     def _slim_repair_payload() -> dict[str, Any]:
@@ -2040,11 +2155,16 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
     def test_a_codex_cold_launch_starts_its_own_lineage_and_a_warm_one_reuses_it(self) -> None:
         """End to end through `record_launch`, the registration transaction and the index.
 
+        The codex lineage is a WORKSHOP lineage since issue #534 PR-J4-b (the pure codex
+        thread lineage, `codex_lineage_id` and `--codex-lineage-id` went with the pure leaf):
+        the host prepares a cold lineage's home before it records the launch
+        (`_prepare_workshop_lineage`, as `Conductor._open_workshop_lineage` does).
+
         COLD: the response and the launch record name `codex_workflow_home` as a directory
         named by the child's own arid under the orchestration's container, and
-        `codex_lineage_id == child_agent_run_id`; the thread registration copies the
-        lineage onto the session-index row. WARM: a second attempt of that thread, recorded
-        with `--codex-lineage-id` = the row's value, is bound the SAME home and its own row
+        `workshop_lineage_id == child_agent_run_id`; the session-index row carries the lineage
+        and the thread registration keeps it. WARM: a second attempt of that lineage, recorded
+        with `--workshop-lineage-id` = the row's value, is bound the SAME home and its own row
         carries the same lineage; a warm launch naming a lineage nobody started answers the
         sentinel and writes nothing. A second COLD launch is a sibling lineage.
         """
@@ -2083,6 +2203,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             )
 
             def _launch(arid: str, **kwargs):
+                lineage = kwargs.get("workshop_lineage_id") or arid
                 return record_launch(
                     repo_root=repo_root,
                     orchestration_id=orch,
@@ -2096,13 +2217,16 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                         "step": "compile",
                         "substep": "generate",
                         **_PURE_GENERATE_OVERRIDE,
+                        "workshop_provider": "codex_cli",
+                        "workshop_lineage_id": lineage,
                         "pure_context": _PURE_COMPILE_CONTEXT,
                         "orchestration_id": orch,
                         "parent_agent_run_id": "orch_run_001",
                         "ir_ref": "workspace/ir/problem__shallow_water2d__0.3.0/shallow-water2d_20260415_001",
                         "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                         "dependency_ref": "spec/problem/shallow_water2d/deps.yaml",
-                        "launch_prompt_full": _pure_compile_generate_prompt(arid),
+                        "launch_prompt_full": _pure_compile_generate_prompt(
+                            arid, provider="codex_cli", lineage=lineage),
                     },
                     response_payload={"agent_run_id": arid, "backend": "codex",
                                       **_spawn_response_payload(arid)},
@@ -2110,18 +2234,20 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 )
 
             container = Path(os.environ[WORKFLOW_HOMES_ROOT_ENV]) / orch / "codex"
+            iso = _prepare_workshop_lineage(repo_root, orch, "arid-cold-a", backend="codex")
             cold = _launch("arid-cold-a")
             response = json.loads((repo_root / cold["launch_response_ref"]).read_text())
-            self.assertEqual(response["codex_lineage_id"], "arid-cold-a")
-            self.assertEqual(Path(response["codex_workflow_home"]), container / "arid-cold-a")
-            self.assertTrue((container / "arid-cold-a" / "config.toml").is_file())
+            self.assertEqual(response["workshop_lineage_id"], "arid-cold-a")
+            self.assertNotIn("codex_lineage_id", response)
+            self.assertEqual(Path(response["codex_workflow_home"]),
+                             (container / "arid-cold-a").resolve())
+            self.assertTrue((container / "arid-cold-a" / "config" / "config.toml").is_file())
             profile = json.loads(
                 (repo_root / "workspace" / "orchestrations" / orch / "sandbox_profiles"
                  / "arid-cold-a.json").read_text())
-            self.assertEqual(profile["runtime_rw_bind_paths"],
-                             [str(container / "arid-cold-a")])
-            self.assertEqual(profile["env"]["CODEX_HOME"], str(container / "arid-cold-a"))
-            # The thread registration carries the lineage onto the row.
+            self.assertEqual(profile["runtime_rw_bind_paths"], [iso["config"], iso["tree"]])
+            self.assertEqual(profile["env"]["CODEX_HOME"], iso["config"])
+            # The launch put the lineage on the row; the thread registration keeps it.
             _write_json_transaction(
                 transaction_dir=repo_root / "workspace" / "orchestrations" / orch,
                 agent_run_id="arid-cold-a", thread_id="thread-a", context_id="arid-cold-a",
@@ -2129,7 +2255,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             rows = {r["agent_run_id"]: r for r in _read_session_run_index_consistent(
                 repo_root, orch)["entries"]}
             self.assertEqual(rows["arid-cold-a"]["agent_session_id"], "thread-a")
-            self.assertEqual(rows["arid-cold-a"]["codex_lineage_id"], "arid-cold-a")
+            self.assertEqual(rows["arid-cold-a"]["workshop_lineage_id"], "arid-cold-a")
             # The TERMINAL upsert `record_agent_run` makes (with no lineage of its own)
             # must leave the lineage on the row: the producer loop finalizes attempt 1
             # BEFORE attempt 2 resolves its lineage off this row, so an upsert that
@@ -2154,31 +2280,34 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
             rows = {r["agent_run_id"]: r for r in _read_session_run_index_consistent(
                 repo_root, orch)["entries"]}
             self.assertEqual(rows["arid-cold-a"]["status"], "fail")
-            self.assertEqual(rows["arid-cold-a"]["codex_lineage_id"], "arid-cold-a")
+            self.assertEqual(rows["arid-cold-a"]["workshop_lineage_id"], "arid-cold-a")
 
             # WARM: attempt 2 of thread-a, against the row's lineage.
-            warm = _launch("arid-warm-a2", codex_lineage_id=rows["arid-cold-a"]["codex_lineage_id"])
+            warm = _launch("arid-warm-a2",
+                           workshop_lineage_id=rows["arid-cold-a"]["workshop_lineage_id"])
             response = json.loads((repo_root / warm["launch_response_ref"]).read_text())
-            self.assertEqual(response["codex_lineage_id"], "arid-cold-a")
-            self.assertEqual(Path(response["codex_workflow_home"]), container / "arid-cold-a")
+            self.assertEqual(response["workshop_lineage_id"], "arid-cold-a")
+            self.assertEqual(Path(response["codex_workflow_home"]),
+                             (container / "arid-cold-a").resolve())
             _write_json_transaction(
                 transaction_dir=repo_root / "workspace" / "orchestrations" / orch,
                 agent_run_id="arid-warm-a2", thread_id="thread-a", context_id="arid-warm-a2",
                 agent_role="substep", status="running")
             rows = {r["agent_run_id"]: r for r in _read_session_run_index_consistent(
                 repo_root, orch)["entries"]}
-            self.assertEqual(rows["arid-warm-a2"]["codex_lineage_id"], "arid-cold-a")
+            self.assertEqual(rows["arid-warm-a2"]["workshop_lineage_id"], "arid-cold-a")
             self.assertFalse((container / "arid-warm-a2").exists())
 
             # A second COLD launch is a sibling lineage, and the container holds only lineages.
+            _prepare_workshop_lineage(repo_root, orch, "arid-cold-b", backend="codex")
             _launch("arid-cold-b")
             self.assertEqual(sorted(p.name for p in container.iterdir()),
                              ["arid-cold-a", "arid-cold-b"])
 
             # WARM against a lineage nobody started: the sentinel, and no launch record.
-            missing = _launch("arid-warm-x", codex_lineage_id="arid-never")
-            self.assertEqual(missing, {"codex_lineage_home_missing": True,
-                                       "codex_lineage_id": "arid-never"})
+            missing = _launch("arid-warm-x", workshop_lineage_id="arid-never")
+            self.assertEqual(missing, {"workshop_lineage_home_missing": True,
+                                       "workshop_lineage_id": "arid-never"})
             self.assertFalse((repo_root / "workspace" / "orchestrations" / orch / "launches"
                               / "arid-warm-x.request.json").exists())
             self.assertFalse((container / "arid-never").exists())
@@ -2216,6 +2345,8 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     "checks": self._codex_launch_checks(),
                 },
             )
+            _prepare_workshop_lineage(repo_root, "orch_001", "substep_run_plan_generate_001",
+                                      backend="codex")
             launch_refs = record_launch(
                 repo_root=repo_root,
                 orchestration_id="orch_001",
@@ -2229,6 +2360,8 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     "step": "compile",
                     "substep": "generate",
                     **_PURE_GENERATE_OVERRIDE,
+                    "workshop_provider": "codex_cli",
+                    "workshop_lineage_id": "substep_run_plan_generate_001",
                     "pure_context": _PURE_COMPILE_CONTEXT,
                     "orchestration_id": "orch_001",
                     "parent_agent_run_id": "orch_run_001",
@@ -2236,7 +2369,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                     "pipeline_ref": "workspace/pipelines/problem__shallow_water2d__0.3.0/fortran_cpu/shallow-water2d_20260415_001",
                     "dependency_ref": "spec/problem/shallow_water2d/deps.yaml",
                     "launch_prompt_full": _pure_compile_generate_prompt(
-                        "substep_run_plan_generate_001"),
+                        "substep_run_plan_generate_001", provider="codex_cli"),
                 },
                 response_payload={
                     "agent_run_id": "substep_run_plan_generate_001",
@@ -11028,7 +11161,7 @@ def _launchable_preflight_dict(**extra: object) -> dict[str, object]:
             {"name": "sandbox_bwrap_userns", "pass": True},
             {"name": "sandbox_bwrap_exec", "pass": True},
             {"name": "codex_exec_json_streaming", "pass": True},
-            {"name": "codex_exec_pure_isolation_flags", "pass": True},
+            {"name": "codex_workshop_flag_set_available", "pass": True},
             {"name": "codex_exec_resume", "pass": True},
             {"name": "codex_prompt_stdin", "pass": True},
             {"name": "codex_project_hooks_validated", "pass": True},
@@ -12140,7 +12273,8 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             self.assertEqual(out.get("blocking_policy_scope"), "session_policy_missing")
 
     def test_record_launch_rejects_missing_step_or_node_key(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+                os.environ, {"CODEX_HOME": str(seed_codex_auth(Path(tmp) / "codex_auth"))}):
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="wf5")
             _mark_dependencies_ready(repo_root, "wf5")
@@ -12160,7 +12294,8 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 "skill_name": "workflow-compile-generate",
                 "skill_ref": "skills/workflow-compile-generate/SKILL.md",
                 "skill_must_read_refs": "",
-                "leaf_mode": "pure",
+                "leaf_mode": "workshop",
+                "workshop_provider": "codex_cli",
                 "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
                 "pure_context": _PURE_GENERATE_CONTEXT,
                 "allowed_output_paths": [],
@@ -12171,8 +12306,8 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             }
             # WHERE each refusal comes from, since Z4 (issue #171). `node_key` is still
             # refused by `record_launch`'s own required-field guard. `step` is refused one
-            # frame earlier, by the PURE renderer `prepare_launch_request_payload` force-runs
-            # before that guard: the pure template is keyed on `(step, substep)`, so a payload
+            # frame earlier, by the leaf renderer `prepare_launch_request_payload` force-runs
+            # before that guard: the template is keyed on `(step, substep)`, so a payload
             # with no step names no prompt. Both are named refusals that say which field is
             # missing, which is the property this row is about; the agentic renderer used to
             # tolerate the missing step and let the guard speak for both.
@@ -12182,7 +12317,13 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 req["step"] = "compile"
                 req["substep"] = "generate"
                 req["node_key"] = "problem/shallow_water2d@0.3.0"
-                # Rendered from the COMPLETE payload, THEN the field is removed: the pure
+                # A cold workshop launch starts its own lineage, whose home the host prepares
+                # before recording it (issue #534); without one `record_launch` refuses the
+                # launch on that ground before reaching the field guard this row is about.
+                req["workshop_lineage_id"] = f"child_missing_{missing_key}"
+                _prepare_workshop_lineage(repo_root, "wf5", f"child_missing_{missing_key}",
+                                          backend="codex")
+                # Rendered from the COMPLETE payload, THEN the field is removed: the workshop
                 # renderer keys its template on `(step, substep)` and cannot render a payload
                 # with no step, so rendering after the deletion would refuse it there instead
                 # of at the `record_launch` guard this row is about.
@@ -12259,7 +12400,8 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
             self.assertEqual(out.get("next_action"), "stop_before_phase_body")
 
     def test_record_launch_enforces_workflow_launch_check_fail_closed(self) -> None:
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+                os.environ, {"CODEX_HOME": str(seed_codex_auth(Path(tmp) / "codex_auth"))}):
             repo_root = Path(tmp)
             init_orchestration(repo_root=repo_root, orchestration_id="wf4")
             _mark_dependencies_ready(repo_root, "wf4")
@@ -12284,7 +12426,9 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 "skill_name": "workflow-compile-generate",
                 "skill_ref": "skills/workflow-compile-generate/SKILL.md",
                 "skill_must_read_refs": "",
-                "leaf_mode": "pure",
+                "leaf_mode": "workshop",
+                "workshop_lineage_id": "plan_sub_fail_closed",
+                "workshop_provider": "codex_cli",
                 "pure_language": "fortran",
                 "pure_parallel": "openmp",
                 "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
@@ -12308,7 +12452,9 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                         "skill_name": "workflow-compile-generate",
                         "skill_ref": "skills/workflow-compile-generate/SKILL.md",
                         "skill_must_read_refs": "",
-                        "leaf_mode": "pure",
+                        "leaf_mode": "workshop",
+                        "workshop_lineage_id": "plan_sub_fail_closed",
+                        "workshop_provider": "codex_cli",
                         "pure_language": "fortran",
                         "pure_parallel": "openmp",
                         "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
@@ -12321,6 +12467,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                     }
                 ),
             }
+            _prepare_workshop_lineage(repo_root, "wf4", "plan_sub_fail_closed", backend="codex")
             with self.assertRaisesRegex(RuntimeError, "workflow-launch-check"):
                 record_launch(
                     repo_root=repo_root,
@@ -12406,12 +12553,16 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
         """record_launch the request and return the persisted capability document. Centralizes
         the capability-file path convention so the four perm-gate tests share one literal.
 
-        An LLM pair's request gets the PURE override the conductor applies last
-        (`build_launch_request(..., pure_leaf=True)`), because since Z4 (issue #171) only a
-        pure or deterministic request renders at all and `build_launch_request` alone stops
-        short of it. A deterministic request is passed through untouched."""
+        An LLM pair's request gets the leaf override the conductor applies last
+        (`build_launch_request(..., pure_leaf=True)`, a claude WORKSHOP request since issue
+        #534 PR-J4-b), because only a workshop or deterministic request renders at all and
+        `build_launch_request` alone stops short of it; its cold lineage is the child's own and
+        its home is prepared first, as the host does. A deterministic request is passed
+        through untouched."""
         if not req.get("deterministic"):
-            req = {**req, **_pure_override_for(req.get("step"), req.get("substep"))}
+            req = {**req, **_pure_override_for(req.get("step"), req.get("substep")),
+                   "workshop_lineage_id": child}
+            _prepare_workshop_lineage(repo_root, orchestration_id, child)
         record_launch(
             repo_root=repo_root,
             orchestration_id=orchestration_id,
@@ -13059,7 +13210,9 @@ class DependencyFactsRenderTests(unittest.TestCase):
         self.assertEqual(_build_dependency_facts(det), "")
 
     def test_the_pure_judge_prompt_carries_the_block_and_a_no_dep_one_does_not(self) -> None:
-        """The block reaches the leaf through the PURE renderer's `<dependency_facts>` slot.
+        """The dependency-facts block `_build_dependency_facts` builds, which a workshop
+        lineage receives as a seed file of its tree (`Conductor` seeds it; the pure renderer's
+        `<dependency_facts>` slot that first carried it went in issue #534 PR-J4-b).
 
         This row used to render the agentic `substep agent` template and assert the block
         landed in it. That template went with the agentic leaf (Z4, issue #171), so what it
@@ -14952,6 +15105,7 @@ class ClaudeSequentialLaunchTests(unittest.TestCase):
     no caller can reason about, so the status has to say so."""
 
     def _launch(self, repo_root: Path, arid: str) -> None:
+        _prepare_workshop_lineage(repo_root, "orch_seq_001", arid)
         record_launch(
             repo_root=repo_root,
             orchestration_id="orch_seq_001",
@@ -15044,12 +15198,13 @@ class RecordTimeoutTests(unittest.TestCase):
         `response_extra` merges extra keys into the launch response payload, for callers
         pinning what the runtime does with fields it has no schema for.
 
-        The base launch is the PURE `generate.generate` one, because since Z4 (issue #171)
-        every LLM leaf is pure and the renderer refuses a request that is neither pure nor
-        deterministic. `deterministic=True` builds the in-process `generate.gate` launch
-        instead — the shape a caller needs when its subject is the write-authorization
-        surface, which a pure launch has none of (no output manifest, hence no
-        `allowed_tmp_root`, hence no authorized scratch)."""
+        The base launch is the claude WORKSHOP `generate.generate` one, because every LLM leaf
+        is a workshop leaf since issue #534 PR-J4-b and the renderer refuses a request that is
+        neither workshop nor deterministic; its lineage home is prepared first, as the host
+        does. `deterministic=True` builds the in-process `generate.gate` launch instead — the
+        shape a caller needs when its subject is the write-authorization surface, which a leaf
+        launch has none of (no output manifest, hence no `allowed_tmp_root`, hence no
+        authorized scratch)."""
         init_orchestration(
             repo_root=repo_root,
             orchestration_id="orch_to_001",
@@ -15077,6 +15232,9 @@ class RecordTimeoutTests(unittest.TestCase):
             },
         )
         substep_arid = "substep_run_to_001"
+        if not deterministic:
+            _discard_isolated_homes("orch_to_001")
+            _prepare_workshop_lineage(repo_root, "orch_to_001", substep_arid)
         record_launch(
             repo_root=repo_root,
             orchestration_id="orch_to_001",
@@ -15161,33 +15319,28 @@ class RecordTimeoutTests(unittest.TestCase):
         return arid
 
     def test_record_launch_prepares_no_claude_home_for_any_launch(self) -> None:
-        """Z4 (issue #171): the private CLAUDE_CONFIG_DIR existed for the AGENTIC leaf, to
-        keep the operator's configuration out. With that leaf retired, NO launch prepares one
-        — not the pure leaf (`--safe-mode`, no tools, no hooks) and not the deterministic
-        in-process substep, which spawns no process at all.
+        """Z4 (issue #171): the private CLAUDE_CONFIG_DIR of the AGENTIC leaf, prepared by
+        `record_launch` itself, went with that leaf. What prepares a claude home now is the
+        HOST, for a `workshop leaf` lineage, before it records the launch (issue #534,
+        `Conductor._open_workshop_lineage`); `record_launch` only finds it (warm) and refuses
+        a cold launch whose home was never prepared (pinned in
+        `test_workshop_launch.py`). So: the deterministic in-process substep, which spawns no
+        process at all, gets no home and no container; and a workshop launch's record carries
+        none of the agentic home's fields (its `claude_workflow_home` names the lineage home
+        the host prepared), and `record_launch` adds no lineage home beside that one.
 
         The deterministic half is the one that is easy to miss: `record_launch` has no
-        deterministic branch, so such a launch is simply `not is_pure` and used to take the
-        agentic arm — preparing a home, and building a read-write profile, for a process that
-        never exists. Both are false records, which is why the assertion is on the directory
-        as well as on the fields."""
+        deterministic branch, so such a launch is simply not a workshop one, and the agentic
+        arm used to prepare a home, and build a read-write profile, for a process that never
+        exists. Both are false records, which is why the assertion is on the directory as well
+        as on the fields. (The pure half this row also had — "a pure launch prepares no home"
+        — went with the pure leaf, issue #534 PR-J4-b.)"""
         from tools.operator_private_root import workflow_homes_root
-        for oid, pure in (("orch_to_001", True), ("orch_det_001", False)):
+        for oid, workshop in (("orch_to_001", True), ("orch_det_001", False)):
             with tempfile.TemporaryDirectory() as td:
                 repo_root = Path(td)
-                if pure:
-                    arid = self._setup_substep_launch(repo_root, request_extra={
-                        "leaf_mode": "pure",
-                        "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
-                        "allowed_output_paths": [],
-                        "pure_context": {
-                            "harness_capabilities": "{}",
-                            "target_profile": "{}",
-                            "ir_document": "algorithm:\n  state_variables: [h]\n",
-                            "tests_document": "- test: conserves mass",
-                            "runner_document": "program p\nend program p\n",
-                        },
-                    })
+                if workshop:
+                    arid = self._setup_substep_launch(repo_root)
                 else:
                     arid = self._setup_deterministic_launch(repo_root)
                 orch_root = repo_root / "workspace" / "orchestrations" / oid
@@ -15196,11 +15349,21 @@ class RecordTimeoutTests(unittest.TestCase):
                         encoding="utf-8"))
                 meta = json.loads(
                     (orch_root / "orchestration_meta.json").read_text(encoding="utf-8"))
-                self.assertNotIn("claude_workflow_home", meta, msg=oid)
-                for key in ("claude_workflow_home", "claude_settings_sha256",
-                            "claude_credentials_bound", "claude_home_generation"):
+                for key in ("claude_settings_sha256", "claude_credentials_bound",
+                            "claude_home_generation"):
                     self.assertNotIn(key, recorded, msg=f"{oid}/{key}")
-                self.assertFalse((workflow_homes_root() / oid / "claude").exists(), msg=oid)
+                container = workflow_homes_root() / oid / "claude"
+                if workshop:
+                    # The home it records is the lineage home the host prepared, found warm.
+                    self.assertEqual(Path(recorded["claude_workflow_home"]),
+                                     (container / arid).resolve(), msg=oid)
+                    self.assertEqual(
+                        sorted(p.name for p in container.iterdir() if p.is_dir()), [arid],
+                        msg=oid)
+                else:
+                    self.assertNotIn("claude_workflow_home", recorded, msg=oid)
+                    self.assertNotIn("claude_workflow_home", meta, msg=oid)
+                    self.assertFalse(container.exists(), msg=oid)
 
     def test_deterministic_launch_records_no_sandbox(self) -> None:
         """A launch that spawns no process has no sandbox, and says so.
@@ -15228,10 +15391,10 @@ class RecordTimeoutTests(unittest.TestCase):
         artifact — `#env` and the `--setenv` map of `#rendered_command` — because the
         rendered argv is the only thing that reflects the wiring rather than restating it.
 
-        Since Z4 (issue #171) the launch this drives is the PURE one, so there is no private
-        `CLAUDE_CONFIG_DIR` among the deliverer-owned names — a pure leaf takes `--safe-mode`
-        and `record_launch` prepares no home for it. The sibling row below keeps its own
-        `request_extra` and adds the host-poison control.
+        The launch this drives is the claude WORKSHOP one (issue #534 PR-J4-b; every leaf
+        profile is a workshop lineage's), so its lineage's `CLAUDE_CONFIG_DIR` is among the
+        deliverer-owned names (`_BACKEND_HOME_ENV_VARS`). The sibling row below adds the
+        host-poison control for the `child_env=None` fallback.
         """
         authored = {"PATH": "/usr/bin:/bin", "HOME": "/tmp/leaf-home",
                     "LANG": "C.UTF-8", "PYTHONPATH": "/repo",
@@ -15257,41 +15420,6 @@ class RecordTimeoutTests(unittest.TestCase):
             self.assertEqual(setenv, profile["env"])
             self.assertEqual(argv.count("--clearenv"), 1)
             self.assertLess(argv.index("--clearenv"), argv.index("--setenv"))
-
-    def test_a_PURE_launch_threads_the_env_into_its_read_only_profile_too(self) -> None:
-        """The `is_pure` branch builds a DIFFERENT profile function, and it was a
-        surviving mutation: reverting its `child_env=` left the suite green, because the
-        threading test above drives only the agentic branch. A pure leaf is confined more
-        tightly than an agentic one, not less, so it is the wrong one to leave inheriting.
-        """
-        authored = {"PATH": "/usr/bin:/bin", "HOME": "/tmp/leaf-home", "LANG": "C.UTF-8",
-                    "ATMOFAB_ORCHESTRATION_ID": "orch_to_001",
-                    "ATMOFAB_CHILD_AGENT_RUN_ID": "substep_run_to_001"}
-        with mock.patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}):
-            with tempfile.TemporaryDirectory() as td:
-                repo_root = Path(td)
-                arid = self._setup_substep_launch(
-                    repo_root,
-                    child_env=dict(authored),
-                    request_extra={
-                        "leaf_mode": "pure",
-                        "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
-                        "allowed_output_paths": [],
-                        "pure_context": {
-                            "harness_capabilities": "{}",
-                            "target_profile": "{}",
-                            "ir_document": "algorithm:\n  state_variables: [h]\n",
-                            "tests_document": "- test: conserves mass",
-                            "runner_document": "program p\nend program p\n",
-                        },
-                    })
-                orch_root = repo_root / "workspace" / "orchestrations" / "orch_to_001"
-                profile = json.loads((orch_root / "sandbox_profiles" /
-                                      f"{arid}.json").read_text(encoding="utf-8"))
-        self.assertTrue(profile.get("readonly"), "expected the pure read-only profile")
-        self.assertEqual({k: v for k, v in profile["env"].items() if k != "TMPDIR"},
-                         authored)
-        self.assertNotIn("ANTHROPIC_BASE_URL", profile["env"])
 
     def test_the_cli_hands_the_parsed_stdin_env_to_record_launch(self) -> None:
         """The dispatch's `child_env=child_env_payload` was a surviving mutation: parsing
@@ -15338,8 +15466,9 @@ class RecordTimeoutTests(unittest.TestCase):
         self.assertIsNone(seen.get("child_env"))
 
     def test_the_cli_hands_the_lineage_id_to_record_launch_and_prints_the_sentinel(self) -> None:
-        """The `--codex-lineage-id` flag and its dispatch, pinned on the boundary the
-        conductor crosses: the conductor spawns this CLI, so a flag that parses and a
+        """The `--workshop-lineage-id` flag and its dispatch (the `--codex-lineage-id` this row
+        first pinned went with the pure codex lineage, issue #534 PR-J4-b), pinned on the
+        boundary the conductor crosses: the conductor spawns this CLI, so a flag that parses and a
         dispatch that forwards it are the two hunks nothing else observes (both survived a
         hunk-level sweep at round 0). The sentinel is asserted on STDOUT under the default
         terse projection, because that is the only channel the conductor reads it from."""
@@ -15348,8 +15477,8 @@ class RecordTimeoutTests(unittest.TestCase):
 
         def fake_record_launch(**kwargs):
             seen.update(kwargs)
-            return {"codex_lineage_home_missing": True,
-                    "codex_lineage_id": kwargs.get("codex_lineage_id")}
+            return {"workshop_lineage_home_missing": True,
+                    "workshop_lineage_id": kwargs.get("workshop_lineage_id")}
 
         response = json.dumps({"agent_run_id": "c", "agent_session_id": "c",
                                "started_at": "2026-08-20T00:00:00Z", "backend": "codex"})
@@ -15360,13 +15489,13 @@ class RecordTimeoutTests(unittest.TestCase):
                 "record-launch", "--repo-root", ".", "--orchestration-id", "o",
                 "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
                 "--request-json", "{}", "--response-json", response,
-                "--codex-lineage-id", "lineage-1",
+                "--workshop-lineage-id", "lineage-1",
             ])
         self.assertEqual(rc, 0, buf.getvalue())
-        self.assertEqual(seen.get("codex_lineage_id"), "lineage-1")
+        self.assertEqual(seen.get("workshop_lineage_id"), "lineage-1")
         printed = json.loads(buf.getvalue())
-        self.assertEqual(printed, {"codex_lineage_home_missing": True,
-                                   "codex_lineage_id": "lineage-1"})
+        self.assertEqual(printed, {"workshop_lineage_home_missing": True,
+                                   "workshop_lineage_id": "lineage-1"})
         # Control: without the flag the parameter is None.
         seen.clear()
         with mock.patch.object(ort, "record_launch", fake_record_launch), \
@@ -15376,7 +15505,17 @@ class RecordTimeoutTests(unittest.TestCase):
                 "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
                 "--request-json", "{}", "--response-json", response,
             ])
-        self.assertIsNone(seen.get("codex_lineage_id"))
+        self.assertIn("workshop_lineage_id", seen)
+        self.assertIsNone(seen.get("workshop_lineage_id"))
+        # The retired flag is refused by the parser, not silently accepted.
+        with self.assertRaises(SystemExit), redirect_stdout(io.StringIO()), \
+                redirect_stderr(io.StringIO()):
+            runtime_main([
+                "record-launch", "--repo-root", ".", "--orchestration-id", "o",
+                "--parent-agent-run-id", "p", "--child-agent-run-id", "c",
+                "--request-json", "{}", "--response-json", response,
+                "--codex-lineage-id", "lineage-1",
+            ])
 
     def test_a_launch_without_a_threaded_env_still_excludes_the_host_poison(self) -> None:
         """The `child_env=None` path (a conductor-less caller) must not be a way back in:
@@ -22388,12 +22527,13 @@ class R5ExemplarConductorGatingTests(unittest.TestCase):
     The decision moved with the leaf model. Until Z4 (issue #171) it was a condition in the
     AGENTIC arm of `run_substep` — `phase == "generate" and substep == "generate" and not
     warm_resume` — and this class drove `run_substep` to observe it. That arm is gone; the
-    producer loop is the PURE one, and its `_PureProducerSpec.wants_exemplar` is the single
-    place the answer is written down (`_run_pure_producer_substep`:
+    producer loop is the WORKSHOP one (the pure loop that first carried this line went in
+    issue #534 PR-J4-b), and its `_PureProducerSpec.wants_exemplar` is the single place the
+    answer is written down (`_run_workshop_producer_substep`:
     `exemplar = self._resolve_exemplar(refs) if spec.wants_exemplar else None`).
 
     So the spec is what this class reads. Driving `run_substep` instead would mean standing up
-    a whole node on disk — the pure loop assembles its closed context before it ever reaches
+    a whole node on disk — the loop assembles its closed context before it ever reaches
     the exemplar line — to observe one boolean, and the assembly failing would look exactly
     like the exemplar not being wanted. The call SITE (that `wants_exemplar` is what gates the
     resolution, and that a repair turn does not attach it) is pinned where the loop is, in
@@ -23307,9 +23447,27 @@ class MultiProviderPreflightTests(unittest.TestCase):
     must behave exactly as it did."""
 
     def _config(self, tmp: Path, text: str) -> Path:
+        """Write `text` as the run's configuration, completed by `workshop_yaml` (every LLM
+        substep entry and its bounds, issue #534 PR-J4-b): this class's subject is the
+        preflight's provider map, not a configuration rule, so it writes only the providers
+        it is about."""
         path = tmp / "llm.yaml"
-        path.write_text(text, encoding="utf-8")
+        path.write_text(_workshop_yaml(text), encoding="utf-8")
         return path
+
+    def _stub_workshop_row(self) -> None:
+        """Stub the CLI's workshop `--help` row (`_workshop_flag_set_check`), which
+        `probe_all_providers` and `_reprobe_recorded_providers` run on EVERY CLI surface since
+        issue #534 PR-J4-b: it runs the real CLI (CI has neither `claude` nor `codex`, and
+        these rows name wrapper commands that do not exist), and it is not what these rows
+        are about. Passing, so a row's launchability assertion is decided by the probe it
+        drives and not by this row failing."""
+        patcher = patch.object(ort, "_workshop_flag_set_check",
+                               lambda token, *a, **k: {
+                                   "name": f"{token}_workshop_flag_set_available",
+                                   "pass": True, "detail": "stubbed"})
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     _MIXED = ("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
               "phases:\n  generate:\n    substeps:\n      generate:\n"
@@ -23545,6 +23703,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
             self.assertIn("changed between the caller loading it", str(ctx.exception))
 
     def test_preflight_accepts_the_snapshot_it_was_given(self) -> None:
+        self._stub_workshop_row()
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             cfg = self._config(Path(tmp), "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n")
@@ -23565,14 +23724,16 @@ class MultiProviderPreflightTests(unittest.TestCase):
         """Hashing the path and then re-reading it to probe approves one version and certifies
         another. Under two wrapper commands on one backend token that is a launch the
         `providers` map never saw, so the two must share one snapshot."""
+        self._stub_workshop_row()
         import tools.llm_config as _lc
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp), "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                                           "  command: wrapA\n")
             snapshot = _lc.load_llm_config(cfg, content=cfg.read_bytes())
             # The file moves on after the snapshot was taken.
-            cfg.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  command: wrapB\n",
-                           encoding="utf-8")
+            cfg.write_text(_workshop_yaml(
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  command: wrapB\n"),
+                encoding="utf-8")
             seen: list = []
 
             def _probe(**kw):
@@ -23637,6 +23798,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         The override is a no-op in VALUE today (nothing in `run_workflow` overrides the file
         since the run-wide flag trio was removed), so this test supplies one directly — that is
         what keeps the transport from being certified only by a case where it cannot matter."""
+        self._stub_workshop_row()
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp), "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n")
             seen: list = []
@@ -23657,6 +23819,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         and refreshing it leaves a mixed configuration's other providers treated as fresh
         indefinitely — and `record-launch` then creates durable child state for a provider that
         has since become unavailable."""
+        self._stub_workshop_row()
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             payload = _launchable_preflight_dict(backend="claude")
@@ -23689,6 +23852,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         """Two entries can share a backend token with different commands; the initial probe
         AND-s them. The row is what the TTL re-probe reconstructs from, so recording only the
         first command would silently stop checking the second after the first expiry."""
+        self._stub_workshop_row()
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp),
                                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  command: wrapA\n"
@@ -23708,6 +23872,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
             self.assertEqual(seen, ["wrapA", "wrapB"])
 
     def test_a_row_predating_surfaces_degrades_to_the_one_it_names(self) -> None:
+        self._stub_workshop_row()
         seen: list = []
 
         def _probe(**kw):
@@ -23734,7 +23899,12 @@ class MultiProviderPreflightTests(unittest.TestCase):
             path = repo_root / "workspace/orchestrations/orch_001/preflight.json"
             probed = _launchable_preflight_dict(backend="claude")
             probed["probe_command"] = "oldwrapper"
-            with patch.object(ort, "probe_execution_platform", return_value=probed):
+            # The re-probe runs every recorded CLI surface's workshop `--help` row too (issue
+            # #534 PR-J4-b), which would run `oldwrapper`; that row is not this one's subject.
+            with patch.object(ort, "probe_execution_platform", return_value=probed), \
+                    patch.object(ort, "_workshop_flag_set_check",
+                                 lambda *a, **k: {"name": "claude_workshop_flag_set_available",
+                                                  "pass": True, "detail": "stubbed"}):
                 ort._run_live_probe_and_update(
                     repo_root, "orch_001",
                     json.loads(path.read_text(encoding="utf-8")))
@@ -23746,6 +23916,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
 
     def test_two_entries_under_one_token_are_anded(self) -> None:
         """Same backend behind two commands: the token is launchable only if BOTH are."""
+        self._stub_workshop_row()
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp),
                                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  command: claude\n"
@@ -23830,14 +24001,27 @@ class MultiProviderPreflightTests(unittest.TestCase):
 
     # --- record_launch: the token comes from THIS launch --------------------------------
 
+    #: The `workshop_provider` a launch on each response backend token names, and the
+    #: lineage-home backend its cold home is prepared under (`pure_leaf.WORKSHOP_LINEAGE_
+    #: BACKENDS`).
+    _WORKSHOP_PROVIDER = {"claude": ("claude_cli", "claude"),
+                          "openai_compatible": ("openai_compatible", "http"),
+                          "anthropic_api": ("anthropic_api", "http")}
+
     def _launch(self, repo_root: Path, response_backend: str, arid: str,
-                *, pure: bool = True, extra_response: dict | None = None) -> dict:
-        """A real `record_launch`. Pure by default: an HTTP provider is admissible only for a
-        pure leaf, and `record_launch` now asserts that itself."""
+                *, workshop: bool = True, extra_response: dict | None = None) -> dict:
+        """A real `record_launch`. A cold WORKSHOP `generate.generate` launch by default (every
+        leaf is one since issue #534 PR-J4-b, and an HTTP provider is admissible only for one,
+        which `record_launch` asserts itself), its lineage home prepared first as the host
+        does. `workshop=False` builds a launch that is neither workshop nor deterministic."""
         from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
-        if pure:
+        if workshop:
+            provider, lineage_backend = self._WORKSHOP_PROVIDER[response_backend]
+            _prepare_workshop_lineage(repo_root, "orch_001", arid, backend=lineage_backend)
             request: dict = {
-                "leaf_mode": "pure",
+                "leaf_mode": "workshop",
+                "workshop_provider": provider,
+                "workshop_lineage_id": arid,
                 "pure_language": "fortran",
                 "pure_parallel": "openmp",
                 "agent_model": "some-model",
@@ -23944,7 +24128,8 @@ class MultiProviderPreflightTests(unittest.TestCase):
             self.assertIs(response["sandbox_enforced"], False)
 
     def test_a_cli_launch_still_gets_its_sandbox_profile(self) -> None:
-        """The control: the skip is keyed on the provider, not on `is_pure`."""
+        """The control: the skip is keyed on the provider, not on the leaf kind (both
+        launches are workshop ones)."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._mixed_preflight(repo_root)
@@ -23983,7 +24168,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
                     "step": "generate",
                     "substep": "generate",
                     "output_refs": [],
-                    "result_summary": "pure_generate: bundle accepted",
+                    "result_summary": "workshop_generate: bundle accepted",
                 })
             rows = [json.loads(ln) for ln in
                     (repo_root / "workspace/orchestrations/orch_001/agent_runs.jsonl")
@@ -24025,20 +24210,20 @@ class MultiProviderPreflightTests(unittest.TestCase):
                     })
             self.assertIn("sandbox_runtime=bwrap", str(ctx.exception))
 
-    def test_an_http_token_on_a_non_pure_launch_is_refused(self) -> None:
+    def test_an_http_token_on_a_non_workshop_launch_is_refused(self) -> None:
         """`record_launch` is the authorization gate; it must not be the one layer that assumes
-        the config and conductor checks ran. Since issue #534 PR-J3-b a WORKSHOP request is
-        admitted too (`test_workshop_launch.HttpWorkshopRecordLaunchTests` drives one); a launch
-        that is neither is refused."""
+        the config and conductor checks ran. A WORKSHOP request is what it admits (issue #534
+        PR-J3-b; the pure leaf it also admitted went in PR-J4-b, and the launches the other
+        rows of this class record are workshop ones); a launch that is not one is refused."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._mixed_preflight(repo_root)
             before = self._tree(repo_root)
             with self.assertRaises(RuntimeError) as ctx:
                 self._launch(repo_root, "openai_compatible", "substep_run_agentic_001",
-                             pure=False)
-            self.assertIn("admissible only for a pure or a workshop leaf; this launch is "
-                          "neither", str(ctx.exception))
+                             workshop=False)
+            self.assertIn("admissible only for a workshop leaf; this launch is not one",
+                          str(ctx.exception))
             # AND it must refuse before any durable launch state — the same rule the
             # build-recurrence guard and the codex-home transaction obey. Placed inside the
             # sandbox block (where it first landed) it raised only after the capability,
@@ -24312,7 +24497,7 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         Renaming, adding or deleting a test without classifying it fails here — which is
         exactly what silently happened three times while the census lived in prose.
         `test_every_captured_production_payload_declares_the_demanded_role` is classified
-        SAMPLE-driven deliberately: it globs the fixture corpus and hard-asserts 7, so
+        SAMPLE-driven deliberately: it globs the fixture corpus and hard-asserts 8, so
         mutating either definition leaves it passing (measured, not assumed)."""
         actual = {
             name for name in dir(type(self))
@@ -24380,7 +24565,8 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         `test_reproduces_every_real_substep_payload`; on its own this test would not notice
         the conductor changing. Four substeps have no captured payload
         (`compile.static`, `generate.gate`, `validate.pre_judge`, `validate.post_judge`),
-        so this covers the seven that exist, not every substep the workflow launches."""
+        so this covers the eight that exist (the escalate diagnostician's `validate.diagnose`
+        among them), not every substep the workflow launches."""
         from tools.orchestration_runtime import (
             _required_child_agent_kind,
             _validate_launch_request_payload,
@@ -24390,28 +24576,25 @@ class AgentRoleFailClosedTests(unittest.TestCase):
             Path(__file__).resolve().parent / "data" / "conductor_launch_requests"
         )
         captured = sorted(fixture_dir.glob("*.request.json"))
-        # NINE: two deterministic captures and, since the re-capture that closed the
-        # `TODO.md` item issue #171 PR-1 left, five REDACTED pure ones — the role field is
-        # verbatim in a redaction, so the LLM half of the role rule is covered again — and two
-        # redacted WORKSHOP ones (issue #534). `BuildLaunchRequestTest`'s docstring carries the
-        # provenance.
-        self.assertEqual(len(captured), 9, "captured payload set changed; revisit coverage")
-        from tools.pure_leaf import (
-            PURE_PROMPT_CONTRACT_VERSION,
-            WORKSHOP_PROMPT_CONTRACT_VERSION,
-        )
+        # EIGHT: two deterministic captures and six redacted WORKSHOP ones (issue #534) — the
+        # role field is verbatim in a redaction, so the LLM half of the role rule is covered.
+        # The five pure captures went with the pure leaf (issue #534 PR-J4-b), replaced by
+        # workshop captures of their pairs, plus the escalate diagnostician's
+        # (`validate.diagnose`). `BuildLaunchRequestTest`'s docstring carries the provenance.
+        self.assertEqual(len(captured), 8, "captured payload set changed; revisit coverage")
+        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        modes = {json.loads(p.read_text(encoding="utf-8")).get("leaf_mode") for p in captured}
+        self.assertEqual(modes, {None, "workshop"}, "a capture of a retired leaf model")
         for path in captured:
             payload = json.loads(path.read_text(encoding="utf-8"))
-            if payload.get("leaf_mode") == "pure":
+            if payload.get("leaf_mode") == "workshop":
                 # A capture carries the contract version of ITS run and the validator demands
                 # the current one exactly (`_validate_pure_launch_request_payload`); the
                 # substitution is made HERE, in the test, so the tracked fixture stays a capture
-                # (`test_workflow_conductor.BuildLaunchRequestTest`, `_HISTORICAL_KEYS`).
-                payload = {**payload, "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION}
-            if payload.get("leaf_mode") == "workshop":
-                # The same substitution, and the provider a `workshop-1` capture predates.
+                # (`test_workflow_conductor.BuildLaunchRequestTest`, `_HISTORICAL_KEYS`) — and
+                # the provider a `workshop-1` capture predates.
                 payload = {**payload,
-                           "prompt_contract_version": WORKSHOP_PROMPT_CONTRACT_VERSION,
+                           "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
                            "workshop_provider": payload.get("workshop_provider", "claude_cli")}
             with self.subTest(fixture=path.name):
                 self.assertEqual(
@@ -25547,7 +25730,12 @@ class ClaudeRosterProbeRepoRootPropagationTests(unittest.TestCase):
             return {"backend": kwargs.get("backend"), "checks": [], "probe_command": "",
                     "status": "fail"}
 
-        with mock.patch.object(ort, "probe_execution_platform", spy):
+        # Every CLI surface also takes its CLI's workshop `--help` row (issue #534 PR-J4-b),
+        # which runs the real CLI; CI has none, and that row is not this class's subject.
+        with mock.patch.object(ort, "probe_execution_platform", spy), \
+                mock.patch.object(ort, "_workshop_flag_set_check",
+                                  lambda *a, **k: {"name": "claude_workshop_flag_set_available",
+                                                   "pass": True, "detail": "stubbed"}):
             call()
         return seen
 
@@ -25557,9 +25745,10 @@ class ClaudeRosterProbeRepoRootPropagationTests(unittest.TestCase):
             root = Path(td)
             config = load_llm_config(
                 root / "llm.yaml",
-                content=("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
-                         "phases:\n  generate:\n    substeps:\n      generate:\n"
-                         "        command: claude --tools Monitor\n").encode("utf-8"))
+                content=_workshop_yaml(
+                    "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
+                    "phases:\n  generate:\n    substeps:\n      generate:\n"
+                    "        command: claude --tools Monitor\n").encode("utf-8"))
             seen = self._seen_repo_roots(
                 lambda: ort.probe_all_providers(config=config, repo_root=root))
         # EVERY surface, not just the first. `assertTrue(seen)` left a regression that
@@ -25737,31 +25926,42 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                 (secret_root / "homes" / "orch_d").stat().st_mode & 0o777, 0o700)
 
     def test_a_home_recorded_at_an_old_location_is_reused_rather_than_migrated(self) -> None:
-        """No migration code, on purpose: a live pre-issue-#64 container keeps being used.
+        """No migration code, on purpose: a live container recorded elsewhere keeps being used.
 
-        A run started before this change recorded a `/tmp` home in its metadata. The
-        reuse branch reads that path and, while the directory is still there, prepares
-        into it — a new lineage lands UNDER it (issue #245) — so `--resume` across the
-        upgrade keeps the tree in one place. Only a container that has VANISHED is
-        re-created, at the new deterministic location. The bwrap side survives the same
-        way: the rw bind for the home is emitted after `--tmpfs /tmp`, so a `/tmp` path is
-        still mountable. A stale `codex_workflow_home_generation` key in such metadata is
-        left as it stands and read by nothing.
-        """
+        A run's metadata records its container. The reuse branch reads that path and, while
+        the directory is still there, prepares into it — a new lineage lands UNDER it (issue
+        #245) — so `--resume` keeps the tree in one place even when the homes root in force
+        has moved (`ATMOFAB_WORKFLOW_HOMES_ROOT` relocated). Only a container that has
+        VANISHED is re-created, at the new deterministic location. A stale
+        `codex_workflow_home_generation` key in such metadata is left as it stands and read
+        by nothing.
+
+        The recorded container here follows the `<homes-root>/<oid>/codex` layout under an
+        OLD root, because a workshop lineage's paths are derived from its container's
+        grandparent (`workshop_tree.LineagePaths`; the codex lineage is a workshop one since
+        issue #534 PR-J4-b). The pre-issue-#64 `/tmp/atmofab-codex-*` container this row first
+        reused fits no such layout and was reusable only by the pure codex thread lineage,
+        which went with the pure leaf; a run that recorded one is behind the J4-a / J4-b
+        `--resume` barriers."""
         with tempfile.TemporaryDirectory() as td:
             root = self._claude_repo(td)
-            legacy = Path(tempfile.mkdtemp(prefix="atmofab-codex-", dir="/tmp"))
-            self.addCleanup(shutil.rmtree, legacy, True)
-            os.chmod(legacy, 0o700)
+            old_root = Path(td) / "old_homes_root"
+            legacy = old_root / "orch_d" / "codex"
+            legacy.mkdir(parents=True)
+            for level in (old_root, legacy.parent, legacy):
+                os.chmod(level, 0o700)
             meta_path = (root / "workspace" / "orchestrations" / "orch_d"
                          / "orchestration_meta.json")
             meta_path.write_text(
                 json.dumps({"codex_workflow_home": str(legacy),
                             "codex_workflow_home_generation": 3}), encoding="utf-8")
             iso = self._prepare_home(root, "orch_d")
-            self.assertEqual(Path(iso["home"]), legacy / "lineage-d")
+            self.assertEqual(Path(iso["home"]), (legacy / "lineage-d").resolve())
+            self.assertEqual(Path(iso["homes_root"]), old_root.resolve())
             self.assertNotIn("generation", iso)
             self.assertFalse((self._homes_root() / "orch_d").exists())
+            self.assertEqual(json.loads(meta_path.read_text(encoding="utf-8"))
+                             ["codex_workflow_home_generation"], 3)
 
     def test_an_unrecorded_existing_home_is_refused_rather_than_adopted(self) -> None:
         """The exclusive `os.mkdir` is what replaced the mkdtemp randomness.
@@ -25970,12 +26170,14 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                     # writable bind destinations, the one `mkdir` on this path with no
                     # chmod after it, which under umask 0o500 came out 0o200 and leaked a
                     # home between this loop's own iterations because `rmtree` could not
-                    # enter it. That home went with the agentic leaf (Z4, issue #171); the
-                    # codex home creates no subdirectories of its own, so what is left to
-                    # check is the files.
+                    # enter it. That home went with the agentic leaf (Z4, issue #171). The
+                    # codex lineage home is a WORKSHOP one since issue #534 PR-J4-b: its
+                    # files sit in its `config/` (the leaf's `CODEX_HOME`), which is 0700
+                    # like the home.
+                    self.assertEqual(Path(iso["config"]).stat().st_mode & 0o777, 0o700)
                     for name in ("config.toml", "auth.json"):
                         self.assertEqual(
-                            (Path(iso["home"]) / name).stat().st_mode & 0o777, 0o600,
+                            (Path(iso["config"]) / name).stat().st_mode & 0o777, 0o600,
                             msg=f"{name} under umask {umask_value:#o}")
 
     def test_a_home_whose_mode_did_not_take_is_refused_rather_than_used(self) -> None:
@@ -26177,15 +26379,11 @@ class DurableWorkflowHomesTests(unittest.TestCase):
 
             moved = root / "checkout_moved"
             shutil.move(str(repo), str(moved))
-            # The lineage home's `config.toml` records the checkout path (the untrusted
-            # marker), so a moved checkout legitimately produces different bytes and the
-            # verified-source comparison refuses the stale copy. NOTHING in production
-            # removes or re-authors it: a warm codex resume from a moved checkout is
-            # refused with "differs from its verified source" (the rough edge `TODO.md`
-            # records from issue #245's round 3; a cold launch from the moved checkout
-            # works, its lineage being new). It is removed BY HAND here so the row can
-            # reach its subject, the marker refresh, on the warm path.
-            (self._homes_root() / "orch_d" / "codex" / "lineage-d" / "config.toml").unlink()
+            # The workshop lineage's `config/config.toml` marks the lineage's TREE untrusted
+            # (issue #534 PR-J4-b; the pure lineage's marked the checkout path, so a moved
+            # checkout produced different bytes and this row removed the file by hand). The
+            # tree is under the homes root, not the checkout, so a moved checkout leaves the
+            # file's bytes unchanged and the warm path reaches the marker refresh as it is.
             self._prepare_home(moved, "orch_d", resume=True)
             self.assertEqual(json.loads(marker.read_text(encoding="utf-8"))["repo_root"],
                              str(moved.resolve()),
@@ -26226,8 +26424,13 @@ class DurableWorkflowHomesTests(unittest.TestCase):
             (root / "workspace" / "orchestrations" / "orch_d"
              / "orchestration_meta.json").write_text(
                 json.dumps({"codex_workflow_home": str(legacy)}), encoding="utf-8")
-            iso = self._prepare_home(root, "orch_d")
-            self.assertEqual(Path(iso["home"]), legacy / "lineage-d")
+            # A workshop lineage cannot be laid out under a container that fits no
+            # `<homes-root>/<oid>/codex` shape (its paths derive from the container's
+            # grandparent, issue #534 PR-J4-b), so the preparation now fails closed — at the
+            # lineage's work directories (`LineagePaths.make_work_dirs`: the derived home "does
+            # not exist"), i.e. AFTER the reuse branch's re-securing ran, which is the subject.
+            with self.assertRaisesRegex(ValueError, r"lineage home .* does not exist"):
+                self._prepare_home(root, "orch_d")
             self.assertFalse((legacy_parent / WORKFLOW_HOME_OWNER_FILENAME).exists(),
                              "a marker was written beside a pre-branch home")
 
@@ -26243,7 +26446,7 @@ class DurableWorkflowHomesTests(unittest.TestCase):
              / "orchestration_meta.json").write_text(
                 json.dumps({"codex_workflow_home": str(elsewhere)}), encoding="utf-8")
             iso = self._prepare_home(root, "orch_d")
-            self.assertEqual(Path(iso["home"]), elsewhere / "lineage-d")
+            self.assertEqual(Path(iso["home"]), (elsewhere / "lineage-d").resolve())
             self.assertFalse((elsewhere.parent / WORKFLOW_HOME_OWNER_FILENAME).exists(),
                              "a marker was written into a homes tree that is not the "
                              "one this launch resolves")
@@ -26610,6 +26813,58 @@ class DurableWorkflowHomesTests(unittest.TestCase):
                                      "the refusal must arrive before anything is made")
 
 
+def _hand_workshop_profile_fields(root: Path) -> dict:
+    """The fields that make a hand-built profile a claude WORKSHOP one, the only profile
+    `render_bwrap_command` renders since issue #534 PR-J4-b (the pure leaf's read-only one is
+    refused): writable, its workdir its tree, its `CLAUDE_CONFIG_DIR` one of its rw binds and
+    not the tree, one credential file bound read-write onto that home's `.credentials.json`.
+    Every path is created under `root` (outside the profile's `repo_root`), because the
+    renderer checks the credential mapping's two files exist. `env` carries only the home
+    variable; a caller merges it into the env it is about."""
+    lineage = root / "lineage"
+    config, tree = lineage / "config", lineage / "tree"
+    config.mkdir(parents=True)
+    tree.mkdir()
+    (config / ".credentials.json").write_text("", encoding="utf-8")
+    cred = root / "operator.credentials.json"
+    cred.write_text("{}", encoding="utf-8")
+    return {
+        "leaf_mode": ort.WORKSHOP_PROFILE_LEAF_MODE,
+        "readonly": False,
+        "workdir": str(tree),
+        "runtime_rw_bind_paths": [str(config), str(tree)],
+        "runtime_rw_credential_mapping": [str(cred), str(config / ".credentials.json")],
+        "env": {"CLAUDE_CONFIG_DIR": str(config)},
+    }
+
+
+def _workshop_build_kwargs(test: unittest.TestCase, backend_type: str = "claude") -> dict:
+    """The `build_readonly_bwrap_profile` kwargs of a `backend_type` workshop lineage — the
+    only profile the builder builds since issue #534 PR-J4-b — spelled by the production
+    `claude_workshop_profile_kwargs` / `codex_workshop_profile_kwargs` over a lineage layout
+    created under a fresh temporary directory (outside any checkout a caller builds for)."""
+    root = Path(tempfile.mkdtemp()).resolve()
+    test.addCleanup(shutil.rmtree, root, True)
+    config, tree = root / "lineage" / "config", root / "lineage" / "tree"
+    config.mkdir(parents=True)
+    tree.mkdir()
+    if backend_type == "codex":
+        auth = root / "operator-auth.json"
+        auth.write_text("{}", encoding="utf-8")
+        (config / "auth.json").write_text("", encoding="utf-8")
+        (config / "config.toml").write_text("", encoding="utf-8")
+        return ort.codex_workshop_profile_kwargs({
+            "config": str(config), "tree": str(tree), "auth": str(auth),
+            "auth_destination": str(config / "auth.json"),
+            "config_toml": str(config / "config.toml")})
+    cred = root / "operator.credentials.json"
+    cred.write_text("{}", encoding="utf-8")
+    (config / ".credentials.json").write_text("", encoding="utf-8")
+    return ort.claude_workshop_profile_kwargs({
+        "config": str(config), "tree": str(tree), "credentials": str(cred),
+        "credentials_destination": str(config / ".credentials.json")})
+
+
 class LeafEnvAllowlistHygieneTests(unittest.TestCase):
     """The owner constants for the leaf's declared environment (issue #63, PR-B).
 
@@ -26787,14 +27042,21 @@ class LeafEnvAllowlistHygieneTests(unittest.TestCase):
         root = Path(d)
         for sub in ("repo", "ws", "tmp"):
             (root / sub).mkdir()
+        workshop = _hand_workshop_profile_fields(root)
         profile = {
             "repo_root": str(root / "repo"), "tmp_dir": str(root / "tmp"),
             "workspace_tmp_rw_abs": str(root / "ws"),
             "read_roots": [], "write_roots": [],
-            "runtime_ro_bind_paths": [], "runtime_rw_bind_paths": [],
+            "runtime_ro_bind_paths": [],
+            **workshop,
             "env": {"PATH": "/usr/bin:/bin", "TMPDIR": str(root / "ws"),
-                    "MY_ATMOFAB_API_KEY": "sk-live"},
+                    **workshop["env"], "MY_ATMOFAB_API_KEY": "sk-live"},
         }
+        # Control: the same profile without the name renders.
+        ort.render_bwrap_command(
+            profile={**profile, "env": {k: v for k, v in profile["env"].items()
+                                        if k != "MY_ATMOFAB_API_KEY"}},
+            command_argv=["claude"])
         with self.assertRaises(ValueError) as ctx:
             ort.render_bwrap_command(profile=profile, command_argv=["claude"])
         self.assertIn("MY_ATMOFAB_API_KEY", str(ctx.exception))
@@ -26892,20 +27154,28 @@ class LeafEnvClosureTests(unittest.TestCase):
         (root / "repo").mkdir()
         (root / "ws").mkdir()
         (root / "tmp").mkdir()
+        # A claude WORKSHOP profile (`_hand_workshop_profile_fields`): the only one the
+        # renderer takes since issue #534 PR-J4-b. Its `CLAUDE_CONFIG_DIR` is added to any env
+        # a caller passes that does not name it, since the renderer refuses a workshop
+        # profile without its home; a caller about that variable states it.
+        workshop = _hand_workshop_profile_fields(root)
         base = {
             "repo_root": str(root / "repo"),
             "tmp_dir": str(root / "tmp"),
             "workspace_tmp_rw_abs": str(root / "ws"),
             "read_roots": [], "write_roots": [],
-            "runtime_ro_bind_paths": [], "runtime_rw_bind_paths": [],
+            "runtime_ro_bind_paths": [],
+            **workshop,
             "env": {"PATH": "/usr/bin:/bin", "HOME": "/h",
-                    "ATMOFAB_ORCHESTRATION_ID": "o", "TMPDIR": str(root / "ws")},
+                    "ATMOFAB_ORCHESTRATION_ID": "o", "TMPDIR": str(root / "ws"),
+                    **workshop["env"]},
         }
         base.update(over)
         if "env" in over and isinstance(over["env"], dict) and over["env"]:
             base["env"] = {**over["env"]}
             if "TMPDIR" in base["env"]:
                 base["env"]["TMPDIR"] = str(root / "ws")
+            base["env"].setdefault("CLAUDE_CONFIG_DIR", workshop["env"]["CLAUDE_CONFIG_DIR"])
         return base
 
     @staticmethod
@@ -26959,7 +27229,7 @@ class LeafEnvClosureTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         profile = ort.build_readonly_bwrap_profile(
             repo_root=d, orchestration_id="orch_x", agent_run_id="arid_x",
-            backend_command="claude", backend_rw_override=[])
+            backend_command="claude", backend_type="claude", **_workshop_build_kwargs(self))
         for field in ort._UNRENDERED_PROFILE_GRANTS:
             with self.subTest(field=field):
                 self.assertIn(field, profile)
@@ -27017,23 +27287,24 @@ class LeafEnvClosureTests(unittest.TestCase):
         validation has to allow them — asserted, or a correct profile would be refused and
         every launch would fail closed.
 
-        `CLAUDE_CONFIG_DIR` left this set with the agentic leaf (Z4, issue #171): a pure
-        claude leaf takes `--safe-mode` and is prepared no private home, so a profile
-        naming one describes a configuration surface nothing built. It is asserted REFUSED
-        below rather than merely dropped from this list."""
+        Since issue #534 the backend home is the workshop lineage's (`CLAUDE_CONFIG_DIR` =
+        its `config/`; the pure leaf's no-home shape and the Z4-era refusal of
+        `CLAUDE_CONFIG_DIR` went with the pure leaf in PR-J4-b), and a workshop profile
+        declares EXACTLY ONE CLI home: a claude profile that also names `CODEX_HOME` is
+        refused, not silently delivered both."""
         profile = self._profile()
+        self.assertIn("CLAUDE_CONFIG_DIR", profile["env"])
         profile["env"] = {**profile["env"],
-                          "CODEX_HOME": "/home/y",
                           "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000",
                           "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "1"}
         argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
         self.assertEqual(self._setenv_map(argv), profile["env"])
-        # ...and the name that LEFT the set is refused, not silently tolerated.
+        # ...and a second CLI home is refused, not silently tolerated.
         refused = self._profile()
-        refused["env"] = {**refused["env"], "CLAUDE_CONFIG_DIR": "/home/x"}
+        refused["env"] = {**refused["env"], "CODEX_HOME": "/home/y"}
         with self.assertRaises(ValueError) as ctx:
             ort.render_bwrap_command(profile=refused, command_argv=["claude"])
-        self.assertIn("CLAUDE_CONFIG_DIR", str(ctx.exception))
+        self.assertIn("exactly one CLI home", str(ctx.exception))
 
     def test_a_mistyped_profile_env_entry_fails_closed_at_render(self) -> None:
         """The renderer's own str->str check, also found undriven. A non-string value
@@ -27071,18 +27342,23 @@ class LeafEnvClosureTests(unittest.TestCase):
 
         Filled from the profile's own recorded ids rather than refused, because refusing
         would reject those older profiles outright — i.e. break `--resume` of a run
-        started before this branch."""
+        started before this branch. (A profile persisted before issue #534 PR-J4-b is a
+        read-only pure one and is refused whole; what this floor still serves is a
+        workshop profile whose env omits the ids, so the env below keeps the lineage's
+        `CLAUDE_CONFIG_DIR`.)"""
         profile = self._profile()
-        # exactly the shape origin/main persisted: the old 7-name host set, no ids
+        # the shape origin/main persisted — the old 7-name host set, no ids — on a workshop
+        # profile's home
         profile["env"] = {"PATH": "/usr/bin:/bin", "HOME": "/h", "LANG": "C.UTF-8",
-                          "TMPDIR": profile["env"]["TMPDIR"]}
+                          "TMPDIR": profile["env"]["TMPDIR"],
+                          "CLAUDE_CONFIG_DIR": profile["env"]["CLAUDE_CONFIG_DIR"]}
         profile["orchestration_id"] = "orch-recorded"
         profile["agent_run_id"] = "arid-recorded"
         argv = ort.render_bwrap_command(profile=profile, command_argv=["claude"])
         setenv = self._setenv_map(argv)
         self.assertEqual(setenv["ATMOFAB_ORCHESTRATION_ID"], "orch-recorded")
         self.assertEqual(setenv["ATMOFAB_CHILD_AGENT_RUN_ID"], "arid-recorded")
-        # ...and the pre-branch profile is RENDERED, not refused
+        # ...and the id-less profile is RENDERED, not refused
         self.assertEqual(setenv["HOME"], "/h")
 
     def test_the_delivered_ids_never_override_what_the_record_declares(self) -> None:
@@ -27120,8 +27396,10 @@ class LeafEnvClosureTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9"}):
             profile = ort.build_readonly_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
-                backend_command="claude", backend_type="claude", child_env=authored)
-        self.assertEqual({k: v for k, v in profile["env"].items() if k != "TMPDIR"},
+                backend_command="claude", backend_type="claude", child_env=authored,
+                **_workshop_build_kwargs(self))
+        self.assertEqual({k: v for k, v in profile["env"].items()
+                          if k not in ("TMPDIR", *ort._BACKEND_HOME_ENV_VARS)},
                          authored)
         self.assertNotIn("ANTHROPIC_BASE_URL", profile["env"])
 
@@ -27164,7 +27442,7 @@ class LeafEnvClosureTests(unittest.TestCase):
             profile = ort.build_readonly_bwrap_profile(
                 repo_root=Path(d) / "repo", orchestration_id="o",
                 agent_run_id="CHILD-ARID", backend_command="claude",
-                backend_type="claude")
+                backend_type="claude", **_workshop_build_kwargs(self))
         self.assertEqual(profile["env"]["ATMOFAB_ORCHESTRATION_ID"], "o")
         self.assertEqual(profile["env"]["ATMOFAB_CHILD_AGENT_RUN_ID"], "CHILD-ARID")
 
@@ -27235,7 +27513,7 @@ class LeafEnvClosureTests(unittest.TestCase):
                     profile = ort.build_readonly_bwrap_profile(
                         repo_root=Path(d) / "repo", orchestration_id="o",
                         agent_run_id="A", backend_command="claude",
-                        backend_type="claude")
+                        backend_type="claude", **_workshop_build_kwargs(self))
                 self.assertEqual(profile["env"]["ATMOFAB_ORCHESTRATION_ID"], "o")
                 self.assertEqual(profile["env"]["ATMOFAB_CHILD_AGENT_RUN_ID"], "A")
 
@@ -27320,7 +27598,8 @@ class LeafEnvClosureTests(unittest.TestCase):
                                           "PATH": f"{bindir}:{os.environ['PATH']}"}):
             profile = ort.build_readonly_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
-                backend_command="cli-sim", backend_type="codex")
+                backend_command="cli-sim", backend_type="codex",
+                **_workshop_build_kwargs(self, "codex"))
         self.assertIn(str(home / "work"), profile["runtime_ro_bind_paths"])
 
     def test_an_install_root_that_is_the_checkout_itself_under_another_name_is_refused(self) -> None:
@@ -27379,7 +27658,8 @@ class LeafEnvClosureTests(unittest.TestCase):
                                           "PATH": f"{bindir}:{os.environ['PATH']}"}):
             profile = ort.build_readonly_bwrap_profile(
                 repo_root=repo, orchestration_id="o", agent_run_id="A",
-                backend_command="cli-sim", backend_type="codex")
+                backend_command="cli-sim", backend_type="codex",
+                **_workshop_build_kwargs(self, "codex"))
         self.assertIn(str(bindir), profile["runtime_ro_bind_paths"])
 
     def test_backend_ro_extra_goes_through_the_alias_refusal(self) -> None:
@@ -27459,7 +27739,8 @@ class LeafEnvClosureTests(unittest.TestCase):
                                           "HOME": str(fake_home)}):
             profile = ort.build_readonly_bwrap_profile(
                 repo_root=Path(d) / "repo", orchestration_id="o", agent_run_id="A",
-                backend_command="claude", backend_type="claude")
+                backend_command="claude", backend_type="claude",
+                **_workshop_build_kwargs(self))
         self.assertNotIn("ANTHROPIC_MODEL", profile["env"])
         self.assertEqual(profile["env"]["HOME"], str(fake_home))
 
@@ -27734,16 +28015,19 @@ class LeafEnvLiveBwrapWitnessTests(unittest.TestCase):
         root = Path(d)
         for sub in ("repo", "ws", "tmp"):
             (root / sub).mkdir()
+        # A claude WORKSHOP profile, the only one rendered since issue #534 PR-J4-b: its
+        # lineage `config/` and `tree/` are real directories, so bwrap binds them for real.
+        workshop = _hand_workshop_profile_fields(root)
         profile = {
             "repo_root": str(root / "repo"),
             "tmp_dir": str(root / "tmp"),
             "workspace_tmp_rw_abs": str(root / "ws"),
             "read_roots": [], "write_roots": [],
             "runtime_ro_bind_paths": ["/usr", "/bin", "/lib", "/lib64"],
-            "runtime_rw_bind_paths": [],
+            **workshop,
             "env": {"PATH": "/usr/bin:/bin", "HOME": "/leaf/home", "LANG": "C.UTF-8",
                     "ATMOFAB_ORCHESTRATION_ID": "o", "ATMOFAB_CHILD_AGENT_RUN_ID": "A",
-                    "TMPDIR": str(root / "ws")},
+                    "TMPDIR": str(root / "ws"), **workshop["env"]},
         }
         argv = ort.render_bwrap_command(profile=profile, command_argv=["/usr/bin/env"])
         poison = {"ANTHROPIC_BASE_URL": "http://127.0.0.1:9",
@@ -27768,6 +28052,133 @@ class LeafEnvLiveBwrapWitnessTests(unittest.TestCase):
         # ...and the poison controls, so "equal" cannot be "the parent env was empty".
         for name in poison:
             self.assertNotIn(name, child)
+
+
+class RetiredPureLeafRecordTests(unittest.TestCase):
+    """The pure leaf went in issue #534 PR-J4-b, and the retirement has two halves that must
+    not be confused (the plan's MJ2 row).
+
+    A NEW launch naming it is refused — by the launch validator with a message naming the
+    retired leaf, and end to end at `record_launch` before any launch record is written. A
+    RECORD a pure leaf wrote before the retirement is still READ: an orchestration whose old
+    rows carry `leaf_mode: pure`, a part label (`pure_part`), a part list (`parts[]`, in the
+    stage meta) and the second counter (`workshop_prompt_contract_version`) still passes the
+    terminal-record and step-result validators, whose no-write-authority carve-out keys on
+    `is_host_rendered_request` (pure OR workshop)."""
+
+    _NODE = "problem/shallow_water2d@0.3.0"
+    _ORCH = "orch_old_pure"
+
+    def _pure_request(self, arid: str, substep: str) -> dict:
+        req = {"node_key": self._NODE, "step": "compile", "substep": substep,
+               "agent_run_id": arid, "agent_role": "substep", "agent_model": "m",
+               "orchestration_id": self._ORCH, "parent_agent_run_id": "orch_run_old",
+               "ir_ref": _FIX_IR_REF, "pipeline_ref": _FIX_PIPE_REF,
+               "dependency_ref": _FIX_COMPILE_STEP_DEP_REF,
+               **_pure_override_for("compile", substep),
+               "leaf_mode": "pure", "prompt_contract_version": "pure-49"}
+        req.pop("workshop_provider", None)
+        return req
+
+    def test_a_new_pure_launch_request_is_refused_naming_the_retired_leaf(self) -> None:
+        req = self._pure_request("child_new_pure", "verify")
+        with self.assertRaises(ValueError) as ctx:
+            ort._validate_pure_launch_request_payload(
+                {**req, "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION})
+        self.assertIn("pure leaf went in issue #534 PR-J4-b", str(ctx.exception))
+        # Control: the same request as a workshop one passes the validator, so the refusal
+        # above is the leaf_mode and nothing else the fixture carries.
+        ort._validate_pure_launch_request_payload(
+            {**req, "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+             "leaf_mode": "workshop", "workshop_provider": "claude_cli",
+             "workshop_lineage_id": "child_new_pure"})
+
+    def test_record_launch_refuses_a_new_pure_launch_before_any_launch_record(self) -> None:
+        """End to end: a `leaf_mode: pure` request is not a workshop one, so `record_launch`
+        takes no lineage; the leaf renderer `prepare_launch_request_payload` runs refuses it
+        (`launch request is neither deterministic nor workshop ... the pure leaf went in
+        issue #534 PR-J4-b`) before the launch is recorded."""
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            init_orchestration(repo_root=repo_root, orchestration_id=self._ORCH)
+            _mark_dependencies_ready(repo_root, self._ORCH)
+            write_preflight(repo_root=repo_root, orchestration_id=self._ORCH,
+                            payload=_launchable_preflight_dict(backend="claude"))
+            req = {**self._pure_request("child_new_pure", "verify"),
+                   "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION}
+            with self.assertRaises(ValueError) as ctx:
+                record_launch(
+                    repo_root=repo_root, orchestration_id=self._ORCH,
+                    parent_agent_run_id="orch_run_old", child_agent_run_id="child_new_pure",
+                    request_payload=req,
+                    response_payload={"agent_run_id": "child_new_pure", "backend": "claude",
+                                      **_spawn_response_payload("child_new_pure")})
+            self.assertIn("the pure leaf went in issue #534 PR-J4-b", str(ctx.exception))
+            self.assertFalse((repo_root / "workspace" / "orchestrations" / self._ORCH
+                              / "launches" / "child_new_pure.request.json").exists())
+
+    def _old_pure_orchestration(self, repo_root: Path) -> tuple[Path, dict]:
+        """An orchestration holding what a pure compile phase recorded before PR-J4-b: two
+        launch requests with `leaf_mode: pure` (the producer's with a `pure_part`), two
+        passing terminal rows with `output_refs: []`, and the host-written `ir_meta.json`
+        with `leaf_mode: pure`, a `parts[]` list and `workshop_prompt_contract_version`."""
+        orch = repo_root / "workspace" / "orchestrations" / self._ORCH
+        (orch / "launches").mkdir(parents=True)
+        (orch / "orchestration_meta.json").write_text(
+            json.dumps({"orchestration_id": self._ORCH}), encoding="utf-8")
+        for arid, substep, extra in (
+                ("old_gen_1", "generate", {"pure_part": "core"}),
+                ("old_ver_1", "verify", {})):
+            (orch / "launches" / f"{arid}.request.json").write_text(
+                json.dumps({**self._pure_request(arid, substep), **extra}), encoding="utf-8")
+        rows = [{"agent_run_id": arid, "agent_role": "substep", "node_key": self._NODE,
+                 "step": "compile", "substep": substep, "status": "pass", "output_refs": []}
+                for arid, substep in (("old_gen_1", "generate"), ("old_ver_1", "verify"))]
+        (orch / "agent_runs.jsonl").write_text(
+            "".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
+        meta_ref = f"{_FIX_IR_REF}/ir_meta.json"
+        (repo_root / meta_ref).parent.mkdir(parents=True, exist_ok=True)
+        (repo_root / meta_ref).write_text(json.dumps({
+            "attempt_count": 1, "verification_status": "pass", "last_fail_reason": None,
+            "debug_mode": False, "context_isolated": True, "leaf_mode": "pure",
+            "prompt_contract_version": "pure-49",
+            "workshop_prompt_contract_version": "workshop-3",
+            "parts": [{"part": "core", "attempts": 1}, {"part": "tests_1", "attempts": 2}],
+        }), encoding="utf-8")
+        payload = {"status": "pass", "validation_stage": "compile",
+                   "substep_agent_run_ids": ["old_gen_1", "old_ver_1"],
+                   "failed_substeps": [], "retry_decisions": None,
+                   "required_outputs": [meta_ref]}
+        return orch, payload
+
+    def test_old_pure_rows_still_pass_the_terminal_record_validator(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._old_pure_orchestration(repo_root)
+            for arid in ("old_gen_1", "old_ver_1"):
+                row = {"agent_role": "substep", "status": "pass", "agent_run_id": arid}
+                with self.subTest(arid=arid):
+                    ort._validate_terminal_run_payload(
+                        repo_root, self._ORCH, {**row, "output_refs": []})
+                    # The carve-out READ the old request: a leaf with no write authority
+                    # that claims outputs is still refused, as it was for a pure leaf.
+                    with self.assertRaises(ValueError):
+                        ort._validate_terminal_run_payload(
+                            repo_root, self._ORCH, {**row, "output_refs": ["x/y.f90"]})
+
+    def test_old_pure_rows_still_pass_the_step_result_validator(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            _orch, payload = self._old_pure_orchestration(repo_root)
+            ort._validate_step_result_payload(
+                repo_root, self._ORCH, node_key=self._NODE, step="compile",
+                agent_run_id="orch_run_old", payload=payload)
+            # Control: the host-written meta is still vouched by its existence on disk.
+            (repo_root / payload["required_outputs"][0]).unlink()
+            with self.assertRaises(ValueError):
+                ort._validate_step_result_payload(
+                    repo_root, self._ORCH, node_key=self._NODE, step="compile",
+                    agent_run_id="orch_run_old", payload=payload)
 
 
 class DirectDepsSourceStatementTests(unittest.TestCase):
@@ -27836,24 +28247,26 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
     #: read the statement, satisfy yourself it states the CURRENT fact (or is legitimately about
     #: something else), and record which. The failure message prints the key and the text.
     _READ: dict[str, str] = {
-        "tools/prompt_templates/pure_compile_generate.txt:ada2f1d75e4db710":
-            "rule 3: read the WHOLE derived set; deps.yaml alone is rejected; the runner "
-            "harness is the target's and is not in the set (issue #284, which also removed "
-            "rules 5-6 and renumbered 7-9 of the same paragraph; issue #346 appended rule 8, "
-            "case input routing, and left rule 3 unchanged; issue #358 rewrote rule 7's "
-            "empty-`profiles` sentence; rule 3 unchanged; issue #483 extended rule 5's "
-            "primary-predicate obligations; rule 3 unchanged; issue #486 extended rule 4 with "
-            "the catalog's published ABI; rule 3 unchanged; issue #526 moved rule 5's "
-            "verification lists to the per-test part template; rule 3 unchanged)",
+        "tools/prompt_templates/workshop_compile_generate.txt:65ead5bcfd9e62a9":
+            "rule 3 of the WORKSHOP template's one-line authoring-rules paragraph (the pure "
+            "template's copy, keyed `pure_compile_generate.txt:ada2f1d75e4db710`, went with it "
+            "in issue #534 PR-J4-b; the workshop paragraph differs in rules 1-2, 4-8, so the "
+            "whole-line digest differs): `direct_deps` is exactly the host's directly-required "
+            "set, the graph document's all_nodes minus self minus transitive_deps, read there "
+            "and not from the dependency declaration, read WHOLE; the runner harness is the "
+            "target's and is not in it; a `profile` entry in deps.yaml is not a node, so "
+            "direct_deps from deps.yaml alone is rejected (read 2026-10-28)",
         "docs/workflow/phases/phase_01_compile.md:8669240102ee7090":
             "§1-1: the HOST's directly-required set, read from the graph document; no "
             "infrastructure node in it (issue #284)",
         "docs/GLOSSARY.md:2f82a6a21ed0ec92":
             "infrastructure spec: the harness is a target attribute no deps.yaml declares; "
             "the host adds it as a direct dependency after Compile (issue #284)",
-        "tools/prompt_templates/pure_compile_generate.txt:7deb92ccbdc3bee3":
+        # The two block labels are byte-identical to the pure templates' (same digests), so
+        # only the surface moved with issue #534 PR-J4-b.
+        "tools/prompt_templates/workshop_compile_generate.txt:7deb92ccbdc3bee3":
             "deps block label: deps.yaml is what the author DECLARED, not the set",
-        "tools/prompt_templates/pure_compile_verify.txt:8f3888c2abeb0882":
+        "tools/prompt_templates/workshop_compile_verify.txt:8f3888c2abeb0882":
             "deps block label, reviewer side: not the set direct_deps must equal",
         "docs/GLOSSARY.md:cb366ac6efb20346":
             "spec.ir.yaml.dependency: the host's set, explicitly not deps.yaml",
@@ -27878,14 +28291,15 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
 
         out: list[str] = []
         # (1) One launch template per LLM substep of Compile, keyed the way the renderer keys
-        # them. Deliberately NOT `startswith("pure compile.")`: the escalate diagnostician has a
-        # `pure compile.diagnose` key too, and it reads a diagnosis document rather than any
-        # dependency declaration.
+        # them (the WORKSHOP family since issue #534 PR-J4-b deleted the pure templates).
+        # Deliberately NOT `startswith("workshop compile.")`: the escalate diagnostician has a
+        # `workshop compile.diagnose` key too, and it reads a diagnosis document rather than
+        # any dependency declaration.
         for substep in wc.SUBSTEPS["compile"]:
-            filename = ort._PROMPT_TEMPLATE_FILES.get(f"pure compile.{substep}")
+            filename = ort._PROMPT_TEMPLATE_FILES.get(f"workshop compile.{substep}")
             if filename:
                 out.append(f"tools/prompt_templates/{filename}")
-        # (2) The phase document, inlined verbatim into both compile prompts.
+        # (2) The phase document, seeded whole into both compile lineages' trees.
         out.append(ort.WORKFLOW_PHASE_DOC_BY_STEP["compile"])
         # (3) The agentic path's per-substep SKILL used to be a surface here. Z4 (issue #171)
         # deleted those SKILLs with the leaf that read them, so `skills/` states this rule
@@ -27970,7 +28384,7 @@ class DirectDepsSourceStatementTests(unittest.TestCase):
         # or a `problem` spec extends the scan without editing this row.
         expected_templates = sum(
             1 for sub in wc.SUBSTEPS["compile"]
-            if ort._PROMPT_TEMPLATE_FILES.get(f"pure compile.{sub}"))
+            if ort._PROMPT_TEMPLATE_FILES.get(f"workshop compile.{sub}"))
         self.assertGreaterEqual(expected_templates, 2)
         self.assertEqual(
             sum(1 for s in surfaces if s.startswith("tools/prompt_templates/")),

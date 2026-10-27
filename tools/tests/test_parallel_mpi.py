@@ -251,7 +251,7 @@ class HarnessUseStatementTests(unittest.TestCase):
 
     def test_the_producer_is_told_the_exception_where_it_is_told_the_rule(self) -> None:
         from tools import orchestration_runtime as ort
-        key = "pure generate.generate"
+        key = "workshop generate.generate"
         composed = ort._compose_fragments(
             ort._load_launch_prompt_templates()[key], ort._PROMPT_TEMPLATE_FILES[key],
             {"pure_language": "fortran", "pure_parallel": "mpi"})
