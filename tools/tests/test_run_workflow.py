@@ -8044,6 +8044,17 @@ class StdoutFormatTests(unittest.TestCase):
             "(cap 300s, lineage_timeout_s) — process group killed, lineage ended, its tree "
             "is judged as it stands",
         )
+        # The diagnostician (issue #534 PR-J4-a): a workshop leaf whose killed tree is NOT read.
+        self.assertEqual(
+            f({"status": "info", "event": "leaf_timeout", "node_key": "n", "step": "validate",
+               "substep": "diagnose", "agent_run_id": "ar_dead", "backend": "claude",
+               "timeout_seconds": 300, "timeout_bound": "lineage_timeout_s",
+               "leaf_mode": "workshop", "elapsed_seconds": 301.0, "leaf_exit": -9,
+               "stdout_chars": 0, "stderr_chars": 0, "orchestration_id": "o"}),
+            "    [warn   ] leaf timeout in validate.diagnose: no answer after 301.0s "
+            "(cap 300s, lineage_timeout_s) — process group killed, lineage ended, its "
+            "diagnosis is discarded unread, phase fails closed",
+        )
         # Defence for a future `spawn_leaf` caller that omits (or half-fills) `timeout_context`:
         # the line must still name the step rather than reading `leaf timeout in build.:`. No
         # production path emits this today — `Build` runs its substep in-process and never

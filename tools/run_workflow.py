@@ -3385,8 +3385,15 @@ def _format_event_human(payload: dict[str, Any], *, elide_detail: bool = True) -
         # A workshop leaf's kill ends its lineage, and the host judges the tree it left: the
         # phase goes on (a defective tree is repaired by a cold reuse), so saying it fails
         # closed would be false.
-        outcome = ("lineage ended, its tree is judged as it stands"
-                   if payload.get("leaf_mode") == "workshop" else "phase fails closed")
+        # The `escalate` diagnostician (a reading workshop leaf since issue #534 PR-J4-a) is the
+        # exception: a diagnosis that did not finish is discarded unread and the phase it was
+        # diagnosing fails closed (`Conductor._diagnose_turn`).
+        if payload.get("substep") == "diagnose":
+            outcome = "lineage ended, its diagnosis is discarded unread, phase fails closed"
+        elif payload.get("leaf_mode") == "workshop":
+            outcome = "lineage ended, its tree is judged as it stands"
+        else:
+            outcome = "phase fails closed"
         return (f"    [warn   ] leaf timeout in {phase}.{substep}: no answer after {elapsed}s "
                 f"(cap {cap}s, {bound}) — process group killed, {outcome}")
 
