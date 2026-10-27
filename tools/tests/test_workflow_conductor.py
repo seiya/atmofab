@@ -24495,10 +24495,10 @@ class LeafEntryThreadingTests(unittest.TestCase):
         for body, field in (
                 ("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n",
                  "claude_tools"),
-                ("defaults:\n  lineage_timeout_s: 2700\n  provider: anthropic_api\n"
-                 "  api_key_env: K\n  model: m\n"
-                 "phases:\n  validate:\n    substeps:\n      judge:\n"
-                 "        provider: claude_cli\n", "http_tool_surface")):
+                (("defaults:\n  lineage_timeout_s: 2700\n  provider: anthropic_api\n"
+                  "  api_key_env: K\n  model: m\n"
+                  "phases:\n  validate:\n    substeps:\n      judge:\n"
+                  "        provider: claude_cli\n"), "http_tool_surface")):
             c = wc.Conductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="O", env={},
                              llm_config=self._config_text(body))
@@ -24525,10 +24525,10 @@ class LeafEntryThreadingTests(unittest.TestCase):
         for body, field, value in (
                 ("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n",
                  "claude_tools", ["Read,Write,Edit,Glob,Grep"]),
-                ("defaults:\n  lineage_timeout_s: 2700\n  provider: anthropic_api\n"
-                 "  api_key_env: K\n  model: m\n"
-                 "phases:\n  validate:\n    substeps:\n      judge:\n"
-                 "        provider: claude_cli\n", "http_tool_surface", list(HTTP_FILE_TOOLS))):
+                (("defaults:\n  lineage_timeout_s: 2700\n  provider: anthropic_api\n"
+                  "  api_key_env: K\n  model: m\n"
+                  "phases:\n  validate:\n    substeps:\n      judge:\n"
+                  "        provider: claude_cli\n"), "http_tool_surface", list(HTTP_FILE_TOOLS))):
             c = wc.Conductor(repo_root=repo, orchestration_id="o",
                              orchestration_agent_run_id="O", env={},
                              llm_config=self._config_text(body))
