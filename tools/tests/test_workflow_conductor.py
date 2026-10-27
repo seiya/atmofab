@@ -8824,6 +8824,14 @@ class DiagnosticianTest(unittest.TestCase):
         # terminal for that reason, and the pure migration keeps it.
         self.assertEqual(d.action, "fail_closed")
         self.assertEqual(d.reason, "validate_diagnose_sandbox_unavailable")
+        # The lineage the launch opened is recorded as continued by nothing (issue #534
+        # PR-J4-a): a raise out of the launch leaves no open diagnose lineage behind.
+        from tools.workshop_tree import LineagePaths, read_lineage_record
+        paths = LineagePaths(
+            homes_root=c.homes, orchestration_id=c.orchestration_id, lineage_id="child-1",
+            orchestration_dir=c.repo_root / "workspace" / "orchestrations" / c.orchestration_id,
+            backend="claude")
+        self.assertEqual(read_lineage_record(paths).get("ended_by"), "superseded")
 
     def test_minting_the_child_id_cannot_crash_out_of_escalate(self) -> None:
         """`new_agent_run_id` runs `python3 tools/new_agent_run_id.py` in a SUBPROCESS: it
