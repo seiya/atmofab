@@ -11,7 +11,6 @@ workshop request by `test_workshop_launch.py`, and the real templates by the row
 
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import tempfile
@@ -710,7 +709,11 @@ _TEMPLATES = ("workshop_generate_generate.txt", "workshop_generate_generate_harn
               "workshop_escalate_diagnose.txt")
 _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
 
-#: `WORKSHOP_PROMPT_CONTRACT_VERSION` -> sha256 over the workshop templates,
+#: HISTORY, frozen (issue #534 PR-J4-b): the retired `WORKSHOP_PROMPT_CONTRACT_VERSION` -> the
+#: digest that shipped under it. Nothing recomputes these any more and nothing asserts over the
+#: literal — the workshop leaf's contract is pinned by `test_pure_prompt_contract_drift`, whose
+#: tuple is the union of this pin's members and the pure pin's. Kept as the record of what
+#: shipped. Each was a sha256 over the workshop templates,
 #: `WORKSHOP_SYSTEM_PROMPT` and `WORKSHOP_TOOL_SURFACE_TEXT` (and, from `workshop-4`, the reading
 #: kind's `WORKSHOP_READER_SYSTEM_PROMPT` and `WORKSHOP_READER_TOOL_SURFACE_TEXT`; from `workshop-6`,
 #: `orchestration_runtime.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH` and the verdict repair's
@@ -751,99 +754,12 @@ _WORKSHOP_CONTRACT_DIGESTS = {
 }
 
 
-def _workshop_digest() -> str:
-    h = hashlib.sha256()
-    for name in _TEMPLATES:
-        h.update(name.encode() + b"\0" + (_DIR / name).read_bytes() + b"\0")
-    h.update(pure_leaf.WORKSHOP_SYSTEM_PROMPT.encode("utf-8"))
-    h.update(json.dumps(pure_leaf.WORKSHOP_TOOL_SURFACE_TEXT, sort_keys=True).encode("utf-8"))
-    # Step 3: the reading kind's system prompt and tool surface (`workshop-4` onward).
-    h.update(pure_leaf.WORKSHOP_READER_SYSTEM_PROMPT.encode("utf-8"))
-    h.update(json.dumps(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT,
-                        sort_keys=True).encode("utf-8"))
-    # Issue #547 (`workshop-6` onward): the cut-read repair turn's `<repair_scope>` paragraph,
-    # a reading leaf's contract text that lives in the runtime rather than in a template.
-    h.update(ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH.encode("utf-8"))
-    h.update(json.dumps([ort.WORKSHOP_VERDICT_REPAIR_SHAPE_SLOTS,
-                         ort.WORKSHOP_VERDICT_REPAIR_CUT_READ_SLOTS],
-                        sort_keys=True).encode("utf-8"))
-    # Issue #534 PR-J3-a (`workshop-7` onward): the codex reading helper, a seed the leaf runs.
-    h.update(pure_leaf.CODEX_READ_HELPER_NAME.encode("utf-8") + b"\0"
-             + pure_leaf.CODEX_READ_HELPER_TEXT.encode("utf-8"))
-    # Issue #534 PR-J3-b (`workshop-8` onward): the five file tools an HTTP workshop leaf is
-    # declared — their names, descriptions and schemas are what the model reads.
-    h.update(json.dumps(list(pure_leaf.HTTP_FILE_TOOL_DECLARATIONS),
-                        sort_keys=True).encode("utf-8"))
-    return h.hexdigest()
-
-
 class TemplateTests(unittest.TestCase):
-    def test_the_workshop_contract_is_pinned_to_its_version(self) -> None:
-        self.assertEqual(_WORKSHOP_CONTRACT_DIGESTS[pure_leaf.WORKSHOP_PROMPT_CONTRACT_VERSION],
-                         _workshop_digest(),
-                         "a workshop template or WORKSHOP_SYSTEM_PROMPT changed: bump "
-                         "WORKSHOP_PROMPT_CONTRACT_VERSION and pin the new digest")
-        self.assertEqual(len(set(_WORKSHOP_CONTRACT_DIGESTS.values())),
-                         len(_WORKSHOP_CONTRACT_DIGESTS))
-
     def test_each_opens_with_the_workshop_sentinel(self) -> None:
         for name in _TEMPLATES:
             with self.subTest(template=name):
                 self.assertTrue((_DIR / name).read_text().startswith(
                     pure_leaf.WORKSHOP_PROMPT_SENTINEL))
-
-    def test_the_producer_rules_are_the_pure_templates_verbatim(self) -> None:
-        """Every line of a pure producer template after its persona — the output contract, the
-        rules, the input labels, the language and parallel markers, the identity block — is in
-        its workshop twin, in order, except the document slots, which the twin replaces with
-        the seed's tree name. So a rule edited in one and not the other fails here (and the
-        bundle_meta's `prompt_contract_version` keeps naming the rules both answer)."""
-        for pure_name, workshop_name in (
-                ("pure_generate_generate.txt", "workshop_generate_generate.txt"),
-                ("pure_generate_generate_harness.txt",
-                 "workshop_generate_generate_harness.txt")):
-            with self.subTest(template=workshop_name):
-                pure = (_DIR / pure_name).read_text().split("\n")[2:]
-                workshop = (_DIR / workshop_name).read_text().split("\n")
-                kept = [ln for ln in pure if not ort._PURE_PLACEHOLDER_RE.fullmatch(ln)]
-                position = 0
-                for line in kept:
-                    self.assertIn(line, workshop[position:], line[:80])
-                    position = workshop.index(line, position) + 1
-
-    def test_the_compile_rules_are_the_pure_templates_verbatim_but_the_part_split(self) -> None:
-        """Issue #534 step 2: the compile twin carries every unit of `pure_compile_generate.txt`
-        after its persona — each line, and each numbered rule of the one-line authoring rules —
-        in order and verbatim, except EXACTLY the three units that exist for the part split of
-        issue #526 (the output contract, which leaves the per-test lists out; the "Repair turns
-        on the whole IR" paragraph; rule (5), which says who authors them). The whole-IR rule
-        (5) it carries instead holds the verification part's predicate rules verbatim, so a
-        rule edited in either pure template and not here fails."""
-        import re as _re
-        pure = (_DIR / "pure_compile_generate.txt").read_text().split("\n")[2:]
-        twin = (_DIR / "workshop_compile_generate.txt").read_text()
-        units: list[str] = []
-        for line in pure:
-            if ort._PURE_PLACEHOLDER_RE.fullmatch(line) or not line:
-                continue
-            units += (_re.split(r" (?=\(\d\) )", line) if line.startswith("Authoring rules")
-                      else [line])
-        missing, position = [], 0
-        for unit in units:
-            found = twin.find(unit, position)
-            if found == -1:
-                missing.append(unit[:30])
-            else:
-                position = found + len(unit)
-        self.assertEqual(missing, [
-            "Output contract (IR document):"[:30],
-            "Repair turns on the whole IR: the"[:30],
-            "(5) Author `io_contract.diagnostics"[:30]])
-        part = (_DIR / "pure_compile_generate_verification.txt").read_text().split("\n")
-        rules = next(ln for ln in part if ln.startswith("Authoring rules"))
-        predicate_rules = rules[rules.index("Alongside each test's predicate"):]
-        self.assertIn(predicate_rules, twin)
-        self.assertNotIn("WITHOUT the three per-test verification lists", twin)
 
     def test_no_document_is_inlined(self) -> None:
         for phase, names in (("generate", _TEMPLATES[:2]),

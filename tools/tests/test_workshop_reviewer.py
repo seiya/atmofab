@@ -16,7 +16,6 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
-from types import MappingProxyType
 from unittest import mock
 
 import tools.llm_config as lc
@@ -1502,51 +1501,15 @@ class RenderTests(unittest.TestCase):
 
 class ReaderTemplateTests(unittest.TestCase):
     _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
-    _PAIRS = (("pure_compile_verify.txt", "workshop_compile_verify.txt"),
-              ("pure_generate_verify.txt", "workshop_generate_verify.txt"),
-              ("pure_generate_verify_harness.txt", "workshop_generate_verify_harness.txt"),
-              ("pure_validate_judge.txt", "workshop_validate_judge.txt"),
-              # Issue #534 PR-J4-a: the escalate diagnostician, a reading twin of its own.
-              ("pure_escalate_diagnose.txt", "workshop_escalate_diagnose.txt"))
-    #: The one pure unit a reading twin REPLACES in its persona (line 0): a reviewer in a tree
-    #: reads with file tools.
-    _REPLACED = "Do not use filesystem or shell tools: everything you need is inlined below."
-    #: The diagnostician's persona states its no-tools rule in its own words, and two units of
-    #: its OUTPUT CONTRACT line (past the persona, so compared below) name the final line of a
-    #: reply, which the twin names `directive.json` (each `(pure unit, twin unit)`).
-    _REPLACED_BY = MappingProxyType({"pure_escalate_diagnose.txt": (
-        "and you must not use filesystem or shell tools",
-        (("and keep the final line a single clean JSON object",
-          "and keep `directive.json` a single clean JSON object and nothing else"),
-         ("an unparsable reply", "an unparsable `directive.json`")))})
-
-    def test_the_reviewer_rules_are_the_pure_templates_verbatim(self) -> None:
-        """Every line of a pure reviewer template after its persona — the output contract, the
-        checklist, the input labels, the language and parallel markers, the identity block — is
-        in its reading twin, in order, except the document slots, which the twin replaces with
-        the seed's tree name and document key; and the persona's no-tools sentence is the one
-        unit replaced. So a rule edited in one and not the other fails here."""
-        for pure_name, twin_name in self._PAIRS:
-            with self.subTest(template=twin_name):
-                pure = (self._DIR / pure_name).read_text().split("\n")
-                twin = (self._DIR / twin_name).read_text().split("\n")
-                persona, units = self._REPLACED_BY.get(pure_name, (self._REPLACED, ()))
-                self.assertIn(persona, pure[0])
-                self.assertNotIn(persona, "\n".join(twin))
-                kept = [ln for ln in pure[2:] if not ort._PURE_PLACEHOLDER_RE.fullmatch(ln)]
-                for old, new in units:
-                    # Each replaced unit is in exactly one kept line, once, and gone from the
-                    # twin: so the replacement is the whole difference.
-                    self.assertEqual(sum(ln.count(old) for ln in kept), 1, old)
-                    self.assertNotIn(old, "\n".join(twin))
-                    kept = [ln.replace(old, new) for ln in kept]
-                position = 0
-                for line in kept:
-                    self.assertIn(line, twin[position:], line[:80])
-                    position = twin.index(line, position) + 1
+    #: The reading kind's launch templates. (Their pure twins, and the row that held each to
+    #: its twin's rules verbatim, went with the pure leaf in issue #534 PR-J4-b: there is no
+    #: second copy of a rule left to drift from.)
+    _TEMPLATES = ("workshop_compile_verify.txt", "workshop_generate_verify.txt",
+                  "workshop_generate_verify_harness.txt", "workshop_validate_judge.txt",
+                  "workshop_escalate_diagnose.txt")
 
     def test_no_document_is_inlined(self) -> None:
-        for _pure, name in self._PAIRS:
+        for name in self._TEMPLATES:
             with self.subTest(template=name):
                 slots = set(ort._PURE_PLACEHOLDER_RE.findall((self._DIR / name).read_text()))
                 documents = set().union(*(set(v) for v in

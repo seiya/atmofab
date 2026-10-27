@@ -1,7 +1,9 @@
-"""Drift guard for the pure prompt contract (TODO Item 5).
+"""Drift guard for the leaf prompt contract (TODO Item 5).
 
-The pure leaf is doc-blind: its behavioral contract is whatever the launch templates + the fixed
-ABI constants say, and a change to any of them is a behavior change that MUST be observable through
+Written for the pure leaf; since issue #534 PR-J4-b it pins the one leaf model, the `workshop
+leaf`, and its tuple is the UNION of the pure pin's surviving members and the workshop pin's
+(`test_workshop_producer._WORKSHOP_CONTRACT_DIGESTS`, a frozen history literal now). The leaf's
+behavioral contract is whatever the launch templates + the fixed ABI constants say, and a change to any of them is a behavior change that MUST be observable through
 `PURE_PROMPT_CONTRACT_VERSION` (so `bundle_meta.json` / the launch record stamp the new contract).
 Nothing else enforces that coupling — a one-character template edit with no version bump, or a bump
 with a stale template, both ship silently.
@@ -18,9 +20,11 @@ historical pin. The assertions catch three drift directions:
     frozen literals (NOT recomputed from the current tuple, which has since moved) and exist only to
     reject a later version that duplicates one of them.
 
-The pin set is deliberately NARROW (a churn magnet if widened): the five template files, the
-fixed `PURE_SYSTEM_PROMPT` (the `--system-prompt` string, a documented version-bump trigger in
-`pure_leaf.py`), the checks-ABI constants the
+The pin set is deliberately NARROW (a churn magnet if widened): the launch template files and the
+fragment files composed into them, the two workshop system prompts (the `--system-prompt`
+strings), the leaf-read tables that sit in code (the `<tool_surface>` rows, the cut-read
+paragraph, the verdict-repair slots, the codex reading helper, the HTTP file-tool declarations),
+the checks-ABI constants the
 templates distill verbatim (`CHECKS_PUBLIC_NAMES` and the two character widths), and — since
 issue #142 — the §1-4 slice of `docs/workflow/CHECKS_MODULE_CONTRACT.md` and — since issue #143 —
 the `#### Severity of a finding` slice of `docs/workflow/phases/phase_02_generate.md`, both of
@@ -64,7 +68,7 @@ The operator chose the whole-document, unhashed disposition for PR-1 (issue #168
 round reverses that, the reversal costs exactly one version bump.
 
 Every pinned member is either a production constant IMPORTED from its authority
-(`CHECKS_PUBLIC_NAMES`, the status width, the prefixes, `PURE_SYSTEM_PROMPT`) or the template file
+(`CHECKS_PUBLIC_NAMES`, the status width, the system prompts, the tool-surface tables) or the template file
 bytes themselves — never a test-local COPY of a production value, which would drift silently from its
 source and pin nothing. In particular the checks-status vocabulary (`'pass'`/`'fail'`/`'na  '`) is
 NOT pinned as a separate literal: it has no production enum constant (it lives only as prose in the
@@ -74,8 +78,8 @@ here would be redundant and self-referential.
 DELIBERATELY OUT OF SCOPE — host-side acceptance-gate / backstop IMPLEMENTATIONS (e.g.
 `validate_pipeline_semantics._validate_diagnostics_contract_output`, the post_execute backstop for
 the diagnostics contract that the producer prompt's clause (A) is written against).
-`PURE_PROMPT_CONTRACT_VERSION` tracks the pure leaf's INPUT contract (the prompt templates,
-`PURE_SYSTEM_PROMPT`, the transport request shape — see `pure_leaf.py`), NOT host-side checks that
+`PURE_PROMPT_CONTRACT_VERSION` tracks the leaf's INPUT contract (the prompt templates, the
+system prompts, the tool surface — see `pure_leaf.py`), NOT host-side checks that
 run AFTER the leaf returns. Hashing such a gate's source into this tuple would (a) force a spurious
 version bump on every transparent gate change — a refactor, a comment, or a false-positive FIX —
 making the very churn magnet this pin set is scoped to avoid, and (b) miscategorize a host-side
@@ -96,20 +100,25 @@ import tools.codegen_bundle as cb
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools.backends import registry as _registry
-from tools.validate_pipeline_semantics import _tests_md_test_block_bytes
-from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, PURE_SYSTEM_PROMPT
+from tools import pure_leaf
+from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
 
+#: The leaf's launch templates — since issue #534 PR-J4-b the eleven `workshop_*.txt` files, the
+#: one leaf model's (the ten `pure_*.txt` files this tuple hashed through `pure-84` are deleted).
+#: Derived as well as listed: `test_the_template_list_is_every_launch_template` compares this
+#: tuple with the directory, so a template added without joining the pin is a red row.
 _TEMPLATE_FILES = (
-    "pure_compile_generate.txt",
-    "pure_compile_generate_verification.txt",
-    "pure_compile_verify.txt",
-    "pure_generate_generate.txt",
-    "pure_generate_verify.txt",
-    "pure_generate_generate_harness.txt",
-    "pure_generate_verify_harness.txt",
-    "pure_bundle_repair.txt",
-    "pure_escalate_diagnose.txt",
-    "pure_validate_judge.txt",
+    "workshop_bundle_repair.txt",
+    "workshop_compile_generate.txt",
+    "workshop_compile_verify.txt",
+    "workshop_escalate_diagnose.txt",
+    "workshop_generate_generate.txt",
+    "workshop_generate_generate_harness.txt",
+    "workshop_generate_verify.txt",
+    "workshop_generate_verify_harness.txt",
+    "workshop_ir_repair.txt",
+    "workshop_validate_judge.txt",
+    "workshop_verdict_repair.txt",
 )
 
 # sha256 of the canonical serialization of the coupled tuple, keyed by contract version. When an
@@ -1076,7 +1085,21 @@ PINNED: dict[str, str] = {
     # `case: X`, the named case under `at('<case>')`) — it said "in every target case", and
     # on that reading a codex leaf declared `compile_fail` for a test whose cases declare
     # different profile inputs. Member moved: `pure_compile_generate_verification.txt`.
-    "pure-84": "22008342688579a1a2496bb9d3bc9e2ad3d94fb2145509e20b57431f1e9f2351",
+    # Shipped at origin/main 9c5e5902 (PR #556, issue #534 PR-J4-a, which touched no pure
+    # member), and re-keyed here so the revert check still holds it (rule 1-b of
+    # `.claude/skills/atmofab-enforcement-change`, the `pure-50@3c117410` precedent).
+    "pure-84@9c5e5902": "22008342688579a1a2496bb9d3bc9e2ad3d94fb2145509e20b57431f1e9f2351",
+    # pure-84, RE-PINNED IN PLACE (issue #534 PR-J4-b, operator decision: the VALUE is kept, so
+    # no derivation key moves): the pure path is deleted, and the tuple becomes the UNION of the
+    # pure pin's members that survive and the workshop pin's (`test_workshop_producer`'s
+    # `_workshop_digest`, `workshop-1` .. `workshop-9`, kept there as a frozen history literal).
+    # Members moved: the ten pure templates out and the eleven workshop templates in;
+    # `PURE_SYSTEM_PROMPT` out and both workshop system prompts in; the two tool-surface
+    # tables, the cut-read scope paragraph, the verdict-repair slot tables, the codex reading
+    # helper and the HTTP file-tool declarations in; the four `compile_verification_*` members
+    # out with the part split they pinned (the workshop `compile.generate` leaf is seeded the
+    # whole phase contract document, whose text neither pin hashed).
+    "pure-84": "1223242e8700fc5247c180b35c62cc00ab5927ae667fab3f633e71285c4c84a6",
 }
 
 
@@ -1097,7 +1120,25 @@ def _contract_tuple() -> dict[str, object]:
             str(path.relative_to(tpl_dir / "backends")): path.read_text(encoding="utf-8")
             for path in sorted((tpl_dir / "backends").rglob("*.txt"))
         },
-        "system_prompt": PURE_SYSTEM_PROMPT,
+        # The two system prompts a workshop leaf runs under (`--system-prompt` on claude; the
+        # system block of an HTTP request), by kind.
+        "system_prompts": {"producing": pure_leaf.WORKSHOP_SYSTEM_PROMPT,
+                           "reading": pure_leaf.WORKSHOP_READER_SYSTEM_PROMPT},
+        # The `<tool_surface>` rows, per provider and kind: the one sentence of a launch prompt
+        # that differs by transport.
+        "tool_surface_text": {"producing": pure_leaf.WORKSHOP_TOOL_SURFACE_TEXT,
+                              "reading": pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT},
+        # A cut-read repair turn's `<repair_scope>` paragraph and the verdict repair's
+        # instruction-slot tables: reading-leaf contract text that lives in the runtime.
+        "cut_read_scope_paragraph": ort.WORKSHOP_CUT_READ_SCOPE_PARAGRAPH,
+        "verdict_repair_slots": [ort.WORKSHOP_VERDICT_REPAIR_SHAPE_SLOTS,
+                                 ort.WORKSHOP_VERDICT_REPAIR_CUT_READ_SLOTS],
+        # The codex reading helper, a seed every codex reading tree carries and the leaf runs.
+        "codex_read_helper": [pure_leaf.CODEX_READ_HELPER_NAME,
+                              pure_leaf.CODEX_READ_HELPER_TEXT],
+        # The five file tools an HTTP workshop leaf is declared: their names, descriptions and
+        # schemas are what the model reads.
+        "http_file_tool_declarations": list(pure_leaf.HTTP_FILE_TOOL_DECLARATIONS),
         # The checks ABI's names and status width, PER LANGUAGE that renders a runner (issue #289,
         # R4-b PR-6): until the second renderer these named the Fortran module, so a `cuda_cpp`
         # runner's ABI could change with the digest unmoved.
@@ -1210,36 +1251,6 @@ def _contract_tuple() -> dict[str, object]:
                 "language", language, "prompt_fragments").EXEMPLAR_GATE_DRIFT_NOTE
             for language in _prompt_languages()
         },
-        # The two host choices that decide what a `compile.generate` verification part reads
-        # (issue #526): which sections of `phase_01_compile.md` it is shown, and the bound that
-        # decides which tests share a part. The document's own text stays leaf input data like
-        # the whole document the core reads; the SELECTION is the host's, so a heading added or
-        # dropped, or a different grouping bound, changes what a part reads and bumps the
-        # version rather than shipping silently.
-        "compile_verification_phase_contract_headings":
-            list(wc.Conductor._VERIFICATION_PHASE_CONTRACT_HEADINGS),
-        "compile_verification_part_budget_bytes": wc.Conductor._VERIFICATION_PART_BUDGET_BYTES,
-        # ...and the two ALGORITHMS those choices run through, over fixed probes rather than the
-        # live documents (which this pin deliberately leaves to compile-docs): the slicer that
-        # cuts the excerpt (a section ending at a different heading, or a fence read
-        # differently, changes what a part reads) and the size measure plus grouping rule that
-        # decide which tests share a prompt.
-        "compile_verification_slicer_probe": wc._markdown_heading_sections(
-            _SLICER_PROBE, ("## C", "## A", "### A.2", "## D"), subject="probe"),
-        # The size measure's own output, so counting characters for bytes, dropping the
-        # newline, a declaration line left out or a `## ` that no longer ends a block moves the
-        # digest whether or not it moves a split on the probe...
-        "compile_verification_block_bytes_probe": _tests_md_test_block_bytes(_TESTS_PROBE),
-        # ...and the grouping rule over that measure and over fixed sizes chosen so that each
-        # clause decides a split: equal to the bound joins, a new part counts from its own
-        # first test, a test past the bound stands alone and nothing joins it after.
-        "compile_verification_grouping_probe": [
-            [list(group) for group in wc.Conductor._verification_part_groups(
-                wc.Conductor.__new__(wc.Conductor), ids, sizes)]
-            for ids, sizes in (
-                (_parse_ids_probe(), _tests_md_test_block_bytes(_TESTS_PROBE)),
-                (["a", "b", "c"], {"a": 6000, "b": 6000, "c": 3000}),
-                (["a", "b", "c", "d"], {"a": 4000, "b": 6000, "c": 12000, "d": 1}))],
         # ... and the runner-output binding, inlined after the whole runner-output contract in
         # the `harness` shape's two prompts on the same ground as that document.
         "runner_output_binding_document": {
@@ -1248,21 +1259,6 @@ def _contract_tuple() -> dict[str, object]:
             for language in _prompt_languages()
         },
     }
-
-
-#: The fixed inputs of the two algorithm probes in `_contract_tuple`.
-_SLICER_PROBE = ("# T\n\n## A\n\na\n\n````\n```\n## not a heading\n```\n````\n\n"
-                 "~~~\n# yaml comment\n~~~\n\n    ```\n\n### A.1\n\nx\n\n### A.2\n\ny\n\n"
-                 "## B\n\nb\n\n## C\n\nc\n\n```\n```yaml\n## inside\n``` x\n~~~\n## inside\n```\n\n"
-                 "  ````\n# indented fence\n`````\n\n ## indented heading\n\n## D\n\nd\n")
-_TESTS_PROBE = ("## 6. Tests\n\n### 6-1. `p1`\n\n" + "a" * 3000 + "\n\n### 6-2. `p2`\n\n"
-                + "b" * 6845 + "\n\n- `test_id`: `p3`\n" + "c" * 4000 + "\n\n## 7. End\n"
-                + "d" * 50000 + "\n### 6-3. `p4`\n\n" + "é" * 6000 + "\n"
-                + "  - `test_id`: `p1`\n" + "e" * 100 + "\n")
-
-
-def _parse_ids_probe() -> list[str]:
-    return list(_tests_md_test_block_bytes(_TESTS_PROBE))
 
 
 def _prompt_languages() -> list[str]:
@@ -1301,11 +1297,15 @@ class PurePromptContractDriftTests(unittest.TestCase):
             "KEEP the existing PINNED entries, and add PINNED['<new-version>'] = '" + computed
             + "' here (its digest must differ from every existing pin — else it is an empty bump).\n"
             "  (2) UNINTENTIONAL drift: revert the edit to the pinned surface "
-            f"({len(_TEMPLATE_FILES)} pure_*.txt templates, "
-            "the "
-            "language backend runner's checks-ABI constants, or an inlined document — "
+            f"({len(_TEMPLATE_FILES)} workshop_*.txt templates, a fragment file under "
+            "prompt_templates/backends/, the two workshop system prompts, a <tool_surface> row, "
+            "the cut-read paragraph or verdict-repair slots, the codex reading helper, the HTTP "
+            "file-tool declarations, the language backends' checks-ABI constants, lint rules, "
+            "gate-guard and binding sections or exemplar note, or an inlined document slice — "
             "CHECKS_MODULE_CONTRACT.md §1-4, phase_02_generate.md's severity rubric, "
-            "RUNNER_OUTPUT_CONTRACT.md §1+§3 AND the whole of that file)."
+            "RUNNER_OUTPUT_CONTRACT.md §1+§3 AND the whole of that file).\n"
+            "The first post-J4 bump writes `leaf-85` (issue #534 PR-J4-b): the counter no longer "
+            "says `pure`."
         )
         self.assertIn(
             PURE_PROMPT_CONTRACT_VERSION, PINNED,
@@ -1340,7 +1340,68 @@ class PurePromptContractDriftTests(unittest.TestCase):
             with self.subTest(label=label), mock.patch.object(target, attribute, value):
                 self.assertNotEqual(base, _digest())
 
+    def test_the_template_list_is_every_launch_template(self) -> None:
+        """`_TEMPLATE_FILES` is the set of launch templates the runtime registers, so a template
+        added to `_PROMPT_TEMPLATE_FILES` without joining the pin is red here."""
+        self.assertEqual(sorted(_TEMPLATE_FILES), sorted(set(ort._PROMPT_TEMPLATE_FILES.values())))
+
+    def test_each_member_class_of_the_union_moves_the_digest(self) -> None:
+        """Issue #534 PR-J4-b's union: each class of leaf-read text — a template (the escalate
+        diagnostician's), a fragment file, a document slice, a tool-surface row, a system
+        prompt, the codex reading helper, an HTTP tool declaration, a lint rule set and a
+        checks-ABI name — is witnessed by changing it and watching the digest move."""
+        from unittest import mock
+        base = _digest()
+        tpl_dir = Path(ort.__file__).resolve().parent / "prompt_templates"
+        real_read = Path.read_text
+
+        def _patched(path_suffix: str):
+            def read_text(self, *a, **kw):  # type: ignore[no-untyped-def]
+                text = real_read(self, *a, **kw)
+                return text + "\nchanged\n" if str(self).endswith(path_suffix) else text
+            return read_text
+
+        fortran = _registry.capability_module("language", "fortran", "checks_abi")
+        lint = _registry.capability_module(
+            "linter", _registry.linter_for_language("fortran"), "lint_rules")
+        runner = _registry.capability_module("language", "fortran", "runner_render")
+        for label, patcher in (
+                ("escalate template", mock.patch.object(
+                    Path, "read_text", _patched("workshop_escalate_diagnose.txt"))),
+                ("fragment file", mock.patch.object(
+                    Path, "read_text",
+                    _patched(str(next((tpl_dir / "backends").rglob("*.txt"))
+                                 .relative_to(tpl_dir))))),
+                ("document slice", mock.patch.object(
+                    wc, "_generate_verify_severity_rubric_section", lambda text: "changed")),
+                ("reader tool-surface row", mock.patch.dict(
+                    pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT, {"claude_cli": "changed"})),
+                ("producer tool-surface row", mock.patch.dict(
+                    pure_leaf.WORKSHOP_TOOL_SURFACE_TEXT, {"codex_cli": "changed"})),
+                ("reader system prompt", mock.patch.object(
+                    pure_leaf, "WORKSHOP_READER_SYSTEM_PROMPT", "changed")),
+                ("codex reading helper", mock.patch.object(
+                    pure_leaf, "CODEX_READ_HELPER_TEXT", "changed")),
+                ("HTTP tool declarations", mock.patch.object(
+                    pure_leaf, "HTTP_FILE_TOOL_DECLARATIONS", ({"name": "changed"},))),
+                ("cut-read paragraph", mock.patch.object(
+                    ort, "WORKSHOP_CUT_READ_SCOPE_PARAGRAPH", "changed")),
+                ("lint rule set", mock.patch.object(lint, "lint_rules_document",
+                                                    lambda: "changed")),
+                ("checks-ABI binding", mock.patch.object(
+                    fortran, "document",
+                    lambda: fortran.DOCUMENT_PATH.read_text(encoding="utf-8") + "\n- one more\n")),
+                ("checks-ABI names", mock.patch.object(
+                    runner, "CHECKS_PUBLIC_NAMES", ("case_setup",)))):
+            with self.subTest(member=label), patcher:
+                self.assertNotEqual(base, _digest(), label)
+
     def test_no_empty_version_bump(self) -> None:
+        # WHAT THIS PROTECTS AFTER issue #534 PR-J4-b, stated as its limit: a revert among the
+        # versions pinned under the CURRENT (union) tuple — `leaf-86` returning to `leaf-85`'s
+        # bytes. Every `pure-NN` entry up to `pure-84@9c5e5902` was hashed over a tuple the union
+        # can never reproduce (its templates are deleted), so those entries are inert: they are
+        # the record that those digests shipped, not a live check.
         # Every pinned version's digest must be UNIQUE. A genuine contract bump changes the tuple and
         # therefore the digest; a new version whose digest equals an earlier one is an EMPTY version
         # bump (unchanged contract), which the no-empty-version-bump policy rejects. Without this,
@@ -1354,13 +1415,13 @@ class PurePromptContractDriftTests(unittest.TestCase):
             collisions, {},
             "empty version bump detected — these versions share an identical contract digest, so "
             f"their contract tuple is unchanged: {collisions}. A version bump must change the "
-            "contract (templates / PURE_SYSTEM_PROMPT / coupled ABI constants); do not add a new "
+            "contract (templates / system prompts / coupled ABI constants); do not add a new "
             "version whose digest duplicates an earlier one.",
         )
 
 
 class TemplateGateParityTests(unittest.TestCase):
-    """The `pure_generate_generate.txt` sentences S1-S3 distil constants that live in
+    """The `workshop_generate_generate.txt` sentences S1-S3 distil constants that live in
     `codegen_bundle.py`. If a constant moves and the prompt does not, the leaf is told to
     emit a value the gate no longer accepts — the exact E2E#7 failure mode. These assert the
     template's distilled surface still agrees with the gate's live constants.
@@ -1372,7 +1433,7 @@ class TemplateGateParityTests(unittest.TestCase):
     @staticmethod
     def _generate_template_bytes() -> str:
         tpl_dir = Path(ort.__file__).resolve().parent / "prompt_templates"
-        return (tpl_dir / "pure_generate_generate.txt").read_text(encoding="utf-8")
+        return (tpl_dir / "workshop_generate_generate.txt").read_text(encoding="utf-8")
 
     def test_template_names_every_state_residency(self) -> None:
         template = self._generate_template_bytes()
@@ -1380,7 +1441,7 @@ class TemplateGateParityTests(unittest.TestCase):
             self.assertIn(
                 residency, template,
                 f"state_residency {residency!r} (cb.STATE_RESIDENCIES) is not named in "
-                "pure_generate_generate.txt — S2 has drifted from the gate enum.")
+                "workshop_generate_generate.txt — S2 has drifted from the gate enum.")
 
     def test_template_capability_tokens_are_all_manifest_provided(self) -> None:
         # Every `<name>@<version>` token the prompt shows as an example must be one the
@@ -1391,7 +1452,7 @@ class TemplateGateParityTests(unittest.TestCase):
         tokens = set(re.findall(r"[a-z][a-z0-9_]*@[0-9]+", template))
         self.assertEqual(
             tokens - provided, set(),
-            "pure_generate_generate.txt names capability tokens the harness manifests do not "
+            "workshop_generate_generate.txt names capability tokens the harness manifests do not "
             f"provide: {sorted(tokens - provided)} (provided: {sorted(provided)}).")
 
 
