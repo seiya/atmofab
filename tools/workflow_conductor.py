@@ -1487,9 +1487,17 @@ _DIAGNOSTICIAN_TARGET_PHASES: frozenset[str] = frozenset({"compile", "generate"}
 
 
 def _parse_directive(stdout: str) -> RouteDecision | None:
-    """Parse + validate the diagnostician's JSON directive into a RouteDecision.
-    Returns None on any malformed/out-of-vocabulary directive (caller fails closed)."""
-    obj = _last_json_object(stdout or "")
+    """Parse + validate the diagnostician's JSON directive into a RouteDecision: the last
+    balanced `{...}` of a reply text (the pure arm). Returns None on any malformed /
+    out-of-vocabulary directive (caller fails closed)."""
+    return _directive_from_object(_last_json_object(stdout or ""))
+
+
+def _directive_from_object(obj: Any) -> RouteDecision | None:
+    """Validate one parsed directive object into a RouteDecision (`_parse_directive`'s rules).
+    The reading arm's `directive.json` is parsed whole and validated here directly: a round
+    trip through `_parse_directive`'s brace scanner, which does not know about strings, would
+    refuse a valid directive whose `reason` holds an unbalanced brace (issue #534 PR-J4-a)."""
     if not isinstance(obj, dict):
         return None
     action = obj.get("action")
@@ -17117,7 +17125,7 @@ class Conductor:
             repair_reason="diagnose_no_repair", attempt_failed_event="diagnose_launch_failed",
             summary_prefix="diagnose", host_write_failed_reason="diagnose_no_host_write",
             runner_host_authored=lambda _refs: False,
-            violations=lambda doc: ([] if _parse_directive(json.dumps(doc)) is not None
+            violations=lambda doc: ([] if _directive_from_object(doc) is not None
                                     else ["the directive is out of vocabulary"]),
             schema_category=category,
             status_of=lambda doc: "pass", reply_of=_unused, summary_of=_unused,
@@ -17210,7 +17218,7 @@ class Conductor:
         if finished:
             _category, _findings, document, _infra = machine.assemble(wturn)
             if document is not None:
-                decision = _parse_directive(json.dumps(document))
+                decision = _directive_from_object(document)
         return self._DiagnoseTurn(proc, wturn.model, wturn.usage, decision,
                                   lineage.paths.lineage_id, wturn.leaf_wall_s)
 

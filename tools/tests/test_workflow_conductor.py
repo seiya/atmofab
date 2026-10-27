@@ -9302,6 +9302,31 @@ class DiagnosticianTest(unittest.TestCase):
                                     wc.PhaseOutcome("validate", "fail")).action, "retry")
         self.assertEqual(len(reads), 1)
 
+    def test_a_directive_whose_reason_holds_a_brace_is_honoured(self) -> None:
+        """`directive.json` is parsed whole and validated as an object: the reply-text scanner
+        `_parse_directive` uses (a brace counter that does not know about strings) would refuse
+        it, and record a delivered directive as `diagnose_fail ... unparsable`."""
+        for reason in ("a } brace", "a { brace"):
+            with self.subTest(reason=reason):
+                doc = {"action": "retry", "target_phase": "generate", "reason": reason}
+                self.assertIsNone(wc._parse_directive(json.dumps(doc)))
+                c = self._conductor()
+                c.leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(0, "", "")  # type: ignore[assignment]
+                real = c.spawn_leaf
+
+                def spawn(prompt, env, entry=None, _doc=doc, _c=c, _real=real, **kw):  # type: ignore[no-untyped-def]
+                    proc = _real(prompt, env, entry, **kw)
+                    tree = (_c.homes / _c.orchestration_id / "claude" / kw["child_arid"]
+                            / "tree")
+                    (tree / "directive.json").write_text(json.dumps(_doc), encoding="utf-8")
+                    return proc
+
+                c.spawn_leaf = spawn  # type: ignore[assignment]
+                d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
+                self.assertEqual((d.action, d.target_phase, d.reason),
+                                 ("retry", "generate", reason))
+                self.assertEqual(self._finalized_row(c)["status"], "pass")
+
     def test_a_lineage_the_host_cannot_lay_out_is_a_named_terminal(self) -> None:
         """The lineage setup raises `ValueError` (`_workshop_backend`, `LineagePaths`,
         `read_lineage_record`), and `escalate` sits outside `conduct`'s only `try`: folded,
