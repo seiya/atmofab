@@ -927,10 +927,11 @@ def replay(repo_root: Path, args: argparse.Namespace, argv: list[str]) -> int:
             "judge_replay_leaf_mismatch",
             f"--leaf {args.leaf}, but {args.llm_config} runs {step}.{substep} as "
             f"leaf: {entry.leaf}")
-    if entry.is_workshop and entry.is_http:
+    if entry.is_workshop and entry.is_http and not (diagnose and args.leaf == "pure"):
         # Issue #534 PR-J3-b (operator decision O3): an HTTP lineage's transcript is the host
         # loop's `loop_turns.jsonl`, which `read_coverage` does not read; refused before any
-        # orchestration is created, `--check` included.
+        # orchestration is created, `--check` included. A diagnose row's PURE arm opens no
+        # lineage (it runs `defaults` as a pure leaf), so it is not refused.
         raise ReplayRefused(
             "judge_replay_http_lineage_unsupported",
             f"a replay of an HTTP lineage ({entry.provider}) reads `loop_turns.jsonl`, which "

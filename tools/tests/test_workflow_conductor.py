@@ -9172,6 +9172,38 @@ class DiagnosticianTest(unittest.TestCase):
                     for sub, cap in c.calls if sub == "record-launch"]
         self.assertEqual(len(set(lineages)), 3)
 
+    def test_each_pure_diagnose_launch_is_a_fresh_http_conversation(self) -> None:
+        """The pure arm (`judge_replay --leaf pure`, until the pure path is deleted) on an HTTP
+        `defaults`: each launch sends ONE message, its own prompt — `_run_http_leaf`'s history
+        is keyed by `(step, substep)` and is reset per launch."""
+        c, _api = self._http([], "o_pure_http_history")
+        sent: list[int] = []
+        directive = self._DIRECTIVE
+
+        import tools.llm_http_leaf as hl
+        real = hl.run_pure_http_leaf
+
+        def fake(entry, messages, env=None):  # type: ignore[no-untyped-def]
+            sent.append(len(messages))
+            return hl.HttpLeafResponse(directive, "m", {}, False, None, directive,
+                                       model_reported=True)
+
+        hl.run_pure_http_leaf = fake  # type: ignore[assignment]
+        self.addCleanup(lambda: setattr(hl, "run_pure_http_leaf", real))
+        # The fake's `spawn_leaf` is the CLI leaf's; put the real one back so its HTTP branch —
+        # and with it `_run_http_leaf`'s history — is what runs.
+        c.spawn_leaf = wc.Conductor.spawn_leaf.__get__(c)  # type: ignore[assignment]
+        import dataclasses
+        entry = dataclasses.replace(c.entry_for(None, None), leaf=lc.LEAF_PURE,
+                                    lineage_timeout_s=None)
+        for n in range(3):
+            child = f"child-p{n}"
+            request = c._diagnose_request(self._refs(), "generate", entry, child,
+                                          '{"failed_phase": "generate"}', pure=True)
+            turn = c._diagnose_turn(self._refs(), request, entry, child, "generate", pure=True)
+            self.assertEqual(turn.decision.action, "retry")
+        self.assertEqual(sent, [1, 1, 1])
+
     def test_a_truncated_http_reply_does_not_get_to_route_the_phase(self) -> None:
         """A reply the provider cut at the output limit ends the launch (`LoopResult.truncated`)
         with the lineage OPEN — no bound ended it — so the turn's `ended_by` does not answer

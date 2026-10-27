@@ -17181,6 +17181,10 @@ class Conductor:
         two loops share."""
         from tools.orchestration_runtime import DIAGNOSE_SUBSTEP
         if pure:
+            # A fresh conversation per launch on the HTTP transport: `_run_http_leaf`'s history
+            # is keyed by `(step, substep)`, so without the reset a second pure diagnose launch
+            # of one phase replays the first one's diagnosis and directive as prior turns.
+            self.reset_http_history(phase, DIAGNOSE_SUBSTEP)
             turn = self._spawn_pure_turn(
                 request, entry, child_arid=child_arid, phase=phase, substep=DIAGNOSE_SUBSTEP,
                 node_key=refs.node_key)

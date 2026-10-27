@@ -789,6 +789,25 @@ class DiagnoseReplayTests(unittest.TestCase):
                           "ranges": [[1, total]]})
         self.assertNotIn("prompt_matches_record", row)
 
+    def test_an_http_defaults_refuses_the_workshop_arm_alone(self) -> None:
+        """O3 refuses an HTTP LINEAGE (its transcript is `loop_turns.jsonl`); a diagnose row's
+        pure arm opens none, so on an HTTP `defaults` it is answered and the workshop arm is
+        refused. (The pure arm then meets this fixture's preflight, which no HTTP endpoint
+        answers; what is pinned is that O3's refusal is the workshop arm's alone.)"""
+        cfg = self.repo.parent / "http.yaml"
+        cfg.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: anthropic_api\n"
+                       "  api_key_env: K\n  model: m\n"
+                       "phases:\n  validate:\n    substeps:\n      judge:\n"
+                       "        provider: claude_cli\n", encoding="utf-8")
+        for arm, refused in (("pure", False), ("workshop", True)):
+            with self.subTest(arm=arm):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    jr.main([_SRC, _DIAGNOSE_ARID, "--leaf", arm, "--llm-config",
+                             str(cfg), "--repo-root", str(self.repo), "--check"])
+                self.assertEqual("judge_replay_http_lineage_unsupported" in out.getvalue(),
+                                 refused, out.getvalue())
+
     def test_check_answers_the_step_gates(self) -> None:
         rc, out = self._main("--check", leaf="workshop")
         self.assertEqual(rc, 0, out)
