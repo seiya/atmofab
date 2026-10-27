@@ -179,7 +179,18 @@ class LineagePaths:
                           self.staged_bin, self.syntax, self.snapshot):
             directory.mkdir(mode=0o700, parents=True, exist_ok=True)
             os.chmod(directory, 0o700)
-        self.record_dir.mkdir(parents=True, exist_ok=True)
+        # The record directory (`<orchestration>/workshop/<lineage>/`), one level at a time
+        # with a chmod after each mkdir: a `parents=True` mkdir under a umask that holds owner
+        # bits (legal, if unusual) creates an intermediate the next level cannot be made in,
+        # and the launch dies. A level that already exists keeps its mode.
+        missing: list[Path] = []
+        directory = self.record_dir
+        while not directory.exists():
+            missing.append(directory)
+            directory = directory.parent
+        for directory in reversed(missing):
+            directory.mkdir(mode=0o700, exist_ok=True)
+            os.chmod(directory, 0o700)
 
 
 def reserved_tree_names(seed_names: Iterable[str], control_file_basename: str | None,

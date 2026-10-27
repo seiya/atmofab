@@ -8702,7 +8702,12 @@ class Conductor:
                     mode = "cold_reuse"
             self.emit("workshop_reopen", node_key=refs.node_key, substep=substep or "",
                       target=target_arid, mode=mode,
-                      findings_carried=last_excerpt is not None)
+                      # What the FIRST launch carries: findings ride a repair payload, and a
+                      # reopen naming no usable target (`none`) builds none, so its findings
+                      # are not carried, and the event must not say they are (the pure
+                      # loop's `pure_reopen_cold` row pinned this until issue #534 PR-J4-b).
+                      findings_carried=(last_excerpt is not None
+                                        and repair_target is not None))
         # The lineage state from here on is the machine's, started from the reopen's answer.
         machine = self._WorkshopLineageMachine(
             self, refs, entry, spec, lineage=lineage, prior=prior,

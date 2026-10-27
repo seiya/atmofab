@@ -4853,12 +4853,6 @@ def _write_json_transaction(
             )
         response["agent_session_id"] = thread_id
         response["session_id"] = thread_id
-        raw_lineage = response.get("codex_lineage_id")
-        lineage = (
-            raw_lineage.strip()
-            if isinstance(raw_lineage, str) and raw_lineage.strip()
-            else None
-        )
         transaction_updates = {expected_targets[0]: response}
         session_index = _read_session_run_index_from_path(expected_targets[1])
         _upsert_session_run_index_entry(
@@ -4868,7 +4862,6 @@ def _write_json_transaction(
             context_id=context_id,
             agent_role=agent_role,
             status=status,
-            codex_lineage_id=lineage,
         )
         transaction_updates[expected_targets[1]] = session_index
         targets = list(expected_targets)
@@ -5350,7 +5343,6 @@ def _append_session_run_index_entry(
     context_id: str | None,
     agent_role: str,
     status: str,
-    codex_lineage_id: str | None = None,
     workshop_lineage_id: str | None = None,
 ) -> None:
     transaction_dir = _orchestration_root(repo_root, orchestration_id)
@@ -5364,7 +5356,6 @@ def _append_session_run_index_entry(
             context_id=context_id,
             agent_role=agent_role,
             status=status,
-            codex_lineage_id=codex_lineage_id,
             workshop_lineage_id=workshop_lineage_id,
         )
         _write_json(_session_run_index_path(repo_root, orchestration_id), doc)
@@ -5378,14 +5369,14 @@ def _upsert_session_run_index_entry(
     context_id: str | None,
     agent_role: str,
     status: str,
-    codex_lineage_id: str | None = None,
     workshop_lineage_id: str | None = None,
 ) -> None:
     """Update ``doc`` with one normalized session/run binding without writing it.
 
-    A lineage id (`codex_lineage_id`, or a workshop leaf's `workshop_lineage_id`, issue #534)
-    is recorded when given and kept when an update omits it: the launches of one lineage are
-    the rows carrying its id."""
+    A workshop leaf's lineage id (`workshop_lineage_id`, issue #534) is recorded when given and
+    kept when an update omits it: the launches of one lineage are the rows carrying its id. (A
+    row written before issue #534 PR-J4-b may carry the pure codex leaf's `codex_lineage_id`,
+    which an update keeps as it keeps any field it does not name.)"""
     entries_obj = doc.get("entries")
     entries = entries_obj if isinstance(entries_obj, list) else []
     normalized_run_id = agent_run_id.strip()
@@ -5403,8 +5394,6 @@ def _upsert_session_run_index_entry(
         item["context_id"] = normalized_context_id
         item["agent_role"] = normalized_role
         item["status"] = normalized_status
-        if codex_lineage_id is not None:
-            item["codex_lineage_id"] = codex_lineage_id
         if workshop_lineage_id is not None:
             item["workshop_lineage_id"] = workshop_lineage_id
         item["updated_at"] = _utc_now_iso()
@@ -5418,8 +5407,6 @@ def _upsert_session_run_index_entry(
             "status": normalized_status,
             "recorded_at": _utc_now_iso(),
         }
-    if codex_lineage_id is not None:
-        entry["codex_lineage_id"] = codex_lineage_id
     if workshop_lineage_id is not None:
         entry["workshop_lineage_id"] = workshop_lineage_id
     entries.append(entry)
@@ -10577,8 +10564,8 @@ def _validate_launch_prompt_text(request_payload: dict[str, Any], prompt_text: s
         # An empty marker set means one of two things, and they must not share an exit.
         # (a) NO STEP: the orchestration agent's own self-prompt, rendered from no template,
         #     with nothing to preserve. That is what the early return below is for.
-        # (b) A STEP that is NEITHER deterministic NOR pure. Since Z4 (issue #171) there is no
-        #     third shape. The renderer refuses to RENDER one — but `prepare_launch_request_payload`
+        # (b) A STEP that is NEITHER deterministic NOR workshop (pure until issue #534 PR-J4-b).
+        #     There is no third shape. The renderer refuses to RENDER one — but `prepare_launch_request_payload`
         #     force-renders only when `pure or not explicit_prompt_present`, so a caller that
         #     supplies `launch_prompt_full` ITSELF never meets the renderer, and this validator
         #     is the only thing in front of an arbitrary prompt body on a real step. Returning
@@ -10611,9 +10598,10 @@ def _validate_launch_prompt_text(request_payload: dict[str, Any], prompt_text: s
             raise ValueError(
                 f"launch request declares step={step!r} "
                 f"substep={request_payload.get('substep')!r} and is neither deterministic nor "
-                "pure. Since Z4 (issue #171) a launch is one of those two shapes: set "
-                "`deterministic: true` for a conductor in-process substep, or `leaf_mode: "
-                '"pure"` with a `pure_context` for an LLM leaf'
+                "workshop. A launch is one of those two shapes (the pure leaf went in issue "
+                "#534 PR-J4-b): set `deterministic: true` for a conductor in-process substep, "
+                "or `leaf_mode: \"workshop\"` with a `pure_context`, a `workshop_lineage_id` "
+                "and a `workshop_provider` for an LLM leaf"
             )
         return
     missing_markers = [marker for marker in required_markers if marker not in prompt_text]
@@ -11563,16 +11551,17 @@ def _validate_launch_request_payload(request_payload: dict[str, Any]) -> None:
     # placement and this arm is no longer what prevents it. The prompt-text arm stays, because a request can
     # declare a shape its prompt does not carry.
     # The shape question is asked of ONE function, `_required_launch_prompt_markers`: an empty
-    # marker set on a real step IS "neither deterministic nor pure" (its own comment says so),
+    # marker set on a real step IS "neither deterministic nor workshop" (its own comment says so),
     # so the two refusals cannot answer differently.
     if (isinstance(step, str) and step.strip()
             and not _required_launch_prompt_markers(request_payload)):
         raise ValueError(
             f"launch request declares step={step!r} "
             f"substep={request_payload.get('substep')!r} and is neither deterministic nor "
-            "pure. Since Z4 (issue #171) a launch is one of those two shapes: set "
-            "`deterministic: true` for a conductor in-process substep, or `leaf_mode: "
-            '"pure"` with a `pure_context` for an LLM leaf'
+            "workshop. A launch is one of those two shapes (the pure leaf went in issue "
+            "#534 PR-J4-b): set `deterministic: true` for a conductor in-process substep, "
+            "or `leaf_mode: \"workshop\"` with a `pure_context`, a `workshop_lineage_id` "
+            "and a `workshop_provider` for an LLM leaf"
         )
     if not is_verify_substep:
         return
@@ -17726,10 +17715,10 @@ def _project_terse_result(command: str, result: Any) -> Any:
     fields = _TERSE_RESULT_FIELDS.get(command)
     if fields is None or not isinstance(result, dict):
         return result
-    # A missing Codex lineage home is not a completed launch: return its
-    # transaction sentinel intact so the conductor can rebuild the request cold.
-    if command == "record-launch" and (result.get("codex_lineage_home_missing")
-                                        or result.get("workshop_lineage_home_missing")):
+    # A missing workshop lineage home is not a completed launch: return its sentinel intact
+    # so the conductor can rebuild the request cold (the pure codex leaf's
+    # `codex_lineage_home_missing` went with it in issue #534 PR-J4-b).
+    if command == "record-launch" and result.get("workshop_lineage_home_missing"):
         return result
     projected: dict[str, Any] = {key: result[key] for key in fields if key in result}
     for key in _TERSE_ALWAYS_KEEP:
