@@ -23514,13 +23514,19 @@ class MultiProviderPreflightTests(unittest.TestCase):
     def test_probe_all_providers_covers_every_distinct_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp), self._MIXED)
+            # `defaults` is a reading workshop surface (issue #534 PR-J4-a), so the claude row
+            # also takes the CLI's workshop `--help` probe; CI has no `claude` on PATH.
             with patch.dict(os.environ, {"ATMOFAB_TEST_LOCAL_KEY": "k"}, clear=False), \
                  patch.object(ort, "probe_execution_platform",
-                              return_value=_launchable_preflight_dict(backend="claude")):
+                              return_value=_launchable_preflight_dict(backend="claude")), \
+                 patch.object(ort, "_workshop_flag_set_check",
+                              lambda *a, **k: {"name": "claude_workshop_flag_set_available",
+                                               "pass": True, "detail": "stubbed"}):
                 out = ort.probe_all_providers(llm_config_path=cfg,
                                               opener=lambda *a, **k: object())
         self.assertEqual(set(out), {"claude", "openai_compatible"})
         self.assertTrue(all(entry["launchable"] for entry in out.values()))
+        self.assertEqual([s.get("workshop") for s in out["claude"]["surfaces"]], [True])
 
     def test_preflight_refuses_a_snapshot_that_changed_under_it(self) -> None:
         """The caller resolved one set of bytes; this subprocess reloads the file. If they
