@@ -1,6 +1,6 @@
 ---
 name: atmofab-enforcement-change
-description: Use when changing this repository's enforcement machinery — the deterministic gates, the validators, the build-runtime library's argument checks, the pure-leaf launch refusals and the read-only sandbox profile, the workshop leaf's writable lineage profile, its wrapper's path resolution under the work tree, its per-lineage operation set and its call cap, `check_ir`'s scratch IR directory under the lineage home, the READING workshop leaf of a judging substep (no endpoint, its one output document, the seed restore, the seeds-only reseed after a transport death, the launch-record endpoint row), the DEV hook layer — and whenever you are about to classify a review finding as 「残余」「到達不能」「対象外」 (residual / unreachable / out of scope). Required reading for fixing a fail-open, adding to an allowlist or denylist, touching the gate functions in `tools/build_runtime.py` / `tools/orchestration_runtime.py`, `tools/hooks/` (the DEV layer; the leaf hook layer, the capability gate and write_root derivation went in Z4, issue #171, and the episodes about them stay in `references/`), or the gates in `validate_pipeline_semantics.py`, for fixing an audit finding, and for triaging a subagent's or Codex's review findings.
+description: Use when changing this repository's enforcement machinery — the deterministic gates, the validators, the build-runtime library's argument checks, the pure-leaf launch refusals and the read-only sandbox profile, the workshop leaf's writable lineage profile, its wrapper's path resolution under the work tree, its per-lineage operation set and its call cap, `check_ir`'s scratch IR directory under the lineage home, the READING workshop leaf of a judging substep (no endpoint, its one output document, the seed restore, the seeds-only reseed after a transport death, the launch-record endpoint row), the HTTP host tool-use loop of a workshop leaf (its file tools' path resolution and reserved names, the cut / timeout / transport rules, the in-memory warm history, `loop_turns.jsonl`, the HTTP workshop record audit), the DEV hook layer — and whenever you are about to classify a review finding as 「残余」「到達不能」「対象外」 (residual / unreachable / out of scope). Required reading for fixing a fail-open, adding to an allowlist or denylist, touching the gate functions in `tools/build_runtime.py` / `tools/orchestration_runtime.py`, `tools/hooks/` (the DEV layer; the leaf hook layer, the capability gate and write_root derivation went in Z4, issue #171, and the episodes about them stay in `references/`), or the gates in `validate_pipeline_semantics.py`, for fixing an audit finding, and for triaging a subagent's or Codex's review findings.
 ---
 
 # Changing atmofab's enforcement machinery
@@ -125,6 +125,19 @@ a fail-open that way, on the strength of **one** compiler probe).
   import the importer at startup and run `python3 -c "import <entry>, sys; print('<module>' in
   sys.modules)"` at both revisions.** Episode: `references/judgment-episodes.md` §Rule 1-b
   (issue #444)
+- **Deleting a step as REDUNDANT "because its caller always did it first" is a claim about every
+  CALLER — the ones a later fix adds included — and the fix that adds one will not re-read it.**
+  Issue #534 PR-J3-b removed an HTTP history drop from `after_transport` because a mutation sweep
+  showed it unobservable: every caller then reached it after the turn's tail had ended the
+  lineage and dropped the history — true at that commit. The NEXT commit, a review-round fix,
+  added a new route into `after_transport` (a cut last reply on a reading lineage, which no tail
+  ends) and did not re-read the deletion, so that lineage was recorded open with its
+  conversation in memory; the round after found it, and the next found the same shape at a
+  second exit. **Rule: keep such a step, GUARDED by
+  the state it relies on (`if ended_by is None: end it`), rather than deleting it — the guard
+  costs a line and states the premise where a new caller cannot miss it.** "The mutation
+  survives" is exactly the evidence the rule above already refuses for a deletion. Episode:
+  `references/judgment-episodes.md` §Rule 1-b (issue #534 PR-J3-b)
 
 **1-c. Severity is a classification too. Do not decide it from one reproduction.** Rule 1 says
 decide "does it happen" by execution; it says **nothing about how far it happens**. The procedure
@@ -222,6 +235,16 @@ to **one unbilled observation**).
   that node and hold both certifications to it — a gate on the producing side where the shape
   is visible, and a closing run over a consumer before the change is called done**
   (`references/judgment-episodes.md` §Rule 1-d, issue #512)
+- **A premise about an EXTERNAL provider's wire contract — what it rejects, what it requires
+  back — is executed against its CURRENT documentation at implementation time, not taken from
+  the plan.** Issue #534 PR-J3-b's plan decided never to replay `reasoning_content` because "the
+  servers that return it refuse a request carrying it"; the vendor's current thinking-mode guide
+  states no such refusal and requires it back on every request carrying `tools` and answers 400
+  otherwise. The implementation shipped the plan's rule and a round-1 reviewer fetched the page.
+  A loopback stand-in cannot answer this either: it implements the premise you gave it. **Rule:
+  for each sentence of a plan that says what a provider accepts or refuses, fetch the provider's
+  page in the implementing session and quote it in the commit** (episode:
+  `references/judgment-episodes.md` §Rule 1-d, issue #534 PR-J3-b)
 - When a premise collapses, **keep the measurements**. The plan dies; the measured facts stay
 
 **1-e. "Out of scope because the leaf gains nothing" is a classification rule 1 does not govern.**
@@ -648,6 +671,18 @@ recipes are in `references/input-surfaces.md`:
   sentence that names a file, in a commit with no diff to the code that assembles what the leaf is
   handed. Same question as the paragraph above, asked from the other end: there the transport
   moved and the contract did not, here the contract moved and the transport did not.
+  **A third form: moving guidance OUT of a fenced slot into a contract slot reaches only the
+  templates that HAVE that slot.** Issue #534 PR-J3-b moved "what to do about a cut reply" out of
+  the repair findings — rendered inside a do-not-obey fence, where an instruction is text to
+  ignore (issue #534 PR-J3-a, PR #552: a rule about chained reads stated in the findings went
+  unheeded until `e03e618b` moved it to the scope paragraph outside the fence) — into the HTTP
+  `<tool_surface>` row; the verdict
+  repair template carried that slot and the bundle and IR repair templates did not, so a
+  producer's cold repair delivered none of it, while the findings had been rewritten as bare
+  diagnoses on the premise that it did. **Rule: when you move a rule to another slot, render every
+  template of the family — cold launch, cold repair, warm repair, each kind — and count the rule
+  in each** (`grep -c <slot>` over the templates is the one-line check that would have shown it).
+  Episode: `references/input-surfaces.md` §Surface 12, "A third form".
 - **Surface 13 — a gate that refuses a SPELLING does not refuse a POINTER to where that spelling
   lives.** Every guard in this repository that protects a leaf-read surface decides by reading the
   text for a token: the severity allowlist refuses a severity VALUE, the restatement scans refuse a

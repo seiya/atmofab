@@ -751,3 +751,20 @@ earlier row had imported the module, so the module is imported before it is patc
 (765921f3). A second error from the same loop: I passed `--continue-on-collection-errors` to the
 script instead of inside `--test-cmd`, and the backgrounded run reported only "failed" — read
 the output file before relaunching.
+
+## The reverse binding leak (issue #534 PR-J3-b / PR #554, 2026-10-27)
+
+The HTTP producer rows of `tools/tests/test_workshop_http.py` patched
+`tools.workshop_wrapper.run_wrapper_op` with a recording fake for the whole test. Inside that
+window the conductor imported `tools.workshop_mcp` for the first time (lazily, for the tool
+declarations), and `workshop_mcp` does `from tools.workshop_wrapper import run_wrapper_op` — so it
+bound the FAKE, and kept it after the patch stopped. A later real-CLI row,
+`test_bwrap_simulation.WorkshopLeafCliTests.test_mc2_a_compile_tree_is_written_checked_and_assembled`,
+served `check_ir` through the fake and its validator never ran. It was red only in
+`mutation_check.py`'s serial baseline: green under `-n` (the files landed on different workers),
+green in every file alone, and green in 8 concurrent single-file runs at both revisions. Bisected
+by running each earlier file of the `--test-cmd` paired with the red row; only
+`test_workshop_http.py` reproduced it. `567c8a75` imports `tools.workshop_mcp` before the patch
+starts. A file that imports the binding module at collection (`test_workshop_mcp.py`) cannot show
+the leak, which is why only one pairing reproduced it.
+

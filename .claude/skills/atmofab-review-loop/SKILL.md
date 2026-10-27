@@ -161,7 +161,12 @@ when a rule does not obviously apply:
   so a later `from tools import build_runtime` read a different object than the modules that
   had imported it earlier. **A test that pops a submodule must also patch the parent package's
   attribute** (`mock.patch.object(tools, "build_runtime", <the module, imported first>)`).
-  Episode: `references/mutation-testing.md` §"A serial baseline found an order dependence"
+  Episode: `references/mutation-testing.md` §"A serial baseline found an order dependence".
+  **The same leak runs the other way: patch `pkg.mod.f` while a module that does `from pkg.mod
+  import f` is imported for the FIRST time, and that module binds the fake for the rest of the
+  process. Import the binding module before the patch starts**, and bisect a serial-only red by
+  pairing each earlier file with the red row. Episode: `references/mutation-testing.md`
+  §"The reverse binding leak"
 - **Run the baseline for handwritten sweeps too, and read it before you trust `-x`** — the script
   refuses a red baseline (exit 2); a sweep you write yourself will not. Two causes, same false
   green: a stale worktree (PR #67), a sweep KILLED mid-run — a timeout or a Ctrl-C skips the
