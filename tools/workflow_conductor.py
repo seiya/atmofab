@@ -9942,7 +9942,9 @@ class Conductor:
         cancelled = cancel is not None and cancel.is_set()
         if loop is not None:
             # A wrapper result ended the lineage inside the host loop: the twin of the CLI's
-            # cancel event (the bound is already recorded by `run_wrapper_op`).
+            # cancel event (the bound is already recorded by `run_wrapper_op`). NOT PINNED, and
+            # kept: such a launch returns rc 0, so nothing below reads a difference today; it
+            # keeps `_WorkshopTurn.cancelled` true to what happened for the next reader of it.
             from tools.llm_workshop_loop import ENDED_BY_WRAPPER
             cancelled = loop.ended == ENDED_BY_WRAPPER
         if not cancelled:
