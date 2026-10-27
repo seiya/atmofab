@@ -692,6 +692,22 @@ class _Reading(_Dialect):
         self.assertIn("ended by its bound", failed_events[0]["detail"])
         self.assertNotIn("returned no tool call", json.dumps(failed_events))
 
+    def test_cut_replies_to_exhaustion_leave_no_open_lineage(self) -> None:
+        """Round 3 of PR-J3-b: every launch writes a provisional `pass` and is then cut; the
+        budget runs out and the substep fails — and the last lineage, which no bound ended, is
+        ended `superseded` with its conversation forgotten, like the ones before it."""
+        cut = self.cut("o2", "write_file", {"path": self.OUTPUT, "content": "{}"})
+        self.conductor([self.calls(self.write_output(self.passing())), cut] * 3)
+        outcome = self.c.run_substep(self.refs, self.PHASE, self.SUBSTEP)
+        self.assertEqual(outcome.status, "fail")
+        self.assertEqual(self.c._workshop_http_histories(), {})
+        for lineage in ("child-1", "child-2", "child-3"):
+            record = workshop_tree.read_lineage_record(workshop_tree.LineagePaths(
+                homes_root=self.c.homes, orchestration_id=_ORCH, lineage_id=lineage,
+                orchestration_dir=self.repo / "workspace" / "orchestrations" / _ORCH,
+                backend="http"))
+            self.assertEqual(record["ended_by"], "superseded", lineage)
+
     def test_a_lineage_ended_by_its_bound_leaves_no_history(self) -> None:
         """Every launch's lineage times out: the review is run again until the budget is spent
         and the substep fails; no conversation of an ended lineage stays in memory — the last

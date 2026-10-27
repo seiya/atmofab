@@ -314,13 +314,19 @@ WORKSHOP_LINEAGE_BACKENDS: dict[str, str] = {
     "openai_compatible": "http",
 }
 
+#: What a claude workshop leaf's file tools are: the reader row's opening, and the producer
+#: row's before it names the wrapper.
+_CLAUDE_FILE_TOOLS_TEXT = ("You have no shell: your file tools (Read, Write, Edit, Glob, Grep) "
+                           "reach your work tree and nothing else.")
+
 #: What a workshop launch prompt's `<tool_surface>` slot says the leaf holds, by the provider
 #: the launch request names (`workshop_provider`): the one sentence of the contract that
 #: differs by transport (`docs/design/producer_workshop_leaf.md` §Provider neutrality). A
 #: provider with no row cannot serve a workshop launch (`_validate_pure_launch_request_payload`).
 WORKSHOP_TOOL_SURFACE_TEXT: dict[str, str] = {
-    "claude_cli": ("You have no shell: your file tools (Read, Write, Edit, Glob, Grep) reach "
-                   "your work tree and nothing else."),
+    "claude_cli": (_CLAUDE_FILE_TOOLS_TEXT[:-1]
+                   + ", and the host's operations are the `wrapper` MCP server's tools "
+                     "(`mcp__wrapper__<operation>`)."),
     "codex_cli": ("Your shell and patch tools run with your work tree as the working directory, "
                   "and the host reads your tree and nothing else you write. A command you run "
                   "there is not one of the host's operations: those are the `wrapper` MCP "
@@ -468,7 +474,7 @@ if __name__ == "__main__":
 #: states. The `codex_cli` row rests on MR5-a (no `mcp__` tool on the reading argv) and MR5-b (a
 #: command-written document assembles).
 WORKSHOP_READER_TOOL_SURFACE_TEXT: dict[str, str] = {
-    "claude_cli": (WORKSHOP_TOOL_SURFACE_TEXT["claude_cli"]
+    "claude_cli": (_CLAUDE_FILE_TOOLS_TEXT
                    + " A read of a file may stop before the end of the file and say so; "
                      "continue from the last line it returned until you reach the end."),
     "codex_cli": ("Your shell and patch tools run with your work tree as the working directory, "

@@ -24022,8 +24022,8 @@ class MultiProviderPreflightTests(unittest.TestCase):
     def test_an_http_token_on_a_non_pure_launch_is_refused(self) -> None:
         """`record_launch` is the authorization gate; it must not be the one layer that assumes
         the config and conductor checks ran. Since issue #534 PR-J3-b a WORKSHOP request is
-        admitted too (`MultiProviderPreflightTests` drives one below); a launch that is neither
-        is refused."""
+        admitted too (`test_workshop_launch.HttpWorkshopRecordLaunchTests` drives one); a launch
+        that is neither is refused."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._mixed_preflight(repo_root)

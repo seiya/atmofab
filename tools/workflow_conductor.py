@@ -11703,6 +11703,12 @@ class Conductor:
                                                    WORKSHOP_ROLLOUT_UNREADABLE)
                               and attempt < MAX_BUNDLE_REPAIR_TURNS)
             if not can_repair:
+                if machine is not None and unfinished_review and turn.truncated:
+                    # An HTTP reading launch whose cut last reply exhausted the budget: no bound
+                    # ended its lineage (rc 0, not timed out), and nothing continues it — the
+                    # reviewer's machine starts empty — so it is ended and its conversation
+                    # forgotten, as `after_transport` does on the re-run path.
+                    machine.after_transport()
                 # Terminal: record verdict_meta with THIS (final) attempt's category/excerpt for the
                 # outer route (classify_failure's verdict table). `category`/`this_excerpt` are used
                 # rather than the `last_*` repair carriers: on a transport terminal the carriers were

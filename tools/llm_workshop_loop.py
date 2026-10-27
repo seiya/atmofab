@@ -14,7 +14,8 @@ The rules this module holds, each decided in the PR-J3-b plan (posted on #534):
 * A reply's tool calls are executed because the reply CONTAINS them, never because of its stop
   reason (an OpenAI-compatible server can say `finish_reason: "stop"` with `tool_calls`); the
   stop reason decides truncation alone. A reply cut at the output limit (`max_tokens` /
-  `length`) is neither executed nor appended to the history.
+  `length`, or anthropic's `model_context_window_exceeded`) is neither executed nor appended
+  to the history.
 * Every call of one reply is answered, in order, in ONE message (anthropic) or one `tool`
   message per call (openai), so the history stays a valid replay; a wrapper result carrying
   `ended: True` answers the rest of the reply with `lineage_ended` and ends the loop after.
@@ -432,7 +433,7 @@ def _anthropic_stream_reply(frames: Sequence[tuple[str, str]]
 
 def _openai_message(content: str, calls: list[dict[str, Any]], reasoning: str
                     ) -> dict[str, Any] | None:
-    """The stored assistant message: `content` (null when empty and calls were made),
+    """The stored assistant message: `content` (null when empty),
     `tool_calls` only when there are some, and `reasoning_content` only when the server
     returned one — replayed as received, because a server that returns it in a request with
     `tools` requires it back on every later request (DeepSeek's thinking mode answers 400
