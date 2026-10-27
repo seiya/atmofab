@@ -171,6 +171,11 @@ class _GenerateProducer(_Dialect):
         self.refs = _write_node(self.repo)
         self.ops: list[tuple[str, dict]] = []
 
+        # `workshop_mcp` binds `run_wrapper_op` by name at import, and the conductor imports it
+        # lazily (for the tool declarations) inside the patched window below: imported first
+        # here, it keeps the real function for every later test of the process.
+        import tools.workshop_mcp  # noqa: F401
+
         def fake_op(ctx, op, args=None, *, on_spawn=None):
             self.ops.append((op, dict(args or {})))
             return {"ok": True, "op": op}
