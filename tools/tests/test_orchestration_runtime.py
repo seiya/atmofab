@@ -525,7 +525,7 @@ def _plant_spec_ir_yaml_make(repo_root: Path, ir_ref: str = _FIX_IR_REF) -> None
     p = repo_root / ir_ref / "spec.ir.yaml"
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(
-        "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    build_system: make\n",
+        "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n",
         encoding="utf-8",
     )
 
@@ -12464,7 +12464,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 "algorithm:\n"
                 "  invariants:\n"
                 "    - \"the build_system: pytest harness is out of scope here\"\n"
-                "impl_defaults:\n  lineage_timeout_s: 2700\n"
+                "impl_defaults:\n"
                 "  toolchain:\n"
                 "    language: other\n"
                 "    build_system: cmake\n",

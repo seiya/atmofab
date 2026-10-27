@@ -14915,7 +14915,7 @@ class WriteLineageTest(unittest.TestCase):
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True)
             (ir_dir / "spec.ir.yaml").write_text(
-                'impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n'
+                'impl_defaults:\n  toolchain:\n    language: fortran\n'
                 'dependency:\n'
                 '  direct_deps:\n'
                 '    - node_key: "component/base@0.1.0"\n'
@@ -15148,7 +15148,7 @@ class WriteMakefileTest(unittest.TestCase):
         ir_dir = repo / refs.ir_ref
         ir_dir.mkdir(parents=True, exist_ok=True)
         (ir_dir / "spec.ir.yaml").write_text(
-            "impl_defaults:\n  lineage_timeout_s: 2700\n"
+            "impl_defaults:\n"
             "  toolchain:\n"
             f"    language: {language}\n"
             "    standard: f2008\n"
@@ -15371,13 +15371,13 @@ class WriteMakefileTest(unittest.TestCase):
         from tools.tests.target_fixtures import FORTRAN_CPU
 
         shapes = {
-            "language absent": "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    build_system: make\n",
+            "language absent": "impl_defaults:\n  toolchain:\n    build_system: make\n",
             "toolchain absent": "impl_defaults: {}\n",
             "impl_defaults absent": "meta:\n  spec_kind: component\n",
-            "toolchain is a list": "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain: [make, fortran]\n",
-            "toolchain is a string": "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain: make\n",
+            "toolchain is a list": "impl_defaults:\n  toolchain: [make, fortran]\n",
+            "toolchain is a string": "impl_defaults:\n  toolchain: make\n",
             "impl_defaults is a string": "impl_defaults: nonsense\n",
-            "another language": "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: zz_other\n",
+            "another language": "impl_defaults:\n  toolchain:\n    language: zz_other\n",
         }
         tc = FORTRAN_CPU.toolchain
         for name, block in shapes.items():
@@ -15651,7 +15651,7 @@ class WriteMakefileTest(unittest.TestCase):
         ir_dir = repo / refs.ir_ref
         ir_dir.mkdir(parents=True, exist_ok=True)
         (ir_dir / "spec.ir.yaml").write_text(
-            "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    standard: f2008\n"
+            "impl_defaults:\n  toolchain:\n    language: fortran\n    standard: f2008\n"
             "    build_system: make\n  target:\n    backend: openmp\n"
             "dependency:\n"
             '  node_key: "component/top@0.1.0"\n'
@@ -15687,7 +15687,7 @@ class WriteMakefileTest(unittest.TestCase):
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
             (ir_dir / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    build_system: make\n"
+                "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n"
                 "dependency:\n"
                 '  node_key: "component/top@0.1.0"\n'
                 "  direct_deps:\n    - node_key: \"component/base@0.1.0\"\n",
@@ -15715,7 +15715,7 @@ class WriteMakefileTest(unittest.TestCase):
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
             (ir_dir / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    build_system: make\n"
+                "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n"
                 "dependency:\n"
                 '  node_key: "component/top@0.1.0"\n'
                 "  direct_deps:\n"
@@ -15827,7 +15827,7 @@ class WriteMakefileTest(unittest.TestCase):
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
             (ir_dir / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    build_system: make\n"
+                "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n"
                 "dependency:\n  node_key: \"component/top@0.1.0\"\n"
                 "  direct_deps:\n    - node_key: \"component/base@0.1.0\"\n",
                 encoding="utf-8")
@@ -16088,7 +16088,7 @@ class WriteMakefileTest(unittest.TestCase):
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
             (ir_dir / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    build_system: make\n"
+                "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n"
                 "dependency:\n  node_key: \"component/top@0.1.0\"\n"
                 "  direct_deps:\n    - node_key: \"component/base@0.2.0\"\n",
                 encoding="utf-8")
@@ -17328,7 +17328,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n"
+                "impl_defaults:\n  toolchain:\n    language: fortran\n"
                 "    build_system: make\n"
                 'dependency:\n  node_key: "component/spec_x@0.1.0"\n'
                 '  direct_deps:\n    - node_key: "component/depy@0.1.0"\n',
@@ -17447,7 +17447,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 run_id="run_1", source_binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  lineage_timeout_s: 2700\n"
+                "impl_defaults:\n"
                 "  toolchain:\n    language: fortran\n    standard: f2008\n"
                 "    build_system: make\n"
                 "  target:\n    class: cpu\n    backend: openmp\n"
@@ -17495,7 +17495,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  lineage_timeout_s: 2700\n"
+                "impl_defaults:\n"
                 "  toolchain:\n    language: fortran\n    standard: f2008\n"
                 "    build_system: make\n"
                 "  target:\n    class: cpu\n    backend: openmp\n",
@@ -17538,7 +17538,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  lineage_timeout_s: 2700\n"
+                "impl_defaults:\n"
                 "  toolchain:\n    language: fortran\n    standard: f2008\n"
                 "    build_system: make\n"
                 "  target:\n    class: cpu\n    backend: openmp\n",
@@ -17574,7 +17574,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 run_id="run_1", source_binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  lineage_timeout_s: 2700\n"
+                "impl_defaults:\n"
                 "  toolchain:\n    language: fortran\n    standard: f2008\n"
                 "    build_system: make\n"
                 "  target:\n    class: cpu\n    backend: openmp\n"
@@ -18276,7 +18276,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 run_id="run_1", source_binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    build_system: make\n"
+                "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n"
                 "  target:\n    class: cpu\n", encoding="utf-8")
             (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
             node_dir = repo / refs.run_node_dir()
@@ -19054,7 +19054,7 @@ class DeterministicBuildTest(unittest.TestCase):
     #   post_execute_violation   <- a gate subprocess exits non-zero
     #   snapshot_deliverable_gap <- gates clean, quality_check clean, a per-case snapshot missing
     #   quality_check_mismatch   <- gates clean, no snapshot gap, the make-test re-run disagrees
-    _B1_IR_MINIMAL = ("impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n"
+    _B1_IR_MINIMAL = ("impl_defaults:\n  toolchain:\n    language: fortran\n"
                       "    build_system: make\n  target:\n    class: cpu\n")
     _B1_IR_SNAPSHOTS = (_B1_IR_MINIMAL
                         + "io_contract:\n  raw_requirements:\n    required_evidence:\n"
@@ -19657,7 +19657,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 run_id="run_1", source_binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    build_system: make\n"
+                "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n"
                 "  target:\n    class: cpu\n", encoding="utf-8")
             (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
 
@@ -19748,7 +19748,7 @@ class DeterministicLintTest(unittest.TestCase):
         ir_dir.mkdir(parents=True, exist_ok=True)
         if language is not None:
             (ir_dir / "spec.ir.yaml").write_text(
-                f"impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: {language}\n", encoding="utf-8")
+                f"impl_defaults:\n  toolchain:\n    language: {language}\n", encoding="utf-8")
             # The language the host reads is the TARGET's (issue #284).
             from tools.tests.target_fixtures import install_target_profile, profile_with
             install_target_profile(repo, profile_with(toolchain={"language": language}))
@@ -19775,7 +19775,7 @@ class DeterministicLintTest(unittest.TestCase):
         ir_dir.mkdir(parents=True, exist_ok=True)
         (ir_dir / "spec.ir.yaml").write_text(
             "meta:\n  spec_id: adv1d\n  spec_kind: problem\n"
-            "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    standard: f2008\n"
+            "impl_defaults:\n  toolchain:\n    language: fortran\n    standard: f2008\n"
             "    build_system: make\n  target:\n    backend: serial\n"
             "dependency:\n"
             f'  node_key: "{self._M3C_NODE_KEY}"\n'
@@ -20424,7 +20424,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
         ir_dir = repo / refs.ir_ref
         ir_dir.mkdir(parents=True, exist_ok=True)
         (ir_dir / "spec.ir.yaml").write_text(
-            f"impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: {language}\n"
+            f"impl_defaults:\n  toolchain:\n    language: {language}\n"
             f"    standard: f2008\n  target:\n    backend: openmp\n", encoding="utf-8")
         # The language the host reads is the TARGET's (issue #284).
         from tools.tests.target_fixtures import install_target_profile, profile_with
@@ -20446,7 +20446,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             refs = self._refs()
             self._seed(repo, refs)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n"
+                "impl_defaults:\n  toolchain:\n    language: fortran\n"
                 "    standard: f2008\n    build_system: make\n  target:\n"
                 "    backend: openmp\n"
                 'dependency:\n  node_key: "component/spec_x@0.1.0"\n'
@@ -20544,7 +20544,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
         ir_dir.mkdir(parents=True, exist_ok=True)
         (ir_dir / "spec.ir.yaml").write_text(
             "meta:\n  spec_id: adv1d\n  spec_kind: problem\n"
-            "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    standard: f2008\n"
+            "impl_defaults:\n  toolchain:\n    language: fortran\n    standard: f2008\n"
             "    build_system: make\n  target:\n    backend: serial\n"
             "dependency:\n"
             f'  node_key: "{self._M3C_NODE_KEY}"\n'
@@ -22086,7 +22086,7 @@ class DeterministicGateTest(unittest.TestCase):
         ir_dir = repo / refs.ir_ref
         ir_dir.mkdir(parents=True, exist_ok=True)
         (ir_dir / "spec.ir.yaml").write_text(
-            f"impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: {language}\n"
+            f"impl_defaults:\n  toolchain:\n    language: {language}\n"
             f"    standard: f2008\n  target:\n    backend: openmp\n", encoding="utf-8")
         # The language the host reads is the TARGET's (issue #284).
         from tools.tests.target_fixtures import install_target_profile, profile_with
@@ -25150,7 +25150,7 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
                          llm_config=_cfg("claude"), env={})
         (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
         (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-            "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n"
+            "impl_defaults:\n  toolchain:\n    language: fortran\n"
             "    build_system: make\n  target:\n    class: cpu\n", encoding="utf-8")
         (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
 

@@ -402,7 +402,7 @@ class ConductorReadsTheTargetTests(unittest.TestCase):
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True)
             (ir_dir / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  lineage_timeout_s: 2700\n  target: {class: gpu, backend: serial}\n"
+                "impl_defaults:\n  target: {class: gpu, backend: serial}\n"
                 "  toolchain: {language: other, standard: s, build_system: other}\n",
                 encoding="utf-8")
             c = self._conductor(repo)
