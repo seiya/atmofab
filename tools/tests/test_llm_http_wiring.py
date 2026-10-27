@@ -38,7 +38,7 @@ from tools.tests.llm_samples import sample_config_with as _cfg
 KEY_ENV = "ATMOFAB_TEST_HTTP_KEY"
 
 _MIXED_CONFIG = (
-    "defaults:\n  provider: claude_cli\n  model: opus\n"
+    "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
     "phases:\n  generate:\n    substeps:\n      generate:\n"
     "        provider: openai_compatible\n"
     "        base_url: http://localhost:8000/v1\n"
@@ -629,7 +629,7 @@ class _RenderingHttpConductor(_RenderingFakeConductor, _HttpConductor):
 
 
 _COMPILE_HTTP_CONFIG = (
-    "defaults:\n  provider: claude_cli\n  model: opus\n"
+    "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
     "phases:\n  compile:\n    substeps:\n      generate:\n"
     "        provider: openai_compatible\n"
     "        base_url: http://localhost:8000/v1\n"

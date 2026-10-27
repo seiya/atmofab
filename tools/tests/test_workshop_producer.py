@@ -39,7 +39,7 @@ _ORCH = "o"
 def _config(repo: Path, extra: str = "") -> lc.LlmConfig:
     path = repo / "llm_workshop.yaml"
     path.write_text(
-        "defaults: {provider: claude_cli, model: opus}\n"
+        "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
         "phases: {generate: {substeps: {generate: {provider: claude_cli, model: opus, "
         f"leaf: workshop, max_wrapper_calls: 30, lineage_timeout_s: 2700{extra}" + "}}}}\n",
         encoding="utf-8")
@@ -705,7 +705,9 @@ _TEMPLATES = ("workshop_generate_generate.txt", "workshop_generate_generate_harn
               # Step 3: the reading kind's templates (the judging substeps).
               "workshop_compile_verify.txt", "workshop_generate_verify.txt",
               "workshop_generate_verify_harness.txt", "workshop_validate_judge.txt",
-              "workshop_verdict_repair.txt")
+              "workshop_verdict_repair.txt",
+              # PR-J4-a: the diagnostician's reading template (`workshop-9` onward).
+              "workshop_escalate_diagnose.txt")
 _DIR = Path(ort.__file__).resolve().parent / "prompt_templates"
 
 #: `WORKSHOP_PROMPT_CONTRACT_VERSION` -> sha256 over the workshop templates,
@@ -743,6 +745,9 @@ _WORKSHOP_CONTRACT_DIGESTS = {
     # operations without the MCP transport (`workshop-7` shipped with PR-J3-a's PR #552, main
     # 3422004c).
     "workshop-8": "b4538ab4db91a37483f9d69e5ebe6e800c6c3ddd960e6d625d75caee75e531ca",
+    # Issue #534 PR-J4-a: the escalate diagnostician's reading template joins the digest
+    # (`workshop-8` shipped with PR-J3-b's PR #554, main 7a153ade).
+    "workshop-9": "4c7d79a934ab3daa2d4840202e97c77fd6cfe59113c348e6f365a81f35126177",
 }
 
 
@@ -1303,7 +1308,7 @@ class Round3Tests(_Base):
 def _codex_config(repo: Path) -> lc.LlmConfig:
     path = repo / "llm_codex_workshop.yaml"
     path.write_text(
-        "defaults: {provider: codex_cli, model: gpt-x}\n"
+        "defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
         "phases: {generate: {substeps: {generate: {provider: codex_cli, model: gpt-x, "
         "leaf: workshop, max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n",
         encoding="utf-8")
@@ -1423,7 +1428,7 @@ if __name__ == "__main__":
 def _compile_config(repo: Path) -> lc.LlmConfig:
     path = repo / "llm_workshop_compile.yaml"
     path.write_text(
-        "defaults: {provider: claude_cli, model: opus}\n"
+        "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
         "phases: {compile: {substeps: {generate: {provider: claude_cli, model: opus, "
         "leaf: workshop, max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n",
         encoding="utf-8")
@@ -1768,5 +1773,5 @@ class WorkshopSpecTests(_Base):
 
 def _write_pure_config(repo: Path) -> Path:
     path = repo / "llm_pure.yaml"
-    path.write_text("defaults: {provider: claude_cli, model: opus}\n", encoding="utf-8")
+    path.write_text("defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n", encoding="utf-8")
     return path

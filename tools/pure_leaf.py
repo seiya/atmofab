@@ -131,22 +131,43 @@ WORKSHOP_PRODUCING_PAIRS: frozenset[tuple[str, str]] = frozenset({
 WORKSHOP_READING_PAIRS: frozenset[tuple[str, str]] = frozenset({
     ("compile", "verify"), ("generate", "verify"), ("validate", "judge")})
 
+#: The phases whose failure the `escalate` diagnostician may be launched for — the ones that
+#: launch a child agent (`orchestration_runtime.STEP_REQUIRED_CHILD_AGENT`, asserted equal by
+#: `test_workshop_launch`); spelled here because this module must not import the runtime.
+DIAGNOSE_STEPS: frozenset[str] = frozenset({"compile", "generate", "build", "validate"})
+#: The diagnostician's substep token (`orchestration_runtime.DIAGNOSE_SUBSTEP`).
+DIAGNOSE_SUBSTEP = "diagnose"
+#: The diagnostician's pairs (`orchestration_runtime.DIAGNOSE_LAUNCH_PAIRS`): the READING kind
+#: by construction since issue #534 PR-J4-a — a seeded tree holding `diagnosis.json`, file
+#: tools, no operation, one output document (`directive.json`). Not a substep an operator
+#: assigns (`tools/llm_config.py` serves it from `defaults`), so the config's
+#: `WORKSHOP_READING_SUBSTEPS` does not mirror it.
+WORKSHOP_DIAGNOSE_PAIRS: frozenset[tuple[str, str]] = frozenset(
+    (step, DIAGNOSE_SUBSTEP) for step in DIAGNOSE_STEPS)
+
+#: Every READING pair a workshop launch may serve: the judges and the diagnostician.
+WORKSHOP_READING_LAUNCH_PAIRS: frozenset[tuple[str, str]] = (
+    WORKSHOP_READING_PAIRS | WORKSHOP_DIAGNOSE_PAIRS)
+
 #: Every `(step, substep)` pair a workshop leaf may serve (`tools/llm_config.py` refuses any
 #: other entry, and mirrors this table as `WORKSHOP_LEAF_SUBSTEPS`).
 WORKSHOP_LAUNCH_PAIRS: frozenset[tuple[str, str]] = (
-    WORKSHOP_PRODUCING_PAIRS | WORKSHOP_READING_PAIRS)
+    WORKSHOP_PRODUCING_PAIRS | WORKSHOP_READING_LAUNCH_PAIRS)
 
 
 def is_workshop_reading_pair(step: Any, substep: Any) -> bool:
-    """True when `(step, substep)` is one of `WORKSHOP_READING_PAIRS`, case/space-insensitively:
-    the one predicate that says which KIND a workshop launch of that pair is."""
+    """True when `(step, substep)` is one of `WORKSHOP_READING_LAUNCH_PAIRS` (a judge or the
+    diagnostician), case/space-insensitively: the one predicate that says which KIND a
+    workshop launch of that pair is."""
     return (str(step or "").strip().lower(),
-            str(substep or "").strip().lower()) in WORKSHOP_READING_PAIRS
+            str(substep or "").strip().lower()) in WORKSHOP_READING_LAUNCH_PAIRS
 
 
 #: The prompt-contract version a workshop request carries in `prompt_contract_version` (the
 #: field the pure request uses for its own). Its own counter, so a workshop template change
-#: never moves `PURE_PROMPT_CONTRACT_VERSION` and the reverse. `workshop-8`: the two HTTP
+#: never moves `PURE_PROMPT_CONTRACT_VERSION` and the reverse. `workshop-9`: the `escalate`
+#: diagnostician as a reading workshop leaf (`workshop_escalate_diagnose.txt`, issue #534
+#: PR-J4-a; `workshop-8` shipped with PR-J3-b's PR #554, main 7a153ade). `workshop-8`: the two HTTP
 #: providers' rows (`HTTP_PRODUCER_TOOL_SURFACE_TEXT`, `HTTP_READER_TOOL_SURFACE_TEXT`) and the
 #: five file tools they declare (`HTTP_FILE_TOOL_DECLARATIONS`); the producer system prompt and
 #: the producing templates name the host's operations without the MCP transport, which is a CLI
@@ -157,7 +178,7 @@ def is_workshop_reading_pair(step: Any, substep: Any) -> bool:
 #: repair's scope paragraph; and the verdict repair template's instruction slot, which renders a
 #: schema repair as before on both providers (issue #547; `workshop-5` shipped with step 3 PR-J2,
 #: main bb119b5a).
-WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-8"
+WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-9"
 
 #: The first line of every host-rendered workshop launch prompt, anchored as the pure sentinel
 #: is (`startswith`). A distinct literal, so a record's prompt says which of the two leaf

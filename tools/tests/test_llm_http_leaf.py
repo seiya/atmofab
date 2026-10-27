@@ -1048,7 +1048,7 @@ class StreamingRequestTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = pathlib.Path(tmp) / "llm.yaml"
             path.write_text(
-                "defaults:\n  provider: claude_cli\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                 "phases:\n  generate:\n    substeps:\n      generate:\n"
                 "        provider: openai_compatible\n"
                 "        base_url: http://localhost:8000/v1\n"

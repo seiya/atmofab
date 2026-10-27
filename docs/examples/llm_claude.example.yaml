@@ -127,6 +127,9 @@ defaults:
   provider: claude_cli
   model: opus
   effort: medium
+  # `defaults` also serves the `escalate` diagnostician, a READING workshop leaf: this bounds
+  # its lineage (required; no substep entry inherits it).
+  lineage_timeout_s: 2700
 
 phases:
   compile:

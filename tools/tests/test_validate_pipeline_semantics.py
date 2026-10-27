@@ -28667,9 +28667,15 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
     def test_a_reading_workshop_record_naming_an_endpoint_is_flagged(self) -> None:
         """The other direction: a judging pair's lineage is served no operation, so a record
         of one naming an endpoint is a reviewer that held the wrapper. The kind is read from
-        the REQUEST's pair, so a response cannot choose it."""
-        for step, substep in (("compile", "verify"), ("generate", "verify"),
-                              ("validate", "judge")):
+        the REQUEST's pair, so a response cannot choose it. Every reading pair: the three
+        judges and, since issue #534 PR-J4-a, the diagnostician's four."""
+        from tools.pure_leaf import (
+            WORKSHOP_DIAGNOSE_PAIRS,
+            WORKSHOP_READING_LAUNCH_PAIRS,
+        )
+        self.assertEqual(len(WORKSHOP_READING_LAUNCH_PAIRS), 7)
+        self.assertLessEqual(WORKSHOP_DIAGNOSE_PAIRS, WORKSHOP_READING_LAUNCH_PAIRS)
+        for step, substep in sorted(WORKSHOP_READING_LAUNCH_PAIRS):
             with self.subTest(pair=f"{step}.{substep}"), \
                     tempfile.TemporaryDirectory() as tmp:
                 repo_root = Path(tmp)

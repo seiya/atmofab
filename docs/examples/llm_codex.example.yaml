@@ -97,6 +97,9 @@ defaults:
   provider: codex_cli
   model: gpt-5.6-sol
   effort: medium
+  # `defaults` also serves the `escalate` diagnostician, a READING workshop leaf: this bounds
+  # its lineage (required; no substep entry inherits it).
+  lineage_timeout_s: 2700
 
 phases:
   compile:

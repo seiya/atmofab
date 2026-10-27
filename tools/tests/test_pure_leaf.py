@@ -867,7 +867,7 @@ class LeafCommandPureBranchTest(unittest.TestCase):
             orchestration_agent_run_id="ORCH", llm_config=_cfg(backend), env={})
 
     def test_pure_claude_command_includes_flags(self):
-        argv = self._conductor("claude").leaf_command(session_id="arid-1")
+        argv = self._conductor("claude").leaf_command(self._conductor("claude").entry_for("generate", "generate"), session_id="arid-1")
         self.assertEqual(argv[0], "claude")
         self.assertIn("--session-id", argv)
         for flag in pl.pure_leaf_flags():
@@ -880,7 +880,7 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         self.assertEqual(argv[argv.index("--tools") + 1], "")
 
     def test_pure_warm_resume_prefixes_resume_flags(self):
-        argv = self._conductor("claude").leaf_command(
+        argv = self._conductor("claude").leaf_command(self._conductor("claude").entry_for("generate", "generate"), 
             session_id="arid-2", resume_session_id="arid-1")
         self.assertEqual(argv[argv.index("--resume") + 1], "arid-1")
         self.assertIn("--fork-session", argv)
@@ -901,7 +901,7 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         self.assertNotIn("pure", inspect.signature(wc.Conductor.leaf_command).parameters)
         for kwargs in ({"session_id": "a"},
                        {"session_id": "a", "resume_session_id": "b"}):
-            argv = self._conductor("claude").leaf_command(**kwargs)
+            argv = self._conductor("claude").leaf_command(self._conductor("claude").entry_for("generate", "generate"), **kwargs)
             self.assertIn("--safe-mode", argv, msg=str(kwargs))
             self.assertIn("--system-prompt", argv, msg=str(kwargs))
             self.assertEqual(argv[argv.index("--tools") + 1], "", msg=str(kwargs))
@@ -916,7 +916,7 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         one reply is the shape check; the argv carries no schema and the call writes no
         schema file.
         """
-        argv = self._conductor("codex").leaf_command(session_id="arid-1")
+        argv = self._conductor("codex").leaf_command(self._conductor("codex").entry_for("generate", "generate"), session_id="arid-1")
         self.assertEqual(argv[:2], ["codex", "exec"])
         self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
         self.assertNotIn("--output-schema", argv)
@@ -937,7 +937,7 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         whole repair budget unused. The read-only policy is re-pinned through the `-c`
         override that `exec` and `exec resume` share instead of being dropped.
         """
-        argv = self._conductor("codex").leaf_command(
+        argv = self._conductor("codex").leaf_command(self._conductor("codex").entry_for("generate", "generate"), 
             session_id="arid-2", resume_session_id="thread-1")
         self.assertEqual(argv[:3], ["codex", "exec", "resume"])
         self.assertNotIn("--sandbox", argv)
@@ -962,7 +962,7 @@ class LeafCommandPureBranchTest(unittest.TestCase):
         """
         from tools.orchestration_runtime import CODEX_EXEC_RESUME_REQUIRED_FLAGS
         required = set(CODEX_EXEC_RESUME_REQUIRED_FLAGS)
-        argv = self._conductor("codex").leaf_command(
+        argv = self._conductor("codex").leaf_command(self._conductor("codex").entry_for("generate", "generate"), 
             session_id="a", resume_session_id="thread-1")
         # No short-form aliasing: the argv must emit exactly the spellings the
         # probe asserts, so a CLI that drops an alias cannot pass the preflight.

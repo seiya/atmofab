@@ -17062,13 +17062,24 @@ class Conductor:
 
     def _diagnose_launch_request(self, refs: NodeRefs, phase: str, outcome: PhaseOutcome,
                                  entry: ResolvedLeafEntry, child_arid: str) -> dict[str, Any]:
-        """The diagnostician's pure launch request. Split out so `escalate` can build it INSIDE
+        """The diagnostician's launch request. Split out so `escalate` can build it INSIDE
         the fold that turns a host failure into a named terminal: `_gather_failure_context`
         reads files and `_diagnosis_document` serializes them, and neither is guaranteed not to
         raise on a tree the conductor did not author."""
-        from tools.orchestration_runtime import DIAGNOSE_SUBSTEP
-
         context = self._gather_failure_context(refs, phase)
+        return self._diagnose_request(
+            refs, phase, entry, child_arid,
+            _diagnosis_document(refs.node_key, phase, outcome.failed_substeps, context,
+                                self.workflow_mode))
+
+    def _diagnose_request(self, refs: NodeRefs, phase: str, entry: ResolvedLeafEntry,
+                          child_arid: str, diagnosis_document: str, *,
+                          pure: bool = False) -> dict[str, Any]:
+        """The request of one diagnose launch over `diagnosis_document`: a READING workshop
+        launch (issue #534 PR-J4-a) — its lineage is its own (`child_arid`) and the provider is
+        the entry's — or, with `pure`, the pure launch it replaced (`judge_replay`'s second arm
+        alone, until the pure path is deleted)."""
+        from tools.orchestration_runtime import DIAGNOSE_SUBSTEP
         return build_launch_request(
             refs, step=phase, substep=DIAGNOSE_SUBSTEP,
             orchestration_id=self.orchestration_id,
@@ -17076,31 +17087,164 @@ class Conductor:
             child_agent_run_id=child_arid,
             agent_model=entry.model, workflow_mode=self.workflow_mode,
             pure_leaf=True,
-            pure_context={"diagnosis_document": _diagnosis_document(
-                refs.node_key, phase, outcome.failed_substeps, context, self.workflow_mode)},
+            pure_context={"diagnosis_document": diagnosis_document},
+            workshop_lineage_id=(None if pure else child_arid),
+            workshop_provider=(None if pure else entry.provider),
         )
+
+    #: The diagnostician's one output file and its seed (issue #534 PR-J4-a).
+    _DIAGNOSE_OUTPUT: ClassVar[str] = "directive.json"
+    _DIAGNOSE_SEED: ClassVar[str] = "diagnosis.json"
+    #: The assembly category of a tree holding no valid `directive.json`. Never routed on: a
+    #: diagnosis that did not arrive fails the phase closed (`<phase>_diagnose_unparsable`).
+    _DIAGNOSE_DIRECTIVE_INVALID: ClassVar[str] = "diagnose_directive_invalid"
+
+    def _diagnose_spec(self) -> Conductor._PureReviewerSpec:
+        """The diagnostician as the READING kind of workshop leaf: one seed (`diagnosis.json`),
+        one output document (`directive.json`), no frozen wrapper context (so no operation and
+        no endpoint, `_workshop_spec_reads`). Read by the lineage machine and
+        `_spawn_workshop_turn` alone: `escalate` is ONE launch, not the reviewer loop, so the
+        loop-only fields (repair, summaries, host writers) are named and never called."""
+        from tools.workshop_tree import assemble_document_file
+        output, category = self._DIAGNOSE_OUTPUT, self._DIAGNOSE_DIRECTIVE_INVALID
+
+        def _unused(*_a: Any, **_kw: Any) -> Any:  # pragma: no cover - not the reviewer loop
+            raise AssertionError("the diagnose spec is read by `escalate`, not the reviewer loop")
+
+        return self._PureReviewerSpec(
+            build_context=_unused, write_project_meta=_unused, write_meta=_unused,
+            non_object_findings="the directive is not one JSON object",
+            repair_reason="diagnose_no_repair", attempt_failed_event="diagnose_launch_failed",
+            summary_prefix="diagnose", host_write_failed_reason="diagnose_no_host_write",
+            runner_host_authored=lambda _refs: False,
+            violations=lambda doc: ([] if _parse_directive(json.dumps(doc)) is not None
+                                    else ["the directive is out of vocabulary"]),
+            schema_category=category,
+            status_of=lambda doc: "pass", reply_of=_unused, summary_of=_unused,
+            document_name="directive",
+            workshop_outputs=(output,),
+            workshop_document_seeds=MappingProxyType({"diagnosis_document": self._DIAGNOSE_SEED}),
+            workshop_assemble=(
+                lambda root, _reserved: assemble_document_file(root, output, category)),
+        )
+
+    class _DiagnoseTurn(NamedTuple):
+        """One diagnose launch and what was read off it."""
+
+        proc: Any
+        model: str | None
+        usage: dict[str, Any] | None
+        #: The directive, or None when it did not arrive (conservatively terminal).
+        decision: RouteDecision | None
+        #: The diagnostician's lineage (None on the pure arm).
+        lineage_id: str | None
+        #: Launch to return (`_PureTurn.leaf_wall_s` / `_WorkshopTurn.leaf_wall_s`).
+        leaf_wall_s: float | None = None
+
+    def _diagnose_turn(self, refs: NodeRefs, request: dict[str, Any], entry: ResolvedLeafEntry,
+                       child_arid: str, phase: str, *, pure: bool = False
+                       ) -> Conductor._DiagnoseTurn | None:
+        """Launch the diagnostician once over `request` and read its directive: `escalate`'s
+        launch, and `judge_replay`'s for a diagnose row. Raises what the setup or the launch
+        raises (`escalate` folds it); None when no launch happened.
+
+        The READING arm (issue #534 PR-J4-a): a cold lineage of its own seeded with
+        `diagnosis.json`, one launch through `_spawn_workshop_turn` (no endpoint; on an HTTP
+        entry the host loop with the reader tools), then the directive read from the snapshot's
+        `directive.json`. A launch that did not FINISH — killed at a bound (`timed_out`; the
+        lineage's `ended_by`), a leaf that died (a nonzero exit), a CLI envelope marked
+        `is_error`, an HTTP reply cut at the output limit (`truncated`) — does NOT route the
+        phase, and its tree is not read: the judges' "tree wins" rule is theirs because their
+        document is gated downstream, and a directive selects reopen / revoke targets that
+        nothing gates. Decided on the turn, BEFORE `assemble`, which reads the tree of a
+        timed-out leaf. The lineage is left as an accepted judge's is — its record names the
+        launch (`last_launch`), and a bound or a dead leaf ended it in the turn's tail — and an
+        HTTP conversation is dropped: nothing continues it. A `ValueError` escaping the turn's
+        TAIL after the leaf ran (a lineage record the tail cannot read) is the residual the
+        two loops share."""
+        from tools.orchestration_runtime import DIAGNOSE_SUBSTEP
+        if pure:
+            turn = self._spawn_pure_turn(
+                request, entry, child_arid=child_arid, phase=phase, substep=DIAGNOSE_SUBSTEP,
+                node_key=refs.node_key)
+            if turn is None:
+                return None
+            proc, envelope = turn.proc, turn.envelope
+            decision = (None if (proc.timed_out or proc.returncode != 0
+                                 or proc.response_truncated
+                                 or not envelope.parsed or envelope.is_error is True)
+                        else _parse_directive(envelope.result
+                                              if isinstance(envelope.result, str) else ""))
+            return self._DiagnoseTurn(proc, turn.model, turn.usage, decision, None,
+                                      turn.leaf_wall_s)
+        spec = self._diagnose_spec()
+        machine = self._WorkshopLineageMachine(self, refs, entry, spec)
+        machine.open_cold(request["pure_context"], request, child_arid)
+        lineage = machine.lineage
+        assert lineage is not None
+        try:
+            wturn = self._spawn_workshop_turn(
+                refs, request, entry, lineage, child_arid=child_arid, phase=phase,
+                substep=DIAGNOSE_SUBSTEP, resume_session_id=None, warm=False, spec=spec)
+        except BaseException:
+            # The launch did not complete: nothing continues this lineage (a guarded step —
+            # the tail may already have ended it).
+            from tools.workshop_tree import end_lineage, read_lineage_record
+            try:
+                if read_lineage_record(lineage.paths).get("ended_by") is None:
+                    end_lineage(lineage.paths, "superseded")
+            except ValueError:
+                pass
+            raise
+        finally:
+            self._drop_workshop_http_history(lineage.paths.lineage_id)
+        if wturn is None:
+            # A COLD launch never finds its home gone (`_spawn_workshop_turn` returns None for a
+            # warm one alone); handled rather than asserted, as a diagnosis that did not happen.
+            return None
+        proc = wturn.proc
+        finished = not (proc.timed_out or proc.returncode != 0 or wturn.ended_by is not None
+                        or wturn.truncated
+                        or getattr(wturn.envelope, "is_error", None) is True)
+        decision: RouteDecision | None = None
+        if finished:
+            _category, _findings, document, _infra = machine.assemble(wturn)
+            if document is not None:
+                decision = _parse_directive(json.dumps(document))
+        return self._DiagnoseTurn(proc, wturn.model, wturn.usage, decision,
+                                  lineage.paths.lineage_id, wturn.leaf_wall_s)
+
+    def _finalize_diagnose_turn(self, refs: NodeRefs, phase: str, entry: ResolvedLeafEntry,
+                                child_arid: str, turn: Conductor._DiagnoseTurn) -> None:
+        """Write the diagnostician's `agent_runs.jsonl` row (`finalize-child`): `pass` with the
+        directive in its summary, else `fail`. Raises what `finalize_child` raises
+        (`OSError`, `RuntimeError`); `escalate` folds it."""
+        from tools.orchestration_runtime import DIAGNOSE_SUBSTEP
+        decision = turn.decision
+        status = "pass" if decision is not None else "fail"
+        result_summary = (
+            f"diagnose_pass: action={decision.action} target={decision.target_phase or 'none'} "
+            f"severity={decision.severity or 'none'}" if decision is not None
+            else f"diagnose_fail: {phase}_diagnose_unparsable")
+        # A host-rendered row carries EMPTY output_refs, so `result_summary` is the only thing
+        # that can speak for it (`_validate_agent_summary_text`).
+        self.finalize_child(
+            child_arid,
+            f"status: {status}\nleaf rc={turn.proc.returncode}\nlineage: {turn.lineage_id}",
+            self._agent_run_json(refs, phase, DIAGNOSE_SUBSTEP, child_arid, status,
+                                 [], result_summary, entry=entry,
+                                 agent_model_override=turn.model, usage=turn.usage))
 
     def escalate(self, refs: NodeRefs, phase: str, outcome: PhaseOutcome) -> RouteDecision:
         """One-shot LLM diagnostician for a failure the decision tables cannot
-        classify. Inlines the failure-artifact content in a pure launch prompt, spawns a
-        tool-free read-only leaf, and parses its final JSON routing directive.
-        An unparsable/invalid/killed directive is conservatively terminal (fail_closed)."""
-        from tools.orchestration_runtime import DIAGNOSE_SUBSTEP
-
+        classify. Seeds the failure-artifact content into a READING workshop leaf's tree
+        (issue #534 PR-J4-a; a pure launch before it), launches it once, and reads its routing
+        directive from the tree (`_diagnose_turn`). An unparsable/invalid/killed directive is
+        conservatively terminal (fail_closed)."""
         # The diagnostician carries no phase/substep of its own, so it runs on `defaults` —
-        # which config validation requires to support the PURE capability for exactly this
-        # reason (`llm_config_defaults_not_pure`).
+        # which the loader resolves as a reading workshop entry for exactly this reason
+        # (`llm_config_defaults_not_workshop`, `_defaults_entry`).
         entry = self.entry_for(None, None)
-        # A fresh conversation per escalation (HTTP transport only), the same reset both pure
-        # loops do at their own start. Without it `_run_http_leaf`'s in-memory history — keyed
-        # by `(step, substep)`, so `(<phase>, diagnose)` for every escalation of one phase —
-        # replays the PREVIOUS diagnosis document and the previous directive as prior turns.
-        # That is a past artifact read as input, which the closed-context contract and this
-        # template's own "reason ONLY over the diagnosis document below" both forbid, and it
-        # anchors attempts 2 and 3 on the model's own earlier answer: a defect that has since
-        # become critical keeps being graded the way it was graded first. Unreachable until
-        # `defaults` was allowed to be an HTTP provider, which is this issue's own change.
-        self.reset_http_history(phase, DIAGNOSE_SUBSTEP)
         # Minting the child id runs `python3 tools/new_agent_run_id.py` in a SUBPROCESS, so it
         # raises `RuntimeError` on a non-zero exit and `OSError` when the interpreter is not on
         # the PATH or a fork fails — and it is a call this issue ADDED, because `origin/main`'s
@@ -17120,12 +17264,11 @@ class Conductor:
         # wraps `run_phase` alone — measured by AST: one `Try` at `conduct`, body
         # `outcome = self.run_phase(...)`, and the `escalate` call is not inside it). So an
         # exception escaping here does NOT reach a named fail_closed the way one escaping a
-        # pure LOOP does: it unwinds to `run_workflow`'s generic handler and the run is
-        # recorded as an unexplained `conductor_error`. `origin/main` folded `spawn_leaf`'s
-        # refusal for exactly this reason; the pure migration must not lose that.
+        # LOOP does: it unwinds to `run_workflow`'s generic handler and the run is recorded as
+        # an unexplained `conductor_error`.
         #
         # `RuntimeError` is in the set because `self.runtime(...)` raises it on a non-zero
-        # exit, which is how the tombstone and the finalize fail. `OSError` covers a missing
+        # exit, which is how the record-launch and the finalize fail. `OSError` covers a missing
         # bwrap/backend binary from `Popen`.
         # The tombstone is a pure bookkeeping subcommand with no sandbox anywhere in it, so it
         # gets the terminal the FINALIZE gets rather than the launch's: `conduct` maps a reason
@@ -17141,79 +17284,31 @@ class Conductor:
             # step_result it could never have. Issue #177 removed that demand — a terminal arid
             # no step_result vouches is simply an attempt — so the tombstone, and the
             # `diagnose_tombstone_failed` route it needed for its own failure, are gone.
-            # `_spawn_pure_turn` does the `record_launch` ITSELF. Recording here as well made
-            # two launches for one child, which the runtime refuses on the claude backend:
-            # the first call writes `active_child_agent_run_id.txt`, and the second hits the
-            # sequential-child gate, raises, sets the orchestration `fail_closed` with
-            # `parallel_nodes_not_explicitly_allowed`, and lands here as a
-            # `<phase>_diagnose_sandbox_unavailable` naming a sandbox that was never the
-            # problem — so on the default backend the diagnostician could not run at all.
-            turn = self._spawn_pure_turn(
-                request, entry, child_arid=child_arid, phase=phase, substep=DIAGNOSE_SUBSTEP,
-                node_key=refs.node_key)
-        except (SandboxEnforcementError, OSError, RuntimeError) as exc:
-            # The host could not record or launch the sandboxed diagnostician — an unbuildable
-            # profile (SandboxEnforcementError), a missing binary (OSError), a record-launch
-            # that refused (RuntimeError). The diagnostician is a best-effort recovery leaf,
-            # so an un-launchable diagnosis is conservatively terminal — the same posture as
-            # an unparsable directive — rather than a crash. NOT every exception: `runtime()`
-            # ends in `json.loads`, so a subcommand exiting 0 with non-JSON stdout raises a
-            # `ValueError` that escapes here. No production path produces one (every `print`
-            # in the runtime goes to stderr), and a conductor whose own subcommand printed
-            # garbage is a conductor defect rather than a diagnosis that did not arrive, so it
-            # is left to crash rather than folded into a routing decision.
+            # `_spawn_workshop_turn` does the `record_launch` ITSELF (one launch per child: a
+            # second record of one child hits the claude backend's sequential-child gate).
+            turn = self._diagnose_turn(refs, request, entry, child_arid, phase)
+        except (SandboxEnforcementError, OSError, RuntimeError, ValueError) as exc:
+            # The host could not set up, record or launch the sandboxed diagnostician — an
+            # unbuildable profile (SandboxEnforcementError), a missing binary (OSError), a
+            # record-launch that refused or a lineage precondition (RuntimeError: a codex
+            # reading home a codex shell can write, `WorkshopSetupFailed`), a lineage the host
+            # cannot lay out or read (ValueError: `_workshop_backend`, `LineagePaths`,
+            # `read_lineage_record`, `end_lineage` — the reviewer loop folds the same setup
+            # with `except Exception`). The diagnostician is a best-effort recovery leaf, so an
+            # un-launchable diagnosis is conservatively terminal — the same posture as an
+            # unparsable directive — rather than a crash.
             # A launch recorded but never finalized is left behind here; that is the residual
-            # the two pure loops already carry, and it is what `--resume` reconciles.
+            # the loops already carry, and it is what `--resume` reconciles.
             self.emit("diagnose_launch_failed", phase=phase, error=str(exc)[:200])
             return RouteDecision("fail_closed", reason=f"{phase}_diagnose_sandbox_unavailable")
         if turn is None:
-            # `_spawn_pure_turn` returns None only for a rotated codex home under a warm
-            # resume, and this launch passes no `resume_session_id`, so it is unreachable
-            # today. Handled rather than asserted: an `assert` disappears under `-O` and would
-            # then be an AttributeError inside the recovery path, and a diagnosis that did not
-            # happen is conservatively terminal like every other one here.
-            self.emit("diagnose_launch_failed", phase=phase, error="pure turn not spawned")
+            # `_diagnose_turn` returns None only when no launch happened (a warm resume's home
+            # gone; a cold launch has none). Handled rather than asserted: an `assert`
+            # disappears under `-O` and would then be an AttributeError inside the recovery
+            # path, and a diagnosis that did not happen is conservatively terminal.
+            self.emit("diagnose_launch_failed", phase=phase, error="diagnose turn not spawned")
             return RouteDecision("fail_closed", reason=f"{phase}_diagnose_unparsable")
-        proc, envelope = turn.proc, turn.envelope
-        # A diagnostician the conductor KILLED does not get to route the phase, and neither does
-        # one whose transport failed or whose reply the envelope reader could not parse. A
-        # partial stdout can contain a complete-looking directive the leaf wrote before it
-        # wedged, and acting on it would spend a phase attempt on the word of a leaf whose turn
-        # never finished — while the operator is being told the leaf was killed and the phase
-        # fails closed. Same conservative posture as an unparsable directive; the partial output
-        # is already persisted as evidence.
-        # The four conditions the two pure loops refuse a document on, plus `timed_out`. Two
-        # were missing and each was added after it was measured reachable, so they are listed
-        # with the transport that reaches them rather than as a formula. (The loops carry FOUR
-        # — `returncode`, `response_truncated`, `not parsed`, `is_error`; neither tests
-        # `timed_out`, because `_timed_out_result` forces a nonzero `returncode` and is the
-        # only producer of the flag, so there `returncode` already answers for it. Here it is
-        # stated anyway, at the point of decision, for the same reason `not parsed` is.):
-        #  - `is_error` — the CLI writes an error envelope whose `result` TEXT is still
-        #    model-written, so a directive-shaped final line inside one would be obeyed AND
-        #    recorded `diagnose_pass` for a turn the CLI itself marked errored. `returncode` is
-        #    no substitute: an is_error envelope arrives on a rc=0 launch.
-        #  - `response_truncated` — the PROVIDER said the answer was cut off at the
-        #    output-token ceiling. Authoritative, and the pure loops' own comment says why: a
-        #    partial document that happens to parse must not be accepted. It is set on the
-        #    HTTP transport alone, which this leaf could not reach until `defaults` was allowed
-        #    to be an HTTP provider — so re-admitting that provider is what made the omission
-        #    live, and on that transport `_spawn_pure_turn` synthesises the envelope with
-        #    `parsed=True, is_error=False`, leaving only `timed_out` and `returncode` between a
-        #    cut-off reply and a routing decision.
-        decision = (None if (proc.timed_out or proc.returncode != 0
-                             or proc.response_truncated
-                             or not envelope.parsed or envelope.is_error is True)
-                    else _parse_directive(envelope.result if isinstance(envelope.result, str)
-                                          else ""))
-        status = "pass" if decision is not None else "fail"
-        result_summary = (
-            f"diagnose_pass: action={decision.action} target={decision.target_phase or 'none'} "
-            f"severity={decision.severity or 'none'}" if decision is not None
-            else f"diagnose_fail: {phase}_diagnose_unparsable")
-        # A pure row carries EMPTY output_refs, so `result_summary` is the only thing that can
-        # speak for it (`_validate_agent_summary_text`).
-        #
+        decision = turn.decision
         # Folded for the same reason the launch is (see above): `self.runtime(...)` raises
         # `RuntimeError` on a non-zero exit, and this call is `escalate`'s LAST, so an escape
         # here would take the conductor down holding a usable directive. The directive is then
@@ -17222,12 +17317,7 @@ class Conductor:
         # `agent_runs.jsonl` vouch exists to prevent. Its own terminal, because the repair is
         # not the one an unusable directive calls for.
         try:
-            self.finalize_child(
-                child_arid,
-                f"status: {status}\nleaf rc={proc.returncode}",
-                self._agent_run_json(refs, phase, DIAGNOSE_SUBSTEP, child_arid, status,
-                                     [], result_summary, entry=entry,
-                                     agent_model_override=turn.model, usage=turn.usage))
+            self._finalize_diagnose_turn(refs, phase, entry, child_arid, turn)
         except (OSError, RuntimeError) as exc:
             self.emit("diagnose_finalize_failed", phase=phase, agent_run_id=child_arid,
                       error=str(exc)[:200])

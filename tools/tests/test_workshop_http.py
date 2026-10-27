@@ -50,7 +50,7 @@ def _config(repo: Path, provider: str, base_url: str, phase: str, substep: str,
         else "lineage_timeout_s: 2700"
     path = repo / f"llm_http_{phase}_{substep}.yaml"
     path.write_text(
-        "defaults: {provider: claude_cli, model: opus}\n"
+        "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
         f"phases: {{{phase}: {{substeps: {{{substep}: {{provider: {provider}, model: m, "
         f"base_url: '{base_url}', api_key_env: HTTP_KEY, leaf: workshop, {bounds}"
         "}}}}\n", encoding="utf-8")

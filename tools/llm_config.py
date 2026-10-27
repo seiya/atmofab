@@ -212,7 +212,9 @@ LEAF_MODELS: frozenset[str] = frozenset({LEAF_PURE, LEAF_WORKSHOP})
 # operations. READING: the three judging substeps (step 3; adopted 2026-10-25), served no
 # operation — a seeded tree, file tools and one output document. Mirrors of
 # `pure_leaf.WORKSHOP_PRODUCING_PAIRS` / `WORKSHOP_READING_PAIRS` (the launch validator's
-# tables), compared by `test_llm_config`.
+# tables), compared by `test_llm_config`. The validator's reading set also holds the `escalate`
+# diagnostician's pairs (`pure_leaf.WORKSHOP_DIAGNOSE_PAIRS`, issue #534 PR-J4-a), which no entry
+# here assigns: `defaults` serves that launch (`_defaults_entry`).
 WORKSHOP_PRODUCING_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({
     ("generate", "generate"), ("compile", "generate")})
 WORKSHOP_READING_SUBSTEPS: frozenset[tuple[str, str]] = frozenset({
@@ -750,7 +752,7 @@ class LlmConfig:
     `entries` holds an entry for EVERY LLM leaf (all five pairs), always — resolution is total,
     so no caller has to re-implement the fallback to `defaults`. `defaults` additionally serves
     the one launch that carries no phase/substep at all (the `escalate` diagnostician), which
-    is why it must support the PURE capability."""
+    is why it is resolved as a READING workshop entry (`_defaults_entry`)."""
 
     path: str
     sha256: str
@@ -801,8 +803,9 @@ class LlmConfig:
         off `defaults`, which was safe only because `defaults` had to be AGENTIC — a
         requirement no HTTP provider meets, so an HTTP `defaults` was refused at load and the
         single-token vocabulary never met one. Issue #169 made the launch `defaults` serves
-        (the `escalate` diagnostician) a PURE leaf, so that requirement is now
-        `llm_config_defaults_not_pure` and the accident is gone.
+        (the `escalate` diagnostician) a PURE leaf, so that requirement became
+        `llm_config_defaults_not_pure` and the accident is gone (since issue #534 PR-J4-a the
+        launch is a reading workshop leaf and the rule `llm_config_defaults_not_workshop`).
 
         Refusing an HTTP `defaults` instead would leave the diagnostician's migration
         undelivered on two DECLARED providers, which `AGENTS.md` §Development premises does
@@ -916,15 +919,55 @@ def _validate_assignment(phase: str, substep: str, entry: ResolvedLeafEntry, whe
                 f"`workshop`", where=where)
 
 
+#: The workshop field `defaults` states for ITS OWN launch, the `escalate` diagnostician (issue
+#: #534 PR-J4-a): the reading kind's one bound. Never inherited by a substep entry
+#: (`_inheritable_default_fields`).
+DEFAULTS_WORKSHOP_FIELDS: frozenset[str] = frozenset({"lineage_timeout_s"})
+
+
 def _refuse_workshop_fields_outside_a_substep(fields: Mapping[str, Any], where: str) -> None:
-    """`WORKSHOP_ENTRY_FIELDS` are substep-scoped: refused at `defaults` and at a phase."""
-    present = sorted(set(fields) & WORKSHOP_ENTRY_FIELDS)
+    """`WORKSHOP_ENTRY_FIELDS` are substep-scoped: refused at a phase, and at `defaults` except
+    `DEFAULTS_WORKSHOP_FIELDS`, which bound the diagnostician `defaults` itself serves."""
+    exempt = DEFAULTS_WORKSHOP_FIELDS if where == "defaults" else frozenset()
+    present = sorted((set(fields) & WORKSHOP_ENTRY_FIELDS) - exempt)
     if present:
         raise LlmConfigError(
             "llm_config_workshop_field_not_substep_scoped",
             f"{', '.join(present)} may be written only under phases.<phase>.substeps.<substep>: "
             f"they select and bound one substep's leaf model, and no level inherits them",
             where=f"{where}.{present[0]}")
+
+
+def _inheritable_default_fields(default_fields: Mapping[str, Any]) -> dict[str, Any]:
+    """The `defaults` fields a substep entry inherits: every one but `DEFAULTS_WORKSHOP_FIELDS`.
+    `_merge_layers` copies every layer-0 field not provider-scoped into every entry, so without
+    this the diagnostician's bound would reach each substep entry (and be refused on a pure one
+    as `llm_config_workshop_bound_on_pure_entry`)."""
+    return {k: v for k, v in default_fields.items() if k not in DEFAULTS_WORKSHOP_FIELDS}
+
+
+def _defaults_entry(default_fields: Mapping[str, Any]) -> ResolvedLeafEntry:
+    """The resolved `defaults` entry: the diagnostician's, a READING workshop leaf by
+    construction (issue #534 PR-J4-a) — `leaf` is set here, never written by the operator
+    (refused at `defaults`), and `lineage_timeout_s` is required."""
+    declared = frozenset(default_fields)
+    base = _finalize_entry(_inheritable_default_fields(default_fields), "defaults", declared)
+    if not base.supports(CAP_WORKSHOP) or base.provider not in WORKSHOP_READING_PROVIDERS:
+        raise LlmConfigError(
+            "llm_config_defaults_not_workshop",
+            f"`defaults` runs the one launch that carries no phase/substep of its own (the "
+            f"`escalate` diagnostician), and that launch is a READING workshop leaf; it needs "
+            f"the {CAP_WORKSHOP!r} capability on a provider in "
+            f"{', '.join(sorted(WORKSHOP_READING_PROVIDERS))}; provider {base.provider!r} has "
+            f"capabilities {', '.join(sorted(base.capabilities)) or '(none)'}",
+            where="defaults")
+    if default_fields.get("lineage_timeout_s") is None:
+        raise LlmConfigError(
+            "llm_config_workshop_bound_missing",
+            "`defaults` must state lineage_timeout_s (missing: lineage_timeout_s): it bounds "
+            "the `escalate` diagnostician's lineage, which `defaults` serves; there is no "
+            "default bound, and no substep entry inherits it", where="defaults")
+    return _finalize_entry({**default_fields, "leaf": LEAF_WORKSHOP}, "defaults", declared)
 
 
 def load_llm_config(path: str | Path, *, content: bytes | None = None) -> LlmConfig:
@@ -986,15 +1029,8 @@ def _build_llm_config(p: Path, raw: bytes) -> LlmConfig:
     defaults_raw = _require_mapping(doc.get("defaults"), "defaults")
     default_fields = _layer_fields(defaults_raw, "defaults")
     _refuse_workshop_fields_outside_a_substep(default_fields, "defaults")
-    defaults = _finalize_entry(default_fields, "defaults", frozenset(default_fields))
-    if not defaults.supports(CAP_PURE):
-        raise LlmConfigError(
-            "llm_config_defaults_not_pure",
-            f"`defaults` runs the one launch that carries no phase/substep of its own (the "
-            f"`escalate` diagnostician), and that launch is a PURE leaf; provider "
-            f"{defaults.provider!r} has capabilities "
-            f"{', '.join(sorted(defaults.capabilities)) or '(none)'}",
-            where="defaults")
+    defaults = _defaults_entry(default_fields)
+    default_fields = _inheritable_default_fields(default_fields)
 
     phases_raw = _require_mapping(doc.get("phases"), "phases")
     resolved: dict[tuple[str, str], ResolvedLeafEntry] = {}
@@ -1200,8 +1236,8 @@ def apply_defaults_overrides(
         if (command and not entry.is_http
                 and entry.command == inherited.command and _inherited("command")):
             # `command` is not applicable to an HTTP provider (it launches no process), and
-            # `defaults` may now BE an HTTP provider (`llm_config_defaults_not_pure` replaced
-            # the agentic requirement, issue #169) — so the CLI-only guard is explicit here
+            # `defaults` may now BE an HTTP provider (issue #169 replaced the agentic
+            # requirement; `llm_config_defaults_not_workshop` is the rule since issue #534) — so the CLI-only guard is explicit here
             # rather than inherited from what `defaults` was allowed to be.
             changes["command"] = command
         return ResolvedLeafEntry(**{**entry.__dict__, **changes}) if changes else entry

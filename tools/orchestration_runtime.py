@@ -9376,6 +9376,11 @@ _PROMPT_TEMPLATE_FILES = {
     # is a field of the diagnosis document).
     **{f"pure {step}.{substep}": "pure_escalate_diagnose.txt"
        for step, substep in sorted(DIAGNOSE_LAUNCH_PAIRS)},
+    # ...as a READING workshop leaf (issue #534 PR-J4-a): the same rules verbatim, the
+    # diagnosis document a seed of its tree, and one output document (`directive.json`) at the
+    # tree root in place of the final-line reply. One launch, no repair turn.
+    **{f"workshop {step}.{substep}": "workshop_escalate_diagnose.txt"
+       for step, substep in sorted(DIAGNOSE_LAUNCH_PAIRS)},
 }
 
 
@@ -14601,8 +14606,11 @@ def probe_all_providers(
     # The (backend token, command) surfaces some `leaf: workshop` entry launches through: only
     # those take their CLI's workshop row (`claude_workshop_flag_set_available` /
     # `codex_workshop_flag_set_available`), and their recorded surface says so, so
-    # the TTL re-probe (`_reprobe_recorded_providers`) keeps requiring it.
-    workshop_surfaces = {(e.backend_token, e.command) for e in cfg.entries.values()
+    # the TTL re-probe (`_reprobe_recorded_providers`) keeps requiring it. `defaults` is among
+    # them: it serves the `escalate` diagnostician, a reading workshop leaf (issue #534
+    # PR-J4-a), on a surface no substep entry need share.
+    workshop_surfaces = {(e.backend_token, e.command)
+                         for e in [cfg.defaults, *cfg.entries.values()]
                          if getattr(e, "is_workshop", False)}
     for row in describe_providers(cfg):
         token = row["backend"]

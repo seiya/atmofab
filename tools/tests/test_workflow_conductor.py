@@ -2805,7 +2805,7 @@ class PhaseDerivationWiringTest(unittest.TestCase):
         cleared between the phase and its escalation.)"""
         c = self._conductor()
         request = {"node_key": "component/spec_x@0.1.0", "step": "build", "substep": None}
-        c.record_launch("child-9", request, c.entry_for(None, None))
+        c.record_launch("child-9", request, c.entry_for("generate", "generate"))
         self.assertNotIn("derivation_key", request)
         refs = self._refs()
         c.run_phase(refs, "compile")
@@ -2813,7 +2813,7 @@ class PhaseDerivationWiringTest(unittest.TestCase):
         c.record_launch("child-10", after, c.entry_for(None, None))
         self.assertEqual(after["derivation_key"], "sha256:" + "f" * 64)
         other = {"node_key": refs.node_key, "step": "generate", "substep": "generate"}
-        c.record_launch("child-11", other, c.entry_for(None, None))
+        c.record_launch("child-11", other, c.entry_for("generate", "generate"))
         self.assertNotIn("derivation_key", other)
 
 
@@ -3004,7 +3004,7 @@ class ConductHappyPathTest(unittest.TestCase):
         common = dict(
             repo_root=str(_SHARED_REPO_ROOT), orchestration_id="o", orchestration_agent_run_id="O",
             spec_ref="spec/c/x", source_dependency_ref="d", until_phase="compile",
-            llm_config=_config_from_text("defaults:\n  provider: claude_cli\n"),
+            llm_config=_config_from_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"),
             workflow_mode="dev", env={})
         with patch.object(wc, "resolve_node", return_value=("c/x@0.1.0", "spec/c/x")), \
              patch.object(wc, "prepare_node",
@@ -3036,7 +3036,7 @@ class ConductHappyPathTest(unittest.TestCase):
         common = dict(
             repo_root=str(_SHARED_REPO_ROOT), orchestration_id="o", orchestration_agent_run_id="O",
             spec_ref="spec/c/x", source_dependency_ref="d", until_phase="compile",
-            llm_config=_config_from_text("defaults:\n  provider: claude_cli\n"),
+            llm_config=_config_from_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"),
             workflow_mode="dev", env={})
         with patch.object(wc, "resolve_node", return_value=("c/x@0.1.0", "spec/c/x")), \
              patch.object(wc, "prepare_node",
@@ -3099,7 +3099,7 @@ class ConductHappyPathTest(unittest.TestCase):
                 repo_root=str(_SHARED_REPO_ROOT), orchestration_id="o",
                 orchestration_agent_run_id="O", spec_ref="spec/c/x",
                 source_dependency_ref="d", until_phase="compile",
-                llm_config=_config_from_text("defaults:\n  provider: claude_cli\n"),
+                llm_config=_config_from_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"),
                 workflow_mode="dev", env={})
         self.assertEqual(status, "pass")
         from tools.orchestration_runtime import DEFAULT_CLAUDE_MODEL_ALIAS
@@ -3117,7 +3117,7 @@ class ConductHappyPathTest(unittest.TestCase):
         from tools import llm_config as _lc
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "c.yaml"
-            path.write_text("defaults:\n  provider: codex_cli\n", encoding="utf-8")
+            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n", encoding="utf-8")
             with self.assertRaisesRegex(ValueError, "llm_config_codex_cli_requires_model"):
                 wc.run_conductor(
                     repo_root=str(_SHARED_REPO_ROOT), orchestration_id="o",
@@ -6362,7 +6362,7 @@ class LeafChildEnvTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         path = Path(d) / "llm.yaml"
         path.write_text(
-            "defaults:\n  provider: claude_cli\n  model: opus\n"
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
             "phases:\n  generate:\n    substeps:\n      generate:\n"
             "        provider: openai_compatible\n"
             "        base_url: http://localhost:8000/v1\n"
@@ -6413,7 +6413,7 @@ class LeafChildEnvTest(unittest.TestCase):
         self.addCleanup(shutil.rmtree, d, True)
         path = Path(d) / "llm.yaml"
         path.write_text(
-            "defaults:\n  provider: claude_cli\n  model: opus\n"
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
             "phases:\n  generate:\n    substeps:\n      generate:\n"
             "        provider: openai_compatible\n"
             "        base_url: http://localhost:8000/v1\n"
@@ -8355,6 +8355,55 @@ class ConductorProducedChainCertifiesTest(unittest.TestCase):
             self.assertEqual(detail2["reason"], "verdict_not_found")
 
 
+class _DiagnoseFake(_FakeConductor):
+    """`_FakeConductor` with the diagnostician's lineage home faked under `homes` and its leaf
+    scripted by `leaf` (issue #534 PR-J4-a: the diagnostician is a READING workshop leaf).
+
+    `leaf(prompt, env, entry, **kw)` returns the launch's `ProcResult` as the scripted leaf of
+    the pure era did, and what that leaf REPLIED it now WRITES: the fake puts the last JSON
+    object of the reply text (a claude envelope's `result`, else the bare stdout) into the
+    tree as `directive.json`, or nothing when the reply holds none."""
+
+    homes: Path
+
+    def leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[no-untyped-def]
+        return wc.ProcResult(0, "", "")
+
+    def _prepare_workshop_home(self, entry, lineage_id, *, resume):  # type: ignore[override]
+        home = self.homes / self.orchestration_id / self._workshop_backend(entry) / lineage_id
+        if resume:
+            return {"homes_root": str(self.homes), "home": str(home),
+                    "config": str(home / "config"), "tree": str(home / "tree"),
+                    "lineage_id": lineage_id} if home.is_dir() else None
+        home.mkdir(parents=True)
+        out = {"homes_root": str(self.homes), "home": str(home), "tree": str(home / "tree"),
+               "lineage_id": lineage_id}
+        if not entry.is_http:                     # an `http/` home has no `config/`
+            (home / "config").mkdir()
+            out["config"] = str(home / "config")
+        return out
+
+    def _start_wrapper_endpoint(self, ctx, on_end):  # type: ignore[override]
+        raise AssertionError("the diagnostician's lineage is served no endpoint")
+
+    def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
+        self.__dict__.setdefault("spawns", []).append(kwargs)
+        proc = self.leaf(prompt_text, child_env, entry, **kwargs)
+        tree = (self.homes / self.orchestration_id / self._workshop_backend(entry)
+                / kwargs["child_arid"] / "tree")
+        text = proc.stdout or ""
+        try:
+            envelope = json.loads(text)
+        except ValueError:
+            envelope = None
+        if isinstance(envelope, dict) and isinstance(envelope.get("result"), str):
+            text = envelope["result"]
+        directive = wc._last_json_object(text)
+        if isinstance(directive, dict):
+            (tree / "directive.json").write_text(json.dumps(directive), encoding="utf-8")
+        return proc
+
+
 class DiagnosticianTest(unittest.TestCase):
     """M4: LLM diagnostician escalation for unclassifiable failures."""
 
@@ -8392,11 +8441,20 @@ class DiagnosticianTest(unittest.TestCase):
         """
         type(self)._conductor_seq = getattr(type(self), "_conductor_seq", 0) + 1
         oid = f"o{type(self)._conductor_seq}"
-        c = _FakeConductor(
+        return self._make(_cfg("claude"), oid)
+
+    def _make(self, llm_config: lc.LlmConfig, oid: str) -> _DiagnoseFake:
+        """A `_DiagnoseFake` on `llm_config` with its own repo root and homes."""
+        c = _DiagnoseFake(
             repo_root=self._repo_root(oid), orchestration_id=oid,
-            orchestration_agent_run_id="ORCH", llm_config=_cfg("claude"), env={},
+            orchestration_agent_run_id="ORCH", llm_config=llm_config, env={},
         )
         c.calls = []
+        # OUTSIDE /tmp, as production's `~/.atmofab/homes` is: a codex reading lineage whose
+        # home a codex shell can write is refused (`_codex_shell_writable_root`).
+        homes = tempfile.TemporaryDirectory(dir="/var/tmp")
+        self.addCleanup(homes.cleanup)
+        c.homes = Path(homes.name).resolve()
         return c
 
     def _refs(self) -> wc.NodeRefs:
@@ -8506,7 +8564,7 @@ class DiagnosticianTest(unittest.TestCase):
         # End-to-end through escalate(): a critical directive that asks to reuse is forced to
         # restart (discard) by resolve_severity_directive.
         c = self._conductor()
-        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+        c.leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
             0, self._directive_stdout(
                 '{"action":"reopen","target_phase":"compile","severity":"critical",'
                 '"repair_strategy":"reuse","reason":"ir_rot"}'), "")
@@ -8520,20 +8578,31 @@ class DiagnosticianTest(unittest.TestCase):
         """The prompt a diagnostician is ACTUALLY handed, through the production renderer.
 
         Not `_diagnosis_document` alone: the persona, the directive schema and the decision
-        criteria moved into `pure_escalate_diagnose.txt` (issue #169), so a test that read the
-        document would observe none of them — and they are the half a leaf acts on.
+        criteria are the template's static body (`workshop_escalate_diagnose.txt` since issue
+        #534 PR-J4-a; `pure_escalate_diagnose.txt` from issue #169), so a test that read the
+        document would observe none of them — and they are the half a leaf acts on. The
+        document itself is a SEED of the leaf's tree, not part of the prompt
+        (`_diagnose_seed`).
         """
-        refs = self._refs()
-        req = wc.build_launch_request(
-            refs, step=phase, substep="diagnose",
-            orchestration_id="o", orchestration_agent_run_id="ORCH",
-            child_agent_run_id="child-1", agent_model="m", workflow_mode=workflow_mode,
-            pure_leaf=True,
-            pure_context={"diagnosis_document": wc._diagnosis_document(
-                node_key, phase, [], context, workflow_mode)},
-        )
+        c = self._conductor()
+        c.workflow_mode = workflow_mode
+        req = c._diagnose_request(
+            self._refs(), phase, c.entry_for(None, None), "child-1",
+            wc._diagnosis_document(node_key, phase, [], context, workflow_mode))
         import tools.orchestration_runtime as _ort
         return _ort.render_launch_prompt_text(_ort.prepare_launch_request_payload(req))
+
+    def _diagnose_seed(self, phase: str, context: dict[str, object], *,
+                       workflow_mode: str = "prod") -> str:
+        """The `diagnosis.json` seed a diagnostician's tree is given, through the production
+        seed builder."""
+        c = self._conductor()
+        c.workflow_mode = workflow_mode
+        req = c._diagnose_request(
+            self._refs(), phase, c.entry_for(None, None), "child-1",
+            wc._diagnosis_document("n", phase, [], context, workflow_mode))
+        return c._workshop_seeds(self._refs(), req["pure_context"], req,
+                                 c._diagnose_spec())["diagnosis.json"]
 
     def test_the_rendered_diagnose_prompt_carries_the_persona_and_the_criteria(self) -> None:
         """The diagnostician's persona, its directive schema and its rollback / severity
@@ -8550,8 +8619,11 @@ class DiagnosticianTest(unittest.TestCase):
         # The two rollback rules a wrong answer costs a phase attempt on.
         self.assertIn("shallowest", prompt.lower())
         self.assertIn("never name `build` or `validate`", prompt)
-        # ...and the document is fenced as data, like every other inlined pure document.
-        self.assertIn("verdict.json", prompt)
+        # ...and the document is a seed the prompt names, not inlined (issue #534 PR-J4-a).
+        self.assertIn("`diagnosis.json`", prompt)
+        self.assertNotIn('"overall"', prompt)
+        self.assertIn("verdict.json", self._diagnose_seed(
+            "validate", {"verdict.json": {"overall": "f"}}))
 
     def test_the_diagnose_prompt_keeps_every_artifact_under_a_large_context(self) -> None:
         """Regression (E2E #4 run 1): the prompt truncated the whole context dump at 6000 chars,
@@ -8566,9 +8638,9 @@ class DiagnosticianTest(unittest.TestCase):
             "ir_meta.json": {"filler": ["x" * 200 for _ in range(60)]},
             "verdict.json": {"overall": "fail"},
         }
-        prompt = self._rendered_diagnose_prompt("generate", context, workflow_mode="dev")
+        prompt = self._diagnose_seed("generate", context, workflow_mode="dev")
         for name in context:
-            self.assertIn(name, prompt, f"{name} must appear in the diagnosis prompt")
+            self.assertIn(name, prompt, f"{name} must appear in the diagnosis document")
         self.assertIn("lake_at_rest cannot be satisfied", prompt)
         self.assertIn("[truncated]", prompt)  # the oversized artifact is marked, not dropped
 
@@ -8658,7 +8730,7 @@ class DiagnosticianTest(unittest.TestCase):
 
     def test_escalate_routes_from_diagnostician(self) -> None:
         c = self._conductor()
-        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+        c.leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
             0, self._directive_stdout(
                 'analysis\n{"action":"reopen","target_phase":"compile","reason":"diag_ir"}'), "")
         d = c.escalate(self._refs(), "validate",
@@ -8677,7 +8749,7 @@ class DiagnosticianTest(unittest.TestCase):
         leaf's does, rather than on a `diagnose_leaf_usage` event that existed only because
         there was no row."""
         c = self._conductor()
-        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+        c.leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
             0, self._directive_stdout(
                 'analysis\n{"action":"reopen","target_phase":"compile","reason":"x"}',
                 modelUsage={"claude-opus-5[1m]": {"inputTokens": 8, "outputTokens": 484,
@@ -8707,11 +8779,8 @@ class DiagnosticianTest(unittest.TestCase):
         """A codex `defaults` is a legal configuration, and the codex pump puts the RAW
         `turn.completed` object on `proc.usage` — no `total_tokens`, no `cost_usd`. The row is
         written through `_leaf_usage_row`, which totals them, rather than off `proc.usage`."""
-        c = _FakeConductor(repo_root=self._repo_root(), orchestration_id="o",
-                           orchestration_agent_run_id="ORCH",
-                           llm_config=_cfg("codex", agent_model="gpt-5.6-sol"), env={})
-        c.calls = []
-        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+        c = self._make(_cfg("codex", agent_model="gpt-5.6-sol"), "o_codex")
+        c.leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
             0, '{"action":"reopen","target_phase":"compile","reason":"x"}', "",
             usage={"input_tokens": 10, "output_tokens": 20})
         c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
@@ -8722,7 +8791,7 @@ class DiagnosticianTest(unittest.TestCase):
         reader of `total_tokens: ""` cannot tell a leaf that reported nothing from a conductor
         that forgot to look."""
         c = self._conductor()
-        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+        c.leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
             -9, "", "killed", timed_out=True)
         c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
         row = self._finalized_row(c)
@@ -8743,7 +8812,7 @@ class DiagnosticianTest(unittest.TestCase):
         def spawn(prompt, env, entry=None, **kw):  # type: ignore[no-untyped-def]
             raise wc.SandboxEnforcementError("profile went missing between record and spawn")
 
-        c.spawn_leaf = spawn  # type: ignore[assignment]
+        c.leaf = spawn  # type: ignore[assignment]
         d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
         # ...and it really did precede the spawn: no finalize happened at all.
         self.assertEqual([sub for sub, _ in c.calls if sub == "finalize-child"], [])
@@ -8795,7 +8864,7 @@ class DiagnosticianTest(unittest.TestCase):
         agent, and its tombstone is what keeps `_build_step_agents_missing_step_result` from
         blocking the re-launch."""
         c = self._conductor()
-        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+        c.leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
             0, self._directive_stdout(
                 '{"action":"retry","target_phase":"generate","reason":"x"}'), "")
         c.escalate(self._refs(), "build", wc.PhaseOutcome("build", "fail"))
@@ -8803,29 +8872,35 @@ class DiagnosticianTest(unittest.TestCase):
         self.assertEqual(row["agent_role"], "step")
         self.assertEqual((row["step"], row["substep"]), ("build", "diagnose"))
 
-    def test_the_diagnose_request_is_a_pure_launch_the_validator_accepts(self) -> None:
+    def test_the_diagnose_request_is_a_reading_launch_the_validator_accepts(self) -> None:
         """The payload is built by the production builder and pushed through the REAL
         validator — the layer a conductor unit test with a stubbed runtime never traverses.
         Every escalatable phase, because each one carries different ids (`dependency_ref`,
-        `source_id`, `binary_id`, `run_id`) and the validator requires the step's own."""
+        `source_id`, `binary_id`, `run_id`) and the validator requires the step's own. Since
+        issue #534 PR-J4-a it is a READING workshop request of the diagnostician's own lineage;
+        the pure request (`pure=True`, `judge_replay`'s second arm until the pure path goes)
+        is accepted beside it."""
         import tools.orchestration_runtime as _ort
         c = self._conductor()
+        entry = c.entry_for(None, None)
         for phase in sorted(_ort.STEP_REQUIRED_CHILD_AGENT):
-            with self.subTest(phase=phase):
-                req = wc.build_launch_request(
-                    self._canonical_refs(), step=phase, substep="diagnose",
-                    orchestration_id="o", orchestration_agent_run_id="ORCH",
-                    child_agent_run_id="child-1", agent_model="m", workflow_mode="prod",
-                    pure_leaf=True,
-                    pure_context={"diagnosis_document": wc._diagnosis_document(
-                        "n", phase, [], {}, "prod")},
-                )
-                prepared = _ort.prepare_launch_request_payload(dict(req))
-                _ort._validate_launch_request_payload(prepared)
-                self.assertEqual(prepared["leaf_mode"], "pure")
-                self.assertEqual(prepared["allowed_output_paths"], [])
-                self.assertEqual(prepared["skill_must_read_refs"], "")
-        del c
+            for pure in (False, True):
+                with self.subTest(phase=phase, pure=pure):
+                    req = c._diagnose_request(
+                        self._canonical_refs(), phase, entry, "child-1",
+                        wc._diagnosis_document("n", phase, [], {}, "prod"), pure=pure)
+                    prepared = _ort.prepare_launch_request_payload(dict(req))
+                    _ort._validate_launch_request_payload(prepared)
+                    self.assertEqual(prepared["leaf_mode"], "pure" if pure else "workshop")
+                    self.assertEqual(prepared.get("workshop_lineage_id"),
+                                     None if pure else "child-1")
+                    self.assertEqual(prepared.get("workshop_provider"),
+                                     None if pure else "claude_cli")
+                    self.assertEqual(prepared["allowed_output_paths"], [])
+                    self.assertEqual(prepared["skill_must_read_refs"], "")
+                    prompt = _ort.render_launch_prompt_text(prepared)
+                    self.assertTrue(prompt.startswith(
+                        "Pure-function leaf turn" if pure else "Workshop leaf turn"))
 
     def test_escalate_names_its_own_substep_in_the_timeout_context(self) -> None:
         """Its `leaf_timeout` event must say WHICH leaf wedged — and it is the one leaf whose
@@ -8841,11 +8916,15 @@ class DiagnosticianTest(unittest.TestCase):
             return wc.ProcResult(1, "", "killed", timed_out=True)
 
         c = self._conductor()
-        c.spawn_leaf = spawn  # type: ignore[assignment]
+        c.leaf = spawn  # type: ignore[assignment]
         d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
         self.assertEqual(captured["timeout_context"],
                          {"node_key": "component/spec_x@0.1.0", "step": "validate",
-                          "substep": "diagnose", "agent_run_id": "child-1"})
+                          "substep": "diagnose", "agent_run_id": "child-1",
+                          "leaf_mode": "workshop"})
+        # ...and it is the READING launch: no endpoint, the reading flag set.
+        self.assertTrue(captured["reading"])
+        self.assertIsNone(captured["mcp_config_json"])
         # ...and a diagnostician that produced no directive stays conservatively terminal.
         self.assertEqual(d.action, "fail_closed")
         self.assertEqual(d.reason, "validate_diagnose_unparsable")
@@ -8859,14 +8938,14 @@ class DiagnosticianTest(unittest.TestCase):
         directive = self._directive_stdout(
             'thinking...\n{"action":"retry","target_phase":"generate","reason":"x"}')
         c = self._conductor()
-        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+        c.leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
             -9, directive, wc._leaf_timeout_marker(7200, 7203.0), timed_out=True)
         d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
         self.assertEqual(d.action, "fail_closed")
         self.assertEqual(d.reason, "validate_diagnose_unparsable")
         # ...while the SAME directive from a leaf that finished on its own is still honoured.
         c2 = self._conductor()
-        c2.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(0, directive, "")  # type: ignore[assignment]
+        c2.leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(0, directive, "")  # type: ignore[assignment]
         self.assertEqual(
             c2.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail")).action,
             "retry")
@@ -8890,7 +8969,7 @@ class DiagnosticianTest(unittest.TestCase):
         sure" is red here rather than in a billed run.
         """
         c = self._conductor()
-        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+        c.leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
             0, self._directive_stdout(
                 '{"action":"reopen","target_phase":"compile","reason":"x"}'), "")
         c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
@@ -8954,119 +9033,100 @@ class DiagnosticianTest(unittest.TestCase):
                                orchestration_agent_run_id="O", env={},
                                llm_config=_cfg("codex", agent_model="gpt-5.6-sol"))
             for kwargs in ({}, {"session_id": "child-1"}):
-                argv = c.leaf_command(c.entry_for(None, None), **kwargs)
+                # A pure substep entry: `defaults` is the diagnostician's reading workshop
+                # entry since issue #534 PR-J4-a.
+                argv = c.leaf_command(c.entry_for("generate", "generate"), **kwargs)
                 self.assertEqual(argv[:2], ["codex", "exec"], msg=str(kwargs))
                 self.assertNotIn("--output-schema", argv, msg=str(kwargs))
             self.assertFalse((Path(tmp) / "workspace").exists())
 
-    def test_each_escalation_of_a_phase_is_a_fresh_conversation(self) -> None:
-        """On the HTTP transport the conversation lives in memory, keyed by `(step, substep)`
-        — `(<phase>, diagnose)` for every escalation of one phase — and `_run_http_leaf`
-        appends every turn to it. Both pure loops reset it at their own start; `escalate` did
-        not, so the second escalation of a phase carried the FIRST diagnosis document and the
-        first directive as prior turns, and the third carried both rounds.
+    #: An HTTP `defaults` beside a CLI `validate.judge`: the shape the shipped examples
+    #: describe, and the one `cli_launch_identity` exists to keep runnable.
+    _HTTP_DEFAULTS = ("defaults:\n  lineage_timeout_s: 2700\n  provider: anthropic_api\n"
+                      "  api_key_env: HTTP_KEY\n  model: claude-opus-5\n  base_url: {url}\n"
+                      "phases:\n  validate:\n    substeps:\n      judge:\n"
+                      "        provider: claude_cli\n")
+    _DIRECTIVE = ('{"action":"retry","target_phase":"generate","severity":"minor",'
+                  '"repair_strategy":"reuse","reason":"x"}')
 
-        Two things come out wrong, and the first is a `leaf shortcut`: the diagnostician reads
-        a superseded attempt's artifact content as input, which the closed-context contract
-        forbids and which this very template tells it it is not doing ("reason ONLY over the
-        diagnosis document below, and do not assume artifacts it does not show"). The second is
-        that attempts 2 and 3 are anchored on the model's own earlier answer, so a defect that
-        has since become `critical` keeps being graded the way it was graded first — and a
-        `minor` grade forces `reuse`, which keeps the artifacts a restart would have discarded.
-
-        A phase gets up to `MAX_ATTEMPTS_PER_PHASE` escalations, so the replay is bounded but
-        real. Unreachable until `defaults` was allowed to be an HTTP provider — this issue's
-        own change — which is why it is pinned here rather than assumed.
-        """
+    def _http(self, script: list, oid: str) -> tuple[_DiagnoseFake, object]:
+        """A `_DiagnoseFake` whose `defaults` is `anthropic_api` against a loopback stand-in
+        answering `script`: the REAL host loop (`_run_workshop_http_loop`) runs."""
+        from tools.tests.http_stand_ins import ScriptedMessagesApi
+        api = ScriptedMessagesApi(script)
+        self.addCleanup(api.close)
         d = tempfile.mkdtemp()
         self.addCleanup(shutil.rmtree, d, True)
         path = Path(d) / "llm.yaml"
-        path.write_text(
-            "defaults:\n  provider: anthropic_api\n"
-            "  api_key_env: ANTHROPIC_API_KEY\n  model: claude-opus-5\n"
-            "phases:\n  validate:\n    substeps:\n      judge:\n"
-            "        provider: claude_cli\n", encoding="utf-8")
-        oid = "o_http_history"
-        c = _FakeConductor(repo_root=self._repo_root(oid), orchestration_id=oid,
-                           orchestration_agent_run_id="ORCH",
-                           llm_config=lc.load_llm_config(path), env={})
-        c.calls = []
-        # Drive the REAL `_run_http_leaf` history bookkeeping by stubbing only the transport
-        # call it wraps, so what is observed is the message list the provider would receive.
-        sent: list[int] = []
-        directive = ('{"action":"retry","target_phase":"generate","severity":"minor",'
-                     '"repair_strategy":"reuse","reason":"x"}')
+        path.write_text(self._HTTP_DEFAULTS.format(url=api.base_url), encoding="utf-8")
+        c = self._make(lc.load_llm_config(path), oid)
+        c.env = {"HTTP_KEY": "sk-diagnose"}
+        self.assertTrue(c.entry_for(None, None).is_http, "the fixture must reach the HTTP path")
+        return c, api
 
-        import tools.llm_http_leaf as hl
-        real = hl.run_pure_http_leaf
+    @staticmethod
+    def _writes_directive(cid: str, directive: str) -> tuple:
+        from tools.tests.http_stand_ins import tool_use
+        return ([tool_use(cid, "write_file", {"path": "directive.json", "content": directive})],
+                "tool_use")
 
-        def fake(entry, messages, env=None):  # type: ignore[no-untyped-def]
-            sent.append(len(messages))
-            # The real response type, so a field the conductor starts reading (issue #348's
-            # `model_reported`) cannot go missing from a hand-rolled double.
-            return hl.HttpLeafResponse(directive, "m", {}, False, None, directive,
-                                       model_reported=True)
+    def test_each_escalation_of_a_phase_is_a_fresh_conversation(self) -> None:
+        """On the HTTP transport a lineage's conversation lives in memory
+        (`_workshop_http_histories`). Each escalation is a lineage of its own (its child arid),
+        and its conversation is dropped once the launch ends: nothing continues it. Before
+        issue #534 PR-J4-a the pure `_run_http_leaf` history was keyed by `(step, substep)` —
+        `(<phase>, diagnose)` for every escalation of one phase — so the second escalation
+        carried the FIRST diagnosis document and directive as prior turns unless reset.
 
-        hl.run_pure_http_leaf = fake  # type: ignore[assignment]
-        self.addCleanup(lambda: setattr(hl, "run_pure_http_leaf", real))
-        # The fixture's `spawn_leaf` is stubbed away; put the real one back so the HTTP branch
-        # of `spawn_leaf` — and with it `_run_http_leaf`'s history — is what runs.
-        c.spawn_leaf = wc.Conductor.spawn_leaf.__get__(c)  # type: ignore[assignment]
+        Two things would come out wrong, and the first is a `leaf shortcut`: the diagnostician
+        reads a superseded attempt's artifact content as input, which the closed-context
+        contract forbids and which this very template tells it it is not doing ("reason ONLY
+        over the diagnosis document below"). The second is that attempts 2 and 3 are anchored
+        on the model's own earlier answer, so a defect that has since become `critical` keeps
+        being graded the way it was graded first."""
+        done = ([{"type": "text", "text": "done"}], "end_turn")
+        c, api = self._http(
+            [step for n in range(3) for step in (
+                self._writes_directive(f"w{n}", self._DIRECTIVE), done)], "o_http_history")
         for _ in range(3):
-            c.escalate(self._refs(), "generate", wc.PhaseOutcome("generate", "fail"))
-        self.assertEqual(
-            sent, [1, 1, 1],
-            "each escalation must send ONE message — its own prompt. A growing count is the "
-            "previous diagnosis and the previous directive being replayed as prior turns.")
+            d = c.escalate(self._refs(), "generate", wc.PhaseOutcome("generate", "fail"))
+            self.assertEqual(d.action, "retry")
+            self.assertEqual(c._workshop_http_histories(), {},
+                             "the diagnostician's conversation outlived its launch")
+        bodies = api.main_requests()
+        firsts = [b for b in bodies if len([m for m in b["messages"]
+                                            if m["role"] != "system"]) == 1]
+        self.assertEqual(len(firsts), 3,
+                         "each escalation must open with ONE message — its own prompt. A "
+                         "longer opening is a previous diagnosis replayed as prior turns.")
+        lineages = [cap["--request-json"]["workshop_lineage_id"]
+                    for sub, cap in c.calls if sub == "record-launch"]
+        self.assertEqual(len(set(lineages)), 3)
 
     def test_a_truncated_http_reply_does_not_get_to_route_the_phase(self) -> None:
-        """The fifth disjunct, and the one only an HTTP `defaults` can reach.
-
-        `response_truncated` is set by the HTTP transport alone (`_run_http_leaf` carries the
-        provider's own "cut off at the output-token ceiling" flag). It could not reach this
-        leaf while `defaults` had to be a CLI provider; issue #169 made `defaults` admissible
-        as an HTTP provider — deliberately, on the vendor-neutrality premise — and that is what
-        made the omission live. It cannot ride on a neighbouring half either: for a non-claude
-        entry `_spawn_pure_turn` SYNTHESISES the envelope with `parsed=True, is_error=False`,
-        so `not parsed` and `is_error` are constants there and only this disjunct is left
-        between a cut-off reply and a phase attempt.
+        """A reply the provider cut at the output limit ends the launch (`LoopResult.truncated`)
+        with the lineage OPEN — no bound ended it — so the turn's `ended_by` does not answer
+        for it: `truncated` is the half that refuses it. The tree holds a complete
+        `directive.json` the leaf wrote before the cut, and it is not read.
 
         A leaf whose provider stopped it mid-sentence would otherwise have the directive it had
         already written obeyed, and its row laundered `diagnose_pass` — the same laundering the
-        `is_error` half exists to stop, on the other transport.
-        """
-        d = tempfile.mkdtemp()
-        self.addCleanup(shutil.rmtree, d, True)
-        path = Path(d) / "llm.yaml"
-        # An HTTP `defaults` beside a CLI `validate.judge`: the shape the shipped examples now
-        # describe, and the one `cli_launch_identity` exists to keep runnable.
-        path.write_text(
-            "defaults:\n  provider: anthropic_api\n"
-            "  api_key_env: ANTHROPIC_API_KEY\n  model: claude-opus-5\n"
-            "phases:\n  validate:\n    substeps:\n      judge:\n"
-            "        provider: claude_cli\n", encoding="utf-8")
-        oid = "o_truncated_http"
-        c = _FakeConductor(repo_root=self._repo_root(oid), orchestration_id=oid,
-                           orchestration_agent_run_id="ORCH",
-                           llm_config=lc.load_llm_config(path), env={})
-        c.calls = []
-        self.assertTrue(c.entry_for(None, None).is_http, "the fixture must reach the HTTP path")
-        directive = '{"action":"retry","target_phase":"generate","reason":"x"}'
-        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
-            0, f"reasoning...\n{directive}\nBut wait, I should also cons", "",
-            response_truncated=True)
+        `is_error` half exists to stop, on the other transport."""
+        cut = ([{"type": "text", "text": "But wait, I should also cons"}], "max_tokens")
+        c, _api = self._http([self._writes_directive("w", self._DIRECTIVE), cut],
+                             "o_truncated_http")
         decision = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
         self.assertEqual(decision.action, "fail_closed")
         self.assertEqual(decision.reason, "validate_diagnose_unparsable")
         self.assertEqual(self._finalized_row(c)["status"], "fail")
-        # The control: the SAME reply on the SAME transport, not truncated, is honoured — so
-        # the refusal above is this half's and not the transport's.
-        c2 = _FakeConductor(repo_root=self._repo_root(oid + "_ok"), orchestration_id=oid + "_ok",
-                            orchestration_agent_run_id="ORCH",
-                            llm_config=lc.load_llm_config(path), env={})
-        c2.calls = []
-        c2.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
-            0, f"reasoning...\n{directive}", "")
+        tree = c.homes / c.orchestration_id / "http" / "child-1" / "tree"
+        self.assertTrue((tree / "directive.json").is_file(), "the directive was written")
+        self.assertEqual(c._workshop_http_histories(), {})
+        # The control: the SAME directive on the SAME transport, the launch finished, is
+        # honoured — so the refusal above is this half's and not the transport's.
+        done = ([{"type": "text", "text": "done"}], "end_turn")
+        c2, _api2 = self._http([self._writes_directive("w", self._DIRECTIVE), done],
+                               "o_truncated_http_ok")
         self.assertEqual(
             c2.escalate(self._refs(), "validate",
                         wc.PhaseOutcome("validate", "fail")).action, "retry")
@@ -9140,63 +9200,43 @@ class DiagnosticianTest(unittest.TestCase):
             self.assertIn(phase, criteria[0])
 
     def test_each_half_of_the_directive_guard_refuses_on_its_own(self) -> None:
-        """`None if (timed_out or rc != 0 or truncated or not parsed or is_error)`.
+        """`finished = not (timed_out or rc != 0 or ended_by is not None or truncated or
+        is_error)` — decided on the TURN, before the tree is read (issue #534 PR-J4-a).
 
-        FIVE disjuncts — the four the two pure loops refuse a document on, plus `timed_out`
-        (neither loop tests it: `_timed_out_result` forces a nonzero `returncode` and is the
-        only producer of the flag, so `returncode` already answers for it there) — and every
-        fixture in this class that reaches them used to be a COMPLETE one: the two killed-leaf
-        rows set `timed_out` AND a non-zero return code, and `_directive_stdout` always builds
-        a well-formed, non-error envelope — so no row was ever decided BY any single half, and
-        deleting three of the four this guard then had left the whole suite green (measured,
-        round 1). Each row below carries a syntactically perfect directive and trips exactly
-        ONE half, so each half is what refuses it.
+        Each CLI row below leaves a syntactically perfect `directive.json` in the tree and
+        trips its own half, so the tree is what would have routed the phase if the half were
+        gone; the HTTP `truncated` half is `test_a_truncated_http_reply_does_not_get_to_route_
+        the_phase`. The gain each half denies is the same: a leaf whose turn did not finish
+        would otherwise have its directive obeyed and its row written `diagnose_pass`.
 
-        The gain each half denies is the same: a leaf whose turn did not finish would
-        otherwise have its directive obeyed and its row written `diagnose_pass`.
-
-        MEASURED, and the three outcomes are different, so they are stated apart:
-
-        - deleting `returncode != 0` or `is_error` turns exactly one subtest BELOW red. Both
-          are reachable in production and pinned by a fixture production can emit.
-        - deleting `response_truncated` turns a DIFFERENT test method red
-          (`test_a_truncated_http_reply_does_not_get_to_route_the_phase`), because the row that
-          straddles it needs an HTTP `defaults` — on that transport `_spawn_pure_turn`
-          synthesises the envelope, so `not parsed` and `is_error` are constants and only this
-          half is left. A row here would have been killed by the neighbouring `not parsed`
-          instead; it was written that way first, and measured green.
-        - deleting `timed_out` or `not envelope.parsed` turns a subtest red on a fixture
-          PRODUCTION CANNOT EMIT, so neither is evidence of reachability. `_timed_out_result`
-          forces a nonzero `returncode` and is the only producer of the flag, so
-          `timed_out=True` with `returncode == 0` does not occur; and an unparsed envelope
-          carries `result is _MISSING`, which the `isinstance(..., str)` guard beside the call
-          reduces to `""`, so `_parse_directive("")` is None anyway. Both disjuncts are
-          REDUNDANT rather than unpinned. They are kept because they state the intent at the
-          point of decision and do not depend on another function's normalisation or on a
-          sentinel's type staying what it is — and the two rows are what would notice if
-          either ever changed.
-        """
+        `ended_by` and `timed_out` / `rc` are not independent on a READING lineage: its
+        `ended_by` can only be set by the turn's tail (`lineage_timeout` / `leaf_timeout` on
+        `timed_out`, `leaf_exit` on a nonzero exit; nothing serves it an operation that could
+        end it), so the lineage half is REDUNDANT with the two process halves — kept, because
+        it states at the point of decision what the lineage record says, and the `ended_by`
+        assertions below are what would notice if the tail stopped recording either. The
+        claude `is_error` envelope is the one CLI half no other covers: it arrives on a
+        zero-exit launch."""
+        from tools.workshop_tree import LineagePaths, read_lineage_record
         directive = '{"action":"retry","target_phase":"generate","reason":"x"}'
         cases = {
             # Killed at the cap, but the process still reported a zero exit.
-            "timed_out": wc.ProcResult(0, self._directive_stdout(directive), "",
-                                       timed_out=True),
-            # Died on its own (an HTTP 502, a codex leaf exiting after its final message)
-            # WITHOUT being killed, so `timed_out` is False and only the code refuses it.
-            "returncode": wc.ProcResult(1, self._directive_stdout(directive), ""),
-            # A live turn whose stdout is not a result envelope at all.
-            "unparsed": wc.ProcResult(0, "not an envelope at all", ""),
-            # The CLI's OWN error envelope. Its `result` text is still model-written, so it
-            # can carry a directive-shaped final line; `returncode` does not catch this one
-            # because an is_error envelope arrives on a zero-exit launch.
-            "is_error": wc.ProcResult(
+            "timed_out": (wc.ProcResult(0, self._directive_stdout(directive), "",
+                                        timed_out=True), "lineage_timeout"),
+            # Died on its own WITHOUT being killed: only the code (and the `leaf_exit` it
+            # records) refuses it.
+            "returncode": (wc.ProcResult(1, self._directive_stdout(directive), ""),
+                           "leaf_exit"),
+            # The CLI's OWN error envelope on a zero exit: the lineage stays open.
+            "is_error": (wc.ProcResult(
                 0, json.dumps({"type": "result", "subtype": "error_during_execution",
                                "is_error": True, "result": directive, "session_id": "s"}), ""),
+                None),
         }
-        for half, proc in cases.items():
+        for half, (proc, ended_by) in cases.items():
             with self.subTest(half=half):
                 c = self._conductor()
-                c.spawn_leaf = lambda prompt, env, entry=None, _p=proc, **kw: _p  # type: ignore[assignment]
+                c.leaf = lambda prompt, env, entry=None, _p=proc, **kw: _p  # type: ignore[assignment]
                 d = c.escalate(self._refs(), "validate",
                                wc.PhaseOutcome("validate", "fail"))
                 self.assertEqual(d.action, "fail_closed", half)
@@ -9204,18 +9244,94 @@ class DiagnosticianTest(unittest.TestCase):
                 # ...and the row says the turn failed, so the cost is recorded against a
                 # `fail` rather than laundered into a `diagnose_pass`.
                 self.assertEqual(self._finalized_row(c)["status"], "fail", half)
+                paths = LineagePaths(
+                    homes_root=c.homes, orchestration_id=c.orchestration_id,
+                    lineage_id="child-1", orchestration_dir=c.repo_root / "workspace"
+                    / "orchestrations" / c.orchestration_id, backend="claude")
+                self.assertTrue((paths.tree / "directive.json").is_file(), half)
+                self.assertEqual(read_lineage_record(paths).get("ended_by"), ended_by, half)
         # The control: the SAME directive from a turn that finished cleanly is honoured, so
-        # the four rows above refuse for their own reason and not because the payload is bad.
+        # the rows above refuse for their own reason and not because the payload is bad; and
+        # its lineage is left as an accepted judge's is (`ended_by` null, the launch recorded).
         c = self._conductor()
-        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+        c.leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
             0, self._directive_stdout(directive), "")
         self.assertEqual(
             c.escalate(self._refs(), "validate",
                        wc.PhaseOutcome("validate", "fail")).action, "retry")
+        paths = LineagePaths(
+            homes_root=c.homes, orchestration_id=c.orchestration_id, lineage_id="child-1",
+            orchestration_dir=c.repo_root / "workspace" / "orchestrations" / c.orchestration_id,
+            backend="claude")
+        record = read_lineage_record(paths)
+        self.assertIsNone(record.get("ended_by"))
+        self.assertEqual(record["last_launch"]["rc"], 0)
+
+    def test_a_turn_that_did_not_finish_is_decided_before_the_tree_is_read(self) -> None:
+        """The order is the property: `assemble` reads the tree of a timed-out leaf (the
+        judges' "tree wins" rule), so a killed diagnostician's tree must not reach it at all."""
+        c = self._conductor()
+        reads: list[str] = []
+        real = c._diagnose_spec
+
+        def counting():  # type: ignore[no-untyped-def]
+            spec = real()
+            inner = spec.workshop_assemble
+            return spec._replace(workshop_assemble=lambda root, reserved: (
+                reads.append(str(root)), inner(root, reserved))[1])
+
+        c._diagnose_spec = counting  # type: ignore[assignment]
+        c.leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+            -9, self._directive_stdout('{"action":"retry","target_phase":"generate"}'),
+            wc._leaf_timeout_marker(7200, 7203.0), timed_out=True)
+        self.assertEqual(c.escalate(self._refs(), "validate",
+                                    wc.PhaseOutcome("validate", "fail")).action, "fail_closed")
+        self.assertEqual(reads, [])
+        c.leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+            0, self._directive_stdout('{"action":"retry","target_phase":"generate"}'), "")
+        c.calls = []
+        self.assertEqual(c.escalate(self._refs(), "validate",
+                                    wc.PhaseOutcome("validate", "fail")).action, "retry")
+        self.assertEqual(len(reads), 1)
+
+    def test_a_lineage_the_host_cannot_lay_out_is_a_named_terminal(self) -> None:
+        """The lineage setup raises `ValueError` (`_workshop_backend`, `LineagePaths`,
+        `read_lineage_record`), and `escalate` sits outside `conduct`'s only `try`: folded,
+        it is `<phase>_diagnose_sandbox_unavailable` like a launch the host cannot make, never
+        a traceback."""
+        c = self._conductor()
+
+        def bad_home(entry, lineage_id, *, resume):  # type: ignore[no-untyped-def]
+            raise ValueError("lineage id is not a safe id")
+
+        c._prepare_workshop_home = bad_home  # type: ignore[assignment]
+        d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
+        self.assertEqual((d.action, d.reason),
+                         ("fail_closed", "validate_diagnose_sandbox_unavailable"))
+        self.assertEqual([sub for sub, _ in c.calls if sub == "finalize-child"], [])
+
+    def test_the_seed_is_the_diagnosis_document(self) -> None:
+        """The tree holds `diagnosis.json` — the context value, plus the one newline issue
+        #548 appends — `CONTRACT.md`, and nothing else the host placed; the launch was recorded
+        as a READING workshop launch of the diagnostician's own lineage."""
+        c = self._conductor()
+        c.leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+            0, self._directive_stdout('{"action":"fail_closed","reason":"spec"}'), "")
+        c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
+        request = next(cap for sub, cap in c.calls if sub == "record-launch")["--request-json"]
+        self.assertEqual((request["leaf_mode"], request["workshop_lineage_id"],
+                          request["workshop_provider"]), ("workshop", "child-1", "claude_cli"))
+        tree = c.homes / c.orchestration_id / "claude" / "child-1" / "tree"
+        document = request["pure_context"]["diagnosis_document"]
+        self.assertFalse(document.endswith("\n"))
+        self.assertEqual((tree / "diagnosis.json").read_text(encoding="utf-8"),
+                         document + "\n")
+        self.assertEqual(sorted(p.name for p in tree.iterdir()),
+                         ["CONTRACT.md", "diagnosis.json", "directive.json"])
 
     def test_escalate_unparsable_is_fail_closed(self) -> None:
         c = self._conductor()
-        c.spawn_leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
+        c.leaf = lambda prompt, env, entry=None, **kw: wc.ProcResult(  # type: ignore[assignment]
             0, self._directive_stdout("I am unsure; no directive"), "")
         d = c.escalate(self._refs(), "build", wc.PhaseOutcome("build", "fail"))
         self.assertEqual(d.action, "fail_closed")
@@ -9278,7 +9394,7 @@ class DiagnosticianTest(unittest.TestCase):
                         '{"action":"reopen","target_phase":"compile","reason":"diag"}'), "")
             return wc.ProcResult(0, "", "")
 
-        c.spawn_leaf = spawn  # type: ignore[assignment]
+        c.leaf = spawn  # type: ignore[assignment]
         status = c.conduct(self._refs(), "validate")
         self.assertEqual(status, "pass")
         revokes = [cap for s, cap in c.calls if s == "revoke-artifact"]
@@ -9476,7 +9592,7 @@ class RunWorkflowConductorGuardTest(unittest.TestCase):
         # under a named rule, before any orchestration state exists.
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "llm.yaml"
-            path.write_text("defaults:\n  provider: cursor_cli\n", encoding="utf-8")
+            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: cursor_cli\n", encoding="utf-8")
             with self.assertRaises(lc.LlmConfigError) as ctx:
                 lc.load_llm_config(path)
         self.assertEqual(ctx.exception.rule, "llm_config_unknown_provider")
@@ -9846,7 +9962,7 @@ class LeafSpawnTest(unittest.TestCase):
         # no such loop, `pure` is a hard requirement of every LLM leaf, and a document that
         # drops it does not load at all. The entries are therefore plain, which is also what
         # the shipped samples look like.
-        body = f"defaults:\n  provider: {provider}\nphases:\n"
+        body = f"defaults:\n  lineage_timeout_s: 2700\n  provider: {provider}\nphases:\n"
         phases: dict[str, list[str]] = {}
         for step, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
             phases.setdefault(step, []).append(substep)
@@ -9889,18 +10005,18 @@ class LeafSpawnTest(unittest.TestCase):
 
     def test_leaf_command_honors_custom_llm_command(self) -> None:
         c = self._c(backend="claude", llm_command="mywrap --model Z")
-        self.assertEqual(c.leaf_command(), self._claude_argv("mywrap", "--model", "Z"))
+        self.assertEqual(c.leaf_command(c.entry_for("generate", "generate")), self._claude_argv("mywrap", "--model", "Z"))
         c2 = self._c(backend="codex", llm_command="codexwrap --x", agent_model="gpt-5.6-sol")
-        argv = c2.leaf_command(session_id="a")
+        argv = c2.leaf_command(c2.entry_for("generate", "generate"), session_id="a")
         self.assertEqual(argv[:5],
                          ["codexwrap", "--x", "exec", "--model", "gpt-5.6-sol"])
         self.assertEqual(argv[-2:], ["--json", "-"])
 
     def test_leaf_command_defaults_to_backend(self) -> None:
-        self.assertEqual(self._c(backend="claude").leaf_command(), self._claude_argv("claude"))
+        self.assertEqual(self._c(backend="claude").leaf_command(self._c(backend="claude").entry_for("generate", "generate")), self._claude_argv("claude"))
         # `session_id` as every production launch passes it; the codex arm reads it for
         # nothing since issue #230.
-        argv = self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command(session_id="a")
+        argv = self._c(backend="codex", agent_model="gpt-5.6-sol").leaf_command(self._c(backend="codex", agent_model="gpt-5.6-sol").entry_for("generate", "generate"), session_id="a")
         self.assertEqual(argv[:4], ["codex", "exec", "--model", "gpt-5.6-sol"])
         self.assertEqual(argv[argv.index("--sandbox") + 1], "read-only")
         self.assertIn("--skip-git-repo-check", argv)  # issue #227: the sandbox cwd is empty
@@ -9926,9 +10042,9 @@ class LeafSpawnTest(unittest.TestCase):
         """
         variadic = ("--tools",)
         c = self._c(backend="claude")
-        argvs = [c.leaf_command(),
-                 c.leaf_command(session_id="a"),
-                 c.leaf_command(session_id="a", resume_session_id="b")]
+        argvs = [c.leaf_command(c.entry_for("generate", "generate")),
+                 c.leaf_command(c.entry_for("generate", "generate"), session_id="a"),
+                 c.leaf_command(c.entry_for("generate", "generate"), session_id="a", resume_session_id="b")]
         for argv in argvs:
             self.assertEqual(argv[-1], "-p", msg=argv)
             for i, token in enumerate(argv):
@@ -9986,13 +10102,14 @@ class LeafSpawnTest(unittest.TestCase):
     def test_leaf_command_pins_session_id_for_claude(self) -> None:
         c = self._c(backend="claude")
         self.assertEqual(
-            c.leaf_command(session_id="arid-1"),
+            c.leaf_command(c.entry_for("generate", "generate"), session_id="arid-1"),
             self._claude_argv("claude", "--session-id", "arid-1"),
         )
         # codex has no per-session flag, and since issue #230 the id reaches a codex argv
         # NOWHERE: the `--output-schema` path it used to key is gone.
         argv = self._c(backend="codex",
-                       agent_model="gpt-5.6-sol").leaf_command(session_id="arid-1")
+                       agent_model="gpt-5.6-sol").leaf_command(self._c(backend="codex",
+                       agent_model="gpt-5.6-sol").entry_for("generate", "generate"), session_id="arid-1")
         self.assertNotIn("--session-id", argv)
         self.assertNotIn("--output-schema", argv)
         self.assertFalse(any("arid-1" in part for part in argv), argv)
@@ -10000,14 +10117,14 @@ class LeafSpawnTest(unittest.TestCase):
     def test_leaf_command_reuse_resume_forks_producer_session(self) -> None:
         c = self._c(backend="claude")
         self.assertEqual(
-            c.leaf_command(session_id="new-arid", resume_session_id="producer-arid"),
+            c.leaf_command(c.entry_for("generate", "generate"), session_id="new-arid", resume_session_id="producer-arid"),
             self._claude_argv("claude", "--resume", "producer-arid", "--fork-session",
                               "--session-id", "new-arid"),
         )
 
     def test_codex_resume_pins_the_same_host_model(self) -> None:
         c = self._c(backend="codex", agent_model="gpt-5.6-sol")
-        argv = c.leaf_command(session_id="new-arid", resume_session_id="thread-123")
+        argv = c.leaf_command(c.entry_for("generate", "generate"), session_id="new-arid", resume_session_id="thread-123")
         self.assertEqual(argv[:6],
                          ["codex", "exec", "resume", "--model", "gpt-5.6-sol", "thread-123"])
         self.assertEqual(argv[-2:], ["--json", "-"])
@@ -10021,7 +10138,7 @@ class LeafSpawnTest(unittest.TestCase):
 
     def test_codex_leaf_rejects_generic_model_alias(self) -> None:
         with self.assertRaisesRegex(ValueError, "explicit model slug"):
-            self._c(backend="codex", agent_model="codex").leaf_command(session_id="a")
+            self._c(backend="codex", agent_model="codex").leaf_command(self._c(backend="codex", agent_model="codex").entry_for("generate", "generate"), session_id="a")
 
     # --- codex JSONL stream handling -----------------------------------------
 
@@ -10888,7 +11005,7 @@ class LeafSpawnTest(unittest.TestCase):
             with _patch.object(wc.subprocess, "Popen", _ClaudePopen):
                 # profile present → bwrap-wrapped (claude)
                 self._c(repo_root=repo, env={}).spawn_leaf(
-                    "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                    "P", {"HOME": "/h"}, session_id="A", child_arid="A", entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"))
                 self.assertEqual(captured["argv"][0], "bwrap")
                 self.assertIn("claude", captured["argv"])
                 self.assertIn("--", captured["argv"])
@@ -10916,7 +11033,7 @@ class LeafSpawnTest(unittest.TestCase):
                 # A leaf that returned normally is not a conductor kill.
                 self.assertIs(
                     self._c(repo_root=repo, env={}).spawn_leaf(
-                        "P", {"HOME": "/h"}, session_id="A", child_arid="A").timed_out, False)
+                        "P", {"HOME": "/h"}, session_id="A", child_arid="A", entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate")).timed_out, False)
                 # codex backend is also wrapped (it gets a profile + sandbox_enforced too).
                 captured.clear()
                 from unittest.mock import patch
@@ -10945,7 +11062,7 @@ class LeafSpawnTest(unittest.TestCase):
                     c_codex = self._c(repo_root=repo, backend="codex", env={})
                     c_codex._register_codex_thread = lambda *args: None  # type: ignore[method-assign]
                     c_codex.spawn_leaf(
-                        "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                        "P", {"HOME": "/h"}, session_id="A", child_arid="A", entry=c_codex.entry_for("generate", "generate"))
                 self.assertEqual(captured["argv"][0], "bwrap")
                 self.assertIn("codex", captured["argv"])
                 # Same on the codex path: stdin pipe requested, prompt off argv (argv ends
@@ -10958,13 +11075,13 @@ class LeafSpawnTest(unittest.TestCase):
                 captured.clear()
                 with self.assertRaises(RuntimeError):
                     self._c(repo_root=repo, env={}).spawn_leaf(
-                        "P", {"HOME": "/h"}, session_id="Z", child_arid="Z")
+                        "P", {"HOME": "/h"}, session_id="Z", child_arid="Z", entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"))
                 self.assertNotIn("argv", captured)
                 # `child_arid` is REQUIRED (issue #169): the caller that used to omit it, the
                 # diagnostician, now has one, and a call without it is a TypeError at the
                 # signature rather than a fail-closed at the profile lookup.
                 with self.assertRaises(TypeError):
-                    self._c(repo_root=repo, env={}).spawn_leaf("P", {"HOME": "/h"})
+                    self._c(repo_root=repo, env={}).spawn_leaf("P", {"HOME": "/h"}, entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"))
                 self.assertNotIn("argv", captured)
                 # structurally invalid profile (missing repo_root/tmp_dir) →
                 # SandboxEnforcementError (so conduct terminalizes fail_closed), not a
@@ -10973,7 +11090,7 @@ class LeafSpawnTest(unittest.TestCase):
                                                    encoding="utf-8")
                 with self.assertRaises(wc.SandboxEnforcementError):
                     self._c(repo_root=repo, env={}).spawn_leaf(
-                        "P", {"HOME": "/h"}, session_id="BAD", child_arid="BAD")
+                        "P", {"HOME": "/h"}, session_id="BAD", child_arid="BAD", entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"))
                 self.assertNotIn("argv", captured)
 
     def test_spawn_leaf_missing_bwrap_binary_fails_closed(self) -> None:
@@ -11004,7 +11121,7 @@ class LeafSpawnTest(unittest.TestCase):
             with _patch.object(wc.subprocess, "Popen", fake_popen):
                 with self.assertRaises(wc.SandboxEnforcementError):
                     self._c(repo_root=repo, env={}).spawn_leaf(
-                        "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                        "P", {"HOME": "/h"}, session_id="A", child_arid="A", entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"))
 
     # --- the hard per-leaf timeout -------------------------------------------
     #
@@ -11096,7 +11213,7 @@ class LeafSpawnTest(unittest.TestCase):
                     "P", {"HOME": "/h"}, session_id="A", child_arid="A",
                     timeout_context={"node_key": "component/spec_x@0.1.0",
                                      "step": "generate", "substep": "generate",
-                                     "agent_run_id": "A"})
+                                     "agent_run_id": "A"}, entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"))
         # ONE deadline-bounded wait, and then the grace-bounded teardown. There is no slicing
         # left to do: `wait` ends at the leaf's EXIT where `communicate` ended at stream EOF,
         # so a leaf that answers and exits while leaking a pipe-holder is noticed structurally
@@ -11202,7 +11319,7 @@ class LeafSpawnTest(unittest.TestCase):
                             patch.object(wc, "LEAF_TERMINATE_GRACE_SECONDS", 0.01):
                         with self.assertRaises(type(exc)):
                             self._c(repo_root=repo, env={}).spawn_leaf(
-                                "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                                "P", {"HOME": "/h"}, session_id="A", child_arid="A", entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"))
                 # The whole GROUP, not just the direct child (which under bwrap is the wrapper).
                 self.assertEqual(signalled[0], (424242, signal.SIGTERM))
 
@@ -11250,7 +11367,7 @@ class LeafSpawnTest(unittest.TestCase):
                     patch.object(wc, "_leaf_timeout_seconds", lambda: 3):
                 with self.assertRaises(KeyboardInterrupt):
                     self._c(repo_root=repo, env={}).spawn_leaf(
-                        "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                        "P", {"HOME": "/h"}, session_id="A", child_arid="A", entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"))
         self.assertIn((424242, signal.SIGTERM), signalled)
 
     @pytest.mark.slow
@@ -11299,7 +11416,7 @@ class LeafSpawnTest(unittest.TestCase):
                     patch.object(wc, "_leaf_timeout_seconds", lambda: 3600):
                 with self.assertRaises(KeyboardInterrupt):
                     self._c(repo_root=repo, env={}).spawn_leaf(
-                        "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                        "P", {"HOME": "/h"}, session_id="A", child_arid="A", entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"))
         # A plateau in what the flood gets through, the same observable the abandon and codex
         # interrupt paths use: a reader parked on a SILENT pipe stays parked either way, so
         # what the flag buys is that a reader still being delivered to stops within one block.
@@ -11455,7 +11572,7 @@ class LeafSpawnTest(unittest.TestCase):
             with patch.object(wc.subprocess, "Popen", _QuickPopen), \
                     patch.object(wc, "_pid_start_ticks", lambda pid: seen.append(pid) or "77"):
                 self._c(repo_root=repo, env={}).spawn_leaf(
-                    "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                    "P", {"HOME": "/h"}, session_id="A", child_arid="A", entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"))
         self.assertEqual(seen, [424242])
 
     def test_a_reaped_leafs_survivors_are_still_reachable_and_still_get_sigkill(self) -> None:
@@ -11565,7 +11682,7 @@ class LeafSpawnTest(unittest.TestCase):
                     redirect_stdout(out):
                 started = time.monotonic()
                 proc = self._c(repo_root=repo, env={}).spawn_leaf(
-                    "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                    "P", {"HOME": "/h"}, session_id="A", child_arid="A", entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"))
                 elapsed = time.monotonic() - started
         # Bounded by the GRACE, not by the cap: a regression that waits the cap out has to fail
         # this quickly rather than park CI for the length of a production timeout.
@@ -11621,7 +11738,7 @@ class LeafSpawnTest(unittest.TestCase):
                     patch.object(wc, "_leaf_timeout_seconds", lambda: 3), \
                     redirect_stdout(io.StringIO()):
                 proc = self._c(repo_root=repo, env={}).spawn_leaf(
-                    "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                    "P", {"HOME": "/h"}, session_id="A", child_arid="A", entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"))
         self.assertEqual((proc.returncode, proc.stdout), (0, "THE ANSWER\n"))
         self.assertIs(proc.timed_out, False)
         self.assertEqual(proc.stderr, "")                   # no marker on a clean drain
@@ -11655,7 +11772,7 @@ class LeafSpawnTest(unittest.TestCase):
             started = time.monotonic()
             proc = c.spawn_leaf("P", dict(os.environ), session_id="A", child_arid="A",
                                 timeout_context={"node_key": "n", "step": "generate",
-                                                 "substep": "generate", "agent_run_id": "A"})
+                                                 "substep": "generate", "agent_run_id": "A"}, entry=c.entry_for("generate", "generate"))
             elapsed = time.monotonic() - started
         self.assertLess(elapsed, 5.0)
         self.assertIs(proc.timed_out, True)
@@ -11696,7 +11813,7 @@ class LeafSpawnTest(unittest.TestCase):
                 patch.object(wc, "LEAF_STDERR_CAPTURE_MAX_CHARS", budget), \
                 patch.object(wc, "LEAF_STDERR_CAPTURE_TAIL_CHARS", 0), \
                 redirect_stdout(io.StringIO()):
-            proc = c.spawn_leaf("P", dict(os.environ), session_id="A", child_arid="A")
+            proc = c.spawn_leaf("P", dict(os.environ), session_id="A", child_arid="A", entry=c.entry_for("generate", "generate"))
         _current, peak = tracemalloc.get_traced_memory()
         growth = peak - baseline
         # PEAK MEMORY is the acceptance, not the size of what came back: this path used to
@@ -11747,7 +11864,7 @@ class LeafSpawnTest(unittest.TestCase):
             with patch.object(wc, "_leaf_timeout_seconds", lambda: 30), \
                     patch.object(wc, "LEAF_STREAM_QUEUE_MAX_CHARS", limit), \
                     redirect_stdout(io.StringIO()):
-                proc = c.spawn_leaf("P", dict(os.environ), session_id="A", child_arid="A")
+                proc = c.spawn_leaf("P", dict(os.environ), session_id="A", child_arid="A", entry=c.entry_for("generate", "generate"))
         self.assertEqual(proc.returncode, 0)
         self.assertIs(proc.timed_out, False)
         self.assertEqual(proc.stdout, "done")            # the turn behind the flood lands
@@ -11785,7 +11902,7 @@ class LeafSpawnTest(unittest.TestCase):
                 proc = c.spawn_leaf("P", dict(os.environ), session_id="A", child_arid="A",
                                     timeout_context={"node_key": "n", "step": "generate",
                                                      "substep": "generate",
-                                                     "agent_run_id": "A"})
+                                                     "agent_run_id": "A"}, entry=c.entry_for("generate", "generate"))
                 elapsed = time.monotonic() - started
         self.assertLess(elapsed, 5.0)
         self.assertIs(proc.timed_out, True)
@@ -11853,7 +11970,7 @@ class LeafSpawnTest(unittest.TestCase):
                     patch.object(wc, "_leaf_timeout_seconds", lambda: 0.05), \
                     redirect_stdout(out):
                 proc = self._c(repo_root=repo, env={}).spawn_leaf(
-                    "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                    "P", {"HOME": "/h"}, session_id="A", child_arid="A", entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"))
         self.assertIs(proc.timed_out, False)          # not a wedge: it finished
         self.assertEqual(proc.returncode, 0)
         self.assertEqual(proc.stdout, "THE ANSWER\n")
@@ -11916,7 +12033,7 @@ class LeafSpawnTest(unittest.TestCase):
                     patch.object(wc, "_leaf_timeout_seconds", lambda: 3), \
                     redirect_stdout(io.StringIO()):
                 proc = self._c(repo_root=repo, env={}).spawn_leaf(
-                    "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                    "P", {"HOME": "/h"}, session_id="A", child_arid="A", entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"))
         self.assertIs(proc.timed_out, False)          # the leaf exited on its own...
         self.assertIn((4242, signal.SIGTERM), signalled)   # ...its survivors are still signalled
 
@@ -11981,7 +12098,7 @@ class LeafSpawnTest(unittest.TestCase):
                             redirect_stdout(io.StringIO()):
                         # `session_id=child_arid` as every production launch does.
                         proc = c.spawn_leaf("P", {"HOME": "/h"}, child_arid="A",
-                                            session_id="A")
+                                            session_id="A", entry=c.entry_for("generate", "generate"))
                 self.assertIs(proc.timed_out, True)
                 # The PINNED pid, not the (unresolvable) live lookup, and not the no-op
                 # direct-child fallback.
@@ -12060,7 +12177,7 @@ class LeafSpawnTest(unittest.TestCase):
                     patch.object(wc, "_leaf_timeout_seconds", lambda: 0.05), \
                     redirect_stdout(io.StringIO()):
                 proc = self._c(repo_root=repo, env={}).spawn_leaf(
-                    "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                    "P", {"HOME": "/h"}, session_id="A", child_arid="A", entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"))
         self.assertEqual(proc.stdout, "partial answer\n")
         # `\xff` is invalid UTF-8 but a legal latin-1 character: this pins that the LOCALE
         # codec was used, not a hardcoded utf-8 (which would render it `\\xff`). Otherwise the
@@ -12116,7 +12233,7 @@ class LeafSpawnTest(unittest.TestCase):
             with patch.object(wc.subprocess, "Popen", _QuickPopen), \
                     patch.dict(wc.os.environ, {"ATMOFAB_LEAF_TIMEOUT_SECONDS": "0"}):
                 proc = self._c(repo_root=repo, env={}).spawn_leaf(
-                    "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                    "P", {"HOME": "/h"}, session_id="A", child_arid="A", entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"))
         # No deadline at all: the wait runs until the leaf ends, however long it takes. It is
         # still the leaf's EXIT that ends it, which is why a leaked pipe-holder cannot stretch
         # it — the reason the cap-off configuration is safe to offer.
@@ -12302,7 +12419,7 @@ class LeafSpawnTest(unittest.TestCase):
                     "P", {"HOME": "/h"}, child_arid="A", session_id="A",
                     resume_session_id="thread-1",
                     timeout_context={"node_key": "component/spec_x@0.1.0", "step": "compile",
-                                     "substep": "generate", "agent_run_id": "A"})
+                                     "substep": "generate", "agent_run_id": "A"}, entry=c.entry_for("generate", "generate"))
         self.assertEqual(signalled[0], (424242, signal.SIGTERM))
         self.assertEqual(proc.returncode, -int(signal.SIGKILL))
         # The drained diagnostics survive, with the marker appended.
@@ -13273,7 +13390,7 @@ class LeafSpawnTest(unittest.TestCase):
                         redirect_stdout(io.StringIO()):
                     proc = c._spawn_codex_json_leaf(["codex", "exec"], {}, "A", prompt_text="P") \
                         if backend == "codex" else \
-                        c.spawn_leaf("P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                        c.spawn_leaf("P", {"HOME": "/h"}, session_id="A", child_arid="A", entry=c.entry_for("generate", "generate"))
                 # Still bounded — this is not a licence to keep the whole stream...
                 self.assertLess(len(proc.stderr), 5_000 + 2_000 + 500, len(proc.stderr))
                 self.assertIn("leaf_stderr_capture_truncated", proc.stderr)
@@ -13478,7 +13595,7 @@ class LeafSpawnTest(unittest.TestCase):
                             patch.object(wc, "_leaf_timeout_seconds", lambda: 1), \
                             redirect_stdout(io.StringIO()):
                         proc = self._c(repo_root=repo, env={}).spawn_leaf(
-                            "P", {"HOME": "/h"}, session_id="A", child_arid="A")
+                            "P", {"HOME": "/h"}, session_id="A", child_arid="A", entry=self._c(repo_root=repo, env={}).entry_for("generate", "generate"))
                 self.assertIn("leaf_stream_abandoned", proc.stderr)
                 # The cause the drain had already read comes back, so the attempt routes.
                 self.assertIn("Connection closed mid-response", proc.stderr)
@@ -14704,7 +14821,7 @@ class WriteLineageTest(unittest.TestCase):
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True)
             (ir_dir / "spec.ir.yaml").write_text(
-                'impl_defaults:\n  toolchain:\n    language: fortran\n'
+                'impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n'
                 'dependency:\n'
                 '  direct_deps:\n'
                 '    - node_key: "component/base@0.1.0"\n'
@@ -14937,7 +15054,7 @@ class WriteMakefileTest(unittest.TestCase):
         ir_dir = repo / refs.ir_ref
         ir_dir.mkdir(parents=True, exist_ok=True)
         (ir_dir / "spec.ir.yaml").write_text(
-            "impl_defaults:\n"
+            "impl_defaults:\n  lineage_timeout_s: 2700\n"
             "  toolchain:\n"
             f"    language: {language}\n"
             "    standard: f2008\n"
@@ -15160,13 +15277,13 @@ class WriteMakefileTest(unittest.TestCase):
         from tools.tests.target_fixtures import FORTRAN_CPU
 
         shapes = {
-            "language absent": "impl_defaults:\n  toolchain:\n    build_system: make\n",
+            "language absent": "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    build_system: make\n",
             "toolchain absent": "impl_defaults: {}\n",
             "impl_defaults absent": "meta:\n  spec_kind: component\n",
-            "toolchain is a list": "impl_defaults:\n  toolchain: [make, fortran]\n",
-            "toolchain is a string": "impl_defaults:\n  toolchain: make\n",
+            "toolchain is a list": "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain: [make, fortran]\n",
+            "toolchain is a string": "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain: make\n",
             "impl_defaults is a string": "impl_defaults: nonsense\n",
-            "another language": "impl_defaults:\n  toolchain:\n    language: zz_other\n",
+            "another language": "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: zz_other\n",
         }
         tc = FORTRAN_CPU.toolchain
         for name, block in shapes.items():
@@ -15440,7 +15557,7 @@ class WriteMakefileTest(unittest.TestCase):
         ir_dir = repo / refs.ir_ref
         ir_dir.mkdir(parents=True, exist_ok=True)
         (ir_dir / "spec.ir.yaml").write_text(
-            "impl_defaults:\n  toolchain:\n    language: fortran\n    standard: f2008\n"
+            "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    standard: f2008\n"
             "    build_system: make\n  target:\n    backend: openmp\n"
             "dependency:\n"
             '  node_key: "component/top@0.1.0"\n'
@@ -15476,7 +15593,7 @@ class WriteMakefileTest(unittest.TestCase):
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
             (ir_dir / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n"
+                "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    build_system: make\n"
                 "dependency:\n"
                 '  node_key: "component/top@0.1.0"\n'
                 "  direct_deps:\n    - node_key: \"component/base@0.1.0\"\n",
@@ -15504,7 +15621,7 @@ class WriteMakefileTest(unittest.TestCase):
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
             (ir_dir / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n"
+                "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    build_system: make\n"
                 "dependency:\n"
                 '  node_key: "component/top@0.1.0"\n'
                 "  direct_deps:\n"
@@ -15616,7 +15733,7 @@ class WriteMakefileTest(unittest.TestCase):
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
             (ir_dir / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n"
+                "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    build_system: make\n"
                 "dependency:\n  node_key: \"component/top@0.1.0\"\n"
                 "  direct_deps:\n    - node_key: \"component/base@0.1.0\"\n",
                 encoding="utf-8")
@@ -15877,7 +15994,7 @@ class WriteMakefileTest(unittest.TestCase):
             ir_dir = repo / refs.ir_ref
             ir_dir.mkdir(parents=True, exist_ok=True)
             (ir_dir / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n"
+                "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    build_system: make\n"
                 "dependency:\n  node_key: \"component/top@0.1.0\"\n"
                 "  direct_deps:\n    - node_key: \"component/base@0.2.0\"\n",
                 encoding="utf-8")
@@ -16468,7 +16585,13 @@ class PureLeafSubstepPredicateTests(unittest.TestCase):
             narrow = _TargetedConductor(
                 repo_root=repo, orchestration_id="o", orchestration_agent_run_id="ORCH",
                 env={}, llm_config=lc.load_llm_config(self._write_config(
-                    repo, "defaults:\n  provider: claude_cli\n  capabilities: [pure]\n")))
+                    repo, "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+                    "  capabilities: [pure, workshop]\n"
+                    # The leaf entries hold `pure` alone; `defaults` (the diagnostician, a
+                    # reading workshop leaf since issue #534 PR-J4-a) keeps `workshop`.
+                    "phases:\n" + "".join(
+                        f"  {ph}:\n    capabilities: [pure]\n"
+                        for ph in sorted(lc.LLM_LEAF_PHASES)))))
             for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
                 self.assertEqual(
                     narrow._pure_leaf_substep(refs, phase, substep),
@@ -17111,7 +17234,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  toolchain:\n    language: fortran\n"
+                "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n"
                 "    build_system: make\n"
                 'dependency:\n  node_key: "component/spec_x@0.1.0"\n'
                 '  direct_deps:\n    - node_key: "component/depy@0.1.0"\n',
@@ -17230,7 +17353,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 run_id="run_1", source_binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n"
+                "impl_defaults:\n  lineage_timeout_s: 2700\n"
                 "  toolchain:\n    language: fortran\n    standard: f2008\n"
                 "    build_system: make\n"
                 "  target:\n    class: cpu\n    backend: openmp\n"
@@ -17278,7 +17401,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n"
+                "impl_defaults:\n  lineage_timeout_s: 2700\n"
                 "  toolchain:\n    language: fortran\n    standard: f2008\n"
                 "    build_system: make\n"
                 "  target:\n    class: cpu\n    backend: openmp\n",
@@ -17321,7 +17444,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n"
+                "impl_defaults:\n  lineage_timeout_s: 2700\n"
                 "  toolchain:\n    language: fortran\n    standard: f2008\n"
                 "    build_system: make\n"
                 "  target:\n    class: cpu\n    backend: openmp\n",
@@ -17357,7 +17480,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 run_id="run_1", source_binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n"
+                "impl_defaults:\n  lineage_timeout_s: 2700\n"
                 "  toolchain:\n    language: fortran\n    standard: f2008\n"
                 "    build_system: make\n"
                 "  target:\n    class: cpu\n    backend: openmp\n"
@@ -18059,7 +18182,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 run_id="run_1", source_binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n"
+                "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    build_system: make\n"
                 "  target:\n    class: cpu\n", encoding="utf-8")
             (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
             node_dir = repo / refs.run_node_dir()
@@ -18837,7 +18960,7 @@ class DeterministicBuildTest(unittest.TestCase):
     #   post_execute_violation   <- a gate subprocess exits non-zero
     #   snapshot_deliverable_gap <- gates clean, quality_check clean, a per-case snapshot missing
     #   quality_check_mismatch   <- gates clean, no snapshot gap, the make-test re-run disagrees
-    _B1_IR_MINIMAL = ("impl_defaults:\n  toolchain:\n    language: fortran\n"
+    _B1_IR_MINIMAL = ("impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n"
                       "    build_system: make\n  target:\n    class: cpu\n")
     _B1_IR_SNAPSHOTS = (_B1_IR_MINIMAL
                         + "io_contract:\n  raw_requirements:\n    required_evidence:\n"
@@ -19440,7 +19563,7 @@ class DeterministicBuildTest(unittest.TestCase):
                 run_id="run_1", source_binary_id="bin_1")
             (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  toolchain:\n    language: fortran\n    build_system: make\n"
+                "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    build_system: make\n"
                 "  target:\n    class: cpu\n", encoding="utf-8")
             (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
 
@@ -19531,7 +19654,7 @@ class DeterministicLintTest(unittest.TestCase):
         ir_dir.mkdir(parents=True, exist_ok=True)
         if language is not None:
             (ir_dir / "spec.ir.yaml").write_text(
-                f"impl_defaults:\n  toolchain:\n    language: {language}\n", encoding="utf-8")
+                f"impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: {language}\n", encoding="utf-8")
             # The language the host reads is the TARGET's (issue #284).
             from tools.tests.target_fixtures import install_target_profile, profile_with
             install_target_profile(repo, profile_with(toolchain={"language": language}))
@@ -19558,7 +19681,7 @@ class DeterministicLintTest(unittest.TestCase):
         ir_dir.mkdir(parents=True, exist_ok=True)
         (ir_dir / "spec.ir.yaml").write_text(
             "meta:\n  spec_id: adv1d\n  spec_kind: problem\n"
-            "impl_defaults:\n  toolchain:\n    language: fortran\n    standard: f2008\n"
+            "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    standard: f2008\n"
             "    build_system: make\n  target:\n    backend: serial\n"
             "dependency:\n"
             f'  node_key: "{self._M3C_NODE_KEY}"\n'
@@ -20207,7 +20330,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
         ir_dir = repo / refs.ir_ref
         ir_dir.mkdir(parents=True, exist_ok=True)
         (ir_dir / "spec.ir.yaml").write_text(
-            f"impl_defaults:\n  toolchain:\n    language: {language}\n"
+            f"impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: {language}\n"
             f"    standard: f2008\n  target:\n    backend: openmp\n", encoding="utf-8")
         # The language the host reads is the TARGET's (issue #284).
         from tools.tests.target_fixtures import install_target_profile, profile_with
@@ -20229,7 +20352,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
             refs = self._refs()
             self._seed(repo, refs)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-                "impl_defaults:\n  toolchain:\n    language: fortran\n"
+                "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n"
                 "    standard: f2008\n    build_system: make\n  target:\n"
                 "    backend: openmp\n"
                 'dependency:\n  node_key: "component/spec_x@0.1.0"\n'
@@ -20327,7 +20450,7 @@ class DeterministicSyntaxTest(unittest.TestCase):
         ir_dir.mkdir(parents=True, exist_ok=True)
         (ir_dir / "spec.ir.yaml").write_text(
             "meta:\n  spec_id: adv1d\n  spec_kind: problem\n"
-            "impl_defaults:\n  toolchain:\n    language: fortran\n    standard: f2008\n"
+            "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n    standard: f2008\n"
             "    build_system: make\n  target:\n    backend: serial\n"
             "dependency:\n"
             f'  node_key: "{self._M3C_NODE_KEY}"\n'
@@ -21869,7 +21992,7 @@ class DeterministicGateTest(unittest.TestCase):
         ir_dir = repo / refs.ir_ref
         ir_dir.mkdir(parents=True, exist_ok=True)
         (ir_dir / "spec.ir.yaml").write_text(
-            f"impl_defaults:\n  toolchain:\n    language: {language}\n"
+            f"impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: {language}\n"
             f"    standard: f2008\n  target:\n    backend: openmp\n", encoding="utf-8")
         # The language the host reads is the TARGET's (issue #284).
         from tools.tests.target_fixtures import install_target_profile, profile_with
@@ -23786,7 +23909,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c = wc.Conductor(
             repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
-                "defaults:\n  provider: claude_cli\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n        model: haiku\n"))
         judge = c.leaf_command(c.entry_for("validate", "judge"))
         self.assertEqual(judge, ["claude", "--model", "haiku", *_pure_leaf_tail()])
@@ -23798,7 +23921,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c = wc.Conductor(
             repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
-                "defaults:\n  provider: claude_cli\n  model: haiku\n"))
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: haiku\n"))
         for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
             self.assertEqual(c.leaf_command(c.entry_for(phase, substep)),
                              ["claude", "--model", "haiku", *_pure_leaf_tail()], msg=f"{phase}.{substep}")
@@ -23809,7 +23932,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c = wc.Conductor(
             repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
-                "defaults:\n  provider: claude_cli\n  effort: xhigh\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  effort: xhigh\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n"
                 "        provider: codex_cli\n        model: gpt-5.6-sol\n"
                 "        effort: ultra\n"))
@@ -23827,7 +23950,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c = wc.Conductor(
             repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
-                "defaults:\n  provider: codex_cli\n  model: gpt-5.6-sol\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: gpt-5.6-sol\n"
                 "  effort: xhigh\n"))
         entry = c.entry_for("generate", "generate")
         # `session_id` as every production launch passes it (the codex arm reads it for
@@ -23840,7 +23963,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         """No level is not a level: the CLI's own default stays in force."""
         c = wc.Conductor(
             repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
-            env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
+            env={}, llm_config=self._config_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"))
         self.assertEqual(c.leaf_command(c.entry_for("compile", "verify")),
                          ["claude", *_pure_leaf_tail()])
 
@@ -23853,7 +23976,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c = wc.Conductor(
             repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=lc.apply_defaults_overrides(
-                self._config_text("defaults:\n  provider: claude_cli\n"), model="opus"))
+                self._config_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"), model="opus"))
         entry = c.entry_for("validate", "judge")
         self.assertEqual(entry.model, "opus")
         self.assertFalse(entry.model_declared)
@@ -23952,7 +24075,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
             env={"PATH": "/usr/bin:/bin", "ANTHROPIC_BASE_URL": "http://elsewhere"},
             llm_config=lc.apply_defaults_overrides(self._config_text(
-                "defaults:\n  provider: claude_cli\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                 "  command: /opt/wrap/claude --sandbox\n"
                 "phases:\n  generate:\n    substeps:\n      generate:\n"
                 "        model: haiku\n"), model="opus"))
@@ -23985,7 +24108,8 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c = wc.Conductor(
             repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
-                "defaults:\n  provider: claude_cli\n  capabilities: [pure]\n"))
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+                "  capabilities: [pure, workshop]\n"))
         self.assertFalse(c._pure_session_resumable("sess-1", c.entry_for("generate", "verify")))
 
     def test_warm_resume_is_refused_and_reported_when_the_capability_is_absent(self) -> None:
@@ -23993,7 +24117,8 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c = wc.Conductor(
             repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
-                "defaults:\n  provider: claude_cli\n  capabilities: [pure]\n"))
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+                "  capabilities: [pure, workshop]\n"))
         c.emit = lambda event, **f: emitted.append({"event": event, **f})  # type: ignore
         repair = {"repair_strategy": "reuse", "repair_target_agent_run_id": "prior-arid"}
         self.assertIsNone(c._resolve_reuse_resume(repair, "generate", "generate"))
@@ -24014,7 +24139,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         """
         with self.assertRaises(lc.LlmConfigError) as ctx:
             self._config_text(
-                "defaults:\n  provider: claude_cli\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                 "phases:\n  generate:\n    substeps:\n      generate:\n"
                 "        provider: claude_cli\n        capabilities: [warm_resume]\n")
         self.assertEqual(ctx.exception.rule,
@@ -24031,7 +24156,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c2 = wc.Conductor(
             repo_root=_SHARED_REPO_ROOT, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
-                "defaults:\n  provider: claude_cli\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                 "phases:\n  generate:\n    substeps:\n      generate:\n"
                 "        max_output_tokens: 4096\n"))
         self.assertEqual(
@@ -24043,7 +24168,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
 
     def test_a_mixed_config_records_per_launch_backend_tokens(self) -> None:
         c = self._config_text(
-            "defaults:\n  provider: claude_cli\n  model: opus\n"
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
             "phases:\n  validate:\n    substeps:\n      judge:\n"
             "        provider: codex_cli\n        model: gpt-5.6-sol\n")
         self.assertEqual(c.entry_for("generate", "generate").backend_token, "claude")
@@ -24069,7 +24194,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
             repo_root=self._scratch_repo_root(), orchestration_id="o",
             orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
-                "defaults:\n  provider: claude_cli\n  model: opus\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n"
                 "        provider: codex_cli\n        model: gpt-5.6-sol\n"))
         c.runtime = lambda argv, *, input=None: (                                  # type: ignore[assignment]
@@ -24088,7 +24213,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
             repo_root=self._scratch_repo_root(), orchestration_id="o",
             orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
-                "defaults:\n  provider: claude_cli\n  model: opus\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
                 "  command: /opt/wrap/claude --sandbox\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n"
                 "        command: /opt/other/claude\n"))
@@ -24129,7 +24254,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c = wc.Conductor(
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
-                "defaults:\n  provider: claude_cli\n  model: opus\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n"
                 "        provider: codex_cli\n        model: gpt-5.6-sol\n"))
         claude = self._record_launch_response(
@@ -24161,7 +24286,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c = wc.Conductor(
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
-                "defaults:\n  provider: claude_cli\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                 "  command: claude --tools Monitor\n"))
         entry = c.entry_for("generate", "generate")
         argv = c.leaf_command(entry)
@@ -24184,10 +24309,14 @@ class LeafEntryThreadingTests(unittest.TestCase):
         repo = self._scratch_repo_root()
         c = wc.Conductor(
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
-            env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
+            env={}, llm_config=self._config_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"))
+        # The `defaults` entry is the diagnostician's reading workshop entry since issue #534
+        # PR-J4-a, so the fallback is exercised on its own pair: the reading surface, no
+        # endpoint.
         response = self._record_launch_response(
-            c, "arid-1", {"step": "generate", "substep": "generate"}, None)
-        self.assertEqual(response["claude_tools"], [""])
+            c, "arid-1", {"step": "validate", "substep": "diagnose"}, None)
+        self.assertEqual(response["claude_tools"], ["Read,Write,Edit,Glob,Grep"])
+        self.assertNotIn("claude_mcp_config", response)
 
     def test_a_deterministic_substep_records_no_argv_it_never_ran(self) -> None:
         """A deterministic substep goes through `record_launch` like any other and then runs
@@ -24202,7 +24331,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         repo = self._scratch_repo_root()
         c = wc.Conductor(
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
-            env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
+            env={}, llm_config=self._config_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"))
         # DERIVED from the predicate over the conductor's own (phase, substep) universe,
         # not hand-listed: a hand-written list cannot support the "every one of them" claim
         # this test makes, and would silently miss a deterministic substep added later.
@@ -24243,7 +24372,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         c = wc.Conductor(
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
             env={}, llm_config=self._config_text(
-                "defaults:\n  provider: codex_cli\n  model: gpt-5.6-sol\n"))
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: gpt-5.6-sol\n"))
         from tools.pure_leaf import PURE_LEAF_MODE
         self._record_launch_response(
             c, "arid-1", {"leaf_mode": PURE_LEAF_MODE, "step": "generate",
@@ -24266,7 +24395,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         repo = self._scratch_repo_root()
         c = wc.Conductor(
             repo_root=repo, orchestration_id="o", orchestration_agent_run_id="O",
-            env={}, llm_config=self._config_text("defaults:\n  provider: claude_cli\n"))
+            env={}, llm_config=self._config_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"))
         entry = c.entry_for("generate", "generate")
         argv = c.leaf_command(entry)
         stripped = [tok for i, tok in enumerate(argv)
@@ -24491,7 +24620,7 @@ class LaunchPayloadFileTransportTests(unittest.TestCase):
             c = self._conductor(repo_root)
             request = {"agent_role": "substep", "pure_context": self.BIG}
 
-            c.record_launch("child-1", request)
+            c.record_launch("child-1", request, c.entry_for("generate", "generate"))
 
             argv, stdin = c.seen[-1]                                   # type: ignore[attr-defined]
             self._assert_no_huge_argv(argv)
@@ -24873,7 +25002,7 @@ class RealValidatorAtTheRetiredArtifactSyntaxGateSitesTests(unittest.TestCase):
                          llm_config=_cfg("claude"), env={})
         (repo / refs.ir_ref).mkdir(parents=True, exist_ok=True)
         (repo / refs.ir_ref / "spec.ir.yaml").write_text(
-            "impl_defaults:\n  toolchain:\n    language: fortran\n"
+            "impl_defaults:\n  lineage_timeout_s: 2700\n  toolchain:\n    language: fortran\n"
             "    build_system: make\n  target:\n    class: cpu\n", encoding="utf-8")
         (repo / refs.source_dir() / "src").mkdir(parents=True, exist_ok=True)
 
@@ -25133,7 +25262,7 @@ class ConductTargetTests(unittest.TestCase):
 
             from tools import target_profile as tp
             c = _C(repo_root=repo, orchestration_id="o", orchestration_agent_run_id="ORCH",
-                   llm_config=_config_from_text("defaults:\n  provider: claude_cli\n"), env={},
+                   llm_config=_config_from_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"), env={},
                    target_profile=tp.load_target_profile(REPO_ROOT, "fortran_cpu"))
             c._seed_repairs_from_revocations = lambda refs, phases: {}  # type: ignore[assignment]
             self.assertEqual(c.conduct(refs, "validate"), "pass")
@@ -25157,7 +25286,7 @@ class ConductTargetTests(unittest.TestCase):
             wc.run_conductor(repo_root=REPO_ROOT, orchestration_id="o",
                              orchestration_agent_run_id="A", spec_ref="spec/x",
                              source_dependency_ref="spec/x/deps.yaml", until_phase="compile",
-                             llm_config=_config_from_text("defaults:\n  provider: claude_cli\n"),
+                             llm_config=_config_from_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"),
                              target_profile=profile)
             self.assertIs(seen[-1], profile)
             # None resolves the default target rather than running without one.
@@ -25166,7 +25295,7 @@ class ConductTargetTests(unittest.TestCase):
                                  orchestration_agent_run_id="A", spec_ref="spec/x",
                                  source_dependency_ref="spec/x/deps.yaml",
                                  until_phase="compile",
-                                 llm_config=_config_from_text("defaults:\n  provider: claude_cli\n"))
+                                 llm_config=_config_from_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"))
             resolve.assert_called_once_with(REPO_ROOT, None)
             self.assertIs(seen[-1], profile)
 

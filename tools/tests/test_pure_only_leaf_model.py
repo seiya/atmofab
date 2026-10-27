@@ -71,7 +71,7 @@ _PROVIDER_BLOCKS = {
 def _config_on(provider: str, tmp: Path) -> lc.LlmConfig:
     """A configuration putting `provider` on every LLM leaf."""
     block = _PROVIDER_BLOCKS[provider]
-    text = "defaults:\n  provider: claude_cli\n  model: opus\nphases:\n"
+    text = "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\nphases:\n"
     for phase in sorted({p for p, _ in lc.LLM_LEAF_SUBSTEPS}):
         text += f"  {phase}:\n    substeps:\n"
         for p, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
@@ -153,7 +153,7 @@ class EveryLlmLaunchIsPureTests(unittest.TestCase):
         dependency surface; the pure entry beside it still takes the pure producer."""
         cfg = self.repo / "llm_ws.yaml"
         cfg.write_text(
-            "defaults: {provider: claude_cli, model: opus}\n"
+            "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
             "phases:\n"
             "  compile: {substeps: {generate: {leaf: workshop, max_wrapper_calls: 3, "
             "lineage_timeout_s: 60}}}\n"
@@ -292,7 +292,7 @@ class SpawnLeafAdmitsOneWritableProfileTests(unittest.TestCase):
         self.repo = Path(tmp.name)
         cfg = self.repo / "llm.yaml"
         cfg.write_text(
-            "defaults: {provider: claude_cli, model: opus}\n"
+            "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
             "phases: {generate: {substeps: {generate: {leaf: workshop, max_wrapper_calls: 3, "
             "lineage_timeout_s: 60}}}}\n", encoding="utf-8")
         self.c = _PureFakeConductor(repo_root=self.repo, orchestration_id="o",

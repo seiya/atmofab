@@ -50,8 +50,8 @@
 # the HTTP providers").
 #
 # `defaults` MAY be an HTTP provider since issue #169: the one launch it serves, the
-# `escalate` diagnostician, is a pure leaf, so the rule on it is
-# `llm_config_defaults_not_pure`. `init` and the
+# `escalate` diagnostician, is a READING workshop leaf (issue #534 PR-J4-a), so the rule on it
+# is `llm_config_defaults_not_workshop`. `init` and the
 # preflight still take one CLI backend token, and it is resolved from whatever the file can
 # launch (`LlmConfig.cli_launch_identity`) rather than from `defaults`, so an HTTP `defaults`
 # beside a CLI leaf runs. ONE thing still stands between this file and an ALL-HTTP run — that
@@ -135,6 +135,9 @@ defaults:
   provider: claude_cli
   model: opus
   effort: medium
+  # `defaults` also serves the `escalate` diagnostician, a READING workshop leaf: this bounds
+  # its lineage (required; no substep entry inherits it).
+  lineage_timeout_s: 2700
 
 phases:
   compile:

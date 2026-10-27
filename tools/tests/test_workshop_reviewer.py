@@ -16,6 +16,7 @@ import shutil
 import tempfile
 import unittest
 from pathlib import Path
+from types import MappingProxyType
 from unittest import mock
 
 import tools.llm_config as lc
@@ -40,7 +41,7 @@ def _terminated(text: str) -> str:
 def _config(repo: Path, phase: str, substep: str, extra: str = "") -> lc.LlmConfig:
     path = repo / "llm_reading.yaml"
     path.write_text(
-        "defaults: {provider: claude_cli, model: opus}\n"
+        "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
         f"phases: {{{phase}: {{substeps: {{{substep}: {{provider: claude_cli, model: opus, "
         f"leaf: workshop, lineage_timeout_s: 2700{extra}" + "}}}}\n",
         encoding="utf-8")
@@ -50,7 +51,7 @@ def _config(repo: Path, phase: str, substep: str, extra: str = "") -> lc.LlmConf
 def _codex_config(repo: Path, phase: str, substep: str) -> lc.LlmConfig:
     path = repo / "llm_reading_codex.yaml"
     path.write_text(
-        "defaults: {provider: codex_cli, model: gpt-x}\n"
+        "defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
         f"phases: {{{phase}: {{substeps: {{{substep}: {{provider: codex_cli, model: gpt-x, "
         "leaf: workshop, lineage_timeout_s: 2700}}}}\n",
         encoding="utf-8")
@@ -1504,9 +1505,20 @@ class ReaderTemplateTests(unittest.TestCase):
     _PAIRS = (("pure_compile_verify.txt", "workshop_compile_verify.txt"),
               ("pure_generate_verify.txt", "workshop_generate_verify.txt"),
               ("pure_generate_verify_harness.txt", "workshop_generate_verify_harness.txt"),
-              ("pure_validate_judge.txt", "workshop_validate_judge.txt"))
-    #: The one pure unit a reading twin REPLACES: a reviewer in a tree reads with file tools.
+              ("pure_validate_judge.txt", "workshop_validate_judge.txt"),
+              # Issue #534 PR-J4-a: the escalate diagnostician, a reading twin of its own.
+              ("pure_escalate_diagnose.txt", "workshop_escalate_diagnose.txt"))
+    #: The one pure unit a reading twin REPLACES in its persona (line 0): a reviewer in a tree
+    #: reads with file tools.
     _REPLACED = "Do not use filesystem or shell tools: everything you need is inlined below."
+    #: The diagnostician's persona states its no-tools rule in its own words, and two units of
+    #: its OUTPUT CONTRACT line (past the persona, so compared below) name the final line of a
+    #: reply, which the twin names `directive.json` (each `(pure unit, twin unit)`).
+    _REPLACED_BY = MappingProxyType({"pure_escalate_diagnose.txt": (
+        "and you must not use filesystem or shell tools",
+        (("and keep the final line a single clean JSON object",
+          "and keep `directive.json` a single clean JSON object and nothing else"),
+         ("an unparsable reply", "an unparsable `directive.json`")))})
 
     def test_the_reviewer_rules_are_the_pure_templates_verbatim(self) -> None:
         """Every line of a pure reviewer template after its persona — the output contract, the
@@ -1518,9 +1530,16 @@ class ReaderTemplateTests(unittest.TestCase):
             with self.subTest(template=twin_name):
                 pure = (self._DIR / pure_name).read_text().split("\n")
                 twin = (self._DIR / twin_name).read_text().split("\n")
-                self.assertIn(self._REPLACED, pure[0])
-                self.assertNotIn(self._REPLACED, "\n".join(twin))
+                persona, units = self._REPLACED_BY.get(pure_name, (self._REPLACED, ()))
+                self.assertIn(persona, pure[0])
+                self.assertNotIn(persona, "\n".join(twin))
                 kept = [ln for ln in pure[2:] if not ort._PURE_PLACEHOLDER_RE.fullmatch(ln)]
+                for old, new in units:
+                    # Each replaced unit is in exactly one kept line, once, and gone from the
+                    # twin: so the replacement is the whole difference.
+                    self.assertEqual(sum(ln.count(old) for ln in kept), 1, old)
+                    self.assertNotIn(old, "\n".join(twin))
+                    kept = [ln.replace(old, new) for ln in kept]
                 position = 0
                 for line in kept:
                     self.assertIn(line, twin[position:], line[:80])
@@ -1532,7 +1551,8 @@ class ReaderTemplateTests(unittest.TestCase):
                 slots = set(ort._PURE_PLACEHOLDER_RE.findall((self._DIR / name).read_text()))
                 documents = set().union(*(set(v) for v in
                                           wc.Conductor._WORKSHOP_REVIEWER_DOCUMENT_SEEDS
-                                          .values())) | {"bundle_document", "dependency_facts"}
+                                          .values())) | {"bundle_document", "dependency_facts",
+                                                         "diagnosis_document"}
                 self.assertEqual(slots & documents, set())
                 self.assertIn("tool_surface", slots)
 

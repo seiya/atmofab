@@ -248,7 +248,7 @@ class SampleConfigTests(unittest.TestCase):
     def test_a_codex_config_without_a_model_still_stops_before_launching(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "c.yaml"
-            path.write_text("defaults:\n  provider: codex_cli\n", encoding="utf-8")
+            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n", encoding="utf-8")
             with self.assertRaises(lc.LlmConfigError) as ctx:
                 lc.load_llm_config(path).validate_runnable()
         self.assertEqual(ctx.exception.rule, "llm_config_codex_cli_requires_model")
@@ -263,7 +263,7 @@ class DefaultConfigPathTests(unittest.TestCase):
     def test_resolving_returns_the_file_when_it_exists(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "llm.yaml"
-            path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
+            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n", encoding="utf-8")
             self.assertEqual(lc.resolve_default_config_path(tmp), path)
 
     def test_a_missing_default_names_the_path_and_the_command_that_creates_it(self) -> None:
@@ -316,12 +316,12 @@ class DefaultConfigPathTests(unittest.TestCase):
 
 class ResolutionTests(_Tmp):
     def test_every_llm_leaf_gets_an_entry_from_bare_defaults(self) -> None:
-        cfg = lc.load_llm_config(self.write("defaults:\n  provider: claude_cli\n"))
+        cfg = lc.load_llm_config(self.write("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"))
         self.assertEqual(set(cfg.entries), set(lc.LLM_LEAF_SUBSTEPS))
 
     def test_phase_layer_overrides_defaults_and_substep_overrides_phase(self) -> None:
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n"
+            "defaults:\n  lineage_timeout_s: 2700\n"
             "  provider: claude_cli\n"
             "  model: default-model\n"
             "phases:\n"
@@ -337,7 +337,7 @@ class ResolutionTests(_Tmp):
 
     def test_unmentioned_fields_inherit_per_field(self) -> None:
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n"
+            "defaults:\n  lineage_timeout_s: 2700\n"
             "  provider: claude_cli\n"
             "  model: default-model\n"
             "  max_output_tokens: 4096\n"
@@ -355,7 +355,7 @@ class ResolutionTests(_Tmp):
         """A deeper level that switches provider must not inherit the outer provider's
         model / command: they name things that only exist on the outer transport."""
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n"
+            "defaults:\n  lineage_timeout_s: 2700\n"
             "  provider: claude_cli\n"
             "  model: claude-model\n"
             "  command: claude --flag\n"
@@ -383,7 +383,7 @@ class ResolutionTests(_Tmp):
         share its provider — not start from an empty provider surface. Folding pairwise loses
         the operator's `defaults.command` wrapper on exactly that one leaf, silently."""
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n"
+            "defaults:\n  lineage_timeout_s: 2700\n"
             "  provider: claude_cli\n"
             "  model: claude-model\n"
             "  command: wrapper-claude --sandbox\n"
@@ -412,7 +412,7 @@ class ResolutionTests(_Tmp):
         made "claude everywhere with a raised ceiling, except one leaf on codex" — a core use
         case — unloadable, and pointed the operator at a key their document does not contain."""
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n  provider: claude_cli\n  max_output_tokens: 32000\n"
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  max_output_tokens: 32000\n"
             "phases:\n  validate:\n    substeps:\n      judge:\n"
             "        provider: codex_cli\n        model: gpt-5.6-sol\n"))
         self.assertEqual(cfg.entry_for("compile", "verify").max_output_tokens, 32000)
@@ -423,15 +423,15 @@ class ResolutionTests(_Tmp):
         """The other side: a field the operator wrote FOR this provider is an error, because
         there is a key in the document to point at."""
         self.assert_rule("llm_config_field_not_applicable",
-                         "defaults:\n  provider: codex_cli\n  model: m\n"
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: m\n"
                          "  max_output_tokens: 32000\n")
         self.assert_rule("llm_config_field_not_applicable",
-                         "defaults:\n  provider: claude_cli\n  timeout_s: 300\n")
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  timeout_s: 300\n")
 
     def test_provider_switch_without_a_replacement_model_is_rejected_not_inherited(self) -> None:
         """The drop is real: the outer `model` cannot satisfy the HTTP model requirement."""
         self.assert_rule("llm_config_http_requires_model",
-                         "defaults:\n"
+                         "defaults:\n  lineage_timeout_s: 2700\n"
                          "  provider: claude_cli\n"
                          "  model: claude-model\n"
                          "phases:\n"
@@ -444,18 +444,18 @@ class ResolutionTests(_Tmp):
 
     def test_entry_for_none_none_is_defaults(self) -> None:
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n  provider: claude_cli\n  model: d\n"
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: d\n"
             "phases:\n  generate:\n    model: p\n"))
         self.assertIs(cfg.entry_for(None, None), cfg.defaults)
         self.assertEqual(cfg.entry_for(None, None).model, "d")
 
     def test_deterministic_substep_falls_back_to_defaults(self) -> None:
-        cfg = lc.load_llm_config(self.write("defaults:\n  provider: claude_cli\n"))
+        cfg = lc.load_llm_config(self.write("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"))
         self.assertIs(cfg.entry_for("generate", "gate"), cfg.defaults)
 
     def test_anthropic_api_base_url_defaults_to_the_canonical_endpoint(self) -> None:
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n  provider: claude_cli\n"
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
             "phases:\n  generate:\n    substeps:\n      generate:\n"
             "        provider: anthropic_api\n"
             "        api_key_env: ANTHROPIC_API_KEY\n"
@@ -465,7 +465,7 @@ class ResolutionTests(_Tmp):
 
     def test_mixed_config_reports_both_providers(self) -> None:
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n  provider: claude_cli\n"
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
             "phases:\n  generate:\n    substeps:\n      generate:\n"
             "        provider: openai_compatible\n"
             "        base_url: http://localhost:8000/v1\n"
@@ -477,7 +477,7 @@ class ResolutionTests(_Tmp):
 
     def test_provenance_map_is_per_leaf_and_includes_defaults(self) -> None:
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n  provider: claude_cli\n"
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
             "phases:\n  generate:\n    substeps:\n      generate:\n"
             "        provider: openai_compatible\n"
             "        base_url: http://localhost:8000/v1\n"
@@ -492,7 +492,7 @@ class ResolutionTests(_Tmp):
 
     def test_describe_providers_dedups_on_the_probed_surface(self) -> None:
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n  provider: claude_cli\n"
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
             "phases:\n  generate:\n    model: another-model\n"))
         self.assertEqual([r["backend"] for r in lc.describe_providers(cfg)], ["claude"])
 
@@ -605,17 +605,18 @@ class CapabilityTests(_Tmp):
 
     def test_capabilities_may_restrict_a_provider(self) -> None:
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n"
+            "defaults:\n  lineage_timeout_s: 2700\n"
             "  provider: claude_cli\n"
-            "  capabilities: [pure]\n"))
+            "  capabilities: [pure, workshop]\n"))
         entry = cfg.entry_for("validate", "judge")
         self.assertTrue(entry.supports(lc.CAP_PURE))
         self.assertFalse(entry.supports(lc.CAP_WARM_RESUME))
+        self.assertFalse(cfg.defaults.supports(lc.CAP_WARM_RESUME))
 
     def test_http_provider_on_a_pure_leaf_is_accepted(self) -> None:
         for substep in ("generate", "verify"):
             cfg = lc.load_llm_config(self.write(
-                "defaults:\n  provider: claude_cli\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                 "phases:\n  generate:\n    substeps:\n"
                 f"      {substep}:\n"
                 "        provider: openai_compatible\n"
@@ -658,7 +659,7 @@ class CapabilityTests(_Tmp):
         for phase, substep in sorted(lc.LLM_LEAF_SUBSTEPS):
             err = self.assert_rule(
                 "llm_config_capability_insufficient_for_substep",
-                "defaults:\n  provider: claude_cli\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                 f"phases:\n  {phase}:\n    substeps:\n      {substep}:\n"
                 "        capabilities: [warm_resume]\n")
             self.assertIn("'pure'", str(err), msg=f"{phase}.{substep}")
@@ -669,7 +670,7 @@ class CapabilityTests(_Tmp):
             with self.subTest(capability=retired):
                 err = self.assert_rule(
                     "llm_config_invalid_field",
-                    "defaults:\n  provider: claude_cli\n"
+                    "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                     f"  capabilities: [{retired}, pure]\n")
                 self.assertIn(retired, str(err))
                 self.assertNotIn(retired, lc.KNOWN_CAPABILITIES)
@@ -696,7 +697,7 @@ class CapabilityTests(_Tmp):
         for provider, block in sorted(blocks.items()):
             for substep in ("generate", "verify"):
                 cfg = lc.load_llm_config(self.write(
-                    "defaults:\n  provider: claude_cli\n  model: opus\n"
+                    "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
                     f"phases:\n  compile:\n    substeps:\n      {substep}:\n" + block))
                 cfg.validate_runnable()
                 self.assertEqual(cfg.entry_for("compile", substep).provider, provider)
@@ -718,7 +719,7 @@ class RuleTests(_Tmp):
         """An empty sequence is FALSY, so `or {}` coerced it to an empty mapping and the layer
         read as "overrides nothing" — silently discarding what the operator wrote and running
         the inherited provider and model."""
-        base = "defaults:\n  provider: claude_cli\n  model: base\n"
+        base = "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: base\n"
         for body in (base + "phases:\n  generate: []\n",
                      base + "phases:\n  generate:\n    substeps: []\n",
                      base + "phases:\n  generate:\n    substeps:\n      verify: []\n"):
@@ -727,7 +728,7 @@ class RuleTests(_Tmp):
     def test_an_absent_layer_is_still_legitimately_empty(self) -> None:
         """`generate:` with no value is the spelling that MEANS nothing, and must keep working
         — only `None` reads as empty."""
-        base = "defaults:\n  provider: claude_cli\n  model: base\n"
+        base = "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: base\n"
         for body in (base, base + "phases:\n", base + "phases:\n  generate:\n",
                      base + "phases:\n  generate:\n    substeps:\n"):
             cfg = lc.load_llm_config(self.write(body, "absent.yaml"))
@@ -740,71 +741,71 @@ class RuleTests(_Tmp):
         """A malformed document can mix key TYPES, and sorting those against each other raises
         a TypeError that escapes the named-rejection contract as a traceback."""
         self.assert_rule("llm_config_unknown_key",
-                         "defaults:\n  provider: claude_cli\n1: x\nfoo: y\n")
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n1: x\nfoo: y\n")
 
     def test_unknown_top_level_key(self) -> None:
         self.assert_rule("llm_config_unknown_key",
-                         "defaults:\n  provider: claude_cli\nbackends: {}\n")
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\nbackends: {}\n")
 
     def test_unknown_entry_key(self) -> None:
         self.assert_rule("llm_config_unknown_key",
-                         "defaults:\n  provider: claude_cli\n  temperature: 0.2\n")
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  temperature: 0.2\n")
 
     def test_unknown_phase(self) -> None:
         self.assert_rule("llm_config_unknown_phase",
-                         "defaults:\n  provider: claude_cli\nphases:\n  generat: {}\n")
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\nphases:\n  generat: {}\n")
 
     def test_unknown_phase_names_build_explicitly(self) -> None:
         err = self.assert_rule(
             "llm_config_unknown_phase",
-            "defaults:\n  provider: claude_cli\nphases:\n  build:\n    model: x\n")
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\nphases:\n  build:\n    model: x\n")
         self.assertIn("deterministic", str(err))
 
     def test_unknown_substep_rejects_a_deterministic_one(self) -> None:
         self.assert_rule("llm_config_unknown_substep",
-                         "defaults:\n  provider: claude_cli\n"
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                          "phases:\n  generate:\n    substeps:\n      gate:\n        model: x\n")
 
     def test_unknown_substep_rejects_a_typo(self) -> None:
         self.assert_rule("llm_config_unknown_substep",
-                         "defaults:\n  provider: claude_cli\n"
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                          "phases:\n  validate:\n    substeps:\n      judg:\n        model: x\n")
 
     def test_unknown_provider(self) -> None:
-        self.assert_rule("llm_config_unknown_provider", "defaults:\n  provider: gemini_cli\n")
+        self.assert_rule("llm_config_unknown_provider", "defaults:\n  lineage_timeout_s: 2700\n  provider: gemini_cli\n")
 
     def test_missing_provider(self) -> None:
-        self.assert_rule("llm_config_missing_provider", "defaults:\n  model: whatever\n")
+        self.assert_rule("llm_config_missing_provider", "defaults:\n  lineage_timeout_s: 2700\n  model: whatever\n")
 
     def test_missing_provider_on_an_empty_document(self) -> None:
         self.assert_rule("llm_config_missing_provider", "")
 
     def test_invalid_field_type(self) -> None:
         self.assert_rule("llm_config_invalid_field",
-                         "defaults:\n  provider: claude_cli\n  model: 12\n")
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: 12\n")
 
     def test_invalid_field_non_positive_timeout(self) -> None:
         self.assert_rule("llm_config_invalid_field",
-                         "defaults:\n  provider: claude_cli\n  timeout_s: 0\n")
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  timeout_s: 0\n")
 
     def test_invalid_field_effort_level_is_per_provider(self) -> None:
         """The level names are the provider's own, so this is not one enum with different
         spellings: `ultra` exists for codex and not claude, `minimal` for an OpenAI-compatible
         endpoint and for neither CLI."""
         self.assert_rule("llm_config_invalid_field",
-                         "defaults:\n  provider: claude_cli\n  effort: ultra\n")
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  effort: ultra\n")
         self.assert_rule("llm_config_invalid_field",
-                         "defaults:\n  provider: codex_cli\n  model: m\n  effort: minimal\n")
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: m\n  effort: minimal\n")
         self.assert_rule("llm_config_invalid_field",
-                         "defaults:\n  provider: claude_cli\n  effort: enthusiastic\n")
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  effort: enthusiastic\n")
         # `none`/`minimal` are the OpenAI API's words, not the Codex CLI's: the CLI resolves
         # against `supported_reasoning_levels`, which lists neither for any served model.
         self.assert_rule("llm_config_invalid_field",
-                         "defaults:\n  provider: codex_cli\n  model: m\n  effort: none\n")
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: m\n  effort: none\n")
         # ...and each accepts its own.
         for body, expected in (
-            ("defaults:\n  provider: claude_cli\n  effort: max\n", "max"),
-            ("defaults:\n  provider: codex_cli\n  model: m\n  effort: ultra\n", "ultra"),
+            ("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  effort: max\n", "max"),
+            ("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: m\n  effort: ultra\n", "ultra"),
         ):
             cfg = lc.load_llm_config(self.write(body, "levels.yaml"))
             self.assertEqual(cfg.entry_for("validate", "judge").effort, expected)
@@ -812,7 +813,7 @@ class RuleTests(_Tmp):
     def test_effort_does_not_apply_to_the_anthropic_api(self) -> None:
         """Its Messages API expresses the same idea as a thinking token budget, not a level."""
         self.assert_rule("llm_config_field_not_applicable",
-                         "defaults:\n  provider: claude_cli\n"
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                          "phases:\n  generate:\n    substeps:\n      generate:\n"
                          "        provider: anthropic_api\n"
                          "        api_key_env: ANTHROPIC_API_KEY\n"
@@ -822,7 +823,7 @@ class RuleTests(_Tmp):
         """A level is a word in the outer provider's vocabulary; carrying it into another
         provider would inherit a level it may not have."""
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n  provider: claude_cli\n  effort: max\n"
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  effort: max\n"
             "phases:\n  generate:\n    substeps:\n      generate:\n"
             "        provider: openai_compatible\n"
             "        base_url: https://x/v1\n        api_key_env: K\n        model: m\n"))
@@ -836,7 +837,7 @@ class RuleTests(_Tmp):
         with `HTTP 504` while the entry's own 2400 s `timeout_s` never fired. An operator who says
         nothing gets SSE."""
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n  provider: claude_cli\n"
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
             "phases:\n  generate:\n    substeps:\n      generate:\n"
             "        provider: openai_compatible\n"
             "        base_url: https://x/v1\n        api_key_env: K\n        model: m\n"))
@@ -845,7 +846,7 @@ class RuleTests(_Tmp):
     def test_an_explicit_stream_false_reaches_the_entry(self) -> None:
         """The escape hatch for an endpoint that cannot speak SSE at all."""
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n  provider: claude_cli\n"
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
             "phases:\n  generate:\n    substeps:\n      generate:\n"
             "        provider: openai_compatible\n"
             "        base_url: https://x/v1\n        api_key_env: K\n        model: m\n"
@@ -858,7 +859,7 @@ class RuleTests(_Tmp):
         otherwise — reproducing the 504 the opt-out exists to escape, silently."""
         for value in ('"false"', "0", "[]", "no-thanks"):
             self.assert_rule("llm_config_invalid_field",
-                             "defaults:\n  provider: claude_cli\n"
+                             "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                              "phases:\n  generate:\n    substeps:\n      generate:\n"
                              "        provider: openai_compatible\n"
                              "        base_url: https://x/v1\n        api_key_env: K\n"
@@ -869,9 +870,9 @@ class RuleTests(_Tmp):
         `if not fields.get(field)` guard that swallowed exactly the spelling an operator writes.
         A CLI leaf is a process; how its transport frames the answer is not configurable here."""
         self.assert_rule("llm_config_field_not_applicable",
-                         "defaults:\n  provider: claude_cli\n  stream: false\n")
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  stream: false\n")
         self.assert_rule("llm_config_field_not_applicable",
-                         "defaults:\n  provider: codex_cli\n  model: m\n  stream: true\n")
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: m\n  stream: true\n")
 
     def test_an_explicitly_empty_inapplicable_field_is_rejected(self) -> None:
         """The other half of the presence-not-truthiness guard, pinned deliberately rather than
@@ -879,13 +880,13 @@ class RuleTests(_Tmp):
         collateral of a guard flip is exactly what goes unnoticed. These four previously loaded
         and were silently dropped; `effort: ""` on an `anthropic_api` entry is the one an
         operator is at all likely to have written, as "leave it at the provider default"."""
-        http = ("defaults:\n  provider: claude_cli\n"
+        http = ("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                 "phases:\n  generate:\n    substeps:\n      generate:\n"
                 "        provider: {provider}\n{extra}"
                 "        api_key_env: K\n        model: m\n")
         for body in (
-            'defaults:\n  provider: claude_cli\n  base_url: ""\n',
-            'defaults:\n  provider: claude_cli\n  api_key_env: ""\n',
+            'defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  base_url: ""\n',
+            'defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  api_key_env: ""\n',
             http.format(provider="openai_compatible",
                         extra='        base_url: https://x/v1\n        command: ""\n'),
             http.format(provider="anthropic_api", extra='        effort: ""\n'),
@@ -898,13 +899,13 @@ class RuleTests(_Tmp):
         loaded, on any provider, because `_layer_fields` rejects it first and as a different
         rule. Pinned so the comment enumerating the flip's collateral cannot quietly grow it."""
         self.assert_rule("llm_config_invalid_field",
-                         "defaults:\n  provider: claude_cli\n  timeout_s:\n")
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  timeout_s:\n")
 
     def test_stream_survives_a_switch_between_two_http_providers(self) -> None:
         """Deliberately NOT provider-scoped: it describes the endpoint's transport behaviour, not
         a provider's vocabulary, and two leaves on the same gateway must both keep the opt-out."""
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n  provider: claude_cli\n"
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
             "phases:\n  generate:\n"
             "    provider: openai_compatible\n"
             "    base_url: https://x/v1\n    api_key_env: K\n    model: m\n"
@@ -918,7 +919,7 @@ class RuleTests(_Tmp):
         """Nothing in the document points at that leaf, so there is nothing to correct — the
         same rule `timeout_s` already follows when it inherits onto a CLI leaf."""
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n  provider: claude_cli\n"
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
             "phases:\n  generate:\n"
             "    provider: openai_compatible\n"
             "    base_url: https://x/v1\n    api_key_env: K\n    model: m\n"
@@ -932,7 +933,7 @@ class RuleTests(_Tmp):
         advertising a positive wall-clock bound would carry a deadline that never fires."""
         for value in (".nan", ".inf"):
             self.assert_rule("llm_config_invalid_field",
-                             "defaults:\n  provider: claude_cli\n"
+                             "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                              "phases:\n  generate:\n    substeps:\n      generate:\n"
                              "        provider: openai_compatible\n"
                              "        base_url: https://x/v1\n        api_key_env: K\n"
@@ -940,7 +941,7 @@ class RuleTests(_Tmp):
 
     def test_invalid_field_unknown_capability_name(self) -> None:
         self.assert_rule("llm_config_invalid_field",
-                         "defaults:\n  provider: claude_cli\n  capabilities: [teleport]\n")
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  capabilities: [teleport]\n")
 
     def test_a_retired_capability_is_refused_not_ignored(self) -> None:
         """`usage_probe` (retired by issue #170, with `agentic` / `mcp_tools` before it) is not
@@ -951,15 +952,15 @@ class RuleTests(_Tmp):
                 self.assertNotIn(retired, lc.KNOWN_CAPABILITIES)
                 self.assert_rule(
                     "llm_config_invalid_field",
-                    f"defaults:\n  provider: claude_cli\n  capabilities: [pure, {retired}]\n")
+                    f"defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  capabilities: [pure, {retired}]\n")
 
     def test_field_not_applicable_http_field_on_a_cli_provider(self) -> None:
         self.assert_rule("llm_config_field_not_applicable",
-                         "defaults:\n  provider: claude_cli\n  base_url: http://x/v1\n")
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  base_url: http://x/v1\n")
 
     def test_field_not_applicable_command_on_an_http_provider(self) -> None:
         self.assert_rule("llm_config_field_not_applicable",
-                         "defaults:\n  provider: claude_cli\n"
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                          "phases:\n  generate:\n    substeps:\n      generate:\n"
                          "        provider: openai_compatible\n"
                          "        base_url: http://localhost:8000/v1\n"
@@ -969,7 +970,7 @@ class RuleTests(_Tmp):
 
     def test_http_requires_base_url(self) -> None:
         self.assert_rule("llm_config_http_requires_base_url",
-                         "defaults:\n  provider: claude_cli\n"
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                          "phases:\n  generate:\n    substeps:\n      generate:\n"
                          "        provider: openai_compatible\n"
                          "        api_key_env: LOCAL_KEY\n"
@@ -977,7 +978,7 @@ class RuleTests(_Tmp):
 
     def test_http_requires_api_key_env(self) -> None:
         self.assert_rule("llm_config_http_requires_api_key_env",
-                         "defaults:\n  provider: claude_cli\n"
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                          "phases:\n  generate:\n    substeps:\n      generate:\n"
                          "        provider: openai_compatible\n"
                          "        base_url: http://localhost:8000/v1\n"
@@ -985,13 +986,13 @@ class RuleTests(_Tmp):
 
     def test_http_requires_model(self) -> None:
         self.assert_rule("llm_config_http_requires_model",
-                         "defaults:\n  provider: claude_cli\n"
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                          "phases:\n  generate:\n    substeps:\n      generate:\n"
                          "        provider: openai_compatible\n"
                          "        base_url: http://localhost:8000/v1\n"
                          "        api_key_env: LOCAL_KEY\n")
 
-    _HTTP = ("defaults:\n  provider: claude_cli\n"
+    _HTTP = ("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
              "phases:\n  generate:\n    substeps:\n      generate:\n"
              "        provider: openai_compatible\n        api_key_env: LOCAL_KEY\n"
              "        model: m\n        base_url: {url}\n")
@@ -1031,16 +1032,16 @@ class RuleTests(_Tmp):
         a bare TypeError, which escapes the startup envelope as a traceback rather than the
         named rejection every other malformed document gets."""
         self.assert_rule("llm_config_unknown_key",
-                         "defaults:\n  provider: claude_cli\n? [a, b]\n: x\n")
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n? [a, b]\n: x\n")
 
     def test_content_parses_the_bytes_it_was_given(self) -> None:
         """One snapshot: a caller that must hash, parse and act on the same bytes cannot read
         the file twice, or the two answers can describe different versions."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "c.yaml"
-            path.write_text("defaults:\n  provider: claude_cli\n  model: on-disk\n",
+            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: on-disk\n",
                             encoding="utf-8")
-            snapshot = b"defaults:\n  provider: claude_cli\n  model: in-hand\n"
+            snapshot = b"defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: in-hand\n"
             cfg = lc.load_llm_config(path, content=snapshot)
             self.assertEqual(cfg.defaults.model, "in-hand")
             self.assertEqual(cfg.sha256, lc._sha256_bytes(snapshot))
@@ -1052,12 +1053,12 @@ class RuleTests(_Tmp):
         substep and therefore what a run costs, so a silent resolution is the failure mode a
         named rejection exists for."""
         self.assert_rule("llm_config_duplicate_key",
-                         "defaults:\n  provider: claude_cli\n"
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                          "phases:\n  generate:\n    model: a\n  generate:\n    model: b\n")
 
     def test_duplicate_substep_key(self) -> None:
         self.assert_rule("llm_config_duplicate_key",
-                         "defaults:\n  provider: claude_cli\n"
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                          "phases:\n  generate:\n    substeps:\n"
                          "      verify:\n        model: a\n      verify:\n        model: b\n")
 
@@ -1066,18 +1067,18 @@ class RuleTests(_Tmp):
         the duplicate-key loader does not see them — the later one silently replaced the
         earlier provider/model assignment."""
         self.assert_rule("llm_config_duplicate_key",
-                         'defaults:\n  provider: claude_cli\n'
+                         'defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n'
                          'phases:\n  generate:\n    model: a\n  " generate ":\n    model: b\n')
 
     def test_duplicate_substep_after_normalization(self) -> None:
         self.assert_rule("llm_config_duplicate_key",
-                         'defaults:\n  provider: claude_cli\n'
+                         'defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n'
                          'phases:\n  generate:\n    substeps:\n      verify:\n'
                          '        model: a\n      " verify ":\n        model: b\n')
 
     def test_duplicate_field_key(self) -> None:
         self.assert_rule("llm_config_duplicate_key",
-                         "defaults:\n  provider: claude_cli\n  model: a\n  model: b\n")
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: a\n  model: b\n")
 
     def test_capability_exceeds_provider(self) -> None:
         """An HTTP provider declares `pure` and nothing else, so naming any second capability
@@ -1087,7 +1088,7 @@ class RuleTests(_Tmp):
         rule earlier, by `llm_config_invalid_field`."""
         err = self.assert_rule(
             "llm_config_capability_exceeds_provider",
-            "defaults:\n  provider: claude_cli\n"
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
             "phases:\n  generate:\n    substeps:\n      generate:\n"
             "        provider: openai_compatible\n"
             "        base_url: http://localhost:8000/v1\n"
@@ -1106,22 +1107,61 @@ class RuleTests(_Tmp):
         restriction that reached the rule became one leaving NO transport at all; and Z4 (issue
         #171) left one transport, so `[warm_resume]` is now simply an entry without `pure`."""
         err = self.assert_rule("llm_config_capability_insufficient_for_substep",
-                               "defaults:\n  provider: claude_cli\n"
+                               "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                                "phases:\n  validate:\n    substeps:\n      judge:\n"
                                "        capabilities: [warm_resume]\n")
         self.assertIn("requires capability 'pure'", str(err))
 
-    def test_defaults_not_pure(self) -> None:
-        """`defaults` serves the escalate diagnostician, which is a PURE launch (issue #169),
-        so an entry restricted away from `pure` is inadmissible there. The restriction is the
-        only way to reach this — every declared provider supports `pure` — which is why the
-        subject is `capabilities:` rather than a provider name. It is also the rule that fires
-        FIRST for such a document, ahead of the per-substep one, which is why `defaults` is
-        where the restriction is written."""
-        err = self.assert_rule("llm_config_defaults_not_pure",
-                               "defaults:\n  provider: claude_cli\n"
-                               "  capabilities: [warm_resume]\n")
+    def test_defaults_not_workshop(self) -> None:
+        """`defaults` serves the escalate diagnostician, a READING workshop launch (issue #534
+        PR-J4-a; a pure one since issue #169), so an entry restricted away from `workshop` is
+        inadmissible there. The restriction is the only way to reach this — every declared
+        provider supports `workshop` and is a reading provider — which is why the subject is
+        `capabilities:` rather than a provider name. It is also the rule that fires FIRST for
+        such a document, ahead of the per-substep one, which is why `defaults` is where the
+        restriction is written."""
+        err = self.assert_rule("llm_config_defaults_not_workshop",
+                               "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+                               "  capabilities: [pure, warm_resume]\n")
         self.assertIn("escalate", str(err))
+
+    def test_defaults_states_the_diagnosticians_bound(self) -> None:
+        """`defaults` is resolved as a reading workshop entry by the loader: `lineage_timeout_s`
+        is required there, and an operator-written `leaf:` or `max_wrapper_calls` stays
+        refused."""
+        err = self.assert_rule("llm_config_workshop_bound_missing",
+                               "defaults:\n  provider: claude_cli\n")
+        self.assertIn("`defaults` must state lineage_timeout_s", str(err))
+        self.assertEqual(err.where, "defaults")
+        for extra in ("  leaf: workshop\n", "  max_wrapper_calls: 3\n"):
+            with self.subTest(extra=extra):
+                self.assert_rule("llm_config_workshop_field_not_substep_scoped",
+                                 "defaults:\n  lineage_timeout_s: 2700\n"
+                                 "  provider: claude_cli\n" + extra)
+        cfg = lc.load_llm_config(self.write(
+            "defaults:\n  provider: claude_cli\n  lineage_timeout_s: 1234\n"))
+        self.assertEqual((cfg.defaults.leaf, cfg.defaults.lineage_timeout_s,
+                          cfg.defaults.max_wrapper_calls), ("workshop", 1234.0, None))
+        self.assertEqual(cfg.defaults.provenance()["lineage_timeout_s"], "1234.0")
+        self.assertEqual(cfg.defaults.provenance()["leaf"], "workshop")
+
+    def test_the_defaults_bound_is_not_inherited(self) -> None:
+        """`defaults.lineage_timeout_s` bounds the diagnostician alone: a pure substep entry does
+        not receive it (it would be refused `bound_on_pure_entry` if it did), and a workshop
+        substep entry without its own bound is refused `bound_missing` rather than inheriting
+        it."""
+        cfg = lc.load_llm_config(self.write(
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"))
+        for key, entry in cfg.entries.items():
+            with self.subTest(pair=key):
+                self.assertIsNone(entry.lineage_timeout_s)
+                self.assertEqual(entry.leaf, "pure")
+        self.assert_rule("llm_config_workshop_bound_missing",
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+                         "phases: {validate: {substeps: {judge: {leaf: workshop}}}}\n")
+        self.assert_rule("llm_config_workshop_field_not_substep_scoped",
+                         "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
+                         "phases: {validate: {lineage_timeout_s: 30}}\n")
 
     def test_an_http_defaults_loads_and_runs_beside_a_cli_leaf(self) -> None:
         """`defaults` no longer has to be agentic — the launch it serves (the `escalate`
@@ -1138,7 +1178,7 @@ class RuleTests(_Tmp):
         examples describe: an HTTP `defaults` beside the CLI `validate.judge` that is still
         agentic until Z3."""
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n"
+            "defaults:\n  lineage_timeout_s: 2700\n"
             "  provider: anthropic_api\n"
             "  api_key_env: ANTHROPIC_API_KEY\n"
             "  model: claude-opus-5\n"
@@ -1154,7 +1194,7 @@ class RuleTests(_Tmp):
         self.assertEqual(cfg.cli_launch_identity(), ("claude", "claude"))
         # A CLI `defaults` still answers for itself, command included.
         cli = lc.load_llm_config(self.write(
-            "defaults:\n  provider: claude_cli\n  command: /opt/claude --flag\n",
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  command: /opt/claude --flag\n",
             "cli_defaults.yaml"))
         cli.validate_runnable()
         self.assertEqual(cli.cli_launch_identity(), ("claude", "/opt/claude --flag"))
@@ -1169,7 +1209,7 @@ class RuleTests(_Tmp):
         # `llm_config_capability_insufficient_for_substep`. That is the state Z3 removes, and
         # this row is what the floor under it looks like when it does.
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n"
+            "defaults:\n  lineage_timeout_s: 2700\n"
             "  provider: anthropic_api\n  api_key_env: ANTHROPIC_API_KEY\n"
             "  model: claude-opus-5\n"
             "phases:\n  validate:\n    substeps:\n      judge:\n"
@@ -1190,12 +1230,12 @@ class RuleTests(_Tmp):
         self.assertIn("defaults", str(ctx.exception))
 
     def test_codex_requires_model_only_at_run_start(self) -> None:
-        cfg = lc.load_llm_config(self.write("defaults:\n  provider: codex_cli\n"))
+        cfg = lc.load_llm_config(self.write("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n"))
         with self.assertRaises(lc.LlmConfigError) as ctx:
             cfg.validate_runnable()
         self.assertEqual(ctx.exception.rule, "llm_config_codex_cli_requires_model")
         lc.load_llm_config(self.write(
-            "defaults:\n  provider: codex_cli\n  model: some-slug\n")).validate_runnable()
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: some-slug\n")).validate_runnable()
 
     def test_codex_requires_model_rejects_the_generic_alias_too(self) -> None:
         """`codex` is an alias the CLI resolves to whatever it currently prefers, so a leaf
@@ -1204,7 +1244,7 @@ class RuleTests(_Tmp):
         catch it is gone and everything later has already created an orchestration."""
         for slug in ("codex", "CODEX", "  codex  "):
             cfg = lc.load_llm_config(self.write(
-                f"defaults:\n  provider: codex_cli\n  model: {slug!r}\n", "alias.yaml"))
+                f"defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: {slug!r}\n", "alias.yaml"))
             with self.assertRaises(lc.LlmConfigError) as ctx:
                 cfg.validate_runnable()
             self.assertEqual(ctx.exception.rule, "llm_config_codex_cli_requires_model",
@@ -1212,12 +1252,12 @@ class RuleTests(_Tmp):
             self.assertIn("explicit slug", str(ctx.exception), msg=slug)
         # ...and a real slug that merely CONTAINS it is fine.
         lc.load_llm_config(self.write(
-            "defaults:\n  provider: codex_cli\n  model: gpt-5.6-codex\n",
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n  model: gpt-5.6-codex\n",
             "real.yaml")).validate_runnable()
 
     def test_codex_requires_model_catches_a_per_substep_omission(self) -> None:
         cfg = lc.load_llm_config(self.write(
-            "defaults:\n  provider: claude_cli\n"
+            "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
             "phases:\n  validate:\n    substeps:\n      judge:\n"
             "        provider: codex_cli\n"))
         with self.assertRaises(lc.LlmConfigError) as ctx:
@@ -1241,7 +1281,7 @@ class RuleTests(_Tmp):
 class WorkshopEntryTests(_Tmp):
     """The `leaf:` field and the two bounds of a `workshop leaf` (issue #534)."""
 
-    BASE = "defaults:\n  provider: claude_cli\n"
+    BASE = "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
     BOUNDS = "max_wrapper_calls: 30, lineage_timeout_s: 2700"
 
     def _gen(self, body: str, pair: str = "generate: {substeps: {generate") -> str:
@@ -1281,8 +1321,8 @@ class WorkshopEntryTests(_Tmp):
                                  self._gen(f"leaf: workshop, {bounds}"))
 
     def test_workshop_fields_are_substep_scoped(self) -> None:
-        for body in ("defaults: {provider: claude_cli, leaf: workshop}\n",
-                     "defaults: {provider: claude_cli, max_wrapper_calls: 3}\n",
+        for body in ("defaults: {lineage_timeout_s: 2700, provider: claude_cli, leaf: workshop}\n",
+                     "defaults: {lineage_timeout_s: 2700, provider: claude_cli, max_wrapper_calls: 3}\n",
                      self.BASE + "phases: {generate: {lineage_timeout_s: 30}}\n",
                      self.BASE + "phases: {generate: {leaf: workshop}}\n"):
             with self.subTest(body=body):
@@ -1525,7 +1565,13 @@ class WorkshopEntryTests(_Tmp):
 
     def test_the_workshop_pairs_match_the_launch_validator(self) -> None:
         from tools import pure_leaf
-        self.assertEqual(lc.WORKSHOP_LEAF_SUBSTEPS, pure_leaf.WORKSHOP_LAUNCH_PAIRS)
+        # The validator's set holds the `escalate` diagnostician's pairs too (issue #534
+        # PR-J4-a), a reading launch no operator assigns: `defaults` serves it.
+        self.assertEqual(lc.WORKSHOP_LEAF_SUBSTEPS,
+                         pure_leaf.WORKSHOP_LAUNCH_PAIRS - pure_leaf.WORKSHOP_DIAGNOSE_PAIRS)
+        self.assertEqual(pure_leaf.WORKSHOP_READING_LAUNCH_PAIRS,
+                         pure_leaf.WORKSHOP_READING_PAIRS | pure_leaf.WORKSHOP_DIAGNOSE_PAIRS)
+        self.assertFalse(lc.WORKSHOP_LEAF_SUBSTEPS & pure_leaf.WORKSHOP_DIAGNOSE_PAIRS)
         self.assertEqual(lc.WORKSHOP_PRODUCING_SUBSTEPS, pure_leaf.WORKSHOP_PRODUCING_PAIRS)
         self.assertEqual(lc.WORKSHOP_READING_SUBSTEPS, pure_leaf.WORKSHOP_READING_PAIRS)
         self.assertEqual(lc.WORKSHOP_READING_PROVIDERS,
@@ -1557,7 +1603,7 @@ class DefaultsOverrideTests(unittest.TestCase):
     def test_an_override_still_reaches_a_file_that_declares_none(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "bare.yaml"
-            path.write_text("defaults:\n  provider: codex_cli\n", encoding="utf-8")
+            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: codex_cli\n", encoding="utf-8")
             cfg = lc.apply_defaults_overrides(lc.load_llm_config(path), model="gpt-5-codex")
         for entry in cfg.entries.values():
             self.assertEqual(entry.model, "gpt-5-codex")
@@ -1578,7 +1624,7 @@ class DefaultsOverrideTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "mixed.yaml"
             path.write_text(
-                "defaults:\n  provider: claude_cli\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                 "phases:\n  generate:\n    substeps:\n      generate:\n"
                 "        provider: openai_compatible\n"
                 "        base_url: http://localhost:8000/v1\n"
@@ -1596,7 +1642,7 @@ class DefaultsOverrideTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "same.yaml"
             path.write_text(
-                "defaults:\n  provider: claude_cli\n  model: opus\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n        model: opus\n",
                 encoding="utf-8")
             cfg = lc.apply_defaults_overrides(lc.load_llm_config(path), model="sonnet")
@@ -1609,7 +1655,7 @@ class DefaultsOverrideTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "phase.yaml"
             path.write_text(
-                "defaults:\n  provider: claude_cli\n  command: wrap\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  command: wrap\n"
                 "phases:\n  generate:\n    command: wrap\n", encoding="utf-8")
             cfg = lc.apply_defaults_overrides(lc.load_llm_config(path), command="other")
             self.assertEqual(cfg.entry_for("generate", "generate").command, "wrap")
@@ -1619,7 +1665,7 @@ class DefaultsOverrideTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "d.yaml"
             path.write_text(
-                "defaults:\n  provider: claude_cli\n  model: opus\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n        model: haiku\n",
                 encoding="utf-8")
             cfg = lc.load_llm_config(path)
@@ -1630,7 +1676,7 @@ class DefaultsOverrideTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "pinned.yaml"
             path.write_text(
-                "defaults:\n  provider: claude_cli\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n"
                 "        model: judge-model\n", encoding="utf-8")
             cfg = lc.apply_defaults_overrides(lc.load_llm_config(path), model="run-wide")
@@ -1644,10 +1690,10 @@ class DefaultsOverrideTests(unittest.TestCase):
         own."""
         with tempfile.TemporaryDirectory() as tmp:
             declared = Path(tmp) / "declared.yaml"
-            declared.write_text("defaults:\n  provider: claude_cli\n  model: opus\n",
+            declared.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n",
                                 encoding="utf-8")
             bare = Path(tmp) / "bare.yaml"
-            bare.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
+            bare.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n", encoding="utf-8")
             for path in (declared, bare):
                 cfg = lc.apply_defaults_overrides(lc.load_llm_config(path), model="sonnet")
                 entry = cfg.entry_for("validate", "judge")
@@ -1661,7 +1707,7 @@ class DefaultsOverrideTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "pin.yaml"
             path.write_text(
-                "defaults:\n  provider: claude_cli\n  model: base\n"
+                "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: base\n"
                 "phases:\n  validate:\n    substeps:\n      judge:\n        model: haiku\n",
                 encoding="utf-8")
             cfg = lc.apply_defaults_overrides(lc.load_llm_config(path), model="sonnet")
@@ -1808,14 +1854,14 @@ class MirrorTableDriftTests(unittest.TestCase):
         import unittest.mock
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "c.yaml"
-            original = "defaults:\n  provider: claude_cli\n  model: original\n"
+            original = "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: original\n"
             path.write_text(original, encoding="utf-8")
             real_read_bytes = Path.read_bytes
 
             def _swap_after_read(self_path):
                 data = real_read_bytes(self_path)
                 if self_path == path:            # the file changes underneath us
-                    path.write_text("defaults:\n  provider: claude_cli\n  model: swapped\n",
+                    path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: swapped\n",
                                     encoding="utf-8")
                 return data
 
@@ -1830,7 +1876,7 @@ class MirrorTableDriftTests(unittest.TestCase):
         sentinel, which callers compare against."""
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "f.yaml"
-            path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
+            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n", encoding="utf-8")
             self.assertEqual(lc.config_sha256(path), ort._compute_sha256(path))
             missing = Path(tmp) / "gone.yaml"
             self.assertEqual(lc.config_sha256(missing), ort._compute_sha256(missing))
@@ -1842,7 +1888,7 @@ class MirrorTableDriftTests(unittest.TestCase):
         import os
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "f.yaml"
-            path.write_text("defaults:\n  provider: claude_cli\n", encoding="utf-8")
+            path.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n", encoding="utf-8")
             os.chmod(path, 0o000)
             try:
                 self.assertFalse(os.access(path, os.R_OK), "running as root: file modes do not apply; "
