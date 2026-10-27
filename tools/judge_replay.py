@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Replay one recorded JUDGING or DIAGNOSE launch under a chosen leaf model (issue #534 step 3,
-PR-J1-b; the `escalate` diagnostician's launches since PR-J4-a).
+"""Replay one recorded JUDGING or DIAGNOSE launch (issue #534 step 3, PR-J1-b; the `escalate`
+diagnostician's launches since PR-J4-a).
 
 Usage:
     python3 tools/judge_replay.py <orchestration_id> <agent_run_id> \\
-        --leaf pure|workshop --llm-config <path> \\
-        [--mutate <json>] [--repeat N] [--label <text>] [--check]
+        --llm-config <path> [--mutate <json>] [--repeat N] [--label <text>] [--check]
 
 The instrument of the judge A/B (parts 2 and 3 of the plan on issue #534). It reads
 `launches/<agent_run_id>.request.json` of a recorded `compile.verify`, `generate.verify` or
@@ -14,15 +13,17 @@ names, its `runner_host_authored` stamp and its `resolved_dependencies` (the dep
 reused verbatim, not re-resolved). Everything else of a launch is built fresh by the REAL
 reviewer loop (`Conductor._run_pure_reviewer_substep`): a fresh `agent_run_id`, the replay's
 own orchestration, the CURRENT prompt contract version and templates. Each repetition is one
-reviewer substep, with its schema repairs, under the leaf model the configuration's entry for
-that substep names; `--leaf` must agree with it (the configuration file is the only thing that
-says what a leaf launches).
+reviewer substep, with its schema repairs, as a reading `workshop leaf` on the configuration's
+entry for that substep (the configuration file is the only thing that says what a leaf
+launches). Through PR-J4-a the tool replayed either of two leaf models (`--leaf pure|workshop`),
+which was the judge A/B; the pure leaf went in PR-J4-b, and with it `--leaf`. A source record
+the pure leaf wrote (`leaf_mode: pure`) is refused (`judge_replay_source_pure_retired`): its
+context was assembled for templates that no longer exist.
 
 `--mutate` is a JSON object `{document_key: [{"old": "...", "new": "..."}, ...]}` (or
 `@<path>` to a file holding one): each
 replacement is applied to the recorded document in order and must match EXACTLY ONCE, or the
-replay is refused before anything is launched. The same mutated context is handed to either
-leaf model, so a seeded defect is the same defect on both arms.
+replay is refused before anything is launched.
 
 The replay runs in its own orchestration, `workspace/orchestrations/replay_<ts>_<hex>/`,
 created like a run's (`init`, the configuration snapshot, `preflight`), whose
@@ -36,22 +37,23 @@ must not be run on one: it composes the SOURCE run's directories from the record
 Refusals print `{"status": "refused", "reason": <code>, "detail": ...}` and exit 2, before
 any launch. Before the orchestration is created: `judge_replay_repeat_invalid` (`--repeat` below
 1); `judge_replay_source_unreadable` / `judge_replay_source_ambiguous` (no such record, or an
-arid prefix naming several); `judge_replay_pair_not_admitted` (not one of the three judging
-pairs or the four diagnose pairs); `judge_replay_no_context` (no `pure_context`, or a non-string value: a warm repair
+arid prefix naming several); `judge_replay_source_pure_retired` (a record of the pure leaf);
+`judge_replay_pair_not_admitted` (not one of the three judging pairs or the four diagnose
+pairs); `judge_replay_no_context` (no `pure_context`, or a non-string value: a warm repair
 turn — replay its cold launch); `judge_replay_shape_unknown` (a `pure_shape` the current tables
 do not declare); `judge_replay_context_keys_moved` (the key set is not the CURRENT one);
 `judge_replay_mutation_invalid` / `_unknown_key` / `_not_once` / `_breaks_document` (below);
 `judge_replay_spec_unresolved` (the source's `spec_ref` no longer resolves, through the catalog,
 to the request's node — its spec VERSION moved since the record, so its replay window is
 closed); `judge_replay_refs_invalid` (the request's `ir_ref` / `pipeline_ref` are not this
-node's store refs); `judge_replay_llm_config_invalid`; `judge_replay_leaf_mismatch` (`--leaf`
-disagrees with the configuration). After it is created, ending it `fail`:
+node's store refs); `judge_replay_llm_config_invalid`;
+`judge_replay_http_lineage_unsupported` (the entry is an HTTP provider). After it is created, ending it `fail`:
 `judge_replay_preflight_failed` (reason code `preflight_failed`) and `judge_replay_not_ready`
 (a launch gate — the two `--check` answers — does not pass). An exception ends it `fail` /
 `judge_replay_error` and propagates.
 
 Each `replay_result.json` row: the head (`replay_orchestration_id`, `source_*`, `step`,
-`substep`, `leaf`, `label`, `mutated_keys`, `repetition`); the outcome (`status`,
+`substep`, `label`, `mutated_keys`, `repetition`); the outcome (`status`,
 `leaf_returncode`, `infra_error`, `document` — the accepted verdict or review, else null —
 and `failure_category`); `attempts` (the reviewer's `per_attempt` rows); `schema_repairs`
 (turns launched because the previous document was refused for anything but a cut read) and
@@ -62,9 +64,7 @@ the two are disjoint); the sums over the attempts of
 attempts that recorded it, with `usage_unrecorded_attempts` counting the attempts whose usage
 channel failed (a launch a bound killed leaves no envelope: the sums are then a lower bound;
 a provider that reports tokens and no cost, as codex does, leaves `cost_usd` null without
-counting there); on the pure
-arm of a pure record `prompt_matches_record` (null on a mutated row); on the workshop arm
-`cli_versions` and `coverage` (below): per seed `lines`, `covered`, `fraction` and `ranges`, the
+counting there); and `cli_versions` and `coverage` (below): per seed `lines`, `covered`, `fraction` and `ranges`, the
 covered lines as `[first, last]` runs — what the deep row's "was the defect's span read" is
 checked against. A seeded defect in `bundle_document` lands in the expanded file named by its
 `logical_path`, so its span is that file's lines in the lineage's tree, not the document's.
@@ -73,14 +73,8 @@ A DIAGNOSE row (`<phase>.diagnose`, PR-J4-a) is one launch through `escalate`'s 
 (`Conductor._diagnose_turn`): no repair, and the row carries `directive` (`action`,
 `target_phase`, `severity`, `repair_strategy`, `reason`; null when the launch gave none) in
 place of `document`, the single attempt in `attempts`, and the same sums. The diagnostician
-runs on `defaults`, which names no leaf model, so `--leaf` IS the arm there and is not compared
-with the configuration: `workshop` runs `defaults` as `escalate` does (a reading lineage seeded
-with `diagnosis.json`), `pure` runs it as a pure leaf over the pure template (until the pure path
-is deleted). `--mutate` applies to `diagnosis_document` as to any context document.
-
-Configuration: on a judging row `--leaf` must agree with the configuration's entry for the
-substep, so the two arms of one A/B row take two files — the A/B's `llm.yaml` (workshop on the judging substeps)
-and a copy with those substeps' `leaf: workshop` / `lineage_timeout_s` removed.
+runs on `defaults` as `escalate` does (a reading lineage seeded with `diagnosis.json`).
+`--mutate` applies to `diagnosis_document` as to any context document.
 
 `--check` creates the orchestration and answers, without launching, whether a launch of this
 row would pass the two launch gates that depend on the workspace rather than on the request:
@@ -95,7 +89,7 @@ and transcripts are what `coverage` was computed from). Remove them when the mea
 recorded: the homes with `tools/prune_workflow_homes.py --orchestration-id <replay id>
 --delete` (a finished replay is terminal), the directory with `rm -r`.
 
-Read coverage (workshop arm, claude): per seed, the fraction of its lines covered by the union,
+Read coverage (claude): per seed, the fraction of its lines covered by the union,
 over the transcript files of every lineage the repetition opened (a cold reuse or a re-run is a
 lineage of its own), of `Read` result ranges and `Grep` content-mode hit lines
 (`read_coverage`, below). These are CLI implementation details, not a contract: a `Read` result
@@ -132,7 +126,6 @@ ADMITTED_PAIRS: tuple[tuple[str, str], ...] = JUDGING_PAIRS + DIAGNOSE_PAIRS
 #: `orchestration_meta.json#invocation.kind` of a replay orchestration.
 REPLAY_KIND = "judge_replay"
 REPLAY_RESULT_NAME = "replay_result.json"
-LEAF_CHOICES = ("pure", "workshop")
 
 
 class ReplayRefused(Exception):
@@ -191,10 +184,17 @@ def load_source(repo_root: Path, orchestration_id: str, agent_run_id: str) -> So
 
 
 def check_source(source: SourceLaunch) -> None:
-    """Refuse a row the replay cannot carry: not a judging pair, not a cold launch with its
-    whole context, or a context whose key set is not the CURRENT one (the template's slots)."""
+    """Refuse a row the replay cannot carry: a record of the retired pure leaf, not a judging
+    pair, not a cold launch with its whole context, or a context whose key set is not the
+    CURRENT one."""
     from tools.orchestration_runtime import (
         PURE_CONTEXT_REQUIRED_KEYS, PURE_CONTEXT_REQUIRED_KEYS_BY_SHAPE)
+    from tools.pure_leaf import is_pure_request
+    if is_pure_request(source.request):
+        raise ReplayRefused(
+            "judge_replay_source_pure_retired",
+            "the record was written by the pure leaf (leaf_mode: pure), which went in issue "
+            "#534 PR-J4-b; replay a workshop record")
     if source.pair not in ADMITTED_PAIRS:
         raise ReplayRefused(
             "judge_replay_pair_not_admitted",
@@ -344,7 +344,7 @@ def new_replay_id() -> str:
     return f"replay_{ts}_{secrets.token_hex(4)}"
 
 
-def replay_invocation(source: SourceLaunch, *, leaf: str, llm_config: Any,
+def replay_invocation(source: SourceLaunch, *, llm_config: Any,
                       argv: list[str], check: bool, label: str | None,
                       mutations: Mapping[str, list[tuple[str, str]]],
                       repo_root: Path) -> dict[str, Any]:
@@ -365,7 +365,6 @@ def replay_invocation(source: SourceLaunch, *, leaf: str, llm_config: Any,
         "source_prompt_contract_version": source.request.get("prompt_contract_version"),
         "step": source.pair[0],
         "substep": source.pair[1],
-        "leaf": leaf,
         "check_only": check,
         "label": label,
         "mutations": {k: [{"old": o, "new": n} for o, n in v] for k, v in mutations.items()},
@@ -714,12 +713,6 @@ def _envelope(repo_root: Path, oid: str, arid: str) -> dict[str, Any]:
     return doc if isinstance(doc, dict) else {}
 
 
-def _as_source(text: str, oid: str, arid: str, source: SourceLaunch) -> str:
-    """The replay's prompt with ITS identity tokens put back to the source's. Only the
-    replay's own ids are rewritten: a recorded document may carry the SOURCE ids (a remote
-    site's `remote_dir` names the source orchestration), and those stay as they are on both
-    sides. The replay's ids are fresh, so the context cannot carry them."""
-    return text.replace(oid, source.orchestration_id).replace(arid, source.agent_run_id)
 
 
 def _sum(values: Iterable[Any]) -> float | None:
@@ -780,70 +773,46 @@ def run_repetition(conductor: Any, repo_root: Path, source: SourceLaunch, refs: 
                         "cache_read_input_tokens", "output_tokens")},
         "leaf_wall_s": _sum(a.get("leaf_wall_s") for a in attempts),
         "duration_ms": _sum(e.get("duration_ms") for e in envelopes),
-        "model_turns": (_sum(a.get("model_turns") for a in attempts) if entry.is_workshop
-                        else _sum(e.get("num_turns") for e in envelopes)),
+        "model_turns": _sum(a.get("model_turns") for a in attempts),
     }
-    if (attempts and not entry.is_workshop and source.prompt_text is not None
-            and source.request.get("leaf_mode") == "pure"):
-        first = str(attempts[0].get("agent_run_id"))
-        prompt_path = (repo_root / "workspace" / "orchestrations" / oid / "launches"
-                       / f"{first}.prompt.txt")
-        if context != source.request.get("pure_context"):
-            # A mutated context renders a different prompt by design: the comparison says
-            # nothing about the template, so it is not made (the unmutated row of the same
-            # launch answers it).
-            row["prompt_matches_record"] = None
-        elif prompt_path.is_file():
-            row["prompt_matches_record"] = (
-                _as_source(prompt_path.read_text(encoding="utf-8"), oid, first, source)
-                == source.prompt_text)
-    if entry.is_workshop:
-        seeds = conductor._workshop_seeds(
-            refs, context, {"resolved_dependencies": list(resolved),
-                            "workshop_provider": entry.provider}, spec)
-        homes = workflow_homes_root()
-        backend = conductor._workshop_backend(entry)
-        trees: list[str] = []
-        transcripts: list[Path] = []
-        for lineage_id in dict.fromkeys(str(a.get("lineage_id")) for a in attempts
-                                        if a.get("lineage_id")):
-            paths = LineagePaths(homes_root=homes, orchestration_id=oid, lineage_id=lineage_id,
-                                 orchestration_dir=repo_root / "workspace" / "orchestrations"
-                                 / oid, backend=backend)
-            trees.append(str(paths.tree))
-            projects = paths.config / "projects"
-            if projects.is_dir():
-                transcripts += sorted(projects.glob("*/*.jsonl"))
-        if entry.provider == "claude_cli":
-            row.update(read_coverage(transcripts, trees, seeds))
-        else:
-            row["coverage"] = None
+    seeds = conductor._workshop_seeds(
+        refs, context, {"resolved_dependencies": list(resolved),
+                        "workshop_provider": entry.provider}, spec)
+    homes = workflow_homes_root()
+    backend = conductor._workshop_backend(entry)
+    trees: list[str] = []
+    transcripts: list[Path] = []
+    for lineage_id in dict.fromkeys(str(a.get("lineage_id")) for a in attempts
+                                    if a.get("lineage_id")):
+        paths = LineagePaths(homes_root=homes, orchestration_id=oid, lineage_id=lineage_id,
+                             orchestration_dir=repo_root / "workspace" / "orchestrations"
+                             / oid, backend=backend)
+        trees.append(str(paths.tree))
+        projects = paths.config / "projects"
+        if projects.is_dir():
+            transcripts += sorted(projects.glob("*/*.jsonl"))
+    if entry.provider == "claude_cli":
+        row.update(read_coverage(transcripts, trees, seeds))
+    else:
+        row["coverage"] = None
     return row
 
 
 def run_diagnose_repetition(conductor: Any, repo_root: Path, source: SourceLaunch, refs: Any,
-                            context: dict[str, str], repetition: int, *,
-                            pure: bool) -> dict[str, Any]:
+                            context: dict[str, str], repetition: int) -> dict[str, Any]:
     """One diagnose launch over the recorded `diagnosis_document`, through `escalate`'s own
     launch (`Conductor._diagnose_turn`, issue #534 PR-J4-a) and its row: the DIRECTIVE in place
-    of a document. The workshop arm runs on the configuration's `defaults` entry as `escalate`
-    does; the pure arm on that entry as a pure one (`leaf` pure, no bound) — the arm is
-    `--leaf`, since `defaults` names no leaf model. One launch, no repair, as in `escalate`."""
-    import dataclasses
-
+    of a document. It runs on the configuration's `defaults` entry as `escalate` does. One
+    launch, no repair, as in `escalate`."""
     from tools.leaf_usage import LEAF_USAGE_UNAVAILABLE
-    from tools.llm_config import LEAF_PURE
     from tools.operator_private_root import workflow_homes_root
     from tools.workshop_tree import LineagePaths
     step, _substep = source.pair
     entry = conductor.entry_for(None, None)
-    if pure:
-        entry = dataclasses.replace(entry, leaf=LEAF_PURE, lineage_timeout_s=None,
-                                    max_wrapper_calls=None)
     child = conductor.new_agent_run_id()
     request = conductor._diagnose_request(refs, step, entry, child,
-                                          context["diagnosis_document"], pure=pure)
-    turn = conductor._diagnose_turn(refs, request, entry, child, step, pure=pure)
+                                          context["diagnosis_document"])
+    turn = conductor._diagnose_turn(refs, request, entry, child, step)
     if turn is None:
         raise RuntimeError("the diagnose launch did not happen")
     conductor._finalize_diagnose_turn(refs, step, entry, child, turn)
@@ -870,16 +839,7 @@ def run_diagnose_repetition(conductor: Any, repo_root: Path, source: SourceLaunc
         "leaf_wall_s": _sum([turn.leaf_wall_s]),
     }
     oid = conductor.orchestration_id
-    if pure and source.prompt_text is not None and source.request.get("leaf_mode") == "pure":
-        prompt_path = (repo_root / "workspace" / "orchestrations" / oid / "launches"
-                       / f"{child}.prompt.txt")
-        if context != source.request.get("pure_context"):
-            row["prompt_matches_record"] = None
-        elif prompt_path.is_file():
-            row["prompt_matches_record"] = (
-                _as_source(prompt_path.read_text(encoding="utf-8"), oid, child, source)
-                == source.prompt_text)
-    if not pure and turn.lineage_id is not None:
+    if turn.lineage_id is not None:
         if entry.provider == "claude_cli":
             seeds = conductor._workshop_seeds(refs, context, request,
                                               conductor._diagnose_spec())
@@ -919,25 +879,18 @@ def replay(repo_root: Path, args: argparse.Namespace, argv: list[str]) -> int:
     diagnose = source.pair in DIAGNOSE_PAIRS
     entry = llm_config.entry_for(step, substep)
     if diagnose:
-        # The diagnostician runs on `defaults`, which names no leaf model (the loader makes it
-        # a reading workshop entry): `--leaf` is the arm (`run_diagnose_repetition`).
+        # The diagnostician runs on `defaults` (`run_diagnose_repetition`).
         entry = llm_config.defaults
-    elif entry.leaf != args.leaf:
-        raise ReplayRefused(
-            "judge_replay_leaf_mismatch",
-            f"--leaf {args.leaf}, but {args.llm_config} runs {step}.{substep} as "
-            f"leaf: {entry.leaf}")
-    if entry.is_workshop and entry.is_http and not (diagnose and args.leaf == "pure"):
+    if entry.is_http:
         # Issue #534 PR-J3-b (operator decision O3): an HTTP lineage's transcript is the host
         # loop's `loop_turns.jsonl`, which `read_coverage` does not read; refused before any
-        # orchestration is created, `--check` included. A diagnose row's PURE arm opens no
-        # lineage (it runs `defaults` as a pure leaf), so it is not refused.
+        # orchestration is created, `--check` included.
         raise ReplayRefused(
             "judge_replay_http_lineage_unsupported",
             f"a replay of an HTTP lineage ({entry.provider}) reads `loop_turns.jsonl`, which "
             "this tool does not read yet (issue #534 follow-up)")
     target_id = refs.target_id
-    invocation = replay_invocation(source, leaf=args.leaf, llm_config=llm_config, argv=argv,
+    invocation = replay_invocation(source, llm_config=llm_config, argv=argv,
                                    check=args.check, label=args.label, mutations=mutations,
                                    repo_root=repo_root)
     replay_orch = create_replay_orchestration(repo_root, source, llm_config, invocation)
@@ -949,7 +902,7 @@ def replay(repo_root: Path, args: argparse.Namespace, argv: list[str]) -> int:
         "source_agent_run_id": source.agent_run_id,
         "source_prompt_contract_version": source.request.get("prompt_contract_version"),
         "source_leaf_mode": source.request.get("leaf_mode"),
-        "step": step, "substep": substep, "leaf": args.leaf, "label": args.label,
+        "step": step, "substep": substep, "label": args.label,
         "mutated_keys": sorted(mutations),
     }
     # A replay certifies nothing, so it never ends `pass` (which the runtime reserves for a
@@ -975,7 +928,7 @@ def replay(repo_root: Path, args: argparse.Namespace, argv: list[str]) -> int:
         for repetition in range(1, args.repeat + 1):
             row = {**head, **(
                 run_diagnose_repetition(conductor, repo_root, source, refs, context,
-                                        repetition, pure=(args.leaf == "pure"))
+                                        repetition)
                 if diagnose else
                 run_repetition(conductor, repo_root, source, refs, context, repetition))}
             _append_result(result_path, row)
@@ -993,10 +946,9 @@ def replay(repo_root: Path, args: argparse.Namespace, argv: list[str]) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Replay one recorded judging launch under a chosen leaf model.")
+        description="Replay one recorded judging or diagnose launch.")
     parser.add_argument("orchestration_id")
     parser.add_argument("agent_run_id")
-    parser.add_argument("--leaf", required=True, choices=LEAF_CHOICES)
     parser.add_argument("--llm-config", required=True)
     parser.add_argument("--mutate", default=None,
                         help="JSON {document_key: [{old, new}, ...]}, or @<path> to one")

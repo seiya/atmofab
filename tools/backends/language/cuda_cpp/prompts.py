@@ -4,10 +4,10 @@ The `prompt_fragments` capability, shaped like the Fortran backend's: the fragme
 `tools/prompt_templates/backends/language/cuda_cpp/` hold what replaces a neutral template's
 `{{language:<name>}}` markers for this language (format: `tools/prompt_fragments.py`).
 
-Both shapes have fragments: the `harness` templates (`pure_generate_generate_harness.txt`,
-`pure_generate_verify_harness.txt`, issue #289 R4-b PR-4) and the physics templates
-(`pure_generate_generate.txt`, `pure_generate_verify.txt`, R4-b PR-6, written with the runner this
-language renders). `fragments` raises for a template with no file, so a composer asked for one
+Both shapes have fragments: the `harness` templates (`workshop_generate_generate_harness.txt`,
+`workshop_generate_verify_harness.txt`; issue #289 R4-b PR-4 wrote them for the pure twins
+deleted in issue #534 PR-J4-b) and the physics templates (`workshop_generate_generate.txt`,
+`workshop_generate_verify.txt`, R4-b PR-6, written with the runner this language renders). `fragments` raises for a template with no file, so a composer asked for one
 anyway is refused rather than handed another language's rules.
 
 Stdlib only, plus the neutral fragment parser.
@@ -27,7 +27,7 @@ FRAGMENT_DIR = (Path(__file__).resolve().parents[3]
 
 @cache
 def fragments(template: str) -> dict[str, str]:
-    """The fragments for the neutral template `template` (its file stem without `pure_`). A
+    """The fragments for the neutral template `template` (its file stem without `workshop_`). A
     template this language has no fragment file for raises (module docstring)."""
     path = FRAGMENT_DIR / f"{template}.txt"
     try:
