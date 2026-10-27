@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-"""Replay one recorded JUDGING launch under a chosen leaf model (issue #534 step 3, PR-J1-b).
+"""Replay one recorded JUDGING or DIAGNOSE launch under a chosen leaf model (issue #534 step 3,
+PR-J1-b; the `escalate` diagnostician's launches since PR-J4-a).
 
 Usage:
     python3 tools/judge_replay.py <orchestration_id> <agent_run_id> \\
@@ -36,7 +37,7 @@ Refusals print `{"status": "refused", "reason": <code>, "detail": ...}` and exit
 any launch. Before the orchestration is created: `judge_replay_repeat_invalid` (`--repeat` below
 1); `judge_replay_source_unreadable` / `judge_replay_source_ambiguous` (no such record, or an
 arid prefix naming several); `judge_replay_pair_not_admitted` (not one of the three judging
-pairs); `judge_replay_no_context` (no `pure_context`, or a non-string value: a warm repair
+pairs or the four diagnose pairs); `judge_replay_no_context` (no `pure_context`, or a non-string value: a warm repair
 turn — replay its cold launch); `judge_replay_shape_unknown` (a `pure_shape` the current tables
 do not declare); `judge_replay_context_keys_moved` (the key set is not the CURRENT one);
 `judge_replay_mutation_invalid` / `_unknown_key` / `_not_once` / `_breaks_document` (below);
@@ -68,8 +69,17 @@ covered lines as `[first, last]` runs — what the deep row's "was the defect's 
 checked against. A seeded defect in `bundle_document` lands in the expanded file named by its
 `logical_path`, so its span is that file's lines in the lineage's tree, not the document's.
 
-Configuration: `--leaf` must agree with the configuration's entry for the substep, so the two
-arms of one A/B row take two files — the A/B's `llm.yaml` (workshop on the judging substeps)
+A DIAGNOSE row (`<phase>.diagnose`, PR-J4-a) is one launch through `escalate`'s own
+(`Conductor._diagnose_turn`): no repair, and the row carries `directive` (`action`,
+`target_phase`, `severity`, `repair_strategy`, `reason`; null when the launch gave none) in
+place of `document`, the single attempt in `attempts`, and the same sums. The diagnostician
+runs on `defaults`, which names no leaf model, so `--leaf` IS the arm there and is not compared
+with the configuration: `workshop` runs `defaults` as `escalate` does (a reading lineage seeded
+with `diagnosis.json`), `pure` runs it as a pure leaf over the pure template (until the pure path
+is deleted). `--mutate` applies to `diagnosis_document` as to any context document.
+
+Configuration: on a judging row `--leaf` must agree with the configuration's entry for the
+substep, so the two arms of one A/B row take two files — the A/B's `llm.yaml` (workshop on the judging substeps)
 and a copy with those substeps' `leaf: workshop` / `lineage_timeout_s` removed.
 
 `--check` creates the orchestration and answers, without launching, whether a launch of this
@@ -110,9 +120,15 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-#: The judging pairs a replay admits. `escalate`'s diagnose launch is replayed in PR-J4.
-ADMITTED_PAIRS: tuple[tuple[str, str], ...] = (
+#: The judging pairs a replay admits, and (issue #534 PR-J4-a) `escalate`'s diagnose launch of
+#: each escalatable phase (`pure_leaf.WORKSHOP_DIAGNOSE_PAIRS`, asserted equal by
+#: `test_judge_replay`).
+JUDGING_PAIRS: tuple[tuple[str, str], ...] = (
     ("compile", "verify"), ("generate", "verify"), ("validate", "judge"))
+DIAGNOSE_PAIRS: tuple[tuple[str, str], ...] = (
+    ("build", "diagnose"), ("compile", "diagnose"), ("generate", "diagnose"),
+    ("validate", "diagnose"))
+ADMITTED_PAIRS: tuple[tuple[str, str], ...] = JUDGING_PAIRS + DIAGNOSE_PAIRS
 #: `orchestration_meta.json#invocation.kind` of a replay orchestration.
 REPLAY_KIND = "judge_replay"
 REPLAY_RESULT_NAME = "replay_result.json"
@@ -805,6 +821,80 @@ def run_repetition(conductor: Any, repo_root: Path, source: SourceLaunch, refs: 
     return row
 
 
+def run_diagnose_repetition(conductor: Any, repo_root: Path, source: SourceLaunch, refs: Any,
+                            context: dict[str, str], repetition: int, *,
+                            pure: bool) -> dict[str, Any]:
+    """One diagnose launch over the recorded `diagnosis_document`, through `escalate`'s own
+    launch (`Conductor._diagnose_turn`, issue #534 PR-J4-a) and its row: the DIRECTIVE in place
+    of a document. The workshop arm runs on the configuration's `defaults` entry as `escalate`
+    does; the pure arm on that entry as a pure one (`leaf` pure, no bound) — the arm is
+    `--leaf`, since `defaults` names no leaf model. One launch, no repair, as in `escalate`."""
+    import dataclasses
+
+    from tools.leaf_usage import LEAF_USAGE_UNAVAILABLE
+    from tools.llm_config import LEAF_PURE
+    from tools.operator_private_root import workflow_homes_root
+    from tools.workshop_tree import LineagePaths
+    step, _substep = source.pair
+    entry = conductor.entry_for(None, None)
+    if pure:
+        entry = dataclasses.replace(entry, leaf=LEAF_PURE, lineage_timeout_s=None,
+                                    max_wrapper_calls=None)
+    child = conductor.new_agent_run_id()
+    request = conductor._diagnose_request(refs, step, entry, child,
+                                          context["diagnosis_document"], pure=pure)
+    turn = conductor._diagnose_turn(refs, request, entry, child, step, pure=pure)
+    if turn is None:
+        raise RuntimeError("the diagnose launch did not happen")
+    conductor._finalize_diagnose_turn(refs, step, entry, child, turn)
+    decision = turn.decision
+    usage = turn.usage if isinstance(turn.usage, dict) else None
+    attempt = {"agent_run_id": child, "model": turn.model, "usage": turn.usage,
+               "lineage_id": turn.lineage_id, "leaf_rc": turn.proc.returncode,
+               "leaf_wall_s": turn.leaf_wall_s}
+    row: dict[str, Any] = {
+        "repetition": repetition,
+        "status": "pass" if decision is not None else "fail",
+        "leaf_returncode": turn.proc.returncode,
+        "directive": ({"action": decision.action, "target_phase": decision.target_phase,
+                       "severity": decision.severity,
+                       "repair_strategy": decision.repair_strategy,
+                       "reason": decision.reason} if decision is not None else None),
+        "attempts": [attempt],
+        "cost_usd": _sum([(usage or {}).get("cost_usd")]),
+        "usage_unrecorded_attempts": int(
+            usage is None or usage.get("status") == LEAF_USAGE_UNAVAILABLE),
+        **{name: _sum([(usage or {}).get(name)])
+           for name in ("input_tokens", "cache_creation_input_tokens",
+                        "cache_read_input_tokens", "output_tokens")},
+        "leaf_wall_s": _sum([turn.leaf_wall_s]),
+    }
+    oid = conductor.orchestration_id
+    if pure and source.prompt_text is not None and source.request.get("leaf_mode") == "pure":
+        prompt_path = (repo_root / "workspace" / "orchestrations" / oid / "launches"
+                       / f"{child}.prompt.txt")
+        if context != source.request.get("pure_context"):
+            row["prompt_matches_record"] = None
+        elif prompt_path.is_file():
+            row["prompt_matches_record"] = (
+                _as_source(prompt_path.read_text(encoding="utf-8"), oid, child, source)
+                == source.prompt_text)
+    if not pure and turn.lineage_id is not None:
+        if entry.provider == "claude_cli":
+            seeds = conductor._workshop_seeds(refs, context, request,
+                                              conductor._diagnose_spec())
+            paths = LineagePaths(homes_root=workflow_homes_root(), orchestration_id=oid,
+                                 lineage_id=turn.lineage_id,
+                                 orchestration_dir=repo_root / "workspace" / "orchestrations"
+                                 / oid, backend=conductor._workshop_backend(entry))
+            projects = paths.config / "projects"
+            transcripts = sorted(projects.glob("*/*.jsonl")) if projects.is_dir() else []
+            row.update(read_coverage(transcripts, [str(paths.tree)], seeds))
+        else:
+            row["coverage"] = None
+    return row
+
+
 def _append_result(path: Path, row: dict[str, Any]) -> None:
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(row, ensure_ascii=False) + "\n")
@@ -826,16 +916,22 @@ def replay(repo_root: Path, args: argparse.Namespace, argv: list[str]) -> int:
     except (LlmConfigError, OSError) as exc:
         raise ReplayRefused("judge_replay_llm_config_invalid", str(exc)) from exc
     step, substep = source.pair
+    diagnose = source.pair in DIAGNOSE_PAIRS
     entry = llm_config.entry_for(step, substep)
-    if entry.leaf != args.leaf:
+    if diagnose:
+        # The diagnostician runs on `defaults`, which names no leaf model (the loader makes it
+        # a reading workshop entry): `--leaf` is the arm (`run_diagnose_repetition`).
+        entry = llm_config.defaults
+    elif entry.leaf != args.leaf:
         raise ReplayRefused(
             "judge_replay_leaf_mismatch",
             f"--leaf {args.leaf}, but {args.llm_config} runs {step}.{substep} as "
             f"leaf: {entry.leaf}")
-    if entry.is_workshop and entry.is_http:
+    if entry.is_workshop and entry.is_http and not (diagnose and args.leaf == "pure"):
         # Issue #534 PR-J3-b (operator decision O3): an HTTP lineage's transcript is the host
         # loop's `loop_turns.jsonl`, which `read_coverage` does not read; refused before any
-        # orchestration is created, `--check` included.
+        # orchestration is created, `--check` included. A diagnose row's PURE arm opens no
+        # lineage (it runs `defaults` as a pure leaf), so it is not refused.
         raise ReplayRefused(
             "judge_replay_http_lineage_unsupported",
             f"a replay of an HTTP lineage ({entry.provider}) reads `loop_turns.jsonl`, which "
@@ -877,12 +973,16 @@ def replay(repo_root: Path, args: argparse.Namespace, argv: list[str]) -> int:
             env=replay_orch.env, workflow_mode=str(invocation["mode"]),
             llm_config=llm_config, target_profile=load_target_profile(repo_root, target_id))
         for repetition in range(1, args.repeat + 1):
-            row = {**head, **run_repetition(conductor, repo_root, source, refs, context,
-                                            repetition)}
+            row = {**head, **(
+                run_diagnose_repetition(conductor, repo_root, source, refs, context,
+                                        repetition, pure=(args.leaf == "pure"))
+                if diagnose else
+                run_repetition(conductor, repo_root, source, refs, context, repetition))}
             _append_result(result_path, row)
-            print(json.dumps({k: row[k] for k in (
+            print(json.dumps({k: row.get(k) for k in (
                 "replay_orchestration_id", "repetition", "status", "failure_category",
-                "cost_usd", "leaf_wall_s")}, ensure_ascii=False), flush=True)
+                "directive", "cost_usd", "leaf_wall_s") if k in row}, ensure_ascii=False),
+                flush=True)
         return 0
     except BaseException as exc:
         status, reason, detail = "fail", "judge_replay_error", f"{type(exc).__name__}: {exc}"

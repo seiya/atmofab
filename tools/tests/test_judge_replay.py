@@ -60,7 +60,7 @@ _CONTEXT = {
 _REVIEW = {"decision": "pass", "findings": [], "notes": "replayed"}
 _FACTS = ({"node_key": _DEP, "pipeline_ref": "workspace/pipelines/x", "run_id": "run_x"},)
 
-_PURE_YAML = "defaults:\n  provider: claude_cli\n  model: opus\n"
+_PURE_YAML = "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
 _WORKSHOP_YAML = (_PURE_YAML + "phases:\n  validate:\n    substeps:\n      judge:\n"
                   "        provider: claude_cli\n        model: opus\n"
                   "        leaf: workshop\n        lineage_timeout_s: 600\n")
@@ -648,6 +648,173 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual(self._replays(), [])
 
 
+_DIAGNOSE_ARID = "99999999-2222-4333-8444-555555555555"
+_DIRECTIVE = {"action": "fail_closed", "target_phase": None, "severity": "major",
+              "repair_strategy": None, "reason": "spec defect"}
+#: The diagnosis document, one value per line (`json.dumps(indent=2)`, as
+#: `_diagnosis_document` writes it), so the seed's line count is known.
+_DIAGNOSIS = json.dumps({"node_key": _USER, "failed_phase": "validate",
+                         "workflow_mode": "dev", "failed_substep_agent_run_ids": [],
+                         "artifacts": {}}, indent=2)
+
+
+class _DiagnoseLeaf(_Leaf):
+    """The scripted diagnostician: a pure turn replies the directive in its envelope; a
+    workshop turn writes `directive.json` into its tree and one transcript that reads
+    `diagnosis.json` whole."""
+
+    def __call__(self, conductor, prompt_text, child_env, entry=None, **kw):
+        self.calls.append({"prompt": prompt_text, **kw})
+        sid = kw.get("session_id") or kw["child_arid"]
+        envelope = {"type": "result", "is_error": False, "result": json.dumps(_DIRECTIVE),
+                    "session_id": sid, "num_turns": 1, "duration_ms": 10,
+                    "total_cost_usd": 0.05,
+                    "usage": {"input_tokens": 1, "output_tokens": 2,
+                              "cache_creation_input_tokens": 0, "cache_read_input_tokens": 3},
+                    "modelUsage": {"claude-opus-5-5": {
+                        "inputTokens": 1, "outputTokens": 2, "cacheReadInputTokens": 3,
+                        "cacheCreationInputTokens": 0}}}
+        if entry is not None and entry.is_workshop:
+            home = self.homes / conductor.orchestration_id / "claude" / kw["child_arid"]
+            tree = home / "tree"
+            (tree / "directive.json").write_text(json.dumps(_DIRECTIVE), encoding="utf-8")
+            project = home / "config" / "projects" / "p"
+            project.mkdir(parents=True, exist_ok=True)
+            seed = f"{tree}/diagnosis.json"
+            total = len((_DIAGNOSIS + "\n").splitlines())
+            lines = [
+                {"version": "9.9.9", "message": {"content": [
+                    {"type": "tool_use", "id": f"r1-{sid}", "name": "Read",
+                     "input": {"file_path": seed}}]}},
+                {"version": "9.9.9", "message": {"content": [
+                    {"type": "tool_result", "tool_use_id": f"r1-{sid}"}]},
+                 "toolUseResult": {"file": {"filePath": seed, "startLine": 1,
+                                            "numLines": total, "totalLines": total}}},
+            ]
+            (project / f"{sid}.jsonl").write_text(
+                "".join(json.dumps(line) + "\n" for line in lines), encoding="utf-8")
+            envelope["result"] = "wrote directive.json"
+        return wc.ProcResult(0, json.dumps(envelope), "")
+
+
+class DiagnoseReplayTests(unittest.TestCase):
+    """MJ1 (issue #534 PR-J4-a): a recorded `validate.diagnose` launch replayed on both arms
+    through `escalate`'s own launch (`Conductor._diagnose_turn`): the row carries the
+    DIRECTIVE, the workshop arm's tree holds `diagnosis.json` and its read is measured, and
+    nothing under `workspace/ir`, `pipelines` or `runs` is written. The source is recorded as
+    the three real ones are, a PURE launch."""
+
+    setUp = JudgeReplayEndToEndTests.setUp
+    _seed = JudgeReplayEndToEndTests._seed
+    _conductor = JudgeReplayEndToEndTests._conductor
+    _replays = JudgeReplayEndToEndTests._replays
+    _rows = JudgeReplayEndToEndTests._rows
+
+    def _record_source(self) -> None:
+        import dataclasses
+
+        from tools.llm_config import LEAF_PURE
+        spec_ref = spec_ref_of(_USER)
+        ort.init_orchestration(repo_root=self.repo, orchestration_id=_SRC, spec_ref=spec_ref,
+                               source_dependency_ref=f"{spec_ref}/deps.yaml")
+        record_orchestration_target(self.repo, _SRC)
+        ort.write_preflight(repo_root=self.repo, orchestration_id=_SRC, payload={
+            "status": "pass", "sandbox_runtime": "bwrap", "sandbox_enforced": True,
+            "can_launch_step_agents": True, "can_launch_substep_agents": True,
+            "backend": "claude", "checks": claude_launch_checks()})
+        conductor = self._conductor(_SRC, self.pure_cfg)
+        conductor.workflow_mode = "dev"
+        self.node_refs = wc.NodeRefs(
+            node_key=_USER, spec_path=spec_ref, ir_id="user_20260101_001",
+            pipeline_id="user_20260101_001", target_id=conductor.target.target_id,
+            source_id="src_20260101_001", binary_id="bin_20260101_001",
+            run_id="run_20260101_001")
+        run_node = self.repo / self.node_refs.run_node_dir()
+        (run_node / "raw").mkdir(parents=True, exist_ok=True)
+        for name in ("diagnostics.json", "perf.json", "command_log.jsonl"):
+            if not (run_node / name).exists():
+                (run_node / name).write_text("{}\n", encoding="utf-8")
+        entry = dataclasses.replace(conductor.entry_for(None, None), leaf=LEAF_PURE,
+                                    lineage_timeout_s=None)
+        request = conductor._diagnose_request(self.node_refs, "validate", entry,
+                                              _DIAGNOSE_ARID, _DIAGNOSIS, pure=True)
+        conductor.record_launch(_DIAGNOSE_ARID, request, entry)
+
+    def _main(self, *extra: str, leaf: str) -> tuple[int, str]:
+        out = io.StringIO()
+        argv = [_SRC, _DIAGNOSE_ARID, "--leaf", leaf, "--llm-config", str(self.pure_cfg),
+                "--repo-root", str(self.repo), *extra]
+        with contextlib.redirect_stdout(out):
+            rc = jr.main(argv)
+        return rc, out.getvalue()
+
+    def test_both_arms_return_the_directive_and_write_nothing_a_run_reads(self) -> None:
+        self.leaf = _DiagnoseLeaf(self.homes)
+        leaf = self.leaf
+        with mock.patch.object(wc.Conductor, "spawn_leaf",
+                               lambda self, *a, **k: leaf(self, *a, **k)):
+            before = _tree_digest(self.repo)
+            for arm in ("pure", "workshop"):
+                with self.subTest(arm=arm):
+                    rc, out = self._main(leaf=arm)
+                    self.assertEqual(rc, 0, out)
+        self.assertEqual(_tree_digest(self.repo), before)
+        rows = {}
+        for replay in self._replays():
+            [row] = self._rows(replay)
+            rows[row["leaf"]] = (replay, row)
+            self.assertEqual(list(replay.rglob("step_result.json")), [])
+        for arm, (replay, row) in rows.items():
+            with self.subTest(arm=arm):
+                self.assertEqual((row["step"], row["substep"], row["status"]),
+                                 ("validate", "diagnose", "pass"))
+                self.assertEqual(row["directive"], _DIRECTIVE)
+                self.assertNotIn("document", row)
+                self.assertEqual(row["cost_usd"], 0.05)
+                [attempt] = row["attempts"]
+                request = json.loads((replay / "launches" / f"{attempt['agent_run_id']}"
+                                      ".request.json").read_text(encoding="utf-8"))
+                self.assertEqual(request["pure_context"], {"diagnosis_document": _DIAGNOSIS})
+                self.assertEqual(request["leaf_mode"], arm)
+        pure_row = rows["pure"][1]
+        self.assertIs(pure_row["prompt_matches_record"], True)
+        self.assertIsNone(pure_row["attempts"][0]["lineage_id"])
+        replay, row = rows["workshop"]
+        tree = self.homes / replay.name / "claude" / row["attempts"][0]["lineage_id"] / "tree"
+        self.assertEqual((tree / "diagnosis.json").read_text(encoding="utf-8"),
+                         _DIAGNOSIS + "\n")
+        total = len((_DIAGNOSIS + "\n").splitlines())
+        self.assertEqual(row["coverage"]["diagnosis.json"],
+                         {"lines": total, "covered": total, "fraction": 1.0,
+                          "ranges": [[1, total]]})
+        self.assertNotIn("prompt_matches_record", row)
+
+    def test_an_http_defaults_refuses_the_workshop_arm_alone(self) -> None:
+        """O3 refuses an HTTP LINEAGE (its transcript is `loop_turns.jsonl`); a diagnose row's
+        pure arm opens none, so on an HTTP `defaults` it is answered and the workshop arm is
+        refused. (The pure arm then meets this fixture's preflight, which no HTTP endpoint
+        answers; what is pinned is that O3's refusal is the workshop arm's alone.)"""
+        cfg = self.repo.parent / "http.yaml"
+        cfg.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: anthropic_api\n"
+                       "  api_key_env: K\n  model: m\n"
+                       "phases:\n  validate:\n    substeps:\n      judge:\n"
+                       "        provider: claude_cli\n", encoding="utf-8")
+        for arm, refused in (("pure", False), ("workshop", True)):
+            with self.subTest(arm=arm):
+                out = io.StringIO()
+                with contextlib.redirect_stdout(out):
+                    jr.main([_SRC, _DIAGNOSE_ARID, "--leaf", arm, "--llm-config",
+                             str(cfg), "--repo-root", str(self.repo), "--check"])
+                self.assertEqual("judge_replay_http_lineage_unsupported" in out.getvalue(),
+                                 refused, out.getvalue())
+
+    def test_check_answers_the_step_gates(self) -> None:
+        rc, out = self._main("--check", leaf="workshop")
+        self.assertEqual(rc, 0, out)
+        self.assertTrue(json.loads(out.strip().splitlines()[-1])["check"]["ready"])
+        self.assertEqual(self.leaf.calls, [])
+
+
 class SourceRefusalTests(unittest.TestCase):
     def _source(self, **request) -> jr.SourceLaunch:
         base = {"step": "validate", "substep": "judge", "pure_context": dict(_CONTEXT)}
@@ -657,7 +824,10 @@ class SourceRefusalTests(unittest.TestCase):
         jr.check_source(self._source())
         for request, code in (
                 ({"step": "generate", "substep": "generate"}, "judge_replay_pair_not_admitted"),
-                ({"step": "build", "substep": "diagnose"}, "judge_replay_pair_not_admitted"),
+                ({"step": "build", "substep": "deterministic_gate"},
+                 "judge_replay_pair_not_admitted"),
+                # A diagnose launch is admitted since issue #534 PR-J4-a — with ITS context.
+                ({"step": "build", "substep": "diagnose"}, "judge_replay_context_keys_moved"),
                 ({"pure_context": None}, "judge_replay_no_context"),
                 ({"pure_context": {**_CONTEXT, "tests_document": None}},
                  "judge_replay_no_context"),
@@ -667,6 +837,15 @@ class SourceRefusalTests(unittest.TestCase):
             with self.subTest(code=code), self.assertRaises(jr.ReplayRefused) as ctx:
                 jr.check_source(self._source(**request))
             self.assertEqual(ctx.exception.code, code)
+
+    def test_a_diagnose_launch_with_its_context_is_admitted(self) -> None:
+        from tools.pure_leaf import WORKSHOP_DIAGNOSE_PAIRS
+        self.assertEqual(set(jr.DIAGNOSE_PAIRS), WORKSHOP_DIAGNOSE_PAIRS)
+        for step, substep in jr.DIAGNOSE_PAIRS:
+            with self.subTest(step=step):
+                jr.check_source(jr.SourceLaunch("o", "a", {
+                    "step": step, "substep": substep,
+                    "pure_context": {"diagnosis_document": "{}"}}, {}, None))
 
     def test_mutations_apply_in_order_each_exactly_once(self) -> None:
         mutations = jr.parse_mutations(json.dumps({"tests_document": [

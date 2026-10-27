@@ -417,18 +417,50 @@ class WorkshopRecordLaunchTests(_Env):
 
     def test_a_workshop_request_on_another_pair_is_refused(self) -> None:
         """Refused twice: the renderer finds no workshop template for the pair (it renders
-        before validation), and the validator names the admissible pairs."""
-        # Every LLM substep admits a workshop entry since issue #534 step 3; the escalate
-        # diagnostician's pair is the one host-rendered pair no workshop leaf serves.
-        req = _workshop_request("ar_x", substep="diagnose")
+        before validation), and the validator names the admissible pairs. Every LLM substep
+        admits a workshop entry since issue #534 step 3, and the escalate diagnostician is a
+        reading workshop launch since PR-J4-a, so the pair here is a DETERMINISTIC substep's —
+        one no leaf of either model serves."""
+        req = _workshop_request("ar_x", substep="gate")
         with self.assertRaises(ValueError) as ctx:
             ort.prepare_launch_request_payload(req)
-        self.assertIn("workshop generate.diagnose", str(ctx.exception))
+        self.assertIn("workshop generate.gate", str(ctx.exception))
         with self.assertRaises(ValueError) as ctx:
             ort._validate_launch_request_payload(req)
-        self.assertIn("leaf_mode=workshop is only valid for (compile, generate), "
-                      "(compile, verify), (generate, generate), (generate, verify), "
-                      "(validate, judge);", str(ctx.exception))
+        self.assertIn("leaf_mode=workshop is only valid for (build, diagnose), "
+                      "(compile, diagnose), (compile, generate), (compile, verify), "
+                      "(generate, diagnose), (generate, generate), (generate, verify), "
+                      "(validate, diagnose), (validate, judge);", str(ctx.exception))
+
+    def test_a_workshop_diagnose_request_is_a_reading_launch(self) -> None:
+        """The pair this row's predecessor refused (issue #534 PR-J4-a): a workshop diagnose
+        request renders `workshop_escalate_diagnose.txt` with the READER tool-surface row,
+        validates, and is the reading kind — so `record_launch`'s caller derives the reading
+        argv (no endpoint) and the audit refuses a record of it that names one
+        (`test_validate_pipeline_semantics`). Validated on `generate` alone: this fixture
+        carries that step's ids; each step's own is `DiagnosticianTest`'s (the production
+        builder)."""
+        from tools.pure_leaf import (
+            WORKSHOP_DIAGNOSE_PAIRS,
+            WORKSHOP_READER_TOOL_SURFACE_TEXT,
+            is_workshop_reading_pair,
+        )
+        self.assertEqual(WORKSHOP_DIAGNOSE_PAIRS, ort.DIAGNOSE_LAUNCH_PAIRS)
+        self.assertEqual({s for s, _ in WORKSHOP_DIAGNOSE_PAIRS},
+                         set(ort.STEP_REQUIRED_CHILD_AGENT))
+        for step, substep in sorted(WORKSHOP_DIAGNOSE_PAIRS):
+            with self.subTest(step=step):
+                self.assertTrue(is_workshop_reading_pair(step, substep))
+                req = _workshop_request(
+                    "ar_x", step=step, substep=substep,
+                    pure_context={"diagnosis_document": '{"failed_phase": "x"}'})
+                prepared = ort.prepare_launch_request_payload(req)
+                if step == "generate":
+                    ort._validate_launch_request_payload(prepared)
+                prompt = ort.render_launch_prompt_text(prepared)
+                self.assertIn("`directive.json`", prompt)
+                self.assertIn(WORKSHOP_READER_TOOL_SURFACE_TEXT["claude_cli"], prompt)
+                self.assertNotIn('"failed_phase"', prompt)
 
     def test_the_prompt_and_the_request_must_agree_on_the_leaf_model(self) -> None:
         workshop = ort.prepare_launch_request_payload(_workshop_request("ar_x"))
@@ -515,22 +547,41 @@ class PreflightTests(unittest.TestCase):
         self.assertIs(ort._claude_workshop_flag_set_check(
             "claude", self._runner(self._HELP, rc=1))["pass"], False)
 
-    def test_only_a_configuration_with_a_workshop_entry_takes_the_check(self) -> None:
+    def test_only_a_surface_a_workshop_entry_launches_through_takes_the_check(self) -> None:
+        """A CLI surface takes its workshop row when some workshop entry launches through it.
+        `defaults` is one since issue #534 PR-J4-a (the diagnostician, a reading workshop
+        leaf), so a claude `defaults` takes the check with no substep entry of its own (review
+        finding 1 of the PR-J4 plan: the probe read `cfg.entries` alone, so a `defaults` on a
+        surface no substep shares launched an argv nothing had certified); a claude surface
+        only PURE substep entries use — beside a codex `defaults` — takes none."""
         def probe(**kw):
-            return {"probe_command": "claude", "checks": [], "status": "pass"}
+            return {"probe_command": kw.get("agent_command") or "claude", "checks": [],
+                    "status": "pass"}
 
+        cases = {
+            "claude defaults": ("defaults: {lineage_timeout_s: 2700, provider: claude_cli}\n",
+                                True),
+            "claude defaults and a workshop entry": (
+                ("defaults: {lineage_timeout_s: 2700, provider: claude_cli}\n"
+                 "phases: {generate: {substeps: {generate: {leaf: workshop, "
+                 "max_wrapper_calls: 3, lineage_timeout_s: 60}}}}\n"), True),
+            "pure claude entries beside a codex defaults": (
+                ("defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
+                 "phases: {generate: {substeps: {generate: {provider: claude_cli}}}}\n"),
+                False),
+        }
         with tempfile.TemporaryDirectory() as tmp:
-            for workshop in (False, True):
-                body = "defaults: {provider: claude_cli}\n"
-                if workshop:
-                    body += ("phases: {generate: {substeps: {generate: {leaf: workshop, "
-                             "max_wrapper_calls: 3, lineage_timeout_s: 60}}}}\n")
-                path = Path(tmp) / f"llm_{workshop}.yaml"
+            for label, (body, workshop) in cases.items():
+                path = Path(tmp) / f"llm_{len(label)}.yaml"
                 path.write_text(body, encoding="utf-8")
-                with self.subTest(workshop=workshop), \
+                with self.subTest(case=label), \
                         mock.patch.object(ort, "probe_execution_platform", probe), \
                         mock.patch.object(ort, "_preflight_allows_agent_launch",
-                                          lambda p: True):
+                                          lambda p: True), \
+                        mock.patch.object(ort, "_codex_workshop_flag_set_check",
+                                          lambda cmd, runner: {
+                                              "name": "codex_workshop_flag_set_available",
+                                              "pass": True, "detail": ""}):
                     providers = ort.probe_all_providers(
                         config=lc.load_llm_config(path),
                         runner=self._runner("no options here"))
@@ -556,7 +607,7 @@ class _WorkshopConfig:
     def config(tmp: Path) -> lc.LlmConfig:
         path = tmp / "llm_workshop.yaml"
         path.write_text(
-            "defaults: {provider: claude_cli, model: opus}\n"
+            "defaults: {lineage_timeout_s: 2700, provider: claude_cli, model: opus}\n"
             "phases: {generate: {substeps: {generate: {provider: claude_cli, model: opus, "
             "effort: medium, leaf: workshop, max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n",
             encoding="utf-8")
@@ -614,7 +665,7 @@ class LeafCommandTests(unittest.TestCase):
         `--mcp-config <file>` raised JSONDecodeError here, failing every launch at
         record-launch; origin/main records `claude_tools` alone."""
         cfg = self.repo / "llm_cmd.yaml"
-        cfg.write_text("defaults: {provider: claude_cli, command: claude --mcp-config "
+        cfg.write_text("defaults: {lineage_timeout_s: 2700, provider: claude_cli, command: claude --mcp-config "
                        "/etc/x.json}\n", encoding="utf-8")
         c = _PureFakeConductor(repo_root=self.repo, orchestration_id="o",
                                orchestration_agent_run_id="orch", env={},
@@ -789,7 +840,7 @@ class SpawnTimeoutTests(unittest.TestCase):
         import threading
         with tempfile.TemporaryDirectory() as tmp:
             cfg = Path(tmp) / "llm.yaml"
-            cfg.write_text("defaults: {provider: anthropic_api, model: m, api_key_env: K}\n"
+            cfg.write_text("defaults: {lineage_timeout_s: 2700, provider: anthropic_api, model: m, api_key_env: K}\n"
                            "phases: {generate: {provider: claude_cli}}\n", encoding="utf-8")
             c = _PureFakeConductor(repo_root=Path(tmp), orchestration_id="o",
                                    orchestration_agent_run_id="orch", env={},
@@ -1093,7 +1144,7 @@ class WorkshopSpawnArgvTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             cfg = repo / "llm.yaml"
-            cfg.write_text("defaults: {provider: codex_cli, model: gpt-x}\n", encoding="utf-8")
+            cfg.write_text("defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n", encoding="utf-8")
             c = _PureFakeConductor(repo_root=repo, orchestration_id="o",
                                    orchestration_agent_run_id="orch", env={},
                                    llm_config=lc.load_llm_config(cfg))
@@ -1115,7 +1166,7 @@ class WorkshopSpawnArgvTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             cfg = repo / "llm.yaml"
-            cfg.write_text("defaults: {provider: codex_cli, model: gpt-x}\n", encoding="utf-8")
+            cfg.write_text("defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n", encoding="utf-8")
             c = _PureFakeConductor(repo_root=repo, orchestration_id="o",
                                    orchestration_agent_run_id="orch", env={},
                                    llm_config=lc.load_llm_config(cfg))

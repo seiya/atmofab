@@ -23311,7 +23311,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         path.write_text(text, encoding="utf-8")
         return path
 
-    _MIXED = ("defaults:\n  provider: claude_cli\n"
+    _MIXED = ("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
               "phases:\n  generate:\n    substeps:\n      generate:\n"
               "        provider: openai_compatible\n"
               "        base_url: http://localhost:8000/v1\n"
@@ -23514,20 +23514,26 @@ class MultiProviderPreflightTests(unittest.TestCase):
     def test_probe_all_providers_covers_every_distinct_provider(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp), self._MIXED)
+            # `defaults` is a reading workshop surface (issue #534 PR-J4-a), so the claude row
+            # also takes the CLI's workshop `--help` probe; CI has no `claude` on PATH.
             with patch.dict(os.environ, {"ATMOFAB_TEST_LOCAL_KEY": "k"}, clear=False), \
                  patch.object(ort, "probe_execution_platform",
-                              return_value=_launchable_preflight_dict(backend="claude")):
+                              return_value=_launchable_preflight_dict(backend="claude")), \
+                 patch.object(ort, "_workshop_flag_set_check",
+                              lambda *a, **k: {"name": "claude_workshop_flag_set_available",
+                                               "pass": True, "detail": "stubbed"}):
                 out = ort.probe_all_providers(llm_config_path=cfg,
                                               opener=lambda *a, **k: object())
         self.assertEqual(set(out), {"claude", "openai_compatible"})
         self.assertTrue(all(entry["launchable"] for entry in out.values()))
+        self.assertEqual([s.get("workshop") for s in out["claude"]["surfaces"]], [True])
 
     def test_preflight_refuses_a_snapshot_that_changed_under_it(self) -> None:
         """The caller resolved one set of bytes; this subprocess reloads the file. If they
         differ, the probe would certify a configuration the run will not launch."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            cfg = self._config(Path(tmp), "defaults:\n  provider: claude_cli\n")
+            cfg = self._config(Path(tmp), "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n")
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
             argv = ["preflight", "--repo-root", str(repo_root),
                     "--orchestration-id", "orch_001", "--backend", "claude",
@@ -23541,7 +23547,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
     def test_preflight_accepts_the_snapshot_it_was_given(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            cfg = self._config(Path(tmp), "defaults:\n  provider: claude_cli\n")
+            cfg = self._config(Path(tmp), "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n")
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
             argv = ["preflight", "--repo-root", str(repo_root),
                     "--orchestration-id", "orch_001", "--backend", "claude",
@@ -23561,11 +23567,11 @@ class MultiProviderPreflightTests(unittest.TestCase):
         `providers` map never saw, so the two must share one snapshot."""
         import tools.llm_config as _lc
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = self._config(Path(tmp), "defaults:\n  provider: claude_cli\n"
+            cfg = self._config(Path(tmp), "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n"
                                           "  command: wrapA\n")
             snapshot = _lc.load_llm_config(cfg, content=cfg.read_bytes())
             # The file moves on after the snapshot was taken.
-            cfg.write_text("defaults:\n  provider: claude_cli\n  command: wrapB\n",
+            cfg.write_text("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  command: wrapB\n",
                            encoding="utf-8")
             seen: list = []
 
@@ -23581,7 +23587,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         """The CLI half: it must pass the object it hashed, not the path."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
-            cfg = self._config(Path(tmp), "defaults:\n  provider: claude_cli\n")
+            cfg = self._config(Path(tmp), "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n")
             init_orchestration(repo_root=repo_root, orchestration_id="orch_001")
             captured: dict = {}
             with patch.object(ort, "probe_execution_platform",
@@ -23632,7 +23638,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         since the run-wide flag trio was removed), so this test supplies one directly — that is
         what keeps the transport from being certified only by a case where it cannot matter."""
         with tempfile.TemporaryDirectory() as tmp:
-            cfg = self._config(Path(tmp), "defaults:\n  provider: claude_cli\n  model: opus\n")
+            cfg = self._config(Path(tmp), "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n")
             seen: list = []
 
             def _probe(**kw):
@@ -23685,7 +23691,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         first command would silently stop checking the second after the first expiry."""
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp),
-                               "defaults:\n  provider: claude_cli\n  command: wrapA\n"
+                               "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  command: wrapA\n"
                                "phases:\n  validate:\n    substeps:\n      judge:\n"
                                "        command: wrapB\n")
             seen: list = []
@@ -23742,7 +23748,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         """Same backend behind two commands: the token is launchable only if BOTH are."""
         with tempfile.TemporaryDirectory() as tmp:
             cfg = self._config(Path(tmp),
-                               "defaults:\n  provider: claude_cli\n  command: claude\n"
+                               "defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  command: claude\n"
                                "phases:\n  validate:\n    substeps:\n      judge:\n"
                                "        command: otherwrap\n")
             payloads = iter([
@@ -25551,7 +25557,7 @@ class ClaudeRosterProbeRepoRootPropagationTests(unittest.TestCase):
             root = Path(td)
             config = load_llm_config(
                 root / "llm.yaml",
-                content=("defaults:\n  provider: claude_cli\n  model: opus\n"
+                content=("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n  model: opus\n"
                          "phases:\n  generate:\n    substeps:\n      generate:\n"
                          "        command: claude --tools Monitor\n").encode("utf-8"))
             seen = self._seen_repo_roots(

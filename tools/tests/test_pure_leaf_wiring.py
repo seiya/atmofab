@@ -1469,6 +1469,9 @@ class PureRenderTests(unittest.TestCase):
         # not match. Scanned anyway, for the same reason every other template is: it reaches a
         # leaf, and a verify severity spelled here would outrank the rubric on that transport.
         ("tools/prompt_templates/pure_escalate_diagnose.txt", None, None),
+        # Issue #534 PR-J4-a: the diagnostician as a reading workshop leaf, its twin's rules
+        # verbatim — scanned for the reason its pure twin is.
+        ("tools/prompt_templates/workshop_escalate_diagnose.txt", None, None),
         # Issue #169 put `validate.judge` on a pure template. Its grading field is
         # `confidence`, not `issue_severity` — a judge reports how sure it is of a finding and
         # the workflow routes on `attribution` instead — so it assigns no rubric value at all.
@@ -1520,6 +1523,11 @@ class PureRenderTests(unittest.TestCase):
         # standing in for the rubric.
         "tools/prompt_templates/pure_escalate_diagnose.txt: Output contract (routing directive)"
         ": one JSON object with th #7a7143f90f63",
+        # Issue #534 PR-J4-a: the same output contract on the reading workshop twin, read
+        # before it was taken: it routes as the pure line does, and names `directive.json` where
+        # that one names the final line.
+        ("tools/prompt_templates/workshop_escalate_diagnose.txt: Output contract (routing "
+         "directive): one JSON object with th #277817f752f6"),
         # `docs/AGENT_CONTRACT.md`'s verify-family routing line stood here until Z4 (issue
         # #171). The file is deleted with the agentic leaf, so the line is on no surface.
         # The RUNBOOK digest below changed in issue #176 (the deleted transport deriver left

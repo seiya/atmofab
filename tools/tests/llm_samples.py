@@ -66,9 +66,9 @@ def agentic_only_config(backend: str = "claude") -> lc.LlmConfig:
             entry, capabilities=frozenset(entry.capabilities) - {lc.CAP_PURE})
 
     base = sample_config(backend or "claude")
-    # `defaults` is NOT narrowed. It serves the escalate diagnostician, which is a pure leaf
-    # since issue #169, and a configuration whose `defaults` cannot run one is refused at load
-    # (`llm_config_defaults_not_pure`) — so narrowing it here would describe a document an
+    # `defaults` is NOT narrowed. It serves the escalate diagnostician, a reading workshop leaf
+    # since issue #534 PR-J4-a, and a configuration whose `defaults` cannot run one is refused
+    # at load (`llm_config_defaults_not_workshop`) — so narrowing it here would describe a document an
     # operator cannot write, which is the one thing this helper's docstring promises it is not.
     # The LEAF entries are what decides which loop a substep runs, and they are narrowed.
     return dataclasses.replace(

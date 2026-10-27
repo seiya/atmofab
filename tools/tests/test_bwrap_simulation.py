@@ -657,7 +657,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
         conductor = wc.Conductor(
             repo_root=repo, orchestration_id=orch, orchestration_agent_run_id="ORCH",
             llm_config=sample_config_with(backend, agent_model=model), env={})
-        argv = conductor.leaf_command(session_id=arid)
+        argv = conductor.leaf_command(conductor.entry_for("generate", "generate"), session_id=arid)
         kwargs: dict = {}
         if private_home:
             home = Path(tmp.name).resolve() / "home"
@@ -771,7 +771,7 @@ class BwrapReadonlyProfileTests(unittest.TestCase):
                               ) -> subprocess.CompletedProcess:
         """Exec the real CLI with the production argv under the profile a prepared home
         implies (`codex_isolation_profile_kwargs`, the same spelling `record_launch` uses)."""
-        argv = conductor.leaf_command(session_id=arid, resume_session_id=resume_session_id)
+        argv = conductor.leaf_command(conductor.entry_for("generate", "generate"), session_id=arid, resume_session_id=resume_session_id)
         self.assertEqual(argv[-2:], ["--json", "-"])
         overrides = [*self._LOOPBACK_OVERRIDES,
                      "--config", f'model_providers.loopback.base_url="{server.base_url}/v1"']
@@ -1429,7 +1429,7 @@ class WorkshopLeafCliTests(unittest.TestCase):
         init_orchestration(repo_root=self.repo, orchestration_id=self.orch)
         _ensure_orchestration_audit_dirs(self.repo, self.orch)
         cfg = base / "llm.yaml"
-        cfg.write_text("defaults: {provider: claude_cli}\nphases: {generate: {substeps: "
+        cfg.write_text("defaults: {lineage_timeout_s: 2700, provider: claude_cli}\nphases: {generate: {substeps: "
                        "{generate: {leaf: workshop, max_wrapper_calls: 5, "
                        "lineage_timeout_s: 600}}}}\n", encoding="utf-8")
         from tools import llm_config
@@ -1684,7 +1684,7 @@ class ReadingWorkshopLeafCliTests(WorkshopLeafCliTests):
         super().setUp()
         from tools import llm_config
         cfg = self.repo.parent / "llm_reading.yaml"
-        cfg.write_text("defaults: {provider: claude_cli}\nphases: {validate: {substeps: "
+        cfg.write_text("defaults: {lineage_timeout_s: 2700, provider: claude_cli}\nphases: {validate: {substeps: "
                        "{judge: {leaf: workshop, lineage_timeout_s: 600}}}}\n",
                        encoding="utf-8")
         self.reader = wc.Conductor(
@@ -1742,6 +1742,55 @@ class ReadingWorkshopLeafCliTests(WorkshopLeafCliTests):
         self.assertEqual(
             workshop_tree.assemble_document_file(paths.snapshot, "review.json", "x"), review)
 
+
+    def test_mj1_the_diagnosticians_lineage_writes_its_directive_and_holds_no_wrapper(
+            self) -> None:
+        """Issue #534 PR-J4-a: the `defaults` entry is the diagnostician's reading workshop
+        entry, so its argv is the reading one (no `--mcp-config`); its tree holds
+        `diagnosis.json`, its `Write` of `directive.json` lands, and the snapshot carries that
+        file alone, which `_parse_directive` reads as the directive it wrote."""
+        from tools import workshop_tree
+        entry = self.reader.entry_for(None, None)
+        self.assertTrue(entry.is_workshop)
+        paths = workshop_tree.LineagePaths(
+            homes_root=Path(self.iso["homes_root"]), orchestration_id=self.orch,
+            lineage_id=self.lineage,
+            orchestration_dir=self.repo / "workspace" / "orchestrations" / self.orch)
+        paths.make_work_dirs()
+        workshop_tree.seed_tree(paths, {"diagnosis.json": '{"failed_phase": "validate"}\n'})
+        directive = {"action": "fail_closed", "target_phase": None, "severity": "major",
+                     "reason": "spec defect"}
+        api = self._api([
+            ([{"type": "tool_use", "id": "toolu_1", "name": "Read",
+               "input": {"file_path": str(self.tree / "diagnosis.json")}}], "tool_use"),
+            ([{"type": "tool_use", "id": "toolu_2", "name": "Write",
+               "input": {"file_path": str(self.tree / "directive.json"),
+                         "content": json.dumps(directive)}}], "tool_use"),
+            ([{"type": "text", "text": "done"}], "end_turn")])
+        argv = self.reader.leaf_command(entry, session_id="s", reading=True)
+        self.assertNotIn("--mcp-config", argv)
+        session = str(uuid.uuid4())
+        profile = build_readonly_bwrap_profile(
+            repo_root=self.repo, orchestration_id=self.orch, agent_run_id=session,
+            backend_command="claude", backend_type="claude",
+            **ort.claude_workshop_profile_kwargs(self.iso))
+        command = ["env", f"ANTHROPIC_BASE_URL={api.base_url}",
+                   "ANTHROPIC_API_KEY=atmofab-loopback",
+                   *self.reader.leaf_command(entry, session_id=session, reading=True)]
+        res = subprocess.run(render_bwrap_command(profile=profile, command_argv=command),
+                             input="Diagnose the failure.", capture_output=True, text=True,
+                             timeout=240, check=False)
+        self.assertEqual(res.returncode, 0, res.stdout + res.stderr)
+        tools = {t["name"] for t in api.main_requests()[0]["tools"]}
+        self.assertFalse({t for t in tools if t.startswith("mcp__")}, tools)
+        self.assertIn("failed_phase", json.dumps(api.tool_results()[0]))
+        host_placed = workshop_tree.reserved_tree_names(
+            ("diagnosis.json",), None, ("directive.json",)) - {"directive.json"}
+        workshop_tree.snapshot_tree(paths, host_placed)
+        self.assertEqual(sorted(p.name for p in paths.snapshot.iterdir()), ["directive.json"])
+        decision = wc._parse_directive(
+            (paths.snapshot / "directive.json").read_text(encoding="utf-8"))
+        self.assertEqual((decision.action, decision.reason), ("fail_closed", "spec defect"))
 
 class _ScriptedResponsesApi:
     """An OpenAI Responses API stand-in that answers with a SCRIPT, streamed as codex reads it.
@@ -1848,7 +1897,7 @@ class _CodexLeafCliCase(unittest.TestCase):
     argv of the entry `CONFIG` names for `PAIR` under the rendered workshop profile. `READING`
     launches the judging (reading) argv, served no endpoint."""
 
-    CONFIG = ("defaults: {provider: codex_cli, model: gpt-5.6-sol}\nphases: {generate: "
+    CONFIG = ("defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-5.6-sol}\nphases: {generate: "
               "{substeps: {generate: {leaf: workshop, max_wrapper_calls: 5, "
               "lineage_timeout_s: 600}}}}\n")
     PAIR = ("generate", "generate")
@@ -2125,7 +2174,7 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
     reader row's paging rule, `pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT`); MR5-d: a warm
     repair resumes the thread."""
 
-    CONFIG = ("defaults: {provider: codex_cli, model: gpt-5.6-sol}\nphases: {validate: "
+    CONFIG = ("defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-5.6-sol}\nphases: {validate: "
               "{substeps: {judge: {leaf: workshop, lineage_timeout_s: 600}}}}\n")
     PAIR = ("validate", "judge")
     READING = True

@@ -666,7 +666,7 @@ _WORKSHOP_ENDPOINT_RESPONSE_FIELDS: tuple[str, ...] = ("claude_mcp_config", "cod
 
 def _workshop_endpoint_violations(request: dict, response: dict) -> list[str]:
     """What is wrong with the endpoint a persisted workshop launch names (issue #534 step 3): a
-    READING launch — a judging pair (`pure_leaf.WORKSHOP_READING_PAIRS`) — is served no wrapper
+    READING launch — a judging pair or the diagnostician's (`pure_leaf.is_workshop_reading_pair`) — is served no wrapper
     operation, so its response names no endpoint; a PRODUCING launch is served its operations
     over one, so its response names one. The kind is the request's pair, never a field of the
     response."""

@@ -49,7 +49,7 @@ _MCP = workshop_mcp_config_json("http://127.0.0.1:4242/mcp")
 def _codex_config(tmp: Path) -> lc.LlmConfig:
     path = tmp / "llm_codex_workshop.yaml"
     path.write_text(
-        "defaults: {provider: codex_cli, model: gpt-x}\n"
+        "defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
         "phases: {generate: {substeps: {generate: {provider: codex_cli, model: gpt-x, "
         "effort: medium, leaf: workshop, max_wrapper_calls: 30, lineage_timeout_s: 2700}}}}\n",
         encoding="utf-8")
@@ -235,7 +235,7 @@ class CodexAdmissionTests(_CodexEnv):
 
     def _claude_yaml(self) -> Path:
         path = self.repo / "llm_claude_ws.yaml"
-        path.write_text("defaults: {provider: claude_cli}\nphases: {generate: {substeps: "
+        path.write_text("defaults: {lineage_timeout_s: 2700, provider: claude_cli}\nphases: {generate: {substeps: "
                         "{generate: {leaf: workshop, max_wrapper_calls: 3, "
                         "lineage_timeout_s: 60}}}}\n", encoding="utf-8")
         return path
@@ -410,7 +410,7 @@ class CodexPreflightTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "llm.yaml"
             path.write_text(
-                "defaults: {provider: claude_cli}\nphases: {generate: {substeps: {generate: "
+                "defaults: {lineage_timeout_s: 2700, provider: claude_cli}\nphases: {generate: {substeps: {generate: "
                 "{provider: codex_cli, model: gpt-x, leaf: workshop, max_wrapper_calls: 3, "
                 "lineage_timeout_s: 60}}}}\n", encoding="utf-8")
             with mock.patch.object(ort, "probe_execution_platform", probe), \
@@ -420,15 +420,21 @@ class CodexPreflightTests(unittest.TestCase):
                     mock.patch.object(ort, "_codex_workshop_flag_set_check",
                                       fake("codex_workshop_flag_set_available")):
                 providers = ort.probe_all_providers(config=lc.load_llm_config(path))
-                self.assertEqual([name for name, _ in seen],
-                                 ["codex_workshop_flag_set_available"])
+                # `defaults` (claude) serves the diagnostician, a reading workshop leaf (issue
+                # #534 PR-J4-a), so its surface takes claude's row and the codex entry codex's.
+                self.assertEqual(sorted(name for name, _ in seen),
+                                 ["claude_workshop_flag_set_available",
+                                  "codex_workshop_flag_set_available"])
                 names = {t: [c["name"] for c in row["checks"]] for t, row in providers.items()}
-                self.assertNotIn("claude_workshop_flag_set_available", names["claude"])
+                self.assertIn("claude_workshop_flag_set_available", names["claude"])
+                self.assertNotIn("codex_workshop_flag_set_available", names["claude"])
                 self.assertIn("codex_workshop_flag_set_available", names["codex"])
+                self.assertNotIn("claude_workshop_flag_set_available", names["codex"])
                 seen.clear()
                 ort._reprobe_recorded_providers(providers, None)
-                self.assertEqual([name for name, _ in seen],
-                                 ["codex_workshop_flag_set_available"])
+                self.assertEqual(sorted(name for name, _ in seen),
+                                 ["claude_workshop_flag_set_available",
+                                  "codex_workshop_flag_set_available"])
 
     def test_a_backend_with_no_row_fails_it(self) -> None:
         self.assertIs(ort._workshop_flag_set_check("anthropic_api", "x", None)["pass"], False)
@@ -467,7 +473,7 @@ class CodexLeafCommandTests(unittest.TestCase):
         self.addCleanup(tmp.cleanup)
         path = Path(tmp.name) / "llm_codex_reading.yaml"
         path.write_text(
-            "defaults: {provider: codex_cli, model: gpt-x}\n"
+            "defaults: {lineage_timeout_s: 2700, provider: codex_cli, model: gpt-x}\n"
             "phases: {validate: {substeps: {judge: {provider: codex_cli, model: gpt-x, "
             "effort: medium, leaf: workshop, lineage_timeout_s: 2700}}}}\n", encoding="utf-8")
         c = _PureFakeConductor(repo_root=Path(tmp.name), orchestration_id="o",
@@ -492,7 +498,7 @@ class CodexLeafCommandTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             wc.Conductor.leaf_command(self.c, self.entry)
         with self.assertRaises(ValueError):
-            wc.Conductor.leaf_command(self.c, self.c.entry_for(None, None),
+            wc.Conductor.leaf_command(self.c, self.c.entry_for("compile", "verify"),
                                       mcp_config_json=_MCP)
 
     def test_the_endpoint_must_be_a_loopback_wrapper_url(self) -> None:

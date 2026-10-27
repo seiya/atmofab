@@ -6,7 +6,7 @@ This document defines the reference conventions for the `skills` used in the pro
 > every LLM substep of the core workflow runs as a `pure-function leaf`: it holds no tools, reads
 > nothing from disk, and receives its whole contract inlined in the launch prompt the host renders
 > (`tools/prompt_templates/pure_*.txt`). The one other leaf shape, a `workshop leaf`
-> (any of the five LLM substeps but `escalate` on a `leaf: workshop` entry, `docs/ORCHESTRATION.md` §workshop leaf), reads
+> (any of the five LLM substeps on a `leaf: workshop` entry, and the `escalate` diagnostician always since issue #534 PR-J4-a, `docs/ORCHESTRATION.md` §workshop leaf), reads
 > its contract from the prompt the host renders (`tools/prompt_templates/workshop_*.txt`) and the
 > `seed` files the host places in its `work tree`; no `SKILL` is among them. The five core phase `SKILL`s are deleted with the agentic
 > leaf that read them. What is left under `skills/` is the procedures an OPERATOR runs — the
@@ -65,7 +65,7 @@ names a `SKILL`.
 - `Build`: conductor in-process (see `docs/workflow/phases/phase_03_build.md`)
 - `Validate execute`: conductor in-process (see `docs/workflow/phases/phase_04_validate.md`)
 - `Validate judge`: `tools/prompt_templates/pure_validate_judge.txt`; on a `leaf: workshop` entry, a reading `workshop leaf` rendered from `tools/prompt_templates/workshop_validate_judge.txt`
-- `Escalate diagnose`: `tools/prompt_templates/pure_escalate_diagnose.txt`
+- `Escalate diagnose`: `tools/prompt_templates/workshop_escalate_diagnose.txt` (a reading workshop leaf since issue #534 PR-J4-a; `pure_escalate_diagnose.txt` is its pure twin until the pure path is deleted)
 - Repair turns: `tools/prompt_templates/pure_bundle_repair.txt`; a `workshop leaf`'s, `tools/prompt_templates/workshop_bundle_repair.txt` on `Generate.generate`, `tools/prompt_templates/workshop_ir_repair.txt` on `Compile.generate`, and `tools/prompt_templates/workshop_verdict_repair.txt` on the three judging substeps
 
 ## phase-to-Skill correspondence table (optional flows)
@@ -77,7 +77,7 @@ names a `SKILL`.
 - `Workflow audit`: `skills/workflow-audit/SKILL.md` (backend-neutral; runs `tools/audit_orchestration.py` over the in-repo records of one orchestration)
 - `Spec input check`: `skills/spec-input-check/SKILL.md` (pre-`Compile` advisory check of `controlled_spec.md` / `deps.yaml` / `tests.md`; proposal only, does not modify the spec)
 - `Workflow timing & token audit`: `skills/workflow-timing-audit/SKILL.md` (Claude Code-only post-run diagnostic; breaks an orchestration down into per-leaf elapsed time and output tokens via `phase_state_log.jsonl` + the per-leaf session transcripts, collapsing the transcript multiple-counting traps; an HTTP leaf has no transcript, so its per-request tokens, elapsed and throughput come from the run's `launches/` artifacts instead; across runs, `scripts/attempt_cost_report.py` splits leaf cost into first launches and retries per `step.substep` over a chosen node set, the granularity the SKILL's §"Comparing cost across runs" requires for a cost comparison (it reads provider-neutral `agent_runs.jsonl` rows; only its warm-resume correction is specific to the claude CLI envelope); read-only, does not modify any artifact)
-- `Workflow escalate (failure diagnostician)`: **no `SKILL`**. The read-only, one-shot escalate LLM the conductor consults when the deterministic decision tables cannot classify a phase failure — it emits a routing directive deciding rollback distance, severity `minor|major|critical`, and reuse-vs-discard of existing artifacts. Its persona, directive schema and decision criteria are the static body of the pure launch template `tools/prompt_templates/pure_escalate_diagnose.txt`, which is the canonical source and is hashed by the prompt-contract drift guard. There was a `skills/workflow-escalate/SKILL.md`, read host-side and rendered into the prompt; issue #169 moved the diagnostician onto the pure transport, where the template is what a leaf receives, and deleted the `SKILL` rather than leave a twin of the same text.
+- `Workflow escalate (failure diagnostician)`: **no `SKILL`**. The read-only, one-shot escalate LLM the conductor consults when the deterministic decision tables cannot classify a phase failure — it emits a routing directive deciding rollback distance, severity `minor|major|critical`, and reuse-vs-discard of existing artifacts. Its persona, directive schema and decision criteria are the static body of its launch template — `tools/prompt_templates/workshop_escalate_diagnose.txt` since issue #534 PR-J4-a, when it became a reading `workshop leaf`, the pure `pure_escalate_diagnose.txt` before it (kept, its twin, until the pure path is deleted) — which is the canonical source and is hashed by the prompt-contract drift guards. There was a `skills/workflow-escalate/SKILL.md`, read host-side and rendered into the prompt; issue #169 moved the diagnostician onto the pure transport, where the template is what a leaf receives, and deleted the `SKILL` rather than leave a twin of the same text.
 
 ## Operations Rules
 1. When handling multiple phases in one piece of work, switch the corresponding `SKILL` per phase.

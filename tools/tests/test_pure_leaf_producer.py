@@ -1767,7 +1767,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
 
         def _rec(child_arid, request, entry=None, **kw):
             requests.append(request)
-            return orig_rec(child_arid, request)
+            return orig_rec(child_arid, request, entry, **kw)
 
         def _spawn(prompt_text, child_env, entry=None, **kwargs):
             spawn_kwargs.append(dict(kwargs))
@@ -2144,7 +2144,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
 
             def _rec(child_arid, request, entry=None, **kw):  # capture the per-launch request shape
                 captured.append(request)
-                return orig(child_arid, request)
+                return orig(child_arid, request, entry, **kw)
 
             def _spawn(prompt_text, child_env, entry=None, **kwargs):
                 spawn_kwargs.append(dict(kwargs))
@@ -2556,7 +2556,7 @@ class _RenderingFakeConductor(_PureFakeConductor):
     def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
         self.prompts = getattr(self, "prompts", [])
         self.prompts.append(prompt_text)
-        return super().spawn_leaf(prompt_text, child_env, **kwargs)
+        return super().spawn_leaf(prompt_text, child_env, entry, **kwargs)
 
 
 class PureProducerExemplarTests(unittest.TestCase):
