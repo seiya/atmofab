@@ -12515,6 +12515,11 @@ class Conductor:
 
     @staticmethod
     def _is_deterministic_substep(phase: str, substep: str | None) -> bool:
+        # The diagnostician is a leaf on every phase, `build` included (whose PHASE runs
+        # in-process): `build_launch_request`'s `deterministic` stamp excludes it the same way.
+        from tools.orchestration_runtime import DIAGNOSE_SUBSTEP
+        if substep == DIAGNOSE_SUBSTEP:
+            return False
         return (phase == "build"
                 or (phase == "validate" and substep in ("pre_judge", "execute", "post_judge"))
                 or (phase == "generate" and substep == "gate")

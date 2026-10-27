@@ -24427,6 +24427,34 @@ class LeafEntryThreadingTests(unittest.TestCase):
                         c, f"arid-{phase}", {"step": phase, "substep": substep or ""}, entry)
                     self.assertNotIn(field, response)
 
+    def test_the_build_diagnostician_records_its_surface(self) -> None:
+        """`build`'s PHASE runs in-process, its diagnostician does not: `build.diagnose` records
+        the reading surface like every other phase's — the five file tools on an HTTP
+        `defaults` (which the pre_judge audit requires, `_http_workshop_record_violations`),
+        the reader tool list on a claude one. Round 2 found `_is_deterministic_substep`
+        answering True for `(build, diagnose)`, so the deterministic-first order of round 1
+        recorded nothing there and the next Validate failed the run on the diagnostician's
+        own record."""
+        from tools.pure_leaf import HTTP_FILE_TOOLS
+        self.assertFalse(wc.Conductor._is_deterministic_substep("build", "diagnose"))
+        repo = self._scratch_repo_root()
+        for body, field, value in (
+                ("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n",
+                 "claude_tools", ["Read,Write,Edit,Glob,Grep"]),
+                ("defaults:\n  lineage_timeout_s: 2700\n  provider: anthropic_api\n"
+                 "  api_key_env: K\n  model: m\n"
+                 "phases:\n  validate:\n    substeps:\n      judge:\n"
+                 "        provider: claude_cli\n", "http_tool_surface", list(HTTP_FILE_TOOLS))):
+            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+                             orchestration_agent_run_id="O", env={},
+                             llm_config=self._config_text(body))
+            for phase in ("build", "compile", "generate", "validate"):
+                with self.subTest(field=field, phase=phase):
+                    response = self._record_launch_response(
+                        c, f"arid-{phase}", {"step": phase, "substep": "diagnose"},
+                        c.entry_for(None, None))
+                    self.assertEqual(response.get(field), value)
+
     def test_record_launch_does_not_write_a_stray_codex_schema(self) -> None:
         """Re-deriving the argv must not have side effects of its own.
 
