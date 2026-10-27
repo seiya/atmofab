@@ -297,7 +297,10 @@ HTTP_READER_TOOL_SURFACE_TEXT = (
     f"{HTTP_READ_PAGE_BYTES:,} bytes per call: read each file from its first line, continuing "
     "from `next_start_line` until it is null, and search one file with `grep_file`. Write your "
     "one document with `write_file`: it reaches your tree that way only, never through the text "
-    "of your reply. The seeds and `CONTRACT.md` are read-only: a write to one is refused.")
+    "of your reply. A reply longer than your output limit is cut and none of its tool calls "
+    "run, and a session whose last reply is cut is reviewed again from the seeds: write your "
+    "document in a reply of its own, and keep each reply short. The seeds and `CONTRACT.md` "
+    "are read-only: a write to one is refused.")
 
 #: The lineage-home directory of each provider that runs a workshop leaf, keyed by PROVIDER
 #: (issue #534 PR-J3-b): the two CLIs keep their backend tokens, the two HTTP providers share

@@ -742,7 +742,7 @@ _WORKSHOP_CONTRACT_DIGESTS = {
     # declarations; the producer system prompt and producing templates name the host's
     # operations without the MCP transport (`workshop-7` shipped with PR-J3-a's PR #552, main
     # 3422004c).
-    "workshop-8": "dd9fc473d2e4eea6b56d94bd2c6efafc938a08a1df255a5aa304d3fd0859187d",
+    "workshop-8": "fc00694897105903aa091ec890b5adc1ddf5c404befd64dfe91503355dc49182",
 }
 
 

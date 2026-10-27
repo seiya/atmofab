@@ -9764,7 +9764,6 @@ class Conductor:
             WORKSHOP_READER_SYSTEM_PROMPT,
             WORKSHOP_SYSTEM_PROMPT,
         )
-        from tools.workshop_tree import append_jsonl
         from tools.workshop_wrapper import run_wrapper_op
         histories = self._workshop_http_histories()
         lineage_id = lineage.paths.lineage_id
@@ -9787,7 +9786,12 @@ class Conductor:
         turns_path = lineage.paths.record_dir / "loop_turns.jsonl"
 
         def record(event: dict[str, Any]) -> None:
-            append_jsonl(turns_path, {"agent_run_id": child_arid, "at": _iso_now(), **event})
+            # ASCII-escaped: a tool argument the model sent may carry a lone surrogate (JSON
+            # accepts `"\ud800"`), which UTF-8 cannot encode; escaped it is recorded, not raised.
+            turns_path.parent.mkdir(parents=True, exist_ok=True)
+            with turns_path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({"agent_run_id": child_arid, "at": _iso_now(),
+                                         **event}) + "\n")
 
         env = self._child_env(child_arid, entry)
         result = run_workshop_loop(
@@ -10135,6 +10139,14 @@ class Conductor:
             nothing gates it, so carrying a dead lineage's `verdict.json` forward would certify
             a document no finished launch stood behind."""
             assert self.lineage is not None
+            from tools.workshop_tree import end_lineage, read_lineage_record
+            if read_lineage_record(self.lineage.paths).get("ended_by") is None:
+                # Still open: a READING launch the unfinished-review rule re-runs after a cut
+                # last reply (HTTP, issue #534 PR-J3-b), which no bound ended. Nothing will
+                # continue it, and its conversation is forgotten. A dead or timed-out launch was
+                # ended (and dropped) by its turn's tail already.
+                end_lineage(self.lineage.paths, "superseded")
+                self.conductor._drop_workshop_http_history(self.lineage.paths.lineage_id)
             self.prior = None if self.reading else self.lineage.paths
             self.lineage, self.resume_session_id = None, None
 
@@ -10222,8 +10234,12 @@ class Conductor:
             (`pure_leaf.HTTP_PRODUCER_TOOL_SURFACE_TEXT` / `HTTP_READER_TOOL_SURFACE_TEXT`), the
             contract outside the fence."""
             if turn.truncated:
-                return (f"your last reply was cut at the output limit ({turn.truncated}), and "
-                        "none of its tool calls ran: no file it was writing reached your tree")
+                if " inside a `" in turn.truncated:
+                    return (f"your last reply was cut at the output limit ({turn.truncated}), "
+                            "and none of its tool calls ran: no file it was writing reached "
+                            "your tree")
+                return (f"your last reply was cut at the output limit ({turn.truncated}) "
+                        "before it finished")
             if (turn.ended_reason is not None and turn.tool_call_made is False
                     and turn.proc.returncode == 0 and not turn.proc.timed_out
                     and not turn.cancelled):

@@ -324,6 +324,39 @@ class _GenerateProducer(_Dialect):
         self.assertIn(pure_leaf.HTTP_PRODUCER_TOOL_SURFACE_TEXT, prompt)
         self.assertNotIn("MCP", prompt)
 
+    def test_a_cold_repair_restates_the_tool_surface_row(self) -> None:
+        """Round 2 of PR-J3-b: what to do about a cut reply is the row's, outside the
+        findings' fence, so a COLD repair (here after the lineage timed out) carries it."""
+        self.conductor([{"sleep": 3, "then": self.done("late")},
+                        self.calls(*_bundle_writes()), self.done()])
+        with mock.patch.object(wc.Conductor, "_workshop_timeout",
+                               side_effect=[(1, "lineage_timeout_s"),
+                                            (600, "lineage_timeout_s")]):
+            self.assertEqual(self.run_substep().status, "pass")
+        cold_repair = self.requests()[1]
+        self.assertFalse(cold_repair.get("warm_resume"))
+        self.assertTrue(cold_repair.get("repair_findings"))
+        payload = ort.prepare_launch_request_payload(dict(cold_repair))
+        prompt = ort.render_launch_prompt_text(payload)
+        self.assertIn(pure_leaf.HTTP_PRODUCER_TOOL_SURFACE_TEXT, prompt)
+        fence = prompt.index(pure_leaf.PURE_DOC_FENCE_END)
+        self.assertGreater(prompt.index(pure_leaf.HTTP_PRODUCER_TOOL_SURFACE_TEXT), fence)
+
+    def test_a_tool_argument_with_a_lone_surrogate_is_recorded_not_raised(self) -> None:
+        """Codex, round 2: JSON accepts `"\\ud800"`; the write is refused and the record row
+        is written escaped rather than aborting the conductor."""
+        lone = '{"path": "x.f90", "content": "\\ud800"}'
+        if self.PROVIDER == "anthropic_api":
+            bad = ([tool_use("s", "write_file", {}, raw_input=lone)], "tool_use")
+        else:
+            bad = ({"tool_calls": [chat_call("s", "write_file", lone)]}, "tool_calls")
+        self.conductor([bad, self.calls(*_bundle_writes()), self.done()])
+        self.assertEqual(self.run_substep().status, "pass")
+        rows = (self.paths("child-1").record_dir / "loop_turns.jsonl").read_text()
+        self.assertIn("\\ud800", rows)
+        self.assertEqual(self.results(self.api.main_requests()[1])[0]["category"],
+                         "tool_refused")
+
     def test_the_persisted_reply_is_redacted(self) -> None:
         """The model's answer channel is persisted redacted (`persist_stdout`), as on the pure
         HTTP path."""
@@ -423,6 +456,21 @@ class MachineHistoryTests(unittest.TestCase):
         machine, histories, _paths = self._machine(_time.time() + 600)
         machine.home_gone()
         self.assertEqual(histories, {})
+
+
+class LoopNoteTests(unittest.TestCase):
+    def test_the_cut_note_says_what_was_cut(self) -> None:
+        from types import SimpleNamespace
+        note = wc.Conductor._WorkshopLineageMachine.loop_note
+        proc = SimpleNamespace(returncode=0, timed_out=False)
+        inside = SimpleNamespace(truncated="max_output_tokens=9 inside a `write_file` call",
+                                 ended_reason="truncated", tool_call_made=True, proc=proc,
+                                 cancelled=False)
+        self.assertIn("none of its tool calls ran", note(inside))
+        text_only = SimpleNamespace(truncated="max_output_tokens=9", ended_reason="truncated",
+                                    tool_call_made=True, proc=proc, cancelled=False)
+        self.assertNotIn("tool calls", note(text_only))
+        self.assertIn("before it finished", note(text_only))
 
 
 class AnthropicGenerateProducerTests(_GenerateProducer, unittest.TestCase):
@@ -620,6 +668,13 @@ class _Reading(_Dialect):
         self.assertFalse(requests[1].get("warm_resume"))
         [failed] = [kw for name, kw in events if name.endswith("_attempt_failed")]
         self.assertIn("cut at the output limit", failed["detail"])
+        # The cut lineage is not left open: nothing continues it, and its conversation goes.
+        first = workshop_tree.LineagePaths(
+            homes_root=self.c.homes, orchestration_id=_ORCH, lineage_id="child-1",
+            orchestration_dir=self.repo / "workspace" / "orchestrations" / _ORCH,
+            backend="http")
+        self.assertEqual(workshop_tree.read_lineage_record(first)["ended_by"], "superseded")
+        self.assertNotIn("child-1", self.c._workshop_http_histories())
 
     def test_a_timeout_before_any_tool_call_carries_no_no_tool_call_note(self) -> None:
         self.conductor([{"sleep": 3, "then": self.done("late")},

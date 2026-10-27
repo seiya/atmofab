@@ -10353,9 +10353,11 @@ def _render_pure_repair_prompt(request_payload: dict[str, Any]) -> str:
             + _fence_pure_doc(prior)) if prior else ""
         subs["launch_body"] = _pure_launch_body(request_payload)
         # The launch body starts after the persona line, which carries a workshop prompt's
-        # `<tool_surface>`; the verdict repair (the one repair template with the slot) states it
-        # beside the body, since a reader row carries its transport's paging rule (step 3
-        # PR-J2). `_pure_launch_body` has already refused a provider with no row.
+        # `<tool_surface>`; every workshop repair template states it beside the body — the
+        # verdict repair since step 3 PR-J2 (a reader row carries its transport's paging rule),
+        # the bundle and IR repairs since PR-J3-b (an HTTP producer row carries what to do about
+        # a cut reply, which the findings' fence may only diagnose). `_pure_launch_body` has
+        # already refused a provider with no row.
         subs["tool_surface"] = (
             _workshop_tool_surface_table(request_payload)[request_payload["workshop_provider"]]
             if _pure_leaf_is_workshop_request(request_payload) else "")
