@@ -1,0 +1,40 @@
+{
+  "agent_role": "substep",
+  "node_key": "component/dynamics_advection_diffusion_boundary_1d_periodic_copy@0.2.1",
+  "step": "validate",
+  "orchestration_id": "replay_20261027T152221Z_2da54138",
+  "agent_run_id": "bad790d2-6230-46a2-a8a8-6c3e6199eb66",
+  "parent_agent_run_id": "4ad02130-d13d-47cf-9e69-7eab61026940",
+  "agent_model": "opus",
+  "workflow_mode": "dev",
+  "ir_ref": "workspace/ir/component__dynamics_advection_diffusion_boundary_1d_periodic_copy__0.2.1/dynamics-advection-diffusion-boundary-1d-periodic-copy_20261007_001",
+  "pipeline_ref": "workspace/pipelines/component__dynamics_advection_diffusion_boundary_1d_periodic_copy__0.2.1/fortran_cpu/dynamics-advection-diffusion-boundary-1d-periodic-copy_20261007_001",
+  "substep": "diagnose",
+  "run_id": "run_20261007_001",
+  "dependency_ref": "workspace/pipelines/component__dynamics_advection_diffusion_boundary_1d_periodic_copy__0.2.1/fortran_cpu/dynamics-advection-diffusion-boundary-1d-periodic-copy_20261007_001",
+  "issue_severity": "none",
+  "repair_strategy": "none",
+  "repair_target_agent_run_id": "none",
+  "repair_reason": "none",
+  "leaf_mode": "workshop",
+  "prompt_contract_version": "workshop-9",
+  "workshop_lineage_id": "bad790d2-6230-46a2-a8a8-6c3e6199eb66",
+  "workshop_provider": "claude_cli",
+  "allowed_output_paths": [],
+  "skill_name": "",
+  "skill_ref": "",
+  "skill_must_read_refs": "",
+  "pure_context": {
+    "diagnosis_document": "<redacted: 14555 bytes sha256:19c7c79b7c4275e45831a98ff77a40270268d939125e0d155f074a326fe53118>"
+  },
+  "launch_prompt_full": "<redacted: 8768 bytes sha256:bfb6b6ad643daf920c5cbd141d493fb90bde5e2510ab56b7057586701b1f30d4>",
+  "launch_prompt_ref": "workspace/orchestrations/replay_20261027T152221Z_2da54138/launches/bad790d2-6230-46a2-a8a8-6c3e6199eb66.prompt.txt",
+  "_resolved_build_system": "make",
+  "_resolved_makefile_host_authored": true,
+  "sandbox_profile_ref": "workspace/orchestrations/replay_20261027T152221Z_2da54138/sandbox_profiles/bad790d2-6230-46a2-a8a8-6c3e6199eb66.json",
+  "_capture_source": {
+    "path": "workspace/orchestrations/replay_20261027T152221Z_2da54138/launches/bad790d2-6230-46a2-a8a8-6c3e6199eb66.request.json",
+    "bytes": 26474,
+    "sha256": "5321d0564e9b7ffe95496011694ebc5a59178fecfb2d5485cba5b891e1314693"
+  }
+}

@@ -138,6 +138,13 @@ _SPEC_PATH_BY_NODE_KEY = {
     # The workshop capture's node (issue #534 step 1's A/B run 2).
     "component/dynamics_shallow_water_time_update_2d_rk4@0.1.1":
         "spec/component/dynamics/shallow_water/dynamics_shallow_water_time_update_2d_rk4",
+    # The three reading captures' node (closing run (4), issue #534 PR-J4-b's corpus)...
+    "problem/shallow_water2d_channel@0.2.5":
+        "spec/problem/dynamics/shallow_water/shallow_water2d_channel",
+    # ...and the diagnostician capture's (PR-J4-a's replay of `d5684138`).
+    "component/dynamics_advection_diffusion_boundary_1d_periodic_copy@0.2.1":
+        "spec/component/dynamics/advection_diffusion/"
+        "dynamics_advection_diffusion_boundary_1d_periodic_copy",
 }
 
 # Fields record-launch adds/derives; not produced by build_launch_request.
@@ -174,8 +181,12 @@ _DETERMINISTIC_ONLY_NON_BUILDER_KEYS = {"skill_must_read_refs"}
 # fixture is no longer a capture. The field is compared as: the builder emits the CURRENT
 # constant, and the capture carries a well-formed version of the same family.
 _HISTORICAL_KEYS = {"prompt_contract_version"}
-_CONTRACT_VERSION_FORM = re.compile(r"^pure-\d+$")
-_WORKSHOP_CONTRACT_VERSION_FORM = re.compile(r"^workshop-\d+$")
+#: The form of `PURE_PROMPT_CONTRACT_VERSION` — `pure-NN` through issue #534 PR-J4-b, `leaf-NN`
+#: from the first bump after it (the counter stops saying `pure`).
+_CONTRACT_VERSION_FORM = re.compile(r"^(pure|leaf)-\d+$")
+#: The form a CAPTURED workshop row may carry: a capture keeps the version of its run, and the
+#: workshop leaf had its own counter (`workshop-N`) until PR-J4-b retired it.
+_CAPTURED_WORKSHOP_VERSION_FORM = re.compile(r"^(pure|leaf|workshop)-\d+$")
 #: Builder fields a `workshop leaf` capture taken under `workshop-1` (issue #534 step 1's A/B,
 #: before step 2 added them) does not carry. Exempt on such a capture only: a later capture
 #: carries them and is held to them like any other field.
@@ -298,7 +309,7 @@ def _assert_builder_reproduces(tc: unittest.TestCase, req: dict) -> None:
         dependency_surface=tuple(req.get("dependency_surface", ())),
         exemplar=req.get("exemplar"),
         warm_resume=bool(req.get("warm_resume")),
-        pure_leaf=req.get("leaf_mode") in ("pure", "workshop"),
+        pure_leaf=req.get("leaf_mode") == "workshop",
         pure_context=req.get("pure_context"),
         pure_shape=req.get("pure_shape", ""),
         pure_language=req.get("pure_language", ""),
@@ -318,14 +329,11 @@ def _assert_builder_reproduces(tc: unittest.TestCase, req: dict) -> None:
         if key in _HISTORICAL_KEYS:
             continue
         tc.assertEqual(value, req[key], f"{step}/{substep}: field {key} mismatch")
-    if req.get("leaf_mode") == "pure":
+    if req.get("leaf_mode") == "workshop":
         from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
         tc.assertEqual(built["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
-        tc.assertRegex(req["prompt_contract_version"], _CONTRACT_VERSION_FORM)
-    if req.get("leaf_mode") == "workshop":
-        from tools.pure_leaf import WORKSHOP_PROMPT_CONTRACT_VERSION
-        tc.assertEqual(built["prompt_contract_version"], WORKSHOP_PROMPT_CONTRACT_VERSION)
-        tc.assertRegex(req["prompt_contract_version"], _WORKSHOP_CONTRACT_VERSION_FORM)
+        tc.assertRegex(PURE_PROMPT_CONTRACT_VERSION, _CONTRACT_VERSION_FORM)
+        tc.assertRegex(req["prompt_contract_version"], _CAPTURED_WORKSHOP_VERSION_FORM)
     # the builder must cover every real field except record-launch extras
     real_business_keys = set(req) - _NON_BUILDER_KEYS
     if req.get("deterministic"):
@@ -409,23 +417,27 @@ class BuildLaunchRequestTest(unittest.TestCase):
         self.assertTrue(real, "no captured request.json artifacts found")
         expected_keys = {
             ("build", None, "deterministic"), ("validate", "execute", "deterministic"),
-            ("compile", "generate", "pure"), ("compile", "verify", "pure"),
-            ("generate", "generate", "pure"), ("generate", "verify", "pure"),
-            ("validate", "judge", "pure"),
             # Issue #534: run 2 of step 1's A/B (`orch_20261023T105639Z_3106b29e`).
             ("generate", "generate", "workshop"),
             # Issue #534: step 2 PR-1's billed run, small node (`orch_20261023T233910Z_159fd6eb`).
             ("compile", "generate", "workshop"),
+            # Issue #534 PR-J4-b: the three reading captures, codex, from closing run (4)
+            # (`orch_20261026T085505Z_d87e8903`: `df3969bf`, `7c02cd4e`, and `eea25683`, the
+            # relaunch after the credit-killed `27b72561`) — they replace the five pure rows
+            # (`pure-49`), deleted with the pure leaf — and the diagnostician's, claude, from
+            # PR-J4-a's replay (`replay_20261027T152221Z_2da54138`, `bad790d2`).
+            ("compile", "verify", "workshop"), ("generate", "verify", "workshop"),
+            ("validate", "judge", "workshop"), ("validate", "diagnose", "workshop"),
         }
         self.assertEqual(set(real), expected_keys, "captured fixture set changed")
-        # Every row is EITHER deterministic OR host-rendered (pure or workshop), asserted rather
-        # than assumed: a row that is neither would be an agentic-shaped capture coming back,
-        # which is the thing the docstring above says this corpus no longer holds.
+        # Every row is EITHER deterministic OR workshop, asserted rather than assumed: a row that
+        # is neither would be an agentic- or pure-shaped capture coming back, which is the thing
+        # the docstring above says this corpus no longer holds.
         for (step, substep, _mode), req in real.items():
             self.assertNotEqual(
                 bool(req.get("deterministic")),
-                req.get("leaf_mode") in ("pure", "workshop"),
-                f"{step}/{substep} is neither deterministic nor host-rendered, or both")
+                req.get("leaf_mode") == "workshop",
+                f"{step}/{substep} is neither deterministic nor workshop, or both")
 
         for (step, substep, _mode), req in real.items():
             with self.subTest(step=step, substep=substep):
@@ -495,8 +507,8 @@ class BuildLaunchRequestTest(unittest.TestCase):
 
         from tools.orchestration_runtime import PURE_CONTEXT_REQUIRED_KEYS
         pure_rows = {k: v for k, v in _load_real_requests().items()
-                     if v.get("leaf_mode") in ("pure", "workshop")}
-        self.assertEqual(len(pure_rows), 7)
+                     if v.get("leaf_mode") == "workshop"}
+        self.assertEqual(len(pure_rows), 6)
         for (step, substep, _mode), req in pure_rows.items():
             with self.subTest(step=step, substep=substep):
                 if "pure_context" not in req:
