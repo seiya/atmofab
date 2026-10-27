@@ -8785,6 +8785,15 @@ class DiagnosticianTest(unittest.TestCase):
             usage={"input_tokens": 10, "output_tokens": 20})
         c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
         self.assertEqual(self._finalized_row(c)["usage"]["total_tokens"], 30)
+        # ...and the launch is a CODEX reading lineage (issue #534 PR-J4-a): the request names
+        # the provider whose reader row the prompt states, and the tree carries the codex
+        # reading helper beside the diagnosis document.
+        from tools.pure_leaf import CODEX_READ_HELPER_NAME
+        request = next(cap for sub, cap in c.calls if sub == "record-launch")["--request-json"]
+        self.assertEqual(request["workshop_provider"], "codex_cli")
+        tree = c.homes / c.orchestration_id / "codex" / "child-1" / "tree"
+        self.assertTrue((tree / CODEX_READ_HELPER_NAME).is_file())
+        self.assertTrue((tree / "diagnosis.json").is_file())
 
     def test_a_diagnostician_with_no_usage_says_so_on_its_row(self) -> None:
         """`usage_status` is the field that says WHY the numbers are empty — without it a
