@@ -76,8 +76,9 @@
 # `capabilities:` narrows what a provider may be used for. The key is RESTRICT-ONLY — it may
 # name a subset of what the provider has (`claude_cli`: pure, warm_resume, workshop)
 # and never more, or the load is refused with
-# `llm_config_capability_exceeds_provider`. Every leaf of this sample is a pure leaf, the
-# default leaf model of every substep, so a pure entry
+# `llm_config_capability_exceeds_provider`. Every substep leaf of this sample is a pure leaf,
+# the default leaf model of every substep (`defaults` serves the diagnostician, a reading
+# workshop leaf, so it keeps `workshop`), so a pure entry
 # narrowed away from `pure` can run nothing and is refused with
 # `llm_config_capability_insufficient_for_substep`. No sample sets the key.
 #

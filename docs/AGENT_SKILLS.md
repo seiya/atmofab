@@ -6,7 +6,7 @@ This document defines the reference conventions for the `skills` used in the pro
 > every LLM substep of the core workflow runs as a `pure-function leaf`: it holds no tools, reads
 > nothing from disk, and receives its whole contract inlined in the launch prompt the host renders
 > (`tools/prompt_templates/pure_*.txt`). The one other leaf shape, a `workshop leaf`
-> (any of the five LLM substeps but `escalate` on a `leaf: workshop` entry, `docs/ORCHESTRATION.md` §workshop leaf), reads
+> (any of the five LLM substeps on a `leaf: workshop` entry, and the `escalate` diagnostician always since issue #534 PR-J4-a, `docs/ORCHESTRATION.md` §workshop leaf), reads
 > its contract from the prompt the host renders (`tools/prompt_templates/workshop_*.txt`) and the
 > `seed` files the host places in its `work tree`; no `SKILL` is among them. The five core phase `SKILL`s are deleted with the agentic
 > leaf that read them. What is left under `skills/` is the procedures an OPERATOR runs — the
@@ -65,7 +65,7 @@ names a `SKILL`.
 - `Build`: conductor in-process (see `docs/workflow/phases/phase_03_build.md`)
 - `Validate execute`: conductor in-process (see `docs/workflow/phases/phase_04_validate.md`)
 - `Validate judge`: `tools/prompt_templates/pure_validate_judge.txt`; on a `leaf: workshop` entry, a reading `workshop leaf` rendered from `tools/prompt_templates/workshop_validate_judge.txt`
-- `Escalate diagnose`: `tools/prompt_templates/pure_escalate_diagnose.txt`
+- `Escalate diagnose`: `tools/prompt_templates/workshop_escalate_diagnose.txt` (a reading workshop leaf since issue #534 PR-J4-a; `pure_escalate_diagnose.txt` is its pure twin until the pure path is deleted)
 - Repair turns: `tools/prompt_templates/pure_bundle_repair.txt`; a `workshop leaf`'s, `tools/prompt_templates/workshop_bundle_repair.txt` on `Generate.generate`, `tools/prompt_templates/workshop_ir_repair.txt` on `Compile.generate`, and `tools/prompt_templates/workshop_verdict_repair.txt` on the three judging substeps
 
 ## phase-to-Skill correspondence table (optional flows)

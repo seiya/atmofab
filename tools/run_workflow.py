@@ -2831,7 +2831,8 @@ def _run_main(
         # Downstream (preflight, the recorded invocation, the closure driver) still speaks the
         # single-backend vocabulary; derive it FROM the config, which is now its only source.
         # NOT off `defaults` directly: since issue #169 `defaults` may be an HTTP provider (the
-        # one launch it serves, the escalate diagnostician, is a pure leaf), and an HTTP
+        # one launch it serves, the escalate diagnostician, was a pure leaf and is a reading workshop
+        # leaf since issue #534 PR-J4-a), and an HTTP
         # provider launches no process — `--agent-backend` / `--backend` take
         # `choices={claude, codex}` and would die on an argparse usage dump. `cli_launch_identity`
         # answers with what the configuration can actually launch and names its own refusal

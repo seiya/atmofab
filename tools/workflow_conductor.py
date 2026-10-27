@@ -1441,9 +1441,10 @@ def _diagnosis_document(node_key: str, phase: str, failed_arids: list[str],
                         context: dict[str, Any], workflow_mode: str) -> str:
     """The diagnostician's whole closed context, as one JSON document.
 
-    The persona, the directive schema and the decision criteria are the pure launch
-    template's static body (`pure_escalate_diagnose.txt`, hashed by the prompt-contract drift
-    guard); everything that varies with the failure is here. The artifacts keep
+    The persona, the directive schema and the decision criteria are the launch template's
+    static body (`workshop_escalate_diagnose.txt` since issue #534 PR-J4-a, its pure twin
+    `pure_escalate_diagnose.txt` before; both hashed by the prompt-contract drift guards);
+    everything that varies with the failure is here — seeded as `diagnosis.json`. The artifacts keep
     `_bounded_context_json`'s per-artifact budget and the caller's ordering, so the failed
     phase's own evidence still gets the large slices.
     """
@@ -1482,7 +1483,7 @@ def _last_json_object(text: str) -> Any:
 # The only rollback targets the diagnostician may name (the LLM-authored producers the
 # conductor can regenerate). `build` / `validate` are deterministic phases the conductor cannot
 # re-run in place to fix a defect, so an out-of-contract target -> None -> fail_closed rather
-# than a wasted reopen. Matches the enum the `pure_escalate_diagnose.txt` template states.
+# than a wasted reopen. Matches the enum the diagnose templates state.
 _DIAGNOSTICIAN_TARGET_PHASES: frozenset[str] = frozenset({"compile", "generate"})
 
 
