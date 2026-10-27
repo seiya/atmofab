@@ -324,6 +324,16 @@ class _GenerateProducer(_Dialect):
         self.assertIn(pure_leaf.HTTP_PRODUCER_TOOL_SURFACE_TEXT, prompt)
         self.assertNotIn("MCP", prompt)
 
+    def test_the_persisted_reply_is_redacted(self) -> None:
+        """The model's answer channel is persisted redacted (`persist_stdout`), as on the pure
+        HTTP path."""
+        self.conductor([self.calls(*_bundle_writes()), self.done(f"the key is {SECRET}")])
+        self.assertEqual(self.run_substep().status, "pass")
+        text = (self.repo / "workspace" / "orchestrations" / _ORCH / "agents" / "child-1"
+                / "dialogs" / "leaf.stdout.log").read_text()
+        self.assertIn("the key is", text)
+        self.assertNotIn(SECRET, text)
+
     def test_an_outer_reopen_in_the_same_process_is_warm(self) -> None:
         """`repair_strategy: reuse` on an open HTTP lineage this process holds is a WARM turn:
         the reopen's request carries the first launch's conversation (`warm_capable` holds
@@ -592,6 +602,40 @@ class _Reading(_Dialect):
             backend="http"))
         self.assertEqual(record["ended_by"], "lineage_timeout")
 
+
+    def test_a_cut_last_reply_makes_an_unfinished_review(self) -> None:
+        """Round 1 of PR-J3-b: the judge writes a provisional `pass`, then its last reply is
+        cut at the output limit. That `pass` is not accepted: the review is run again from the
+        seeds alone, as for a launch its bound ended."""
+        self.conductor([self.calls(self.write_output(self.passing())),
+                        self.cut("o2", "write_file", {"path": self.OUTPUT, "content": "{}"}),
+                        self.calls(self.write_output(self.passing())), self.done()])
+        events: list = []
+        with mock.patch.object(_HttpReviewerFake, "emit",
+                               lambda _self, name, **kw: events.append((name, kw))):
+            outcome = self.c.run_substep(self.refs, self.PHASE, self.SUBSTEP)
+        self.assertEqual(outcome.status, "pass", outcome)
+        requests = [c[1]["--request-json"] for c in self.c.calls if c[0] == "record-launch"]
+        self.assertEqual([r["workshop_lineage_id"] for r in requests], ["child-1", "child-2"])
+        self.assertFalse(requests[1].get("warm_resume"))
+        [failed] = [kw for name, kw in events if name.endswith("_attempt_failed")]
+        self.assertIn("cut at the output limit", failed["detail"])
+
+    def test_a_timeout_before_any_tool_call_carries_no_no_tool_call_note(self) -> None:
+        self.conductor([{"sleep": 3, "then": self.done("late")},
+                        self.calls(self.write_output(self.passing())), self.done()])
+        failed_events: list = []
+        with mock.patch.object(wc.Conductor, "_workshop_timeout",
+                               side_effect=[(1, "lineage_timeout_s"),
+                                            (600, "lineage_timeout_s")]), \
+                mock.patch.object(_HttpReviewerFake, "emit",
+                                  lambda _self, name, **kw: failed_events.append(kw)
+                                  if name.endswith("_attempt_failed") else None):
+            self.assertEqual(self.c.run_substep(self.refs, self.PHASE, self.SUBSTEP).status,
+                             "pass")
+        self.assertEqual(len(failed_events), 1)
+        self.assertIn("ended by its bound", failed_events[0]["detail"])
+        self.assertNotIn("returned no tool call", json.dumps(failed_events))
 
     def test_a_lineage_ended_by_its_bound_leaves_no_history(self) -> None:
         """Every launch's lineage times out: the review is run again until the budget is spent

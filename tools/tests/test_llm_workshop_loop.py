@@ -373,6 +373,33 @@ class StreamReaderTests(unittest.TestCase):
         self.assertEqual(reply.calls[0].arguments, {"path": "a", "content": "b"})
 
 
+class StreamEndTests(unittest.TestCase):
+    def test_an_error_event_wins_over_message_stop(self) -> None:
+        frames = [("message_start", json.dumps({"message": {"model": "m", "usage": {}}})),
+                  ("error", json.dumps({"error": {"type": "overloaded_error",
+                                                  "message": "Overloaded"}})),
+                  ("message_stop", "{}")]
+        reply, error = loop._anthropic_stream_reply(frames)
+        self.assertIsNone(reply)
+        self.assertIn("overloaded_error", error)
+
+
+class SeveredTeardownTests(_Base):
+    def test_a_complete_stream_whose_teardown_is_severed_is_not_a_transport_death(self) -> None:
+        """The provider's terminator is on the wire, then the connection dies before the
+        declared length: the reply is complete and is used (the pure path's rule)."""
+        for dialect in ("anthropic_api", "openai_compatible"):
+            with self.subTest(dialect=dialect):
+                self.dialect = dialect
+                self.calls = []
+                done = (_reply_anthropic([], "end_turn", "all done") if dialect == "anthropic_api"
+                        else ({"content": "all done"}, "stop"))
+                server = self.api([done], short_by=64)
+                result = self.run_loop(server)
+                self.assertIsNone(result.transport_error, result)
+                self.assertEqual(result.text, "all done")
+
+
 class UsageSumTests(_Base):
     def test_usage_is_summed_over_the_launch_s_requests_up_to_a_transport_error(self) -> None:
         server = self.api([_reply_anthropic([tool_use("a", "list_files", {})]),
@@ -425,10 +452,56 @@ class AnthropicEndsTests(_EndsMixin, _Base):
                            _reply_anthropic([], "end_turn", "ok")])
         history = loop.LoopHistory()
         self.run_loop(server, history=history)
-        self.run_loop(server, history=history)
+        self.rows = []
+        entry = _entry(self.dialect, server.base_url)
+        loop.run_workshop_loop(
+            entry, system="S", history=history, prompt="WARM REPAIR FINDINGS", tools=TOOLS,
+            call_tool=lambda n, a: {"ok": True}, deadline=time.monotonic() + 60,
+            deadline_name="d", env=ENV, record=self.rows.append)
         roles = [m["role"] for m in server.main_requests()[1]["messages"]]
         self.assertEqual(roles, ["user"])
         self.assertEqual(len(server.main_requests()[1]["messages"][0]["content"]), 2)
+        # The record re-carries the merged message whole, from its index.
+        [request] = [r for r in self.rows if r["event"] == "request"]
+        self.assertEqual(request["messages_from"], 0)
+        self.assertIn("WARM REPAIR FINDINGS", json.dumps(request["messages"]))
+        self.assertIn("PROMPT", json.dumps(request["messages"]))
+
+    def test_rebuilding_from_the_rows_gives_the_history(self) -> None:
+        """Replacing the rebuilt history from each request row's `messages_from` on (plus the
+        last appended reply, which only the next row or none carries) gives the history."""
+        server = self.api([_reply_anthropic([tool_use("a", "list_files", {})]),
+                           _reply_anthropic([tool_use("b", "list_files", {})], "max_tokens"),
+                           _reply_anthropic([tool_use("c", "list_files", {})]),
+                           _reply_anthropic([], "end_turn", "ok")])
+        history = loop.LoopHistory()
+        self.run_loop(server, history=history)
+        self.run_loop(server, history=history)
+        rebuilt: list = []
+        for row in self.rows:
+            if row["event"] == "request":
+                rebuilt[row["messages_from"]:] = row["messages"]
+        self.assertEqual(rebuilt, history.messages[:len(rebuilt)])
+        self.assertEqual(len(rebuilt), len(history.messages) - 1)
+
+    def test_a_context_window_stop_is_a_truncation(self) -> None:
+        server = self.api([_reply_anthropic([tool_use("a", "list_files", {})],
+                                            "model_context_window_exceeded")])
+        result = self.run_loop(server)
+        self.assertEqual(self.calls, [])
+        self.assertEqual(result.ended, loop.ENDED_TRUNCATED)
+        self.assertIn("context window", result.truncated)
+
+    def test_a_failed_tool_result_is_marked_is_error(self) -> None:
+        server = self.api([_reply_anthropic([tool_use("a", "no_such", {}),
+                                             tool_use("b", "list_files", {})]),
+                           _reply_anthropic([], "end_turn", "ok")])
+        history = loop.LoopHistory()
+        self.run_loop(server, history=history)
+        bad, good = [b for m in history.messages if m["role"] == "user"
+                     for b in m["content"] if b.get("type") == "tool_result"]
+        self.assertIs(bad.get("is_error"), True)
+        self.assertNotIn("is_error", good)
 
 
 class OpenAiEndsTests(_EndsMixin, _Base):
@@ -453,14 +526,25 @@ class OpenAiEndsTests(_EndsMixin, _Base):
         tool_msgs = [m for m in history.messages if m["role"] == "tool"]
         self.assertEqual([m["tool_call_id"] for m in tool_msgs], ["a", "b"])
 
-    def test_reasoning_content_is_recorded_and_not_replayed(self) -> None:
-        server = self.api([({"reasoning_content": "THOUGHT",
-                             "tool_calls": [chat_call("a", "list_files", {})]}, "tool_calls"),
-                           ({"content": "done"}, "stop")])
-        self.run_loop(server)
-        self.assertNotIn("THOUGHT", json.dumps(server.main_requests()[1]))
-        self.assertIn("THOUGHT", json.dumps([r for r in self.rows
-                                             if r["event"] == "response"]))
+    def test_reasoning_content_is_recorded_and_replayed_streamed_and_buffered(self) -> None:
+        """A thinking server that returns `reasoning_content` with `tools` requires it back on
+        every later request (DeepSeek: HTTP 400 otherwise); a reply with none sends none."""
+        for stream in (True, False):
+            with self.subTest(stream=stream):
+                self.rows = []
+                server = self.api([({"reasoning_content": "THOUGHT",
+                                     "tool_calls": [chat_call("a", "list_files", {})]},
+                                    "tool_calls"),
+                                   ({"tool_calls": [chat_call("b", "list_files", {})]},
+                                    "tool_calls"),
+                                   ({"content": "done"}, "stop")])
+                self.run_loop(server, stream=stream)
+                second, third = server.main_requests()[1:]
+                first_reply = second["messages"][2]
+                self.assertEqual(first_reply["reasoning_content"], "THOUGHT")
+                self.assertNotIn("reasoning_content", third["messages"][4])
+                self.assertIn("THOUGHT", json.dumps([r for r in self.rows
+                                                     if r["event"] == "response"]))
 
     def test_assistant_replay_shape(self) -> None:
         server = self.api([({"tool_calls": [chat_call("a", "list_files", {})]}, "tool_calls"),
@@ -566,7 +650,7 @@ class FileToolTests(unittest.TestCase):
         reserved = {"CONTRACT.md", "tests.md"}
         call = lambda path, content="x": loop.file_tool(
             self.root, reserved, "write_file", {"path": path, "content": content})
-        for bad in ("../x", "/etc/x", "a\\b", "a//b", "./a", ""):
+        for bad in ("../x", "/etc/x", "a\\b", "a//b", "./a", "", "a\x00b", "d/a\x00b"):
             self.assertFalse(call(bad)["ok"], bad)
         self.assertFalse(call("CONTRACT.md")["ok"])
         self.assertFalse(call("tests.md")["ok"])

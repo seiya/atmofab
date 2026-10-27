@@ -45,7 +45,7 @@
 # per reply and to change a long file with `edit_file`). `timeout_s` bounds each request and
 # `lineage_timeout_s` the lineage. No cache field is sent: the server's automatic prefix
 # caching applies where it supports it. A reasoning model's
-# `reasoning_content` is recorded and never sent back. Every tool result and tree file the leaf
+# `reasoning_content` is recorded and sent back with its reply (a thinking server requires it). Every tool result and tree file the leaf
 # reads is sent to the endpoint in each request (`docs/ORCHESTRATION.md` §workshop leaf, "On
 # the HTTP providers").
 #

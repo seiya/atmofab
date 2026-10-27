@@ -11509,10 +11509,12 @@ class Conductor:
                                 f"re-run test_bwrap_simulation.CodexReadingLeafCliTests, "
                                 f"MR5-e)")[:1000]
                     accepted_verdict = None
-            if (machine is not None and proc.timed_out
+            if (machine is not None and (proc.timed_out or turn.truncated)
                     and not (accepted_verdict is not None
                              and spec.status_of(accepted_verdict) == "fail")):
-                # A reading launch its BOUND ended (`lineage_timeout` / `leaf_timeout`) is an
+                # A reading launch its BOUND ended (`lineage_timeout` / `leaf_timeout`) — or,
+                # on an HTTP lineage, whose last reply was CUT at the output limit, so its last
+                # action never reached the tree (issue #534 PR-J3-b) — is an
                 # UNFINISHED review unless its tree holds a schema-valid `fail` (accepted: it
                 # routes to a repair or an escalation, never to a certification). Anything
                 # else — a `pass`, valid or not, or no document — is not accepted and not
@@ -11527,8 +11529,11 @@ class Conductor:
                 unfinished_review = True
                 accepted_verdict = None
                 category = spec.schema_category
+                ended_how = ("its last reply was cut at the output limit"
+                             if turn.truncated and not proc.timed_out
+                             else "the session was ended by its bound")
                 findings = machine.ended_note(
-                    f"the session was ended by its bound before the review finished, and "
+                    f"{ended_how} before the review finished, and "
                     f"{output} {held}: an unfinished review certifies nothing, so the review "
                     f"is run again from the seeds alone"[:1000], turn)
 

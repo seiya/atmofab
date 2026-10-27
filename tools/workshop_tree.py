@@ -507,6 +507,8 @@ def write_tree_file(root: Path, name: str, text: str, *,
             if exc.errno == errno.EISDIR:
                 return f"{rel.as_posix()}: is a directory"
             return f"{rel.as_posix()}: cannot be written ({exc.strerror or exc})"
+        except ValueError as exc:
+            return f"{rel.as_posix()}: is not a usable path ({exc})"
         with os.fdopen(fd, "wb") as stream:
             if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
                 return f"{rel.as_posix()}: is not a regular file"

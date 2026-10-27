@@ -27,7 +27,8 @@ The rules this module holds, each decided in the PR-J3-b plan (posted on #534):
   the last user message), set on a COPY at serialization — the stored history carries none; every
   user message is a content-block list, so the first request caches the launch prompt too. The
   assistant turn is replayed exactly as received. OpenAI: no cache field (the server's automatic
-  prefix caching); `reasoning_content` is recorded and never replayed.
+  prefix caching); `reasoning_content`, when a server returns it, is recorded and replayed on
+  the assistant message (a thinking server that returns it with `tools` requires it back).
 
 Stdlib only at import (`urllib` through `tools.llm_http_leaf`); the file tools import
 `tools.workshop_tree` when called.
@@ -73,7 +74,7 @@ LINEAGE_ENDED = "lineage_ended"
 TOOL_REFUSED = "tool_refused"
 
 #: The stop reasons that mean "the reply was cut at the output limit".
-_TRUNCATION_STOP_REASONS = frozenset({"max_tokens", "length"})
+_TRUNCATION_STOP_REASONS = frozenset({"max_tokens", "length", "model_context_window_exceeded"})
 
 #: The `ended` value of a launch a wrapper result ended (`ended: True`).
 ENDED_BY_WRAPPER = "wrapper_ended"
@@ -87,9 +88,12 @@ _CACHE_MARK = {"type": "ephemeral"}
 
 @dataclass
 class LoopHistory:
-    """One lineage's conversation: the stored `messages` (dialect-shaped, append-only, carrying
-    no `cache_control`) and how many of them the record already holds, so a `request` row of
-    `loop_turns.jsonl` carries only the messages appended since the previous request."""
+    """One lineage's conversation: the stored `messages` (dialect-shaped, carrying no
+    `cache_control`) and how many of them the record already holds, so a `request` row of
+    `loop_turns.jsonl` carries the messages from `recorded` on: every message appended since the
+    previous request, and the last `user` message again when a launch prompt was merged into it
+    (`_append_user`). Rebuilding the history from the rows is replacing it from each row's
+    `messages_from` on with the row's messages."""
 
     messages: list[dict[str, Any]] = field(default_factory=list)
     recorded: int = 0
@@ -139,7 +143,7 @@ class _Reply(NamedTuple):
     stop_reason: str
     usage: dict[str, Any]
     model: str
-    #: The openai `reasoning_content`, recorded and never replayed.
+    #: The openai `reasoning_content` (also on `message`, replayed when non-empty).
     reasoning: str
 
 
@@ -271,17 +275,21 @@ def user_message(entry: Any, text: str) -> dict[str, Any]:
     return {"role": "user", "content": text}
 
 
-def _append_user(entry: Any, history: list[dict[str, Any]], text: str) -> None:
+def _append_user(entry: Any, history: LoopHistory, text: str) -> None:
     """Append the launch prompt. On anthropic a history ending in a `user` message (the tool
     results of a launch a bound or a truncation ended) takes the prompt as one more block of
-    that message, so the replay never holds two consecutive user turns."""
+    that message, so the replay never holds two consecutive user turns; that message is then
+    marked unrecorded again, so the next `request` row carries it whole (a row's messages
+    replace the reconstructed history from its `messages_from` on)."""
+    messages = history.messages
     message = user_message(entry, text)
-    if (entry.provider == "anthropic_api" and history
-            and history[-1].get("role") == "user"
-            and isinstance(history[-1].get("content"), list)):
-        history[-1]["content"].extend(message["content"])
+    if (entry.provider == "anthropic_api" and messages
+            and messages[-1].get("role") == "user"
+            and isinstance(messages[-1].get("content"), list)):
+        messages[-1]["content"].extend(message["content"])
+        history.recorded = min(history.recorded, len(messages) - 1)
         return
-    history.append(message)
+    messages.append(message)
 
 
 # --- reply readers -----------------------------------------------------------------------
@@ -422,16 +430,21 @@ def _anthropic_stream_reply(frames: Sequence[tuple[str, str]]
                   "".join(text), calls, stop_reason, usage, model, ""), None
 
 
-def _openai_message(content: str, reasoning_free_calls: list[dict[str, Any]]
+def _openai_message(content: str, calls: list[dict[str, Any]], reasoning: str
                     ) -> dict[str, Any] | None:
-    """The stored assistant message (decision 6): `content` (null when empty and calls were
-    made), `tool_calls` only when there are some, and never `reasoning_content`."""
-    if not content and not reasoning_free_calls:
+    """The stored assistant message: `content` (null when empty and calls were made),
+    `tool_calls` only when there are some, and `reasoning_content` only when the server
+    returned one — replayed as received, because a server that returns it in a request with
+    `tools` requires it back on every later request (DeepSeek's thinking mode answers 400
+    otherwise; without `tools` it is ignored), and a server that returns none gets none."""
+    if not content and not calls and not reasoning:
         return None
     message: dict[str, Any] = {"role": "assistant",
                                "content": content if content else None}
-    if reasoning_free_calls:
-        message["tool_calls"] = reasoning_free_calls
+    if reasoning:
+        message["reasoning_content"] = reasoning
+    if calls:
+        message["tool_calls"] = calls
     return message
 
 
@@ -465,7 +478,7 @@ def _openai_reply(doc: Mapping[str, Any]) -> tuple[_Reply | None, str | None]:
     calls, wire = _openai_calls(message.get("tool_calls") or [])
     model = doc.get("model")
     finish = choice.get("finish_reason")
-    return _Reply(_openai_message(content, wire), content, calls,
+    return _Reply(_openai_message(content, wire, reasoning), content, calls,
                   finish if isinstance(finish, str) else "",
                   _openai_usage(doc.get("usage")),
                   model if isinstance(model, str) else "", reasoning), None
@@ -544,8 +557,8 @@ def _openai_stream_reply(frames: Sequence[tuple[str, str]]
          "function": {"name": slot["name"], "arguments": "".join(slot["arguments"])}}
         for _index, slot in sorted(calls.items()))
     content = "".join(text)
-    return _Reply(_openai_message(content, wire), content, parsed, finish or "", usage,
-                  model, "".join(reasoning)), None
+    return _Reply(_openai_message(content, wire, "".join(reasoning)), content, parsed,
+                  finish or "", usage, model, "".join(reasoning)), None
 
 
 # --- tool results ------------------------------------------------------------------------
@@ -647,7 +660,7 @@ def run_workshop_loop(
     base_timeout = float(getattr(entry, "timeout_s", None) or DEFAULT_HTTP_TIMEOUT_SECONDS)
     stream = bool(getattr(entry, "stream", True))
     messages = history.messages
-    _append_user(entry, messages, prompt)
+    _append_user(entry, history, prompt)
 
     usage_total: dict[str, int] = {}
     requests = 0
@@ -733,9 +746,11 @@ def run_workshop_loop(
         if reply.stop_reason in _TRUNCATION_STOP_REASONS:
             # Decision 4: a cut reply's calls are never executed and the reply is not
             # appended (its last call has no result a replay could carry).
-            limit = "max_output_tokens"
+            limit = (f"max_output_tokens={max_tokens}"
+                     if reply.stop_reason != "model_context_window_exceeded"
+                     else "the model's context window")
             cut = reply.calls[-1].name if reply.calls else None
-            truncated = (f"{limit}={max_tokens}" + (f" inside a `{cut}` call" if cut else ""))
+            truncated = limit + (f" inside a `{cut}` call" if cut else "")
             ended = ENDED_TRUNCATED
             text = reply.text
             return finish()
