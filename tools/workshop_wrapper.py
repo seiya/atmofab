@@ -52,6 +52,14 @@ WRAPPER_OPS: tuple[str, ...] = ("derive", "compile", "lint", "syntax_check", "ru
 IR_CHECK_OPS: tuple[str, ...] = ("check_ir",)
 #: Every operation any lineage may serve.
 ALL_OPS: tuple[str, ...] = WRAPPER_OPS + IR_CHECK_OPS
+#: The operations each PRODUCING pair's lineage serves, by `(step, substep)` (issue #534
+#: PR-J3-b): what the conductor's producer specs freeze into `WrapperContext.ops`, and what the
+#: launch-record audit compares an HTTP workshop launch's declared tool surface against (it
+#: receives no frozen context). A test pins the specs equal to this table.
+WORKSHOP_OPS_BY_PAIR: dict[tuple[str, str], tuple[str, ...]] = {
+    ("generate", "generate"): WRAPPER_OPS,
+    ("compile", "generate"): IR_CHECK_OPS,
+}
 
 #: The categories a refused call carries. A bound's category ends the lineage.
 CATEGORY_MAX_WRAPPER_CALLS = "max_wrapper_calls"

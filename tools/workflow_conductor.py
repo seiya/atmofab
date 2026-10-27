@@ -5834,8 +5834,9 @@ class Conductor:
         cannot leave the record describing the old argv. The same reasoning already pins
         `backend_command` to `leaf_command(entry)[0]`.
 
-        Two launches are declined outright, because they have no argv to describe at all — an
-        HTTP leaf (no process) and a deterministic substep (in-process).
+        Two launches are declined outright, because they have no argv to describe at all — a
+        pure HTTP leaf (no process) and a deterministic substep (in-process). A workshop HTTP
+        leaf has no argv either and records `http_tool_surface` instead (issue #534 PR-J3-b).
 
         A WORKSHOP leaf (issue #534) records one more field, `claude_mcp_config` (codex:
         `codex_mcp_config`, issue #534 step 2 PR-2): the server name and URL its `--mcp-config`
@@ -5849,9 +5850,15 @@ class Conductor:
         if entry.is_http:
             # There is no CLI leaf and no argv: `spawn_leaf` returns on this same predicate
             # before it reaches `leaf_command`, which refuses a non-spawnable provider
-            # outright. Nothing about CLI settings layers is true of an HTTP leaf, so it is
-            # recorded about nothing rather than about "".
-            return {}
+            # outright. Nothing about CLI settings layers is true of an HTTP leaf, so a pure one
+            # is recorded about nothing rather than about "". A WORKSHOP one (issue #534
+            # PR-J3-b) records the tools the host loop declares to it — the five file tools,
+            # plus the pair's operations on a producing pair (`WORKSHOP_OPS_BY_PAIR`) — which
+            # the launch-record audit compares against the kind's surface.
+            if not getattr(entry, "is_workshop", False):
+                return {}
+            return {"http_tool_surface": self._http_workshop_tool_names(
+                request.get("step"), request.get("substep"))}
         if self._is_deterministic_substep(str(request.get("step", "")),
                                           request.get("substep") or None):
             # A deterministic substep is recorded through `record_launch` like any other, but
@@ -9442,6 +9449,14 @@ class Conductor:
         #: A codex launch's `ProcResult.command_outputs` (what each command printed, from the
         #: host's own capture). None on claude.
         command_outputs: list[tuple[str, int]] | None = None
+        #: An HTTP launch whose last reply was cut at the output limit: the limit and the tool
+        #: the cut fell inside (`LoopResult.truncated`). None elsewhere.
+        truncated: str | None = None
+        #: An HTTP launch's end (`LoopResult.ended`: the last reply's stop reason, or why the
+        #: host loop stopped). None on a CLI launch.
+        ended_reason: str | None = None
+        #: Whether any reply of an HTTP launch made a tool call. None on a CLI launch.
+        tool_call_made: bool | None = None
 
     def _workshop_seeds(self, refs: NodeRefs, pure_context: Mapping[str, str],
                         request: Mapping[str, Any],
@@ -9535,12 +9550,13 @@ class Conductor:
         return seeds
 
     def _workshop_backend(self, entry: Any) -> str:
-        """The lineage-home backend of a workshop entry: its provider's backend token
-        (`llm_config.PROVIDER_BACKEND_TOKENS`), when that is one of `workshop_tree.
-        LINEAGE_BACKENDS` (the keys of `orchestration_runtime.WORKSHOP_HOME_PREPARERS`)."""
-        from tools.llm_config import PROVIDER_BACKEND_TOKENS
+        """The lineage-home backend of a workshop entry: `pure_leaf.WORKSHOP_LINEAGE_BACKENDS`
+        of its provider (the CLI's backend token; `http` for both HTTP providers, issue #534
+        PR-J3-b), when that is one of `workshop_tree.LINEAGE_BACKENDS` (the keys of
+        `orchestration_runtime.WORKSHOP_HOME_PREPARERS`)."""
+        from tools.pure_leaf import WORKSHOP_LINEAGE_BACKENDS
         from tools.workshop_tree import LINEAGE_BACKENDS
-        backend = PROVIDER_BACKEND_TOKENS.get(getattr(entry, "provider", ""))
+        backend = WORKSHOP_LINEAGE_BACKENDS.get(getattr(entry, "provider", ""))
         if backend not in LINEAGE_BACKENDS:
             raise ValueError(f"provider {getattr(entry, 'provider', None)!r} runs no workshop "
                              "leaf")
@@ -9634,7 +9650,17 @@ class Conductor:
         `<config>/projects/*/<sid>.jsonl` (the twin of `_claude_session_resumable`, whose root is
         the operator's `~/.claude`, which a workshop leaf never writes). Codex: the thread's
         rollout, `<config>/sessions/<yyyy>/<mm>/<dd>/rollout-<timestamp>-<thread_id>.jsonl`
-        (measured on codex-cli 0.164.0, MX4; `exec resume` reads it from there)."""
+        (measured on codex-cli 0.164.0, MX4; `exec resume` reads it from there). HTTP: the
+        lineage's conversation is in THIS process's memory (`_workshop_http_histories`, issue
+        #534 PR-J3-b) and the lineage is open; `session_id` names nothing on that transport."""
+        if paths.backend == "http":
+            from tools.workshop_tree import read_lineage_record
+            if paths.lineage_id not in self._workshop_http_histories():
+                return False
+            try:
+                return read_lineage_record(paths).get("ended_by") is None
+            except ValueError:
+                return False
         if not isinstance(session_id, str) or not session_id.strip():
             return False
         sid = session_id.strip()
@@ -9665,6 +9691,135 @@ class Conductor:
         of the entry, which names no substep."""
         return spec.workshop_freeze_context is None
 
+    def _workshop_http_histories(self) -> dict[str, Any]:
+        """The conversation of every OPEN HTTP workshop lineage of this process, by lineage id
+        (`llm_workshop_loop.LoopHistory`; issue #534 PR-J3-b): the HTTP transport's warm state,
+        the twin of a CLI's session in the lineage home. Never persisted, so a lineage reopened
+        by another process is a cold reuse. No lock: the conductor runs one substep at a time,
+        and the loop runs on its main thread."""
+        histories = getattr(self, "_workshop_http_history", None)
+        if histories is None:
+            histories = {}
+            self._workshop_http_history = histories
+        return histories
+
+    def _drop_workshop_http_history(self, lineage_id: str) -> None:
+        """Forget an HTTP lineage's conversation: the lineage ended, or the loop moved on."""
+        self._workshop_http_histories().pop(lineage_id, None)
+
+    @staticmethod
+    def _http_workshop_tool_names(step: Any, substep: Any) -> list[str]:
+        """The tools an HTTP workshop launch of `(step, substep)` is declared, in order: the five
+        file tools, then the pair's operations (`workshop_wrapper.WORKSHOP_OPS_BY_PAIR`; none on
+        a reading pair)."""
+        from tools.pure_leaf import HTTP_FILE_TOOLS
+        from tools.workshop_wrapper import WORKSHOP_OPS_BY_PAIR
+        pair = (str(step or "").strip().lower(), str(substep or "").strip().lower())
+        return [*HTTP_FILE_TOOLS, *WORKSHOP_OPS_BY_PAIR.get(pair, ())]
+
+    @staticmethod
+    def _http_workshop_tools(step: Any, substep: Any) -> list[dict[str, Any]]:
+        """The declarations of `_http_workshop_tool_names(step, substep)`: the file tools'
+        (`pure_leaf.HTTP_FILE_TOOL_DECLARATIONS`) and the wrapper's (`workshop_mcp.
+        TOOL_DEFINITIONS`, whose `inputSchema` is the schema declared)."""
+        from tools.pure_leaf import HTTP_FILE_TOOL_DECLARATIONS
+        from tools.workshop_mcp import TOOL_DEFINITIONS
+        names = Conductor._http_workshop_tool_names(step, substep)
+        files = {d["name"]: d for d in HTTP_FILE_TOOL_DECLARATIONS}
+        out: list[dict[str, Any]] = []
+        for name in names:
+            if name in files:
+                out.append(dict(files[name]))
+            else:
+                definition = TOOL_DEFINITIONS[name]
+                out.append({"name": name, "description": definition["description"],
+                            "input_schema": definition["inputSchema"]})
+        return out
+
+    def _run_workshop_http_loop(self, refs: NodeRefs, rec: Mapping[str, Any], entry: Any,
+                                lineage: "Conductor._WorkshopLineage", *, child_arid: str,
+                                phase: str, substep: str | None, warm: bool, ctx: Any,
+                                timeout_seconds: int, timeout_name: str) -> tuple[Any, Any]:
+        """One launch of an HTTP workshop lineage through the host loop (issue #534 PR-J3-b):
+        `(ProcResult, LoopResult)`. The `ProcResult` is synthesized in the shape the turn's tail
+        reads — `returncode` 1 on a transport error (its message in `stderr`, as
+        `_run_http_leaf` puts it), `timed_out` when the deadline ended the launch, `usage`
+        summed over the launch's requests — so the tail ends the lineage, records the launch
+        and snapshots the tree as it does for a CLI leaf.
+
+        The tools run here: the five file tools on the lineage's tree (`llm_workshop_loop.
+        file_tool`, the host-placed names refused), and on a PRODUCING lineage every other name
+        through `workshop_wrapper.run_wrapper_op` on the frozen context `ctx` (a reading
+        lineage has none, and every other name is refused). Every request, response, call and
+        result is a row of `<record_dir>/loop_turns.jsonl`."""
+        from tools.llm_http_leaf import redact_secret
+        from tools.llm_workshop_loop import (
+            TOOL_ARGUMENTS_INVALID,
+            LoopHistory,
+            file_tool,
+            run_workshop_loop,
+        )
+        from tools.pure_leaf import (
+            HTTP_FILE_TOOLS,
+            WORKSHOP_READER_SYSTEM_PROMPT,
+            WORKSHOP_SYSTEM_PROMPT,
+        )
+        from tools.workshop_tree import append_jsonl
+        from tools.workshop_wrapper import run_wrapper_op
+        histories = self._workshop_http_histories()
+        lineage_id = lineage.paths.lineage_id
+        history = histories.get(lineage_id) if warm else None
+        if history is None:
+            history = LoopHistory()
+            histories[lineage_id] = history
+        tree = lineage.paths.tree
+        reserved = lineage.host_placed
+
+        def call_tool(name: str, args: dict[str, Any]) -> dict[str, Any]:
+            if name in HTTP_FILE_TOOLS:
+                return file_tool(tree, reserved, name, args)
+            if ctx is not None:
+                return run_wrapper_op(ctx, name, args)
+            return {"ok": False, "category": TOOL_ARGUMENTS_INVALID,
+                    "findings": f"{name!r} is not served on this lineage; your tools are "
+                                f"{list(HTTP_FILE_TOOLS)}"}
+
+        turns_path = lineage.paths.record_dir / "loop_turns.jsonl"
+
+        def record(event: dict[str, Any]) -> None:
+            append_jsonl(turns_path, {"agent_run_id": child_arid, "at": _iso_now(), **event})
+
+        env = self._child_env(child_arid, entry)
+        result = run_workshop_loop(
+            entry,
+            system=(WORKSHOP_SYSTEM_PROMPT if ctx is not None
+                    else WORKSHOP_READER_SYSTEM_PROMPT),
+            history=history, prompt=str(rec["launch_prompt_text"]),
+            tools=self._http_workshop_tools(phase, substep), call_tool=call_tool,
+            deadline=time.monotonic() + timeout_seconds, deadline_name=timeout_name,
+            env=env, record=record)
+        path = (self.repo_root / "workspace" / "orchestrations" / self.orchestration_id
+                / "launches" / f"{child_arid}.http_response.txt")
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(result.raw_response or "", encoding="utf-8")
+        except OSError as exc:
+            self.emit("http_leaf_response_unpersisted", agent_run_id=child_arid,
+                      error=str(exc)[:200])
+        if result.transport_error is not None:
+            self.emit("http_leaf_transport_error", agent_run_id=child_arid,
+                      provider=entry.provider, error=result.transport_error[:400])
+        proc = ProcResult(
+            1 if result.transport_error is not None else 0,
+            result.text, (result.transport_error or "")[:4000],
+            usage=result.usage, model=result.model or entry.model or None,
+            timed_out=result.timed_out,
+            persist_stdout=redact_secret(result.text, entry, env),
+            response_truncated=bool(result.truncated),
+            model_provenance=("http_response" if result.model_reported
+                              else "configured_entry" if entry.model else None))
+        return proc, result
+
     def _spawn_workshop_turn(self, refs: NodeRefs, request: dict[str, Any], entry: Any,
                              lineage: "Conductor._WorkshopLineage", *, child_arid: str,
                              phase: str, substep: str | None,
@@ -9683,7 +9838,12 @@ class Conductor:
 
         Returns None when a WARM launch finds the lineage home gone (`record_launch` answers
         `workshop_lineage_home_missing`): nothing was launched and the loop falls back to a
-        cold launch."""
+        cold launch.
+
+        On an HTTP entry (issue #534 PR-J3-b) the leaf is the host's tool-use loop
+        (`_run_workshop_http_loop`): no endpoint is started and `spawn_leaf` is not reached; the
+        loop calls the wrapper's operations in this process, and the tail — the lineage's end,
+        `last_launch`, the snapshot — reads the `ProcResult` it synthesizes."""
         from tools.pure_leaf import (
             _MISSING,
             ResultEnvelope,
@@ -9713,8 +9873,14 @@ class Conductor:
         # context is frozen, no endpoint started, and nothing can cancel the leaf. Its bound is
         # the spawn timeout alone (`_workshop_timeout`), recorded below as for a producer.
         reading = self._workshop_spec_reads(spec)
+        # An HTTP entry (issue #534 PR-J3-b) runs the host loop in this process: no endpoint is
+        # started (the loop calls the wrapper's operations in-process) and `spawn_leaf` is not
+        # reached — its HTTP branch is the PURE request path.
+        http = bool(getattr(entry, "is_http", False))
         cancel: threading.Event | None = None
         server: Any = None
+        ctx: Any = None
+        loop: Any = None
         if not reading:
             assert spec.workshop_freeze_context is not None
             try:
@@ -9727,7 +9893,7 @@ class Conductor:
             except Exception as exc:  # noqa: BLE001 — a host precondition, before any launch
                 raise WorkshopSetupFailed(f"{type(exc).__name__}: {exc}") from exc
         calls_before = int(read_lineage_record(paths).get("wrapper_calls_used") or 0)
-        if not reading:
+        if not reading and not http:
             cancel = threading.Event()
             event = cancel
             server = self._start_wrapper_endpoint(ctx, lambda _ended_by: event.set())
@@ -9749,16 +9915,22 @@ class Conductor:
             self._launch_instant(child_arid)
             launched_monotonic = time.monotonic()
             timeout_seconds, timeout_name = self._workshop_timeout(lineage.deadline)
-            proc = self.spawn_leaf(
-                rec["launch_prompt_text"], self._child_env(child_arid, entry), entry,
-                session_id=child_arid,
-                resume_session_id=(resume_session_id if warm else None),
-                child_arid=child_arid,
-                timeout_context={"node_key": refs.node_key, "step": phase,
-                                 "substep": substep or "", "agent_run_id": child_arid,
-                                 "leaf_mode": "workshop"},
-                timeout_seconds=timeout_seconds, timeout_name=timeout_name,
-                mcp_config_json=mcp_config_json, cancel_event=cancel, reading=reading)
+            if http:
+                proc, loop = self._run_workshop_http_loop(
+                    refs, rec, entry, lineage, child_arid=child_arid, phase=phase,
+                    substep=substep, warm=warm, ctx=ctx, timeout_seconds=timeout_seconds,
+                    timeout_name=timeout_name)
+            else:
+                proc = self.spawn_leaf(
+                    rec["launch_prompt_text"], self._child_env(child_arid, entry), entry,
+                    session_id=child_arid,
+                    resume_session_id=(resume_session_id if warm else None),
+                    child_arid=child_arid,
+                    timeout_context={"node_key": refs.node_key, "step": phase,
+                                     "substep": substep or "", "agent_run_id": child_arid,
+                                     "leaf_mode": "workshop"},
+                    timeout_seconds=timeout_seconds, timeout_name=timeout_name,
+                    mcp_config_json=mcp_config_json, cancel_event=cancel, reading=reading)
             self._persist_leaf_output(child_arid, proc)
         finally:
             if server is not None:
@@ -9768,6 +9940,11 @@ class Conductor:
                 f"workshop wrapper endpoint of {child_arid}: {server.in_flight()} handler(s) "
                 "still running after stop; the tree is not snapshotted under a live operation")
         cancelled = cancel is not None and cancel.is_set()
+        if loop is not None:
+            # A wrapper result ended the lineage inside the host loop: the twin of the CLI's
+            # cancel event (the bound is already recorded by `run_wrapper_op`).
+            from tools.llm_workshop_loop import ENDED_BY_WRAPPER
+            cancelled = loop.ended == ENDED_BY_WRAPPER
         if not cancelled:
             if proc.timed_out:
                 end_lineage(paths, "lineage_timeout"
@@ -9782,10 +9959,24 @@ class Conductor:
             paths, agent_run_id=child_arid, rc=proc.returncode,
             ended_at_utc=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"))
         record = read_lineage_record(paths)
+        if http and record.get("ended_by") is not None:
+            # The lineage ended (a bound, a transport death, a wrapper result): its
+            # conversation is never continued.
+            self._drop_workshop_http_history(paths.lineage_id)
         snapshot_tree(paths, lineage.host_placed)
         items_completed: int | None = None
         command_outputs: list[tuple[str, int]] | None = None
-        if entry.provider == "claude_cli":
+        if loop is not None:
+            # HTTP: the codex synthetic envelope shape (no CLI envelope exists), the model
+            # the response reported, the loop's summed usage, and its request count as the
+            # turn count. No `_codex_*` helper: the HTTP usage row reads no `resumed`.
+            envelope = ResultEnvelope(
+                True, proc.stdout, False, proc.model if proc.model else _MISSING,
+                proc.usage if proc.usage is not None else _MISSING, child_arid, None, None)
+            model, provenance = proc.model, proc.model_provenance
+            usage = _leaf_usage_row(proc, entry, envelope=None, resumed=None)
+            turns = loop.turns
+        elif entry.provider == "claude_cli":
             envelope = parse_result_envelope(proc.stdout)
             model = None if envelope.model is _MISSING else envelope.model
             provenance = "result_envelope" if model is not None else None
@@ -9824,7 +10015,10 @@ class Conductor:
             wrapper_calls,
             turns if isinstance(turns, int) and not isinstance(turns, bool) else None,
             items_completed, round(time.monotonic() - launched_monotonic, 3),
-            command_outputs)
+            command_outputs,
+            truncated=(loop.truncated if loop is not None else None),
+            ended_reason=(loop.ended if loop is not None else None),
+            tool_call_made=(loop.tool_call_made if loop is not None else None))
 
     class _WorkshopLineageMachine:
         """The lineage state machine both workshop loops share (issue #534 step 3): which
@@ -9854,7 +10048,10 @@ class Conductor:
             self.entry = entry
             self.spec = spec
             self.reading = Conductor._workshop_spec_reads(spec)
-            self.warm_capable = entry.supports(CAP_WARM_RESUME)
+            # An HTTP entry's warm state is the lineage's in-memory conversation (issue #534
+            # PR-J3-b); `warm_resume` stays a CLI capability (it names a session to reopen).
+            self.warm_capable = entry.supports(CAP_WARM_RESUME) or bool(
+                getattr(entry, "is_http", False))
             self.lineage = lineage
             self.prior = prior
             self.resume_session_id = resume_session_id
@@ -9887,6 +10084,7 @@ class Conductor:
                 # Its work goes on in a new lineage: record that nothing will continue it (a
                 # reason a bound already recorded stands).
                 end_lineage(lineage.paths, "superseded")
+                self.conductor._drop_workshop_http_history(lineage.paths.lineage_id)
                 self.prior, self.lineage, self.resume_session_id = lineage.paths, None, None
             return warm
 
@@ -9925,6 +10123,7 @@ class Conductor:
             from tools.workshop_tree import end_lineage
             assert self.lineage is not None
             end_lineage(self.lineage.paths, "superseded")
+            self.conductor._drop_workshop_http_history(self.lineage.paths.lineage_id)
             self.lineage, self.resume_session_id, self.prior = None, None, None
 
         def after_transport(self) -> None:
@@ -9934,6 +10133,7 @@ class Conductor:
             nothing gates it, so carrying a dead lineage's `verdict.json` forward would certify
             a document no finished launch stood behind."""
             assert self.lineage is not None
+            self.conductor._drop_workshop_http_history(self.lineage.paths.lineage_id)
             self.prior = None if self.reading else self.lineage.paths
             self.lineage, self.resume_session_id = None, None
 
@@ -9948,6 +10148,7 @@ class Conductor:
             assert self.lineage is not None
             from tools.workshop_tree import end_lineage
             end_lineage(self.lineage.paths, "superseded")
+            self.conductor._drop_workshop_http_history(self.lineage.paths.lineage_id)
             self.prior, self.lineage, self.resume_session_id = None, None, None
 
         def after_repair(self, turn: "Conductor._WorkshopTurn", child_arid: str) -> None:
@@ -9980,6 +10181,10 @@ class Conductor:
                 # not carry (its `leaf_returncode` is 0 by the reviewer's rule).
                 "leaf_rc": turn.proc.returncode,
                 "leaf_wall_s": turn.leaf_wall_s,
+                # An HTTP launch's own end (issue #534 PR-J3-b): the host loop's stop reason,
+                # and the cut when a reply was cut at the output limit. Null on a CLI launch.
+                "ended_reason": turn.ended_reason,
+                "truncated": turn.truncated,
             }
 
         def assemble(self, turn: "Conductor._WorkshopTurn"
@@ -10005,8 +10210,32 @@ class Conductor:
             return None, None, assembled, None
 
         @staticmethod
+        def loop_note(turn: "Conductor._WorkshopTurn") -> str | None:
+            """What an HTTP launch's host loop says about the turn, for the repair prompt
+            (issue #534 PR-J3-b): a reply cut at the output limit, or a launch whose replies
+            made no tool call at all (nothing reaches the tree but through `write_file`). None
+            on a CLI launch and on an HTTP launch with neither."""
+            if turn.truncated:
+                return (f"your last reply was cut at the output limit ({turn.truncated}) and "
+                        "none of its tool calls ran; write a long file in parts (several "
+                        "`write_file` calls, or `edit_file`)")
+            if (turn.ended_reason is not None and turn.tool_call_made is False
+                    and turn.proc.returncode == 0 and not turn.proc.timed_out
+                    and not turn.cancelled):
+                # A finished turn (the model answered with no tool call), not one a bound or
+                # a transport error ended before any call.
+                return (f"the endpoint returned no tool call (stop reason: "
+                        f"{turn.ended_reason}); every file reaches your tree only through "
+                        "`write_file`")
+            return None
+
+        @staticmethod
         def ended_note(findings: str | None, turn: "Conductor._WorkshopTurn") -> str | None:
-            """`findings` with the bound that ended the lineage, when one did."""
+            """`findings` with the bound that ended the lineage, when one did, and the host
+            loop's note on an HTTP launch (`loop_note`) BEFORE the document's own findings."""
+            note = Conductor._WorkshopLineageMachine.loop_note(turn)
+            if note is not None:
+                findings = f"{note}\n{findings}" if findings else note
             if turn.ended_by is None:
                 return findings
             return (f"{findings}\n(the lineage ended by {turn.ended_by}; the tree was taken as "
@@ -10058,7 +10287,7 @@ class Conductor:
                 ("pure_context_assembly_failed", _pure_assembly_detail(exc)), 1)
         runner_host_authored = spec.runner_host_authored(refs)
         exemplar = self._resolve_exemplar(refs) if spec.wants_exemplar else None
-        warm_capable = entry.supports(CAP_WARM_RESUME)
+        warm_capable = entry.supports(CAP_WARM_RESUME) or bool(getattr(entry, "is_http", False))
         per_attempt: list[dict[str, Any]] = []
         #: The open lineage the next turn resumes, and the session it resumes.
         lineage: Conductor._WorkshopLineage | None = None

@@ -589,9 +589,12 @@ class CapabilityTests(_Tmp):
         self.assertEqual(set(lc.PROVIDER_CAPABILITIES), set(lc.SUPPORTED_PROVIDERS))
         for provider, caps in lc.PROVIDER_CAPABILITIES.items():
             self.assertLessEqual(caps, lc.KNOWN_CAPABILITIES, msg=provider)
-        # The user-approved scope rule, as a property of the table rather than a branch.
+        # The user-approved scope rule, as a property of the table rather than a branch: an
+        # HTTP provider has no session to reopen, and since issue #534 PR-J3-b runs a workshop
+        # leaf through the host loop.
         for provider in lc.HTTP_PROVIDERS:
-            self.assertEqual(lc.PROVIDER_CAPABILITIES[provider], frozenset({lc.CAP_PURE}))
+            self.assertEqual(lc.PROVIDER_CAPABILITIES[provider],
+                             frozenset({lc.CAP_PURE, lc.CAP_WORKSHOP}))
 
     def test_supports_is_fail_closed_on_an_unknown_capability_name(self) -> None:
         entry = lc.ResolvedLeafEntry(provider="claude_cli",
@@ -1368,11 +1371,19 @@ class WorkshopEntryTests(_Tmp):
             f"provider: codex_cli, model: m, leaf: workshop, {self.BOUNDS}")))
 
     def test_a_workshop_entry_needs_a_provider_declaring_it(self) -> None:
+        # A provider whose table row lacks it is refused (no provider lacks it today since
+        # issue #534 PR-J3-b, so the table is narrowed for the row).
+        with mock.patch.dict(lc.PROVIDER_CAPABILITIES,
+                             {"anthropic_api": frozenset({lc.CAP_PURE})}):
+            self.assert_rule(
+                "llm_config_workshop_unsupported_on_provider",
+                self._gen("provider: anthropic_api, model: m, api_key_env: K, "
+                          f"leaf: workshop, {self.BOUNDS}"))
+        # `capabilities:` may narrow it away, and then the entry has no workshop transport.
         self.assert_rule(
             "llm_config_workshop_unsupported_on_provider",
             self._gen("provider: anthropic_api, model: m, api_key_env: K, "
-                      f"leaf: workshop, {self.BOUNDS}"))
-        # `capabilities:` may narrow it away, and then the entry has no workshop transport.
+                      f"capabilities: [pure], leaf: workshop, {self.BOUNDS}"))
         self.assert_rule(
             "llm_config_workshop_unsupported_on_provider",
             self._gen(f"capabilities: [pure, warm_resume], leaf: workshop, {self.BOUNDS}"))
@@ -1430,12 +1441,64 @@ class WorkshopEntryTests(_Tmp):
                 self.assertTrue(entry.is_workshop)
                 self.assertIsNotNone(entry.max_wrapper_calls)
 
+    def test_the_http_samples_producing_block_loads_on_each_producing_substep(self) -> None:
+        """Issue #534 PR-J3-b: each HTTP sample's commented PRODUCING block, uncommented and
+        loaded under both producing substeps, is an HTTP workshop entry with both bounds."""
+        for sample, provider in (("llm_anthropic_api.example.yaml", "anthropic_api"),
+                                 ("llm_openai_compatible.example.yaml", "openai_compatible")):
+            lines = (SAMPLE_DIR / sample).read_text(encoding="utf-8").splitlines()
+            start = lines.index("#       generate:")
+            block = []
+            for line in lines[start:]:
+                if not line.startswith("#       "):
+                    break
+                block.append(line[len("#       "):].split("#", 1)[0].rstrip())
+            for phase in ("compile", "generate"):
+                with self.subTest(sample=sample, phase=phase):
+                    body = (self.BASE + f"phases:\n  {phase}:\n    substeps:\n"
+                            + "\n".join("      " + line for line in block) + "\n")
+                    cfg = lc.load_llm_config(self.write(body))
+                    cfg.validate_runnable()
+                    entry = cfg.entry_for(phase, "generate")
+                    self.assertEqual((entry.provider, entry.is_workshop, entry.is_http),
+                                     (provider, True, True))
+                    self.assertIsNotNone(entry.max_wrapper_calls)
+                    self.assertIsNotNone(entry.lineage_timeout_s)
+
+    def test_an_http_workshop_entry_loads_on_every_substep(self) -> None:
+        """The inversion of the pre-PR-J3-b refusal: both HTTP providers run a workshop leaf on
+        every workshop pair, a producer with both bounds and a reader with
+        `lineage_timeout_s` alone; a `defaults`-level or phase-level workshop field is still
+        refused (substep-scoped)."""
+        for provider, extra in (("anthropic_api", "api_key_env: K"),
+                                ("openai_compatible",
+                                 "base_url: 'http://127.0.0.1:8000/v1', api_key_env: K")):
+            for phase, substep in sorted(lc.WORKSHOP_LEAF_SUBSTEPS):
+                reading = (phase, substep) in lc.WORKSHOP_READING_SUBSTEPS
+                bounds = "lineage_timeout_s: 60" if reading else self.BOUNDS
+                with self.subTest(provider=provider, pair=f"{phase}.{substep}"):
+                    cfg = lc.load_llm_config(self.write(self._gen(
+                        f"provider: {provider}, model: m, {extra}, leaf: workshop, {bounds}",
+                        f"{phase}: {{substeps: {{{substep}")))
+                    entry = cfg.entry_for(phase, substep)
+                    self.assertTrue(entry.is_workshop and entry.is_http)
+        for level in ("defaults", "phase"):
+            body = (self.BASE.replace("provider: claude_cli",
+                                      "provider: claude_cli\n  leaf: workshop")
+                    if level == "defaults" else
+                    self.BASE + "phases:\n  generate:\n    provider: anthropic_api\n"
+                    "    api_key_env: K\n    model: m\n    leaf: workshop\n")
+            with self.subTest(level=level), self.assertRaises(lc.LlmConfigError):
+                lc.load_llm_config(self.write(body))
+
     def test_the_sample_reading_block_loads_on_each_judging_substep(self) -> None:
         """The commented READING block (issue #534 step 3) of each sample is uncommented and
         loaded under each judging substep, renamed as the sample says: a block that stops
         loading teaches a refused configuration. Codex's since step 3 PR-J2."""
         for sample, provider in (("llm_claude.example.yaml", "claude_cli"),
-                                 ("llm_codex.example.yaml", "codex_cli")):
+                                 ("llm_codex.example.yaml", "codex_cli"),
+                                 ("llm_anthropic_api.example.yaml", "anthropic_api"),
+                                 ("llm_openai_compatible.example.yaml", "openai_compatible")):
             text = (SAMPLE_DIR / sample).read_text(encoding="utf-8")
             lines = text.splitlines()
             start = lines.index("#       judge:")

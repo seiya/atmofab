@@ -12815,7 +12815,10 @@ def _chmod_directory_no_follow(path: Path, mode: int, label: str) -> None:
 # orchestration may use BOTH backends — `llm.yaml` selects per phase / per substep —
 # so the backend must be a directory level rather than part of the orchestration
 # directory itself.
-WORKFLOW_BACKEND_HOME_DIRNAMES = ("claude", "codex")
+#
+# `http` holds the lineage homes of an HTTP `workshop leaf` (issue #534 PR-J3-b): one directory
+# for both HTTP providers, whose host loop is one transport (`pure_leaf.WORKSHOP_LINEAGE_BACKENDS`).
+WORKFLOW_BACKEND_HOME_DIRNAMES = ("claude", "codex", "http")
 
 # The owner marker's filename, written in the orchestration directory that is the
 # PARENT of the bound backend homes. `tools/prune_workflow_homes.py` reads it.
@@ -13813,12 +13816,90 @@ def _prepare_codex_workshop_home(repo_root: Path, orchestration_id: str, lineage
                                         resume=resume, workshop=True)
 
 
+def _prepare_http_workshop_home(repo_root: Path, orchestration_id: str, lineage_id: str,
+                                *, resume: bool) -> dict[str, str] | None:
+    """Prepare the lineage home of ONE HTTP `workshop leaf` lineage (issue #534 PR-J3-b).
+
+    `_prepare_claude_workshop_home` minus what a CLI needs: no `config/` and no credentials —
+    the host loop runs in the conductor's process and reads the API key from the leaf
+    environment per request (`llm_http_leaf._api_key`). The container
+    `<homes-root>/<oid>/http/` is recorded in `orchestration_meta.json#http_workflow_home`; the
+    lineage home `<container>/<lineage_id>/` is `workshop_tree.LineagePaths(backend="http")
+    .home`. `resume` means what it means for the claude preparer: cold creates the home
+    EXCLUSIVELY, 0700, and its work directories; warm answers `None` when it is gone.
+
+    Returns `{home, tree, lineage_id, homes_root}`."""
+    lineage_token = (lineage_id or "").strip() if isinstance(lineage_id, str) else ""
+    if not _is_safe_path_id(lineage_token):
+        raise ValueError(
+            "HTTP workshop home: lineage_id must be a plain [A-Za-z0-9_-] token "
+            f"(got {lineage_id!r})")
+    meta_path = _orchestration_root(repo_root, orchestration_id) / "orchestration_meta.json"
+    with _orchestration_meta_exclusive_lock(repo_root, orchestration_id):
+        meta = _read_json(meta_path)
+        if not isinstance(meta, dict):
+            raise ValueError("orchestration metadata missing while preparing the HTTP home")
+        raw_home = meta.get("http_workflow_home")
+        container: Path | None = None
+        if isinstance(raw_home, str) and raw_home.strip():
+            container = Path(raw_home)
+            try:
+                container.lstat()
+            except FileNotFoundError:
+                container = None
+            else:
+                _require_secure_backend_home(container, "HTTP", tighten=True)
+                _resecure_workflow_home_on_reuse(
+                    repo_root, orchestration_id, container, "HTTP")
+        if container is None:
+            container = _create_workflow_backend_home(
+                repo_root, orchestration_id, "http", "HTTP")
+            meta["http_workflow_home"] = str(container)
+            _write_json(meta_path, meta)
+        home = container / lineage_token
+        if resume:
+            try:
+                home.lstat()
+            except FileNotFoundError:
+                return None
+            _require_secure_backend_home(home, "HTTP", tighten=True)
+        else:
+            try:
+                os.mkdir(home, 0o700)
+            except FileExistsError as exc:
+                raise ValueError(
+                    f"HTTP workshop lineage home already exists: {home}. A lineage is created "
+                    f"once, by the cold launch whose agent_run_id names it ({lineage_token}); a "
+                    "directory already there was made by hand or left by a run that crashed "
+                    "between creating it and recording the launch. Inspect it; if it is "
+                    "debris, remove that one directory and re-run.") from exc
+            except OSError as exc:
+                raise ValueError(
+                    f"cannot create HTTP workshop lineage home {home}: {exc}") from exc
+            os.chmod(home, 0o700)
+            _require_secure_backend_home(home, "HTTP")
+            from tools.workshop_tree import LineagePaths
+            LineagePaths(homes_root=container.parent.parent,
+                         orchestration_id=orchestration_id, lineage_id=lineage_token,
+                         orchestration_dir=_orchestration_root(repo_root, orchestration_id),
+                         backend="http").make_work_dirs()
+    return {
+        "home": str(home.resolve()),
+        "tree": str((home / "tree").resolve()),
+        "lineage_id": lineage_token,
+        "homes_root": str(container.resolve().parent.parent),
+    }
+
+
 #: A `workshop leaf`'s lineage-home preparer and the profile kwargs a prepared home implies, by
-#: backend token (issue #534 step 2 PR-2). The conductor and `record_launch` read the same
-#: tables, so the home a launch is recorded against is the one the conductor seeded.
+#: LINEAGE backend (`pure_leaf.WORKSHOP_LINEAGE_BACKENDS` maps a provider to it; issue #534 step
+#: 2 PR-2, `http` PR-J3-b). The conductor and `record_launch` read the same tables, so the home a
+#: launch is recorded against is the one the conductor seeded. `http` has no profile row: an
+#: HTTP launch runs no sandboxed process.
 WORKSHOP_HOME_PREPARERS: dict[str, Callable[..., dict[str, str] | None]] = {
     "claude": _prepare_claude_workshop_home,
     "codex": _prepare_codex_workshop_home,
+    "http": _prepare_http_workshop_home,
 }
 WORKSHOP_PROFILE_KWARGS: dict[str, Callable[[Mapping[str, str]], dict[str, Any]]] = {
     "claude": claude_workshop_profile_kwargs,
@@ -15152,10 +15233,15 @@ def record_launch(
     # other two ran: a non-pure HTTP launch would receive allowed_output_paths, file-tool pins
     # and a write-authorized capability with no sandbox at all. Raising here leaves no
     # agent-graph edge and no session-index row behind.
-    if backend_token in _HTTP_PROVIDER_TOKENS and not _is_pure_launch_request(request_payload):
+    #
+    # A WORKSHOP request is admitted too (issue #534 PR-J3-b): its tools are the host loop's,
+    # run in the conductor's process on the lineage's tree, and like a pure leaf it holds no
+    # write authority under the checkout (the host writes every artifact from the snapshot).
+    if (backend_token in _HTTP_PROVIDER_TOKENS
+            and not _pure_leaf_is_host_rendered_request(request_payload)):
         raise RuntimeError(
             f"record-launch: provider {backend_token!r} runs no confined child process and is "
-            f"admissible only for a pure leaf; this launch is not pure")
+            f"admissible only for a pure or a workshop leaf; this launch is neither")
 
     # A WORKSHOP leaf's lineage (issue #534): a claude or codex launch in the lineage's private
     # home,
@@ -15175,15 +15261,25 @@ def record_launch(
     # Both are answered before any launch record, session-index row or active-child marker.
     is_workshop = _pure_leaf_is_workshop_request(request_payload)
     workshop_isolation: dict[str, str] | None = None
+    #: The lineage-home backend of a workshop launch (`pure_leaf.WORKSHOP_LINEAGE_BACKENDS`,
+    #: keyed by provider): the CLI's own token on a CLI launch, `http` for both HTTP providers,
+    #: whose `backend_token` is the provider token (issue #534 PR-J3-b).
+    lineage_backend: str | None = None
     if workshop_lineage_id is not None or is_workshop:
         if not is_workshop:
             raise ValueError("workshop_lineage_id is valid only for a workshop launch request")
-        if (backend_token not in WORKSHOP_HOME_PREPARERS
+        from tools.llm_config import PROVIDER_BACKEND_TOKENS
+        from tools.pure_leaf import WORKSHOP_LINEAGE_BACKENDS
+        named = request_payload.get("workshop_provider")
+        named = named if isinstance(named, str) else ""
+        lineage_backend = WORKSHOP_LINEAGE_BACKENDS.get(named)
+        if (lineage_backend not in WORKSHOP_HOME_PREPARERS
                 or (_launch_backend and _launch_backend != backend_token)):
             raise ValueError(
-                f"record-launch: a workshop launch runs on a CLI backend "
-                f"({', '.join(sorted(WORKSHOP_HOME_PREPARERS))}); this launch names "
-                f"{_launch_backend or backend_token!r}")
+                f"record-launch: a workshop launch runs in a lineage home of "
+                f"{', '.join(sorted(WORKSHOP_HOME_PREPARERS))} (providers "
+                f"{', '.join(sorted(WORKSHOP_LINEAGE_BACKENDS))}); this launch names "
+                f"workshop_provider {named!r} on {_launch_backend or backend_token!r}")
         if codex_lineage_id is not None:
             # A workshop lineage is named by `workshop_lineage_id` on both CLIs; the pure codex
             # thread lineage is a different home layout under the same container.
@@ -15191,9 +15287,7 @@ def record_launch(
                              "launch names its lineage with workshop_lineage_id")
         # The provider the prompt's `<tool_surface>` was rendered for is THIS launch's: a
         # prompt stating another transport's tools would describe a surface the leaf lacks.
-        from tools.llm_config import PROVIDER_BACKEND_TOKENS
-        named = request_payload.get("workshop_provider")
-        if PROVIDER_BACKEND_TOKENS.get(named if isinstance(named, str) else "") != backend_token:
+        if PROVIDER_BACKEND_TOKENS.get(named) != backend_token:
             raise ValueError(
                 f"record-launch: the workshop request's workshop_provider {named!r} is not this "
                 f"launch's provider (backend {backend_token!r})")
@@ -15223,7 +15317,7 @@ def record_launch(
                     f"{workshop_lineage_id!r}, so the request's workshop_lineage_id must name "
                     f"it and the child must be a new run (got request {requested!r}, child "
                     f"{child_agent_run_id!r})")
-        workshop_isolation = WORKSHOP_HOME_PREPARERS[backend_token](
+        workshop_isolation = WORKSHOP_HOME_PREPARERS[lineage_backend](
             repo_root, orchestration_id, requested, resume=True)
         if workshop_isolation is None:
             if workshop_lineage_id is None:
@@ -15641,6 +15735,13 @@ def record_launch(
         # skipped, and it is marked so
         # the audit validators (which key on `sandbox_profile` presence) can tell a skipped
         # profile from a missing one.
+        if is_workshop:
+            # Every workshop record, on any transport, names its lineage and the home the
+            # launch ran in (`<lineage backend>_workflow_home`; issue #534 PR-J3-b moved the
+            # two stamps out of the CLI arm below so an HTTP workshop record carries them too).
+            assert workshop_isolation is not None and lineage_backend is not None
+            response_payload[f"{lineage_backend}_workflow_home"] = workshop_isolation["home"]
+            response_payload["workshop_lineage_id"] = workshop_isolation["lineage_id"]
         if backend_token in _HTTP_PROVIDER_TOKENS:
             request_payload.setdefault("leaf_transport", "http")
             response_payload.setdefault("leaf_transport", "http")
@@ -15709,15 +15810,13 @@ def record_launch(
                     # The family the profile is built for is the one whose home was prepared
                     # above: the same resolver answers both, or the record would describe one
                     # CLI's home under another's profile.
-                    if _backend_family != backend_token:
+                    if _backend_family != backend_token or lineage_backend != backend_token:
                         raise ValueError(
                             f"a workshop launch's profile is its backend's ({backend_token!r}); "
-                            f"the command resolves to {_backend_family!r}")
-                    # Its lineage home was found above, cold and warm alike.
+                            f"the command resolves to {_backend_family!r} and the lineage home "
+                            f"is {lineage_backend!r}")
+                    # Its lineage home was found above, cold and warm alike, and stamped.
                     assert workshop_isolation is not None
-                    response_payload[f"{backend_token}_workflow_home"] = (
-                        workshop_isolation["home"])
-                    response_payload["workshop_lineage_id"] = workshop_isolation["lineage_id"]
                     profile_kwargs = WORKSHOP_PROFILE_KWARGS[backend_token](workshop_isolation)
                 # Every CLI leaf is pure (Z4, issue #171), so there is one profile builder.
                 # The read-write arm that stood beside it built a profile carrying the

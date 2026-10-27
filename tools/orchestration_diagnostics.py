@@ -17,7 +17,9 @@ directly addressable as ``<projects-root>/<slug>/<arid>.jsonl`` — the operator
 ``~/.claude/projects``, which since Z4 (issue #171) is the only root there is. A
 ``pure-function leaf`` is prepared no private ``CLAUDE_CONFIG_DIR``, so it writes where every
 other claude session writes. A ``workshop leaf`` (issue #534) writes its transcript into its
-lineage's private config home instead, which is not searched here. Issue #63 had put an AGENTIC leaf's transcript in the
+lineage's private config home instead, which is not searched here; an HTTP workshop lineage's
+transcript is the host loop's ``loop_turns.jsonl`` under its lineage record (PR-J3-b), not
+searched either. Issue #63 had put an AGENTIC leaf's transcript in the
 orchestration's private home and issue #64 made that home durable
 (``~/.atmofab/homes/<orchestration_id>/claude``); that leaf is deleted, the home is no longer
 prepared, and a transcript written under one before the cut is not reachable from here —

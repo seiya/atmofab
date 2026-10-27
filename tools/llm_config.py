@@ -115,12 +115,13 @@ def _is_loopback(host: str) -> bool:
 #                and with it the `agentic` capability that selected it.
 #   warm_resume  a finished leaf session can be reopened for a repair turn carrying the prior
 #                context (claude `--resume --fork-session`, codex `exec resume`).
-#   workshop     the provider can run a `workshop leaf` (issue #534): a producing leaf that edits a
-#                host-seeded work tree with the CLI's own tools confined to it and reaches the
-#                host's operations through the wrapper's MCP endpoint, its tree snapshotted into
-#                the same document a pure producer returns. Declared by the two CLI providers,
-#                whose launch shapes are measured (`pure_leaf.workshop_leaf_flags`,
-#                `pure_leaf.codex_workshop_overrides`); an HTTP provider has no agent loop yet.
+#   workshop     the provider can run a `workshop leaf` (issue #534): a leaf that works in a
+#                host-seeded tree with file tools confined to it — a producing one also reaching
+#                the host's operations — its tree snapshotted into the same document a pure
+#                leaf returns. The two CLI providers run it with their own tools (launch shapes
+#                measured: `pure_leaf.workshop_leaf_flags`, `pure_leaf.codex_workshop_overrides`)
+#                and the wrapper's MCP endpoint; the two HTTP providers through the host's
+#                tool-use loop (`tools/llm_workshop_loop.py`, issue #534 PR-J3-b).
 CAP_PURE = "pure"
 CAP_WARM_RESUME = "warm_resume"
 CAP_WORKSHOP = "workshop"
@@ -143,9 +144,9 @@ KNOWN_CAPABILITIES: frozenset[str] = frozenset({
 PROVIDER_CAPABILITIES: Mapping[str, frozenset[str]] = {
     "claude_cli": frozenset({CAP_PURE, CAP_WARM_RESUME, CAP_WORKSHOP}),
     "codex_cli": frozenset({CAP_PURE, CAP_WARM_RESUME, CAP_WORKSHOP}),
-    # HTTP providers: one request, one response. No session to reopen, no tools to grant.
-    "openai_compatible": frozenset({CAP_PURE}),
-    "anthropic_api": frozenset({CAP_PURE}),
+    # HTTP providers: no session to reopen; the host loop serves the tools of a workshop leaf.
+    "openai_compatible": frozenset({CAP_PURE, CAP_WORKSHOP}),
+    "anthropic_api": frozenset({CAP_PURE, CAP_WORKSHOP}),
 }
 
 SUPPORTED_PROVIDERS: frozenset[str] = frozenset(PROVIDER_CAPABILITIES)
@@ -221,8 +222,10 @@ WORKSHOP_LEAF_SUBSTEPS: frozenset[tuple[str, str]] = (
 
 # The providers a READING workshop entry may name: those whose reading launch shape is measured
 # and whose `<tool_surface>` row exists (`pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT`, compared
-# by `test_llm_config`). `codex_cli` joined with its measured reading argv (step 3, PR-J2).
-WORKSHOP_READING_PROVIDERS: frozenset[str] = frozenset({"claude_cli", "codex_cli"})
+# by `test_llm_config`). `codex_cli` joined with its measured reading argv (step 3, PR-J2); the
+# two HTTP providers with the host loop's five file tools (PR-J3-b).
+WORKSHOP_READING_PROVIDERS: frozenset[str] = frozenset({
+    "claude_cli", "codex_cli", "anthropic_api", "openai_compatible"})
 
 # The entry fields of the workshop leaf. SUBSTEP-SCOPED: admissible only at
 # `phases.<phase>.substeps.<substep>`, so no level inherits one and no question of inheritance
@@ -667,8 +670,8 @@ def _finalize_entry(fields: Mapping[str, Any], where: str,
                 "llm_config_workshop_unsupported_on_provider",
                 f"`leaf: workshop` needs a provider with the {CAP_WORKSHOP!r} capability; "
                 f"provider {provider!r} has "
-                f"{', '.join(sorted(capabilities)) or '(none)'} (the workshop launch shape is "
-                f"measured on the CLI providers, claude_cli and codex_cli)",
+                f"{', '.join(sorted(capabilities)) or '(none)'} (the providers that run one: "
+                f"{', '.join(sorted(p for p, caps in PROVIDER_CAPABILITIES.items() if CAP_WORKSHOP in caps))})",
                 where=f"{where}.leaf")
         # The bound every kind states. `max_wrapper_calls` is decided per kind by
         # `_validate_assignment`, which knows the substep.
@@ -900,7 +903,7 @@ def _validate_assignment(phase: str, substep: str, entry: ResolvedLeafEntry, whe
                 "llm_config_workshop_reading_unsupported_on_provider",
                 f"`leaf: workshop` on the judging substep {phase}.{substep} runs on "
                 f"{', '.join(sorted(WORKSHOP_READING_PROVIDERS))} only; provider "
-                f"{entry.provider!r} has no measured reading launch shape yet",
+                f"{entry.provider!r} has no reading tool surface",
                 where=f"{where}.leaf")
     for cap in sorted(required_capabilities(phase, substep, entry.leaf)):
         if not entry.supports(cap):

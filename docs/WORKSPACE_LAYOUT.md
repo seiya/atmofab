@@ -58,7 +58,8 @@ workspace/
 │       │       ├── workshop_lineage.json          (`lineage_id`, `node_key`, `started_at_utc`, `wrapper_calls_used`, `ended_by`, `last_launch`: `{agent_run_id, rc, ended_at_utc}` of the latest launch)
 │       │       ├── .lineage.lock                  (the advisory lock the record's writers take)
 │       │       ├── command_log.jsonl              (every build-runtime call the wrapper made, and each `derive` and `check_ir`)
-│       │       └── wrapper_calls.jsonl            (every request the wrapper's MCP endpoint served, with the launch's agent_run_id and the peer address; one `connection_error` row per connection the client dropped mid-exchange)
+│       │       ├── wrapper_calls.jsonl            (CLI lineages only: every request the wrapper's MCP endpoint served, with the launch's agent_run_id and the peer address; one `connection_error` row per connection the client dropped mid-exchange. An HTTP lineage has no endpoint and no such file)
+│       │       └── loop_turns.jsonl               (HTTP lineages only, issue #534 PR-J3-b: one row per host-loop event — `request` (the parameters, the tools declared and the messages appended since the previous request), `response` (the raw body), `tool_call` / `tool_result` per call, `ended` — each with the launch's `agent_run_id`, the API key redacted; the launch response of such a launch also names `http_workflow_home`, `workshop_lineage_id` and `http_tool_surface`)
 │       │
 │       ├── hooks/
 │       │   └── workflow_hooks.jsonl               (host-side: pre_phase_launch, pre_phase_complete, etc.)

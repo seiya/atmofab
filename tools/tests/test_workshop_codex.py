@@ -122,7 +122,7 @@ class CodexLineageHomeTests(_CodexEnv):
         with self.assertRaises(ValueError):
             workshop_tree.LineagePaths(homes_root=self.homes, orchestration_id=_ORCH,
                                        lineage_id="l", orchestration_dir=self.repo,
-                                       backend="http")
+                                       backend="anthropic_api")
 
 
 class CodexWorkshopProfileTests(_CodexEnv):

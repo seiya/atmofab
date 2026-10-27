@@ -624,6 +624,24 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         [replay] = self._replays()
         self.assertEqual(self._status(replay), ("fail", "judge_replay_error"))
 
+    def test_an_http_workshop_entry_is_refused_naming_the_record(self) -> None:
+        """Issue #534 PR-J3-b (operator decision O3): an HTTP lineage's transcript is
+        `loop_turns.jsonl`, which the coverage reader does not read; refused before any
+        replay orchestration exists, `--check` included."""
+        cfg = self.pure_cfg.parent / "http_workshop.yaml"
+        cfg.write_text(_PURE_YAML + "phases:\n  validate:\n    substeps:\n      judge:\n"
+                       "        provider: anthropic_api\n        api_key_env: K\n"
+                       "        model: m\n        leaf: workshop\n"
+                       "        lineage_timeout_s: 600\n", encoding="utf-8")
+        for extra in ((), ("--check",)):
+            with self.subTest(extra=extra):
+                rc, out = self._main(*extra, cfg=cfg, leaf="workshop")
+                doc = json.loads(out)
+                self.assertEqual((rc, doc["reason"]),
+                                 (2, "judge_replay_http_lineage_unsupported"))
+                self.assertIn("loop_turns.jsonl", doc["detail"])
+                self.assertEqual(self._replays(), [])
+
     def test_the_leaf_must_be_the_configurations(self) -> None:
         rc, out = self._main(cfg=self.pure_cfg, leaf="workshop")
         self.assertEqual((rc, json.loads(out)["reason"]), (2, "judge_replay_leaf_mismatch"))

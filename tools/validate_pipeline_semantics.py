@@ -55,6 +55,7 @@ try:
     from tools.pure_leaf import (
         PURE_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
+        WORKSHOP_LINEAGE_BACKENDS,
         WORKSHOP_PROMPT_CONTRACT_VERSION,
         WORKSHOP_PROMPT_SENTINEL,
         is_pure_request as _pure_leaf_is_pure_request,
@@ -101,6 +102,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
     from tools.pure_leaf import (
         PURE_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
+        WORKSHOP_LINEAGE_BACKENDS,
         WORKSHOP_PROMPT_CONTRACT_VERSION,
         WORKSHOP_PROMPT_SENTINEL,
         is_pure_request as _pure_leaf_is_pure_request,
@@ -641,12 +643,13 @@ def _is_pure_launch_prompt_text(launch_text: str) -> bool:
     return launch_text.lstrip().startswith(PURE_PROMPT_SENTINEL)
 
 
-# The provider tokens whose pure leaf is answered over HTTPS from the CONDUCTOR's own process
-# (issue #28) and therefore has no child process to confine and no bwrap profile to audit.
-# Duplicated from `orchestration_runtime._HTTP_PROVIDER_TOKENS` rather than imported: this
-# module may not import the runtime (module-boundary rule), and the two are compared by
+# The provider tokens whose leaf is answered over HTTPS from the CONDUCTOR's own process (issue
+# #28; a pure leaf, and since issue #534 PR-J3-b a workshop leaf's host loop) and therefore has
+# no child process to confine and no bwrap profile to audit. Duplicated from
+# `orchestration_runtime._HTTP_PROVIDER_TOKENS` rather than imported: this module may not import
+# the runtime (module-boundary rule), and the two are compared by
 # `test_http_pure_leaf_backends_matches_the_runtime`.
-_HTTP_PURE_LEAF_BACKENDS: frozenset[str] = frozenset({"openai_compatible", "anthropic_api"})
+_HTTP_LEAF_BACKENDS: frozenset[str] = frozenset({"openai_compatible", "anthropic_api"})
 
 
 #: A workshop profile's CLI-home env name by backend family. Duplicated from
@@ -654,10 +657,6 @@ _HTTP_PURE_LEAF_BACKENDS: frozenset[str] = frozenset({"openai_compatible", "anth
 #: compared with it by `test_validate_pipeline_semantics`.
 _WORKSHOP_PROFILE_HOME_ENV: dict[str, str] = {"claude": "CLAUDE_CONFIG_DIR", "codex": "CODEX_HOME"}
 
-#: The CLI family of a workshop request's `workshop_provider`: the providers' backend tokens
-#: (`llm_config.PROVIDER_BACKEND_TOKENS`, compared by `test_validate_pipeline_semantics`) for the
-#: providers that run a workshop leaf.
-_WORKSHOP_PROVIDER_FAMILY: dict[str, str] = {"claude_cli": "claude", "codex_cli": "codex"}
 
 
 #: The launch-response fields a workshop launch records the wrapper's endpoint under
@@ -684,6 +683,44 @@ def _workshop_endpoint_violations(request: dict, response: dict) -> list[str]:
                  f"{request.get('substep')}) must name its wrapper endpoint "
                  "(claude_mcp_config / codex_mcp_config)")]
     return []
+
+
+def _http_workshop_record_violations(request: dict, response: dict) -> list[str]:
+    """What is wrong with a persisted HTTP `workshop leaf` launch (issue #534 PR-J3-b), whose
+    host loop runs in the conductor's process with no sandbox profile: its response names no
+    wrapper endpoint (`*_mcp_config`: the loop calls the operations in-process), names the
+    lineage the request names (`workshop_lineage_id`) and the home it ran in
+    (`http_workflow_home`, whose last segment is that lineage), and declares exactly the KIND's
+    tool surface (`http_tool_surface`): the five file tools on a reading pair, and the five
+    plus the pair's operations (`workshop_wrapper.WORKSHOP_OPS_BY_PAIR`) on a producing pair —
+    compared against that table, never against the request."""
+    from tools.pure_leaf import HTTP_FILE_TOOLS
+    from tools.workshop_wrapper import WORKSHOP_OPS_BY_PAIR
+    out: list[str] = []
+    endpoint = sorted(k for k in response if isinstance(k, str) and k.endswith("_mcp_config"))
+    if endpoint:
+        out.append(f"http workshop launch must name no wrapper endpoint (got "
+                   f"{', '.join(endpoint)})")
+    lineage = request.get("workshop_lineage_id")
+    lineage = lineage.strip() if isinstance(lineage, str) else ""
+    if not lineage:
+        out.append("http workshop launch request names no workshop_lineage_id")
+    if response.get("workshop_lineage_id") != lineage or not lineage:
+        out.append(f"http workshop launch response must name the request's lineage "
+                   f"{lineage!r} as workshop_lineage_id (got "
+                   f"{response.get('workshop_lineage_id')!r})")
+    home = response.get("http_workflow_home")
+    if not (isinstance(home, str) and home.strip()
+            and Path(home).name == lineage and Path(home).parent.name == "http"):
+        out.append(f"http workshop launch response must name its lineage home "
+                   f"<homes>/<oid>/http/{lineage} as http_workflow_home (got {home!r})")
+    pair = (str(request.get("step") or "").strip().lower(),
+            str(request.get("substep") or "").strip().lower())
+    expected = [*HTTP_FILE_TOOLS, *WORKSHOP_OPS_BY_PAIR.get(pair, ())]
+    if response.get("http_tool_surface") != expected:
+        out.append(f"http workshop launch ({pair[0]}.{pair[1]}) must declare the tool surface "
+                   f"{expected} (got {response.get('http_tool_surface')!r})")
+    return out
 
 
 def _workshop_profile_violations(profile: dict, request: dict | None = None,
@@ -745,7 +782,7 @@ def _workshop_profile_violations(profile: dict, request: dict | None = None,
                    f"({' or '.join(_WORKSHOP_PROFILE_HOME_ENV.values())}) naming {config} "
                    f"(got {homes!r})")
     elif (request is not None and request.get("workshop_provider") is not None
-          and _WORKSHOP_PROVIDER_FAMILY.get(str(request.get("workshop_provider"))) != family):
+          and WORKSHOP_LINEAGE_BACKENDS.get(str(request.get("workshop_provider"))) != family):
         # The spawn-side twin keys the family on the ENTRY's provider; the record's is the
         # request's `workshop_provider`, which the prompt's tool surface was rendered for. A
         # request that names none claims nothing to disagree with: the field arrived with step 2
@@ -8154,13 +8191,26 @@ def _validate_orchestration_hierarchy(
                                         .strip().lower()
                                         if isinstance(resp_payload_for_launch, dict) else ""
                                     )
-                                    http_pure_leaf = (
+                                    http_leaf = (
                                         resp_transport == "http"
                                         and isinstance(resp_backend, str)
                                         and resp_backend.strip().lower()
-                                        in _HTTP_PURE_LEAF_BACKENDS
+                                        in _HTTP_LEAF_BACKENDS
                                     )
-                                    if http_pure_leaf:
+                                    if http_leaf and is_workshop:
+                                        # An HTTP WORKSHOP record (issue #534 PR-J3-b): no
+                                        # profile, as a pure HTTP record, and in its place the
+                                        # lineage stamps and the kind's declared tool surface.
+                                        violations.extend(
+                                            f"{runs_path}:line {idx + 1} {why}"
+                                            for why in _http_workshop_record_violations(
+                                                req_payload_for_launch
+                                                if isinstance(req_payload_for_launch, dict)
+                                                else {},
+                                                resp_payload_for_launch
+                                                if isinstance(resp_payload_for_launch, dict)
+                                                else {}))
+                                    if http_leaf:
                                         if sbx_ref_for_launch:
                                             violations.append(
                                                 f"{runs_path}:line {idx + 1} http pure launch must "
@@ -8183,7 +8233,7 @@ def _validate_orchestration_hierarchy(
                                         # exemption granted on a response whose provider the row
                                         # does not claim is a record disagreeing with itself.
                                         row_backend = str(item.get("agent_backend") or "").strip()
-                                        if row_backend.lower() not in _HTTP_PURE_LEAF_BACKENDS:
+                                        if row_backend.lower() not in _HTTP_LEAF_BACKENDS:
                                             violations.append(
                                                 f"{runs_path}:line {idx + 1} http pure launch row "
                                                 f"agent_backend must be an http provider (got "
@@ -8202,7 +8252,7 @@ def _validate_orchestration_hierarchy(
                                                 sbx_doc = _read_json(sbx_path)
                                             except json.JSONDecodeError:
                                                 sbx_doc = None
-                                    if http_pure_leaf:
+                                    if http_leaf:
                                         pass
                                     elif not isinstance(sbx_doc, dict):
                                         violations.append(

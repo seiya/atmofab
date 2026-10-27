@@ -7,10 +7,46 @@
 #
 #     cp docs/examples/llm_openai_compatible.example.yaml llm.yaml
 #
-# WHY EVERY LEAF, NOW. `openai_compatible` is one request and one response: no session to
-# reopen, no tools to grant, and nothing to hold a tool. That confines it to the leaves that run as
-# host-mediated PURE functions — one closed context in, one JSON document out — which since
-# Z4 (issue #171) is EVERY leaf there is. There is no other leaf model to be admissible on.
+# WHY EVERY LEAF. `openai_compatible` has no session to reopen, so as a PURE leaf — one closed
+# context in, one JSON document out, which since Z4 (issue #171) every leaf can be — it is one
+# request and one response. Each leaf below is pure; any of them may instead run as a WORKSHOP
+# leaf (issue #534 PR-J3-b), where the HOST runs the tool-use loop: it declares five file tools
+# (`read_file`, `write_file`, `edit_file`, `list_files`, `grep_file`) over the lineage's work
+# tree — and on a producing substep the host's operations — as `tools` of the request,
+# executes every tool call a reply makes (whatever its `finish_reason`), and asks again until
+# the model answers with no tool call. The server must support tool calling. The entry states
+# the leaf model and its bounds on the substep only. On a PRODUCING substep
+# (`compile.generate`, `generate.generate`), the same block under each:
+#
+#       generate:
+#         provider: openai_compatible
+#         base_url: http://localhost:8000/v1
+#         api_key_env: LOCAL_LLM_API_KEY
+#         model: qwen2.5-coder-32b-instruct
+#         leaf: workshop
+#         max_wrapper_calls: 30      # host-operation calls per lineage (cold launch + repairs)
+#         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
+#
+# On a JUDGING substep (`compile.verify`, `generate.verify`, `validate.judge`), with the
+# substep's own name in place of `judge` — no host operation is served, so `max_wrapper_calls`
+# is refused there:
+#
+#       judge:
+#         provider: openai_compatible
+#         base_url: http://localhost:8000/v1
+#         api_key_env: LOCAL_LLM_API_KEY
+#         model: qwen2.5-coder-32b-instruct
+#         leaf: workshop
+#         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
+#
+# On a workshop entry `max_output_tokens` bounds ONE reply, and a reply that writes a file
+# carries it whole: one `write_file` of a 60 KB source is about 15-20k output tokens (a reply
+# cut at the limit runs none of its tool calls, and the repair turn says to write a long file in
+# parts). `timeout_s` bounds each request and `lineage_timeout_s` the lineage. No cache field is
+# sent: the server's automatic prefix caching applies where it supports it. A reasoning model's
+# `reasoning_content` is recorded and never sent back. Every tool result and tree file the leaf
+# reads is sent to the endpoint in each request (`docs/ORCHESTRATION.md` §workshop leaf, "On
+# the HTTP providers").
 #
 # `defaults` MAY be an HTTP provider since issue #169: the one launch it serves, the
 # `escalate` diagnostician, is a pure leaf, so the rule on it is

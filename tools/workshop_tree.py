@@ -22,7 +22,12 @@ leaf-side sees the second:
 * the LINEAGE RECORD, `workspace/orchestrations/<oid>/workshop/<lineage_id>/`, host-written
   only: `workshop_lineage.json`, `command_log.jsonl` (every build-runtime call of the wrapper) and
   `wrapper_calls.jsonl` (every request the wrapper's transport, `tools/workshop_mcp.py`,
-  served).
+  served; a CLI lineage's) or `loop_turns.jsonl` (the host loop's record of an HTTP lineage,
+  `tools/llm_workshop_loop.py`). An HTTP lineage's home has no `config/`.
+
+The HTTP host loop's two write tools reach the tree through `write_tree_file` /
+`edit_tree_file`, which resolve every parent through its parent's fd with `O_NOFOLLOW` and
+refuse a host-placed name.
 
 No function here raises on what the leaf wrote: a malformed tree is a finding the caller
 reports back, never an exception. Neutral core (`docs/BACKEND_BOUNDARY.md`): the names of the
@@ -75,11 +80,12 @@ ENDED_BY_VALUES: tuple[str, ...] = (
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
-#: The CLI backends a lineage home is prepared for: the directory under
-#: `<homes-root>/<oid>/` that holds it, which is `orchestration_runtime.
-#: WORKFLOW_BACKEND_HOME_DIRNAMES` (the prune tool walks those names), and the backend token of
-#: the provider that launches it (`claude_cli`, issue #534 step 1; `codex_cli`, step 2 PR-2).
-LINEAGE_BACKENDS: tuple[str, ...] = ("claude", "codex")
+#: The transports a lineage home is prepared for: the directory under `<homes-root>/<oid>/`
+#: that holds it, which is `orchestration_runtime.WORKFLOW_BACKEND_HOME_DIRNAMES` (the prune tool
+#: walks those names), and the value `pure_leaf.WORKSHOP_LINEAGE_BACKENDS` maps the launching
+#: provider to: `claude` (`claude_cli`, issue #534 step 1), `codex` (`codex_cli`, step 2 PR-2),
+#: `http` (both HTTP providers, whose host loop is one transport — PR-J3-b; no `config/`).
+LINEAGE_BACKENDS: tuple[str, ...] = ("claude", "codex", "http")
 
 _LINEAGE_LOCKS: dict[str, threading.Lock] = {}
 _LINEAGE_LOCKS_GUARD = threading.Lock()
@@ -429,6 +435,128 @@ def write_host_file(root: Path, name: str, text: str) -> None:
     fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
     with os.fdopen(fd, "w", encoding="utf-8") as stream:
         stream.write(text)
+
+
+def _open_parent_creating(root: Path, rel: PurePosixPath) -> int:
+    """An fd on `<root>/<rel>`'s parent directory, reached through no symbolic link and created
+    under `root` where missing: each component is opened `O_DIRECTORY | O_NOFOLLOW` relative to
+    the previous fd, and a missing one is made (0700) through that fd, never through a path
+    string, so a component the leaf replaced by a link between two calls is refused. Raises
+    `OSError` (`ELOOP` / `ENOTDIR` for a link or a file on the way)."""
+    flags_dir = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        for part in rel.parts[:-1]:
+            try:
+                nxt = os.open(part, flags_dir, dir_fd=fd)
+            except FileNotFoundError:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=fd)
+                except FileExistsError:
+                    pass
+                nxt = os.open(part, flags_dir, dir_fd=fd)
+            os.close(fd)
+            fd = nxt
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def write_tree_file(root: Path, name: str, text: str, *,
+                    reserved: Iterable[str]) -> str | None:
+    """Write a LEAF's file at `<root>/<name>` for the HTTP host loop's `write_file` (issue #534
+    PR-J3-b): None when written, else the finding the leaf is answered with. Never raises.
+
+    `name` must be a plain relative path (`plain_relative_path`) and not a `reserved` name (the
+    lineage's host-placed files: the seeds, `CONTRACT.md`, the control file — on a CLI leaf the
+    host restores such a write silently; here it is refused, because the host is the one
+    writing). Every parent is opened through its parent's fd with `O_NOFOLLOW` and created there
+    when missing; the file itself is opened `O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW`, 0644,
+    through the parent's fd. So nothing reached through a link is written, whether the link
+    points in or out of the tree."""
+    rel = plain_relative_path(name)
+    if rel is None:
+        return (f"{name!r} is not a plain relative path of your work tree (no leading `/`, no "
+                "`.` or `..` segment, no backslash, no empty segment)")
+    if rel.as_posix() in {str(n) for n in reserved}:
+        return (f"{rel.as_posix()} is a host-placed file (a seed or CONTRACT.md) and is "
+                "read-only; write your own file under another name")
+    try:
+        data = text.encode("utf-8")
+    except UnicodeEncodeError as exc:
+        return f"{rel.as_posix()}: content is not encodable as UTF-8 ({exc.reason})"
+    try:
+        parent = _open_parent_creating(Path(root), rel)
+    except OSError as exc:
+        if exc.errno in (errno.ELOOP, errno.ENOTDIR):
+            return f"{rel.as_posix()}: a directory on its path is a symbolic link or a file"
+        return f"{rel.as_posix()}: cannot be written ({exc.strerror or exc})"
+    except ValueError as exc:
+        return f"{rel.as_posix()}: is not a usable path ({exc})"
+    try:
+        try:
+            # `O_NONBLOCK`: a FIFO a wrapper-run program left at the name answers ENXIO
+            # rather than holding the loop open waiting for a reader.
+            fd = os.open(rel.parts[-1],
+                         os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW | os.O_NONBLOCK,
+                         0o644, dir_fd=parent)
+        except OSError as exc:
+            if exc.errno == errno.ELOOP:
+                return f"{rel.as_posix()}: is a symbolic link; it is not written through"
+            if exc.errno == errno.EISDIR:
+                return f"{rel.as_posix()}: is a directory"
+            return f"{rel.as_posix()}: cannot be written ({exc.strerror or exc})"
+        with os.fdopen(fd, "wb") as stream:
+            if not stat.S_ISREG(os.fstat(stream.fileno()).st_mode):
+                return f"{rel.as_posix()}: is not a regular file"
+            stream.write(data)
+    except OSError as exc:
+        return f"{rel.as_posix()}: cannot be written ({exc})"
+    finally:
+        os.close(parent)
+    return None
+
+
+def edit_tree_file(root: Path, name: str, old: str, new: str, *,
+                   reserved: Iterable[str]) -> str | None:
+    """Replace the ONE occurrence of `old` in the leaf's file `<root>/<name>` with `new`, for
+    the HTTP host loop's `edit_file`: None when done, else the finding. Read through
+    `read_regular_file_under`, written through `write_tree_file` (the reserved set and the
+    no-link rule are that function's). Zero occurrences, or two and more, are refused with the
+    count. Never raises."""
+    rel = plain_relative_path(name)
+    if rel is None:
+        return write_tree_file(root, name, "", reserved=reserved)
+    if rel.as_posix() in {str(n) for n in reserved}:
+        return write_tree_file(root, name, "", reserved=reserved)
+    if not old:
+        return "old_text is empty; name the exact text to replace"
+    data, why = read_regular_file_under(Path(root), rel)
+    if data is None:
+        return f"{rel.as_posix()}: {why}"
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError:
+        return f"{rel.as_posix()}: is not UTF-8 text"
+    count = text.count(old)
+    if count != 1:
+        return (f"{rel.as_posix()}: old_text occurs {count} times; it must occur exactly once "
+                "(give more surrounding text, or write the file whole)")
+    return write_tree_file(root, name, text.replace(old, new, 1), reserved=reserved)
+
+
+def list_tree_files(root: Path) -> tuple[list[tuple[str, int]], list[str]]:
+    """`([(path, bytes)], [link paths])` of `root`, for the HTTP host loop's `list_files`:
+    every regular file (`_walk_tree_files`, links not followed) with its size, sorted."""
+    files, links = _walk_tree_files(Path(root))
+    out: list[tuple[str, int]] = []
+    for rel in files:
+        try:
+            out.append((rel.as_posix(), (Path(root) / rel).lstat().st_size))
+        except OSError:
+            continue
+    return out, links
 
 
 def assemble_bundle_document(root: Path, reserved: Iterable[str]) -> dict[str, Any] | AssemblyFailure:

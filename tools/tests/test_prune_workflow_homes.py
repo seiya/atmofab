@@ -301,6 +301,15 @@ class PruneWorkflowHomesTests(unittest.TestCase):
         self.assertFalse(by_id["orch_extra"]["deleted"])
         self.assertTrue(by_id["orch_ok"]["deleted"])
 
+    def test_an_http_lineage_directory_is_a_backend_home(self) -> None:
+        """Issue #534 PR-J3-b: an HTTP workshop leaf's lineage homes sit under `http/`, a
+        declared backend directory, so an entry holding it is pruned like any other."""
+        self._entry("orch_http", status="pass", backends=("claude", "http"))
+        reports, _ = self._prune(delete=True)
+        [report] = [r for r in reports if r["orchestration_id"] == "orch_http"]
+        self.assertTrue(report["deleted"], report)
+        self.assertEqual(report["backends"], ["claude", "http"])
+
     def test_the_homes_root_is_resolved_through_the_module_the_suite_guards(self) -> None:
         """`from … import _workflow_homes_root` put this module outside the suite's guard.
 
