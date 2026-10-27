@@ -1,22 +1,15 @@
 #!/usr/bin/env python3
-"""HTTP transport for a Z2 pure leaf (issue #28).
+"""The shared HTTP layer of the HTTP providers (issue #28): POST / server-sent-event reads,
+usage normalization, API-key handling and redaction. Its one caller since issue #534 PR-J4-b
+is the host tool-use loop of an HTTP `workshop leaf` (`tools/llm_workshop_loop.py`, PR-J3-b),
+which builds the request and reads the reply of each turn; the HTTP PURE leaf this module was
+written for — one closed context in, one JSON document out, with its request builders,
+response readers and `run_pure_http_leaf` — went in PR-J4-b.
 
-A *pure leaf* is one typed document in, one JSON document out: the host assembles a closed
-context, the model answers once, and the host validates and writes the result. Nothing in that
-contract needs a process. This module speaks it over HTTPS instead, so `generate.generate` /
-`generate.verify` can run on an operator-hosted endpoint (vLLM, llama.cpp, Ollama, a hosted
-OpenAI-compatible API) or on the Anthropic Messages API, while the expensive agentic substeps
-stay where they are.
-
-**Why there is no sandbox here.** bwrap confines a leaf because an agentic leaf runs
-model-directed tools against the filesystem. An HTTP pure leaf runs none: the response is DATA,
-handed to the same `extract_json_document` / bundle / verdict validators the CLI pure leaf's
-response goes through, and the leaf's write authority is the empty set either way (the host
-still runs the FS-diff over empty write_roots). What IS new is egress: the conductor now
-originates outbound HTTPS to an operator-configured `base_url`. This module asks urllib to
-honour the proxy variables of the environment it is HANDED — the leaf's, the dict
-`workflow_conductor._child_env` authors — and since that environment is a declared allowlist
-(issue #63) with the proxy families a NAMED EXCLUSION
+**Egress.** The conductor originates outbound HTTPS to an operator-configured `base_url`. This
+module asks urllib to honour the proxy variables of the environment it is HANDED — the leaf's,
+the dict `workflow_conductor._child_env` authors — and since that environment is a declared
+allowlist (issue #63) with the proxy families a NAMED EXCLUSION
 (`orchestration_runtime.LEAF_ENV_NAMED_EXCLUSIONS`), `_env_proxies` finds nothing and the request
 goes direct. Measured, not inferred. The mechanism below is kept rather than deleted because the
 exclusion is a decision that can be revisited by adding the names back, and the handler is what
@@ -24,17 +17,15 @@ makes that a one-line change; the exclusion's own comment carries the reasons. T
 PREFLIGHT reachability probe (`orchestration_runtime._probe_http_provider`) opens its request
 with this same `_default_opener` over `leaf_env_from(os.environ)`, so preflight and the leaf
 take one route by construction and a proxied host fails at preflight rather than after it
-(issue #83; before that fix the probe called `urlopen` bare and passed through the operator's
-proxy).
+(issue #83).
 
 **The key is never in the config.** A config names the ENVIRONMENT VARIABLE
 (`api_key_env`); this module reads it at call time and puts it in a header. It is never logged,
 never returned, never persisted — the raw response body IS persisted by the caller, so the
 request side is where that discipline has to live.
 
-Stdlib only (`urllib`), and importing only `tools.pure_leaf` for the shared prompt/category
-constants — the same transport-substrate role `pure_leaf.py` plays for the CLI path — plus
-`tools.leaf_usage` for the ONE usage shape every backend's numbers are recorded in.
+Stdlib only (`urllib`), plus `tools.leaf_usage` for the ONE usage shape every backend's numbers
+are recorded in.
 """
 
 from __future__ import annotations
@@ -45,46 +36,17 @@ import re
 import time
 import urllib.error
 import urllib.request
-from typing import Any, Callable, Iterator, Mapping, NamedTuple, Sequence
+from typing import Any, Callable, Iterator, Mapping, Sequence
 
 from tools.leaf_usage import LEAF_USAGE_SOURCE_HTTP, normalize_leaf_usage
-from tools.pure_leaf import PURE_SYSTEM_PROMPT
 
 # Wire version required by the Anthropic Messages API. Pinned, not "latest": the response shape
 # this module parses is the one this version promises.
 ANTHROPIC_VERSION = "2023-06-01"
 
-# A pure leaf's answer is one document; a request that has not answered in this long is not
-# going to. The caller may override per entry (`timeout_s`).
+# One request of the loop; a request that has not answered in this long is not going to. The
+# caller may override per entry (`timeout_s`).
 DEFAULT_HTTP_TIMEOUT_SECONDS = 900
-
-
-class HttpLeafResponse(NamedTuple):
-    """One HTTP pure-leaf turn.
-
-    `transport_error` is set when the turn did not produce an answer at all — DNS, TLS, a
-    timeout, a 4xx/5xx, a non-JSON body, a body missing the fields the shape promises, or a
-    missing API key. The caller routes it exactly as it routes a nonzero leaf exit
-    (`pure_transport`), because it is the same thing: no document to repair.
-
-    `truncated` means the provider itself said the answer was cut off at the output-token
-    ceiling. It is authoritative — more so than inspecting the partial text — so the caller
-    classifies it as `pure_response_truncated` without consulting the extractor.
-
-    `model_reported` says, on a turn that produced an answer, whether `model` is the name the
-    provider's response reported (True) or the entry's configured name the transport fell back
-    to (False), so a caller can record the model's provenance rather than present a configured
-    alias as a resolved one (issue #348). On a `transport_error` turn `model` is empty and
-    `model_reported` is False; the caller records the entry's configured name itself.
-    """
-
-    text: str
-    model: str
-    usage: "dict[str, Any] | None"
-    truncated: bool
-    transport_error: "str | None"
-    raw_response: str
-    model_reported: bool = False
 
 
 class _NoRedirects(urllib.request.HTTPRedirectHandler):
@@ -149,8 +111,9 @@ def _default_opener(env: "Mapping[str, str] | None" = None) -> "Callable[..., An
     return urllib.request.build_opener(*handlers).open
 
 
-# Ceiling on a response body. A pure leaf answers with one JSON document; anything past this is
-# not an answer, and reading it unbounded is how a trickling endpoint holds the run open.
+# Ceiling on a response body. One reply of the loop is bounded by its output-token limit;
+# anything past this is not an answer, and reading it unbounded is how a trickling endpoint
+# holds the run open.
 _MAX_RESPONSE_BYTES = 32 * 1024 * 1024
 _READ_CHUNK_BYTES = 65536
 # An error body is only ever a diagnostic excerpt (`_ERROR_DETAIL_CHARS` of it survives), so it
@@ -636,73 +599,6 @@ def _api_key(entry: Any,
     return value, None
 
 
-def _openai_request(
-    entry: Any, messages: "Sequence[Mapping[str, str]]", max_output_tokens: int,
-    env: "Mapping[str, str] | None" = None, *, stream: bool,
-) -> "tuple[str, dict[str, Any], dict[str, str], str | None]":
-    key, error = _api_key(entry, env)
-    if error is not None:
-        return "", {}, {}, error
-    url = entry.base_url.rstrip("/") + "/chat/completions"
-    headers = {"Authorization": f"Bearer {key}"}
-    payload: dict[str, Any] = {
-        "model": entry.model,
-        "messages": [{"role": "system", "content": PURE_SYSTEM_PROMPT}, *messages],
-        # `max_tokens`, not `max_completion_tokens`: every local server (vLLM, llama.cpp,
-        # Ollama) speaks the former, and it is the compatibility surface this provider is named
-        # for. Hosted OpenAI has since renamed it; switching is a follow-up for when a run
-        # actually targets it.
-        "max_tokens": max_output_tokens,
-    }
-    # Only when configured: the field is meaningful to reasoning models and rejected by some
-    # servers that do not implement it, so an absent level must not put it on the wire.
-    if getattr(entry, "effort", ""):
-        payload["reasoning_effort"] = entry.effort
-    if stream:
-        payload["stream"] = True
-        # An OpenAI-shaped stream carries NO usage unless this is asked for, and `usage` is what
-        # reaches `ProcResult.usage` and the `agent_runs` row the operator's cost comparison is
-        # read out of. The residual risk is a server that validates unknown body keys and answers
-        # 400 — which is cheap and self-naming (milliseconds, no tokens, and the provider's own
-        # message names `stream_options` in the persisted body), tagged `llm_client_error` so it
-        # fails closed on the FIRST attempt instead of being retried, and recovered from with one
-        # `stream: false` in the config. Losing token accounting silently is the worse trade.
-        payload["stream_options"] = {"include_usage": True}
-        headers["Accept"] = "text/event-stream"
-    # No `"stream": false` when opted out: the escape hatch must send byte-for-byte the request
-    # that worked before streaming existed, or the hatch is itself a new thing to be rejected by
-    # the endpoint it exists for.
-    return url, payload, headers, None
-
-
-def _anthropic_request(
-    entry: Any, messages: "Sequence[Mapping[str, str]]", max_output_tokens: int,
-    env: "Mapping[str, str] | None" = None, *, stream: bool,
-) -> "tuple[str, dict[str, Any], dict[str, str], str | None]":
-    key, error = _api_key(entry, env)
-    if error is not None:
-        return "", {}, {}, error
-    url = entry.base_url.rstrip("/") + "/v1/messages"
-    payload: dict[str, Any] = {
-        "model": entry.model,
-        # The system channel is the same fixed prompt the claude CLI pure leaf gets via
-        # `--system-prompt`. On this transport the model's total input is a function of the
-        # host-assembled body alone (A2); on the CLI transport it is not — the CLI adds its own
-        # text (`docs/ORCHESTRATION.md` §pure-function leaf; issue #454).
-        "system": PURE_SYSTEM_PROMPT,
-        "messages": list(messages),
-        # Required by this API, unlike OpenAI's, where it is optional.
-        "max_tokens": max_output_tokens,
-    }
-    headers = {"x-api-key": key, "anthropic-version": ANTHROPIC_VERSION}
-    if stream:
-        # No `stream_options` counterpart: this API puts usage in the stream natively, split
-        # across `message_start` (input) and `message_delta` (output).
-        payload["stream"] = True
-        headers["Accept"] = "text/event-stream"
-    return url, payload, headers, None
-
-
 def _normalized_usage(usage: "dict[str, Any] | None") -> "dict[str, Any] | None":
     """A reader's canonical-name usage in the one shape every leaf backend records.
 
@@ -779,40 +675,6 @@ def _anthropic_usage(raw: Any) -> "dict[str, Any]":
     return {k: usage[k] for k in keys if isinstance(usage.get(k), int)}
 
 
-def _read_openai_response(doc: Mapping[str, Any]) -> "tuple[str, str, dict, bool, str | None]":
-    choices = doc.get("choices")
-    if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-        return "", "", {}, False, "response_missing_choices"
-    choice = choices[0]
-    message = choice.get("message")
-    content = message.get("content") if isinstance(message, dict) else None
-    if not isinstance(content, str):
-        return "", "", {}, False, "response_missing_message_content"
-    model = doc.get("model")
-    return (content, model if isinstance(model, str) else "",
-            _openai_usage(doc.get("usage")),
-            choice.get("finish_reason") == "length", None)
-
-
-def _read_anthropic_response(doc: Mapping[str, Any]) -> "tuple[str, str, dict, bool, str | None]":
-    blocks = doc.get("content")
-    if not isinstance(blocks, list):
-        return "", "", {}, False, "response_missing_content"
-    # Concatenate the TEXT blocks: a pure leaf is told to answer with one document, but a
-    # provider may still split it across blocks, and dropping any of them would corrupt the
-    # document into an unparseable one and blame the model for it.
-    text = "".join(
-        block.get("text", "") for block in blocks
-        if isinstance(block, dict) and block.get("type") == "text"
-        and isinstance(block.get("text"), str))
-    if not text:
-        return "", "", {}, False, "response_has_no_text_block"
-    model = doc.get("model")
-    return (text, model if isinstance(model, str) else "",
-            _anthropic_usage(doc.get("usage")),
-            doc.get("stop_reason") == "max_tokens", None)
-
-
 # What an incomplete stream is reported as. The WORDING is load-bearing, not decoration: the
 # conductor classifies a leaf's terminal text with `_LEAF_INFRA_ERROR_PATTERNS`, and a string
 # that matches none of them is an unclassified nonzero exit — non-retryable, so a genuinely
@@ -830,258 +692,6 @@ _STREAM_INTERRUPTED = "stream interrupted"
 # <urlopen error [Errno -3] ...>`) matched nothing, so the same DNS failure before any byte was
 # re-launched under `stream: true` and failed the run closed under `stream: false` (#467).
 _TRANSPORT_FAILED = "network error"
-
-
-def _read_openai_stream(
-        frames: "Sequence[tuple[str, str]]") -> "tuple[str, str, dict, bool, str | None]":
-    """Fold an OpenAI-dialect event stream into the same 5-tuple the buffered reader returns.
-
-    Mirrors `_read_openai_response` decision for decision — only `choices[0].delta.content` is
-    the answer, exactly as only `choices[0].message.content` is there. A `reasoning_content`
-    delta is thinking, not the document, and is dropped for the same reason the buffered reader
-    never looks for one."""
-    text: list[str] = []
-    model = ""
-    usage: dict[str, Any] = {}
-    finish_reason: "str | None" = None
-    saw_done = False
-    saw_choice = False
-    error_detail = ""
-    for _event, data in frames:
-        if data == "[DONE]":
-            saw_done = True
-            continue
-        try:
-            doc = json.loads(data)
-        except json.JSONDecodeError:
-            # A frame this dialect does not model (a gateway's own annotation). Skipping it is
-            # safe; a stream made ONLY of them ends with neither terminator and is reported
-            # below, so nothing is silently accepted.
-            continue
-        if not isinstance(doc, dict):
-            continue
-        detail = doc.get("error")
-        # TRUTHY, not `is not None`. A proxy that stamps `"error": null` — or `""`, `{}`,
-        # `false`, `0` — on every ordinary content chunk is a real shape, and treating any of
-        # those as an error both dropped the chunk's content and reported nonsense
-        # (`provider error event False`). With `""` the run got the worst outcome available: a
-        # SUCCESSFUL turn carrying an empty document. A falsy error is not an error.
-        if detail:
-            # The mirror of the Messages API's `error` EVENT, which this dialect expresses as an
-            # ordinary chunk carrying an `error` key. Without this the frame has no `choices`, is
-            # skipped as unmodelled, and a `[DONE]` (or a `finish_reason` on an earlier chunk)
-            # then reports an upstream failure as a COMPLETE answer — handing the validators a
-            # truncated document to blame the model for, which is the outcome this module
-            # refuses everywhere else.
-            error_detail = (f"{detail.get('type', 'error')}: {detail.get('message', '')}"
-                            if isinstance(detail, dict) else str(detail))
-            continue
-        if isinstance(doc.get("model"), str):
-            model = doc["model"]
-        chunk_usage = doc.get("usage")
-        if isinstance(chunk_usage, dict):
-            usage = _openai_usage(chunk_usage) or usage
-        choices = doc.get("choices")
-        # `choices` is legitimately EMPTY on the final chunk that `stream_options.include_usage`
-        # asks for, so this must never index blindly.
-        if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
-            continue
-        saw_choice = True
-        choice = choices[0]
-        delta = choice.get("delta")
-        if isinstance(delta, dict) and isinstance(delta.get("content"), str):
-            text.append(delta["content"])
-        if isinstance(choice.get("finish_reason"), str):
-            finish_reason = choice["finish_reason"]
-    # The UNION of the two completion markers, because servers disagree about which they send:
-    # llama.cpp has shipped without `[DONE]`, and some gateways swallow the finish_reason on the
-    # last chunk. A connection severed mid-answer produces NEITHER, which is the case that has to
-    # fail — otherwise a network fault arrives at the validators as a truncated document and is
-    # blamed on the model, spending repair turns on it.
-    # An error frame WINS over a terminator that follows it, exactly as the Messages API reader
-    # lets its `error` event beat a `message_stop`.
-    if error_detail:
-        return "", "", {}, False, (
-            f"{_STREAM_INTERRUPTED}: provider error event {error_detail}".strip())
-    if not (saw_done or finish_reason is not None):
-        return "", "", {}, False, (
-            f"{_STREAM_INTERRUPTED}: ended after {len(frames)} frames with no [DONE] and no "
-            f"finish_reason")
-    if not saw_choice:
-        # The buffered reader's `response_missing_choices`, and the mirror has to be exact: a
-        # well-terminated stream of nothing but the `include_usage` chunk (`choices: []`) and
-        # `[DONE]` would otherwise be a SUCCESS with empty text, spending a bundle-repair turn on
-        # an answer the provider never gave. An empty `content` inside a real choice stays legal,
-        # exactly as it is in the buffered path.
-        return "", "", {}, False, "response_missing_choices"
-    return "".join(text), model, usage, finish_reason == "length", None
-
-
-def _read_anthropic_stream(
-        frames: "Sequence[tuple[str, str]]") -> "tuple[str, str, dict, bool, str | None]":
-    """Fold a Messages-API event stream into the same 5-tuple the buffered reader returns.
-
-    Takes only `text_delta`, mirroring the buffered reader's `type == "text"` block filter:
-    `thinking_delta`, `signature_delta` and `input_json_delta` are not the answer document."""
-    text: list[str] = []
-    model = ""
-    usage: dict[str, Any] = {}
-    truncated = False
-    complete = False
-    error_detail = ""
-    for event, data in frames:
-        try:
-            doc = json.loads(data)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(doc, dict):
-            continue
-        if event == "message_start":
-            message = doc.get("message")
-            if isinstance(message, dict):
-                if isinstance(message.get("model"), str):
-                    model = message["model"]
-                # `message_start` carries the whole input side — the uncached input AND the
-                # two cache classes — so take all of it, not just `input_tokens`. Only
-                # `output_tokens` arrives later, on `message_delta`.
-                usage.update(_anthropic_usage(message.get("usage")))
-        elif event == "content_block_delta":
-            delta = doc.get("delta")
-            if (isinstance(delta, dict) and delta.get("type") == "text_delta"
-                    and isinstance(delta.get("text"), str)):
-                text.append(delta["text"])
-        elif event == "message_delta":
-            delta = doc.get("delta")
-            if isinstance(delta, dict) and delta.get("stop_reason") == "max_tokens":
-                truncated = True
-            reported = doc.get("usage")
-            if isinstance(reported, dict) and isinstance(reported.get("output_tokens"), int):
-                # Cumulative, so the last one wins.
-                usage["output_tokens"] = reported["output_tokens"]
-        elif event == "message_stop":
-            complete = True
-        elif event == "error":
-            detail = doc.get("error")
-            if isinstance(detail, dict):
-                error_detail = f"{detail.get('type', 'error')}: {detail.get('message', '')}"
-            else:
-                error_detail = str(detail)
-    # An `error` event WINS over a `message_stop`, because this API really does answer 200 and
-    # then fail mid-stream (`overloaded_error` is the common one), and the detail is what lets
-    # the conductor rank it above a bare transport flake.
-    if error_detail:
-        return "", "", {}, False, (
-            f"{_STREAM_INTERRUPTED}: provider error event {error_detail}".strip())
-    if not complete:
-        return "", "", {}, False, (
-            f"{_STREAM_INTERRUPTED}: ended after {len(frames)} frames with no message_stop")
-    if not text:
-        return "", "", {}, False, "response_has_no_text_block"
-    return "".join(text), model, usage, truncated, None
-
-
-class _Shape(NamedTuple):
-    """One provider's wire dialect: how to ask, and how to read either kind of answer.
-
-    Named rather than a bare tuple because three callables is where positional unpacking stops
-    being readable. `build_request` takes a `stream` keyword instead of there being a fourth,
-    streaming-only builder: the two requests differ by two keys, and a separate builder would
-    duplicate the URL, the headers and the `_api_key` failure path to express that."""
-
-    build_request: Callable[..., Any]
-    read_response: Callable[..., Any]
-    read_stream: Callable[..., Any]
-
-
-_SHAPES: Mapping[str, _Shape] = {
-    "openai_compatible": _Shape(
-        _openai_request, _read_openai_response, _read_openai_stream),
-    "anthropic_api": _Shape(
-        _anthropic_request, _read_anthropic_response, _read_anthropic_stream),
-}
-
-
-def run_pure_http_leaf(
-    entry: Any,
-    messages: "Sequence[Mapping[str, str]]",
-    *,
-    timeout_s: "float | None" = None,
-    max_output_tokens: "int | None" = None,
-    env: "Mapping[str, str] | None" = None,
-    opener: "Callable[..., Any] | None" = None,
-) -> HttpLeafResponse:
-    """One pure-leaf turn against `entry`'s HTTP provider.
-
-    `messages` is the conversation so far in OpenAI/Anthropic role form — for a first attempt
-    a single user turn, for a repair the prior turns plus the critique (the in-process analog
-    of the CLI path's `--resume --fork-session`). The system channel is supplied here, not by
-    the caller, so both shapes get the same fixed `PURE_SYSTEM_PROMPT`.
-
-    Never raises: every failure comes back as `transport_error`, because the caller's job is to
-    turn it into a substep outcome, not to unwind."""
-    shape = _SHAPES.get(entry.provider)
-    if shape is None:
-        return HttpLeafResponse(
-            "", "", None, False,
-            f"unsupported_http_provider: {entry.provider!r}", "")
-    limit = int(max_output_tokens or entry.max_output_tokens or DEFAULT_MAX_OUTPUT_TOKENS)
-    timeout = float(timeout_s or entry.timeout_s or DEFAULT_HTTP_TIMEOUT_SECONDS)
-
-    # `getattr`, not `entry.stream`: `entry` is typed `Any` and callers hand this hand-built
-    # objects, the same defensive read `effort` already gets. Defaulting to True keeps the
-    # DEFAULT with the fix — an object that has never heard of the field still streams.
-    stream = bool(getattr(entry, "stream", True))
-    url, payload, headers, error = shape.build_request(
-        entry, messages, limit, env, stream=stream)
-    if error is not None:
-        return HttpLeafResponse("", "", None, False, error, "")
-    # `secret` is the key just resolved for this request: everything this call returns —
-    # the raw body (persisted under `launches/`) and the transport error (emitted as an event)
-    # — is provider-supplied text that may echo it back.
-    secret, _ = _api_key(entry, env)
-    if stream:
-        frames, raw, error = _post_stream(url, payload, headers, timeout_s=timeout,
-                                          secret=secret, env=env, opener=opener)
-        if frames is None:
-            return HttpLeafResponse("", "", None, False, error or "empty_response", raw)
-        text, model, usage, truncated, read_error = shape.read_stream(frames)
-        if read_error is None:
-            # The provider's own terminator is on the wire, so the ANSWER is complete and
-            # whatever went wrong went wrong after it: a teardown severed before the final
-            # zero-length chunk, or a keepalive trailer that outlived the deadline. Both were
-            # reproduced. Reporting those as a transport failure would throw away a finished
-            # generation — for this workload, ten billed minutes of it — and re-launch for an
-            # answer already in hand.
-            error = None
-        if error is not None:
-            # Died mid-answer. Report the TRANSPORT message rather than the reader's "no
-            # terminator" summary of it: the former names what actually happened to the socket.
-            return HttpLeafResponse("", "", None, False, error, raw)
-    else:
-        doc, raw, error = _post_json(url, payload, headers, timeout_s=timeout,
-                                     secret=secret, env=env, opener=opener)
-        if error is not None or doc is None:
-            return HttpLeafResponse("", "", None, False, error or "empty_response", raw)
-        text, model, usage, truncated, read_error = shape.read_response(doc)
-    if read_error is not None:
-        # REDACTED, like every other provider-supplied string this module returns. A reader's
-        # error used to be a constant, so this was safe by construction; it stopped being one
-        # when the stream readers began quoting the provider's own `error` frame, and
-        # "Incorrect API key provided: sk-..." is exactly the message class a provider puts
-        # there. The caller emits this string as an event and stores it in the leaf's stderr,
-        # both persisted — which is the whole reason the key discipline lives on this side.
-        return HttpLeafResponse("", "", None, False, _redact(read_error, secret), raw)
-    # `model or entry.model`: the response's own value is the provenance ground truth (a
-    # gateway may resolve an alias), and the configured one is the honest fallback.
-    #
-    # Redacted, unlike `text`: this value is only ever PERSISTED (the `agent_runs` row, the
-    # per-attempt metadata) — nothing parses it — so removing a credential from it costs
-    # nothing but a mangled model name in the case where the key is a substring of one, which
-    # is the trade the answer channel could not make.
-    reported = _redact(model, secret)
-    return HttpLeafResponse(text, reported or entry.model,
-                            _normalized_usage(usage), truncated, None, raw,
-                            model_reported=bool(reported))
 
 
 # The default `max_tokens` when neither the entry nor the caller names one. Deliberately NOT
