@@ -697,16 +697,18 @@ classifier refused the deletion edit itself as "Security Weaken", and then a rea
 being edited, even after the operator approved in chat. It went through only after the operator
 left auto mode. Plan a defense deletion for a session that is not in auto mode.
 
-## Rule 1-b: a redundant step deleted on its callers' state, and the caller the previous fix had just added (issue #534 PR-J3-b / PR #554, 2026-10-27)
+## Rule 1-b: a redundant step deleted on its callers' state, and the caller the next fix added (issue #534 PR-J3-b / PR #554, 2026-10-27)
 
-The HTTP workshop loop keeps each lineage's conversation in memory, and three places dropped it:
-the turn's tail (when the lineage record says it ended), `_WorkshopLineageMachine.next_launch`
-(on a supersede) and `after_transport` / `after_cut_read`. Round 0's hand sweep reported the
+The HTTP workshop loop keeps each lineage's conversation in memory, and five places dropped it
+(`git grep -n _drop_workshop_http_history 567c8a75 -- tools/workflow_conductor.py`): the turn's
+tail (when the lineage record says it ended), `_WorkshopLineageMachine.next_launch` (on a
+supersede), `home_gone`, `after_transport` and `after_cut_read`. Round 0's hand sweep reported the
 `after_transport` drop as a survivor, and the reasoning was correct for the callers that existed
 when it was written: `after_transport` ran only after a transport death, whose tail had already
 ended the lineage `leaf_exit` and dropped the history. `f833b694` deleted the drop on that
-premise. But `ac2faf54`, the round-1 fix committed just before the sweep's verdict was acted on,
-had routed a NEW case through `after_transport`: an HTTP reading launch whose last reply was cut
+premise (and `after_cut_read`'s, a codex-only path). Then `ac2faf54`, the round-1 fix committed on
+top of it (`f833b694` is its parent), routed a NEW case through `after_transport` without re-reading the
+deletion: an HTTP reading launch whose last reply was cut
 at the output limit is an unfinished review, re-run from the seeds — and a cut launch returns rc
 0, not timed out, so no tail ends it. Round 2's fail-open reviewer found the lineage recorded
 `ended_by: null` (resumable by its own record) and its history retained; `5a47d7c6` restored the
@@ -721,9 +723,10 @@ new caller, where a deletion silently stops covering it.
 
 The PR-J3-b plan's decision 6 said the OpenAI-dialect loop records `reasoning_content` and never
 replays it, because "the reasoning servers that return it (DeepSeek's documented rule) refuse a
-request that carries it". That was DeepSeek's rule for its earlier reasoner. The current
-thinking-mode guide (https://api-docs.deepseek.com/guides/thinking_mode, fetched 2026-10-27) says
-that in a conversation carrying `tools`, `reasoning_content` "must be fully passed back to the API
+request that carries it". The vendor's current thinking-mode guide
+(https://api-docs.deepseek.com/guides/thinking_mode, fetched 2026-10-27) states no such refusal —
+without `tools` it says the field "will be ignored" — and says that in a conversation carrying
+`tools`, `reasoning_content` "must be fully passed back to the API
 in all subsequent requests" and "the API will return a 400 error" otherwise — and a workshop loop
 always carries `tools`, so every second request of such an entry would have failed closed as
 `llm_client_error`. The implementing session re-measured every code seam the plan named and did not

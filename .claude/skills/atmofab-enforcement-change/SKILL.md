@@ -129,10 +129,11 @@ a fail-open that way, on the strength of **one** compiler probe).
   CALLER — the ones a later fix adds included — and the fix that adds one will not re-read it.**
   Issue #534 PR-J3-b removed an HTTP history drop from `after_transport` because a mutation sweep
   showed it unobservable: every caller then reached it after the turn's tail had ended the
-  lineage and dropped the history. The previous commit had just added a new route into
-  `after_transport` — a cut last reply on a reading lineage, which no tail ends — so the deletion
-  left that lineage recorded open and its conversation in memory; the next round found it, and
-  the round after found the same shape at a second exit. **Rule: keep such a step, GUARDED by
+  lineage and dropped the history — true at that commit. The NEXT commit, a review-round fix,
+  added a new route into `after_transport` (a cut last reply on a reading lineage, which no tail
+  ends) and did not re-read the deletion, so that lineage was recorded open with its
+  conversation in memory; the round after found it, and the next found the same shape at a
+  second exit. **Rule: keep such a step, GUARDED by
   the state it relies on (`if ended_by is None: end it`), rather than deleting it — the guard
   costs a line and states the premise where a new caller cannot miss it.** "The mutation
   survives" is exactly the evidence the rule above already refuses for a deletion. Episode:
@@ -237,8 +238,8 @@ to **one unbilled observation**).
 - **A premise about an EXTERNAL provider's wire contract — what it rejects, what it requires
   back — is executed against its CURRENT documentation at implementation time, not taken from
   the plan.** Issue #534 PR-J3-b's plan decided never to replay `reasoning_content` because "the
-  servers that return it refuse a request carrying it" (DeepSeek's older rule); the vendor's
-  current thinking-mode guide requires it back on every request carrying `tools` and answers 400
+  servers that return it refuse a request carrying it"; the vendor's current thinking-mode guide
+  states no such refusal and requires it back on every request carrying `tools` and answers 400
   otherwise. The implementation shipped the plan's rule and a round-1 reviewer fetched the page.
   A loopback stand-in cannot answer this either: it implements the premise you gave it. **Rule:
   for each sentence of a plan that says what a provider accepts or refuses, fetch the provider's
@@ -673,12 +674,15 @@ recipes are in `references/input-surfaces.md`:
   **A third form: moving guidance OUT of a fenced slot into a contract slot reaches only the
   templates that HAVE that slot.** Issue #534 PR-J3-b moved "what to do about a cut reply" out of
   the repair findings — rendered inside a do-not-obey fence, where an instruction is text to
-  ignore (the J3-a `_reads_chained` episode) — into the HTTP `<tool_surface>` row; the verdict
+  ignore (issue #534 PR-J3-a, PR #552: a rule about chained reads stated in the findings went
+  unheeded until `e03e618b` moved it to the scope paragraph outside the fence) — into the HTTP
+  `<tool_surface>` row; the verdict
   repair template carried that slot and the bundle and IR repair templates did not, so a
   producer's cold repair delivered none of it, while the findings had been rewritten as bare
   diagnoses on the premise that it did. **Rule: when you move a rule to another slot, render every
   template of the family — cold launch, cold repair, warm repair, each kind — and count the rule
   in each** (`grep -c <slot>` over the templates is the one-line check that would have shown it).
+  Episode: `references/input-surfaces.md` §Surface 12, "A third form".
 - **Surface 13 — a gate that refuses a SPELLING does not refuse a POINTER to where that spelling
   lives.** Every guard in this repository that protects a leaf-read surface decides by reading the
   text for a token: the severity allowlist refuses a severity VALUE, the restatement scans refuse a

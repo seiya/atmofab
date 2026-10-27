@@ -621,7 +621,6 @@ routes the thing the sentence names arrives — the must-read set, the host-inli
 template's own words. A blank in that table is the defect. On a repository where one contract is
 read by two transports, expect exactly one of them to be wrong.
 
-
 ### A third form: guidance moved out of a fence reaches only the templates with the new slot (issue #534 PR-J3-b, 2026-10-27)
 
 The HTTP loop's repair notes were first written as instructions ("write a long file in parts") and
@@ -634,6 +633,7 @@ cold repair, the one turn whose findings could say "your last reply was cut", ca
 instruction nor the row. Round 2's blank-slate reviewer found it by rendering the cold repair
 through `prepare_launch_request_payload` and counting the row's phrases (0 / 0 / 0 against the
 cold launch's 1 / 1 / 1). `5a47d7c6` added the slot to both templates.
+
 ## Surface 13 — the guard reads for a spelling; a pointer walks past it (issue #168)
 
 **What happened.** A `docs/RUNBOOK.md` bullet quoted a wrong number for what a blind `--resume`
