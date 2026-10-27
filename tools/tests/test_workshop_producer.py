@@ -747,7 +747,7 @@ _WORKSHOP_CONTRACT_DIGESTS = {
     "workshop-8": "b4538ab4db91a37483f9d69e5ebe6e800c6c3ddd960e6d625d75caee75e531ca",
     # Issue #534 PR-J4-a: the escalate diagnostician's reading template joins the digest
     # (`workshop-8` shipped with PR-J3-b's PR #554, main 7a153ade).
-    "workshop-9": "4c7d79a934ab3daa2d4840202e97c77fd6cfe59113c348e6f365a81f35126177",
+    "workshop-9": "ba020ee490b16a045e6c93e5e9a5c5a8fb072a08f6feef7c9c526d5f02aac290",
 }
 
 
