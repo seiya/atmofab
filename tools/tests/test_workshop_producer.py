@@ -738,6 +738,11 @@ _WORKSHOP_CONTRACT_DIGESTS = {
     # the lowered advice size, and the helper's text joins the digest (`workshop-6` shipped
     # with issue #547's PR #550, main d5d849be).
     "workshop-7": "7581618a41ef397919ad96295ba8ec5f7a71797bc5f293ccba310492e467c854",
+    # Issue #534 PR-J3-b: the two HTTP providers' tool-surface rows and the five file tools'
+    # declarations; the producer system prompt and producing templates name the host's
+    # operations without the MCP transport (`workshop-7` shipped with PR-J3-a's PR #552, main
+    # 3422004c).
+    "workshop-8": "b4538ab4db91a37483f9d69e5ebe6e800c6c3ddd960e6d625d75caee75e531ca",
 }
 
 
@@ -760,6 +765,10 @@ def _workshop_digest() -> str:
     # Issue #534 PR-J3-a (`workshop-7` onward): the codex reading helper, a seed the leaf runs.
     h.update(pure_leaf.CODEX_READ_HELPER_NAME.encode("utf-8") + b"\0"
              + pure_leaf.CODEX_READ_HELPER_TEXT.encode("utf-8"))
+    # Issue #534 PR-J3-b (`workshop-8` onward): the five file tools an HTTP workshop leaf is
+    # declared — their names, descriptions and schemas are what the model reads.
+    h.update(json.dumps(list(pure_leaf.HTTP_FILE_TOOL_DECLARATIONS),
+                        sort_keys=True).encode("utf-8"))
     return h.hexdigest()
 
 

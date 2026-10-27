@@ -112,7 +112,8 @@
 # as a READING workshop leaf (issue #534 step 3; adopted 2026-10-25): the documents the pure
 # judge is shown inline are seed files of its tree, and it writes its one verdict document
 # there. It is served no host operation, so its entry states `lineage_timeout_s` alone —
-# `max_wrapper_calls` is refused on a judging substep — and it runs on claude_cli or codex_cli.
+# `max_wrapper_calls` is refused on a judging substep — and it runs on any provider (the HTTP
+# providers through the host's tool-use loop; their samples carry their own blocks).
 # The same block under each judging substep, with the substep's own name in place of `judge`
 # (and the model that substep runs on):
 #

@@ -24021,7 +24021,9 @@ class MultiProviderPreflightTests(unittest.TestCase):
 
     def test_an_http_token_on_a_non_pure_launch_is_refused(self) -> None:
         """`record_launch` is the authorization gate; it must not be the one layer that assumes
-        the config and conductor checks ran."""
+        the config and conductor checks ran. Since issue #534 PR-J3-b a WORKSHOP request is
+        admitted too (`test_workshop_launch.HttpWorkshopRecordLaunchTests` drives one); a launch
+        that is neither is refused."""
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
             self._mixed_preflight(repo_root)
@@ -24029,7 +24031,8 @@ class MultiProviderPreflightTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as ctx:
                 self._launch(repo_root, "openai_compatible", "substep_run_agentic_001",
                              pure=False)
-            self.assertIn("admissible only for a pure leaf", str(ctx.exception))
+            self.assertIn("admissible only for a pure or a workshop leaf; this launch is "
+                          "neither", str(ctx.exception))
             # AND it must refuse before any durable launch state — the same rule the
             # build-recurrence guard and the codex-home transaction obey. Placed inside the
             # sandbox block (where it first landed) it raised only after the capability,

@@ -35,6 +35,7 @@ from tools.pure_leaf import (
     WORKSHOP_PROMPT_SENTINEL,
     workshop_mcp_config_json,
 )
+from tools.tests.orchestration_fixtures import claude_launch_checks
 from tools.tests.test_pure_leaf_producer import _PureFakeConductor
 from tools.tests.test_pure_leaf_wiring import (
     _mark_dependencies_ready,
@@ -400,7 +401,7 @@ class WorkshopRecordLaunchTests(_Env):
                 ("absent", _workshop_request("ar_x", workshop_provider=None),
                  "must name its provider in workshop_provider"),
                 ("a provider with no surface row",
-                 _workshop_request("ar_x", workshop_provider="anthropic_api"),
+                 _workshop_request("ar_x", workshop_provider="made_up_provider"),
                  "must name its provider in workshop_provider"),
                 ("on a pure request", _pure_request("generate", workshop_provider="claude_cli"),
                  "carries workshop_provider and is not a workshop request")):
@@ -824,6 +825,140 @@ class SpawnTimeoutTests(unittest.TestCase):
                     wc.Conductor.spawn_leaf(c, "", {}, c.entry_for("generate", "verify"),
                                             child_arid="c", timeout_seconds=bad)
 
+
+
+class HttpWorkshopRecordLaunchTests(_Env):
+    """The real `record_launch` on an HTTP workshop launch (issue #534 PR-J3-b): admitted,
+    recorded with no sandbox, and stamped with the lineage and its `http/` home — the home
+    `_prepare_http_workshop_home` made, which the record resolves through
+    `pure_leaf.WORKSHOP_LINEAGE_BACKENDS` from the request's provider (the launch's
+    `backend_token` is the PROVIDER token, `anthropic_api`)."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        _mark_dependencies_ready(self.repo, _ORCH)
+        ort.write_preflight(repo_root=self.repo, orchestration_id=_ORCH, payload={
+            "status": "pass", "sandbox_runtime": "bwrap", "sandbox_enforced": True,
+            "can_launch_step_agents": True, "can_launch_substep_agents": True,
+            "backend": "claude", "checks": claude_launch_checks(),
+            "providers": {"claude": {"launchable": True, "checks": []},
+                          "anthropic_api": {"launchable": True, "checks": []},
+                          "openai_compatible": {"launchable": True, "checks": []}}})
+        _with_test_templates(self)
+
+    def _base(self) -> Path:
+        return self.repo / "workspace/orchestrations" / _ORCH
+
+    def _launch(self, child: str, req: dict, *, backend: str = "anthropic_api",
+                prepare: bool = True, **kw) -> dict:
+        if prepare and "workshop_lineage_id" not in kw:
+            ort._prepare_http_workshop_home(self.repo, _ORCH, child, resume=False)
+        prepared = ort.prepare_launch_request_payload(dict(req))
+        req = dict(req, launch_prompt_full=ort.render_launch_prompt_text(prepared))
+        return record_launch(repo_root=self.repo, orchestration_id=_ORCH,
+                             parent_agent_run_id="orch_run_001", child_agent_run_id=child,
+                             request_payload=req,
+                             response_payload={**_spawn_response(child), "backend": backend,
+                                               "agent_run_id": child,
+                                               "started_at": "2026-10-27T00:00:00Z"},
+                             **kw)
+
+    def test_a_cold_http_workshop_launch_is_admitted_and_stamped(self) -> None:
+        for provider in ("anthropic_api", "openai_compatible"):
+            child = f"ar_http_{provider}"
+            with self.subTest(provider=provider):
+                self._launch(child, _workshop_request(child, workshop_provider=provider),
+                             backend=provider)
+                response = json.loads(
+                    (self._base() / f"launches/{child}.response.json").read_text())
+                home = (self.homes / _ORCH / "http" / child).resolve()
+                self.assertEqual(response["http_workflow_home"], str(home))
+                self.assertEqual(response["workshop_lineage_id"], child)
+                self.assertNotIn(f"{provider}_workflow_home", response)
+                self.assertEqual((response["leaf_transport"], response["sandbox_runtime"],
+                                  response["sandbox_enforced"]), ("http", "none", False))
+                self.assertNotIn("sandbox_profile_ref", response)
+                self.assertFalse((self._base() / f"sandbox_profiles/{child}.json").exists())
+                _clear_active_child(self.repo)
+
+    def test_an_http_workshop_leaf_can_be_finalized(self) -> None:
+        """`record_agent_run`'s HTTP terminal exemption keys on the launch response's
+        transport and provider token, so it applies to a workshop launch unchanged."""
+        self._launch("ar_fin", _workshop_request("ar_fin", workshop_provider="anthropic_api"))
+        ort.record_agent_run(repo_root=self.repo, orchestration_id=_ORCH, payload={
+            "agent_run_id": "ar_fin", "agent_role": "substep", "agent_backend": "anthropic_api",
+            "agent_model": "m", "parent_agent_run_id": "orch_run_001", "status": "pass",
+            "started_at": "2026-10-27T00:00:00Z", "finished_at": "2026-10-27T00:01:00Z",
+            "agent_session_id": "ar_fin", "context_id": "ar_fin", "context_isolated": True,
+            "node_key": _workshop_request("ar_fin")["node_key"], "step": "generate",
+            "substep": "generate", "output_refs": [], "result_summary": "workshop_generate"})
+        rows = [json.loads(line) for line in
+                (self._base() / "agent_runs.jsonl").read_text().splitlines() if line.strip()]
+        row = next(r for r in rows if r.get("agent_run_id") == "ar_fin")
+        self.assertEqual((row["sandbox_runtime"], row["leaf_transport"]), ("none", "http"))
+        self.assertFalse((self._base() / "agent_runs_invalid.jsonl").exists())
+
+    def test_a_warm_http_launch_whose_home_is_gone_answers_missing(self) -> None:
+        self._launch("ar_cold", _workshop_request("ar_cold", workshop_provider="anthropic_api"))
+        _clear_active_child(self.repo)
+        out = self._launch("ar_warm", _workshop_request(
+            "ar_warm", "ar_gone", workshop_provider="anthropic_api"),
+            workshop_lineage_id="ar_gone")
+        self.assertEqual(out, {"workshop_lineage_home_missing": True,
+                               "workshop_lineage_id": "ar_gone"})
+
+    def test_a_cold_http_launch_whose_home_was_not_prepared_is_refused(self) -> None:
+        with self.assertRaises(RuntimeError) as ctx:
+            self._launch("ar_x", _workshop_request("ar_x", workshop_provider="anthropic_api"),
+                         prepare=False)
+        self.assertIn("the host prepares it before recording the launch", str(ctx.exception))
+
+    def test_a_request_naming_another_provider_is_refused(self) -> None:
+        ort._prepare_claude_workshop_home(self.repo, _ORCH, "ar_x", resume=False)
+        with self.assertRaises(ValueError) as ctx:
+            self._launch("ar_x", _workshop_request("ar_x", workshop_provider="claude_cli"),
+                         prepare=False)
+        self.assertIn("is not this launch's provider", str(ctx.exception))
+        self.assertFalse((self._base() / "launches/ar_x.request.json").exists())
+
+    def test_a_neither_pure_nor_workshop_http_launch_is_refused(self) -> None:
+        req = _pure_request("generate", agent_run_id="ar_y")
+        req.pop("leaf_mode")
+        with self.assertRaises((RuntimeError, ValueError)):
+            self._launch("ar_y", req, prepare=False)
+        self.assertFalse((self._base() / "launches/ar_y.request.json").exists())
+
+
+class HttpWorkshopHomeTests(_Env):
+    def test_cold_creates_a_private_home_with_work_dirs_and_no_config(self) -> None:
+        iso = ort._prepare_http_workshop_home(self.repo, _ORCH, "lin_h", resume=False)
+        home = Path(iso["home"])
+        self.assertEqual(home, (self.homes / _ORCH / "http" / "lin_h").resolve())
+        self.assertEqual(stat.S_IMODE(home.lstat().st_mode), 0o700)
+        self.assertEqual(sorted(p.name for p in home.iterdir()),
+                         ["snapshot", "staged", "syntax", "tree"])
+        self.assertEqual(Path(iso["homes_root"]), self.homes.resolve())
+        meta = json.loads((self.repo / "workspace/orchestrations" / _ORCH
+                           / "orchestration_meta.json").read_text())
+        self.assertEqual(meta["http_workflow_home"], str(self.homes / _ORCH / "http"))
+        with self.assertRaises(ValueError):
+            ort._prepare_http_workshop_home(self.repo, _ORCH, "lin_h", resume=False)
+
+    def test_warm_finds_the_home_or_answers_none(self) -> None:
+        ort._prepare_http_workshop_home(self.repo, _ORCH, "lin_h", resume=False)
+        self.assertEqual(
+            ort._prepare_http_workshop_home(self.repo, _ORCH, "lin_h", resume=True)["home"],
+            str((self.homes / _ORCH / "http" / "lin_h").resolve()))
+        self.assertIsNone(ort._prepare_http_workshop_home(self.repo, _ORCH, "nope",
+                                                          resume=True))
+
+    def test_the_tables_name_the_http_home(self) -> None:
+        self.assertIs(ort.WORKSHOP_HOME_PREPARERS["http"], ort._prepare_http_workshop_home)
+        self.assertIn("http", ort.WORKFLOW_BACKEND_HOME_DIRNAMES)
+        self.assertNotIn("http", ort.WORKSHOP_PROFILE_KWARGS)
+        for bad in ("../x", "a/b", ""):
+            with self.assertRaises(ValueError):
+                ort._prepare_http_workshop_home(self.repo, _ORCH, bad, resume=False)
 
 
 class WorkshopRecordLaunchCliTests(WorkshopRecordLaunchTests):

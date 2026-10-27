@@ -28430,7 +28430,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                              if "must NOT reference a sandbox profile" in v])
 
     def _make_workshop(self, repo_root: Path, *, workshop_prompt: bool = True,
-                       profile: dict | None = None) -> None:
+                       profile: dict | None = None, provider: str = "claude_cli") -> None:
         """Turn the pure record into a WORKSHOP record (issue #534 PR-2): the request declares
         `leaf_mode: workshop` with its lineage and contract version, the prompt is rendered
         from a stand-in workshop template (PR-3 ships the real one), and the sandbox profile is
@@ -28447,7 +28447,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         req_path = root / "launches" / f"{self._ARID}.request.json"
         req = json.loads(req_path.read_text(encoding="utf-8"))
         req.update(leaf_mode="workshop", workshop_lineage_id=self._ARID,
-                   workshop_provider="claude_cli",
+                   workshop_provider=provider,
                    prompt_contract_version=WORKSHOP_PROMPT_CONTRACT_VERSION)
         req_path.write_text(json.dumps(req, ensure_ascii=False), encoding="utf-8")
         # A producing launch records the wrapper endpoint it was served
@@ -28470,7 +28470,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                                        "workshop generate.generate": "workshop_x.txt"}):
                 prompt = ort.render_launch_prompt_text(ort.prepare_launch_request_payload({
                     "leaf_mode": "workshop", "workshop_lineage_id": self._ARID,
-                    "workshop_provider": "claude_cli", "agent_model": "opus", "agent_role": "substep", "node_key": self._NODE,
+                    "workshop_provider": provider, "agent_model": "opus", "agent_role": "substep", "node_key": self._NODE,
                     "step": "generate", "substep": "generate", "orchestration_id": self._ORCH,
                     "agent_run_id": self._ARID, "parent_agent_run_id": "orch_run_001",
                     "source_id": "src_20260415_001",
@@ -28491,6 +28491,122 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                                               f"{home}/config/.credentials.json"]}
         (root / "sandbox_profiles" / f"{self._ARID}.json").write_text(json.dumps(body),
                                                                      encoding="utf-8")
+
+    def _make_http_workshop(self, repo_root: Path, provider: str = "anthropic_api",
+                            **response: object) -> None:
+        """The workshop record an HTTP provider's launch leaves (issue #534 PR-J3-b):
+        `record_launch`'s HTTP arm (no profile, `leaf_transport: http`), the lineage stamps it
+        moves into the workshop block, and the declared tool surface
+        `Conductor._launch_setting_surface` records. `response` overrides response fields
+        (`None` deletes one)."""
+        from tools.pure_leaf import HTTP_FILE_TOOLS
+        self._make_workshop(repo_root, provider=provider)
+        self._make_http(repo_root, backend=provider)
+        resp_path = self._orch_root(repo_root) / "launches" / f"{self._ARID}.response.json"
+        resp = json.loads(resp_path.read_text(encoding="utf-8"))
+        resp.pop("claude_mcp_config", None)
+        resp.update({
+            "workshop_lineage_id": self._ARID,
+            "http_workflow_home": f"/tmp/homes/{self._ORCH}/http/{self._ARID}",
+            "http_tool_surface": [*HTTP_FILE_TOOLS, "derive", "compile", "lint",
+                                  "syntax_check", "run"]})
+        for key, value in response.items():
+            if value is None:
+                resp.pop(key, None)
+            else:
+                resp[key] = value
+        resp_path.write_text(json.dumps(resp, ensure_ascii=False), encoding="utf-8")
+
+    def test_an_http_workshop_record_passes_the_sweep(self) -> None:
+        """Issue #534 PR-J3-b: no profile, the lineage stamps and the producing pair's tool
+        surface — on both HTTP providers, and against the same tree as a pure record."""
+        for provider in ("anthropic_api", "openai_compatible"):
+            with self.subTest(provider=provider), tempfile.TemporaryDirectory() as tmp, \
+                    tempfile.TemporaryDirectory() as tmp2:
+                repo_root = Path(tmp)
+                self._build_tree(repo_root)
+                self._make_http_workshop(repo_root, provider)
+                self.assertEqual(self._workshop_violations(repo_root), [])
+                control = Path(tmp2)
+                self._build_tree(control)
+                self._make_pure(control)
+                self.assertEqual(self._all_violations(repo_root),
+                                 self._all_violations(control))
+
+    def test_a_malformed_http_workshop_record_is_flagged(self) -> None:
+        from tools.pure_leaf import HTTP_FILE_TOOLS
+        ops = ["derive", "compile", "lint", "syntax_check", "run"]
+        cases = {
+            "an endpoint": ({"claude_mcp_config": [{"server": "wrapper", "url": "u"}]},
+                            "must name no wrapper endpoint"),
+            "a codex endpoint": ({"codex_mcp_config": [{"server": "wrapper", "url": "u"}]},
+                                 "must name no wrapper endpoint"),
+            "no lineage stamp": ({"workshop_lineage_id": None}, "as workshop_lineage_id"),
+            "another lineage": ({"workshop_lineage_id": "other"}, "as workshop_lineage_id"),
+            "no home stamp": ({"http_workflow_home": None}, "http_workflow_home"),
+            "a home of another lineage": (
+                {"http_workflow_home": f"/tmp/homes/{self._ORCH}/http/other"},
+                "http_workflow_home"),
+            "a claude home": (
+                {"http_workflow_home": f"/tmp/homes/{self._ORCH}/claude/{self._ARID}"},
+                "http_workflow_home"),
+            "a subset surface": ({"http_tool_surface": [*HTTP_FILE_TOOLS, *ops[:-1]]},
+                                 "must declare the tool surface"),
+            "a superset surface": ({"http_tool_surface": [*HTTP_FILE_TOOLS, *ops, "check_ir"]},
+                                   "must declare the tool surface"),
+            "a reading surface": ({"http_tool_surface": list(HTTP_FILE_TOOLS)},
+                                  "must declare the tool surface"),
+            "no surface": ({"http_tool_surface": None}, "must declare the tool surface"),
+        }
+        for label, (response, needle) in cases.items():
+            with self.subTest(case=label), tempfile.TemporaryDirectory() as tmp:
+                repo_root = Path(tmp)
+                self._build_tree(repo_root)
+                self._make_http_workshop(repo_root, **response)
+                self.assertTrue([v for v in self._workshop_violations(repo_root)
+                                 if needle in v], (label, self._workshop_violations(repo_root)))
+
+    def test_an_http_workshop_record_with_a_profile_is_flagged(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_http_workshop(repo_root)
+            (self._orch_root(repo_root) / "sandbox_profiles" / f"{self._ARID}.json"
+             ).write_text("{}", encoding="utf-8")
+            self.assertTrue([v for v in self._workshop_violations(repo_root)
+                             if "sandbox_profiles/" in v and "exists" in v])
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_http_workshop(repo_root, sandbox_profile_ref="workspace/x.json")
+            self.assertTrue([v for v in self._workshop_violations(repo_root)
+                             if "must NOT reference a sandbox profile" in v])
+
+    def test_a_reading_http_record_may_declare_no_operation(self) -> None:
+        """The surface is the KIND's, read from the request's pair against
+        `WORKSHOP_OPS_BY_PAIR` — never from the request — so a judging pair's surface naming an
+        operation is flagged and its five-tool surface passes."""
+        from tools.pure_leaf import HTTP_FILE_TOOLS
+        from tools.validate_pipeline_semantics import _http_workshop_record_violations
+        request = {"step": "validate", "substep": "judge", "workshop_lineage_id": "L"}
+        good = {"workshop_lineage_id": "L", "http_workflow_home": "/h/o/http/L",
+                "http_tool_surface": list(HTTP_FILE_TOOLS)}
+        self.assertEqual(_http_workshop_record_violations(request, good), [])
+        self.assertTrue(_http_workshop_record_violations(
+            request, {**good, "http_tool_surface": [*HTTP_FILE_TOOLS, "derive"]}))
+        compile_request = {**request, "step": "compile", "substep": "generate"}
+        self.assertEqual(_http_workshop_record_violations(
+            compile_request, {**good, "http_tool_surface": [*HTTP_FILE_TOOLS, "check_ir"]}),
+            [])
+
+    def test_a_pure_http_record_is_not_held_to_the_workshop_stamps(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repo_root = Path(tmp)
+            self._build_tree(repo_root)
+            self._make_pure(repo_root)
+            self._make_http(repo_root, backend="anthropic_api")
+            self.assertEqual([v for v in self._pure_violations(repo_root)
+                              if "http workshop" in v], [])
 
     def _workshop_violations(self, repo_root: Path) -> list[str]:
         return [v for v in validate(repo_root=repo_root, workspace_root="workspace",
@@ -28670,14 +28786,22 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
     def test_the_cli_home_table_is_the_runtime_s(self) -> None:
         from tools import llm_config
         from tools import orchestration_runtime as ort_
-        from tools.validate_pipeline_semantics import (
-            _WORKSHOP_PROFILE_HOME_ENV,
-            _WORKSHOP_PROVIDER_FAMILY,
-        )
+        from tools import pure_leaf
+        from tools.validate_pipeline_semantics import _WORKSHOP_PROFILE_HOME_ENV
         self.assertEqual(_WORKSHOP_PROFILE_HOME_ENV, ort_.WORKSHOP_PROFILE_HOME_ENV)
-        self.assertEqual(_WORKSHOP_PROVIDER_FAMILY, {
-            p: llm_config.PROVIDER_BACKEND_TOKENS[p] for p in llm_config.PROVIDER_CAPABILITIES
+        # Issue #534 PR-J3-b: the audit reads the provider -> lineage-home table itself
+        # (`pure_leaf.WORKSHOP_LINEAGE_BACKENDS`). Every provider that runs a workshop leaf has a
+        # row; a CLI's row is its backend token (the profile family the audit compares), and
+        # each row names a home the runtime prepares.
+        self.assertEqual(set(pure_leaf.WORKSHOP_LINEAGE_BACKENDS), {
+            p for p in llm_config.PROVIDER_CAPABILITIES
             if llm_config.CAP_WORKSHOP in llm_config.PROVIDER_CAPABILITIES[p]})
+        for provider, backend in pure_leaf.WORKSHOP_LINEAGE_BACKENDS.items():
+            self.assertIn(backend, ort_.WORKSHOP_HOME_PREPARERS, provider)
+            if provider in llm_config.CLI_PROVIDERS:
+                self.assertEqual(backend, llm_config.PROVIDER_BACKEND_TOKENS[provider])
+            else:
+                self.assertEqual(backend, "http")
 
     def test_a_profile_of_the_other_family_than_the_request_s_provider_is_flagged(self) -> None:
         """Round 3 of step 2 PR-2: a codex profile under a request naming `claude_cli` (and the
@@ -28782,7 +28906,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         """The token set is duplicated here (this module may not import the runtime); the two
         must not drift, or a provider added there would fail this gate."""
         from tools.orchestration_runtime import _HTTP_PROVIDER_TOKENS
-        self.assertEqual(vps._HTTP_PURE_LEAF_BACKENDS, frozenset(_HTTP_PROVIDER_TOKENS))
+        self.assertEqual(vps._HTTP_LEAF_BACKENDS, frozenset(_HTTP_PROVIDER_TOKENS))
 
     def test_pure_request_with_nonpure_prompt_flagged(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

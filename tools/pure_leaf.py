@@ -146,14 +146,18 @@ def is_workshop_reading_pair(step: Any, substep: Any) -> bool:
 
 #: The prompt-contract version a workshop request carries in `prompt_contract_version` (the
 #: field the pure request uses for its own). Its own counter, so a workshop template change
-#: never moves `PURE_PROMPT_CONTRACT_VERSION` and the reverse. `workshop-7`: the `codex_cli`
+#: never moves `PURE_PROMPT_CONTRACT_VERSION` and the reverse. `workshop-8`: the two HTTP
+#: providers' rows (`HTTP_PRODUCER_TOOL_SURFACE_TEXT`, `HTTP_READER_TOOL_SURFACE_TEXT`) and the
+#: five file tools they declare (`HTTP_FILE_TOOL_DECLARATIONS`); the producer system prompt and
+#: the producing templates name the host's operations without the MCP transport, which is a CLI
+#: transport's (issue #534 PR-J3-b). `workshop-7`: the `codex_cli`
 #: reader row leads with the host's reading helper (`CODEX_READ_HELPER_TEXT`, a seed of every
 #: codex reading tree) at the lowered `CODEX_READ_ADVICE_BYTES` (issue #534 PR-J3-a). `workshop-6`: the `codex_cli`
 #: reader row names every output budget and the host's refusal of a cut read; the cut-read
 #: repair's scope paragraph; and the verdict repair template's instruction slot, which renders a
 #: schema repair as before on both providers (issue #547; `workshop-5` shipped with step 3 PR-J2,
 #: main bb119b5a).
-WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-7"
+WORKSHOP_PROMPT_CONTRACT_VERSION = "workshop-8"
 
 #: The first line of every host-rendered workshop launch prompt, anchored as the pure sentinel
 #: is (`startswith`). A distinct literal, so a record's prompt says which of the two leaf
@@ -165,12 +169,12 @@ WORKSHOP_PROMPT_SENTINEL = "Workshop leaf turn (host-seeded work tree)"
 WORKSHOP_SYSTEM_PROMPT = (
     "You are the producer of a host-mediated workflow, working in a host-seeded work tree. "
     "Your file tools reach that tree and nothing else; you hold no shell. The host runs the "
-    "operations you ask for through the `wrapper` tools and judges your tree after you "
+    "operations you ask for through the host's operation tools and judges your tree after you "
     "finish. The user message is your complete task."
 )
 
 #: The system prompt a READING workshop leaf (a judging substep, step 3) runs under. Its own
-#: text because the producer's names the `wrapper` tools, which a reading lineage is not
+#: text because the producer's names the host's operation tools, which a reading lineage is not
 #: served.
 WORKSHOP_READER_SYSTEM_PROMPT = (
     "You are a reviewer of a host-mediated workflow, working in a host-seeded work tree. Your "
@@ -179,17 +183,156 @@ WORKSHOP_READER_SYSTEM_PROMPT = (
     "complete task."
 )
 
+#: The page of an HTTP workshop leaf's `read_file` (issue #534 PR-J3-b, operator decision O2):
+#: at most this many lines per call — the default `max_lines` and its ceiling — and at most this
+#: many UTF-8 bytes of text, a page stopping at the last WHOLE line under the cap. Host
+#: constants, not entry fields: 2,000 lines is the claude `Read` default under which the reading
+#: judges were adopted, and 100,000 bytes (about 25,000 tokens) bounds a page of long JSON lines.
+HTTP_READ_PAGE_LINES = 2000
+HTTP_READ_PAGE_BYTES = 100_000
+
+#: The file tools an HTTP workshop leaf is declared, in the order they are declared: the twins
+#: of claude's `Read / Write / Edit / Glob / Grep` (`WORKSHOP_FILE_TOOLS`), which the host loop
+#: (`tools/llm_workshop_loop.py`) runs on the lineage's tree.
+HTTP_FILE_TOOLS: tuple[str, ...] = (
+    "read_file", "write_file", "edit_file", "list_files", "grep_file")
+
+_PATH_PROPERTY = {"type": "string",
+                  "description": "a path relative to your work tree's root, with `/` separators"}
+
+#: What the model reads of the five file tools: name, description and JSON schema, in one table
+#: both dialects serialize (`llm_workshop_loop`). Leaf-read contract text: a change here is a
+#: prompt-contract change (`WORKSHOP_PROMPT_CONTRACT_VERSION`).
+HTTP_FILE_TOOL_DECLARATIONS: tuple[dict[str, Any], ...] = (
+    {"name": "read_file",
+     "description": (
+         f"Read lines of one file of your work tree. One call returns at most "
+         f"{HTTP_READ_PAGE_LINES:,} lines and at most {HTTP_READ_PAGE_BYTES:,} bytes of text, "
+         "stopping at the last whole line under both, and says `total_lines` and "
+         "`next_start_line`; call again from `next_start_line` until it is null to read the "
+         "rest. A single line longer than the byte page is not returned: the result names it "
+         "in `skipped_line`, and `grep_file` shows its start."),
+     "input_schema": {
+         "type": "object",
+         "properties": {
+             "path": _PATH_PROPERTY,
+             "start_line": {"type": "integer", "description": "first line to return (from 1)"},
+             "max_lines": {"type": "integer",
+                           "description": f"at most this many lines (at most "
+                                          f"{HTTP_READ_PAGE_LINES:,})"},
+         },
+         "required": ["path"],
+         "additionalProperties": False,
+     }},
+    {"name": "write_file",
+     "description": ("Write a whole file of your work tree, creating it and its directories "
+                     "or replacing it. The seeds and CONTRACT.md are read-only."),
+     "input_schema": {
+         "type": "object",
+         "properties": {"path": _PATH_PROPERTY,
+                        "content": {"type": "string", "description": "the file's whole text"}},
+         "required": ["path", "content"],
+         "additionalProperties": False,
+     }},
+    {"name": "edit_file",
+     "description": ("Replace one exact occurrence of `old_text` in a file of your work tree "
+                     "with `new_text`. Refused when `old_text` occurs zero times or more than "
+                     "once. The seeds and CONTRACT.md are read-only."),
+     "input_schema": {
+         "type": "object",
+         "properties": {"path": _PATH_PROPERTY,
+                        "old_text": {"type": "string"},
+                        "new_text": {"type": "string"}},
+         "required": ["path", "old_text", "new_text"],
+         "additionalProperties": False,
+     }},
+    {"name": "list_files",
+     "description": ("List every file of your work tree with its size in bytes, and any "
+                     "symbolic link (not followed, not readable)."),
+     "input_schema": {"type": "object", "properties": {}, "additionalProperties": False}},
+    {"name": "grep_file",
+     "description": (
+         "Find the lines of ONE file of your work tree that match a Python regular expression. "
+         "Returns each matching line with its line number, at most `max_matches` of them "
+         f"(default and ceiling 200) and at most {HTTP_READ_PAGE_BYTES:,} bytes of text, a "
+         "long line cut to fit, and `total_matches`."),
+     "input_schema": {
+         "type": "object",
+         "properties": {
+             "path": _PATH_PROPERTY,
+             "pattern": {"type": "string", "description": "a Python `re` pattern"},
+             "max_matches": {"type": "integer",
+                             "description": "at most this many matches (at most 200)"},
+         },
+         "required": ["path", "pattern"],
+         "additionalProperties": False,
+     }},
+)
+
+#: The default and ceiling of `grep_file`'s `max_matches`.
+HTTP_GREP_MAX_MATCHES = 200
+
+if tuple(d["name"] for d in HTTP_FILE_TOOL_DECLARATIONS) != HTTP_FILE_TOOLS:  # pragma: no cover
+    raise RuntimeError("HTTP_FILE_TOOL_DECLARATIONS must declare HTTP_FILE_TOOLS in order")
+
+#: The `<tool_surface>` sentence of a PRODUCING workshop launch on either HTTP provider: one
+#: text, because the host loop is one transport whichever dialect it speaks.
+HTTP_PRODUCER_TOOL_SURFACE_TEXT = (
+    "You have no shell. Your tools are `read_file`, `write_file`, `edit_file`, `list_files` "
+    "and `grep_file`, which reach your work tree and nothing else, and the host's operations, "
+    "declared to you as tools under their own names, which run on your tree when you call "
+    f"them. `read_file` returns at most {HTTP_READ_PAGE_LINES:,} lines and "
+    f"{HTTP_READ_PAGE_BYTES:,} bytes per call and says `next_start_line`; `grep_file` finds "
+    "lines in one file; `list_files` says each file's size. The seeds and `CONTRACT.md` are "
+    "read-only: a write to one is refused. A file reaches your tree only through `write_file` "
+    "or `edit_file`, never through the text of your reply. A reply longer than your output "
+    "limit is cut and none of its tool calls run: write one file per reply, and change a long "
+    "file with `edit_file` rather than writing it whole again.")
+
+#: The `<tool_surface>` sentence of a READING workshop launch on either HTTP provider.
+HTTP_READER_TOOL_SURFACE_TEXT = (
+    "You have no shell. Your tools are `read_file`, `write_file`, `edit_file`, `list_files` "
+    "and `grep_file`, which reach your work tree and nothing else; you are served no host "
+    f"operation. `read_file` returns at most {HTTP_READ_PAGE_LINES:,} lines and "
+    f"{HTTP_READ_PAGE_BYTES:,} bytes per call: read each file from its first line, continuing "
+    "from `next_start_line` until it is null, and search one file with `grep_file`. Write your "
+    "one document with `write_file`: it reaches your tree that way only, never through the text "
+    "of your reply. A reply longer than your output limit is cut and none of its tool calls "
+    "run, and a session whose last reply is cut is reviewed again from the seeds: write your "
+    "document in a reply of its own, and keep each reply short. The seeds and `CONTRACT.md` "
+    "are read-only: a write to one is refused.")
+
+#: The lineage-home directory of each provider that runs a workshop leaf, keyed by PROVIDER
+#: (issue #534 PR-J3-b): the two CLIs keep their backend tokens, the two HTTP providers share
+#: one transport and one directory, `http` (`workshop_tree.LINEAGE_BACKENDS`). The one place the
+#: provider-to-dirname mapping lives: the conductor's `_workshop_backend`, `record_launch`'s
+#: workshop block and the launch-record audit all read it.
+WORKSHOP_LINEAGE_BACKENDS: dict[str, str] = {
+    "claude_cli": "claude",
+    "codex_cli": "codex",
+    "anthropic_api": "http",
+    "openai_compatible": "http",
+}
+
+#: What a claude workshop leaf's file tools are: the reader row's opening, and the producer
+#: row's before it names the wrapper.
+_CLAUDE_FILE_TOOLS_TEXT = ("You have no shell: your file tools (Read, Write, Edit, Glob, Grep) "
+                           "reach your work tree and nothing else.")
+
 #: What a workshop launch prompt's `<tool_surface>` slot says the leaf holds, by the provider
 #: the launch request names (`workshop_provider`): the one sentence of the contract that
 #: differs by transport (`docs/design/producer_workshop_leaf.md` §Provider neutrality). A
 #: provider with no row cannot serve a workshop launch (`_validate_pure_launch_request_payload`).
 WORKSHOP_TOOL_SURFACE_TEXT: dict[str, str] = {
-    "claude_cli": ("You have no shell: your file tools (Read, Write, Edit, Glob, Grep) reach "
-                   "your work tree and nothing else."),
+    "claude_cli": (_CLAUDE_FILE_TOOLS_TEXT[:-1]
+                   + ", and the host's operations are the `wrapper` MCP server's tools "
+                     "(`mcp__wrapper__<operation>`)."),
     "codex_cli": ("Your shell and patch tools run with your work tree as the working directory, "
                   "and the host reads your tree and nothing else you write. A command you run "
                   "there is not one of the host's operations: those are the `wrapper` MCP "
                   "server's tools (`mcp__wrapper__<operation>`)."),
+    "anthropic_api": HTTP_PRODUCER_TOOL_SURFACE_TEXT,
+    "openai_compatible": HTTP_PRODUCER_TOOL_SURFACE_TEXT,
 }
 
 #: The token budget codex applies to a direct `exec` result (and, by default, to each
@@ -331,7 +474,7 @@ if __name__ == "__main__":
 #: states. The `codex_cli` row rests on MR5-a (no `mcp__` tool on the reading argv) and MR5-b (a
 #: command-written document assembles).
 WORKSHOP_READER_TOOL_SURFACE_TEXT: dict[str, str] = {
-    "claude_cli": (WORKSHOP_TOOL_SURFACE_TEXT["claude_cli"]
+    "claude_cli": (_CLAUDE_FILE_TOOLS_TEXT
                    + " A read of a file may stop before the end of the file and say so; "
                      "continue from the last line it returned until you reach the end."),
     "codex_cli": ("Your shell and patch tools run with your work tree as the working directory, "
@@ -367,6 +510,8 @@ WORKSHOP_READER_TOOL_SURFACE_TEXT: dict[str, str] = {
                   f"which any command's output exceeded {CODEX_EXEC_OUTPUT_BUDGET_BYTES:,} "
                   "bytes, any output reached you cut, or a read was delegated to a sub-agent is "
                   "refused, and the review is run again from the seeds with those reads named."),
+    "anthropic_api": HTTP_READER_TOOL_SURFACE_TEXT,
+    "openai_compatible": HTTP_READER_TOOL_SURFACE_TEXT,
 }
 
 #: The MCP server name the wrapper is registered under in `--mcp-config`. The CLI names its

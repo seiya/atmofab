@@ -39,6 +39,7 @@ from tools.orchestration_runtime import (
     render_bwrap_command,
 )
 from tools.tests import skip_probes
+from tools.tests.http_stand_ins import ScriptedMessagesApi
 from tools.tests.llm_samples import sample_config_with
 
 
@@ -1172,6 +1173,51 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
     def op(self, name: str, args: dict | None = None) -> dict:
         return self.ww.run_wrapper_op(self.ctx, name, args)
 
+    def test_the_http_host_loop_runs_the_real_operations(self) -> None:
+        """Issue #534 PR-J3-b, MH2's bwrap row: an HTTP workshop leaf's host loop
+        (`llm_workshop_loop.run_workshop_loop`) answers a scripted Messages-API reply's
+        `derive` and `compile` calls through `run_wrapper_op` on this REAL context — so the
+        compile is the row-2 sandboxed one — and its `read_file` on the tree; every result
+        goes back in one message."""
+        import time as _time
+        from types import SimpleNamespace
+
+        from tools.llm_workshop_loop import LoopHistory, file_tool, run_workshop_loop
+        from tools.pure_leaf import HTTP_FILE_TOOL_DECLARATIONS, HTTP_FILE_TOOLS
+        from tools.tests.http_stand_ins import tool_use
+        from tools.workshop_mcp import TOOL_DEFINITIONS
+
+        api = ScriptedMessagesApi([
+            ([tool_use("t1", "derive", {}), tool_use("t2", "compile", {}),
+              tool_use("t3", "read_file", {"path": "x_model.f90", "max_lines": 2})],
+             "tool_use"),
+            ([{"type": "text", "text": "done"}], "end_turn")])
+        self.addCleanup(api.close)
+        tools = [*HTTP_FILE_TOOL_DECLARATIONS,
+                 *({"name": op, "description": TOOL_DEFINITIONS[op]["description"],
+                    "input_schema": TOOL_DEFINITIONS[op]["inputSchema"]}
+                   for op in self.ww.WRAPPER_OPS)]
+
+        def call_tool(name: str, args: dict) -> dict:
+            if name in HTTP_FILE_TOOLS:
+                return file_tool(self.paths.tree, self.ctx.reserved_names, name, args)
+            return self.ww.run_wrapper_op(self.ctx, name, args)
+
+        entry = SimpleNamespace(provider="anthropic_api", model="m", base_url=api.base_url,
+                                api_key_env="K", timeout_s=None, max_output_tokens=None,
+                                stream=True, effort="")
+        result = run_workshop_loop(
+            entry, system="S", history=LoopHistory(), prompt="P", tools=tools,
+            call_tool=call_tool, deadline=_time.monotonic() + 600, deadline_name="d",
+            env={"K": "placeholder"})
+        self.assertEqual(result.ended, "end_turn", result)
+        derive, compiled, read = [json.loads(r["content"]) for r in api.tool_results()]
+        self.assertTrue(derive["ok"], derive)
+        self.assertTrue(compiled["ok"], compiled)
+        self.assertEqual(compiled["binaries"], ["x_runner"])
+        self.assertEqual(read["text"], "module x_model\n  use dep_model, only: dep_twice")
+        self.assertEqual(self.wt.read_lineage_record(self.paths)["wrapper_calls_used"], 2)
+
     def test_the_operations_build_and_run_a_bundle_that_reaches_nothing_else(self) -> None:
         import socket
 
@@ -1336,82 +1382,9 @@ class WorkshopWrapperSandboxTests(unittest.TestCase):
 
 
 
-class _ScriptedApi:
-    """An Anthropic Messages API stand-in that answers with a SCRIPT, streamed as the CLI asks.
-
-    The i-th request whose body offers tools (the leaf's main loop) is answered `script[i]` —
-    a list of content blocks and a stop reason; every other request (the CLI's own side calls)
-    gets a one-word text reply. Request bodies are kept for the assertions. Unbilled: the
-    CLI talks to loopback with a placeholder key."""
-
-    def __init__(self, script: list[tuple[list[dict], str]]) -> None:
-        bodies: list[bytes] = []
-
-        def events(blocks: list[dict], stop: str) -> bytes:
-            evs: list[dict] = [{"type": "message_start", "message": {
-                "id": "msg_1", "type": "message", "role": "assistant",
-                "model": "claude-opus-5-5", "content": [], "stop_reason": None,
-                "stop_sequence": None, "usage": {"input_tokens": 1, "output_tokens": 1}}}]
-            for i, block in enumerate(blocks):
-                if block["type"] == "text":
-                    evs += [{"type": "content_block_start", "index": i,
-                             "content_block": {"type": "text", "text": ""}},
-                            {"type": "content_block_delta", "index": i,
-                             "delta": {"type": "text_delta", "text": block["text"]}}]
-                else:
-                    evs += [{"type": "content_block_start", "index": i, "content_block": {
-                                "type": "tool_use", "id": block["id"], "name": block["name"],
-                                "input": {}}},
-                            {"type": "content_block_delta", "index": i, "delta": {
-                                "type": "input_json_delta",
-                                "partial_json": json.dumps(block["input"])}}]
-                evs.append({"type": "content_block_stop", "index": i})
-            evs += [{"type": "message_delta", "delta": {"stop_reason": stop,
-                                                        "stop_sequence": None},
-                     "usage": {"output_tokens": 1}}, {"type": "message_stop"}]
-            return "".join(f"event: {e['type']}\ndata: {json.dumps(e)}\n\n"
-                           for e in evs).encode()
-
-        class Handler(BaseHTTPRequestHandler):
-            def do_POST(self) -> None:
-                body = self.rfile.read(int(self.headers.get("Content-Length") or 0))
-                bodies.append(body)
-                main = [b for b in bodies if b'"tools"' in b]
-                if b'"tools"' in body and len(main) <= len(script):
-                    blocks, stop = script[len(main) - 1]
-                else:
-                    blocks, stop = [{"type": "text", "text": "ok"}], "end_turn"
-                data = events(blocks, stop)
-                self.send_response(200)
-                self.send_header("Content-Type", "text/event-stream")
-                self.send_header("Content-Length", str(len(data)))
-                self.end_headers()
-                self.wfile.write(data)
-
-            do_GET = do_POST
-
-            def log_message(self, *args) -> None:  # BaseHTTPRequestHandler's spelling
-                pass
-
-        self.bodies = bodies
-        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-        threading.Thread(target=self._server.serve_forever, daemon=True).start()
-        self.base_url = f"http://127.0.0.1:{self._server.server_address[1]}"
-
-    def main_requests(self) -> list[dict]:
-        return [json.loads(b) for b in self.bodies if b'"tools"' in b]
-
-    def tool_results(self) -> list[dict]:
-        out = []
-        for doc in self.main_requests():
-            for message in doc.get("messages", []):
-                if isinstance(message.get("content"), list):
-                    out += [c for c in message["content"] if c.get("type") == "tool_result"]
-        return out
-
-    def close(self) -> None:
-        self._server.shutdown()
-        self._server.server_close()
+# The Messages-API stand-in the real claude CLI talks to here moved to `http_stand_ins`
+# (issue #534 PR-J3-b), where the HTTP workshop leaf's host loop tests use it too.
+_ScriptedApi = ScriptedMessagesApi
 
 
 @skip_probes.skip_unless_installed("claude")
