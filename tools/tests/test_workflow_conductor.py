@@ -8843,9 +8843,18 @@ class DiagnosticianTest(unittest.TestCase):
                         return _real(turn._replace(command_outputs=None), arid, entry, paths)
 
                     c._codex_cut_reads = no_capture  # type: ignore[assignment]
+                emitted: list[dict] = []
+                c.emit = lambda event, **f: emitted.append({"event": event, **f})  # type: ignore[assignment]
                 d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
                 expected = "retry" if label == "clean" else "fail_closed"
                 self.assertEqual(d.action, expected, label)
+                # ...and the discard names its cause, which the row's `unparsable` does not.
+                cut = [e for e in emitted if e["event"] == "diagnose_cut_read"]
+                self.assertEqual(len(cut), 0 if label == "clean" else 1, label)
+                if label == "no capture":
+                    self.assertIn("no per-command capture", cut[0]["unreadable"])
+                elif cut:
+                    self.assertEqual(cut[0]["cut_outputs"], 1, label)
 
     def test_a_diagnostician_with_no_usage_says_so_on_its_row(self) -> None:
         """`usage_status` is the field that says WHY the numbers are empty — without it a

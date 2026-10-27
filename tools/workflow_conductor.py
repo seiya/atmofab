@@ -17234,6 +17234,13 @@ class Conductor:
             # cut read — or a rollout the host cannot read — discards it.
             lines, unreadable = self._codex_cut_reads(wturn, child_arid, entry, lineage.paths)
             finished = not lines and unreadable is None
+            if not finished:
+                # The row says `<phase>_diagnose_unparsable` for every discarded diagnosis, so
+                # the event is what tells a cut read from a malformed directive.
+                self.emit("diagnose_cut_read", phase=phase, agent_run_id=child_arid,
+                          lineage_id=lineage.paths.lineage_id, cut_outputs=len(lines),
+                          unreadable=unreadable or "",
+                          findings=(self._cut_read_findings(lines) if lines else "")[:600])
         decision: RouteDecision | None = None
         if finished:
             _category, _findings, document, _infra = machine.assemble(wturn)
@@ -17324,7 +17331,13 @@ class Conductor:
             # `read_lineage_record`, `end_lineage` — the reviewer loop folds the same setup
             # with `except Exception`). The diagnostician is a best-effort recovery leaf, so an
             # un-launchable diagnosis is conservatively terminal — the same posture as an
-            # unparsable directive — rather than a crash.
+            # unparsable directive — rather than a crash. `ValueError` is WIDER than the lineage
+            # setup, and that is a decision reversed from `origin/main`, whose comment left it
+            # unfolded as a conductor defect: it also folds `runtime()`'s `json.loads` of a
+            # subcommand's non-JSON stdout and a `leaf_command` / `spawn_leaf` refusal. They
+            # cannot be told apart here, and unfolded each escapes `conduct` (whose only `try`
+            # wraps `run_phase`) as an unexplained `conductor_error`; folded, the
+            # `diagnose_launch_failed` event carries the exception text.
             # A launch recorded but never finalized is left behind here; that is the residual
             # the loops already carry, and it is what `--resume` reconciles.
             self.emit("diagnose_launch_failed", phase=phase, error=str(exc)[:200])
