@@ -150,7 +150,7 @@ WORKSHOP_READING_LAUNCH_PAIRS: frozenset[tuple[str, str]] = (
     WORKSHOP_READING_PAIRS | WORKSHOP_DIAGNOSE_PAIRS)
 
 #: Every `(step, substep)` pair a workshop leaf may serve (`tools/llm_config.py` refuses any
-#: other entry, and mirrors this table as `WORKSHOP_LEAF_SUBSTEPS`).
+#: other entry, and mirrors this table minus `WORKSHOP_DIAGNOSE_PAIRS` as `WORKSHOP_LEAF_SUBSTEPS`).
 WORKSHOP_LAUNCH_PAIRS: frozenset[tuple[str, str]] = (
     WORKSHOP_PRODUCING_PAIRS | WORKSHOP_READING_LAUNCH_PAIRS)
 
