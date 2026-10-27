@@ -7,35 +7,29 @@
 #
 #     cp docs/examples/llm_anthropic_api.example.yaml llm.yaml
 #
-# WHY EVERY LEAF. `anthropic_api` has no session to reopen, so as a PURE leaf — one closed
-# context in, one JSON document out, which since Z4 (issue #171) every leaf can be — it is one
-# request and one response. Each leaf below is pure; any of them may instead run as a WORKSHOP
-# leaf (issue #534 PR-J3-b), where the HOST runs the tool-use loop: it declares five file tools
-# (`read_file`, `write_file`, `edit_file`, `list_files`, `grep_file`) over the lineage's work
-# tree — and on a producing substep the host's operations — executes every tool call a reply
-# makes, and asks again until the model answers with no tool call. The entry states the leaf
-# model and its bounds on the substep only. On a PRODUCING substep (`compile.generate`,
-# `generate.generate`), the same block under each:
+# WHY EVERY LEAF. Every LLM leaf is a WORKSHOP leaf (issue #534), and on an HTTP provider the
+# HOST runs its tool-use loop (issue #534 PR-J3-b): it declares five file tools (`read_file`,
+# `write_file`, `edit_file`, `list_files`, `grep_file`) over the lineage's work tree — and on a
+# producing substep the host's operations — executes every tool call a reply makes, and asks
+# again until the model answers with no tool call. Each entry states its bounds on the substep
+# only. On a PRODUCING substep (`compile.generate`, `generate.generate`), the block reads:
 #
 #       generate:
 #         provider: anthropic_api
 #         api_key_env: ANTHROPIC_API_KEY
 #         model: claude-opus-5
 #         max_output_tokens: 32768
-#         leaf: workshop
 #         max_wrapper_calls: 30      # host-operation calls per lineage (cold launch + repairs)
 #         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 #
-# On a JUDGING substep (`compile.verify`, `generate.verify`, `validate.judge`), with the
-# substep's own name in place of `judge` — no host operation is served, so `max_wrapper_calls`
-# is refused there:
+# On a JUDGING substep (`compile.verify`, `generate.verify`, `validate.judge`) no host operation
+# is served, so `max_wrapper_calls` is refused there:
 #
 #       judge:
 #         provider: anthropic_api
 #         api_key_env: ANTHROPIC_API_KEY
 #         model: claude-opus-5
 #         max_output_tokens: 16384
-#         leaf: workshop
 #         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 #
 # On a workshop entry `max_output_tokens` bounds ONE reply, and a reply that writes a file
@@ -58,13 +52,11 @@
 # (`llm_config_no_cli_backend`, refused at run start). It is why `defaults` here is the CLI
 # provider rather than the endpoint every leaf uses.
 #
-# The two GENERATE pure leaves are additionally gated at run time on the node having a
-# CodegenBundle SHAPE (`Conductor._bundle_shape`: `m3c` for a physics node, `harness` for an
-# `infrastructure` self-test since issue #169). Every node the spec catalog holds has one, so a
-# pure-only provider has a pure path everywhere; a hand-crafted IR with no shape fails that node
-# closed (`node_has_no_bundle_shape`) — since Z4 (issue #171) there is no agentic session to fall
-# back to on any provider. The two COMPILE pure
-# leaves carry no such condition — the Compile contract does not depend on the node kind.
+# The two GENERATE leaves are additionally gated at run time on the node having a CodegenBundle
+# SHAPE (`Conductor._bundle_shape`: `m3c` for a physics node, `harness` for an `infrastructure`
+# self-test since issue #169). Every node the spec catalog holds has one; a hand-crafted IR with
+# no shape fails that node closed (`node_has_no_bundle_shape`). The two COMPILE leaves carry no
+# such condition — the Compile contract does not depend on the node kind.
 #
 # EVERY phase, substep and provider is written out, even though the resolution rules would let
 # the unmentioned leaves inherit `defaults`. The file is the answer to "what runs where" — a
@@ -137,6 +129,8 @@ phases:
         # re-measure against the node you run. The timeout moves with it.
         max_output_tokens: 65536
         timeout_s: 4800
+        max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
+        lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
       # PURE: the IR reviewer. Returns the same verdict document the generate reviewer does.
       verify:
         provider: anthropic_api
@@ -144,6 +138,7 @@ phases:
         model: claude-sonnet-5
         max_output_tokens: 16384
         timeout_s: 1800
+        lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 
   generate:
     substeps:
@@ -153,12 +148,15 @@ phases:
         api_key_env: ANTHROPIC_API_KEY
         model: claude-opus-5
         max_output_tokens: 32768
+        max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
+        lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
       # PURE: the verdict reviewer over the bundle above.
       verify:
         provider: anthropic_api
         api_key_env: ANTHROPIC_API_KEY
         model: claude-opus-5
         max_output_tokens: 16384
+        lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
 
   validate:
     substeps:
@@ -176,3 +174,4 @@ phases:
         # The artifact is a decision and a findings array, so this is headroom rather than a
         # size: half the bundle writer's budget, as the verify leaves take.
         max_output_tokens: 16384
+        lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
