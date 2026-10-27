@@ -88,15 +88,17 @@ terminal `agent_run.json` record that thread ID as `agent_session_id`. A missing
 thread ID is a launch failure. `codex exec resume <thread_id>` continues the recorded thread in
 place; it is not a Claude-style fork.
 
-For an M3c node, Codex pure Generate uses `codex exec --json --sandbox read-only` (as do both Codex pure `Compile` leaves, on EVERY node — they carry no M3c condition, so certifying a Codex run against this checklist must exercise them too) with the
-CLI read-only sandbox and the outer read-only bwrap profile. The host validates and writes the
-returned bundle/verdict, so the leaf has no repository write authority. It is a tool-bearing
-CLI inside a read-only sandbox, not the tool-free isolation a Claude pure leaf has.
+A Codex leaf is a `workshop leaf` on every node (issue #534; the pure leaf's
+`codex exec --json --sandbox read-only` launch under a read-only bwrap profile went in PR-J4-b):
+`codex exec --json --sandbox workspace-write` under the lineage's bwrap profile, whose only rw
+binds are the lineage's own `config/` (its `CODEX_HOME`) and `tree/` (its working directory),
+both outside the checkout. The host validates and writes the document it reads back from the
+tree, so the leaf has no repository write authority (`docs/ORCHESTRATION.md` §workshop leaf).
 
 `codex exec` and `codex exec resume` do **not** accept the same options: `resume` has no
-`--sandbox`. A pure repair turn therefore re-pins the read-only policy with
-`--config sandbox_mode="read-only"` rather than inheriting it from the resumed thread. Confirm this
-on a live run: every pure repair attempt must reach a `thread.started`, not exit at argv
+`--sandbox`. A repair turn therefore re-pins the policy with
+`--config sandbox_mode="workspace-write"` rather than inheriting it from the resumed thread.
+Confirm this on a live run: every repair attempt must reach a `thread.started`, not exit at argv
 parsing. The `codex_exec_resume` preflight check probes `exec resume --help` for exactly the
 option set the resume argv emits (`CODEX_EXEC_RESUME_REQUIRED_FLAGS`); probing `exec --help`
 alone would certify a command the CLI rejects.
