@@ -5855,6 +5855,15 @@ class Conductor:
         lineages and wrapper-call counts from `bundle_meta.json`, not this field).
         """
         entry = entry if entry is not None else self.entry_for(None, None)
+        if self._is_deterministic_substep(str(request.get("step", "")),
+                                          request.get("substep") or None):
+            # A deterministic substep is recorded through `record_launch` like any other, but
+            # it runs IN-PROCESS (`_run_deterministic_substep`) and spawns no CLI at all.
+            # Describing it with the argv a leaf WOULD have had is the very thing this field
+            # exists to prevent — a record of a launch that did not happen. Checked FIRST:
+            # its entry is `defaults`, a workshop entry since issue #534 PR-J4-a, so on an
+            # HTTP `defaults` the branch below would record a tool surface it was never given.
+            return {}
         if entry.is_http:
             # There is no CLI leaf and no argv: `spawn_leaf` returns on this same predicate
             # before it reaches `leaf_command`, which refuses a non-spawnable provider
@@ -5867,13 +5876,6 @@ class Conductor:
                 return {}
             return {"http_tool_surface": self._http_workshop_tool_names(
                 request.get("step"), request.get("substep"))}
-        if self._is_deterministic_substep(str(request.get("step", "")),
-                                          request.get("substep") or None):
-            # A deterministic substep is recorded through `record_launch` like any other, but
-            # it runs IN-PROCESS (`_run_deterministic_substep`) and spawns no CLI at all.
-            # Describing it with the argv a leaf WOULD have had is the very thing this field
-            # exists to prevent — a record of a launch that did not happen.
-            return {}
         # `session_id=child_arid` because the claude argv carries it (`--session-id`), and this
         # field records the surface of the launch that HAPPENED: re-deriving it with the id
         # spawn_leaf passes keeps the recorded argv on the production path. `leaf_command` is

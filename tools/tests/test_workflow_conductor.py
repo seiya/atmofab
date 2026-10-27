@@ -24401,6 +24401,32 @@ class LeafEntryThreadingTests(unittest.TestCase):
             c.entry_for("generate", "generate"))
         self.assertEqual(llm["claude_tools"], [""])
 
+    def test_a_deterministic_substep_on_its_own_entry_records_nothing(self) -> None:
+        """Production records a deterministic substep with `entry_for(phase, substep)`, which is
+        `defaults` — a reading workshop entry since issue #534 PR-J4-a. On a CLI `defaults` that
+        must record no argv, and on an HTTP one no `http_tool_surface`: the deterministic branch
+        is decided before the entry's transport (it ran after the HTTP branch, which returned
+        the five file tools for `build` once `defaults` became a workshop entry)."""
+        repo = self._scratch_repo_root()
+        for body, field in (
+                ("defaults:\n  lineage_timeout_s: 2700\n  provider: claude_cli\n",
+                 "claude_tools"),
+                ("defaults:\n  lineage_timeout_s: 2700\n  provider: anthropic_api\n"
+                 "  api_key_env: K\n  model: m\n"
+                 "phases:\n  validate:\n    substeps:\n      judge:\n"
+                 "        provider: claude_cli\n", "http_tool_surface")):
+            c = wc.Conductor(repo_root=repo, orchestration_id="o",
+                             orchestration_agent_run_id="O", env={},
+                             llm_config=self._config_text(body))
+            for phase, substep in (("build", None), ("validate", "execute"),
+                                   ("generate", "gate")):
+                with self.subTest(field=field, phase=phase):
+                    entry = c.entry_for(phase, substep)
+                    self.assertTrue(entry.is_workshop)
+                    response = self._record_launch_response(
+                        c, f"arid-{phase}", {"step": phase, "substep": substep or ""}, entry)
+                    self.assertNotIn(field, response)
+
     def test_record_launch_does_not_write_a_stray_codex_schema(self) -> None:
         """Re-deriving the argv must not have side effects of its own.
 
