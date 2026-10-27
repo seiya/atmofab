@@ -8389,6 +8389,8 @@ class _DiagnoseFake(_FakeConductor):
     def spawn_leaf(self, prompt_text, child_env, entry=None, **kwargs):  # type: ignore[override]
         self.__dict__.setdefault("spawns", []).append(kwargs)
         proc = self.leaf(prompt_text, child_env, entry, **kwargs)
+        if not entry.is_workshop:
+            return proc                    # the pure arm: the reply is the answer, no tree
         tree = (self.homes / self.orchestration_id / self._workshop_backend(entry)
                 / kwargs["child_arid"] / "tree")
         text = proc.stdout or ""
@@ -9314,8 +9316,10 @@ class DiagnosticianTest(unittest.TestCase):
         is_error)` — decided on the TURN, before the tree is read (issue #534 PR-J4-a).
 
         Each CLI row below leaves a syntactically perfect `directive.json` in the tree and
-        trips its own half, so the tree is what would have routed the phase if the half were
-        gone; the HTTP `truncated` half is `test_a_truncated_http_reply_does_not_get_to_route_
+        trips one of the conditions; the `is_error` row is decided by its half alone, while the
+        `timed_out` and `returncode` rows are each refused by more than one (see below: deleting
+        `timed_out`, `returncode != 0` or `ended_by` alone leaves them red-free, and a nonzero
+        exit is also `assemble`'s `pure_transport`). The HTTP `truncated` half is `test_a_truncated_http_reply_does_not_get_to_route_
         the_phase`. The gain each half denies is the same: a leaf whose turn did not finish
         would otherwise have its directive obeyed and its row written `diagnose_pass`.
 
@@ -9376,6 +9380,44 @@ class DiagnosticianTest(unittest.TestCase):
         record = read_lineage_record(paths)
         self.assertIsNone(record.get("ended_by"))
         self.assertEqual(record["last_launch"]["rc"], 0)
+
+    def test_each_half_of_the_pure_arms_guard_refuses_on_its_own(self) -> None:
+        """The PURE arm of `_diagnose_turn` (`judge_replay --leaf pure`, the billed A/B's second
+        arm, until the pure path is deleted) keeps the pure escalate's five-way guard. Each row
+        carries a perfect directive and trips one half; the control is honoured. (`escalate`
+        exercised this guard until issue #534 PR-J4-a moved it to the reading arm.) Deleting
+        `timed_out`, `response_truncated` or `is_error` turns its row red; `not envelope.parsed`
+        is redundant, as it was on the pure escalate — an unparsed envelope's result is not a
+        string and `_parse_directive("")` is None."""
+        import dataclasses
+        directive = '{"action":"retry","target_phase":"generate","reason":"x"}'
+        cases = {
+            "timed_out": wc.ProcResult(0, self._directive_stdout(directive), "",
+                                       timed_out=True),
+            "returncode": wc.ProcResult(1, self._directive_stdout(directive), ""),
+            "unparsed": wc.ProcResult(0, "not an envelope at all", ""),
+            "is_error": wc.ProcResult(
+                0, json.dumps({"type": "result", "subtype": "error_during_execution",
+                               "is_error": True, "result": directive, "session_id": "s"}), ""),
+            "response_truncated": wc.ProcResult(0, self._directive_stdout(directive), "",
+                                                response_truncated=True),
+            "control": wc.ProcResult(0, self._directive_stdout(directive), ""),
+        }
+        for half, proc in cases.items():
+            with self.subTest(half=half):
+                c = self._conductor()
+                entry = dataclasses.replace(c.entry_for(None, None), leaf=lc.LEAF_PURE,
+                                            lineage_timeout_s=None)
+                c.leaf = lambda prompt, env, entry=None, _p=proc, **kw: _p  # type: ignore[assignment]
+                request = c._diagnose_request(self._refs(), "validate", entry, "child-1",
+                                              '{"failed_phase": "validate"}', pure=True)
+                turn = c._diagnose_turn(self._refs(), request, entry, "child-1", "validate",
+                                        pure=True)
+                if half == "control":
+                    self.assertEqual(turn.decision.action, "retry")
+                else:
+                    self.assertIsNone(turn.decision, half)
+                self.assertIsNone(turn.lineage_id)
 
     def test_a_turn_that_did_not_finish_is_decided_before_the_tree_is_read(self) -> None:
         """The order is the property: `assemble` reads the tree of a timed-out leaf (the
