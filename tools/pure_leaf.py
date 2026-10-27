@@ -284,7 +284,10 @@ HTTP_PRODUCER_TOOL_SURFACE_TEXT = (
     f"them. `read_file` returns at most {HTTP_READ_PAGE_LINES:,} lines and "
     f"{HTTP_READ_PAGE_BYTES:,} bytes per call and says `next_start_line`; `grep_file` finds "
     "lines in one file; `list_files` says each file's size. The seeds and `CONTRACT.md` are "
-    "read-only: a write to one is refused.")
+    "read-only: a write to one is refused. A file reaches your tree only through `write_file` "
+    "or `edit_file`, never through the text of your reply. A reply longer than your output "
+    "limit is cut and none of its tool calls run: write one file per reply, and change a long "
+    "file with `edit_file` rather than writing it whole again.")
 
 #: The `<tool_surface>` sentence of a READING workshop launch on either HTTP provider.
 HTTP_READER_TOOL_SURFACE_TEXT = (
@@ -293,8 +296,8 @@ HTTP_READER_TOOL_SURFACE_TEXT = (
     f"operation. `read_file` returns at most {HTTP_READ_PAGE_LINES:,} lines and "
     f"{HTTP_READ_PAGE_BYTES:,} bytes per call: read each file from its first line, continuing "
     "from `next_start_line` until it is null, and search one file with `grep_file`. Write your "
-    "one document with `write_file`. The seeds and `CONTRACT.md` are read-only: a write to one "
-    "is refused.")
+    "one document with `write_file`: it reaches your tree that way only, never through the text "
+    "of your reply. The seeds and `CONTRACT.md` are read-only: a write to one is refused.")
 
 #: The lineage-home directory of each provider that runs a workshop leaf, keyed by PROVIDER
 #: (issue #534 PR-J3-b): the two CLIs keep their backend tokens, the two HTTP providers share

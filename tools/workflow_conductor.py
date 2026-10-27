@@ -10211,22 +10211,26 @@ class Conductor:
 
         @staticmethod
         def loop_note(turn: "Conductor._WorkshopTurn") -> str | None:
-            """What an HTTP launch's host loop says about the turn, for the repair prompt
+            """What an HTTP launch's host loop observed about the turn, for the repair prompt
             (issue #534 PR-J3-b): a reply cut at the output limit, or a launch whose replies
-            made no tool call at all (nothing reaches the tree but through `write_file`). None
-            on a CLI launch and on an HTTP launch with neither."""
+            made no tool call at all. None on a CLI launch and on an HTTP launch with neither.
+
+            A DIAGNOSIS, never an instruction: the findings reach the leaf inside the repair
+            template's do-not-obey fence, where an instruction is text to ignore (the J3-a
+            `_reads_chained` episode). What to do about either — one file per reply, `edit_file`
+            for a long file, files only through the tools — is the HTTP tool-surface row's
+            (`pure_leaf.HTTP_PRODUCER_TOOL_SURFACE_TEXT` / `HTTP_READER_TOOL_SURFACE_TEXT`), the
+            contract outside the fence."""
             if turn.truncated:
-                return (f"your last reply was cut at the output limit ({turn.truncated}) and "
-                        "none of its tool calls ran; write a long file in parts (several "
-                        "`write_file` calls, or `edit_file`)")
+                return (f"your last reply was cut at the output limit ({turn.truncated}), and "
+                        "none of its tool calls ran: no file it was writing reached your tree")
             if (turn.ended_reason is not None and turn.tool_call_made is False
                     and turn.proc.returncode == 0 and not turn.proc.timed_out
                     and not turn.cancelled):
                 # A finished turn (the model answered with no tool call), not one a bound or
                 # a transport error ended before any call.
                 return (f"the endpoint returned no tool call (stop reason: "
-                        f"{turn.ended_reason}); every file reaches your tree only through "
-                        "`write_file`")
+                        f"{turn.ended_reason}): nothing your reply said reached your tree")
             return None
 
         @staticmethod

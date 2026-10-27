@@ -40,10 +40,10 @@
 #
 # On a workshop entry `max_output_tokens` bounds ONE reply, and a reply that writes a file
 # carries it whole: one `write_file` of a 60 KB source is about 15-20k output tokens, so 32768
-# holds one (a reply cut at the limit runs none of its tool calls, and the repair turn says to
-# write a long file in parts). `timeout_s` bounds each request, and `lineage_timeout_s` the
-# lineage: a request in flight when the lineage's time runs out ends the launch as the
-# lineage's timeout. Each request marks two prompt-cache breakpoints (`cache_control` on the
+# holds one (a reply cut at the limit runs none of its tool calls; the tool surface tells the
+# leaf to write one file per reply and to change a long file with `edit_file`). `timeout_s`
+# bounds each request, and `lineage_timeout_s` the lineage: a request in flight when the
+# lineage's time runs out ends the launch as the lineage's timeout. Each request marks two prompt-cache breakpoints (`cache_control` on the
 # system block and on the last user block); a gateway that rejects the field fails the launch
 # as a transport error. Every tool result and tree file the leaf reads is sent to the endpoint
 # in each request (`docs/ORCHESTRATION.md` §workshop leaf, "On the HTTP providers").
