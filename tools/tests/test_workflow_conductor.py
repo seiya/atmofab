@@ -8846,7 +8846,7 @@ class DiagnosticianTest(unittest.TestCase):
 
                     c._codex_cut_reads = no_capture  # type: ignore[assignment]
                 emitted: list[dict] = []
-                c.emit = lambda event, **f: emitted.append({"event": event, **f})  # type: ignore[assignment]
+                c.emit = lambda event, _e=emitted, **f: _e.append({"event": event, **f})  # type: ignore[assignment]
                 d = c.escalate(self._refs(), "validate", wc.PhaseOutcome("validate", "fail"))
                 expected = "retry" if label == "clean" else "fail_closed"
                 self.assertEqual(d.action, expected, label)
