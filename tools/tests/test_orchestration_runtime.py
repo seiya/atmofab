@@ -28127,6 +28127,20 @@ class RetiredPureLeafRecordTests(unittest.TestCase):
              "leaf_mode": "workshop", "workshop_provider": "claude_cli",
              "workshop_lineage_id": "child_new_pure"})
 
+    def test_a_new_workshop_request_carrying_a_pure_part_is_refused(self) -> None:
+        """The compile part split went with the pure leaf: a NEW request labelled with a part
+        is refused rather than recorded as a part no loop runs (old records keep their
+        readers)."""
+        req = {**self._pure_request("child_new_part", "verify"),
+               "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+               "leaf_mode": "workshop", "workshop_provider": "claude_cli",
+               "workshop_lineage_id": "child_new_part"}
+        with self.assertRaises(ValueError) as ctx:
+            ort._validate_pure_launch_request_payload({**req, "pure_part": "core"})
+        self.assertIn("carries pure_part='core'", str(ctx.exception))
+        # Control: the same request without the label passes.
+        ort._validate_pure_launch_request_payload(req)
+
     def test_record_launch_refuses_a_new_pure_launch_before_any_launch_record(self) -> None:
         """End to end: a `leaf_mode: pure` request is not a workshop one, so `record_launch`
         takes no lineage; the leaf renderer `prepare_launch_request_payload` runs refuses it
