@@ -197,6 +197,10 @@ class EveryLlmLaunchIsAWorkshopLeafTests(unittest.TestCase):
         assert outcome.infra_error is not None
         detail = outcome.infra_error[1]
         self.assertNotIn("agentic", detail)
+        # Nor the pure leaf, which went in issue #534 PR-J4-b (round-0 mutation survivor: the
+        # detail said "runs as a pure-function leaf ... has no pure path" until then).
+        self.assertIn("runs as a workshop leaf", detail)
+        self.assertNotIn("pure", detail)
         # It still names both inputs the shape predicate reads, so the operator knows where
         # to look (carried from `pure_only_provider_on_agentic_path`, which it replaces).
         self.assertIn("node_key", detail)
@@ -597,6 +601,9 @@ class HostDefectRefusalsTests(unittest.TestCase):
         message = str(caught.exception)
         self.assertIn("names no rendered prompt", message)
         self.assertIn("step=None", message)
+        # The refusal names no leaf model: it said "pure launch request" until issue #534
+        # PR-J4-b, a model no request can select any more (round-0 mutation survivor).
+        self.assertTrue(message.startswith("launch request names no rendered prompt"), message)
 
 
 class ExemplarFenceCannotBeForgedTests(unittest.TestCase):

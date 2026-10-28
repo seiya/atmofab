@@ -1195,9 +1195,12 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
         # A failure's first detail line says what is missing (the operator sees that line).
         checks, _ = _probe_claude_backend("claude", "claude",
                                           runner_for("Usage: claude [options]\n"))
-        self.assertIn("names no `--restricted` option",
-                      {c["name"]: c for c in checks}
+        first_line = ({c["name"]: c for c in checks}
                       ["claude_restricted_flag_available"]["detail"].splitlines()[0])
+        self.assertIn("names no `--restricted` option", first_line)
+        # It names the leaf model there is (round-0 mutation survivor of issue #534 PR-J4-b:
+        # the line said "cannot run a pure leaf" until the pure leaf went).
+        self.assertIn("this CLI cannot run a leaf (issue #453)", first_line)
         for label, help_text in (
             ("absent", "Usage: claude [options] [command] [prompt]\n"),
             ("longer option", "Usage: claude [options]\n  --restricted-mode  x\n"),
@@ -23884,6 +23887,37 @@ class MultiProviderPreflightTests(unittest.TestCase):
                 {"claude": {"provider_type": "claude_cli", "probe_command": "wrapA",
                             "checks": [], "launchable": True}}, None)
         self.assertEqual(seen, ["wrapA"])
+
+    def test_a_cli_row_without_the_workshop_stamp_is_reprobed_for_the_workshop_row(
+            self) -> None:
+        """Every CLI surface takes its CLI's workshop row on re-probe, stamped or not (issue
+        #534 PR-J4-b): a recorded `claude_cli` surface WITHOUT the `workshop` stamp — the shape a
+        pre-J4-b pure-only preflight wrote — is re-probed for the flag set, its failure makes the
+        token unlaunchable, and the refreshed surface carries the stamp. No producer at HEAD
+        writes an unstamped CLI surface (`probe_all_providers` stamps every one), so this pins
+        the re-probe's own rule rather than a reachable input (round-0 mutation survivor)."""
+        calls: list = []
+
+        def _flag_row(token, probe_command, runner):  # type: ignore[no-untyped-def]
+            calls.append((token, probe_command))
+            return {"name": f"{token}_workshop_flag_set_available", "pass": False,
+                    "detail": "stubbed: no workshop flag set"}
+
+        with patch.object(ort, "probe_execution_platform",
+                          return_value=_launchable_preflight_dict(backend="claude")), \
+                patch.object(ort, "_workshop_flag_set_check", side_effect=_flag_row):
+            fresh = ort._reprobe_recorded_providers(
+                {"claude": {"provider_type": "claude_cli", "probe_command": "wrapA",
+                            "checks": [], "launchable": True,
+                            "surfaces": [{"provider_type": "claude_cli",
+                                          "probe_command": "wrapA", "base_url": "",
+                                          "api_key_env": ""}]}}, None)
+        row = fresh["claude"]
+        self.assertEqual(len(calls), 1, calls)
+        self.assertIn("claude_workshop_flag_set_available",
+                      [c.get("name") for c in row["checks"]])
+        self.assertFalse(row["launchable"])
+        self.assertEqual([s.get("workshop") for s in row["surfaces"]], [True])
 
     def test_a_refreshed_probe_persists_the_rows_it_refreshed(self) -> None:
         """Advancing `probed_at` while leaving the stale rows is the state the re-probe exists

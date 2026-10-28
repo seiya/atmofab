@@ -191,6 +191,24 @@ class CodexWorkshopProfileTests(_CodexEnv):
                     render_bwrap_command(profile=broken, command_argv=["codex"])
 
 
+    def test_the_renderer_refuses_the_retired_readonly_profile(self) -> None:
+        """The read-only profile the pure leaf ran under — no `leaf_mode`, `readonly: True`,
+        workdir at `repo_root`, no credential mapping — is refused BY NAME since issue #534
+        PR-J4-b; until then the renderer accepted it as the non-workshop shape. Both callers
+        build a workshop profile (`record_launch` from `WORKSHOP_PROFILE_KWARGS`, and
+        `spawn_leaf` refuses any other first), so this pins the renderer's own rule
+        (round-0 mutation survivor)."""
+        profile, _iso = self._profile()
+        retired = json.loads(json.dumps(profile))
+        retired.pop("leaf_mode")
+        retired.pop("runtime_rw_credential_mapping", None)
+        retired.update(readonly=True, workdir=str(self.repo))
+        with self.assertRaises(ValueError) as ctx:
+            render_bwrap_command(profile=retired, command_argv=["codex"])
+        self.assertIn("every leaf runs in a workshop lineage", str(ctx.exception))
+        self.assertIn("got None", str(ctx.exception))
+
+
 class CodexAdmissionTests(_CodexEnv):
     """`_admissible_leaf_profile`: a codex workshop profile for a codex workshop entry, and
     neither family's profile for the other's entry."""
