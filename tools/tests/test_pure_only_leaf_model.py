@@ -54,6 +54,40 @@ from tools.tests.test_orchestration_runtime import (
     _spawn_response_payload,
 )
 from tools.tests.test_pure_leaf_producer import _PureFakeConductor, _write_node
+from tools.tests.private_root_fixture import (
+    redirect_isolated_homes_root_for_module,
+    restore_isolated_homes_root_for_module,
+)
+
+_MODULE_CREDENTIALS: list = []
+
+
+def setUpModule() -> None:
+    # Since issue #534 PR-J4-b every launch these rows record is a workshop leaf, and a claude
+    # workshop lineage home binds the operator's credentials file
+    # (`_prepare_claude_workshop_home`), which `record_launch` re-checks. The file the
+    # preparer reads is a temporary one, never the operator's (and CI has none); the homes
+    # are redirected off the operator's real `~/.atmofab/homes`.
+    import os
+    from unittest import mock
+
+    from tools import operator_private_root as _opr
+    redirect_isolated_homes_root_for_module(__name__)
+    tmp = tempfile.TemporaryDirectory(prefix="atmofab-test-claude-cred-")
+    cred = Path(tmp.name) / ".credentials.json"
+    cred.write_text('{"claudeAiOauth": {"accessToken": "x"}}', encoding="utf-8")
+    os.chmod(cred, 0o600)
+    patcher = mock.patch.object(_opr, "claude_credentials_file", lambda: cred)
+    patcher.start()
+    _MODULE_CREDENTIALS.append((tmp, patcher))
+
+
+def tearDownModule() -> None:
+    while _MODULE_CREDENTIALS:
+        tmp, patcher = _MODULE_CREDENTIALS.pop()
+        patcher.stop()
+        tmp.cleanup()
+    restore_isolated_homes_root_for_module(__name__)
 
 # One block per declared provider, in the `capabilities`-free form an operator writes. The set
 # is compared against `PROVIDER_CAPABILITIES` in the test, so a provider added to the product
