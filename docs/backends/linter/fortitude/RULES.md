@@ -62,8 +62,9 @@ statement of that set for a reader; the machine-readable definition is
     source below the top level of `src/`, so this flag is the lint half of one rule.
 - **What the flags do NOT close is the rest of the FILE SET.** The walk reads `.f90` only — a
   `body.inc` pulled in by an `include` line is compiled by the compiler and never linted. That is
-  not reachable today: no leaf writes a file (Z4, issue #171 — the host writes every artifact),
-  and the pure path's `logical_path` allowlist is `.f90` alone. The walk also does not follow a
+  not reachable today: the host writes every artifact from the bundle document (a `workshop
+  leaf` writes only its own work tree), and the bundle's `logical_path` extension allowlist
+  (`codegen_bundle.logical_path_violations`) is `.f90` alone. The walk also does not follow a
   symlinked DIRECTORY inside its root (measured on 0.8.0, 0.9.0 and 0.9.2, with or without
   `--exclude=`: `1 files scanned` over a top-level file beside it), while a symlinked FILE is
   scanned; the host writes no symlink into `src/`, so this is a statement of reach rather than an
@@ -226,7 +227,7 @@ supported version — disabling the directives did not take their own diagnostic
 - **The leaf-facing documents** state individual rules of this set to the agent that must satisfy
   them (`docs/backends/language/fortran/GENERATE_RULES.md` §1, the Fortran prompt fragments
   `tools/prompt_templates/backends/language/fortran/generate_generate.txt` the host composes
-  into `tools/prompt_templates/pure_generate_generate.txt`, and
+  into `tools/prompt_templates/workshop_generate_generate.txt`, and
   `docs/backends/language/fortran/CHECKS_ABI.md` §5). Each names a subset and cites this set. A code
   named there that this repository has no position on — neither in `RULE_CODES` nor in
   `EXCLUDED_RULE_CODES` — is a test failure, not a documentation nuance; so is a copyable

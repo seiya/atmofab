@@ -7,8 +7,8 @@ Until Z4 ([issue #171](https://github.com/seiya/atmofab/issues/171)) there were 
 the way down to the entrypoint by issue #102: a LEAF layer (`leaf_config/claude/settings.json`,
 `leaf_config/codex/hooks.json`, both naming `tools/hooks/cli.py`) that decided what a workflow leaf
 could read, write and run, and this DEV layer. The leaf layer is deleted with the agentic leaf that
-made it necessary: a `pure-function leaf` launches with no tools and no shell, so it issues no tool
-call for a hook to judge, and the read-boundary, write-boundary and Bash-grammar machinery that
+made it necessary: the `pure-function leaf` that replaced it launched with no tools and no shell
+(until [issue #534](https://github.com/seiya/atmofab/issues/534) PR-J4-b deleted it in turn), so it issued no tool call for a hook to judge, and the read-boundary, write-boundary and Bash-grammar machinery that
 layer carried — `read_manifest_read_guard`, `output_manifest_write_guard`, `forbid_python_inline_write`,
 `forbid_tools_direct_read`, `extract_bash_read_targets` and the rest — has no subject left. A
 `workshop leaf` ([issue #534](https://github.com/seiya/atmofab/issues/534)) does make tool calls —
