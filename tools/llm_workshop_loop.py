@@ -4,7 +4,7 @@ A CLI workshop leaf runs its own agent loop: the CLI asks the model, runs the fi
 the work tree and calls the host's operations over the wrapper's MCP endpoint. An HTTP provider
 (`anthropic_api`, `openai_compatible`) has no process and no loop, so the HOST runs it here: it
 sends the conversation, executes every tool call the reply contains — the five file tools
-(`pure_leaf.HTTP_FILE_TOOLS`) on the lineage's tree, and on a producing lineage the wrapper's
+(`leaf_contract.HTTP_FILE_TOOLS`) on the lineage's tree, and on a producing lineage the wrapper's
 operations through `workshop_wrapper.run_wrapper_op` — appends the results, and asks again, until
 the model answers with no tool call or a bound ends the launch. What the leaf leaves in its tree
 is then judged exactly as a CLI leaf's tree is (`docs/ORCHESTRATION.md` §workshop leaf).
@@ -59,7 +59,7 @@ from tools.llm_http_leaf import (
     _post_stream,
     _redact,
 )
-from tools.pure_leaf import (
+from tools.leaf_contract import (
     HTTP_FILE_TOOLS,
     HTTP_GREP_MAX_MATCHES,
     HTTP_READ_PAGE_BYTES,

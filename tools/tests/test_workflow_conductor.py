@@ -176,7 +176,7 @@ _NON_BUILDER_KEYS = {
 _DETERMINISTIC_ONLY_NON_BUILDER_KEYS = {"skill_must_read_refs"}
 # The one builder field a pure capture is NOT held to verbatim. A capture carries the contract
 # version of ITS run, and `PURE_PROMPT_CONTRACT_VERSION` is bumped on every prompt-template
-# change (`git log --date=short -G'PURE_PROMPT_CONTRACT_VERSION = ' -- tools/pure_leaf.py`:
+# change (`git log --date=short -G'PURE_PROMPT_CONTRACT_VERSION = ' -- tools/leaf_contract.py`:
 # 20 commits between 2026-09-03 and 2026-09-12, pure-24 -> pure-43), so pinning the literal
 # would make every bump red and the cheap way to re-green it a hand edit — after which the
 # fixture is no longer a capture. The field is compared as: the builder emits the CURRENT
@@ -331,7 +331,7 @@ def _assert_builder_reproduces(tc: unittest.TestCase, req: dict) -> None:
             continue
         tc.assertEqual(value, req[key], f"{step}/{substep}: field {key} mismatch")
     if req.get("leaf_mode") == "workshop":
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
         tc.assertEqual(built["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
         tc.assertRegex(PURE_PROMPT_CONTRACT_VERSION, _CONTRACT_VERSION_FORM)
         tc.assertRegex(req["prompt_contract_version"], _CAPTURED_WORKSHOP_VERSION_FORM)
@@ -408,9 +408,9 @@ class BuildLaunchRequestTest(unittest.TestCase):
     output by pair and overwrites — so adding a capture of one of those shapes means either
     replacing that pair's row or widening the loader's key, and is a test change either way.
     What is not driven through `build_launch_request` by any capture is driven by
-    `test_pure_leaf_wiring._host_built_launch_requests` (the renderer shapes: cold dep-detail
+    `test_leaf_wiring._host_built_launch_requests` (the renderer shapes: cold dep-detail
     variants, warm and cold repair) and, for the `harness` bundle shape,
-    `test_pure_leaf_producer`; dispatch by `test_pure_only_leaf_model`. This row's own axis is
+    `test_leaf_producer`; dispatch by `test_leaf_model`. This row's own axis is
     "the payload matches a run that really happened", which those do not have."""
 
     def test_reproduces_every_real_substep_payload(self) -> None:
@@ -932,8 +932,8 @@ def _leaf_kind(phase: str | None, substep: str | None) -> dict[str, Any]:
     """The KIND keyword arguments `leaf_command` / `spawn_leaf` take for a launch of
     `(phase, substep)`: a judging pair or the diagnostician (`phase`/`substep` None, the
     `defaults` entry's launch) is READING and takes no endpoint; a producing pair takes its
-    wrapper's endpoint (`pure_leaf.is_workshop_reading_pair`)."""
-    from tools.pure_leaf import is_workshop_reading_pair, workshop_mcp_config_json
+    wrapper's endpoint (`leaf_contract.is_workshop_reading_pair`)."""
+    from tools.leaf_contract import is_workshop_reading_pair, workshop_mcp_config_json
     if phase is None or is_workshop_reading_pair(phase, substep):
         return {"reading": True}
     return {"mcp_config_json": workshop_mcp_config_json(_TEST_MCP_URL)}
@@ -943,13 +943,13 @@ def _leaf_tail(phase: str | None = None, substep: str | None = None) -> list[str
     """The tail EVERY claude leaf argv of `(phase, substep)`'s kind carries: the workshop flag
     set of that kind, then `-p`.
 
-    Derived from `pure_leaf.workshop_leaf_flags()` rather than written out, because that set is
+    Derived from `leaf_contract.workshop_leaf_flags()` rather than written out, because that set is
     the contract and a literal here would only have to be edited to match it. What the goldens
     that splat this pin is the HEAD — the command prefix and the per-entry `--model` /
     `--effort` / session flags — and that nothing follows the `-p`. (The pure-function flag set
     these goldens carried until issue #534 PR-J4-b went with the pure leaf.)
     """
-    from tools.pure_leaf import workshop_leaf_flags
+    from tools.leaf_contract import workshop_leaf_flags
     kind = _leaf_kind(phase, substep)
     return [*workshop_leaf_flags(kind.get("mcp_config_json"),
                                  reading=bool(kind.get("reading"))), "-p"]
@@ -1211,7 +1211,7 @@ class _FakeConductor(wc.Conductor):
         return warm_capable and bool(self.fake_lineage_resumable)
 
     def _fake_leaf_substep(self, refs, phase, substep, repair):
-        from tools.pure_leaf import is_workshop_reading_pair, workshop_mcp_config_json
+        from tools.leaf_contract import is_workshop_reading_pair, workshop_mcp_config_json
         entry = self.entry_for(phase, substep)
         reading = is_workshop_reading_pair(phase, substep)
         # A producing launch is handed its wrapper's endpoint; a reading one none.
@@ -3420,7 +3420,7 @@ class ConductRoutingTest(unittest.TestCase):
         # `make_error` routes `restart`: the conductor's repair payload names `restart` and the
         # retry is not a warm resume. (The fake producer passes that payload through as its
         # request; the real loop records `none` and renders no excerpt — witnessed by
-        # test_pure_leaf_producer's `test_a_build_restart_carries_no_findings_...`.) The
+        # test_leaf_producer's `test_a_build_restart_carries_no_findings_...`.) The
         # revocation still records the excerpt for the operator.
         c, status, seen, gen_launches, build_ids = self._build_failure_conduct("make_error")
         self.assertEqual(status, "pass")
@@ -3709,7 +3709,7 @@ class ConductRoutingTest(unittest.TestCase):
         return c, refs
 
     def test_a_judge_finding_travels_on_the_prod_compile_reopen(self) -> None:
-        from tools.pure_leaf import judge_repair_text
+        from tools.leaf_contract import judge_repair_text
         folded = judge_repair_text(self._review_455())
         self.assertGreater(len(folded), 5000)  # past every per-artifact clip in the tree
         with tempfile.TemporaryDirectory() as tmp:
@@ -3731,7 +3731,7 @@ class ConductRoutingTest(unittest.TestCase):
     def test_a_judge_finding_travels_on_the_dev_rollback(self) -> None:
         # dev terminalizes the backward reopen as `dev_phase_rollback`, AFTER the revocation,
         # so the operator's `--resume` seeds the warm repair from the artifact.
-        from tools.pure_leaf import judge_repair_text
+        from tools.leaf_contract import judge_repair_text
         with tempfile.TemporaryDirectory() as tmp:
             c, refs = self._judging_conductor(
                 tmp, "dev",
@@ -8626,7 +8626,7 @@ class DiagnosticianTest(unittest.TestCase):
         # ...and the launch is a CODEX reading lineage (issue #534 PR-J4-a): the request names
         # the provider whose reader row the prompt states, and the tree carries the codex
         # reading helper beside the diagnosis document.
-        from tools.pure_leaf import CODEX_READ_HELPER_NAME
+        from tools.leaf_contract import CODEX_READ_HELPER_NAME
         request = next(cap for sub, cap in c.calls if sub == "record-launch")["--request-json"]
         self.assertEqual(request["workshop_provider"], "codex_cli")
         tree = c.homes / c.orchestration_id / "codex" / "child-1" / "tree"
@@ -8639,7 +8639,7 @@ class DiagnosticianTest(unittest.TestCase):
         #547): the judges' cut-read check runs on the diagnostician too, and a cut read — an
         output over the budget, a cut marker in the rollout — or a rollout the host cannot read
         discards the directive, since a diagnosis is never run again."""
-        from tools.pure_leaf import CODEX_EXEC_OUTPUT_BUDGET_BYTES
+        from tools.leaf_contract import CODEX_EXEC_OUTPUT_BUDGET_BYTES
         directive = '{"action":"retry","target_phase":"generate","reason":"x"}'
         cases = {
             "an output over the budget": {"codex_commands": [
@@ -10861,7 +10861,7 @@ class LeafSpawnTest(unittest.TestCase):
         OUTSIDE `repo`, as production's `~/.atmofab/homes` is. It is the one profile any leaf
         runs under since issue #534 PR-J4-b; the read-only profile (`readonly: true`, no
         `leaf_mode`) these fixtures wrote until then is refused by name
-        (`test_pure_only_leaf_model.SpawnLeafRefusesTheRetiredReadonlyProfileTests`). The rows
+        (`test_leaf_model.SpawnLeafRefusesTheRetiredReadonlyProfileTests`). The rows
         that use it are about PROCESS handling, which is the same under either."""
         outside = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, outside, True)
@@ -22385,7 +22385,7 @@ class G3JudgeGateSubstepTest(unittest.TestCase):
     #169) made the judge pure by default, and one of this class's subjects only exists on the
     agentic path: `determine_substep_status` reading the review alone (the pure branch also
     requires `judge_meta.json`). Its pure counterpart lives in
-    `tools/tests/test_pure_leaf_judge.py`. The `recoverable` class no longer has a disposition
+    `tools/tests/test_leaf_judge.py`. The `recoverable` class no longer has a disposition
     of its own — issue #176 deleted the warm-resume mini-loop that consumed `warm_resume`, so
     both graded classes write `fail_closed` on either path."""
 
@@ -24344,7 +24344,7 @@ class LeafEntryThreadingTests(unittest.TestCase):
         answering True for `(build, diagnose)`, so the deterministic-first order of round 1
         recorded nothing there and the next Validate failed the run on the diagnostician's
         own record."""
-        from tools.pure_leaf import HTTP_FILE_TOOLS
+        from tools.leaf_contract import HTTP_FILE_TOOLS
         self.assertFalse(wc.Conductor._is_deterministic_substep("build", "diagnose"))
         repo = self._scratch_repo_root()
         for body, field, value in (
@@ -24891,7 +24891,7 @@ class LeafUsageRecordingTests(unittest.TestCase):
         """The invariant that retired the runtime's ~/.claude backfill: `finalize_child` no
         longer reconstructs anything, so a path that leaves `usage` absent silently loses the
         measurement instead of falling back. (The pure loops are covered by
-        `test_pure_leaf_producer` / `test_llm_http_wiring`; this fixture drives no pure leaf.)"""
+        `test_leaf_producer` / `test_llm_http_wiring`; this fixture drives no pure leaf.)"""
         c = self._conductor(wc.ProcResult(0, "done", "", usage=dict(self._CAPTURED_USAGE)))
         c.conduct(self._refs(), "validate")
         rows = [cap["--agent-run-json"] for sub, cap in c.calls if sub == "finalize-child"]
@@ -25096,7 +25096,7 @@ class WarmResumeUsageTest(unittest.TestCase):
     TURN2_USAGE = _u(2, 30665, 72846, 44769)
 
     def _row(self, stdout: str, resumed_stdout: "str | None" = TURN1, *, resumed=True):
-        from tools.pure_leaf import parse_result_envelope
+        from tools.leaf_contract import parse_result_envelope
         pair = (("t1", parse_result_envelope(resumed_stdout)) if resumed else None)
         return wc._leaf_usage_row(wc.ProcResult(0, stdout, ""), self.ENTRY,
                                   envelope=parse_result_envelope(stdout), resumed=pair)

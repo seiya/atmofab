@@ -115,7 +115,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 #: The judging pairs a replay admits, and (issue #534 PR-J4-a) `escalate`'s diagnose launch of
-#: each escalatable phase (`pure_leaf.WORKSHOP_DIAGNOSE_PAIRS`, asserted equal by
+#: each escalatable phase (`leaf_contract.WORKSHOP_DIAGNOSE_PAIRS`, asserted equal by
 #: `test_judge_replay`).
 JUDGING_PAIRS: tuple[tuple[str, str], ...] = (
     ("compile", "verify"), ("generate", "verify"), ("validate", "judge"))

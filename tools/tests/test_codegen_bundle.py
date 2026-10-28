@@ -925,7 +925,7 @@ class FieldGrammarTest(unittest.TestCase):
         """The regression this module's laziness exists to prevent, driven end to end.
 
         `tools.codegen_bundle` is imported by `validate_pipeline_semantics`, `workflow_conductor`
-        and `pure_leaf`, so anything that raises at ITS import takes down the deterministic gate
+        and `leaf_contract`, so anything that raises at ITS import takes down the deterministic gate
         stack — measured once at 374 tests unrun, with nothing able to report the cause. Three
         separate decisions have to hold for that not to happen when a second language backend is
         registered: `_language_bundle` asking extraction (so `load` is not called on an
@@ -1054,7 +1054,7 @@ class FieldGrammarTest(unittest.TestCase):
                 self.assertIn("no implemented language backend", str(caught.exception))
         # And the refusal lands where the rule lives, not in `import tools.codegen_bundle`:
         # computing it at import took down `validate_pipeline_semantics`, `workflow_conductor`
-        # and `pure_leaf` with it, so 374 unrelated tests did not run and nothing could report
+        # and `leaf_contract` with it, so 374 unrelated tests did not run and nothing could report
         # the cause. The module imports; the bundle contract is what refuses.
         cb._identifier_re.cache_clear()
         try:

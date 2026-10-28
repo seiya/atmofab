@@ -43,7 +43,7 @@ from tools import llm_config as lc
 from tools import llm_http_leaf as hl
 from tools import llm_workshop_loop as loop
 from tools import workflow_conductor as wc
-from tools.pure_leaf import HTTP_FILE_TOOL_DECLARATIONS
+from tools.leaf_contract import HTTP_FILE_TOOL_DECLARATIONS
 from tools.tests.llm_samples import workshop_yaml
 
 KEY_ENV = "ATMOFAB_TEST_HTTP_KEY"

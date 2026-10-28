@@ -36,7 +36,7 @@ import tools.orchestration_runtime as ort
 import tools.run_workflow as rw
 import tools.workflow_conductor as wc
 from tools import operator_private_root
-from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
 from tools.tests.llm_samples import workshop_yaml
 from tools.tests.orchestration_fixtures import (
     certify_node,
@@ -316,7 +316,7 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
                          ("cancel", "judge_replay_finished"))
 
     def test_an_exhausted_repair_budget_counts_the_repair_turns(self) -> None:
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         bad = wc.ProcResult(0, json.dumps({"type": "result", "is_error": False,
                                            "result": json.dumps({"decision": "maybe"}),
                                            "num_turns": 1, "duration_ms": 1}), "")
@@ -789,7 +789,7 @@ class SourceRefusalTests(unittest.TestCase):
             self.assertEqual(ctx.exception.code, code)
 
     def test_a_diagnose_launch_with_its_context_is_admitted(self) -> None:
-        from tools.pure_leaf import WORKSHOP_DIAGNOSE_PAIRS
+        from tools.leaf_contract import WORKSHOP_DIAGNOSE_PAIRS
         self.assertEqual(set(jr.DIAGNOSE_PAIRS), WORKSHOP_DIAGNOSE_PAIRS)
         for step, substep in jr.DIAGNOSE_PAIRS:
             with self.subTest(step=step):

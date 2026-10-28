@@ -22,7 +22,7 @@ from unittest import mock
 import tools.llm_config as lc
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
-from tools import operator_private_root, pure_leaf
+from tools import operator_private_root, leaf_contract
 from tools.orchestration_runtime import (
     build_readonly_bwrap_profile,
     claude_workshop_profile_kwargs,
@@ -30,15 +30,15 @@ from tools.orchestration_runtime import (
     record_launch,
     render_bwrap_command,
 )
-from tools.pure_leaf import (
+from tools.leaf_contract import (
     PURE_PROMPT_CONTRACT_VERSION,
     WORKSHOP_PROMPT_SENTINEL,
     workshop_mcp_config_json,
 )
 from tools.tests.llm_samples import workshop_yaml
 from tools.tests.orchestration_fixtures import claude_launch_checks
-from tools.tests.test_pure_leaf_producer import _PureFakeConductor
-from tools.tests.test_pure_leaf_wiring import (
+from tools.tests.test_leaf_producer import _PureFakeConductor
+from tools.tests.test_leaf_wiring import (
     _mark_dependencies_ready,
     _preflight,
     _pure_request,
@@ -284,7 +284,7 @@ class WorkshopRecordLaunchTests(_Env):
         """Record one launch. A COLD workshop launch has its lineage home prepared first, as
         the conductor does in its own process before it records the launch (`prepare=False`
         leaves it absent)."""
-        if (prepare and pure_leaf.is_workshop_request(req) and "workshop_lineage_id" not in kw
+        if (prepare and leaf_contract.is_workshop_request(req) and "workshop_lineage_id" not in kw
                 and not (self.homes / _ORCH / "claude" / child).exists()):
             self._prepare(child, resume=False)
         prepared = ort.prepare_launch_request_payload(dict(req))
@@ -394,7 +394,7 @@ class WorkshopRecordLaunchTests(_Env):
         refused by `record_launch` before anything is recorded — reached here by giving a second
         provider a surface row, as PR-2 will."""
         self._prepare("ar_x", resume=False)
-        with mock.patch.dict(pure_leaf.WORKSHOP_TOOL_SURFACE_TEXT,
+        with mock.patch.dict(leaf_contract.WORKSHOP_TOOL_SURFACE_TEXT,
                              {"codex_cli": "Your shell reaches your tree."}):
             with self.assertRaises(ValueError) as ctx:
                 self._launch("ar_x", _workshop_request("ar_x", workshop_provider="codex_cli"))
@@ -447,7 +447,7 @@ class WorkshopRecordLaunchTests(_Env):
         (`test_validate_pipeline_semantics`). Validated on `generate` alone: this fixture
         carries that step's ids; each step's own is `DiagnosticianTest`'s (the production
         builder)."""
-        from tools.pure_leaf import (
+        from tools.leaf_contract import (
             WORKSHOP_DIAGNOSE_PAIRS,
             WORKSHOP_READER_TOOL_SURFACE_TEXT,
             is_workshop_reading_pair,
@@ -478,7 +478,7 @@ class WorkshopRecordLaunchTests(_Env):
         pure = _pure_request("generate")
         workshop_prompt = ort.render_launch_prompt_text(workshop)
         self.assertTrue(workshop_prompt.startswith(WORKSHOP_PROMPT_SENTINEL))
-        pure_prompt = (pure_leaf.PURE_PROMPT_SENTINEL
+        pure_prompt = (leaf_contract.PURE_PROMPT_SENTINEL
                        + workshop_prompt[len(WORKSHOP_PROMPT_SENTINEL):])
         with self.assertRaises(ValueError):
             ort._validate_launch_prompt_text(workshop, pure_prompt)
@@ -651,7 +651,7 @@ class LeafCommandTests(unittest.TestCase):
                                          mcp_config_json=self.mcp)
         self.assertEqual(argv, ["claude", "--model", "opus", "--effort", "medium",
                                 "--session-id", "sid",
-                                *pure_leaf.workshop_leaf_flags(self.mcp), "-p"])
+                                *leaf_contract.workshop_leaf_flags(self.mcp), "-p"])
         self.assertNotIn("--safe-mode", argv)
         self.assertNotIn("", argv)
 
@@ -701,7 +701,7 @@ class LeafCommandTests(unittest.TestCase):
         entry = c.entry_for("generate", "verify")
         self.assertEqual(wc.Conductor._launch_setting_surface(
             c, "child", {"step": "generate", "substep": "verify"}, entry),
-            {"claude_tools": [",".join(pure_leaf.WORKSHOP_FILE_TOOLS)]})
+            {"claude_tools": [",".join(leaf_contract.WORKSHOP_FILE_TOOLS)]})
 
     def test_record_launch_passes_the_lineage_only_when_given(self) -> None:
         seen: list[list[str]] = []
@@ -912,7 +912,7 @@ class HttpWorkshopRecordLaunchTests(_Env):
     """The real `record_launch` on an HTTP workshop launch (issue #534 PR-J3-b): admitted,
     recorded with no sandbox, and stamped with the lineage and its `http/` home — the home
     `_prepare_http_workshop_home` made, which the record resolves through
-    `pure_leaf.WORKSHOP_LINEAGE_BACKENDS` from the request's provider (the launch's
+    `leaf_contract.WORKSHOP_LINEAGE_BACKENDS` from the request's provider (the launch's
     `backend_token` is the PROVIDER token, `anthropic_api`)."""
 
     def setUp(self) -> None:

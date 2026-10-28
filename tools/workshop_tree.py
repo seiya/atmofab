@@ -82,7 +82,7 @@ _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 #: The transports a lineage home is prepared for: the directory under `<homes-root>/<oid>/`
 #: that holds it, which is `orchestration_runtime.WORKFLOW_BACKEND_HOME_DIRNAMES` (the prune tool
-#: walks those names), and the value `pure_leaf.WORKSHOP_LINEAGE_BACKENDS` maps the launching
+#: walks those names), and the value `leaf_contract.WORKSHOP_LINEAGE_BACKENDS` maps the launching
 #: provider to: `claude` (`claude_cli`, issue #534 step 1), `codex` (`codex_cli`, step 2 PR-2),
 #: `http` (both HTTP providers, whose host loop is one transport — PR-J3-b; no `config/`).
 LINEAGE_BACKENDS: tuple[str, ...] = ("claude", "codex", "http")

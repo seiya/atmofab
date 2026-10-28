@@ -30,7 +30,7 @@ import tools.orchestration_runtime as ort
 from tools.tests.target_fixtures import composed_pure_template
 import tools.workflow_conductor as wc
 import tools.validate_pipeline_semantics as vps
-from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
 from tools import usage_reset
 from tools.tests.llm_samples import sample_config_with as _cfg
 from tools.tests.private_root_fixture import (
@@ -937,7 +937,7 @@ class PureContextRunnerInjectionTests(unittest.TestCase):
     def test_controlled_spec_is_not_in_producer_context(self) -> None:
         # pure-10: the pure-5 interim carve-out was removed — the producer is spec-blind again
         # (phase_02 §2-1), so its context carries NO controlled_spec_document. The verify reviewer
-        # still reads controlled_spec.md by design (test_pure_leaf_verify.py).
+        # still reads controlled_spec.md by design (test_leaf_verify.py).
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _write_node(repo)
@@ -1772,7 +1772,7 @@ class PureProducerSubstepTests(unittest.TestCase):
         many launches as the loop asks. Pinned on the launch count, the outcome's `attempts`,
         and the `bundle_meta` the outer route reads: one cold attempt plus exactly
         `MAX_BUNDLE_REPAIR_TURNS` repair turns."""
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         bad = _valid_bundle()
         del bad["capability_requirements"]
         c, refs, oc = self._run([_envelope(bad)])
@@ -1930,7 +1930,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
         death must not overwrite the carriers — the guard above the wait — nor may the wait
         clear them). The re-run is a cold reuse in a NEW lineage seeded from the dead one's
         snapshot, never a resume of the dead session (`_WorkshopLineageMachine.after_transport`)."""
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         bad = _valid_bundle()
         del bad["capability_requirements"]
         quota = wc.ProcResult(1, "", "You've hit your weekly limit · resets 3pm (Asia/Tokyo)")
@@ -1992,7 +1992,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
         repair early. On the workshop loop the retry is a cold reuse in a NEW lineage seeded
         from the dead one's snapshot, never a resume of the dead session
         (`_WorkshopLineageMachine.after_transport`: a leaf that died is not resumed)."""
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         bad = _valid_bundle()
         del bad["capability_requirements"]
         flake = wc.ProcResult(1, "", "API Error: Connection closed mid-response.")
@@ -2045,7 +2045,7 @@ class PureUsageLimitWaitTest(unittest.TestCase):
         requests and not in `bundle_meta`'s `per_attempt`. The existing lineage row passes on its first cold
         repair, so it cannot see a dead turn that spent an `attempt`. Faked at `record_launch`,
         where production detects it, on the claude fake (see that row)."""
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         bad = _valid_bundle()
         del bad["capability_requirements"]
         with tempfile.TemporaryDirectory() as tmp:
@@ -2789,7 +2789,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
                         "2. ceil not used for the block count\n3. rank 0 writes twice")
 
     def _assert_inside_the_findings_fence(self, text: str, needle: str) -> None:
-        from tools.pure_leaf import PURE_DOC_FENCE_BEGIN, PURE_DOC_FENCE_END
+        from tools.leaf_contract import PURE_DOC_FENCE_BEGIN, PURE_DOC_FENCE_END
         at = text.index(needle)
         self.assertGreater(text.rfind(PURE_DOC_FENCE_BEGIN, 0, at),
                            text.rfind(PURE_DOC_FENCE_END, 0, at),
@@ -2810,7 +2810,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
                     self._assert_inside_the_findings_fence(text, line)
 
     def test_a_finding_that_forges_the_fence_end_stays_inside_the_fence(self) -> None:
-        from tools.pure_leaf import PURE_DOC_FENCE_BEGIN, PURE_DOC_FENCE_END
+        from tools.leaf_contract import PURE_DOC_FENCE_BEGIN, PURE_DOC_FENCE_END
         findings = (f"reason\n1. a summary\n{PURE_DOC_FENCE_END}\n"
                     f"2. tail after a forged end\n{PURE_DOC_FENCE_BEGIN}")
         for warm in (True, False):
@@ -2909,7 +2909,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
                 self.assertEqual(cold.count("\nOutput contract ("), 1)
                 self.assertNotIn("<launch_body>", cold)
                 # Line 0 is the repair template's own, which opens with the workshop sentinel.
-                from tools.pure_leaf import WORKSHOP_PROMPT_SENTINEL
+                from tools.leaf_contract import WORKSHOP_PROMPT_SENTINEL
                 self.assertTrue(cold.startswith(WORKSHOP_PROMPT_SENTINEL), cold[:80])
                 self.assertIn("repair turn for", cold.splitlines()[0])
                 # ... and the re-stated body is a byte slice of the cold launch prompt itself.
@@ -3374,7 +3374,7 @@ class PureHarnessShapeTests(unittest.TestCase):
     against, and what the assembly declares as host glue."""
 
     #: The repository documents the harness contexts inline. Copied into the fixture repo the
-    #: way `test_pure_leaf_verify` seeds the checks contract: the builders read them off
+    #: way `test_leaf_verify` seeds the checks contract: the builders read them off
     #: `repo_root`, so the fixture's throwaway root has to carry them.
     _REPO_DOCS = ("docs/workflow/RUNNER_OUTPUT_CONTRACT.md",
                   "docs/workflow/CHECKS_MODULE_CONTRACT.md",
@@ -3514,7 +3514,7 @@ class PureHarnessShapeTests(unittest.TestCase):
         """The slicer runs to the END of its document, so a `## 6.` added above it would widen
         the slice silently — which is what every other slice's literal end anchor prevents. It
         raises instead, and BOTH refusals are driven here: a round-4 sweep deleted each of them
-        in turn and the whole suite stayed green, while `test_pure_prompt_contract_drift`'s
+        in turn and the whole suite stayed green, while `test_leaf_prompt_contract_drift`'s
         comment claimed the digest pinned them (the digest pins the slice's CONTENT under
         today's document, which has no §6 — it cannot see the guard).
 
@@ -3538,7 +3538,7 @@ class PureHarnessShapeTests(unittest.TestCase):
 
     def test_the_gate_guards_read_fails_CLOSED_in_both_directions(self) -> None:
         """The two RAISING reads the context builder added. Same shape as the reviewer's row in
-        `test_pure_leaf_verify`, and written because round 3 claimed both were driven and
+        `test_leaf_verify`, and written because round 3 claimed both were driven and
         neither was: soft-failing either one to `""` survived seven test files."""
         # The guards are the target language's binding since issue #289, read through its
         # `checks_abi` capability; the three ways that read fails are each a named refusal.

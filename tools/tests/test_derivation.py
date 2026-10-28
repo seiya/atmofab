@@ -15,7 +15,7 @@ import unittest
 from unittest import mock
 
 from tools import derivation as d
-from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
 from tools.raw_evidence_excerpt import RAW_EXCERPT_POLICY_VERSION
 
 

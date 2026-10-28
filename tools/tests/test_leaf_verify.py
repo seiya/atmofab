@@ -6,7 +6,7 @@ reviewer loop `_run_pure_reviewer_substep`, verdict validation, the source_meta.
 projection, verdict_meta, the classify_failure verdict route) and the `tools/run_workflow.py`
 gate removal. The loop is driven through its workshop seam (`test_workshop_reviewer`'s
 `_ReviewerFake`, via `_reviewer_conductor` below): the leaf writes its verdict into the
-lineage's tree. Mirrors the producer suite (`test_pure_leaf_producer.py`), whose fixtures it
+lineage's tree. Mirrors the producer suite (`test_leaf_producer.py`), whose fixtures it
 reuses.
 """
 
@@ -32,8 +32,8 @@ from tools.backends import registry as _bb_registry  # noqa: E402
 from tools.tests.target_fixtures import FORTRAN_CPU as _BB_PROFILE  # noqa: E402
 _FORTRAN_BUNDLE_FACTS = _bb_registry.capability_module(
     "language", _BB_PROFILE.toolchain["language"], "bundle_facts")
-from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, VERDICT_SEVERITIES
-from tools.tests.test_pure_leaf_producer import (
+from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION, VERDICT_SEVERITIES
+from tools.tests.test_leaf_producer import (
     _NODE, _write_node, _PureFakeConductor, _valid_bundle, _envelope, _conductor,
 )
 from tools import usage_reset
@@ -455,7 +455,7 @@ class PureVerifyContextTests(unittest.TestCase):
         SAMPLED: nothing about what each bullet SAYS — the wording is prose a leaf reads, and
         `test_severity_rubric_document_is_the_rubric_subsection_of_the_real_phase_02` pins only
         the span. `none` has no named constant of its own (the pass side is the bare literal in
-        `pure_leaf.validate_verdict`), so its exclusion is self-tested against the tuple rather
+        `leaf_contract.validate_verdict`), so its exclusion is self-tested against the tuple rather
         than written out."""
         self.assertIn("none", VERDICT_SEVERITIES,
                       "the pass-side literal left the enum; the exclusion below now removes "
@@ -914,11 +914,11 @@ class PureVerifySubstepTests(unittest.TestCase):
         """Drive a `minor` verdict with `_LONG_SUMMARIES` through the real routing and read the
         launch request the producer's repair turn RECORDS — via `run_substep`, so the producer
         loop's own seed of `repair_findings` is on the path, not only `build_launch_request`.
-        The producer is a workshop leaf (`test_pure_leaf_producer._WorkshopLeafFake`), whose
+        The producer is a workshop leaf (`test_leaf_producer._WorkshopLeafFake`), whose
         lineage `child-1` the repair targets: `resumable=True` reopens it warm, `resumable=False`
         is the #209 cold first turn (a provider without warm resume, a GC'd transcript), a new
         lineage carrying the findings."""
-        from tools.tests.test_pure_leaf_producer import _workshop_conductor
+        from tools.tests.test_leaf_producer import _workshop_conductor
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
         refs = _verify_node(repo)
@@ -1015,7 +1015,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         repeats its last envelope for as many launches as the loop asks. The two loops are
         separate copies, so the producer's row does not cover this one. Pinned on the launch
         count, the outcome's `attempts`, and the `verdict_meta` the outer route reads."""
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         c, refs, oc = self._run([_envelope({"verification_status": "pass"})])
         self.assertEqual(oc.status, "fail")
         self.assertEqual(_spawned(c), MAX_BUNDLE_REPAIR_TURNS + 1)
@@ -1057,7 +1057,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         repair budget is spent — never a transport death, so never a quota wait. (The pure loop
         ended at once with `infra_error: leaf_timeout`; the workshop rule is pinned whole by
         `test_workshop_reviewer`'s `test_a_pass_never_finished_exhausts_into_the_schema_category`.)"""
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         marker = wc._leaf_timeout_marker(7200, 7203.0)
         self._tmp = tempfile.TemporaryDirectory()
         repo = Path(self._tmp.name)
@@ -1337,7 +1337,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         # `MAX_BUNDLE_REPAIR_TURNS` malformed verdicts before the valid one. A wait that spent
         # one `attempt` would refuse the last repair and fail closed (the fixture straddles the
         # budget on purpose — one malformed verdict would pass under that regression).
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         malformed = [wc.ProcResult(0, _envelope("nope"), "")] * MAX_BUNDLE_REPAIR_TURNS
         c, refs = self._waiting(self._QUOTA, *malformed,
                                 wc.ProcResult(0, _envelope(_verdict("pass")), ""), record=True)
@@ -1380,7 +1380,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         (2) The connection drops on the first repair turn instead: the retry re-runs that repair
         with the same findings, and still spends no budget — cold, in a new lineage seeded from
         the seeds alone, never resuming the dead session (the workshop lineage's rule)."""
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         malformed = wc.ProcResult(0, _envelope({"verification_status": "pass"}), "")
         c, refs = self._waiting(self._FLAKE, *([malformed] * (MAX_BUNDLE_REPAIR_TURNS + 1)),
                                 record=True)
@@ -1418,7 +1418,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         repair. The dead turn must not spend the repair budget: every repair the budget allows
         still reaches a leaf (`MAX_BUNDLE_REPAIR_TURNS + 1` spawns), and `verdict_meta` counts
         the launches that ran, not the request that died."""
-        from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+        from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
         malformed = wc.ProcResult(0, _envelope({"verification_status": "pass"}), "")
         c, refs = self._waiting(malformed, malformed, record=True)
         recorded = c.record_launch
@@ -1635,7 +1635,7 @@ class PureVerifyRoutingDriftTests(unittest.TestCase):
     def test_routing_categories_match_pure_leaf_constants(self) -> None:
         # parallel_review (glm): the routing table must key on the SAME category strings the loop
         # assigns, or a constant rename would silently mis-route. Pin the identity. (The pure
-        # reply extractor's two categories, `pure_leaf.RESPONSE_*`, went with it in issue #534
+        # reply extractor's two categories, `leaf_contract.RESPONSE_*`, went with it in issue #534
         # PR-J4-b; the reviewer loop assigns the two below.)
         self.assertIn(wc.GENERATE_VERDICT_SCHEMA_VIOLATION, wc.GENERATE_VERDICT_FAILURE_ROUTING)
         self.assertEqual(wc.GENERATE_VERDICT_FAILURE_ROUTING[wc.WORKSHOP_CUT_READ],
@@ -1676,7 +1676,7 @@ class PureVerifyColdFallbackSurrogateTests(unittest.TestCase):
         # if a violation message ever carried a lone surrogate, capture-time normalization must keep
         # every downstream write from raising. Force it by making the validator emit one.
         from unittest import mock
-        import tools.pure_leaf as pl
+        import tools.leaf_contract as pl
 
         class _C(_reviewer_fake()):  # type: ignore[misc]
             def record_launch(self, child_arid, request, entry=None, **kwargs):  # type: ignore[override]
@@ -2039,7 +2039,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
                   "docs/workflow/phases/phase_02_generate.md")
 
     def setUp(self) -> None:
-        from tools.tests.test_pure_leaf_producer import (
+        from tools.tests.test_leaf_producer import (
             _write_harness_node, _harness_bundle, _HARNESS_SPEC_ID)
         self._harness_bundle = _harness_bundle
         self._spec_id = _HARNESS_SPEC_ID
@@ -2158,7 +2158,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         self.assertEqual(self._last_request()["pure_shape"], "harness")
 
     def test_run_substep_dispatches_the_producer_with_the_shape(self) -> None:
-        from tools.tests.test_pure_leaf_producer import _harness_bundle, _workshop_conductor
+        from tools.tests.test_leaf_producer import _harness_bundle, _workshop_conductor
         producer = _workshop_conductor(self.repo)
         producer.envelopes = [_envelope(_harness_bundle())]
         oc = producer.run_substep(self.refs, "generate", "generate")

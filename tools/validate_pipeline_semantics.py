@@ -49,16 +49,16 @@ try:
         normalize_raw_evidence_spelling as _normalize_raw_evidence_spelling,
     )
     # PURE_PROMPT_SENTINEL is IMPORTED (not copy-pasted like SLIM_REPAIR_PROMPT_SENTINEL): the
-    # Z2 pure sentinel has a single source in tools/pure_leaf so orchestration_runtime, the
+    # Z2 pure sentinel has a single source in tools/leaf_contract so orchestration_runtime, the
     # prompt templates, and this validator cannot drift (a parity test still pins template
-    # line 0 against it). pure_leaf is stdlib-only, so importing it here introduces no cycle.
-    from tools.pure_leaf import (
+    # line 0 against it). leaf_contract is stdlib-only, so importing it here introduces no cycle.
+    from tools.leaf_contract import (
         PURE_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
         WORKSHOP_LINEAGE_BACKENDS,
         WORKSHOP_PROMPT_SENTINEL,
-        is_pure_request as _pure_leaf_is_pure_request,
-        is_workshop_request as _pure_leaf_is_workshop_request,
+        is_pure_request as _leaf_contract_is_pure_request,
+        is_workshop_request as _leaf_contract_is_workshop_request,
     )
     from tools.target_profile import (
         TargetProfile,
@@ -98,13 +98,13 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         normalize_raw_evidence_artifact as _normalize_raw_evidence_artifact,
         normalize_raw_evidence_spelling as _normalize_raw_evidence_spelling,
     )
-    from tools.pure_leaf import (
+    from tools.leaf_contract import (
         PURE_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
         WORKSHOP_LINEAGE_BACKENDS,
         WORKSHOP_PROMPT_SENTINEL,
-        is_pure_request as _pure_leaf_is_pure_request,
-        is_workshop_request as _pure_leaf_is_workshop_request,
+        is_pure_request as _leaf_contract_is_pure_request,
+        is_workshop_request as _leaf_contract_is_workshop_request,
     )
     from tools.target_profile import (
         TargetProfile,
@@ -620,8 +620,8 @@ def _launch_request_is_slim_repair(request_payload: dict) -> bool:
     two classify mutually exclusively. Everything else here answers for a pre-Z4 record."""
     if request_payload.get("deterministic"):
         return False
-    if (_pure_leaf_is_pure_request(request_payload)
-            or _pure_leaf_is_workshop_request(request_payload)):
+    if (_leaf_contract_is_pure_request(request_payload)
+            or _leaf_contract_is_workshop_request(request_payload)):
         return False
     if not request_payload.get("warm_resume"):
         return False
@@ -664,11 +664,11 @@ _WORKSHOP_ENDPOINT_RESPONSE_FIELDS: tuple[str, ...] = ("claude_mcp_config", "cod
 
 def _workshop_endpoint_violations(request: dict, response: dict) -> list[str]:
     """What is wrong with the endpoint a persisted workshop launch names (issue #534 step 3): a
-    READING launch — a judging pair or the diagnostician's (`pure_leaf.is_workshop_reading_pair`) — is served no wrapper
+    READING launch — a judging pair or the diagnostician's (`leaf_contract.is_workshop_reading_pair`) — is served no wrapper
     operation, so its response names no endpoint; a PRODUCING launch is served its operations
     over one, so its response names one. The kind is the request's pair, never a field of the
     response."""
-    from tools.pure_leaf import is_workshop_reading_pair
+    from tools.leaf_contract import is_workshop_reading_pair
     named = [f for f in _WORKSHOP_ENDPOINT_RESPONSE_FIELDS if response.get(f)]
     if is_workshop_reading_pair(request.get("step"), request.get("substep")):
         if named:
@@ -692,7 +692,7 @@ def _http_workshop_record_violations(request: dict, response: dict) -> list[str]
     tool surface (`http_tool_surface`): the five file tools on a reading pair, and the five
     plus the pair's operations (`workshop_wrapper.WORKSHOP_OPS_BY_PAIR`) on a producing pair —
     compared against that table, never against the request."""
-    from tools.pure_leaf import HTTP_FILE_TOOLS
+    from tools.leaf_contract import HTTP_FILE_TOOLS
     from tools.workshop_wrapper import WORKSHOP_OPS_BY_PAIR
     out: list[str] = []
     endpoint = sorted(k for k in response if isinstance(k, str) and k.endswith("_mcp_config"))
@@ -813,7 +813,7 @@ def _workshop_profile_violations(profile: dict, request: dict | None = None,
 def _launch_request_is_workshop(request_payload: dict) -> bool:
     """True when the structured launch REQUEST is a `workshop leaf` (`leaf_mode == "workshop"`,
     issue #534), by the same single detection source the runtime uses."""
-    return _pure_leaf_is_workshop_request(request_payload)
+    return _leaf_contract_is_workshop_request(request_payload)
 
 
 def _is_workshop_launch_prompt_text(launch_text: str) -> bool:
@@ -825,12 +825,12 @@ def _is_workshop_launch_prompt_text(launch_text: str) -> bool:
 def _launch_request_is_pure(request_payload: dict) -> bool:
     """True when the structured launch REQUEST is a Z2 pure-function leaf (`leaf_mode == "pure"`).
 
-    Delegates to `pure_leaf.is_pure_request` — the SAME single detection source
+    Delegates to `leaf_contract.is_pure_request` — the SAME single detection source
     orchestration_runtime._is_pure_launch_request uses, so the producer and this validator cannot
     disagree about what "pure" is. Gating on this (not prompt text alone) prevents a non-pure
     record whose prompt was swapped for a pure-looking body from escaping the full markers, and
     vice versa."""
-    return _pure_leaf_is_pure_request(request_payload)
+    return _leaf_contract_is_pure_request(request_payload)
 
 
 def _required_launch_prompt_markers_for_role(

@@ -57,7 +57,7 @@ def runner_output_document() -> str:
 #: and its binding idiom, so it is this backend's (issue #289, R4-b PR-4). It states the gate and
 #: the idiom itself and cites no document (issue #424): a pure leaf reads nothing from disk, so a
 #: path it is pointed at is a path it cannot follow. It is a member of the pure prompt contract
-#: digest (`tools/tests/test_pure_prompt_contract_drift.py`).
+#: digest (`tools/tests/test_leaf_prompt_contract_drift.py`).
 EXEMPLAR_GATE_DRIFT_NOTE = (
     "In particular, an exemplar certified before the `Generate.gate` gate promoted its "
     "current `-Werror` classes can show an ABI-fixed dummy "

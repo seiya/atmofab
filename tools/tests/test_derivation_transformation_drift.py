@@ -2,7 +2,7 @@
 
 A derivation key (`tools/derivation.py`) hashes a phase's contract inputs together with the
 version of the transformation that turns them into an output. The LLM half of that version is
-`PURE_PROMPT_CONTRACT_VERSION`, whose coupled surface `test_pure_prompt_contract_drift.py` pins.
+`PURE_PROMPT_CONTRACT_VERSION`, whose coupled surface `test_leaf_prompt_contract_drift.py` pins.
 This module pins the REST:
 
 * `COMPILE_INLINED_DOCUMENTS_VERSION` — the three documents the compile pair inlines IN FULL
@@ -1766,7 +1766,7 @@ class TransformationDriftTests(unittest.TestCase):
 #: Every `pure_context` key the launch tables declare, classified. `input`: node input data,
 #: hashed per node by the derivation inputs (`phase_derivation_inputs`) or an artifact of an
 #: upstream phase whose OUTPUT HASH is; `contract`: a static document or slice pinned by
-#: `test_pure_prompt_contract_drift._contract_tuple` under `PURE_PROMPT_CONTRACT_VERSION`;
+#: `test_leaf_prompt_contract_drift._contract_tuple` under `PURE_PROMPT_CONTRACT_VERSION`;
 #: `compile-docs`: pinned above under `COMPILE_INLINED_DOCUMENTS_VERSION`; `derived`: a
 #: host-computed value that is a function of `input` members and the transformation version
 #: (not hashed on its own); `same-phase`: an artifact an EARLIER substep of the same phase
@@ -1826,7 +1826,7 @@ class InlinedDocumentCensusTests(unittest.TestCase):
         """A key classified `contract` must be pinned by the prompt drift test's tuple — read
         off that test's `_contract_tuple` source, so a row here cannot claim a pin that
         module does not take."""
-        from tools.tests import test_pure_prompt_contract_drift as drift
+        from tools.tests import test_leaf_prompt_contract_drift as drift
         tuple_source = inspect.getsource(drift._contract_tuple)
         expected_member = {
             "checks_module_contract_document": "checks_contract_abi_sections",

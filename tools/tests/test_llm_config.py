@@ -1689,7 +1689,7 @@ class WorkshopEntryTests(_Tmp):
                 self.assert_rule("llm_config_workshop_field_not_substep_scoped", body)
 
     def test_the_workshop_pairs_match_the_launch_validator(self) -> None:
-        from tools import pure_leaf
+        from tools import leaf_contract
         # Every LLM pair is a workshop pair (issue #534 PR-J4-b): the union of the two kinds
         # is `LLM_LEAF_SUBSTEPS`, with no pair left over for a second leaf model.
         self.assertEqual(lc.WORKSHOP_LEAF_SUBSTEPS, lc.LLM_LEAF_SUBSTEPS)
@@ -1697,14 +1697,14 @@ class WorkshopEntryTests(_Tmp):
         # The validator's set holds the `escalate` diagnostician's pairs too (issue #534
         # PR-J4-a), a reading launch no operator assigns: `defaults` serves it.
         self.assertEqual(lc.WORKSHOP_LEAF_SUBSTEPS,
-                         pure_leaf.WORKSHOP_LAUNCH_PAIRS - pure_leaf.WORKSHOP_DIAGNOSE_PAIRS)
-        self.assertEqual(pure_leaf.WORKSHOP_READING_LAUNCH_PAIRS,
-                         pure_leaf.WORKSHOP_READING_PAIRS | pure_leaf.WORKSHOP_DIAGNOSE_PAIRS)
-        self.assertFalse(lc.WORKSHOP_LEAF_SUBSTEPS & pure_leaf.WORKSHOP_DIAGNOSE_PAIRS)
-        self.assertEqual(lc.WORKSHOP_PRODUCING_SUBSTEPS, pure_leaf.WORKSHOP_PRODUCING_PAIRS)
-        self.assertEqual(lc.WORKSHOP_READING_SUBSTEPS, pure_leaf.WORKSHOP_READING_PAIRS)
+                         leaf_contract.WORKSHOP_LAUNCH_PAIRS - leaf_contract.WORKSHOP_DIAGNOSE_PAIRS)
+        self.assertEqual(leaf_contract.WORKSHOP_READING_LAUNCH_PAIRS,
+                         leaf_contract.WORKSHOP_READING_PAIRS | leaf_contract.WORKSHOP_DIAGNOSE_PAIRS)
+        self.assertFalse(lc.WORKSHOP_LEAF_SUBSTEPS & leaf_contract.WORKSHOP_DIAGNOSE_PAIRS)
+        self.assertEqual(lc.WORKSHOP_PRODUCING_SUBSTEPS, leaf_contract.WORKSHOP_PRODUCING_PAIRS)
+        self.assertEqual(lc.WORKSHOP_READING_SUBSTEPS, leaf_contract.WORKSHOP_READING_PAIRS)
         self.assertEqual(lc.WORKSHOP_READING_PROVIDERS,
-                         frozenset(pure_leaf.WORKSHOP_READER_TOOL_SURFACE_TEXT))
+                         frozenset(leaf_contract.WORKSHOP_READER_TOOL_SURFACE_TEXT))
         # The retired leaf-model vocabulary is gone from the configuration module.
         for retired in ("LEAF_PURE", "LEAF_WORKSHOP", "LEAF_MODELS", "CAP_PURE",
                         "WORKSHOP_BOUND_FIELDS"):

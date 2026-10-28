@@ -6,7 +6,7 @@ operations (`tools/workshop_wrapper.py`) as MCP tools — the operations its lin
 `compile.generate` one. This module serves them over MCP's
 streamable-HTTP transport from the conductor's own process — a `ThreadingHTTPServer` on
 `127.0.0.1:<ephemeral port>`, started for ONE launch and stopped when that launch's leaf exits.
-The leaf's CLI is told the URL by `--mcp-config` (`pure_leaf.workshop_mcp_config_json`).
+The leaf's CLI is told the URL by `--mcp-config` (`leaf_contract.workshop_mcp_config_json`).
 
 The protocol subset, as measured against the claude CLI 2.1.309 (`tools/tests/test_bwrap_
 simulation.py` `WorkshopLeafCliTests`, unbilled): JSON-RPC 2.0 over `POST /mcp`, one message per

@@ -11,11 +11,11 @@ defensive freshness branch.
 The loop ITSELF is shared with the two older reviewers — `_run_pure_reviewer_substep`,
 parametrised by a `_PureReviewerSpec` — so the transport-shaped behaviour (usage waits,
 transient retries, tombstones, warm/cold repair turns) is pinned once by
-`test_pure_leaf_verify.py` and is not re-pinned here. The loop rows below drive it through
-the same workshop seam (`test_pure_leaf_verify._reviewer_conductor`): the leaf writes its
+`test_leaf_verify.py` and is not re-pinned here. The loop rows below drive it through
+the same workshop seam (`test_leaf_verify._reviewer_conductor`): the leaf writes its
 review into the lineage's tree as `review.json`. What IS re-pinned here is everything the
 judge's spec record decides, because that is where a judge-side defect would live. The
-document's own schema belongs to `test_pure_leaf.py`, and the raw-evidence excerpt to
+document's own schema belongs to `test_leaf_contract.py`, and the raw-evidence excerpt to
 `test_raw_evidence_excerpt.py`.
 """
 
@@ -37,15 +37,15 @@ import tools.llm_config as lc
 import tools.raw_evidence_excerpt as rex
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
-from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
 from tools.tests.llm_samples import sample_config as _cfg
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
-from tools.tests.test_pure_leaf_producer import (
+from tools.tests.test_leaf_producer import (
     _conductor,
     _envelope,
     _PureFakeConductor,
 )
-from tools.tests.test_pure_leaf_verify import _reviewer_conductor
+from tools.tests.test_leaf_verify import _reviewer_conductor
 
 _NODE = "component/dynamics_advdiff_flux_1d_upwind_center2@0.2.0"
 _SPEC_ID = "dynamics_advdiff_flux_1d_upwind_center2"
@@ -180,7 +180,7 @@ class _Fixture(unittest.TestCase):
 
     def conductor(self, *envelopes) -> _PureFakeConductor:
         """The reviewer loop's workshop fake over this node, scripted by `envelopes` (CLI
-        stdout texts, or `ProcResult`s; `test_pure_leaf_verify._leaf_action`)."""
+        stdout texts, or `ProcResult`s; `test_leaf_verify._leaf_action`)."""
         return _reviewer_conductor(self.repo, list(envelopes) or ["{}"])
 
     def run_node(self, name: str) -> Path:
@@ -684,7 +684,7 @@ class PureJudgeTableTests(unittest.TestCase):
         rejected for obeying its instructions — this repository's recorded default error
         direction, and exactly what the cap's own measurement was correcting. Neither number is
         transcribed here; the template is required to state whatever the constant says."""
-        from tools.pure_leaf import SEMANTIC_REVIEW_NOTES_MAX_CHARS
+        from tools.leaf_contract import SEMANTIC_REVIEW_NOTES_MAX_CHARS
         template = (Path(wc.__file__).resolve().parents[1] / "tools" / "prompt_templates"
                     / "workshop_validate_judge.txt").read_text(encoding="utf-8")
         self.assertIn(f"at most {SEMANTIC_REVIEW_NOTES_MAX_CHARS} characters", template)

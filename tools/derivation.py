@@ -26,7 +26,7 @@ each decision):
   keyed, because no verdict predicate depends on it yet.
 * The static documents the host inlines into a pure prompt — the same bytes for every node
   — are a property of the TRANSFORMATION, not of the node: they enter through the version
-  tuple, which the drift tests pin (`tools/tests/test_pure_prompt_contract_drift.py`,
+  tuple, which the drift tests pin (`tools/tests/test_leaf_prompt_contract_drift.py`,
   `tools/tests/test_derivation_transformation_drift.py`), so a maintainer decides once —
   bump or re-pin — instead of a typo fix invalidating every certified node. A host-derived
   document that VARIES by node or by target — the harness capability manifest of the target's
@@ -88,7 +88,7 @@ def transformation_versions() -> dict[str, tuple[str, ...]]:
     load time for the runtime's own import order) and returned fresh, so a test that patches a
     constant sees its patch. The tuple is what `derivation_key` hashes under `"transformation"`.
     """
-    from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+    from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
     from tools.raw_evidence_excerpt import RAW_EXCERPT_POLICY_VERSION
     return {
         "compile": ("pure", PURE_PROMPT_CONTRACT_VERSION, COMPILE_INLINED_DOCUMENTS_VERSION),

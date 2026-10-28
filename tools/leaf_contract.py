@@ -30,7 +30,7 @@ from typing import Any, NamedTuple
 # (`tools/derivation.py`), so a contract change is an observable event (A7). Bumped when any
 # text a leaf reads changes — a workshop template, a fragment, a document slice, a tool-surface
 # row, a system prompt — in a way that affects leaf behaviour; the drift pin
-# (`tools/tests/test_pure_prompt_contract_drift.py`) names what it hashes. ONE counter since
+# (`tools/tests/test_leaf_prompt_contract_drift.py`) names what it hashes. ONE counter since
 # issue #534 PR-J4-b: the workshop leaf's own (`WORKSHOP_PROMPT_CONTRACT_VERSION`, `workshop-1`
 # through `workshop-9`, which entered no key) is retired, and the VALUE stays `pure-84` (no key
 # moves); the next bump writes `leaf-85`.

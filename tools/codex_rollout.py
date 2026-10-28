@@ -49,7 +49,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from tools.pure_leaf import CODEX_EXEC_OUTPUT_BUDGET_BYTES
+from tools.leaf_contract import CODEX_EXEC_OUTPUT_BUDGET_BYTES
 
 #: The header codex writes above a cut output. Its two lines may be joined by a raw newline or
 #: by an escaped one (one or more backslashes, as JSON nests).

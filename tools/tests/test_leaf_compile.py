@@ -10,7 +10,7 @@ The loops THEMSELVES are shared with the generate pair — `_run_workshop_produc
 `_run_pure_reviewer_substep`, parametrised by a `_PureProducerSpec` / `_PureReviewerSpec`, and
 since issue #534 PR-J4-b each runs a `workshop leaf` (the pure leaf and the compile part split
 of issue #526 went in that PR) — so the transport-shaped behaviour (usage waits, transient
-retries, warm/cold repair turns) is pinned once by `test_pure_leaf_producer.py` /
+retries, warm/cold repair turns) is pinned once by `test_leaf_producer.py` /
 `test_workshop_producer.py` / `test_workshop_reviewer.py` and is not re-pinned here. What IS
 re-pinned here is everything the spec record decides, because that is what a compile-side
 defect would live in. The leaf is `_WorkshopLeafFake`, which writes its document into its tree.
@@ -36,7 +36,7 @@ import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools.backends import registry as backend_registry
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
-from tools.tests.test_pure_leaf_producer import (
+from tools.tests.test_leaf_producer import (
     _envelope,
     _PureFakeConductor,
     _run_producer,
@@ -79,7 +79,7 @@ def _write_compile_node(repo: Path, *, kind: str = "component", profile: bool = 
     """Stage what a Compile phase finds on disk: the spec's three documents, a catalog entry,
     and the two host-authored sidecars `run_phase` writes before `compile.generate` runs.
 
-    Deliberately NOT `test_pure_leaf_producer._write_node`, which stages a lowered IR and a
+    Deliberately NOT `test_leaf_producer._write_node`, which stages a lowered IR and a
     rendered runner: at `compile.generate` time neither exists, and a fixture that provided them
     would let a context builder read an artifact production cannot have.
     """
@@ -634,7 +634,7 @@ class PureCompileProfileContextTests(_Fixture):
         self.assertEqual(ctx["profile_spec_document"],
                          wc.Conductor._PURE_PROFILE_ABSENT_DOCUMENT)
         # Driven through the real validator, not asserted about: this is the frame that refuses.
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
         base = {"agent_role": "substep", "step": "compile", "substep": "generate",
                 "leaf_mode": "workshop", "workshop_lineage_id": "c",
                 "workshop_provider": "claude_cli",
@@ -657,7 +657,7 @@ class PureCompileProfileContextTests(_Fixture):
         Driven through the validator on all three shapes, so the exemption is measured at the
         frame that grants it rather than asserted about.
         """
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
         ctx = self.conductor()._build_pure_compile_context(self.refs)
         base = {"agent_role": "substep", "step": "compile", "substep": "generate",
                 "leaf_mode": "workshop", "workshop_lineage_id": "c",
@@ -1525,7 +1525,7 @@ class PureCompileFailDeclarationTests(_Fixture):
 
 
 def ort_repair_turns() -> int:
-    from tools.pure_leaf import MAX_BUNDLE_REPAIR_TURNS
+    from tools.leaf_contract import MAX_BUNDLE_REPAIR_TURNS
     return MAX_BUNDLE_REPAIR_TURNS
 
 

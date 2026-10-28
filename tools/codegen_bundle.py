@@ -271,7 +271,7 @@ _SEGMENT_RE = re.compile(LOGICAL_PATH_SEGMENT_PATTERN)
 # to demand.
 # LAZY, and that is the point. Computing these at import made a legitimate second language
 # backend with a different identifier grammar raise inside `import tools.codegen_bundle` — which
-# `validate_pipeline_semantics`, `workflow_conductor` and `pure_leaf` all import, so the refusal
+# `validate_pipeline_semantics`, `workflow_conductor` and `leaf_contract` all import, so the refusal
 # took down the whole deterministic gate stack and 374 tests did not run, with nothing able to
 # report why. Refusing is right; that blast radius is not. Resolved on first use instead, so the
 # failure lands in the bundle contract that owns the rule.

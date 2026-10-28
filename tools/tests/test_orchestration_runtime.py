@@ -76,7 +76,7 @@ from tools.orchestration_runtime import (
     default_agent_model_for_backend,
 )
 
-from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, WORKSHOP_PROMPT_SENTINEL
+from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION, WORKSHOP_PROMPT_SENTINEL
 
 # The derivation record a PASS step_result must carry (issue #250): what the conductor computes
 # at phase start (`phase_derivation`) and `write_step_result` stamps into the certifying meta.
@@ -22266,7 +22266,7 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                         f"! checks for {sid}\nmodule {sid}_checks\nend module\n")
             # An M3c checks exemplar is gated on its recorded contract version matching the
             # current one; seed a matching `bundle_meta.json` by default (None => current).
-            from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+            from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
             version = contract_version if contract_version is not None else PURE_PROMPT_CONTRACT_VERSION
             self._write(src.parent / "bundle_meta.json",
                         json.dumps({"prompt_contract_version": version}))
@@ -22540,7 +22540,7 @@ class R5ExemplarConductorGatingTests(unittest.TestCase):
     the exemplar line — to observe one boolean, and the assembly failing would look exactly
     like the exemplar not being wanted. The call SITE (that `wants_exemplar` is what gates the
     resolution, and that a repair turn does not attach it) is pinned where the loop is, in
-    `tools/tests/test_pure_leaf_producer.py`.
+    `tools/tests/test_leaf_producer.py`.
     """
 
     def _conductor(self, tmp: str):
@@ -24036,7 +24036,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
     # --- record_launch: the token comes from THIS launch --------------------------------
 
     #: The `workshop_provider` a launch on each response backend token names, and the
-    #: lineage-home backend its cold home is prepared under (`pure_leaf.WORKSHOP_LINEAGE_
+    #: lineage-home backend its cold home is prepared under (`leaf_contract.WORKSHOP_LINEAGE_
     #: BACKENDS`).
     _WORKSHOP_PROVIDER = {"claude": ("claude_cli", "claude"),
                           "openai_compatible": ("openai_compatible", "http"),
@@ -24048,7 +24048,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         leaf is one since issue #534 PR-J4-b, and an HTTP provider is admissible only for one,
         which `record_launch` asserts itself), its lineage home prepared first as the host
         does. `workshop=False` builds a launch that is neither workshop nor deterministic."""
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
         if workshop:
             provider, lineage_backend = self._WORKSHOP_PROVIDER[response_backend]
             _prepare_workshop_lineage(repo_root, "orch_001", arid, backend=lineage_backend)
@@ -24616,7 +24616,7 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         # workshop captures of their pairs, plus the escalate diagnostician's
         # (`validate.diagnose`). `BuildLaunchRequestTest`'s docstring carries the provenance.
         self.assertEqual(len(captured), 8, "captured payload set changed; revisit coverage")
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
         modes = {json.loads(p.read_text(encoding="utf-8")).get("leaf_mode") for p in captured}
         self.assertEqual(modes, {None, "workshop"}, "a capture of a retired leaf model")
         for path in captured:

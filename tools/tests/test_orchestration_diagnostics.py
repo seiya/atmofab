@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from tools import orchestration_diagnostics as diag
-from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -394,7 +394,7 @@ class LeafTranscriptRootTests(unittest.TestCase):
     either reader at the operator home left the whole suite green.
 
     Z4 (issue #171) retired the agentic leaf and the private home with it. A pure leaf runs
-    with no `CLAUDE_CONFIG_DIR` (`tools/pure_leaf.py`), so its transcript is written where the
+    with no `CLAUDE_CONFIG_DIR` (`tools/leaf_contract.py`), so its transcript is written where the
     CLI writes every transcript, and `claude_leaf_projects_roots` returns that one root. What
     this class pins now is the operator-home half, which was always the other branch.
 
@@ -725,7 +725,7 @@ class PureLeafMetaWriterReaderContractTest(unittest.TestCase):
     silently reporting zero tokens (both modules' own suites would stay green)."""
 
     def test_conductor_written_metas_round_trip_through_reader(self) -> None:
-        from tools.tests.test_pure_leaf_producer import _conductor, _write_node
+        from tools.tests.test_leaf_producer import _conductor, _write_node
 
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)

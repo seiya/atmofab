@@ -325,7 +325,7 @@ operator does not lower the count — it decides which site you check first.
 shapes, so read the one nearest your rule and treat copying as the starting point. The live
 ones (the three in `tools/tests/test_hooks_cli.py` that this paragraph used to name went with
 the leaf hook layer in Z4, issue #171 PR-1; their episode stays in
-`references/judgment-episodes.md` §Rule 3-a): `tools/tests/test_pure_leaf_wiring.py`
+`references/judgment-episodes.md` §Rule 3-a): `tools/tests/test_leaf_wiring.py`
 `test_phase_02_states_the_scope_rule_with_its_bound` (anchor on text that precedes the rule,
 byte-identical in the refused wording, plus the refused spelling asserted absent) and
 `_RUBRIC_POINTER_SURFACES` (the surface tuple asserted as a literal first, the anchor's count

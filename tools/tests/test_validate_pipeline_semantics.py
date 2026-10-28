@@ -28269,7 +28269,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         stamped, its prompt opening with the pure sentinel and carrying the identity block, and
         the read-only sandbox profile. The prompt is a LITERAL — the pure renderer went in issue
         #534 PR-J4-b — holding exactly what the audit reads of it: line 0 and the markers."""
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION, PURE_PROMPT_SENTINEL
+        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION, PURE_PROMPT_SENTINEL
         orch_root = self._orch_root(repo_root)
         req_path = orch_root / "launches" / f"{self._ARID}.request.json"
         req = json.loads(req_path.read_text(encoding="utf-8"))
@@ -28478,7 +28478,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         response names the wrapper endpoint a producing launch is served, and the sandbox
         profile is the writable lineage profile `record_launch` writes."""
         from tools import orchestration_runtime as ort
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
         root = self._orch_root(repo_root)
         req_path = root / "launches" / f"{self._ARID}.request.json"
         req = json.loads(req_path.read_text(encoding="utf-8"))
@@ -28526,7 +28526,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         moves into the workshop block, and the declared tool surface
         `Conductor._launch_setting_surface` records. `response` overrides response fields
         (`None` deletes one)."""
-        from tools.pure_leaf import HTTP_FILE_TOOLS
+        from tools.leaf_contract import HTTP_FILE_TOOLS
         self._make_workshop(repo_root, provider=provider)
         self._make_http(repo_root, backend=provider)
         resp_path = self._orch_root(repo_root) / "launches" / f"{self._ARID}.response.json"
@@ -28562,7 +28562,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                                  self._all_violations(control))
 
     def test_a_malformed_http_workshop_record_is_flagged(self) -> None:
-        from tools.pure_leaf import HTTP_FILE_TOOLS
+        from tools.leaf_contract import HTTP_FILE_TOOLS
         ops = ["derive", "compile", "lint", "syntax_check", "run"]
         cases = {
             "an endpoint": ({"claude_mcp_config": [{"server": "wrapper", "url": "u"}]},
@@ -28614,7 +28614,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         """The surface is the KIND's, read from the request's pair against
         `WORKSHOP_OPS_BY_PAIR` — never from the request — so a judging pair's surface naming an
         operation is flagged and its five-tool surface passes."""
-        from tools.pure_leaf import HTTP_FILE_TOOLS
+        from tools.leaf_contract import HTTP_FILE_TOOLS
         from tools.validate_pipeline_semantics import _http_workshop_record_violations
         request = {"step": "validate", "substep": "judge", "workshop_lineage_id": "L"}
         good = {"workshop_lineage_id": "L", "http_workflow_home": "/h/o/http/L",
@@ -28700,7 +28700,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         of one naming an endpoint is a reviewer that held the wrapper. The kind is read from
         the REQUEST's pair, so a response cannot choose it. Every reading pair: the three
         judges and, since issue #534 PR-J4-a, the diagnostician's four."""
-        from tools.pure_leaf import (
+        from tools.leaf_contract import (
             WORKSHOP_DIAGNOSE_PAIRS,
             WORKSHOP_READING_LAUNCH_PAIRS,
         )
@@ -28734,7 +28734,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         surviving constant, so a `workshop-9` record in the current orchestration is a violation
         — in the request and, independently, in the prompt line. `workshop-9` is a frozen
         history literal: the constant that held it is gone."""
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
         self.assertNotEqual(PURE_PROMPT_CONTRACT_VERSION, "workshop-9")
         # The control: the record as written now passes the version checks.
         with tempfile.TemporaryDirectory() as tmp:
@@ -28852,17 +28852,17 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
     def test_the_cli_home_table_is_the_runtime_s(self) -> None:
         from tools import llm_config
         from tools import orchestration_runtime as ort_
-        from tools import pure_leaf
+        from tools import leaf_contract
         from tools.validate_pipeline_semantics import _WORKSHOP_PROFILE_HOME_ENV
         self.assertEqual(_WORKSHOP_PROFILE_HOME_ENV, ort_.WORKSHOP_PROFILE_HOME_ENV)
         # Issue #534 PR-J3-b: the audit reads the provider -> lineage-home table itself
-        # (`pure_leaf.WORKSHOP_LINEAGE_BACKENDS`). Every provider that runs a workshop leaf has a
+        # (`leaf_contract.WORKSHOP_LINEAGE_BACKENDS`). Every provider that runs a workshop leaf has a
         # row; a CLI's row is its backend token (the profile family the audit compares), and
         # each row names a home the runtime prepares.
-        self.assertEqual(set(pure_leaf.WORKSHOP_LINEAGE_BACKENDS), {
+        self.assertEqual(set(leaf_contract.WORKSHOP_LINEAGE_BACKENDS), {
             p for p in llm_config.PROVIDER_CAPABILITIES
             if llm_config.CAP_WORKSHOP in llm_config.PROVIDER_CAPABILITIES[p]})
-        for provider, backend in pure_leaf.WORKSHOP_LINEAGE_BACKENDS.items():
+        for provider, backend in leaf_contract.WORKSHOP_LINEAGE_BACKENDS.items():
             self.assertIn(backend, ort_.WORKSHOP_HOME_PREPARERS, provider)
             if provider in llm_config.CLI_PROVIDERS:
                 self.assertEqual(backend, llm_config.PROVIDER_BACKEND_TOKENS[provider])
@@ -29004,7 +29004,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             # into a no-op replace, leaving the prompt line at the CURRENT version — the assertion
             # below would then pass on the request-json violation alone and the prompt-line check
             # would be silently dead.
-            from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+            from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
             prompt_path.write_text(
                 prompt_path.read_text(encoding="utf-8").replace(
                     f"prompt_contract_version: {PURE_PROMPT_CONTRACT_VERSION}",
@@ -29056,7 +29056,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         record (`_required_launch_prompt_markers_for_role(workshop=True)`) is checked on the
         real rendered prompt — each non-sentinel identity marker stripped alone is named."""
         from tools.validate_pipeline_semantics import _required_launch_prompt_markers_for_role
-        from tools.pure_leaf import WORKSHOP_PROMPT_SENTINEL
+        from tools.leaf_contract import WORKSHOP_PROMPT_SENTINEL
         markers = _required_launch_prompt_markers_for_role("substep", workshop=True)
         self.assertEqual(markers[0], WORKSHOP_PROMPT_SENTINEL)
         for marker in markers[1:]:
@@ -31188,7 +31188,7 @@ class CompileIrDirTests(unittest.TestCase):
         import shutil
         import threading
 
-        from tools.tests.test_pure_leaf_compile import _write_compile_node
+        from tools.tests.test_leaf_compile import _write_compile_node
         with tempfile.TemporaryDirectory() as tmp, tempfile.TemporaryDirectory() as other:
             repo = Path(tmp)
             refs = _write_compile_node(repo, stage_ir=True)

@@ -44,7 +44,7 @@ from tools.llm_config import LLM_LEAF_SUBSTEPS
 from tools.tests.orchestration_fixtures import claude_launch_checks
 from tools.tests.target_fixtures import TARGET_ID
 from tools.tests.target_fixtures import composed_pure_template
-from tools.pure_leaf import (
+from tools.leaf_contract import (
     PURE_DOC_FENCE_BEGIN,
     PURE_DOC_FENCE_END,
     PURE_PROMPT_CONTRACT_VERSION,
@@ -566,9 +566,9 @@ class BlankContextRationaleCouplingTests(unittest.TestCase):
     #: Where a leaf-facing rationale can live. Derived narrowly rather than scanning the tree:
     #: a bound that grows silently is a bound that stops meaning anything.
     _SCANNED = ("tools/workflow_conductor.py", "tools/orchestration_runtime.py",
-                "tools/pure_leaf.py", "tools/raw_evidence_excerpt.py",
-                "tools/tests/test_pure_leaf_producer.py", "tools/tests/test_pure_leaf_verify.py",
-                "tools/tests/test_pure_leaf_judge.py", "tools/tests/test_pure_leaf_wiring.py",
+                "tools/leaf_contract.py", "tools/raw_evidence_excerpt.py",
+                "tools/tests/test_leaf_producer.py", "tools/tests/test_leaf_verify.py",
+                "tools/tests/test_leaf_judge.py", "tools/tests/test_leaf_wiring.py",
                 "docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
                 "docs/workflow/phases/phase_04_validate.md")
     #: `docs/design/deterministic_followups.md` is deliberately NOT scanned: issue #181 froze it
@@ -980,7 +980,7 @@ class PureRenderTests(unittest.TestCase):
     # meaning of an input, enumerating spellings is the losing line). So it is replaced by a
     # question that IS answerable: "has this text changed since a human last read it against the
     # axis?" That is the instrument this file already uses for `_SEVERITY_ROUTING_ALLOWLIST` and
-    # the one `tools/tests/test_pure_prompt_contract_drift.py` uses for phase_02's slice, which
+    # the one `tools/tests/test_leaf_prompt_contract_drift.py` uses for phase_02's slice, which
     # is why phase_02 was red for every mutant that phase_01 survived. phase_01 now has the same
     # standing. Re-taking the digest is one line, and the failure message says what to re-read
     # before taking it.
@@ -1248,7 +1248,7 @@ class PureRenderTests(unittest.TestCase):
         sources = {
             "_generate_verify_severity_rubric_section": "workflow_conductor.py",
             "pure_severity_rubric_document_unsliceable": "workflow_conductor.py",
-            "PURE_PROMPT_CONTRACT_VERSION": "pure_leaf.py",
+            "PURE_PROMPT_CONTRACT_VERSION": "leaf_contract.py",
         }
         for name, module in sources.items():
             self.assertIn(name, note,
@@ -1555,9 +1555,10 @@ class PureRenderTests(unittest.TestCase):
         # conductor does with a value the rubric already chose; it assigns nothing. Round 1
         # re-worded its "(an LLM `structural_violation` ...)" parenthetical; round 2 added the
         # deterministic `Validate.execute` reopens and the manual revocation's findings; round 3
-        # made that recipe a complete command. READ: same, nothing assigned.
+        # made that recipe a complete command. READ: same, nothing assigned. Issue #534 PR-J4-d
+        # renamed the module the recipe imports (`tools.leaf_contract`). READ: same.
         ("docs/RUNBOOK.md: - Cross-phase `Compile` re-derivation of an already-`certifi"
-         " #569579fb2cde"),
+         " #f6a1541ab0e7"),
         # Issue #455: phase_02's on-failure bullet states the route of an `ir_inconsistency`
         # finding — `dev_verify_major` in `dev`, `verify_severity_major` and a directive in
         # `prod` — where it used to say "the orchestration agent decides". It points at
@@ -2172,7 +2173,7 @@ class PureRenderTests(unittest.TestCase):
         """
         templates = ort._load_launch_prompt_templates()
         texts: list[str] = []
-        if ort._pure_leaf_is_host_rendered_request(request_payload):
+        if ort._leaf_contract_is_host_rendered_request(request_payload):
             launch = (not str(request_payload.get("repair_findings", "")).strip()
                       or not request_payload.get("warm_resume"))
             if str(request_payload.get("repair_findings", "")).strip():
@@ -2414,12 +2415,12 @@ class PureRenderTests(unittest.TestCase):
         calling a builder is invisible: both sides of the equality are derived from the calls
         that happen, so they drop together. MEASURED at `26e1b5e` in a pristine worktree:
         replacing `_render_pure_launch_prompt`'s `_build_dependency_facts(...)` with `""` left
-        this test, both sweeps and the whole of `test_pure_leaf_wiring`,
-        `test_orchestration_runtime`, `test_pure_leaf_producer`,
+        this test, both sweeps and the whole of `test_leaf_wiring`,
+        `test_orchestration_runtime`, `test_leaf_producer`,
         `test_validate_pipeline_semantics` and `test_workflow_conductor` green (3031 passed,
         1602 subtests, before and after). What a renderer owes at launch is a separate claim and
         needs its own witness — `test_a_cold_workshop_tree_carries_the_host_resolved_dependency_facts`
-        below is that one for the case measured (on the seed path since issue #534 PR-J4-b), and `test_pure_leaf_producer
+        below is that one for the case measured (on the seed path since issue #534 PR-J4-b), and `test_leaf_producer
         .test_cold_repair_includes_dependency_facts` is the repair-side mirror that already
         existed.
         """
@@ -2779,7 +2780,7 @@ class PureRenderTests(unittest.TestCase):
 
     def test_compile_severity_rubric_states_every_verdict_severity_at_its_own_bullet(self) -> None:
         """Enumeration coupling (`atmofab-enforcement-change` rule 3-a) for phase_01 §1-2's
-        rubric (issue #148) — the mirror of `test_pure_leaf_verify
+        rubric (issue #148) — the mirror of `test_leaf_verify
         .test_severity_rubric_states_every_verdict_severity_at_its_own_bullet`, which holds
         phase_02 §2-2 to the same rule.
 
@@ -2787,12 +2788,12 @@ class PureRenderTests(unittest.TestCase):
         exactly one `- `<value>`:` bullet of the slice, and that no other value does — so a value
         added to the enum, or a bullet deleted or misspelled, is red and NAMES the value. The
         membership comes from the code; the document is checked against it.
-        The enum lives in `tools/pure_leaf.py`, a `generate`-side module, and `Compile.verify` is
+        The enum lives in `tools/leaf_contract.py`, a `generate`-side module, and `Compile.verify` is
         an AGENTIC leaf that renders no pure verdict — the enum reaches it through the
         conductor's routing, `classify_verify_severity`, which is phase-independent. That is why
         this is the right set for a phase_01 rubric.
         What connects the enum to that routing, stated at its real strength (round 1 corrected an
-        overstatement here): `test_pure_leaf.test_every_severity_routes_consistently` asserts only
+        overstatement here): `test_leaf_contract.test_every_severity_routes_consistently` asserts only
         that every non-`none` member routes to something other than `advance`. It does NOT pin
         that each value has its own branch — `classify_verify_severity` ends in a catch-all
         `escalate`, so deleting the `minor` branch would still satisfy it — and it does not pin
@@ -2880,7 +2881,7 @@ class PureRenderTests(unittest.TestCase):
                           f"explained; a leaf that meets one rubric and not the pointer reads "
                           f"the disagreement as an error.")
         # phase_01's rubric CONTENT, by digest. phase_02's equivalent is
-        # `tools/tests/test_pure_prompt_contract_drift.py`, which hashes its slice because it is
+        # `tools/tests/test_leaf_prompt_contract_drift.py`, which hashes its slice because it is
         # a pure-leaf input; phase_01 is force-read whole and had no counterpart, which is
         # exactly the asymmetry every surviving mutant of rounds 1-3 lived in.
         artifact = {"compile": "`spec.ir.yaml`", "generate": "the sources under review"}
@@ -3363,9 +3364,9 @@ class PureValidatePipelineTests(unittest.TestCase):
         self.assertFalse(vps._launch_request_is_pure({"leaf_mode": "agentic"}))
 
     def test_pure_predicate_shared_single_source(self) -> None:
-        # Both modules delegate to pure_leaf.is_pure_request (single detection source), so they
+        # Both modules delegate to leaf_contract.is_pure_request (single detection source), so they
         # cannot disagree about what "pure" is.
-        from tools.pure_leaf import is_pure_request, PURE_LEAF_MODE
+        from tools.leaf_contract import is_pure_request, PURE_LEAF_MODE
         for payload in ({"leaf_mode": "pure"}, {"leaf_mode": "  PURE "}, {"leaf_mode": "agentic"},
                         {}, {"leaf_mode": None}):
             self.assertEqual(ort._is_pure_launch_request(payload), is_pure_request(payload))
@@ -3430,7 +3431,7 @@ class PureRepairScopeSentenceTests(unittest.TestCase):
 
     @staticmethod
     def _render(step: str, substep: str) -> str:
-        from tools.pure_leaf import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
         return ort._render_pure_repair_prompt({
             "node_key": "component/x@1.0.0", "step": step, "substep": substep,
             "orchestration_id": "o", "agent_run_id": "child-1",
@@ -3492,13 +3493,13 @@ class PureRepairScopeSentenceTests(unittest.TestCase):
     def test_the_paragraph_precedes_the_findings_it_governs(self) -> None:
         """It has to be read before the violation text, not after it: the findings block is what
         offers the cheap correction."""
-        from tools.pure_leaf import PURE_DOC_FENCE_BEGIN
+        from tools.leaf_contract import PURE_DOC_FENCE_BEGIN
         text = self._render("validate", "judge")
         self.assertLess(text.index(self._FORBIDS_DROPPING), text.index(PURE_DOC_FENCE_BEGIN))
 
     def test_the_paragraph_is_outside_the_untrusted_fence(self) -> None:
         """A host instruction inside the data fence is one the leaf is told to ignore."""
-        from tools.pure_leaf import PURE_DOC_FENCE_BEGIN, PURE_DOC_FENCE_END
+        from tools.leaf_contract import PURE_DOC_FENCE_BEGIN, PURE_DOC_FENCE_END
         text = self._render("generate", "verify")
         before = text[:text.index(self._FORBIDS_DROPPING)]
         self.assertEqual(before.count(PURE_DOC_FENCE_BEGIN), before.count(PURE_DOC_FENCE_END))

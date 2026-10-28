@@ -1,4 +1,4 @@
-"""Unit tests for the leaf-side helpers of `tools/pure_leaf.py` that outlived the pure leaf.
+"""Unit tests for the leaf-side helpers of `tools/leaf_contract.py` that outlived the pure leaf.
 
 Every LLM leaf is a `workshop leaf` since issue #534 PR-J4-b, and the pure leaf's own transport
 (`pure_leaf_flags`, the reply-text extractor, the pure argv branches of
@@ -17,7 +17,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from tools import pure_leaf as pl
+from tools import leaf_contract as pl
 from tools import workflow_conductor as wc
 
 
@@ -750,7 +750,7 @@ class CodexResumeArgvCertificationTest(unittest.TestCase):
         producing argv (step 2 PR-2) and the reading one (step 3 PR-J2). The equality holds on
         each.
         """
-        from tools import pure_leaf
+        from tools import leaf_contract
         from tools.orchestration_runtime import CODEX_EXEC_RESUME_REQUIRED_FLAGS
         from tools.tests.test_workshop_producer import (
             _codex_config as _producing_config,
@@ -760,7 +760,7 @@ class CodexResumeArgvCertificationTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             for kind, load, pair, kwargs in (
                     ("producing", lambda r: _producing_config(r), ("generate", "generate"),
-                     {"mcp_config_json": pure_leaf.workshop_mcp_config_json(
+                     {"mcp_config_json": leaf_contract.workshop_mcp_config_json(
                          "http://127.0.0.1:5/mcp")}),
                     ("reading", lambda r: _reading_config(r, "validate", "judge"),
                      ("validate", "judge"), {"reading": True})):

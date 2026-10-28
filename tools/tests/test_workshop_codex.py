@@ -32,10 +32,10 @@ from tools.orchestration_runtime import (
     render_bwrap_command,
     write_preflight,
 )
-from tools.pure_leaf import workshop_mcp_config_json
-from tools.tests.test_pure_leaf_producer import _PureFakeConductor
+from tools.leaf_contract import workshop_mcp_config_json
+from tools.tests.test_leaf_producer import _PureFakeConductor
 from tools.tests.llm_samples import workshop_yaml
-from tools.tests.test_pure_leaf_wiring import _mark_dependencies_ready, _spawn_response
+from tools.tests.test_leaf_wiring import _mark_dependencies_ready, _spawn_response
 from tools.tests.test_workshop_launch import (
     _ORCH,
     _clear_active_child,
