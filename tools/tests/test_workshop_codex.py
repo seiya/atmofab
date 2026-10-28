@@ -349,6 +349,15 @@ class CodexPreflightTests(unittest.TestCase):
             return subprocess.CompletedProcess(argv, rc, text, "")
         return run
 
+    def test_an_unrunnable_cli_fails_the_row_rather_than_the_preflight(self) -> None:
+        """A `--help` that cannot run at all is a failed capability row, named, not an
+        exception out of the preflight."""
+        def gone(argv, **kw):
+            raise FileNotFoundError(2, "No such file or directory", argv[0])
+        check = ort._codex_workshop_flag_set_check("/nonexistent/codex", gone)
+        self.assertIs(check["pass"], False)
+        self.assertIn("FileNotFoundError", check["detail"])
+
     def test_the_row_requires_each_option_the_mode_and_the_url_route(self) -> None:
         check = ort._codex_workshop_flag_set_check
         self.assertIs(check("codex", self._runner(self._EXEC_HELP, self._MCP_HELP))["pass"],

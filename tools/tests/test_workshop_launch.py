@@ -557,6 +557,15 @@ class PreflightTests(unittest.TestCase):
         self.assertIs(ort._claude_workshop_flag_set_check(
             "claude", self._runner(self._HELP, rc=1))["pass"], False)
 
+    def test_an_unrunnable_cli_fails_the_row_rather_than_the_preflight(self) -> None:
+        """A `--help` that cannot run at all is a failed capability row, named, not an
+        exception out of the preflight."""
+        def gone(argv, **kw):
+            raise FileNotFoundError(2, "No such file or directory", argv[0])
+        check = ort._claude_workshop_flag_set_check("/nonexistent/claude", gone)
+        self.assertIs(check["pass"], False)
+        self.assertIn("FileNotFoundError", check["detail"])
+
     def test_only_a_surface_a_workshop_entry_launches_through_takes_the_check(self) -> None:
         """A CLI surface takes its workshop row when some workshop entry launches through it —
         since issue #534 PR-J4-b every entry is one, so every CLI surface an entry names takes
