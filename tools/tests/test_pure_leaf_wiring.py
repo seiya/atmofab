@@ -1169,7 +1169,7 @@ class PureRenderTests(unittest.TestCase):
         ("docs/workflow/phases/phase_02_generate.md", "\n## Generate-executor",
          "\n## I/O contract"),
         ("docs/workflow/LAUNCH_PROMPT_REFERENCE.md",
-         "\n#### Z2 pure-function leaf launch prompt", "\n#### Additional contract on"),
+         "\n#### Launch-request context documents and fragments", "\n#### Additional contract on"),
         ("docs/AGENT_SKILLS.md", "\n## Requirements", "\n## Responsibility-decision flow"),
     )
 
