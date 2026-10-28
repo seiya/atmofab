@@ -1524,11 +1524,14 @@ class WorkshopEntryTests(_Tmp):
                 err = self.assert_rule("llm_config_workshop_bound_missing",
                                        _without_entry(_doc(), phase, substep))
                 self.assertIn(f"{phase}.{substep}", str(err))
+                # The location is where the fix is written, not the level the entry was
+                # inherited from (`defaults` here).
+                self.assertEqual(err.where, f"phases.{phase}.substeps.{substep}")
             with self.subTest(pair=f"{phase}.{substep}", inherits="phase"):
                 err = self.assert_rule("llm_config_workshop_bound_missing", _without_entry(
                     _doc(phase_fields={phase: "model: phase-model"}), phase, substep))
                 self.assertIn(f"{phase}.{substep}", str(err))
-                self.assertEqual(err.where, f"phases.{phase}")
+                self.assertEqual(err.where, f"phases.{phase}.substeps.{substep}")
         # ...and the complete document the rows above remove from loads.
         lc.load_llm_config(self.write(_doc(phase_fields={"compile": "model: phase-model"})))
 

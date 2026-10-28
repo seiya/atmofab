@@ -59,9 +59,12 @@
 # no shape fails that node closed (`node_has_no_bundle_shape`). The two COMPILE leaves carry no
 # such condition — the Compile contract does not depend on the node kind.
 #
-# EVERY phase, substep and provider is written out, even though the resolution rules would let
-# the unmentioned leaves inherit `defaults`. The file is the answer to "what runs where" — a
-# reader should get that answer by reading it, not by re-deriving it from an inheritance chain.
+# EVERY phase, substep and provider is written out. The substep entries are REQUIRED: each
+# states its own bounds (`lineage_timeout_s`, and `max_wrapper_calls` on a producing substep),
+# which no level inherits, so a substep left out is refused at load
+# (`llm_config_workshop_bound_missing`). The provider would inherit from `defaults`; it is
+# written out anyway because the file is the answer to "what runs where" — a reader should get
+# that answer by reading it, not by re-deriving it from an inheritance chain.
 #
 #   base_url         MUST carry the API version segment: the request appends /chat/completions.
 #                    (`anthropic_api` is the opposite — it appends /v1/messages, so give that one

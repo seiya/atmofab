@@ -843,7 +843,8 @@ def _validate_assignment(phase: str, substep: str, entry: ResolvedLeafEntry, whe
             f"the {kind} substep {phase}.{substep} must state "
             f"{' and '.join(WORKSHOP_BOUND_FIELDS_BY_KIND['reading' if reading else 'producing'])}"
             f" under phases.{phase}.substeps.{substep} (missing: {', '.join(missing)}); there "
-            f"is no default bound, and no level inherits one", where=where)
+            f"is no default bound, and no level inherits one",
+            where=f"phases.{phase}.substeps.{substep}")
     if reading and entry.max_wrapper_calls is not None:
         raise LlmConfigError(
             "llm_config_workshop_bound_not_served",

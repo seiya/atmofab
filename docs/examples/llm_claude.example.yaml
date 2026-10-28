@@ -9,11 +9,13 @@
 # asserts the leaf argv it produces, so it cannot drift silently the way an untested YAML file in
 # this repository has before.
 #
-# EVERY phase, substep, provider, model and effort is written out, even though the resolution
-# rules would let all five leaves inherit one `defaults` block. The file is the answer to
-# "what runs where, and how hard does it think" — a reader should get that answer by reading it,
-# not by re-deriving it from an inheritance chain. Omission still works and is the right choice
-# once the copy is yours to edit; it is the wrong choice for the sample.
+# EVERY phase, substep, provider, model and effort is written out. The substep entries are
+# REQUIRED: each states its own bounds (`lineage_timeout_s`, and `max_wrapper_calls` on a
+# producing substep), which no level inherits, so a substep left out is refused at load
+# (`llm_config_workshop_bound_missing`). Provider, model and effort would inherit from
+# `defaults`; they are written out anyway because the file is the answer to "what runs where,
+# and how hard does it think" — a reader should get that answer by reading it, not by
+# re-deriving it from an inheritance chain.
 #
 # The five entries below are the complete set of LLM leaves. Every other substep
 # (compile.static, generate.gate, validate.pre_judge / execute / post_judge, and the whole
