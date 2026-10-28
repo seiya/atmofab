@@ -5,7 +5,8 @@ Since issue #64 each orchestration's isolated backend homes live at
 `<homes-root>/<orchestration_id>/{claude,codex}`, where the root is
 `~/.atmofab/homes` (relocatable with `ATMOFAB_WORKFLOW_HOMES_ROOT`). The `codex`
 entry is a CONTAINER since issue #245: each codex thread's own `CODEX_HOME` is a
-lineage directory beneath it, `codex/<codex_lineage_id>/`. The `claude` entry is a run's
+lineage directory beneath it (`codex/<codex_lineage_id>/` for a pre-PR-J4-b pure thread,
+issue #534; such directories may still exist on disk). The `claude` entry is a run's
 pre-Z4 private claude home where one was recorded, and is the container a `workshop leaf`
 lineage (issue #534) is laid out in, `claude/<lineage_id>/` holding that lineage's
 private config home, work tree, staged closure and snapshot; a codex `workshop leaf`

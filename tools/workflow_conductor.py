@@ -10251,7 +10251,7 @@ class Conductor:
                 raise SandboxEnforcementError("CODEX_HOME and deprecated ATMOFAB_HOME conflict")
             # No promotion of `legacy` into CODEX_HOME here. The home the leaf reads is
             # the one `record_launch` PREPARED and the bwrap profile `--setenv`s
-            # (`codex_isolation_profile_kwargs`); a host-side spelling could name a
+            # (`_prepare_codex_workshop_lineage`); a host-side spelling could name a
             # different home than the one whose settings were SHA-pinned, and no
             # host-side reader consumes `child_env["CODEX_HOME"]`.
         elif entry.is_http:

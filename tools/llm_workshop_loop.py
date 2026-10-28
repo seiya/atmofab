@@ -239,8 +239,7 @@ def _anthropic_payload(entry: Any, system: str, messages: Sequence[Mapping[str, 
 def _openai_payload(entry: Any, system: str, messages: Sequence[Mapping[str, Any]],
                     tools: list[dict[str, Any]], max_tokens: int,
                     stream: bool) -> dict[str, Any]:
-    """The Chat-Completions body: as `llm_http_leaf._openai_request` builds the pure one, with
-    the workshop system prompt and the tools."""
+    """The Chat-Completions body, with the workshop system prompt and the tools."""
     payload: dict[str, Any] = {
         "model": entry.model,
         "messages": [{"role": "system", "content": system}, *copy.deepcopy(list(messages))],

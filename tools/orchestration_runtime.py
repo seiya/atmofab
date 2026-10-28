@@ -9067,8 +9067,9 @@ def _reprobe_recorded_providers(
                     "checks": probe.get("checks", []),
                     "launchable": _preflight_allows_agent_launch(probe),
                 }
-                # Unconditional for a CLI surface since issue #534 PR-J4-b (`probe_all_providers`):
-                # a row recorded before it, without the `workshop` stamp, is re-probed for it too.
+                # Unconditional for a CLI surface since issue #534 PR-J4-b (`probe_all_providers`).
+                # A row recorded before it carries no `workshop` stamp; the `--resume` barrier
+                # refuses such an orchestration at start, and this re-probes it if one gets here.
                 check = _workshop_flag_set_check(
                     str(token), probed["probe_command"], subprocess.run)
                 probed["checks"] = list(probed["checks"]) + [check]
