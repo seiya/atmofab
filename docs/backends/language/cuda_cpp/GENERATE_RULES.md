@@ -1,7 +1,7 @@
 # Generate rules — the CUDA C++ binding
 
 > **Audience: the maintainer of the CUDA C++ `Generate` prompts and gates.** No leaf reads this
-> document from disk; the rules it states reach a pure `generate.generate` leaf through the CUDA
+> document from disk; the rules it states reach the `generate.generate` leaf through the CUDA
 > C++ prompt fragments (`tools/prompt_templates/backends/language/cuda_cpp/`), the static-lint
 > rule set the linter backend renders (`tools/backends/linter/nvcc/lint.py`
 > `lint_rules_document`), and `docs/backends/language/cuda_cpp/CHECKS_ABI.md` §5. It is the
