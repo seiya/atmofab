@@ -511,7 +511,7 @@ def _sum_pure_attempt_usage(
 
     Each attempt is `{"agent_run_id", "model": str|None, "model_provenance": str|None,
     "usage": dict|None}` (conductor `_run_workshop_producer_substep` /
-    `_run_pure_reviewer_substep`, and the deleted pure producer loop on an older record; this
+    `_run_leaf_reviewer_substep`, and the deleted pure producer loop on an older record; this
     reader ignores `model_provenance`). Missing or
     malformed `usage` / `model` entries are skipped rather than raising — diagnostics
     degrade, never break (see `_nonneg_int`). `models` preserves attempt order (a repair

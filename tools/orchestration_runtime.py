@@ -1030,7 +1030,7 @@ def _closure_signature(
     # Issue #175: the adopted `profile` set is part of the resolution, and it is the ONLY part
     # that does not show up in `all_nodes` — the profile is not a node. Without it, bumping a
     # profile's `spec_version` (its §3 parameter/compatibility constraints are what an adopter's
-    # `algorithm` is written to honour, and what `_pure_profile_spec_document` inlines) left
+    # `algorithm` is written to honour, and what `_leaf_profile_spec_document` inlines) left
     # every adopter's signature byte-identical, so the R6-lite comparison this signature was
     # written for called it fresh — while its IR's `profile_selection` went on naming the
     # retired version. Measured on this tree before the fix: identical signature across a
@@ -2250,7 +2250,7 @@ def _strip_certification_keys(meta_path: Path) -> bool:
 #
 #   compile   spec.{controlled_spec,tests,deps} — the three spec files' bytes;
 #             profiles[] — each adopted profile's `controlled_spec.md`, as the compile
-#               producer is shown it (`_pure_profile_spec_document`);
+#               producer is shown it (`_leaf_profile_spec_document`);
 #             dependency_graph — the derived closure's canonical signature
 #               (`_closure_signature` of `build_dependency_graph(include_via=False)`: node
 #               set, heights, direct/transitive split and the adopted profile set);
@@ -2336,7 +2336,7 @@ def harness_node_key_for(repo_root: Path, node_key: str, target: TargetProfile) 
     (`target_profile.harness_node_key_for_target`, issue #284 — the IR's `infrastructure` direct
     dependency until R4-a PR-3). `infrastructure` is read off the NODE_KEY — the host's identity
     for the node — never off the IR's self-declared `meta.spec_kind`. Shared by the conductor's
-    context assembly, runner render and acceptance layer (`_pure_harness_node_key` delegates
+    context assembly, runner render and acceptance layer (`_leaf_harness_node_key` delegates
     here), the generate derivation inputs, the pipeline closure (`pipeline_closure_nodes`) and
     the deterministic tamper gate. Raises `TargetProfileError` when the target's harness does
     not resolve in the catalog (the launch gate refused that before the run started)."""
@@ -3015,7 +3015,7 @@ def phase_derivation_inputs(
                 "tests": _spec_file_hash(repo_root, spec, "tests.md"),
             },
             # The target the source is generated FOR: the producer is shown the profile
-            # (`Conductor._pure_target_profile_document`), so the profile's content is an
+            # (`Conductor._leaf_target_profile_document`), so the profile's content is an
             # input. The harness below is the one the profile names (issue #284), so a
             # profile that names another harness moves both members.
             "target": {"target_id": target.target_id, "profile": target.sha256},
@@ -4545,7 +4545,7 @@ _HTTP_PREFLIGHT_SKIP_REACHABILITY_ENV = "ATMOFAB_HTTP_PREFLIGHT_SKIP_REACHABILIT
 # runner-authoring leaf. An `m3c` physics producer does not receive it (it authors
 # model+checks over a host-rendered runner) and takes `CHECKS_MODULE_CONTRACT.md` instead.
 # The node-aware SELECTION used to be `leaf_contract_doc_refs`, deleted with the force-read
-# set in Z4 (issue #171); `Conductor._build_pure_*_context` makes the same choice now.
+# set in Z4 (issue #171); `Conductor._build_leaf_*_context` makes the same choice now.
 RUNNER_OUTPUT_CONTRACT_REF = "docs/workflow/RUNNER_OUTPUT_CONTRACT.md"
 # R1/M3c-β: the fixed-ABI contract for a physics node's `<spec_id>_checks.f90`
 # (the leaf-authored callbacks the host-rendered runner drives). Reaches every `generate`

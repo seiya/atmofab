@@ -15982,7 +15982,7 @@ end program shallow_water2d_runner
         the leaf could recognize them. The SKILL is deleted with the agentic transport: a pure
         leaf reads no `SKILL`, and what it is handed instead is
         `docs/workflow/phases/phase_01_compile.md`, inlined WHOLE into its prompt as
-        `phase_contract_document` (`Conductor._build_pure_compile_context`). So the same
+        `phase_contract_document` (`Conductor._build_leaf_compile_context`). So the same
         question is asked of that document.
 
         The verbatim-quote half does NOT move with it. Its purpose was recognition — the leaf
@@ -26998,8 +26998,8 @@ class ExecutionModeContractCouplingGateTests(unittest.TestCase):
             # four selection cases and the compile-verify SKILL's "Three shapes the gate cannot
             # see and this leaf must". Both files are deleted with the agentic leaf, and both
             # leaves read this phase contract instead — it is inlined WHOLE into the pure
-            # producer's and the pure reviewer's prompts (`_build_pure_compile_context` /
-            # `_build_pure_compile_verify_context`), which is why the row above is not a
+            # producer's and the pure reviewer's prompts (`_build_leaf_compile_context` /
+            # `_build_leaf_compile_verify_context`), which is why the row above is not a
             # weaker statement of the same rule but the same statement on the live surface.
             # Each of the three shapes is pinned in it by a needle above: the `sequence`-with-
             # empty-`iteration_contract` node by the V2 sentence, the `columnwise` node whose
@@ -27641,7 +27641,7 @@ _REAL_IR_TOP_LEVEL_KEYS = frozenset(
     }  # + `public_api`, on infrastructure and component nodes
 )
 # (The 2026-07-14 measurement carried `impl_defaults` too; R4-a PR-3, issue #284, removed that
-# section from the IR contract and `Conductor._pure_ir_document_violations` refuses it, so no IR
+# section from the IR contract and `Conductor._leaf_ir_document_violations` refuses it, so no IR
 # certified since carries it. Re-measure against the corpus once it has been re-derived.)
 _REAL_IR_STATE_CONTRACT_FIELDS = frozenset(
     {"state_variables", "required_update_paths", "diagnostics_from_state", "fallback_policy"}

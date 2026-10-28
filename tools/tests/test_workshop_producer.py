@@ -443,7 +443,7 @@ class EndOfLineageTests(_Base):
             _write_bundle(tree)
 
         self.c.leaf_actions = [dies_after_a_draft, finishes]
-        with mock.patch.object(self.c, "_pure_transient_retry", return_value=True), \
+        with mock.patch.object(self.c, "_leaf_transient_retry", return_value=True), \
                 mock.patch("time.sleep"):
             outcome = self.run_substep()
         self.assertEqual(outcome.status, "pass", outcome)
@@ -665,7 +665,7 @@ class OuterReopenTests(_Base):
 
 def _seeds(conductor, refs, context, request=None):
     """`_workshop_seeds` under the generate producer spec the loop seeds a lineage by."""
-    spec = conductor._pure_producer_spec("generate", conductor._bundle_shape(refs))
+    spec = conductor._leaf_producer_spec("generate", conductor._bundle_shape(refs))
     return conductor._workshop_seeds(refs, context, request or {}, spec)
 
 
@@ -688,14 +688,14 @@ class SeedTests(_Base):
     def test_the_node_s_own_interface_header_is_a_seed(self) -> None:
         with mock.patch.object(wc.Conductor, "_interface_header_text",
                                return_value=("node_model.h", "// header\n")):
-            seeds = _seeds(self.c, self.refs, self.c._build_pure_context(self.refs))
+            seeds = _seeds(self.c, self.refs, self.c._build_leaf_context(self.refs))
         self.assertEqual(seeds["node_model.h"], "// header\n")
 
     def test_every_file_the_host_placed_in_src_is_a_seed(self) -> None:
         src = self.repo / self.refs.source_dir() / "src"
         (src / "dep_model.h").write_text("// dep\n", encoding="utf-8")
         (src / self.c._control_file_basename(self.refs)).write_text("x", encoding="utf-8")
-        seeds = _seeds(self.c, self.refs, self.c._build_pure_context(self.refs))
+        seeds = _seeds(self.c, self.refs, self.c._build_leaf_context(self.refs))
         self.assertEqual(seeds["dep_model.h"], "// dep\n")
         self.assertNotIn(self.c._control_file_basename(self.refs), seeds)
 
@@ -1004,7 +1004,7 @@ class GapTests(_Base):
         self.c.leaf_actions = [_writes_nothing,
                                lambda c, t, kw: wc.ProcResult(1, "", "API Error: 529 overloaded"),
                                _writes_bundle]
-        with mock.patch.object(self.c, "_pure_transient_retry", return_value=True):
+        with mock.patch.object(self.c, "_leaf_transient_retry", return_value=True):
             self.assertEqual(self.run_substep().status, "pass")
         third = self.requests()[2]
         self.assertIn(workshop_tree.BUNDLE_MANIFEST_NAME, third["repair_findings"])
@@ -1039,7 +1039,7 @@ class GapTests(_Base):
         for label, extra in (
                 ("usage wait", mock.patch.object(wc, "_leaf_infra_error",
                                                  return_value=("llm_usage_limit", "limit"))),
-                ("transient retry", mock.patch.object(wc.Conductor, "_pure_transient_retry",
+                ("transient retry", mock.patch.object(wc.Conductor, "_leaf_transient_retry",
                                                       return_value=True))):
             with self.subTest(retry=label):
                 self.setUp()
@@ -1091,11 +1091,11 @@ class SeedRefusalTests(_Base):
         src = self.repo / self.refs.source_dir() / "src"
         (src / "tests.md").write_text("x", encoding="utf-8")
         with self.assertRaises(RuntimeError) as ctx:
-            _seeds(self.c, self.refs, self.c._build_pure_context(self.refs))
+            _seeds(self.c, self.refs, self.c._build_leaf_context(self.refs))
         self.assertIn("tests.md", str(ctx.exception))
 
     def test_a_context_carrying_the_runner_needs_it_in_src(self) -> None:
-        context = self.c._build_pure_context(self.refs)
+        context = self.c._build_leaf_context(self.refs)
         (self.repo / self.refs.source_dir() / "src"
          / self.c._runner_basename(self.refs)).unlink()
         with self.assertRaises(RuntimeError) as ctx:
@@ -1106,7 +1106,7 @@ class SeedRefusalTests(_Base):
         src = self.repo / self.refs.source_dir() / "src"
         (src / "CONTRACT.md").write_text("x", encoding="utf-8")
         with self.assertRaises(RuntimeError) as ctx:
-            _seeds(self.c, self.refs, self.c._build_pure_context(self.refs))
+            _seeds(self.c, self.refs, self.c._build_leaf_context(self.refs))
         self.assertIn("CONTRACT.md", str(ctx.exception))
 
 
@@ -1171,7 +1171,7 @@ class Round2Tests(_Base):
 
         overloaded = lambda c, t, kw: wc.ProcResult(1, "", "API Error: 529 overloaded")
         self.c.leaf_actions = [overloaded] * 3
-        with mock.patch.object(self.c, "_pure_transient_retry", side_effect=retry):
+        with mock.patch.object(self.c, "_leaf_transient_retry", side_effect=retry):
             self.assertEqual(self.run_substep().status, "fail")
         self.assertEqual(retries, [0, 1, 2])
         self.assertEqual(len({r["workshop_lineage_id"] for r in self.requests()}), 3)
@@ -1431,7 +1431,7 @@ class WorkshopCompileProducerTests(unittest.TestCase):
         self.assertEqual(outcome.status, "pass", outcome)
         ir_dir = self.repo / self.refs.ir_ref
         self.assertEqual((ir_dir / "spec.ir.yaml").read_text(),
-                         wc.Conductor._pure_ir_yaml(_assembled_ir()))
+                         wc.Conductor._leaf_ir_yaml(_assembled_ir()))
         self.assertEqual(json.loads((ir_dir / "ir_meta.json").read_text())
                          ["verification_status"], "pending")
         meta = self.meta()
@@ -1641,11 +1641,11 @@ class WorkshopCompileProducerTests(unittest.TestCase):
                          "workshop_compile_fail: workshop_wrapper_not_stopped")
 
     def test_a_seed_named_after_an_output_file_is_refused(self) -> None:
-        spec = self.c._pure_producer_spec("compile")
+        spec = self.c._leaf_producer_spec("compile")
         bad = spec._replace(workshop_document_seeds={
             **spec.workshop_document_seeds, "tests_document": workshop_tree.IR_DOCUMENT_NAME})
         with self.assertRaises(RuntimeError) as ctx:
-            self.c._workshop_seeds(self.refs, self.c._build_pure_compile_context(self.refs),
+            self.c._workshop_seeds(self.refs, self.c._build_leaf_compile_context(self.refs),
                                    {}, bad)
         self.assertIn("named after an output file", str(ctx.exception))
 
@@ -1662,9 +1662,9 @@ class WorkshopCompileProducerTests(unittest.TestCase):
 
 class WorkshopSpecTests(_Base):
     def test_both_generate_shapes_carry_the_same_workshop_half(self) -> None:
-        default = self.c._pure_producer_spec("generate", "m3c")
-        harness = self.c._pure_producer_spec("generate", "harness")
-        fields = [f for f in wc.Conductor._PureProducerSpec._fields if f.startswith("workshop_")]
+        default = self.c._leaf_producer_spec("generate", "m3c")
+        harness = self.c._leaf_producer_spec("generate", "harness")
+        fields = [f for f in wc.Conductor._LeafProducerSpec._fields if f.startswith("workshop_")]
         self.assertEqual(len(fields), 8)
         for name in fields:
             with self.subTest(field=name):
@@ -1676,7 +1676,7 @@ class WorkshopSpecTests(_Base):
         base = dict(step="generate", substep="generate", orchestration_id="o",
                     orchestration_agent_run_id="orch", child_agent_run_id="c",
                     agent_model="opus", workflow_mode="dev", pure_leaf=True,
-                    pure_context=self.c._build_pure_context(self.refs))
+                    pure_context=self.c._build_leaf_context(self.refs))
         for kw in ({"workshop_lineage_id": "c"}, {"workshop_provider": "claude_cli"}):
             with self.subTest(given=kw):
                 with self.assertRaises(ValueError) as ctx:

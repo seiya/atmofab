@@ -8,7 +8,7 @@ runs in the conductor's process, from a `WrapperContext` the conductor freezes i
 before the leaf is launched (`Conductor._freeze_wrapper_context` / `_freeze_ir_check_context`),
 so a call — served on a transport thread while the leaf runs — reads no conductor state. The
 one conductor method it calls is the IR contract an IR context binds
-(`Conductor._pure_ir_document_violations`, and the declaration reader beside it), which reads
+(`Conductor._leaf_ir_document_violations`, and the declaration reader beside it), which reads
 only the frozen node refs and class constants.
 
 What the leaf chooses is the CONTENT of its tree and, for `run`, a binary basename, a
@@ -131,7 +131,7 @@ class WrapperContext:
     #: The operations this lineage serves, in the order the leaf is told them.
     ops: tuple[str, ...] = WRAPPER_OPS
     #: (document) -> None, or (category, findings): `pure_bundle_contract_violation` bound on a
-    #: bundle lineage, `Conductor._pure_ir_document_violations` bound on an IR one.
+    #: bundle lineage, `Conductor._leaf_ir_document_violations` bound on an IR one.
     violations: Callable[[dict[str, Any]], tuple[str, str] | None] | None = None
     # --- a bundle lineage (`WRAPPER_OPS`) ---------------------------------------------------
     control_file_basename: str = ""
@@ -170,9 +170,9 @@ class WrapperContext:
     #: `workshop_tree.assemble_ir_document`.
     assemble: Callable[[Path, frozenset[str]], Any] | None = None
     #: (document) -> the leaf's own "cannot be completed" declaration as one line, or None:
-    #: `Conductor._pure_ir_declared_fail`.
+    #: `Conductor._leaf_ir_declared_fail`.
     declared_fail: Callable[[dict[str, Any]], str | None] | None = None
-    #: (ir object) -> the IR text the host would write: `Conductor._pure_ir_yaml`.
+    #: (ir object) -> the IR text the host would write: `Conductor._leaf_ir_yaml`.
     ir_yaml: Callable[[dict[str, Any]], str] | None = None
     #: (ir_meta text) the pending `ir_meta.json` the host would write beside it.
     ir_meta_text: str = ""
@@ -648,7 +648,7 @@ def _op_check_ir(ctx: WrapperContext, args: Mapping[str, Any],
                  on_spawn: Any) -> dict[str, Any]:
     """Check the tree's IR the way the host will (issue #534 step 2): assemble it
     (`workshop_tree.assemble_ir_document`), judge the document by the producer's contract
-    (`Conductor._pure_ir_document_violations`), and — when it carries an IR rather than a
+    (`Conductor._leaf_ir_document_violations`), and — when it carries an IR rather than a
     declaration — run the `Compile.static` validators over a scratch IR directory holding the
     host-normalized `spec.ir.yaml`, a pending `ir_meta.json` and the host's sidecars, as
     `<ir_ref>` would hold them. Feedback only: the host's own `Compile.static` runs on the

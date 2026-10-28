@@ -1236,7 +1236,7 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
         the row. Two mutants of the document, both GREEN at round 1 --
         rewriting `compile_generate_meta.json`'s row path from `workspace/ir/.../<ir_id>/` to
         `workspace/pipelines/.../WRONG/DIR/`, and rewriting every `conductor
-        (`_write_pure_attempt_meta`)` writer cell to `LEAF (the leaf writes it itself)`, which
+        (`_write_leaf_attempt_meta`)` writer cell to `LEAF (the leaf writes it itself)`, which
         inverts the row's own load-bearing sentence about the leaf holding no write authority.
 
         Those two are left uncovered deliberately. Coupling the DIRECTORY would need a

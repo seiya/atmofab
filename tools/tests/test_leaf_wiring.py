@@ -1644,7 +1644,7 @@ class PureRenderTests(unittest.TestCase):
         BOUNDED to `docs/**.md`. The builders also inline node artifacts (an IR, a runner) and
         two `docs/examples/` schema files, none of which is prose that could assign a severity;
         a docstring that merely MENTIONS a path is excluded by the full-match, which matters
-        because `_build_pure_context`'s docstring names the checks contract in order to say it
+        because `_build_leaf_context`'s docstring names the checks contract in order to say it
         is NOT inlined there.
         """
         repo_root = Path(ort.__file__).resolve().parents[1]
@@ -1658,7 +1658,7 @@ class PureRenderTests(unittest.TestCase):
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef):
                 continue
-            if not (node.name.startswith("_build_pure_") and node.name.endswith("_context")):
+            if not (node.name.startswith("_build_leaf_") and node.name.endswith("_context")):
                 continue
             builders += 1
             body = node.body[1:] if ast.get_docstring(node) is not None else node.body
@@ -1720,7 +1720,7 @@ class PureRenderTests(unittest.TestCase):
         # Until Z4 (issue #171) the derivation read `leaf_contract_doc_refs` — the documents an
         # AGENTIC leaf was TOLD to force-read. No leaf force-reads anything now, and that
         # function is gone with the transport. A repository document reaches a leaf only where
-        # a `_build_pure_*_context` puts the file into its closed context — inlined into the
+        # a `_build_leaf_*_context` puts the file into its closed context — inlined into the
         # pure leaf's prompt until issue #534 PR-J4-b, a seed file of the workshop tree since.
         # The derivation below asks the same question of the transport that exists.
         scanned = {rel for rel, _b, _e in self._SEVERITY_ASSIGNMENT_SURFACES}
@@ -2722,8 +2722,8 @@ class PureRenderTests(unittest.TestCase):
                     continue
                 step, substep = label.split("/")[0].split(".")
                 shape = "m3c" if step == "generate" else None
-                spec = (c._pure_producer_spec(step, shape) if substep == "generate"
-                        else c._pure_reviewer_spec(step, substep, shape))
+                spec = (c._leaf_producer_spec(step, shape) if substep == "generate"
+                        else c._leaf_reviewer_spec(step, substep, shape))
                 with self.subTest(label=label):
                     block = ort._build_dependency_facts(req)
                     rendered = ort.prepare_launch_request_payload(req)["launch_prompt_full"]
@@ -3582,10 +3582,10 @@ class LanguageFragmentCompositionTests(unittest.TestCase):
         from types import SimpleNamespace
         from tools.tests.target_fixtures import FORTRAN_CPU
         holder = SimpleNamespace(target=FORTRAN_CPU)
-        self.assertEqual(wc.Conductor._pure_language(holder, "generate"),
+        self.assertEqual(wc.Conductor._leaf_language(holder, "generate"),
                          FORTRAN_CPU.toolchain["language"])
         for phase in ("compile", "validate"):
-            self.assertEqual(wc.Conductor._pure_language(holder, phase), "", phase)
+            self.assertEqual(wc.Conductor._leaf_language(holder, phase), "", phase)
 
 
 class ParallelFragmentCompositionTests(unittest.TestCase):
@@ -3752,8 +3752,8 @@ class ParallelFragmentCompositionTests(unittest.TestCase):
         cuda = tp.load_target_profile(Path(ort.__file__).resolve().parents[1], "cpp_gpu")
         for profile in (FORTRAN_CPU, cuda):
             holder = SimpleNamespace(target=profile)
-            self.assertEqual(wc.Conductor._pure_parallel(holder, "generate"),
+            self.assertEqual(wc.Conductor._leaf_parallel(holder, "generate"),
                              profile.parallel_backend)
             for phase in ("compile", "validate"):
-                self.assertEqual(wc.Conductor._pure_parallel(holder, phase), "", phase)
+                self.assertEqual(wc.Conductor._leaf_parallel(holder, phase), "", phase)
         self.assertNotEqual(FORTRAN_CPU.parallel_backend, cuda.parallel_backend)

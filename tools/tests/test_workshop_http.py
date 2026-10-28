@@ -297,7 +297,7 @@ class _GenerateProducer(_GenerateHarness):
     def test_a_transport_death_drops_the_history_and_reopens_cold(self) -> None:
         self.conductor([{"status": 503, "body": "upstream"}, self.calls(*_bundle_writes()),
                         self.done()])
-        with mock.patch.object(_HttpProducerFake, "_pure_transient_retry",
+        with mock.patch.object(_HttpProducerFake, "_leaf_transient_retry",
                                side_effect=[True]):
             outcome = self.run_substep()
         self.assertEqual(outcome.status, "pass", outcome)

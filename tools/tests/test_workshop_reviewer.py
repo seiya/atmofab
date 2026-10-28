@@ -1,5 +1,5 @@
 """The READING kind of `workshop leaf` (issue #534 step 3): the three judging substeps run by
-`Conductor._run_pure_reviewer_substep` (a workshop loop alone since issue #534 PR-J4-b).
+`Conductor._run_leaf_reviewer_substep` (a workshop loop alone since issue #534 PR-J4-b).
 
 The leaf is a fake `spawn_leaf` that writes the reviewer's one document into the lineage's
 tree, the way the real CLI's file tools would; the lineage home is a temporary directory.
@@ -290,7 +290,7 @@ class CompileVerifyTests(_Base):
     def test_the_tree_holds_every_context_document_under_its_seed_name(self) -> None:
         self.run_substep()
         tree = self.paths("child-1").tree
-        context = self.c._build_pure_compile_verify_context(self.refs)
+        context = self.c._build_leaf_compile_verify_context(self.refs)
         for key, name in self.seeds().items():
             with self.subTest(key=key):
                 self.assertEqual((tree / name).read_text(), _terminated(
@@ -508,7 +508,7 @@ class CompileVerifyTests(_Base):
             (tree / self.OUTPUT).write_text(json.dumps(self.passing()), encoding="utf-8")
             return wc.ProcResult(1, "", "connection reset by peer (ECONNRESET)")
         self.c.leaf_actions = [writes_pass_and_dies, _writes_nothing]
-        with mock.patch.object(wc.Conductor, "_pure_transient_retry", return_value=True):
+        with mock.patch.object(wc.Conductor, "_leaf_transient_retry", return_value=True):
             outcome = self.run_substep()
         self.assertEqual(outcome.status, "fail")
         self.assertFalse((self.paths("child-2").tree / self.OUTPUT).exists())
@@ -524,7 +524,7 @@ class CompileVerifyTests(_Base):
                                                   return_value=("llm_usage_limit", "limit")),
                                 mock.patch.object(wc.Conductor, "_usage_limit_wait",
                                                   return_value=True))),
-                ("transient retry", (mock.patch.object(wc.Conductor, "_pure_transient_retry",
+                ("transient retry", (mock.patch.object(wc.Conductor, "_leaf_transient_retry",
                                                        return_value=True),))):
             with self.subTest(retry=label):
                 self.setUp()
@@ -585,7 +585,7 @@ class GenerateVerifyTests(CompileVerifyTests):
         No production path reassembles a reviewer tree."""
         self.run_substep()
         tree = self.paths("child-1").tree
-        context = self.c._build_pure_verify_context(self.refs)
+        context = self.c._build_leaf_verify_context(self.refs)
         for key, name in self.seeds().items():
             with self.subTest(key=key):
                 self.assertEqual((tree / name).read_text(), _terminated(
@@ -623,7 +623,7 @@ class GenerateVerifyTests(CompileVerifyTests):
         self.c.leaf_actions = [edits_the_contract, reads_the_contract]
         self.assertEqual(self.run_substep().status, "pass")
         self.assertTrue(self.c.spawns[1]["resume_session_id"])
-        context = self.c._build_pure_verify_context(self.refs)
+        context = self.c._build_leaf_verify_context(self.refs)
         self.assertFalse(context["checks_module_contract_document"].endswith("\n"))
         self.assertEqual(seen, [context["checks_module_contract_document"] + "\n"])
 
@@ -654,7 +654,7 @@ class ValidateJudgeTests(CompileVerifyTests):
     def test_the_tree_holds_every_context_document_under_its_seed_name(self) -> None:
         self.run_substep()
         tree = self.paths("child-1").tree
-        context = self.c._build_pure_judge_context(self.refs)
+        context = self.c._build_leaf_judge_context(self.refs)
         for key, name in self.seeds().items():
             with self.subTest(key=key):
                 text = (tree / name).read_text()
@@ -737,7 +737,7 @@ def _over(size: int = 600_000) -> list[tuple[str, int]]:
 
 class _CodexCutReadRows:
     """The host's refusal of a cut read on a codex reading lineage (issue #547), driven through
-    `_run_pure_reviewer_substep` with the fake CLI's rollout and capture. Mixed into one class
+    `_run_leaf_reviewer_substep` with the fake CLI's rollout and capture. Mixed into one class
     per judging pair below (the m3c shape of `generate.verify`; the `harness` shape is
     rendered by `RenderTests` only), so each also runs every row of its pair's class on codex: the lineage
     under the codex container, a warm turn resuming the THREAD the launch emitted, and an attempt
@@ -925,7 +925,7 @@ class _CodexCutReadRows:
         self.assertEqual(self.run_substep().status, "pass")
         first, second, third = self.rows()
         self.assertEqual(first["failure_category"], wc.WORKSHOP_CUT_READ)
-        self.assertEqual(second["failure_category"], self.c._pure_reviewer_spec(
+        self.assertEqual(second["failure_category"], self.c._leaf_reviewer_spec(
             self.PHASE, self.SUBSTEP).schema_category)
         self.assertNotIn("failure_category", third)
 
@@ -982,7 +982,7 @@ class _CodexCutReadRows:
                                _writes(self.OUTPUT, self.passing())]
         self.assertEqual(self.run_substep().status, "pass")
         reasons = [r.get("repair_reason") for r in self.requests()]
-        spec = self.c._pure_reviewer_spec(self.PHASE, self.SUBSTEP)
+        spec = self.c._leaf_reviewer_spec(self.PHASE, self.SUBSTEP)
         self.assertEqual(reasons, ["none", wc.WORKSHOP_CUT_READ_REPAIR_REASON, spec.repair_reason])
         self.assertIn(ort.PURE_REPAIR_SCOPE_PARAGRAPH,
                       ort._render_pure_repair_prompt(self.requests()[2]))
@@ -1063,7 +1063,7 @@ class _CodexCutReadRows:
     def test_a_transport_death_is_not_scanned(self) -> None:
         self.c.leaf_actions = [_reads(rows=None, commands=None, then=_dies),
                                _writes(self.OUTPUT, self.passing())]
-        with mock.patch.object(self.c, "_pure_transient_retry", return_value=True):
+        with mock.patch.object(self.c, "_leaf_transient_retry", return_value=True):
             self.assertEqual(self.run_substep().status, "pass")
         first, second = self.rows()
         self.assertEqual((first["failure_category"], first["cut_outputs"]),
@@ -1544,7 +1544,7 @@ class HarnessSpecTests(unittest.TestCase):
         c = _PureFakeConductor(repo_root=repo, orchestration_id=_ORCH,
                                orchestration_agent_run_id="orch",
                                llm_config=_config(repo, "generate", "verify"), env={})
-        spec = c._pure_reviewer_spec("generate", "verify", "harness")
+        spec = c._leaf_reviewer_spec("generate", "verify", "harness")
         self.assertEqual(spec.pure_shape, "harness")
         self.assertEqual(spec.workshop_outputs, ("verdict.json",))
         context = {k: f"TEXT-{k}" for k in
@@ -1588,9 +1588,9 @@ class SeedNewlineTests(unittest.TestCase):
 
     def spec(self, phase: str, substep: str, shape: str):
         if substep == "generate":
-            return self.c._pure_producer_spec(
+            return self.c._leaf_producer_spec(
                 phase, (shape or "m3c") if phase == "generate" else None)
-        return self.c._pure_reviewer_spec(phase, substep, shape or None)
+        return self.c._leaf_reviewer_spec(phase, substep, shape or None)
 
     def bundle(self) -> dict:
         """`_valid_bundle()` with its first file unterminated: the existing bundle content is
@@ -1685,8 +1685,8 @@ class SeedNewlineTests(unittest.TestCase):
         relied on."""
         from tools.tests.test_leaf_producer import _write_node
         refs = _write_node(self.repo)
-        spec = self.c._pure_producer_spec("generate", "m3c")
-        seeds = self.c._workshop_seeds(refs, self.c._build_pure_context(refs), {}, spec)
+        spec = self.c._leaf_producer_spec("generate", "m3c")
+        seeds = self.c._workshop_seeds(refs, self.c._build_leaf_context(refs), {}, spec)
         self.assertEqual(seeds["spec.ir.yaml"],
                          (self.repo / refs.ir_ref / "spec.ir.yaml").read_text(encoding="utf-8"))
 
@@ -1702,11 +1702,11 @@ class SeedNewlineTests(unittest.TestCase):
                                      env={})
         judge = _write_run_node(judge_repo)
         rows = (
-            (self.c, verify, self.c._build_pure_verify_context(verify),
-             self.c._pure_reviewer_spec("generate", "verify"),
+            (self.c, verify, self.c._build_leaf_verify_context(verify),
+             self.c._leaf_reviewer_spec("generate", "verify"),
              ("CHECKS_MODULE_CONTRACT.md", "SEVERITY_RUBRIC.md")),
-            (judge_c, judge, judge_c._build_pure_judge_context(judge),
-             judge_c._pure_reviewer_spec("validate", "judge"),
+            (judge_c, judge, judge_c._build_leaf_judge_context(judge),
+             judge_c._leaf_reviewer_spec("validate", "judge"),
              ("runner_output_contract.md",)))
         for conductor, refs, context, spec, names in rows:
             seeds = conductor._workshop_seeds(refs, context, {}, spec)

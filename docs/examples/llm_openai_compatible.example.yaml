@@ -150,8 +150,8 @@ phases:
       # pure leaf was given inline): the producer is 127,273 bytes for every one of the 7 IR
       # directories on disk (it does not read the IR), and the reviewer ranges 150,912 to
       # 171,200 across them. Re-measure rather than trusting these — build a `Conductor` and
-      # sum `len(v.encode()) for v in c._build_pure_compile_context(refs).values()`, and the
-      # same for `_build_pure_compile_verify_context`; their values are the seeds. An endpoint
+      # sum `len(v.encode()) for v in c._build_leaf_compile_context(refs).values()`, and the
+      # same for `_build_leaf_compile_verify_context`; their values are the seeds. An endpoint
       # with a 32k-token context window cannot run either leaf; check the window first.
       generate:
         provider: openai_compatible
@@ -260,7 +260,7 @@ phases:
       # recorded `run_20260802_001`, the excerpt alone is 52,001 bytes (from 13,019,745 bytes of
       # `raw/`) and the whole seed set is about 150 KB. Re-measure rather than trusting that —
       # build a `Conductor` and sum
-      # `len(v.encode()) for v in c._build_pure_judge_context(refs).values()`, whose values
+      # `len(v.encode()) for v in c._build_leaf_judge_context(refs).values()`, whose values
       # are the seeds (a `.json` one re-indented one value per line).
       judge:
         provider: openai_compatible

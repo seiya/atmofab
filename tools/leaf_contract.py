@@ -334,7 +334,7 @@ CODEX_EXEC_OUTPUT_BUDGET_TOKENS = 10_000
 CODEX_BYTES_PER_TOKEN = 4
 
 #: The byte rule the host applies to a codex reading lineage's own capture of each command
-#: (`workflow_conductor.Conductor._run_pure_reviewer_substep`, issue #547).
+#: (`workflow_conductor.Conductor._run_leaf_reviewer_substep`, issue #547).
 CODEX_EXEC_OUTPUT_BUDGET_BYTES = CODEX_EXEC_OUTPUT_BUDGET_TOKENS * CODEX_BYTES_PER_TOKEN
 
 #: The size the codex reader row tells a leaf to keep each command's output under, and the page

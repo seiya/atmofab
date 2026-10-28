@@ -344,7 +344,7 @@ PINNED: dict[str, str] = {
     "pure-32": "a8872df07ad2c2e9fed855f335e17d99e143c01f668b2d515cda40d739c72441",
     # pure-33 (issue #168, round 3): the IR producer's output contract now STATES two host
     # refusals it did not. Round 3's disclosure axis rendered the real prompt and compared it
-    # against `_pure_ir_document_violations`: the `ir.meta.spec_kind`-equals-the-node's-kind
+    # against `_leaf_ir_document_violations`: the `ir.meta.spec_kind`-equals-the-node's-kind
     # clause and the serialize/parse round trip were both enforced and undisclosed, so a leaf
     # met them as a repair turn out of a budget of two, and the round-trip finding named no
     # path to act on. A refusal the leaf is never told about is a turn it cannot converge on.

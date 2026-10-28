@@ -2539,7 +2539,7 @@ def _run_main(
 
     # Z2 generate-executor (M-F). The executor is no longer selectable: legacy execution was
     # removed, so `pure` is hardcoded. Both generate LLM substeps (the CodegenBundle producer and
-    # the verdict reviewer) go through the pure path when `_pure_leaf_substep` matches — the node
+    # the verdict reviewer) go through the pure path when `_leaf_substep` matches — the node
     # having a `CodegenBundle` SHAPE, on EITHER backend (the "claude backend ∧ M3c node"
     # condition this comment used to state stopped being true when codex joined the pure path).
     # A node with no shape used to fall through to the shared agentic leaf loop; Z4 (issue #171)

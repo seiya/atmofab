@@ -125,7 +125,7 @@ def _config_on(provider: str, tmp: Path) -> lc.LlmConfig:
 class _DispatchProbe(_PureFakeConductor):
     """Records which loop `run_substep` chose, and refuses to launch anything."""
 
-    def _run_pure_reviewer_substep(self, refs, phase, substep, *a, **kw):  # type: ignore[override]
+    def _run_leaf_reviewer_substep(self, refs, phase, substep, *a, **kw):  # type: ignore[override]
         self.__dict__.setdefault("dispatch", []).append(("reviewer", phase, substep))
         return wc.SubstepOutcome("child-r", "pass", [], 0, None, 1)
 
@@ -649,7 +649,7 @@ class ExemplarFenceCannotBeForgedTests(unittest.TestCase):
     and the half of `_sanitize_exemplar_body` that is still LIVE lost its only pin. Mutating the
     function to `return text` survived 1913 tests across the three largest suites.
 
-    The surface is live: `Conductor._resolve_exemplar` runs under `_PureProducerSpec.wants_exemplar`,
+    The surface is live: `Conductor._resolve_exemplar` runs under `_LeafProducerSpec.wants_exemplar`,
     and `_build_exemplar` renders the block the `generate.generate` workshop leaf reads as a seed
     file of its tree (`Conductor._workshop_seeds`). The exemplar body is a certified `.f90` an
     LLM wrote, a Fortran comment may legally contain the fence prefix, and an early close
@@ -1080,7 +1080,7 @@ class PureAndPromptMustAgreeTests(unittest.TestCase):
 
 
 class BundleWriteStaysInsideTheSourceTreeTests(unittest.TestCase):
-    """`_write_pure_bundle_artifacts` refuses a `logical_path` that escapes `src/`.
+    """`_write_leaf_bundle_artifacts` refuses a `logical_path` that escapes `src/`.
 
     FOUND BY THE ROUND-2 SECURITY REVIEW as a surviving mutant: `if False and not
     target.resolve().is_relative_to(src_root)` left the suite green. The check is
@@ -1109,7 +1109,7 @@ class BundleWriteStaysInsideTheSourceTreeTests(unittest.TestCase):
             escape = "../../../../escaped.f90"
             doc = {"files": [{"logical_path": escape, "content": "module m\nend module\n"}]}
             with self.assertRaises(RuntimeError) as caught:
-                c._write_pure_bundle_artifacts(refs, doc, {})
+                c._write_leaf_bundle_artifacts(refs, doc, {})
             self.assertIn("resolves outside the source tree", str(caught.exception))
             self.assertIn(escape, str(caught.exception))
             # Refused BEFORE the write, not after: nothing landed anywhere under the repo.
@@ -1129,7 +1129,7 @@ class BundleWriteStaysInsideTheSourceTreeTests(unittest.TestCase):
                 ir_id="x_1", pipeline_id="x_1", source_id="src_1", binary_id="bin_1",
                 run_id="run_1", source_binary_id="bin_1")
             doc = {"files": [{"logical_path": "x_model.f90", "content": "module m\nend module\n"}]}
-            written = c._write_pure_bundle_artifacts(refs, doc, {})
+            written = c._write_leaf_bundle_artifacts(refs, doc, {})
             self.assertTrue(any(w.endswith("src/x_model.f90") for w in written), written)
 
 
@@ -1138,7 +1138,7 @@ class NoInlinedDocumentDescribesADeletedTransportTests(unittest.TestCase):
 
     (The pure leaf had each such document INLINED into its prompt; a workshop leaf reads it as
     a seed file of its tree since issue #534 PR-J4-b. Either way it is the leaf's own input, and
-    the set is the same: what `Conductor._build_pure_*_context` assembles.)
+    the set is the same: what `Conductor._build_leaf_*_context` assembles.)
 
     THE INSTRUMENT rounds 1-3 kept failing to be. Each round swept this class by hand and each
     missed a different spelling: round 1 fixed six citations and missed the three that are
@@ -1154,7 +1154,7 @@ class NoInlinedDocumentDescribesADeletedTransportTests(unittest.TestCase):
     load refuses that entry outright.
 
     DERIVED, not listed. The document set comes from the AST of
-    `Conductor._build_pure_*_context` — the same three spellings those builders use, resolved:
+    `Conductor._build_leaf_*_context` — the same three spellings those builders use, resolved:
     a literal `docs/**.md` path, `CHECKS_MODULE_CONTRACT_REF` / `RUNNER_OUTPUT_CONTRACT_REF`,
     and a `WORKFLOW_PHASE_DOC_BY_STEP[...]` subscript. A builder added later is scanned without
     an edit here, which is the whole point; a fourth SPELLING would not be, and that bound is
@@ -1190,7 +1190,7 @@ class NoInlinedDocumentDescribesADeletedTransportTests(unittest.TestCase):
         for node in ast.walk(tree):
             if not isinstance(node, ast.FunctionDef):
                 continue
-            if not (node.name.startswith("_build_pure_") and node.name.endswith("_context")):
+            if not (node.name.startswith("_build_leaf_") and node.name.endswith("_context")):
                 continue
             builders += 1
             body = node.body[1:] if ast.get_docstring(node) is not None else node.body
@@ -1269,7 +1269,7 @@ class NoInlinedDocumentDescribesADeletedTransportTests(unittest.TestCase):
                 repo_root=repo, orchestration_id="o", orchestration_agent_run_id="orch",
                 env={"ATMOFAB_TEST_KEY": "sk-test"}, llm_config=_config_on("claude_cli", repo))
             derived = self._inlined_documents()
-            for builder in (c._build_pure_compile_context, c._build_pure_compile_verify_context):
+            for builder in (c._build_leaf_compile_context, c._build_leaf_compile_verify_context):
                 ctx = builder(refs)
                 inlined_text = "\n".join(str(v) for v in ctx.values())
                 for rel in derived:

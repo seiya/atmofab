@@ -502,7 +502,7 @@ class DeterministicBuildGraphTest(unittest.TestCase):
         Makefile the conductor renders on the `legacy` executor (`_write_makefile`).
 
         Z2 landed WITHOUT replacing `_write_makefile`: the pure executor renders from this
-        graph via its own `_render_pure_makefile_from_graph`, and `_write_makefile` is
+        graph via its own `_render_leaf_makefile_from_graph`, and `_write_makefile` is
         unchanged. So the two renders are NOT byte-identical (header comments differ, and
         legacy carries `MODEL_SRC`/`MODEL_OBJ` variables where pure inlines per-compile-unit
         paths). What must agree is the derived build graph — the object set and its order —
@@ -3047,7 +3047,7 @@ class PurePublishedSurfacePinTests(unittest.TestCase):
         # producer authors no `public_api` for has no pinned surface to compare against.
         from tools.workflow_conductor import Conductor
         self.assertEqual(cb.L1C_PUBLISHED_SURFACE_SPEC_KINDS,
-                         Conductor._PURE_IR_PUBLIC_API_KINDS)
+                         Conductor._LEAF_IR_PUBLIC_API_KINDS)
 
     def test_non_pinned_node_kind_is_inert(self) -> None:
         # A `problem` node's surface is derived post-hoc, not pinned against §5 here; passing a
@@ -3421,17 +3421,17 @@ class PureStateBindingLayerTests(unittest.TestCase):
                     {"artifact": "state_snapshots", "schema": {"variables": vars_}}]}}}))
             holder = SimpleNamespace(
                 repo_root=root,
-                _pure_harness_node_key=lambda nk: "infrastructure/harness_fortran_cpu_mpi@0.2.0",
+                _leaf_harness_node_key=lambda nk: "infrastructure/harness_fortran_cpu_mpi@0.2.0",
                 _bundle_shape=lambda refs: "m3c",
                 _read_toolchain=lambda refs: {"language": "fortran"},
                 _runner_basename=lambda refs: "bx_runner.f90",
-                _build_pure_bundle_graph=lambda refs, d: None)
-            holder._pure_bundle_violation_inputs = (
-                lambda refs: wc.Conductor._pure_bundle_violation_inputs(holder, refs))
+                _build_leaf_bundle_graph=lambda refs, d: None)
+            holder._leaf_bundle_violation_inputs = (
+                lambda refs: wc.Conductor._leaf_bundle_violation_inputs(holder, refs))
             refs = SimpleNamespace(ir_ref=ir_ref, node_key=self._NK, spec_id="bx")
             with mock.patch.object(cb, "pure_bundle_contract_violation",
                                    autospec=True, return_value=None) as spy:
-                wc.Conductor._pure_bundle_violations(holder, refs, {})
+                wc.Conductor._leaf_bundle_violations(holder, refs, {})
         self.assertEqual(spy.call_args.kwargs["ir_snapshot_variables"], vars_)
         self.assertEqual(spy.call_args.kwargs["harness_label"],
                          "infrastructure/harness_fortran_cpu_mpi@0.2.0")

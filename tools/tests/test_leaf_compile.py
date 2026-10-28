@@ -7,7 +7,7 @@ defensive freshness branch), `tools/llm_config.py` and `tools/orchestration_runt
 required-context keys and the templates).
 
 The loops THEMSELVES are shared with the generate pair — `_run_workshop_producer_substep` /
-`_run_pure_reviewer_substep`, parametrised by a `_PureProducerSpec` / `_PureReviewerSpec`, and
+`_run_leaf_reviewer_substep`, parametrised by a `_LeafProducerSpec` / `_LeafReviewerSpec`, and
 since issue #534 PR-J4-b each runs a `workshop leaf` (the pure leaf and the compile part split
 of issue #526 went in that PR) — so the transport-shaped behaviour (usage waits, transient
 retries, warm/cold repair turns) is pinned once by `test_leaf_producer.py` /
@@ -53,7 +53,7 @@ _PROBLEM_NODE = "problem/shallow_water2d@0.4.0"
 _PROBLEM_SPEC_ID = "shallow_water2d"
 _PROBLEM_SPEC_PATH = "spec/problem/dynamics/shallow_water/shallow_water2d"
 
-#: The repository documents `_build_pure_compile_context` reads. Staged into the fixture repo by
+#: The repository documents `_build_leaf_compile_context` reads. Staged into the fixture repo by
 #: COPYING the real files, so the slicers and the presence checks run against what production
 #: reads rather than against a stand-in whose anchors a test author chose.
 _REPO_DOCUMENTS = (
@@ -137,7 +137,7 @@ def _write_compile_node(repo: Path, *, kind: str = "component", profile: bool = 
     ir_dir = repo / refs.ir_ref
     ir_dir.mkdir(parents=True, exist_ok=True)
     # `profiles` is the sidecar key the host writes for the adopted-profile record (issue
-    # #175); it is what `_pure_profile_spec_document` reads, so a profile fixture has to carry
+    # #175); it is what `_leaf_profile_spec_document` reads, so a profile fixture has to carry
     # it here rather than only in `deps.yaml`.
     (ir_dir / "dependency_graph.json").write_text(
         json.dumps({"node_key": node, "direct_deps": [], "all_nodes": [node],
@@ -293,10 +293,10 @@ class PureCompileContextTests(_Fixture):
         table declares but the builder omits fails the launch validator."""
         c = self.conductor()
         self.assertEqual(
-            set(c._build_pure_compile_context(self.refs)),
+            set(c._build_leaf_compile_context(self.refs)),
             set(ort.PURE_CONTEXT_REQUIRED_KEYS[("compile", "generate")]))
         self.assertEqual(
-            set(c._build_pure_compile_verify_context(self.refs)),
+            set(c._build_leaf_compile_verify_context(self.refs)),
             set(ort.PURE_CONTEXT_REQUIRED_KEYS[("compile", "verify")]))
 
     def test_a_missing_node_artifact_fails_closed_before_any_launch(self) -> None:
@@ -408,21 +408,21 @@ class PureCompileContextTests(_Fixture):
         the node declares no profile, and a named line when the catalog cannot resolve one — so
         it has no path that yields `""`."""
         c = self.conductor()
-        ctx = c._build_pure_compile_context(self.refs)
+        ctx = c._build_leaf_compile_context(self.refs)
         self.assertEqual(ctx["profile_spec_document"],
-                         wc.Conductor._PURE_PROFILE_ABSENT_DOCUMENT)
+                         wc.Conductor._LEAF_PROFILE_ABSENT_DOCUMENT)
 
     def _build(self, substep: str):
         c = self.conductor()
-        return (c._build_pure_compile_context if substep == "generate"
-                else c._build_pure_compile_verify_context)
+        return (c._build_leaf_compile_context if substep == "generate"
+                else c._build_leaf_compile_verify_context)
 
     def test_the_operator_sees_the_filename_the_raise_names(self) -> None:
         """The whole chain, driven end to end: a missing repository document -> the raise ->
         the infra_error the loop recovers it as -> the composed `reason_detail`.
 
         Each link was changed for one reason — the raise names the BASENAME first so the cap
-        eats the least actionable end, `_pure_assembly_detail` drops the redundant exception
+        eats the least actionable end, `_leaf_assembly_detail` drops the redundant exception
         class, and the transport branch derives its evidence clip instead of fixing it at 110 —
         and NONE of them is observable from its own side. Measured before those changes, on this
         tree's longest spec path, the operator got a directory prefix with no filename and a
@@ -433,7 +433,7 @@ class PureCompileContextTests(_Fixture):
         outcome = c.run_substep(self.refs, "compile", "generate")
         tag, detail = outcome.infra_error
         self.assertEqual(tag, "pure_context_assembly_failed")
-        # `_pure_assembly_detail`: the message already names its reason, so the class is dropped.
+        # `_leaf_assembly_detail`: the message already names its reason, so the class is dropped.
         self.assertTrue(detail.startswith("pure_controlled_spec_document_missing:"), detail)
         # The composition the operator actually reads. Built here exactly as run_phase's
         # transport branch builds it, from the module's own budget constant.
@@ -458,7 +458,7 @@ class PureCompileContextTests(_Fixture):
             lambda ev, _sink=events, **f: _sink.append((ev, f)))
         outcome = c.run_substep(self.refs, "compile", "generate")
         detail = [f["detail"] for e, f in events if e == "pure_context_assembly_failed"][0]
-        self.assertGreater(wc._PURE_ASSEMBLY_EVENT_DETAIL_MAX_CHARS,
+        self.assertGreater(wc._LEAF_ASSEMBLY_EVENT_DETAIL_MAX_CHARS,
                            wc._PHASE_REASON_DETAIL_MAX_CHARS,
                            "the event exists to carry what reason_detail cannot")
         # The whole raise, not a prefix of it: reason, filename AND directory.
@@ -492,9 +492,9 @@ class PureCompileContextTests(_Fixture):
 
     def test_a_node_with_no_profile_dependency_gets_the_host_sentence(self) -> None:
         c = self.conductor()
-        ctx = c._build_pure_compile_context(self.refs)
+        ctx = c._build_leaf_compile_context(self.refs)
         self.assertEqual(ctx["profile_spec_document"],
-                         wc.Conductor._PURE_PROFILE_ABSENT_DOCUMENT)
+                         wc.Conductor._LEAF_PROFILE_ABSENT_DOCUMENT)
 
     def test_the_templates_name_no_backend_identifier(self) -> None:
         """The two templates are `neutral core` files (`docs/BACKEND_BOUNDARY.md`), so no
@@ -530,7 +530,7 @@ class PureCompileContextTests(_Fixture):
         (self.repo / self.refs.ir_ref / "spec.ir.yaml").write_text(
             yaml.safe_dump(_valid_ir(), sort_keys=False), encoding="utf-8")
         c = self.conductor()
-        ctx = c._build_pure_compile_verify_context(self.refs)
+        ctx = c._build_leaf_compile_verify_context(self.refs)
         self.assertIn("schema_version", ctx["ir_document"])
         self.assertIn(f"{_SPEC_ID}__apply", ctx["dependency_surface_document"])
         # The reviewer reads the file verbatim, so the prototype the producer is shown reaches it.
@@ -565,8 +565,8 @@ class PureCompileContextTests(_Fixture):
             self.assertRegex(probe, self._STALE)
         self.assertNotRegex("tests.md §5", self._STALE)
         c = self.conductor()
-        for substep, ctx in (("generate", c._build_pure_compile_context(self.refs)),
-                             ("verify", c._build_pure_compile_verify_context(self.refs))):
+        for substep, ctx in (("generate", c._build_leaf_compile_context(self.refs)),
+                             ("verify", c._build_leaf_compile_verify_context(self.refs))):
             doc = ctx["phase_contract_document"]
             with self.subTest(substep=substep):
                 bullets = [ln for ln in doc.splitlines() if ln.startswith(self._V3_PREFIX)]
@@ -582,7 +582,7 @@ class PureCompileProfileContextTests(_Fixture):
 
     def test_an_adopted_profile_is_resolved_through_the_sidecar(self) -> None:
         c = self.conductor()
-        doc = c._build_pure_compile_context(self.refs)["profile_spec_document"]
+        doc = c._build_leaf_compile_context(self.refs)["profile_spec_document"]
         self.assertIn("demo_profile", doc)
         self.assertIn("The profile fixes the component set.", doc)
 
@@ -600,8 +600,8 @@ class PureCompileProfileContextTests(_Fixture):
             (self.repo / self.refs.spec_path / "deps.yaml").read_text(encoding="utf-8"))
         self.assertTrue(deps["dependencies"]["profiles"])
         c = self.conductor()
-        doc = c._build_pure_compile_context(self.refs)["profile_spec_document"]
-        self.assertEqual(doc, wc.Conductor._PURE_PROFILE_ABSENT_DOCUMENT)
+        doc = c._build_leaf_compile_context(self.refs)["profile_spec_document"]
+        self.assertEqual(doc, wc.Conductor._LEAF_PROFILE_ABSENT_DOCUMENT)
         self.assertNotIn("demo_profile", doc)
 
     def test_a_sidecar_with_no_profiles_record_is_a_recoverable_assembly_failure(self) -> None:
@@ -613,7 +613,7 @@ class PureCompileProfileContextTests(_Fixture):
         graph_path.write_text(json.dumps(graph, indent=2), encoding="utf-8")
         c = self.conductor()
         with self.assertRaises(RuntimeError) as caught:
-            c._build_pure_compile_context(self.refs)
+            c._build_leaf_compile_context(self.refs)
         self.assertIn("pure_profile_spec_document_missing", str(caught.exception))
 
     def test_the_absent_document_sentinel_is_what_the_launch_validator_requires(self) -> None:
@@ -625,14 +625,14 @@ class PureCompileProfileContextTests(_Fixture):
         node — every `component` and `infrastructure` spec in this tree, the majority path —
         and that abort. A round-5 census found the property claimed as pinned in a comment and
         pinned by nothing: emptying the sentinel left 2477 tests green."""
-        self.assertTrue(wc.Conductor._PURE_PROFILE_ABSENT_DOCUMENT.strip())
+        self.assertTrue(wc.Conductor._LEAF_PROFILE_ABSENT_DOCUMENT.strip())
         graph_path = self.repo / self.refs.ir_ref / "dependency_graph.json"
         graph = json.loads(graph_path.read_text(encoding="utf-8"))
         graph["profiles"] = []
         graph_path.write_text(json.dumps(graph, indent=2), encoding="utf-8")
-        ctx = self.conductor()._build_pure_compile_context(self.refs)
+        ctx = self.conductor()._build_leaf_compile_context(self.refs)
         self.assertEqual(ctx["profile_spec_document"],
-                         wc.Conductor._PURE_PROFILE_ABSENT_DOCUMENT)
+                         wc.Conductor._LEAF_PROFILE_ABSENT_DOCUMENT)
         # Driven through the real validator, not asserted about: this is the frame that refuses.
         from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         base = {"agent_role": "substep", "step": "compile", "substep": "generate",
@@ -658,7 +658,7 @@ class PureCompileProfileContextTests(_Fixture):
         frame that grants it rather than asserted about.
         """
         from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
-        ctx = self.conductor()._build_pure_compile_context(self.refs)
+        ctx = self.conductor()._build_leaf_compile_context(self.refs)
         base = {"agent_role": "substep", "step": "compile", "substep": "generate",
                 "leaf_mode": "workshop", "workshop_lineage_id": "c",
                 "workshop_provider": "claude_cli",
@@ -677,17 +677,17 @@ class PureCompileProfileContextTests(_Fixture):
     def test_an_unresolvable_profile_is_named_rather_than_failing_the_substep(self) -> None:
         (self.repo / "spec/profile/demo/demo_profile/controlled_spec.md").unlink()
         c = self.conductor()
-        doc = c._build_pure_compile_context(self.refs)["profile_spec_document"]
+        doc = c._build_leaf_compile_context(self.refs)["profile_spec_document"]
         self.assertIn("demo_profile", doc)
         self.assertIn("does not resolve", doc)
 
 
 # ======================================================================================
-# `_pure_ir_document_violations`
+# `_leaf_ir_document_violations`
 # ======================================================================================
 class PureIrDocumentViolationTests(_Fixture):
     def violations(self, doc, refs=None):
-        return self.conductor()._pure_ir_document_violations(refs or self.refs, doc)
+        return self.conductor()._leaf_ir_document_violations(refs or self.refs, doc)
 
     def test_a_clean_document_has_no_violations(self) -> None:
         self.assertIsNone(self.violations(_doc()))
@@ -792,7 +792,7 @@ class PureIrDocumentViolationTests(_Fixture):
     def test_each_required_section_is_killed_one_at_a_time(self) -> None:
         """One probe per element of the floor, not one probe deleting all of them: a missing
         element of an enumeration is invisible when the enumeration is checked together."""
-        required = list(wc.Conductor._PURE_IR_REQUIRED_SECTIONS) + ["public_api"]
+        required = list(wc.Conductor._LEAF_IR_REQUIRED_SECTIONS) + ["public_api"]
         for section in required:
             with self.subTest(section=section):
                 ir = _valid_ir()
@@ -865,7 +865,7 @@ class PureIrDocumentViolationTests(_Fixture):
             c = _workshop_conductor(repo)
             ir = _valid_ir("problem")
             ir["dependency"]["node_key"] = refs.node_key   # the node's own key, not the fixture's
-            self.assertIsNone(c._pure_ir_document_violations(refs, {"ir": ir,
+            self.assertIsNone(c._leaf_ir_document_violations(refs, {"ir": ir,
                                                                     "compile_fail": None}))
 
     def test_an_impl_defaults_section_is_refused(self) -> None:
@@ -878,14 +878,14 @@ class PureIrDocumentViolationTests(_Fixture):
             c = _workshop_conductor(repo)
             ir = _valid_ir()
             ir["impl_defaults"] = {"toolchain": {"language": "x"}}
-            found = c._pure_ir_document_violations(refs, {"ir": ir, "compile_fail": None})
+            found = c._leaf_ir_document_violations(refs, {"ir": ir, "compile_fail": None})
             self.assertIsNotNone(found)
             assert found is not None
             self.assertEqual(found[0], wc.COMPILE_IR_DOCUMENT_VIOLATION)
             self.assertIn("impl_defaults", found[1])
             self.assertIn("target-free", found[1])
-            self.assertEqual(wc.Conductor._PURE_IR_FORBIDDEN_SECTIONS, ("impl_defaults",))
-            self.assertNotIn("impl_defaults", wc.Conductor._PURE_IR_REQUIRED_SECTIONS)
+            self.assertEqual(wc.Conductor._LEAF_IR_FORBIDDEN_SECTIONS, ("impl_defaults",))
+            self.assertNotIn("impl_defaults", wc.Conductor._LEAF_IR_REQUIRED_SECTIONS)
 
     def test_the_round_trip_probe_accepts_an_adversarial_json_document(self) -> None:
         """The OVER-REFUSAL direction of the serialize/parse probe, which is the direction that
@@ -923,7 +923,7 @@ class PureIrDocumentViolationTests(_Fixture):
             return doc
 
         c = self.conductor(_envelope(_whole()))
-        spec = c._pure_producer_spec("compile")._replace(
+        spec = c._leaf_producer_spec("compile")._replace(
             workshop_assemble=assemble_with_a_surrogate)
         outcome = _run_producer(c, self.refs, spec=spec, phase="compile")
         meta = json.loads((self.repo / self.refs.ir_ref
@@ -1108,7 +1108,7 @@ class PureCompileProducerTests(_Fixture):
         def boom(*a, **k):
             raise OSError("no space left on device")
 
-        c._write_pure_ir_artifacts = boom  # type: ignore[assignment]
+        c._write_leaf_ir_artifacts = boom  # type: ignore[assignment]
         outcome = c.run_substep(self.refs, "compile", "generate")
         self.assertEqual(outcome.status, "fail")
         self.assertEqual(outcome.leaf_returncode, 1)
@@ -1247,7 +1247,7 @@ class PureCompileReviewerTests(_Fixture):
 # The values the SPEC record decides
 # ======================================================================================
 class PureCompileSpecValueTests(_Fixture):
-    """One row per field of `_PureProducerSpec` / `_PureReviewerSpec` whose value reaches an
+    """One row per field of `_LeafProducerSpec` / `_LeafReviewerSpec` whose value reaches an
     artifact, an event or a record.
 
     These exist because the round-0 mutation sweep found them unpinned as a CLASS: reverting a
@@ -1389,7 +1389,7 @@ class PureCompileFailDeclarationTests(_Fixture):
     document violation — a warm repair turn, then the producer-failure route."""
 
     def violation(self, compile_fail):
-        return self.conductor()._pure_ir_document_violations(
+        return self.conductor()._leaf_ir_document_violations(
             self.refs, {"ir": None, "compile_fail": compile_fail})
 
     def test_every_admissible_input_is_a_declaration(self) -> None:
@@ -1439,7 +1439,7 @@ class PureCompileFailDeclarationTests(_Fixture):
         asks for one answer. Every declaration shape the other rows accept is refused here."""
         for name in wc.Conductor._compile_fail_inputs():
             with self.subTest(input=name):
-                result = self.conductor()._pure_ir_document_violations(
+                result = self.conductor()._leaf_ir_document_violations(
                     self.refs, {"ir": _valid_ir(),
                                 "compile_fail": {"input": name, "where": "§6", "what": "x"}})
                 self.assertIsNotNone(result)
@@ -1535,12 +1535,12 @@ def ort_repair_turns() -> int:
 class PureCompileProviderMatrixTests(_Fixture):
     def test_both_compile_leaves_are_pure_without_any_ir_on_disk(self) -> None:
         """No shape condition: at `compile.generate` time there is no IR to read a shape from,
-        which is exactly why the predicate (`_pure_leaf_substep`, which keeps its name until a
-        later PR) cannot use the generate pair's bundle-shape test here."""
+        which is exactly why the predicate (`_leaf_substep`, `_pure_leaf_substep` until issue #534
+        PR-J4-d) cannot use the generate pair's bundle-shape test here."""
         self.assertFalse((self.repo / self.refs.ir_ref / "spec.ir.yaml").exists())
         c = self.conductor()
         for substep in ("generate", "verify"):
-            self.assertTrue(c._pure_leaf_substep(self.refs, "compile", substep))
+            self.assertTrue(c._leaf_substep(self.refs, "compile", substep))
 
     def test_the_declared_pure_set_is_exactly_the_migrated_leaf_pairs(self) -> None:
         """`LLM_LEAF_SUBSTEPS` is the set of LLM LEAF pairs (each a workshop leaf since issue

@@ -564,7 +564,7 @@ def harness_capability_manifest_document_for(node_key: str | None) -> dict[str, 
 
     A pure producer negotiates against exactly one harness: the one its run's target names, or
     the node itself on a harness (`orchestration_runtime.harness_node_key_for`, issue #284 —
-    through `Conductor._pure_harness_node_key`, which `_pure_bundle_violations` also resolves the
+    through `Conductor._leaf_harness_node_key`, which `_leaf_bundle_violations` also resolves the
     acceptance layer from). Handing it the FULL table instead would show it
     capabilities that another harness provides and its own does not, licensing a
     `capability_requirements` token the acceptance layer then rejects as
@@ -1845,7 +1845,7 @@ def m3c_checks_abi_violation(doc: Mapping[str, Any], spec_id: str, *,
     except Exception as exc:  # noqa: BLE001
         # The third caller of the seam, and it was the one left without this. A backend package
         # that cannot be IMPORTED is a host fault; escaping from here reaches
-        # `_pure_bundle_violations`, which has no handler at this call, so the acceptance layer
+        # `_leaf_bundle_violations`, which has no handler at this call, so the acceptance layer
         # crashes instead of rejecting — the failure this layer exists to avoid. The two
         # deterministic gates convert it; so does this one now.
         refusal = f"the backend for that language could not be loaded ({exc!r})"
@@ -2067,7 +2067,7 @@ BUNDLE_SHAPES: tuple[str, ...] = ("m3c", "harness")
 
 #: The `spec_kind`s whose IR carries a `public_api.published_operations` pin the L1c layer holds
 #: a bundle's `operation` entrypoints to. Kept equal to the kinds the pure IR producer authors a
-#: `public_api` for (`workflow_conductor._PURE_IR_PUBLIC_API_KINDS`); a kind absent here has no
+#: `public_api` for (`workflow_conductor._LEAF_IR_PUBLIC_API_KINDS`); a kind absent here has no
 #: pinned surface to compare against, so the layer stays inert for it rather than fail-closing on
 #: an IR that was never asked for the section.
 L1C_PUBLISHED_SURFACE_SPEC_KINDS: frozenset[str] = frozenset({"component", "infrastructure"})
@@ -2189,7 +2189,7 @@ def pure_bundle_contract_violation(
     """The full Z2 pure-CodegenBundle host acceptance contract as `(category, findings)`, or None.
 
     The SINGLE source of the acceptance layers shared by the producer's in-conversation gate
-    (`Conductor._pure_bundle_violations`) and the deterministic post-generate tamper gate
+    (`Conductor._leaf_bundle_violations`) and the deterministic post-generate tamper gate
     (`validate_pipeline_semantics._validate_post_generate_bundle`), so a bundle the producer
     would reject can never be certified by the independent re-check (and the two cannot drift).
 

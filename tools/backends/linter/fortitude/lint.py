@@ -148,7 +148,7 @@ RULE_CODES: tuple[str, ...] = (
 #:
 #: WHY THE NAMES ARE HERE AND NOT ONLY IN THE DOCUMENT. A pure `Generate` leaf force-reads
 #: nothing, so a rule it must satisfy reaches it only if the host INLINES it
-#: (`Conductor._build_pure_harness_context`). `lint_rules_document` below is what the host
+#: (`Conductor._build_leaf_harness_context`). `lint_rules_document` below is what the host
 #: inlines, and it has to name the rules rather than only their codes, because a code is not a
 #: rule to anyone who has not memorized this table. Issue #169 measured the cost of the absence:
 #: the harness self-test's producer went pure with four of the codes it must satisfy stated in no

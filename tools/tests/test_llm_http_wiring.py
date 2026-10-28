@@ -279,7 +279,7 @@ class HttpWorkshopWiringTests(_ChatDialect, _GenerateHarness, unittest.TestCase)
             repo_root=self.repo, orchestration_id=_ORCH, orchestration_agent_run_id="orch",
             env={"HTTP_KEY": SECRET}, llm_config=_cfg("claude", agent_model="opus"))
         c._conductor_authors_makefile = lambda refs: False      # type: ignore[assignment]
-        self.assertFalse(c._pure_leaf_substep(self.refs, "generate", "generate"))
+        self.assertFalse(c._leaf_substep(self.refs, "generate", "generate"))
         outcome = c.run_substep(self.refs, "generate", "generate")
         self.assertEqual(outcome.status, "fail")
         assert outcome.infra_error is not None

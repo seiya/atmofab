@@ -63,7 +63,7 @@ def _digest(members: dict[str, str]) -> str:
 
 # The compile-inlined documents, by the KEY the compile builders declare them under
 # (`PURE_CONTEXT_REQUIRED_KEYS[("compile", "generate")]`) and the path each reads
-# (`Conductor._build_pure_compile_context`).
+# (`Conductor._build_leaf_compile_context`).
 COMPILE_INLINED_DOCUMENTS: dict[str, str] = {
     "phase_contract_document": ort.WORKFLOW_PHASE_DOC_BY_STEP["compile"],
     "ir_algorithm_example_document": "docs/examples/spec_ir_algorithm_section.example.yaml",
@@ -134,14 +134,14 @@ def render_tuple() -> dict[str, str]:
             _file_digest("tools/backends/build_system/make/__init__.py"),
         "tools/backends/language/fortran/__init__.py":
             _file_digest("tools/backends/language/fortran/__init__.py"),
-        "Conductor._render_pure_makefile_from_graph":
-            _source_digest(wc.Conductor._render_pure_makefile_from_graph),
-        # What `_render_pure_makefile_from_graph` hands the renderer (issue #534 PR-1 moved it
+        "Conductor._render_leaf_makefile_from_graph":
+            _source_digest(wc.Conductor._render_leaf_makefile_from_graph),
+        # What `_render_leaf_makefile_from_graph` hands the renderer (issue #534 PR-1 moved it
         # into a helper the workshop wrapper binds too).
         "Conductor._control_file_render_inputs":
             _source_digest(wc.Conductor._control_file_render_inputs),
-        "Conductor._write_pure_bundle_artifacts":
-            _source_digest(wc.Conductor._write_pure_bundle_artifacts),
+        "Conductor._write_leaf_bundle_artifacts":
+            _source_digest(wc.Conductor._write_leaf_bundle_artifacts),
         # The second language's host renders (issue #289, R4-b PR-4): its control-file rules,
         # its `bundle_facts`, the published-surface header the host writes beside its bundle (and the
         # lowering it renders with),
@@ -1002,7 +1002,7 @@ PINNED_RENDER: dict[str, str] = {
     # profile's count; the renderer's pin of that harness carries the seven-argument writer.
     # Rows moved: `fortran/runner.py`, and the docstrings of `tools/host_execution.py`
     # (`perf_parallelism`) and `tools/host_render.py` (`render_runner`).
-    "render-12": "e67d6b26885115087847d3cb1ae58e95657a261335fc00e35716c51dcb0c5d2d",
+    "render-12": "94410f59920cefbca0b06b643d6ac76bd8b3d9a12ec7f9422b16cffac919aed3",
     # Re-pinned (issue #534 PR-3), behaviour-preserving: `_write_interface_header` writes what
     # the new `_interface_header_text` renders (joins the tuple), so a `workshop leaf`'s tree is
     # seeded with the header the gates read; the header written is byte-identical. The digest
@@ -1062,6 +1062,15 @@ PINNED_RENDER: dict[str, str] = {
     # and no harness-pin answer moves. Re-pinned in place during the review loop. (Measured by diffing `render_tuple()` against origin/main 3ff3f789's: that
     # row and no other.) The digest `render-9` shipped with at 3ff3f789:
     "render-9@3ff3f789": "8567602b0caba3a16668cbfae6362a97435c697645fc03b98071c883deea806d",
+    # Re-pinned (issue #534 PR-J4-d), behaviour-preserving: renames only. Two members are
+    # renamed (`_render_pure_makefile_from_graph` -> `_render_leaf_makefile_from_graph`,
+    # `_write_pure_bundle_artifacts` -> `_write_leaf_bundle_artifacts`), `_write_runner` and
+    # `_control_file_render_inputs` call renamed methods, and `fortran/lines.py`'s docstring
+    # names `tools/leaf_contract.py` (was `tools/pure_leaf.py`). Each moved method's source
+    # maps back to origin/main's byte for byte under the PR's reverse rename map. (Measured by
+    # diffing `render_tuple()` against origin/main c38a3d8b's: those rows and no other.) The
+    # digest `render-12` shipped with at c38a3d8b:
+    "render-12@c38a3d8b": "e67d6b26885115087847d3cb1ae58e95657a261335fc00e35716c51dcb0c5d2d",
 }
 PINNED_BUILD: dict[str, str] = {
     # Re-pinned (issue #284, R4-a PR-2), behaviour-preserving for this transformation:
@@ -1115,7 +1124,7 @@ PINNED_BUILD: dict[str, str] = {
     # version as the building machine answered). A bump: every certified build-1 record lacks
     # `environment`, which `Validate.execute` now requires. The tuple gained the remote
     # executor, the launch seam, the site record and the version argv.
-    "build-2": "64c97d62cdd775f0e98d12bf19964a514264c9534bc8b03ff2d4f3ce0e102b65",
+    "build-2": "f07a084a7dbf701cbbf95d74bb9a30ccf793726a397410a030e959f115b7fda4",
     # Re-pinned (issue #512, PR-4b), behaviour-preserving: `tools/host_execution.py` gains
     # `serial_execution_env` and an execution-shape argument to `launch_shape`, whose default is
     # the certified shape — the one the build's backstop call asks for, with the argv prefix,
@@ -1256,6 +1265,12 @@ PINNED_BUILD: dict[str, str] = {
     # failure and is never reused. (Measured by diffing `build_tuple()` against
     # origin/main ad0393fd's: those two rows and no other.) The digest `build-2` shipped with at ad0393fd:
     "build-2@ad0393fd": "8607644d9d7dc718cc7dabac0481be902360ce0f08aad91257e9e9e1f94d1793",
+    # Re-pinned (issue #534 PR-J4-d), behaviour-preserving: `_stage_dependency_sources` calls
+    # methods renamed `_pure_*` -> `_leaf_*`; its source maps back to origin/main's byte for
+    # byte under the PR's reverse rename map. (Measured by diffing `build_tuple()` against
+    # origin/main c38a3d8b's: that row and no other.) The digest `build-2` shipped with at
+    # c38a3d8b:
+    "build-2@c38a3d8b": "64c97d62cdd775f0e98d12bf19964a514264c9534bc8b03ff2d4f3ce0e102b65",
 }
 PINNED_EXECUTE: dict[str, str] = {
     "execute-1": "8bd25306f0ec274b4879be41b33430e0cddf9fe62e19a6d8be4e96dcc4e014be",
@@ -1750,7 +1765,7 @@ class TransformationDriftTests(unittest.TestCase):
         keep an old pin green over a document nobody inlines any more)."""
         declared = set(ort.PURE_CONTEXT_REQUIRED_KEYS[("compile", "generate")])
         self.assertTrue(set(COMPILE_INLINED_DOCUMENTS) <= declared)
-        builder = inspect.getsource(wc.Conductor._build_pure_compile_context)
+        builder = inspect.getsource(wc.Conductor._build_leaf_compile_context)
         for key, rel in COMPILE_INLINED_DOCUMENTS.items():
             with self.subTest(key=key):
                 self.assertTrue((_REPO / rel).is_file(), rel)

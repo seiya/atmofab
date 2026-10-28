@@ -674,7 +674,7 @@ def assemble_ir_document(root: Path, reserved: Iterable[str] = ()) -> dict[str, 
 
     `spec.ir.yaml` is `yaml.safe_load`ed into `ir`; `compile_fail.json` is `json.loads`ed into
     `compile_fail`. Each absent file contributes `None`. BOTH present gives a document carrying
-    both, which the producer's contract (`Conductor._pure_ir_document_violations`, unchanged)
+    both, which the producer's contract (`Conductor._leaf_ir_document_violations`, unchanged)
     refuses as two answers; NEITHER is `workshop_tree_empty`. A file reached through a link,
     not a regular file, not UTF-8, not parseable, or holding a value that is not a JSON value
     is an `ir_document_violation` finding. What passes goes through the same contract a pure

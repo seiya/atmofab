@@ -21478,7 +21478,7 @@ class ChildContextDocSizeTests(unittest.TestCase):
 
     The QUESTION is unchanged since Z4 (issue #171); the mechanism under it is not. A leaf
     used to FORCE-READ these files off disk (`leaf_contract_doc_refs`), and the cost was the
-    same. Now no leaf reads anything: `Conductor._build_pure_*_context` reads the file and
+    same. Now no leaf reads anything: `Conductor._build_leaf_*_context` reads the file and
     inlines it, which is why a document that reaches no `pure_context` value is unguarded
     here however large — WORKFLOW_CORE.md, phase_02/03/04, PERFORMANCE_DIAGNOSTICS.md and
     COMMAND_LOG_PLACEMENT.md are all in that position, as they were before."""
@@ -22531,7 +22531,7 @@ class R5ExemplarConductorGatingTests(unittest.TestCase):
     AGENTIC arm of `run_substep` — `phase == "generate" and substep == "generate" and not
     warm_resume` — and this class drove `run_substep` to observe it. That arm is gone; the
     producer loop is the WORKSHOP one (the pure loop that first carried this line went in
-    issue #534 PR-J4-b), and its `_PureProducerSpec.wants_exemplar` is the single place the
+    issue #534 PR-J4-b), and its `_LeafProducerSpec.wants_exemplar` is the single place the
     answer is written down (`_run_workshop_producer_substep`:
     `exemplar = self._resolve_exemplar(refs) if spec.wants_exemplar else None`).
 
@@ -22553,13 +22553,13 @@ class R5ExemplarConductorGatingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             c = self._conductor(tmp)
             # The DEFAULT generate shape wants one...
-            self.assertTrue(c._pure_producer_spec("generate", "m3c").wants_exemplar)
+            self.assertTrue(c._leaf_producer_spec("generate", "m3c").wants_exemplar)
             # ...the `harness` shape does not: an `infrastructure` self-test authors the
             # executable entry, and a physics sibling's model is not an example of it.
-            self.assertFalse(c._pure_producer_spec("generate", "harness").wants_exemplar)
+            self.assertFalse(c._leaf_producer_spec("generate", "harness").wants_exemplar)
             # ...and neither does the compile producer: it authors an IR, and there is no
             # certified sibling SOURCE to show it.
-            self.assertFalse(c._pure_producer_spec("compile").wants_exemplar)
+            self.assertFalse(c._leaf_producer_spec("compile").wants_exemplar)
 
     def test_no_reviewer_wants_an_exemplar(self) -> None:
         """A reviewer is shown the artifact under review, not a second node's source. The
@@ -22572,7 +22572,7 @@ class R5ExemplarConductorGatingTests(unittest.TestCase):
                                           ("generate", "verify", "harness"),
                                           ("validate", "judge", None)):
                 with self.subTest(phase=phase, substep=substep, shape=shape):
-                    spec = c._pure_reviewer_spec(phase, substep, shape)
+                    spec = c._leaf_reviewer_spec(phase, substep, shape)
                     self.assertFalse(hasattr(spec, "wants_exemplar"))
 
 

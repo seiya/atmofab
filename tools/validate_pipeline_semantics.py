@@ -8854,7 +8854,7 @@ def validate_compile_ir_dir(repo_root: Path, ir_dir: Path) -> list[str]:
     `validate_compile_stage` on `<ir_ref>`. The validators read `tests.md` and the controlled
     spec through the IR's `meta.source_refs`, which this function does NOT confine: its caller
     passes only an IR whose refs the producer's contract (`Conductor.
-    _pure_ir_document_violations`) has pinned to the node's own spec documents. The schema pin is per thread (`_pinned_repo_root_for_schema` is a
+    _leaf_ir_document_violations`) has pinned to the node's own spec documents. The schema pin is per thread (`_pinned_repo_root_for_schema` is a
     `ContextVar`), so a call on a wrapper handler thread does not disturb the main thread's."""
     with _pinned_repo_root_for_schema(repo_root):
         return _validate_compile_ir_dir_impl(repo_root, Path(ir_dir))
@@ -11199,7 +11199,7 @@ def _pure_gate_build_graph_inputs(
     """(toolchain, dependency_closure, dependency_edges) for the tamper gate's assembly check.
 
     Mirrors `workflow_conductor._read_toolchain` + `_dependency_closure_nodes` +
-    `_build_pure_bundle_graph`'s edge derivation from the SAME dependency sidecar, so the graph
+    `_build_leaf_bundle_graph`'s edge derivation from the SAME dependency sidecar, so the graph
     the gate assembles is the graph the producer's acceptance built. The toolchain is the
     pipeline's target's (issue #284), the profile the conductor read it from; the closure is
     `orchestration_runtime.pipeline_closure_nodes`, the one definition the conductor's staging
@@ -11287,7 +11287,7 @@ def _validate_post_generate_bundle(
     # The harness a bundle negotiates against: on `harness` the node ITSELF (a harness declares
     # the execution model it implements), otherwise the harness the pipeline's TARGET names
     # (issue #284) — `orchestration_runtime.harness_node_key_for`, the one resolution the
-    # conductor's `_pure_harness_node_key` delegates to as well.
+    # conductor's `_leaf_harness_node_key` delegates to as well.
     from tools.orchestration_runtime import harness_node_key_for
     from tools.target_profile import TargetProfileError
     try:
@@ -11310,7 +11310,7 @@ def _validate_post_generate_bundle(
         str(toolchain.get("language") or ""), "bundle_facts", bundle_path, language_refusals)
     runner_basename = bundle.runner_basename(spec_id) if bundle is not None else ""
     # The host glue this node's assembly carries — none on `harness`, where the runner is bundle
-    # content rather than something the host renders. Mirrors `_build_pure_bundle_graph`.
+    # content rather than something the host renders. Mirrors `_build_leaf_bundle_graph`.
     host_glue: tuple[str, ...] = (() if shape == "harness" or bundle is None
                                   else (runner_basename,))
 

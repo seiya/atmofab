@@ -249,8 +249,8 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
             orchestration_agent_run_id="orch-arid", child_agent_run_id=_SRC_ARID,
             agent_model="opus", workflow_mode="dev", runner_host_authored=True,
             resolved_dependencies=_FACTS, pure_leaf=True, pure_context=dict(_CONTEXT),
-            pure_language=conductor._pure_language(_STEP),
-            pure_parallel=conductor._pure_parallel(_STEP),
+            pure_language=conductor._leaf_language(_STEP),
+            pure_parallel=conductor._leaf_parallel(_STEP),
             workshop_lineage_id=_SRC_ARID, workshop_provider="claude_cli")
         entry = conductor.entry_for(_STEP, _SUBSTEP)
         # A workshop launch is recorded into a lineage home the conductor opened first.
@@ -380,7 +380,7 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
         self.assertEqual(row["mutated_keys"], ["tests_document"])
         [attempt] = row["attempts"]
         tree = self.homes / replay.name / "claude" / attempt["lineage_id"] / "tree"
-        spec = self._conductor(replay.name, self.workshop_cfg)._pure_judge_spec()
+        spec = self._conductor(replay.name, self.workshop_cfg)._leaf_judge_spec()
         expected = dict(_CONTEXT, tests_document=_CONTEXT["tests_document"].replace(
             old, "SEEDED DEFECT\n"))
         for key, name in spec.workshop_document_seeds.items():

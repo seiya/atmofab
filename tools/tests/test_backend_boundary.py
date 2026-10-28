@@ -3488,7 +3488,7 @@ class CapabilityOwnershipTests(unittest.TestCase):
     def test_the_bundle_gate_is_the_third_caller_and_converts_a_broken_import_too(self) -> None:
         # `m3c_checks_abi_violation` was enumerated as one of the seam's three callers and was
         # the one left without the conversion its two siblings got. It escapes into
-        # `_pure_bundle_violations`, which has no handler at that call, so the acceptance layer
+        # `_leaf_bundle_violations`, which has no handler at that call, so the acceptance layer
         # crashes rather than rejecting the bundle.
         import tools.codegen_bundle as codegen_bundle
 

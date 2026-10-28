@@ -2309,7 +2309,7 @@ class CodexReadingLeafCliTests(_CodexLeafCliCase):
             ("tests.md", "host_verdict.json"), None, ("review.json",)) - {"review.json"}
         workshop_tree.snapshot_tree(self.paths, host_placed)
         self.assertEqual(sorted(p.name for p in self.paths.snapshot.iterdir()), ["review.json"])
-        spec = self.conductor._pure_reviewer_spec("validate", "judge")
+        spec = self.conductor._leaf_reviewer_spec("validate", "judge")
         assembled = spec.workshop_assemble(self.paths.snapshot, ())
         self.assertEqual(assembled, review)
         self.assertEqual(leaf_contract.semantic_review_document_violations(assembled), [])

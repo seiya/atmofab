@@ -2,7 +2,7 @@
 """The `generate.verify` reviewer (M-D; a READING workshop leaf since issue #534 PR-J4-b).
 
 Covers the host side of the `generate.verify` channel in `tools/workflow_conductor.py` (the
-reviewer loop `_run_pure_reviewer_substep`, verdict validation, the source_meta.json
+reviewer loop `_run_leaf_reviewer_substep`, verdict validation, the source_meta.json
 projection, verdict_meta, the classify_failure verdict route) and the `tools/run_workflow.py`
 gate removal. The loop is driven through its workshop seam (`test_workshop_reviewer`'s
 `_ReviewerFake`, via `_reviewer_conductor` below): the leaf writes its verdict into the
@@ -79,7 +79,7 @@ def _verify_node(repo: Path, *, stage_checks_contract: bool = True,
                  stage_phase_02: bool = True) -> wc.NodeRefs:
     """A pure node with the producer's codegen_bundle.json already on disk (the reviewer input),
     and — unless the corresponding `stage_*` argument is False — the repository's checks-module
-    contract and phase_02 contract staged where `_build_pure_verify_context` reads them."""
+    contract and phase_02 contract staged where `_build_leaf_verify_context` reads them."""
     refs = _write_node(repo)
     src = repo / refs.source_dir()
     src.mkdir(parents=True, exist_ok=True)
@@ -100,7 +100,7 @@ def _verify_node(repo: Path, *, stage_checks_contract: bool = True,
 
 # ======================================================================================
 # The reviewer loop's workshop seam (issue #534 PR-J4-b: every reviewer is a READING workshop
-# leaf, so these rows drive `_run_pure_reviewer_substep` through it)
+# leaf, so these rows drive `_run_leaf_reviewer_substep` through it)
 # ======================================================================================
 def _reviewer_fake() -> type:
     """`test_workshop_reviewer._ReviewerFake`: the reviewer loop's workshop seam — the lineage
@@ -155,9 +155,9 @@ def _reviewer_conductor(repo: Path, script, *, cls: type | None = None, llm_conf
 def _run_verify(c, refs: wc.NodeRefs) -> wc.SubstepOutcome:
     """`generate.verify`'s reviewer loop with the node's own spec — what the deleted seam
     `_run_pure_verify_substep` bound, and what `run_substep` dispatches a judging pair to."""
-    return c._run_pure_reviewer_substep(
+    return c._run_leaf_reviewer_substep(
         refs, "generate", "verify", (),
-        c._pure_reviewer_spec("generate", "verify", c._shape_for_spec(refs, "generate")))
+        c._leaf_reviewer_spec("generate", "verify", c._shape_for_spec(refs, "generate")))
 
 
 def _spawned(c) -> int:
@@ -169,14 +169,14 @@ def _requests(c) -> list[dict]:
 
 
 # ======================================================================================
-# _build_pure_verify_context
+# _build_leaf_verify_context
 # ======================================================================================
 class PureVerifyContextTests(unittest.TestCase):
     def test_context_has_the_six_verify_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
-            ctx = _conductor(repo)._build_pure_verify_context(refs)
+            ctx = _conductor(repo)._build_leaf_verify_context(refs)
             self.assertEqual(set(ctx),
                              {"controlled_spec_document", "tests_document",
                               "ir_document", "target_profile",
@@ -198,7 +198,7 @@ class PureVerifyContextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
-            doc = _conductor(repo)._build_pure_verify_context(
+            doc = _conductor(repo)._build_leaf_verify_context(
                 refs)["checks_module_contract_document"]
             self.assertTrue(doc.startswith("## 1. The fixed ABI\n"), doc[:80])
             neutral_end = doc.index("## 1. The fixed ABI in Fortran")
@@ -243,7 +243,7 @@ class PureVerifyContextTests(unittest.TestCase):
             repo = Path(tmp)
             refs = _verify_node(repo, stage_checks_contract=False)
             with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_pure_verify_context(refs)
+                _conductor(repo)._build_leaf_verify_context(refs)
             self.assertIn("pure_checks_contract_document_missing", str(cm.exception))
 
     def test_each_unreadable_node_artifact_raises_its_named_document(self) -> None:
@@ -263,14 +263,14 @@ class PureVerifyContextTests(unittest.TestCase):
                 refs = _verify_node(repo)
                 (repo / rel_of(refs)).unlink()
                 with self.assertRaises(RuntimeError) as cm:
-                    _conductor(repo)._build_pure_verify_context(refs)
+                    _conductor(repo)._build_leaf_verify_context(refs)
                 self.assertIn(marker, str(cm.exception))
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
             (repo / refs.source_dir() / "codegen_bundle.json").write_bytes(b"\xff\xfe")
             with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_pure_verify_context(refs)
+                _conductor(repo)._build_leaf_verify_context(refs)
             self.assertIn("pure_bundle_document_missing", str(cm.exception))
             self.assertIn("UnicodeDecodeError", str(cm.exception))
         # ...and a whitespace-only one (a truncated write): the launch validator refuses it
@@ -280,7 +280,7 @@ class PureVerifyContextTests(unittest.TestCase):
             refs = _verify_node(repo)
             (repo / refs.ir_ref / "spec.ir.yaml").write_text(" \n\t\n", encoding="utf-8")
             with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_pure_verify_context(refs)
+                _conductor(repo)._build_leaf_verify_context(refs)
             self.assertIn("pure_ir_document_missing", str(cm.exception))
             self.assertTrue(str(cm.exception).endswith(": empty"), str(cm.exception))
 
@@ -293,7 +293,7 @@ class PureVerifyContextTests(unittest.TestCase):
             (repo / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").write_bytes(
                 b"## 1. x\n\xff\xfe\n## 5. y\n")
             with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_pure_verify_context(refs)
+                _conductor(repo)._build_leaf_verify_context(refs)
             self.assertIn("pure_checks_contract_document_missing", str(cm.exception))
 
     def test_the_language_binding_fails_closed_three_ways(self) -> None:
@@ -312,18 +312,18 @@ class PureVerifyContextTests(unittest.TestCase):
             with mock.patch.object(checks_abi, "document",
                                    lambda: body.replace("## 1. ", "## One ", 1)):
                 with self.assertRaises(RuntimeError) as cm:
-                    c._build_pure_verify_context(refs)
+                    c._build_leaf_verify_context(refs)
             self.assertIn("pure_checks_contract_document_unsliceable", str(cm.exception))
             self.assertIn("checks-ABI binding", str(cm.exception))
             with mock.patch.object(checks_abi, "document", side_effect=OSError("gone")):
                 with self.assertRaises(RuntimeError) as cm:
-                    c._build_pure_verify_context(refs)
+                    c._build_leaf_verify_context(refs)
             self.assertIn("pure_checks_abi_binding_missing", str(cm.exception))
             record = backend_registry.get("language", "fortran")
             with mock.patch.dict(backend_registry._BACKENDS, {("language", "fortran"): record._replace(
                     backend_provides=record.backend_provides - {"checks_abi"})}):
                 with self.assertRaises(RuntimeError) as cm:
-                    c._build_pure_verify_context(refs)
+                    c._build_leaf_verify_context(refs)
             self.assertIn("pure_checks_abi_binding_unavailable", str(cm.exception))
 
     def test_unsliceable_checks_contract_raises_the_named_contract(self) -> None:
@@ -335,7 +335,7 @@ class PureVerifyContextTests(unittest.TestCase):
             (repo / "docs" / "workflow" / "CHECKS_MODULE_CONTRACT.md").write_text(
                 "## 1. The fixed ABI\nbody\n", encoding="utf-8")
             with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_pure_verify_context(refs)
+                _conductor(repo)._build_leaf_verify_context(refs)
             self.assertIn("pure_checks_contract_document_unsliceable", str(cm.exception))
 
     def test_severity_rubric_document_is_the_rubric_subsection_of_the_real_phase_02(self) -> None:
@@ -345,7 +345,7 @@ class PureVerifyContextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
-            doc = _conductor(repo)._build_pure_verify_context(refs)["severity_rubric_document"]
+            doc = _conductor(repo)._build_leaf_verify_context(refs)["severity_rubric_document"]
             self.assertTrue(doc.startswith("#### Severity of a finding"), doc[:80])
             self.assertIn("names the repair", doc,
                           "the rubric's lead sentence no longer says what the value names; this "
@@ -464,7 +464,7 @@ class PureVerifyContextTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
             refs = _verify_node(repo)
-            doc = _conductor(repo)._build_pure_verify_context(refs)["severity_rubric_document"]
+            doc = _conductor(repo)._build_leaf_verify_context(refs)["severity_rubric_document"]
         # A VALUE bullet is one whose opener is `<word>`: — the shape the three value bullets
         # use. Summing openers over the ENUM (round 1's fix) restored nothing: it could never see
         # a bullet for a value outside the enum, so `- `fatal`: …` shipped green where the older
@@ -485,7 +485,7 @@ class PureVerifyContextTests(unittest.TestCase):
             repo = Path(tmp)
             refs = _verify_node(repo, stage_phase_02=False)
             with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_pure_verify_context(refs)
+                _conductor(repo)._build_leaf_verify_context(refs)
             self.assertIn("pure_severity_rubric_document_missing", str(cm.exception))
 
     def test_non_utf8_phase_02_raises_the_named_contract(self) -> None:
@@ -495,7 +495,7 @@ class PureVerifyContextTests(unittest.TestCase):
             (repo / "docs" / "workflow" / "phases" / "phase_02_generate.md").write_bytes(
                 b"#### Severity of a finding\n\xff\xfe\n## On-failure behavior\n")
             with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_pure_verify_context(refs)
+                _conductor(repo)._build_leaf_verify_context(refs)
             self.assertIn("pure_severity_rubric_document_missing", str(cm.exception))
 
     def test_unsliceable_phase_02_raises_the_named_contract(self) -> None:
@@ -512,7 +512,7 @@ class PureVerifyContextTests(unittest.TestCase):
                 real.replace("\n## On-failure behavior\n", "\n## Retry policy\n"),
                 encoding="utf-8")
             with self.assertRaises(RuntimeError) as cm:
-                _conductor(repo)._build_pure_verify_context(refs)
+                _conductor(repo)._build_leaf_verify_context(refs)
             self.assertIn("pure_severity_rubric_document_unsliceable", str(cm.exception))
 
 
@@ -707,7 +707,7 @@ class PureVerifySubstepTests(unittest.TestCase):
     def test_context_assembly_failure_is_a_recorded_fail_closed_outcome(self) -> None:
         """The HANDLER pin for issue #142's fail-closed disposition, not the builder's.
 
-        `_build_pure_verify_context` raising is only half the contract: `run_substep`'s callers
+        `_build_leaf_verify_context` raising is only half the contract: `run_substep`'s callers
         must never see an exception, so this loop has to convert it into the same recorded
         `pure_context_assembly_failed` transport outcome the producer produces. Deleting the
         try/except around the call would leave every builder-side test above green.
@@ -2025,7 +2025,7 @@ class PureVerifyTransientWallClockBudgetScopeTest(unittest.TestCase):
 # ======================================================================================
 class PureHarnessVerifyWiringTests(unittest.TestCase):
     """The reviewer half of the second shape, driven through the reviewer loop and
-    `run_substep` rather than by calling `_pure_reviewer_spec` directly.
+    `run_substep` rather than by calling `_leaf_reviewer_spec` directly.
 
     Choosing the spec and WIRING the choice into the two call sites are different things: a
     round-0 mutation sweep reported both call sites as unpinned while the spec's own rows were
@@ -2092,7 +2092,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
                 target.unlink()
                 try:
                     with self.assertRaises(RuntimeError) as caught:
-                        self.c._build_pure_harness_verify_context(self.refs)
+                        self.c._build_leaf_harness_verify_context(self.refs)
                     self.assertIn(reason, str(caught.exception))
                 finally:
                     target.write_text(body, encoding="utf-8")
@@ -2103,7 +2103,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
                              encoding="utf-8")
         try:
             with self.assertRaises(RuntimeError) as caught:
-                self.c._build_pure_harness_verify_context(self.refs)
+                self.c._build_leaf_harness_verify_context(self.refs)
             self.assertIn("pure_severity_rubric_document_unsliceable", str(caught.exception))
         finally:
             phase_doc.write_text(body, encoding="utf-8")
@@ -2112,7 +2112,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         # given a row above or shows up here. (An earlier form subtracted the reason STRINGS
         # from a set of context KEYS — a no-op term a round-4 reviewer spotted; the sets are
         # named explicitly now.)
-        ctx = self.c._build_pure_harness_verify_context(self.refs)
+        ctx = self.c._build_leaf_harness_verify_context(self.refs)
         raising = {"runner_output_contract_document", "severity_rubric_document",
                    "controlled_spec_document", "tests_document", "ir_document",
                    "bundle_document"}
@@ -2179,7 +2179,7 @@ class PureHarnessVerifyWiringTests(unittest.TestCase):
         a template is caught by the drift pin's digest and reaches a leaf only through a
         deliberate version bump, while a `controlled_spec.md` edit moves only that node's
         derivation key, which no test reads for meaning."""
-        ctx = self.c._build_pure_harness_verify_context(self.refs)
+        ctx = self.c._build_leaf_harness_verify_context(self.refs)
         contract = ctx["runner_output_contract_document"]
         self.assertIn("final before `write_perf`", contract)
         self.assertNotIn("whole execution", contract)

@@ -169,7 +169,7 @@ PROVIDER_BACKEND_TOKENS: Mapping[str, str] = {
 # `workflow_conductor.SUBSTEPS` minus `Conductor._is_deterministic_substep`; guarded by
 # `test_llm_leaf_substeps_matches_conductor`.
 #
-# NOTE the dispatch in `Conductor._pure_leaf_substep` additionally gates the two GENERATE pairs
+# NOTE the dispatch in `Conductor._leaf_substep` additionally gates the two GENERATE pairs
 # on the node having a bundle SHAPE at all (`Conductor._bundle_shape`: `m3c` or, since issue
 # #169, `harness`). No in-tree node answers None; a hand-crafted IR with no shape has no leaf
 # path for those two pairs, and since Z4 there is nothing to fall through to, so the conductor
