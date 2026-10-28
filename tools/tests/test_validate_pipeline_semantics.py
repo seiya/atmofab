@@ -28269,13 +28269,13 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         stamped, its prompt opening with the pure sentinel and carrying the identity block, and
         the read-only sandbox profile. The prompt is a LITERAL — the pure renderer went in issue
         #534 PR-J4-b — holding exactly what the audit reads of it: line 0 and the markers."""
-        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION, PURE_PROMPT_SENTINEL
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION, PURE_PROMPT_SENTINEL
         orch_root = self._orch_root(repo_root)
         req_path = orch_root / "launches" / f"{self._ARID}.request.json"
         req = json.loads(req_path.read_text(encoding="utf-8"))
         req["leaf_mode"] = "pure"
         # A real pure launch request carries the contract version; the audit re-checks its value.
-        req["prompt_contract_version"] = PURE_PROMPT_CONTRACT_VERSION
+        req["prompt_contract_version"] = LEAF_PROMPT_CONTRACT_VERSION
         req_path.write_text(json.dumps(req, ensure_ascii=False), encoding="utf-8")
         if pure_prompt:
             prompt = (
@@ -28284,7 +28284,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 f"Target node_key: {self._NODE}\nTarget step: generate\n"
                 f"Target substep: generate\norchestration_id: {self._ORCH}\n"
                 f"agent_run_id: {self._ARID}\n"
-                f"prompt_contract_version: {PURE_PROMPT_CONTRACT_VERSION}\n")
+                f"prompt_contract_version: {LEAF_PROMPT_CONTRACT_VERSION}\n")
             (orch_root / "launches" / f"{self._ARID}.prompt.txt").write_text(
                 prompt, encoding="utf-8")
         # The read-only sandbox profile — the ONE document a real pure launch persisted about
@@ -28473,18 +28473,18 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                        profile: dict | None = None, provider: str = "claude_cli") -> None:
         """Turn the generate.generate record into a WORKSHOP record, as a launch writes one
         since issue #534 PR-J4-b: the request declares `leaf_mode: workshop` with its lineage,
-        its provider and the ONE contract version (`PURE_PROMPT_CONTRACT_VERSION`), the prompt
+        its provider and the ONE contract version (`LEAF_PROMPT_CONTRACT_VERSION`), the prompt
         is the real `workshop generate.generate` template rendered for the request, the
         response names the wrapper endpoint a producing launch is served, and the sandbox
         profile is the writable lineage profile `record_launch` writes."""
         from tools import orchestration_runtime as ort
-        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         root = self._orch_root(repo_root)
         req_path = root / "launches" / f"{self._ARID}.request.json"
         req = json.loads(req_path.read_text(encoding="utf-8"))
         req.update(leaf_mode="workshop", workshop_lineage_id=self._ARID,
                    workshop_provider=provider,
-                   prompt_contract_version=PURE_PROMPT_CONTRACT_VERSION)
+                   prompt_contract_version=LEAF_PROMPT_CONTRACT_VERSION)
         req_path.write_text(json.dumps(req, ensure_ascii=False), encoding="utf-8")
         # A producing launch records the wrapper endpoint it was served
         # (`Conductor._launch_setting_surface`).
@@ -28499,7 +28499,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                 "node_key": self._NODE, "step": "generate", "substep": "generate",
                 "orchestration_id": self._ORCH, "agent_run_id": self._ARID,
                 "parent_agent_run_id": "orch_run_001", "source_id": "src_20260415_001",
-                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                 "allowed_output_paths": [], "pure_language": "fortran",
                 "pure_parallel": "openmp",
                 "pure_context": {"harness_capabilities": "{}", "target_profile": "t",
@@ -28734,8 +28734,8 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
         surviving constant, so a `workshop-9` record in the current orchestration is a violation
         — in the request and, independently, in the prompt line. `workshop-9` is a frozen
         history literal: the constant that held it is gone."""
-        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
-        self.assertNotEqual(PURE_PROMPT_CONTRACT_VERSION, "workshop-9")
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
+        self.assertNotEqual(LEAF_PROMPT_CONTRACT_VERSION, "workshop-9")
         # The control: the record as written now passes the version checks.
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -28753,7 +28753,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
                      if "prompt_contract_version" in v]
             self.assertEqual(len(found), 1, found)
             self.assertIn("workshop launch request prompt_contract_version must be "
-                          f"{PURE_PROMPT_CONTRACT_VERSION!r} (got 'workshop-9')", found[0])
+                          f"{LEAF_PROMPT_CONTRACT_VERSION!r} (got 'workshop-9')", found[0])
         # The prompt line alone stamped with it (the request is current).
         with tempfile.TemporaryDirectory() as tmp:
             repo_root = Path(tmp)
@@ -28761,7 +28761,7 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             self._make_workshop(repo_root)
             prompt_path = self._orch_root(repo_root) / "launches" / f"{self._ARID}.prompt.txt"
             text = prompt_path.read_text(encoding="utf-8")
-            line = f"prompt_contract_version: {PURE_PROMPT_CONTRACT_VERSION}"
+            line = f"prompt_contract_version: {LEAF_PROMPT_CONTRACT_VERSION}"
             self.assertIn(line, text)
             prompt_path.write_text(text.replace(line, "prompt_contract_version: workshop-9"),
                                    encoding="utf-8")
@@ -29004,10 +29004,10 @@ class PureLaunchRecordSweepTest(unittest.TestCase):
             # into a no-op replace, leaving the prompt line at the CURRENT version — the assertion
             # below would then pass on the request-json violation alone and the prompt-line check
             # would be silently dead.
-            from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
+            from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
             prompt_path.write_text(
                 prompt_path.read_text(encoding="utf-8").replace(
-                    f"prompt_contract_version: {PURE_PROMPT_CONTRACT_VERSION}",
+                    f"prompt_contract_version: {LEAF_PROMPT_CONTRACT_VERSION}",
                     "prompt_contract_version: pure-OBSOLETE"),
                 encoding="utf-8")
             self.assertTrue(

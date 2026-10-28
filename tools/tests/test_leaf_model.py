@@ -1,6 +1,6 @@
 """Z4 (issue #171): one leaf model, pinned at the mechanism — the PURE leaf from Z4, the
-WORKSHOP leaf since issue #534 PR-J4-b deleted the pure one (the file keeps its name until a
-later PR renames it).
+WORKSHOP leaf since issue #534 PR-J4-b deleted the pure one (`test_pure_only_leaf_model.py`
+until PR-J4-d renamed it).
 
 The deletions of PR-1 remove the agentic leaf loop and everything only it reached. What has
 to survive them is not any one branch but two properties of the conductor as a whole, and both
@@ -734,11 +734,11 @@ class LaunchPromptValidationFloorTests(unittest.TestCase):
     def test_a_host_rendered_prompt_missing_a_request_field_value_is_refused(self) -> None:
         from tools.orchestration_runtime import (
             _validate_launch_prompt_text, render_launch_prompt_text)
-        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         payload = {
             **self._BASE, "step": "validate", "substep": "judge", "leaf_mode": "workshop",
             "workshop_provider": "claude_cli", "workshop_lineage_id": "arid-1",
-            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
             "pure_context": {k: f"<{k} fixture body>"
                              for k in ort.PURE_CONTEXT_REQUIRED_KEYS[("validate", "judge")]},
         }
@@ -1040,17 +1040,17 @@ class PureAndPromptMustAgreeTests(unittest.TestCase):
         is hand-built — the pure sentinel and the identity block — and the refusal is the one
         this arm raises, not the renderer's."""
         from tools.orchestration_runtime import _validate_launch_prompt_text
-        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION, PURE_PROMPT_SENTINEL
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION, PURE_PROMPT_SENTINEL
         payload = {
             "node_key": "component/x@0.1.0", "step": "validate", "substep": "judge",
             "orchestration_id": "o", "agent_run_id": "arid-1", "parent_agent_run_id": "orch",
             "agent_model": "opus", "workflow_mode": "dev", "leaf_mode": "pure",
-            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
         }
         body = (f"{PURE_PROMPT_SENTINEL}: hand-built\n"
                 "Target node_key: component/x@0.1.0\nTarget step: validate\n"
                 "Target substep: judge\norchestration_id: o\nagent_run_id: arid-1\n"
-                f"prompt_contract_version: {PURE_PROMPT_CONTRACT_VERSION}\n")
+                f"prompt_contract_version: {LEAF_PROMPT_CONTRACT_VERSION}\n")
         with self.assertRaises(ValueError) as caught:
             _validate_launch_prompt_text(payload, "a friendly preamble\n" + body)
         self.assertIn("must open with the pure-function sentinel", str(caught.exception))
@@ -1058,13 +1058,13 @@ class PureAndPromptMustAgreeTests(unittest.TestCase):
     def test_a_workshop_request_prompt_must_open_with_the_sentinel(self) -> None:
         from tools.orchestration_runtime import (
             _validate_launch_prompt_text, render_launch_prompt_text)
-        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         payload = {
             "node_key": "component/x@0.1.0", "step": "validate", "substep": "judge",
             "orchestration_id": "o", "agent_run_id": "arid-1", "parent_agent_run_id": "orch",
             "agent_model": "opus", "workflow_mode": "dev", "leaf_mode": "workshop",
             "workshop_provider": "claude_cli", "workshop_lineage_id": "arid-1",
-            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
             "pure_context": {k: f"<{k}>" for k in
                              ort.PURE_CONTEXT_REQUIRED_KEYS[("validate", "judge")]},
         }

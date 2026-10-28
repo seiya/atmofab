@@ -222,7 +222,7 @@ class HappyPathTests(_Base):
         meta = self.bundle_meta()
         self.assertEqual(meta["result"], "pass")
         self.assertEqual(meta["leaf_mode"], "workshop")
-        self.assertEqual(meta["prompt_contract_version"], leaf_contract.PURE_PROMPT_CONTRACT_VERSION)
+        self.assertEqual(meta["prompt_contract_version"], leaf_contract.LEAF_PROMPT_CONTRACT_VERSION)
         # One version since issue #534 PR-J4-b: the retired workshop counter is not written.
         self.assertNotIn("workshop_prompt_contract_version", meta)
         row = meta["per_attempt"][0]
@@ -236,7 +236,7 @@ class HappyPathTests(_Base):
         self.assertEqual(request["leaf_mode"], "workshop")
         self.assertEqual(request["workshop_lineage_id"], "child-1")
         self.assertEqual(request["prompt_contract_version"],
-                         leaf_contract.PURE_PROMPT_CONTRACT_VERSION)
+                         leaf_contract.LEAF_PROMPT_CONTRACT_VERSION)
         self.assertNotIn("workshop_prompt_contract_version", request)
         self.assertIn("pure_context", request)
         (spawn,) = self.c.spawns
@@ -1436,7 +1436,7 @@ class WorkshopCompileProducerTests(unittest.TestCase):
                          ["verification_status"], "pending")
         meta = self.meta()
         self.assertEqual((meta["result"], meta["leaf_mode"], meta["prompt_contract_version"]),
-                         ("pass", "workshop", leaf_contract.PURE_PROMPT_CONTRACT_VERSION))
+                         ("pass", "workshop", leaf_contract.LEAF_PROMPT_CONTRACT_VERSION))
         # One version since issue #534 PR-J4-b: the retired workshop counter is not written.
         self.assertNotIn("workshop_prompt_contract_version", meta)
         self.assertNotIn("parts", meta)

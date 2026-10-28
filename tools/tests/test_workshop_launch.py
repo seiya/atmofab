@@ -31,7 +31,7 @@ from tools.orchestration_runtime import (
     render_bwrap_command,
 )
 from tools.leaf_contract import (
-    PURE_PROMPT_CONTRACT_VERSION,
+    LEAF_PROMPT_CONTRACT_VERSION,
     WORKSHOP_PROMPT_SENTINEL,
     workshop_mcp_config_json,
 )
@@ -81,7 +81,7 @@ def _with_test_templates(test: unittest.TestCase) -> None:
 
 def _workshop_request(child: str, lineage: str | None = None, **overrides) -> dict:
     req = _pure_request("generate", leaf_mode="workshop",
-                        prompt_contract_version=PURE_PROMPT_CONTRACT_VERSION,
+                        prompt_contract_version=LEAF_PROMPT_CONTRACT_VERSION,
                         agent_run_id=child, workshop_lineage_id=lineage or child,
                         workshop_provider="claude_cli")
     req.update(overrides)
@@ -324,7 +324,7 @@ class WorkshopRecordLaunchTests(_Env):
         self.assertEqual(request["allowed_output_paths"], [])
         prompt = (self._base() / "launches/ar_ws_cold.prompt.txt").read_text()
         self.assertTrue(prompt.startswith(WORKSHOP_PROMPT_SENTINEL))
-        self.assertIn(f"prompt_contract_version: {PURE_PROMPT_CONTRACT_VERSION}", prompt)
+        self.assertIn(f"prompt_contract_version: {LEAF_PROMPT_CONTRACT_VERSION}", prompt)
         # The workshop profile passes the persisted-record audit the validator runs.
         import tools.validate_pipeline_semantics as vps
         self.assertEqual(vps._workshop_profile_violations(profile), [])

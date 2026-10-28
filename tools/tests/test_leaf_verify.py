@@ -32,7 +32,7 @@ from tools.backends import registry as _bb_registry  # noqa: E402
 from tools.tests.target_fixtures import FORTRAN_CPU as _BB_PROFILE  # noqa: E402
 _FORTRAN_BUNDLE_FACTS = _bb_registry.capability_module(
     "language", _BB_PROFILE.toolchain["language"], "bundle_facts")
-from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION, VERDICT_SEVERITIES
+from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION, VERDICT_SEVERITIES
 from tools.tests.test_leaf_producer import (
     _NODE, _write_node, _PureFakeConductor, _valid_bundle, _envelope, _conductor,
 )
@@ -846,7 +846,7 @@ class PureVerifySubstepTests(unittest.TestCase):
         vmeta = json.loads((base / "verdict_meta.json").read_text())
         self.assertEqual(vmeta["result"], "pass")
         self.assertIsNone(vmeta["failure_category"])
-        self.assertEqual(vmeta["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
+        self.assertEqual(vmeta["prompt_contract_version"], LEAF_PROMPT_CONTRACT_VERSION)
         self.assertEqual(vmeta["per_attempt"][0]["model"], "claude-opus-4-8")
         self.assertEqual(vmeta["per_attempt"][0]["model_provenance"], "result_envelope")
 
@@ -1722,7 +1722,7 @@ class PureVerifyLaunchRequestTests(unittest.TestCase):
                                           workshop_provider="claude_cli", **kwargs)
             self.assertEqual(req["leaf_mode"], "workshop")
             self.assertEqual(req["substep"], "verify")
-            self.assertEqual(req["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
+            self.assertEqual(req["prompt_contract_version"], LEAF_PROMPT_CONTRACT_VERSION)
             self.assertNotIn("workshop_prompt_contract_version", req)
             self.assertEqual(req["allowed_output_paths"], [])
             self.assertEqual(req["skill_name"], "")
@@ -1773,7 +1773,7 @@ class PureVerifyOutputContractTests(unittest.TestCase):
         for extra in self._VERIFY_REQUESTS:
             req = {"leaf_mode": "workshop", "workshop_provider": "claude_cli",
                    "pure_language": "fortran", "pure_parallel": "openmp",
-                   "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION, **extra}
+                   "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION, **extra}
             # The `Output contract` paragraph of each verify launch template, read where the
             # cold repair reads it: the composed template itself (issue #510).
             texts.append(next(b.strip() for b in ort._pure_launch_template(req).split("\n\n")
@@ -1806,7 +1806,7 @@ class PureVerifyOutputContractTests(unittest.TestCase):
         for extra in self._VERIFY_REQUESTS:
             req = {"leaf_mode": "workshop", "workshop_provider": "claude_cli",
                    "pure_language": "fortran", "pure_parallel": "openmp",
-                   "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                   "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                    "repair_findings": "verdict JSON did not parse", **extra}
             with self.subTest(request=extra):
                 cold = ort._render_pure_repair_prompt(req)

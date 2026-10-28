@@ -1141,7 +1141,7 @@ def _numbered_section_range(text: str, begin: str, end: str, *, subject: str) ->
         docstring records what it measured about its own document.
 
     A slice is a pure-leaf INPUT: changing what one spans changes what the leaf reads and
-    therefore requires a `PURE_PROMPT_CONTRACT_VERSION` bump. The drift guard hashes the slices
+    therefore requires a `LEAF_PROMPT_CONTRACT_VERSION` bump. The drift guard hashes the slices
     THEMSELVES (`tools/tests/test_leaf_prompt_contract_drift.py`), so a silent re-slice changes
     the digest instead of shipping unversioned.
     """
@@ -1296,7 +1296,7 @@ def _generate_verify_severity_rubric_section(text: str) -> str:
     second enumeration inside this function.
 
     This slice is a pure-leaf INPUT: changing what it spans changes what the reviewer reads and
-    therefore requires a `PURE_PROMPT_CONTRACT_VERSION` bump. The drift guard hashes the slice
+    therefore requires a `LEAF_PROMPT_CONTRACT_VERSION` bump. The drift guard hashes the slice
     ITSELF (`tools/tests/test_leaf_prompt_contract_drift.py`), so a silent re-slice changes the
     digest instead of shipping unversioned."""
     lines = text.splitlines()
@@ -1936,9 +1936,9 @@ def build_launch_request(
                          "request and names its lineage (workshop_lineage_id); the pure leaf "
                          "it would otherwise describe went in issue #534 PR-J4-b")
     if pure_leaf:
-        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION, WORKSHOP_LEAF_MODE
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION, WORKSHOP_LEAF_MODE
         req["leaf_mode"] = WORKSHOP_LEAF_MODE
-        req["prompt_contract_version"] = PURE_PROMPT_CONTRACT_VERSION
+        req["prompt_contract_version"] = LEAF_PROMPT_CONTRACT_VERSION
         req["workshop_lineage_id"] = workshop_lineage_id
         # The provider whose tool surface the prompt states (`<tool_surface>`, step 2).
         req["workshop_provider"] = workshop_provider
@@ -6704,12 +6704,12 @@ class Conductor:
         model's provenance (`_spawn_workshop_turn`: claude's CLI result envelope, codex's
         host-pinned slug, an HTTP provider's response or configured entry). A re-derivable value is not
         introduced beyond what only the transcript would otherwise hold."""
-        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         meta: dict[str, Any] = {
             "result": result,
             "failure_category": failure_category,
             "attempts": attempts,
-            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
             "per_attempt": per_attempt,
         }
         # Every leaf is a `workshop leaf` (issue #534; the only leaf model since PR-J4-b), so
@@ -6876,7 +6876,7 @@ class Conductor:
         R4-a PR-3 are gone with the IR section they governed. The checks-module contract's ABI
         sections were the one target-coloured document left (R4-a's accepted residual); since
         issue #289 (R4-b PR-2) they are language-neutral, and the language binding is shown
-        only to the `generate` leaves. Its version is `PURE_PROMPT_CONTRACT_VERSION`'s, the
+        only to the `generate` leaves. Its version is `LEAF_PROMPT_CONTRACT_VERSION`'s, the
         classification `test_derivation_transformation_drift.INLINED_DOCUMENT_CLASS` gives it
         (`contract`, pinned by `test_leaf_prompt_contract_drift`) — not
         `COMPILE_INLINED_DOCUMENTS_VERSION`'s, which pins the three documents this context
@@ -7281,12 +7281,12 @@ class Conductor:
         pair it lives beside `compile_static_meta.json` and is named after its substep the same
         way; `validate.judge` passes its run-node dir, because that is where the run's own
         records live."""
-        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         meta: dict[str, Any] = {
             "result": result,
             "failure_category": failure_category,
             "attempts": attempts,
-            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
             "per_attempt": per_attempt,
         }
         # Every leaf is a `workshop leaf` (issue #534; the only leaf model since PR-J4-b), so
@@ -7390,7 +7390,7 @@ class Conductor:
 
         Never called on an exhausted attempt: no accepted document, no file — which is what
         makes the file's absence the signal `run_phase` routes on."""
-        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         from tools.raw_evidence_excerpt import RAW_EXCERPT_POLICY_VERSION
         paths = self._pure_judge_document_refs(refs)
         findings = []
@@ -7414,7 +7414,7 @@ class Conductor:
             "run_id": refs.run_id,
             "attempt_count": attempts,
             "raw_excerpt_policy_version": RAW_EXCERPT_POLICY_VERSION,
-            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
         }
         if review.get("notes"):
             review_document["notes"] = review["notes"]
@@ -9261,12 +9261,12 @@ class Conductor:
         meta_contracts and carries no per-attempt usage), and the envelope usage is not recoverable
         from any other artifact — so this file is a justified (non-redundant) persistence, exactly
         as bundle_meta.json is for the producer."""
-        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         meta: dict[str, Any] = {
             "result": result,
             "failure_category": failure_category,
             "attempts": attempts,
-            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
             "per_attempt": per_attempt,
         }
         # Every leaf is a `workshop leaf` (issue #534; the only leaf model since PR-J4-b), so

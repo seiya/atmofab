@@ -19,7 +19,7 @@ The output also carries `_capture_source`: the source path, byte count and sha25
 recorded request, so that anyone holding the workspace can check a tracked fixture is this
 script's output and not a hand edit. **This script's output is never edited by hand** —
 including `prompt_contract_version`, which is the contract at capture time and is read as
-historical by the tests; a bump of `PURE_PROMPT_CONTRACT_VERSION` obliges no re-capture.
+historical by the tests; a bump of `LEAF_PROMPT_CONTRACT_VERSION` obliges no re-capture.
 """
 from __future__ import annotations
 

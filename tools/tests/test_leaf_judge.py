@@ -37,7 +37,7 @@ import tools.llm_config as lc
 import tools.raw_evidence_excerpt as rex
 import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
-from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
+from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
 from tools.tests.llm_samples import sample_config as _cfg
 from tools.tests.target_fixtures import TARGET_ID as _TARGET_ID
 from tools.tests.test_leaf_producer import (
@@ -334,7 +334,7 @@ class SemanticReviewWriterTests(_Fixture):
         # FROM the constant, not a literal: the stamp exists so a recorded review says which
         # window its judge looked through, which a hardcoded number would not track.
         self.assertEqual(doc["raw_excerpt_policy_version"], rex.RAW_EXCERPT_POLICY_VERSION)
-        self.assertEqual(doc["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
+        self.assertEqual(doc["prompt_contract_version"], LEAF_PROMPT_CONTRACT_VERSION)
         self.assertNotIn("notes", doc)
 
     def test_scope_refs_exist_and_are_workspace_rooted(self) -> None:
@@ -431,7 +431,7 @@ class PureJudgeLoopTests(_Fixture):
             "decision"], "pass")
         meta = json.loads(self.run_node("judge_meta.json").read_text())
         self.assertEqual(meta["result"], "pass")
-        self.assertEqual(meta["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
+        self.assertEqual(meta["prompt_contract_version"], LEAF_PROMPT_CONTRACT_VERSION)
         row = _finalized(c)[-1]
         # A pure row carries no output_refs, so the summary is the only thing that can satisfy
         # `_validate_agent_summary_text`.

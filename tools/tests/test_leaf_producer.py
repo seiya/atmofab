@@ -30,7 +30,7 @@ import tools.orchestration_runtime as ort
 from tools.tests.target_fixtures import composed_pure_template
 import tools.workflow_conductor as wc
 import tools.validate_pipeline_semantics as vps
-from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
+from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
 from tools import usage_reset
 from tools.tests.llm_samples import sample_config_with as _cfg
 from tools.tests.private_root_fixture import (
@@ -1360,7 +1360,7 @@ class PureProducerSubstepTests(unittest.TestCase):
         self.assertTrue((base / "src" / "Makefile").exists())
         meta = json.loads((base / "bundle_meta.json").read_text())
         self.assertEqual(meta["result"], "pass")
-        self.assertEqual(meta["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
+        self.assertEqual(meta["prompt_contract_version"], LEAF_PROMPT_CONTRACT_VERSION)
         self.assertEqual(meta["per_attempt"][0]["model"], "claude-opus-4-8")
         self.assertEqual(meta["per_attempt"][0]["model_provenance"], "result_envelope")
 
@@ -2598,7 +2598,7 @@ class PureLaunchRequestTests(unittest.TestCase):
             self.assertEqual(req["leaf_mode"], "workshop")
             self.assertEqual((req["workshop_lineage_id"], req["workshop_provider"]),
                              ("c", "claude_cli"))
-            self.assertEqual(req["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
+            self.assertEqual(req["prompt_contract_version"], LEAF_PROMPT_CONTRACT_VERSION)
             self.assertEqual(req["allowed_output_paths"], [])
             self.assertEqual(req["skill_name"], "")
             self.assertEqual(req["skill_ref"], "")
@@ -2762,7 +2762,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
             "pure_language": "fortran",
             "pure_parallel": "openmp",
             "node_key": _NODE, "orchestration_id": "o", "agent_run_id": "c",
-            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
             "workshop_lineage_id": "c", "workshop_provider": "claude_cli",
             "repair_findings": "capability_requirements missing",
             "pure_context": context,
@@ -2882,7 +2882,7 @@ class PureColdRepairPromptTests(unittest.TestCase):
                 req = {"leaf_mode": "workshop", "step": step, "substep": substep,
                        "node_key": _HARNESS if shape == "harness" else _NODE,
                        "orchestration_id": "o", "agent_run_id": "c",
-                       "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                       "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                        "workshop_lineage_id": "c", "workshop_provider": "claude_cli",
                        "repair_findings": "x is missing",
                        "pure_context": {k: f"<{k} body>" for k in keys}}

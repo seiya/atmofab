@@ -47,7 +47,7 @@ from tools.tests.target_fixtures import composed_pure_template
 from tools.leaf_contract import (
     PURE_DOC_FENCE_BEGIN,
     PURE_DOC_FENCE_END,
-    PURE_PROMPT_CONTRACT_VERSION,
+    LEAF_PROMPT_CONTRACT_VERSION,
     PURE_PROMPT_SENTINEL,
     VERDICT_SEVERITIES,
     WORKSHOP_LAUNCH_PAIRS,
@@ -205,7 +205,7 @@ def _pure_request(substep: str = "generate", **overrides) -> dict[str, object]:
         "pipeline_ref": _PIPE_REF,
         "dependency_ref": _DEP_REF,
         "source_id": "src_20260415_001",
-        "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+        "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
         "allowed_output_paths": [],
         "pure_context": ctx,
     }
@@ -632,7 +632,7 @@ class PureRenderTests(unittest.TestCase):
         for token in (
             "Target node_key:", "Target step:", "Target substep:",
             "orchestration_id:", "agent_run_id:",
-            f"prompt_contract_version: {PURE_PROMPT_CONTRACT_VERSION}",
+            f"prompt_contract_version: {LEAF_PROMPT_CONTRACT_VERSION}",
         ):
             self.assertIn(token, prompt)
         # No `<placeholder>` token of a document survives, and no document is inlined.
@@ -990,7 +990,7 @@ class PureRenderTests(unittest.TestCase):
     # the shape change silently DELETED phase_02's per-bullet axis pin. Measured: re-grounding
     # phase_02's `minor` bullet on the consequence axis is red at `29f8f93` and green at
     # `c27007d` in this file. Its only remaining guard was the pure-prompt drift digest, whose
-    # remedy line says "bump `PURE_PROMPT_CONTRACT_VERSION`" — which is exactly what a
+    # remedy line says "bump `LEAF_PROMPT_CONTRACT_VERSION`" — which is exactly what a
     # maintainer making an intentional documentation edit does, a trap
     # `_generate_verify_severity_rubric_section`'s own docstring warns about in those words.
     #
@@ -1248,7 +1248,7 @@ class PureRenderTests(unittest.TestCase):
         sources = {
             "_generate_verify_severity_rubric_section": "workflow_conductor.py",
             "pure_severity_rubric_document_unsliceable": "workflow_conductor.py",
-            "PURE_PROMPT_CONTRACT_VERSION": "leaf_contract.py",
+            "LEAF_PROMPT_CONTRACT_VERSION": "leaf_contract.py",
         }
         for name, module in sources.items():
             self.assertIn(name, note,
@@ -3431,11 +3431,11 @@ class PureRepairScopeSentenceTests(unittest.TestCase):
 
     @staticmethod
     def _render(step: str, substep: str) -> str:
-        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         return ort._render_pure_repair_prompt({
             "node_key": "component/x@1.0.0", "step": step, "substep": substep,
             "orchestration_id": "o", "agent_run_id": "child-1",
-            "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
             "warm_resume": True, "repair_strategy": "reuse",
             "repair_findings": "verification_status 'fail' requires at least one finding",
         })

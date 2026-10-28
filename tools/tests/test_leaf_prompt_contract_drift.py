@@ -4,7 +4,7 @@ Written for the pure leaf; since issue #534 PR-J4-b it pins the one leaf model, 
 leaf`, and its tuple is the UNION of the pure pin's surviving members and the workshop pin's
 (`test_workshop_producer._WORKSHOP_CONTRACT_DIGESTS`, a frozen history literal now). The leaf's
 behavioral contract is whatever the launch templates + the fixed ABI constants say, and a change to any of them is a behavior change that MUST be observable through
-`PURE_PROMPT_CONTRACT_VERSION` (so `bundle_meta.json` / the launch record stamp the new contract).
+`LEAF_PROMPT_CONTRACT_VERSION` (so `bundle_meta.json` / the launch record stamp the new contract).
 Nothing else enforces that coupling — a one-character template edit with no version bump, or a bump
 with a stale template, both ship silently.
 
@@ -50,7 +50,7 @@ days in the seven weeks to 2026-09-07 — measured at `04a7b75` with
 over 12 days. That figure was carried in from the planning session rather than re-measured here,
 and no counting of this file's history reproduces it; the argument it supports is unaffected,
 but a refusal's own justification has to be checkable.) So hashing it would bump
-`PURE_PROMPT_CONTRACT_VERSION` on most edits to it — and a bump
+`LEAF_PROMPT_CONTRACT_VERSION` on most edits to it — and a bump
 has two side effects that reach work this pin has nothing to do with: `_resolve_exemplar_source`
 stops offering every sibling exemplar certified at an earlier version, and
 `validate_pipeline_semantics._validate_orchestration_hierarchy` refuses to `--resume` an
@@ -78,7 +78,7 @@ here would be redundant and self-referential.
 DELIBERATELY OUT OF SCOPE — host-side acceptance-gate / backstop IMPLEMENTATIONS (e.g.
 `validate_pipeline_semantics._validate_diagnostics_contract_output`, the post_execute backstop for
 the diagnostics contract that the producer prompt's clause (A) is written against).
-`PURE_PROMPT_CONTRACT_VERSION` tracks the leaf's INPUT contract (the prompt templates, the
+`LEAF_PROMPT_CONTRACT_VERSION` tracks the leaf's INPUT contract (the prompt templates, the
 system prompts, the tool surface — see `leaf_contract.py`), NOT host-side checks that
 run AFTER the leaf returns. Hashing such a gate's source into this tuple would (a) force a spurious
 version bump on every transparent gate change — a refactor, a comment, or a false-positive FIX —
@@ -101,7 +101,7 @@ import tools.orchestration_runtime as ort
 import tools.workflow_conductor as wc
 from tools.backends import registry as _registry
 from tools import leaf_contract
-from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
+from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
 
 #: The leaf's launch templates — since issue #534 PR-J4-b the eleven `workshop_*.txt` files, the
 #: one leaf model's (the ten `pure_*.txt` files this tuple hashed through `pure-84` are deleted).
@@ -122,7 +122,7 @@ _TEMPLATE_FILES = (
 )
 
 # sha256 of the canonical serialization of the coupled tuple, keyed by contract version. When an
-# INTENTIONAL contract change bumps `PURE_PROMPT_CONTRACT_VERSION`, KEEP the existing entries and
+# INTENTIONAL contract change bumps `LEAF_PROMPT_CONTRACT_VERSION`, KEEP the existing entries and
 # ADD the new (version -> digest) entry with the value this test prints on failure. A bump with no
 # matching entry, an edit with no bump, or a new version whose digest duplicates an earlier one (an
 # empty bump OR a silent revert to a prior contract) all fail here. Never delete or edit a
@@ -142,7 +142,7 @@ _TEMPLATE_FILES = (
 # current-schema digest — so they do NOT detect a future REVERT of the template to the pre-pure-8
 # (pure-6/pure-7) contract. Revert detection holds only among versions sharing the CURRENT schema
 # (pure-8 onward); the empty-bump guard across all pinned versions is unaffected. Only the CURRENT
-# version's pin (whichever `PURE_PROMPT_CONTRACT_VERSION` names, below) is a live equality
+# version's pin (whichever `LEAF_PROMPT_CONTRACT_VERSION` names, below) is a live equality
 # target for `_digest()` — naming a specific version here just goes stale on every bump.
 PINNED: dict[str, str] = {
     "pure-6": "b614072bcaad7ffe61f48d54256305b89982457d2ef6c3b5126e09598e5e7067",
@@ -1299,7 +1299,7 @@ class PurePromptContractDriftTests(unittest.TestCase):
         resolution = (
             f"\n\nRecomputed digest: {computed}\n"
             "Resolve ONE of two ways:\n"
-            f"  (1) INTENTIONAL contract change: bump PURE_PROMPT_CONTRACT_VERSION (tools/leaf_contract.py), "
+            f"  (1) INTENTIONAL contract change: bump LEAF_PROMPT_CONTRACT_VERSION (tools/leaf_contract.py), "
             "KEEP the existing PINNED entries, and add PINNED['<new-version>'] = '" + computed
             + "' here (its digest must differ from every existing pin — else it is an empty bump).\n"
             "  (2) UNINTENTIONAL drift: revert the edit to the pinned surface "
@@ -1315,13 +1315,13 @@ class PurePromptContractDriftTests(unittest.TestCase):
             "says `pure`."
         )
         self.assertIn(
-            PURE_PROMPT_CONTRACT_VERSION, PINNED,
-            f"PURE_PROMPT_CONTRACT_VERSION={PURE_PROMPT_CONTRACT_VERSION!r} has no PINNED entry."
+            LEAF_PROMPT_CONTRACT_VERSION, PINNED,
+            f"LEAF_PROMPT_CONTRACT_VERSION={LEAF_PROMPT_CONTRACT_VERSION!r} has no PINNED entry."
             + resolution,
         )
         self.assertEqual(
-            computed, PINNED[PURE_PROMPT_CONTRACT_VERSION],
-            f"pure prompt contract digest for {PURE_PROMPT_CONTRACT_VERSION!r} does not match the pin."
+            computed, PINNED[LEAF_PROMPT_CONTRACT_VERSION],
+            f"pure prompt contract digest for {LEAF_PROMPT_CONTRACT_VERSION!r} does not match the pin."
             + resolution,
         )
 

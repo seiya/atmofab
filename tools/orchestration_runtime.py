@@ -91,7 +91,7 @@ try:
         PURE_DOC_FENCE_BEGIN,
         PURE_DOC_FENCE_END,
         PURE_LEAF_MODE,
-        PURE_PROMPT_CONTRACT_VERSION,
+        LEAF_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
         WORKSHOP_LAUNCH_PAIRS,
         WORKSHOP_LEAF_MODE,
@@ -140,7 +140,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         PURE_DOC_FENCE_BEGIN,
         PURE_DOC_FENCE_END,
         PURE_LEAF_MODE,
-        PURE_PROMPT_CONTRACT_VERSION,
+        LEAF_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
         WORKSHOP_LAUNCH_PAIRS,
         WORKSHOP_LEAF_MODE,
@@ -3963,7 +3963,7 @@ def _catalog_family_index(repo_root: Path) -> list[dict[str, str]]:
 
 def _exemplar_contract_version_matches(model_src: Path) -> bool:
     """True iff the certified pure source at ``model_src`` was authored under the CURRENT
-    ``PURE_PROMPT_CONTRACT_VERSION``, read from its ``bundle_meta.json#prompt_contract_version``.
+    ``LEAF_PROMPT_CONTRACT_VERSION``, read from its ``bundle_meta.json#prompt_contract_version``.
 
     ``model_src`` is ``.../source/<source_id>/src/<id>_model.f90``, so the pure ``bundle_meta.json``
     is two parents up. This gates the R5 M3c model+checks exemplar: a sibling's ``<id>_checks.f90``
@@ -3984,7 +3984,7 @@ def _exemplar_contract_version_matches(model_src: Path) -> bool:
     except Exception:
         return False
     return (isinstance(doc, dict)
-            and str(doc.get("prompt_contract_version", "")).strip() == PURE_PROMPT_CONTRACT_VERSION)
+            and str(doc.get("prompt_contract_version", "")).strip() == LEAF_PROMPT_CONTRACT_VERSION)
 
 
 def _resolve_exemplar_source(
@@ -11292,10 +11292,10 @@ def _validate_pure_launch_request_payload(request_payload: dict[str, Any]) -> No
             f"got (step={step!r}, substep={substep!r})"
         )
     version = request_payload.get("prompt_contract_version")
-    if version != PURE_PROMPT_CONTRACT_VERSION:
+    if version != LEAF_PROMPT_CONTRACT_VERSION:
         raise ValueError(
             f"{leaf_mode} launch request prompt_contract_version must be exactly "
-            f"{PURE_PROMPT_CONTRACT_VERSION!r}; got {version!r}"
+            f"{LEAF_PROMPT_CONTRACT_VERSION!r}; got {version!r}"
         )
     aop = request_payload.get("allowed_output_paths")
     if aop not in (None, []):

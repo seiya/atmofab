@@ -175,14 +175,15 @@ _NON_BUILDER_KEYS = {
 # and not listed above (it was, for one commit, and the omission mutant survived).
 _DETERMINISTIC_ONLY_NON_BUILDER_KEYS = {"skill_must_read_refs"}
 # The one builder field a pure capture is NOT held to verbatim. A capture carries the contract
-# version of ITS run, and `PURE_PROMPT_CONTRACT_VERSION` is bumped on every prompt-template
-# change (`git log --date=short -G'PURE_PROMPT_CONTRACT_VERSION = ' -- tools/leaf_contract.py`:
+# version of ITS run, and `LEAF_PROMPT_CONTRACT_VERSION` is bumped on every prompt-template
+# change (`git log --date=short -G'PURE_PROMPT_CONTRACT_VERSION = ' -- tools/pure_leaf.py`, the names
+# before issue #534 PR-J4-d:
 # 20 commits between 2026-09-03 and 2026-09-12, pure-24 -> pure-43), so pinning the literal
 # would make every bump red and the cheap way to re-green it a hand edit — after which the
 # fixture is no longer a capture. The field is compared as: the builder emits the CURRENT
 # constant, and the capture carries a well-formed version of the same family.
 _HISTORICAL_KEYS = {"prompt_contract_version"}
-#: The form of `PURE_PROMPT_CONTRACT_VERSION` — `pure-NN` through issue #534 PR-J4-b, `leaf-NN`
+#: The form of `LEAF_PROMPT_CONTRACT_VERSION` — `pure-NN` through issue #534 PR-J4-b, `leaf-NN`
 #: from the first bump after it (the counter stops saying `pure`).
 _CONTRACT_VERSION_FORM = re.compile(r"^(pure|leaf)-\d+$")
 #: The form a CAPTURED workshop row may carry: a capture keeps the version of its run, and the
@@ -331,9 +332,9 @@ def _assert_builder_reproduces(tc: unittest.TestCase, req: dict) -> None:
             continue
         tc.assertEqual(value, req[key], f"{step}/{substep}: field {key} mismatch")
     if req.get("leaf_mode") == "workshop":
-        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
-        tc.assertEqual(built["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
-        tc.assertRegex(PURE_PROMPT_CONTRACT_VERSION, _CONTRACT_VERSION_FORM)
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
+        tc.assertEqual(built["prompt_contract_version"], LEAF_PROMPT_CONTRACT_VERSION)
+        tc.assertRegex(LEAF_PROMPT_CONTRACT_VERSION, _CONTRACT_VERSION_FORM)
         tc.assertRegex(req["prompt_contract_version"], _CAPTURED_WORKSHOP_VERSION_FORM)
     # the builder must cover every real field except record-launch extras
     real_business_keys = set(req) - _NON_BUILDER_KEYS

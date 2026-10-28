@@ -244,7 +244,7 @@ class CompileVerifyTests(_Base):
         self.assert_projected_pass()
         vmeta = self.attempt_meta()
         self.assertEqual((vmeta["result"], vmeta["leaf_mode"], vmeta["prompt_contract_version"]),
-                         ("pass", "workshop", leaf_contract.PURE_PROMPT_CONTRACT_VERSION))
+                         ("pass", "workshop", leaf_contract.LEAF_PROMPT_CONTRACT_VERSION))
         # One version since issue #534 PR-J4-b: the retired workshop counter is not written.
         self.assertNotIn("workshop_prompt_contract_version", vmeta)
         row = vmeta["per_attempt"][0]
@@ -278,7 +278,7 @@ class CompileVerifyTests(_Base):
         self.assertEqual((request["leaf_mode"], request["workshop_lineage_id"],
                           request["workshop_provider"], request["prompt_contract_version"]),
                          ("workshop", "child-1", self.PROVIDER,
-                          leaf_contract.PURE_PROMPT_CONTRACT_VERSION))
+                          leaf_contract.LEAF_PROMPT_CONTRACT_VERSION))
         self.assertNotIn("workshop_prompt_contract_version", request)
         (spawn,) = self.c.spawns
         self.assertIsNone(spawn["mcp_config_json"])
@@ -1137,7 +1137,7 @@ class CodexValidateJudgeTests(_CodexCutReadRows, ValidateJudgeTests):
         self.assertFalse((self.c.homes / _ORCH / "claude").exists())
         vmeta = self.attempt_meta()
         self.assertEqual((vmeta["leaf_mode"], vmeta["prompt_contract_version"]),
-                         ("workshop", leaf_contract.PURE_PROMPT_CONTRACT_VERSION))
+                         ("workshop", leaf_contract.LEAF_PROMPT_CONTRACT_VERSION))
         self.assertNotIn("workshop_prompt_contract_version", vmeta)
         row = vmeta["per_attempt"][0]
         self.assertEqual((row["model"], row["model_turns"], row["items_completed"],
@@ -1372,7 +1372,7 @@ class RenderTests(unittest.TestCase):
                     self.assertEqual(text.lower().count(self.PAGING.lower()),
                                      1 if provider == "claude_cli" else 0)
                     self.assertIn(f"prompt_contract_version: "
-                                  f"{leaf_contract.PURE_PROMPT_CONTRACT_VERSION}", text)
+                                  f"{leaf_contract.LEAF_PROMPT_CONTRACT_VERSION}", text)
         for step, substep, shape in self.PAIRS:
             with self.subTest(pair=(step, substep, shape)):
                 req = ort.prepare_launch_request_payload(self._request(step, substep, shape))

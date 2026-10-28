@@ -634,11 +634,11 @@ class PureCompileProfileContextTests(_Fixture):
         self.assertEqual(ctx["profile_spec_document"],
                          wc.Conductor._PURE_PROFILE_ABSENT_DOCUMENT)
         # Driven through the real validator, not asserted about: this is the frame that refuses.
-        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         base = {"agent_role": "substep", "step": "compile", "substep": "generate",
                 "leaf_mode": "workshop", "workshop_lineage_id": "c",
                 "workshop_provider": "claude_cli",
-                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION}
+                "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION}
         ort._validate_pure_launch_request_payload({**base, "pure_context": ctx})
         with self.assertRaises(ValueError) as caught:
             ort._validate_pure_launch_request_payload(
@@ -657,12 +657,12 @@ class PureCompileProfileContextTests(_Fixture):
         Driven through the validator on all three shapes, so the exemption is measured at the
         frame that grants it rather than asserted about.
         """
-        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         ctx = self.conductor()._build_pure_compile_context(self.refs)
         base = {"agent_role": "substep", "step": "compile", "substep": "generate",
                 "leaf_mode": "workshop", "workshop_lineage_id": "c",
                 "workshop_provider": "claude_cli",
-                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                 "repair_strategy": "reuse", "repair_findings": "a static gate finding"}
         # Warm: the resumed session holds the context, so omitting it is accepted.
         ort._validate_pure_launch_request_payload({**base, "warm_resume": True})
@@ -957,7 +957,7 @@ class PureCompileProducerTests(_Fixture):
         # One launch: the leaf authored the whole IR in its tree.
         self.assertEqual(gmeta["attempts"], 1)
         self.assertEqual(meta["attempt_count"], 1)
-        self.assertEqual(gmeta["prompt_contract_version"], ort.PURE_PROMPT_CONTRACT_VERSION)
+        self.assertEqual(gmeta["prompt_contract_version"], ort.LEAF_PROMPT_CONTRACT_VERSION)
         self.assertEqual(gmeta["leaf_mode"], "workshop")
 
     def test_the_pending_status_is_not_read_as_a_certified_dependency(self) -> None:

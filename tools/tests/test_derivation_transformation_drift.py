@@ -2,13 +2,13 @@
 
 A derivation key (`tools/derivation.py`) hashes a phase's contract inputs together with the
 version of the transformation that turns them into an output. The LLM half of that version is
-`PURE_PROMPT_CONTRACT_VERSION`, whose coupled surface `test_leaf_prompt_contract_drift.py` pins.
+`LEAF_PROMPT_CONTRACT_VERSION`, whose coupled surface `test_leaf_prompt_contract_drift.py` pins.
 This module pins the REST:
 
 * `COMPILE_INLINED_DOCUMENTS_VERSION` — the three documents the compile pair inlines IN FULL
   (`phase_01_compile.md`, the two IR examples; the `impl_defaults` schema was the fourth until
   R4-a PR-3, issue #284, which deleted it with the IR section). The prompt drift
-  test refuses to pin them under `PURE_PROMPT_CONTRACT_VERSION` because a bump of THAT version
+  test refuses to pin them under `LEAF_PROMPT_CONTRACT_VERSION` because a bump of THAT version
   has two side effects (it stops `_resolve_exemplar_source` offering earlier-version exemplars
   and refuses `--resume` across it); a bump of this one has exactly one effect — every node's
   Compile re-derives — and re-pinning without a bump is the maintainer saying "this edit did not
@@ -891,7 +891,7 @@ PINNED_RENDER: dict[str, str] = {
     # writers that call it. The `test:` recipe pre-creates `raw/state_snapshots/initial` only
     # when the host renders the runner (`initial_capture_dir`), `raw/state_snapshots` otherwise;
     # the m3c Makefile is byte-identical, a harness node's loses `/initial`. A re-pin, not a
-    # bump: the same change bumps `PURE_PROMPT_CONTRACT_VERSION` to pure-59 (RUNNER_OUTPUT_CONTRACT
+    # bump: the same change bumps `LEAF_PROMPT_CONTRACT_VERSION` to pure-59 (RUNNER_OUTPUT_CONTRACT
     # §3 states the directory set), which is in the generate transformation tuple, so every
     # Generate key moves and every certified harness Makefile is re-rendered whatever this version
     # says (the precedent is `execute-8`'s issue #346 re-pin). (Measured by diffing
@@ -1361,7 +1361,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # when a case lacks it or two disagree) — the record every `tests.md` §8 asks for. A re-pin,
     # not a bump: the record's bytes DO change (unlike the refusal-only re-pins above), but no
     # gate and no verdict predicate reads the two fields (`Validate.judge` is shown the record
-    # whole), and the same change bumps `PURE_PROMPT_CONTRACT_VERSION` to pure-54, which is in
+    # whole), and the same change bumps `LEAF_PROMPT_CONTRACT_VERSION` to pure-54, which is in
     # the validate transformation tuple (`tools/derivation.py`), so every validate key moves
     # and every certified Validate re-derives — with the new record — whatever this version
     # says. A bump here would move nothing more. (Measured by diffing `execute_tuple()` against
@@ -1766,7 +1766,7 @@ class TransformationDriftTests(unittest.TestCase):
 #: Every `pure_context` key the launch tables declare, classified. `input`: node input data,
 #: hashed per node by the derivation inputs (`phase_derivation_inputs`) or an artifact of an
 #: upstream phase whose OUTPUT HASH is; `contract`: a static document or slice pinned by
-#: `test_leaf_prompt_contract_drift._contract_tuple` under `PURE_PROMPT_CONTRACT_VERSION`;
+#: `test_leaf_prompt_contract_drift._contract_tuple` under `LEAF_PROMPT_CONTRACT_VERSION`;
 #: `compile-docs`: pinned above under `COMPILE_INLINED_DOCUMENTS_VERSION`; `derived`: a
 #: host-computed value that is a function of `input` members and the transformation version
 #: (not hashed on its own); `same-phase`: an artifact an EARLIER substep of the same phase

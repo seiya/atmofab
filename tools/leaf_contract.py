@@ -5,9 +5,9 @@
 The module began as the PURE-FUNCTION leaf's transport (Z2; `docs/design/
 zero_base_architecture.md` A2): a host-assembled closed context, one typed JSON document
 returned, no tools. That leaf model, its launch flag set (`pure_leaf_flags`), its fixed system
-prompt and its reply-text extractor went in PR-J4-b; the module keeps its name until the
-mechanical renames of J4-d. What it holds now is STAGE-AGNOSTIC: the leaf contract version
-(`PURE_PROMPT_CONTRACT_VERSION`, a derivation-key input), the workshop leaf's launch flags and
+prompt and its reply-text extractor went in PR-J4-b, and PR-J4-d renamed the module from
+`tools/pure_leaf.py`. What it holds now is STAGE-AGNOSTIC: the leaf contract version
+(`LEAF_PROMPT_CONTRACT_VERSION`, a derivation-key input), the workshop leaf's launch flags and
 tool-surface tables, the result-envelope parser, the verify verdict and semantic-review
 contracts, and the record predicates (`is_pure_request` and the pure sentinel stay so a
 record written by the pure leaf is still read). It is deliberately free of any
@@ -34,7 +34,7 @@ from typing import Any, NamedTuple
 # issue #534 PR-J4-b: the workshop leaf's own (`WORKSHOP_PROMPT_CONTRACT_VERSION`, `workshop-1`
 # through `workshop-9`, which entered no key) is retired, and the VALUE stays `pure-84` (no key
 # moves); the next bump writes `leaf-85`.
-PURE_PROMPT_CONTRACT_VERSION = "pure-84"
+LEAF_PROMPT_CONTRACT_VERSION = "pure-84"
 
 # Schema-violation repair is a bounded in-conversation continuation (warm `--resume
 # --fork-session`): the producer sees its own prior answer plus the violation excerpt and
@@ -50,7 +50,7 @@ MAX_BUNDLE_REPAIR_TURNS = 2
 # line 0 against it via a parity test. The slim-repair sentinel, whose anchor this mirrored, was
 # COPIED into each module instead; it survives in the validator alone, for the pre-Z4 records it
 # still has to classify (issue #171). A change here is a prompt-contract change (bump
-# `PURE_PROMPT_CONTRACT_VERSION`).
+# `LEAF_PROMPT_CONTRACT_VERSION`).
 PURE_PROMPT_SENTINEL = "Pure-function leaf turn (host-mediated)"
 
 # Data-only fence around an untrusted document inlined into a pure launch prompt (`tests.md`,
@@ -151,7 +151,7 @@ WORKSHOP_PROMPT_SENTINEL = "Workshop leaf turn (host-seeded work tree)"
 #: default because the default carries per-machine DYNAMIC sections (cwd, environment, memory
 #: paths, git status). It takes them out of the system prompt but not out of the request: the
 #: CLI still adds text of its own (`docs/ORCHESTRATION.md`, issue #454). A change here is a
-#: prompt-contract change (`PURE_PROMPT_CONTRACT_VERSION`).
+#: prompt-contract change (`LEAF_PROMPT_CONTRACT_VERSION`).
 WORKSHOP_SYSTEM_PROMPT = (
     "You are the producer of a host-mediated workflow, working in a host-seeded work tree. "
     "Your file tools reach that tree and nothing else; you hold no shell. The host runs the "
@@ -188,7 +188,7 @@ _PATH_PROPERTY = {"type": "string",
 
 #: What the model reads of the five file tools: name, description and JSON schema, in one table
 #: both dialects serialize (`llm_workshop_loop`). Leaf-read contract text: a change here is a
-#: prompt-contract change (`PURE_PROMPT_CONTRACT_VERSION`).
+#: prompt-contract change (`LEAF_PROMPT_CONTRACT_VERSION`).
 HTTP_FILE_TOOL_DECLARATIONS: tuple[dict[str, Any], ...] = (
     {"name": "read_file",
      "description": (

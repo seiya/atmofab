@@ -76,7 +76,7 @@ from tools.orchestration_runtime import (
     default_agent_model_for_backend,
 )
 
-from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION, WORKSHOP_PROMPT_SENTINEL
+from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION, WORKSHOP_PROMPT_SENTINEL
 
 # The derivation record a PASS step_result must carry (issue #250): what the conductor computes
 # at phase start (`phase_derivation`) and `write_step_result` stamps into the certifying meta.
@@ -141,7 +141,7 @@ _PURE_GENERATE_OVERRIDE = {
     "workshop_provider": "claude_cli",
     "pure_language": "fortran",
     "pure_parallel": "openmp",
-    "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+    "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
     "allowed_output_paths": [],
     "skill_name": "",
     "skill_ref": "",
@@ -486,7 +486,7 @@ def _launch_request_body(arid: str, *, deterministic: bool = False) -> dict:
         shape["workshop_provider"] = "claude_cli"
         shape["pure_language"] = "fortran"
         shape["pure_parallel"] = "openmp"
-        shape["prompt_contract_version"] = PURE_PROMPT_CONTRACT_VERSION
+        shape["prompt_contract_version"] = LEAF_PROMPT_CONTRACT_VERSION
         shape["pure_context"] = _PURE_GENERATE_CONTEXT
     src = f"{_FIX_PIPE_REF}/source/src_20260509_001"
     return {
@@ -1776,7 +1776,7 @@ class CodexOrchestrationRuntimeTests(unittest.TestCase):
                 "leaf_mode": "workshop",
                 "workshop_lineage_id": "substep_run_plan_verify_001",
                 "workshop_provider": "claude_cli",
-                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                 "pure_context": {
                     "ir_document": "algorithm:\n  state_variables: [h]\n",
                     "tests_document": "- test: conserves mass",
@@ -12299,7 +12299,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 "skill_must_read_refs": "",
                 "leaf_mode": "workshop",
                 "workshop_provider": "codex_cli",
-                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                 "pure_context": _PURE_GENERATE_CONTEXT,
                 "allowed_output_paths": [],
                 "issue_severity": "none",
@@ -12434,7 +12434,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                 "workshop_provider": "codex_cli",
                 "pure_language": "fortran",
                 "pure_parallel": "openmp",
-                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                 "pure_context": _PURE_GENERATE_CONTEXT,
                 "allowed_output_paths": [],
                 "issue_severity": "none",
@@ -12460,7 +12460,7 @@ class TestPhase2PlanGuardsIntegration(unittest.TestCase):
                         "workshop_provider": "codex_cli",
                         "pure_language": "fortran",
                         "pure_parallel": "openmp",
-                        "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                        "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                         "pure_context": _PURE_GENERATE_CONTEXT,
                         "allowed_output_paths": [],
                         "issue_severity": "none",
@@ -22266,8 +22266,8 @@ class R5ExemplarSelectorTests(unittest.TestCase):
                         f"! checks for {sid}\nmodule {sid}_checks\nend module\n")
             # An M3c checks exemplar is gated on its recorded contract version matching the
             # current one; seed a matching `bundle_meta.json` by default (None => current).
-            from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
-            version = contract_version if contract_version is not None else PURE_PROMPT_CONTRACT_VERSION
+            from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
+            version = contract_version if contract_version is not None else LEAF_PROMPT_CONTRACT_VERSION
             self._write(src.parent / "bundle_meta.json",
                         json.dumps({"prompt_contract_version": version}))
 
@@ -24048,7 +24048,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
         leaf is one since issue #534 PR-J4-b, and an HTTP provider is admissible only for one,
         which `record_launch` asserts itself), its lineage home prepared first as the host
         does. `workshop=False` builds a launch that is neither workshop nor deterministic."""
-        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         if workshop:
             provider, lineage_backend = self._WORKSHOP_PROVIDER[response_backend]
             _prepare_workshop_lineage(repo_root, "orch_001", arid, backend=lineage_backend)
@@ -24070,7 +24070,7 @@ class MultiProviderPreflightTests(unittest.TestCase):
                 "pipeline_ref": _FIX_PIPE_REF,
                 "dependency_ref": "spec/problem/shallow_water2d/deps.yaml",
                 "source_id": "src_20260415_001",
-                "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                 "allowed_output_paths": [],
                 "pure_context": {
                     "controlled_spec_document": "the model conserves mass",
@@ -24616,7 +24616,7 @@ class AgentRoleFailClosedTests(unittest.TestCase):
         # workshop captures of their pairs, plus the escalate diagnostician's
         # (`validate.diagnose`). `BuildLaunchRequestTest`'s docstring carries the provenance.
         self.assertEqual(len(captured), 8, "captured payload set changed; revisit coverage")
-        from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
+        from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
         modes = {json.loads(p.read_text(encoding="utf-8")).get("leaf_mode") for p in captured}
         self.assertEqual(modes, {None, "workshop"}, "a capture of a retired leaf model")
         for path in captured:
@@ -24628,7 +24628,7 @@ class AgentRoleFailClosedTests(unittest.TestCase):
                 # (`test_workflow_conductor.BuildLaunchRequestTest`, `_HISTORICAL_KEYS`) — and
                 # the provider a `workshop-1` capture predates.
                 payload = {**payload,
-                           "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+                           "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                            "workshop_provider": payload.get("workshop_provider", "claude_cli")}
             with self.subTest(fixture=path.name):
                 self.assertEqual(
@@ -28118,12 +28118,12 @@ class RetiredPureLeafRecordTests(unittest.TestCase):
         req = self._pure_request("child_new_pure", "verify")
         with self.assertRaises(ValueError) as ctx:
             ort._validate_pure_launch_request_payload(
-                {**req, "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION})
+                {**req, "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION})
         self.assertIn("pure leaf went in issue #534 PR-J4-b", str(ctx.exception))
         # Control: the same request as a workshop one passes the validator, so the refusal
         # above is the leaf_mode and nothing else the fixture carries.
         ort._validate_pure_launch_request_payload(
-            {**req, "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+            {**req, "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
              "leaf_mode": "workshop", "workshop_provider": "claude_cli",
              "workshop_lineage_id": "child_new_pure"})
 
@@ -28132,7 +28132,7 @@ class RetiredPureLeafRecordTests(unittest.TestCase):
         is refused rather than recorded as a part no loop runs (old records keep their
         readers)."""
         req = {**self._pure_request("child_new_part", "verify"),
-               "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION,
+               "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION,
                "leaf_mode": "workshop", "workshop_provider": "claude_cli",
                "workshop_lineage_id": "child_new_part"}
         with self.assertRaises(ValueError) as ctx:
@@ -28153,7 +28153,7 @@ class RetiredPureLeafRecordTests(unittest.TestCase):
             write_preflight(repo_root=repo_root, orchestration_id=self._ORCH,
                             payload=_launchable_preflight_dict(backend="claude"))
             req = {**self._pure_request("child_new_pure", "verify"),
-                   "prompt_contract_version": PURE_PROMPT_CONTRACT_VERSION}
+                   "prompt_contract_version": LEAF_PROMPT_CONTRACT_VERSION}
             with self.assertRaises(ValueError) as ctx:
                 record_launch(
                     repo_root=repo_root, orchestration_id=self._ORCH,

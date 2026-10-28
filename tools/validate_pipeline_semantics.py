@@ -53,7 +53,7 @@ try:
     # prompt templates, and this validator cannot drift (a parity test still pins template
     # line 0 against it). leaf_contract is stdlib-only, so importing it here introduces no cycle.
     from tools.leaf_contract import (
-        PURE_PROMPT_CONTRACT_VERSION,
+        LEAF_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
         WORKSHOP_LINEAGE_BACKENDS,
         WORKSHOP_PROMPT_SENTINEL,
@@ -99,7 +99,7 @@ except ModuleNotFoundError:  # pragma: no cover - import bootstrap for direct CL
         normalize_raw_evidence_spelling as _normalize_raw_evidence_spelling,
     )
     from tools.leaf_contract import (
-        PURE_PROMPT_CONTRACT_VERSION,
+        LEAF_PROMPT_CONTRACT_VERSION,
         PURE_PROMPT_SENTINEL,
         WORKSHOP_LINEAGE_BACKENDS,
         WORKSHOP_PROMPT_SENTINEL,
@@ -8123,7 +8123,7 @@ def _validate_orchestration_hierarchy(
                                     # carried its own (`workshop-N`) through PR-J4-a, and one
                                     # stamped so fails here — the `--resume` barrier the
                                     # retirement is (docs/RUNBOOK.md).
-                                    expected_version = PURE_PROMPT_CONTRACT_VERSION
+                                    expected_version = LEAF_PROMPT_CONTRACT_VERSION
                                     mode_word = "workshop" if is_workshop else "pure"
                                     if req_version != expected_version:
                                         violations.append(

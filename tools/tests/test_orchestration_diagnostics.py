@@ -13,7 +13,7 @@ from pathlib import Path
 from unittest import mock
 
 from tools import orchestration_diagnostics as diag
-from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
+from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -755,7 +755,7 @@ class PureLeafMetaWriterReaderContractTest(unittest.TestCase):
         self.assertEqual(gen["attempts"], 2)
         self.assertEqual(gen["failure_category"], "bundle_schema_violation")
         # The writer stamps the contract version; the reader must surface it.
-        self.assertEqual(gen["prompt_contract_version"], PURE_PROMPT_CONTRACT_VERSION)
+        self.assertEqual(gen["prompt_contract_version"], LEAF_PROMPT_CONTRACT_VERSION)
         # Every usage class the writer persists must be summed by the reader.
         self.assertEqual(gen["usage_total"]["total_tokens"], 11 + 22 + 33 + 44)
         self.assertEqual(gen["models"], ["claude-opus-4-8"])

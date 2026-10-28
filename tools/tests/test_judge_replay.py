@@ -36,7 +36,7 @@ import tools.orchestration_runtime as ort
 import tools.run_workflow as rw
 import tools.workflow_conductor as wc
 from tools import operator_private_root
-from tools.leaf_contract import PURE_PROMPT_CONTRACT_VERSION
+from tools.leaf_contract import LEAF_PROMPT_CONTRACT_VERSION
 from tools.tests.llm_samples import workshop_yaml
 from tools.tests.orchestration_fixtures import (
     certify_node,
@@ -293,7 +293,7 @@ class JudgeReplayEndToEndTests(unittest.TestCase):
             self.assertNotIn("prompt_matches_record", row)
             self.assertEqual(row["source_leaf_mode"], "workshop")
             self.assertEqual(row["source_prompt_contract_version"],
-                             PURE_PROMPT_CONTRACT_VERSION)
+                             LEAF_PROMPT_CONTRACT_VERSION)
             self.assertEqual(row["label"], "agreement")
             # The scripted envelope's figures, summed over the one attempt.
             self.assertEqual((row["duration_ms"], row["model_turns"], row["input_tokens"],
