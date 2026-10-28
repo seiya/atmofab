@@ -622,7 +622,8 @@ class HostDefectRefusalsTests(unittest.TestCase):
         first thing a malformed host-rendered request meets: a bare `KeyError('workshop ...')`
         reaches the operator as a traceback naming a dict, and the named refusal reaches them
         as the step / substep / shape that has no template. Driven on a workshop request since
-        issue #534 PR-J4-b (the renderer kept its name; the pure family it served went).
+        issue #534 PR-J4-b (the renderer kept its name, `_render_pure_launch_prompt`, until PR-J4-d;
+        the pure family it served went).
         """
         from tools.orchestration_runtime import _render_leaf_launch_prompt
         payload = {

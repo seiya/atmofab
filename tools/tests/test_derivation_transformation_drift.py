@@ -891,7 +891,7 @@ PINNED_RENDER: dict[str, str] = {
     # writers that call it. The `test:` recipe pre-creates `raw/state_snapshots/initial` only
     # when the host renders the runner (`initial_capture_dir`), `raw/state_snapshots` otherwise;
     # the m3c Makefile is byte-identical, a harness node's loses `/initial`. A re-pin, not a
-    # bump: the same change bumps `LEAF_PROMPT_CONTRACT_VERSION` to pure-59 (RUNNER_OUTPUT_CONTRACT
+    # bump: the same change bumps `PURE_PROMPT_CONTRACT_VERSION` to pure-59 (RUNNER_OUTPUT_CONTRACT
     # §3 states the directory set), which is in the generate transformation tuple, so every
     # Generate key moves and every certified harness Makefile is re-rendered whatever this version
     # says (the precedent is `execute-8`'s issue #346 re-pin). (Measured by diffing
@@ -1376,7 +1376,7 @@ PINNED_EXECUTE: dict[str, str] = {
     # when a case lacks it or two disagree) — the record every `tests.md` §8 asks for. A re-pin,
     # not a bump: the record's bytes DO change (unlike the refusal-only re-pins above), but no
     # gate and no verdict predicate reads the two fields (`Validate.judge` is shown the record
-    # whole), and the same change bumps `LEAF_PROMPT_CONTRACT_VERSION` to pure-54, which is in
+    # whole), and the same change bumps `PURE_PROMPT_CONTRACT_VERSION` to pure-54, which is in
     # the validate transformation tuple (`tools/derivation.py`), so every validate key moves
     # and every certified Validate re-derives — with the new record — whatever this version
     # says. A bump here would move nothing more. (Measured by diffing `execute_tuple()` against
