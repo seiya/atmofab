@@ -109,21 +109,21 @@ defaults:
 phases:
   compile:
     substeps:
-      # PURE (issue #168): the IR producer. The host inlines the controlled spec, the tests,
-      # the dependency declaration and the phase contract, and the leaf returns one JSON
-      # document holding the IR — it holds no tools and writes nothing. The hardest structured
-      # task in the run, 26.7% of all tokens on the agentic measurement below, and every later
-      # leaf reads what it wrote.
+      # The IR producer. The host seeds the controlled spec, the tests, the dependency
+      # declaration and the phase contract into its tree; the leaf writes the whole IR there as
+      # `spec.ir.yaml` (or `compile_fail.json` to declare an input defect) and checks it with
+      # `check_ir`. The hardest structured task in the run, 26.7% of all tokens on the agentic
+      # measurement above, and every later leaf reads what it wrote.
       generate:
         provider: claude_cli
         model: opus
         effort: medium
         max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
-      # PURE (issue #168): the IR reviewer. Semantic cross-reference (V1/V3/V5) over a
-      # deterministically-clean IR, returning one verdict document. The cheapest leaf to be
-      # wrong in: 3 of 93 nodes re-ran it, and both `generate` and `validate.judge` read the
-      # same IR afterwards. The only leaf this file economises, and it does so by model tier —
+      # The IR reviewer. Semantic cross-reference (V1/V3/V5) over a deterministically-clean IR
+      # seeded in its tree, written as one verdict document, `verdict.json`. The cheapest leaf
+      # to be wrong in: 3 of 93 nodes re-ran it, and both `generate` and `validate.judge` read
+      # the same IR afterwards. The only leaf this file economises, and it does so by model tier —
       # effort stays at the generation default here as everywhere else.
       verify:
         provider: claude_cli
@@ -133,16 +133,19 @@ phases:
 
   generate:
     substeps:
-      # The CodegenBundle producer — 45.3% of all tokens and the only leaf that routinely
-      # re-runs (30.2% of its spend is re-runs, tail to 7 attempts). The last leaf to economise.
+      # The CodegenBundle producer: writes the bundle's files and `bundle.yaml` in its tree and
+      # builds, lints and runs them through the host's operations. 45.3% of all tokens and the
+      # only leaf that routinely re-runs (30.2% of its spend is re-runs, tail to 7 attempts).
+      # The last leaf to economise.
       generate:
         provider: claude_cli
         model: opus
         effort: medium
         max_wrapper_calls: 30      # wrapper calls per lineage (its cold launch + resumes)
         lineage_timeout_s: 2700    # seconds per lineage, from its cold launch
-      # The verdict reviewer, reached only on a source the deterministic gate already accepted —
-      # but it re-ran in 12 of 80 nodes, and a wrong rejection re-runs the 45% leaf above.
+      # The verdict reviewer: reads the bundle seeded in its tree and writes `verdict.json`.
+      # Reached only on a source the deterministic gate already accepted — but it re-ran in 12
+      # of 80 nodes, and a wrong rejection re-runs the 45% leaf above.
       verify:
         provider: claude_cli
         model: opus
@@ -151,8 +154,9 @@ phases:
 
   validate:
     substeps:
-      # The independent semantic check. Never re-run in 69 of 69 nodes, so its cost is perfectly
-      # predictable — and still not economised, because nothing runs after it to catch a miss.
+      # The independent semantic check: reads the run's documents seeded in its tree and writes
+      # `review.json`. Never re-run in 69 of 69 nodes, so its cost is perfectly predictable —
+      # and still not economised, because nothing runs after it to catch a miss.
       judge:
         provider: claude_cli
         model: opus

@@ -43,7 +43,8 @@ expect, before you believe a single mutant.
 ## A reviewer mutated the TEST and reported the sweep vacuous (issue #149, 2026-09-03)
 
 The branch added a sweep that scans, among other host literals, `tools/pure_leaf.py`'s
-`PURE_SYSTEM_PROMPT` — the system prompt every pure leaf receives outside its launch prompt — for
+`PURE_SYSTEM_PROMPT` — the system prompt every pure leaf received outside its launch prompt (deleted
+with the pure leaf in issue #534 PR-J4-b) — for
 a hand-assigned severity. The constant carries none today, so the block is a growth bound.
 
 Round 1's security axis reported it as **vacuous, unpinned dead machinery**, and named its

@@ -1,6 +1,6 @@
 ---
 name: atmofab-enforcement-change
-description: Use when changing this repository's enforcement machinery — the deterministic gates, the validators, the build-runtime library's argument checks, the pure-leaf launch refusals and the read-only sandbox profile, the workshop leaf's writable lineage profile, its wrapper's path resolution under the work tree, its per-lineage operation set and its call cap, `check_ir`'s scratch IR directory under the lineage home, the READING workshop leaf of a judging substep (no endpoint, its one output document, the seed restore, the seeds-only reseed after a transport death, the launch-record endpoint row), the HTTP host tool-use loop of a workshop leaf (its file tools' path resolution and reserved names, the cut / timeout / transport rules, the in-memory warm history, `loop_turns.jsonl`, the HTTP workshop record audit), the DEV hook layer — and whenever you are about to classify a review finding as 「残余」「到達不能」「対象外」 (residual / unreachable / out of scope). Required reading for fixing a fail-open, adding to an allowlist or denylist, touching the gate functions in `tools/build_runtime.py` / `tools/orchestration_runtime.py`, `tools/hooks/` (the DEV layer; the leaf hook layer, the capability gate and write_root derivation went in Z4, issue #171, and the episodes about them stay in `references/`), or the gates in `validate_pipeline_semantics.py`, for fixing an audit finding, and for triaging a subagent's or Codex's review findings.
+description: Use when changing this repository's enforcement machinery — the deterministic gates, the validators, the build-runtime library's argument checks, the launch-record refusals (a new pure launch among them), the workshop leaf's writable lineage profile, its wrapper's path resolution under the work tree, its per-lineage operation set and its call cap, `check_ir`'s scratch IR directory under the lineage home, the READING workshop leaf of a judging substep or the `escalate` diagnostician (no endpoint, its one output document, the seed restore, the seeds-only reseed after a transport death, the launch-record endpoint row), the HTTP host tool-use loop of a workshop leaf (its file tools' path resolution and reserved names, the cut / timeout / transport rules, the in-memory warm history, `loop_turns.jsonl`, the HTTP workshop record audit), the DEV hook layer — and whenever you are about to classify a review finding as 「残余」「到達不能」「対象外」 (residual / unreachable / out of scope). Required reading for fixing a fail-open, adding to an allowlist or denylist, touching the gate functions in `tools/build_runtime.py` / `tools/orchestration_runtime.py`, `tools/hooks/` (the DEV layer; the leaf hook layer, the capability gate and write_root derivation went in Z4, issue #171, and the episodes about them stay in `references/`), or the gates in `validate_pipeline_semantics.py`, for fixing an audit finding, and for triaging a subagent's or Codex's review findings.
 ---
 
 # Changing atmofab's enforcement machinery
@@ -15,7 +15,7 @@ Fixing enforcement machinery in this repository carries a high probability that 
 itself introduces the next defect**. In PR #51 (two high audit findings), 17 subagent review
 rounds plus 3 Codex passes surfaced 15 defects that the fixes had introduced. What follows is
 a procedure against those recurring shapes; it does not restate the rules themselves (the
-canonical sources are `docs/BUILD_RUNTIME.md` / `docs/HOOKS.md` / `docs/AGENT_SKILLS.md` / `docs/ORCHESTRATION.md` §pure-function leaf and §workshop leaf —
+canonical sources are `docs/BUILD_RUNTIME.md` / `docs/HOOKS.md` / `docs/AGENT_SKILLS.md` / `docs/ORCHESTRATION.md` §workshop leaf —
 copying them here would add one more twin document, which is itself the defect class this
 skill exists to kill).
 
@@ -542,7 +542,9 @@ recipes are in `references/input-surfaces.md`:
   what can MOVE a protected path; this asks what happens when the same path is written at a new
   TIME. **HISTORICAL since Z4** ([issue #171](https://github.com/seiya/atmofab/issues/171)
   PR-2): the write-attribution layer this surface is about is deleted, because a
-  `pure-function leaf` has no write authority to attribute — the host writes every artifact.
+  leaf has no write authority over the checkout to attribute — the host writes every artifact
+  (from a `pure-function leaf`'s returned document then, from a `workshop leaf`'s tree snapshot
+  since issue #534 PR-J4-b).
   The surface is kept because the SHAPE recurs wherever one layer classifies by window and
   another writes outside it. What it described: `_validate_actual_write_paths` attributed by
   WINDOW, a leaf's changes diffed against the baseline its launch took, and a child-authored
@@ -644,8 +646,8 @@ recipes are in `references/input-surfaces.md`:
   leaf-authored source — off the one leaf whose runner it was written for, while
   `leaf_contract_doc_refs`' own docstring names that leaf as the reason not to gate the injection
   on node shape. **Rule: before changing a leaf's transport, enumerate what the OLD transport
-  delivered — the SKILL, each `leaf_contract_doc_refs` entry, each must-read the request built —
-  and say for each where it goes now.** Three answers are legitimate (inlined as context,
+  delivered — the SKILL, each `leaf_contract_doc_refs` entry, each must-read the request built,
+  each inlined context value, each seed file — and say for each where it goes now.** Three answers are legitimate (inlined as context,
   restated in the template, genuinely not needed) and a fourth is the defect (nowhere). **The
   tell is that nothing fails**: the gate still runs, the suite is green, and the cost is a leaf
   that cannot satisfy a rule it was never shown — a pass-rate defect that reads as model
