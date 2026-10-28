@@ -1291,13 +1291,13 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
         # the document omits fails both, and the loop's message is the one that says what to
         # add. Ordering it first made growth report a bare set difference instead.
         # The second cell of every per-attempt meta row ends in a marker no other row in the table
-        # carries — ``(`pure` only)`` when the rows were added, the workshop marker below now — so
-        # it is the document's own statement of which rows claim to be per-attempt records. Compared as a SET against the code.
-        # Every record is written by a `workshop leaf` since issue #534 PR-J4-b, and its row says
-        # so with the second marker (older records may still say `pure`); the claim is the same,
-        # so both spellings count.
-        pure_marker = "(`pure` only)"
-        markers = (pure_marker, "(`workshop`; `pure` on older records)")
+        # carries, so it is the document's own statement of which rows claim to be per-attempt
+        # records. Compared as a SET against the code. The rows said ``(`pure` only)`` when they
+        # were added and ``(`pure` or `workshop`)`` after issue #534 step 1; since PR-J4-b every
+        # new record is a `workshop leaf`'s, and only the current marker is accepted, so a row
+        # reverted to an older one is red rather than silently re-claiming a pure writer.
+        marker = "(`workshop`; `pure` on older records)"
+        markers = (marker,)
         claimed = set()
         for line in doc.splitlines():
             stripped = line.strip()
@@ -1312,7 +1312,7 @@ class PureLeafMetaPhaseTests(unittest.TestCase):
             f"`PURE_LEAF_META_FILES` declares. A name here that the code no longer declares is a "
             f"stale row a reader would look for on disk and not find; a declared name missing "
             f"here is covered by the per-record checks ABOVE, which say what to add. If a row's "
-            f"phase cell was legitimately reworded away from {pure_marker}, this marker is what "
+            f"phase cell was legitimately reworded away from {marker}, this marker is what "
             f"the check reads and it has to be restored or this comparison rewritten.")
 
 
